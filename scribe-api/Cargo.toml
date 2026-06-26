@@ -39,6 +39,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "timeout", "limit", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
 zeroize = { version = "1", features = ["derive"] }
 
 pretty_assertions = "1"

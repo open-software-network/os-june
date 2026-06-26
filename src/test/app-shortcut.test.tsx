@@ -1,10 +1,19 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
-import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
-import { OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
+import {
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+} from "../lib/agent-events";
+import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -67,7 +76,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogin: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
-  osAccountsTopUp: vi.fn(),
+  osAccountsUpgrade: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
@@ -163,7 +172,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
-  osAccountsTopUp: mocks.osAccountsTopUp,
+  osAccountsUpgrade: mocks.osAccountsUpgrade,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
@@ -248,13 +257,12 @@ describe("App shortcuts", () => {
     });
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
-    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
     mocks.ensureHermesBridgeSession.mockResolvedValue({});
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     mocks.hermesBridgeStatus.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+      running: false,
     });
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessionMessages.mockResolvedValue([]);
@@ -269,8 +277,7 @@ describe("App shortcuts", () => {
       settings: { generationModel: "" },
     });
     mocks.startHermesBridge.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+      running: false,
     });
     mocks.startPeriodicScribeUpdateChecks.mockReturnValue(vi.fn());
     mocks.suggestAgentSessionTitle.mockImplementation(async (prompt: string) => ({
@@ -342,55 +349,151 @@ describe("App shortcuts", () => {
   });
 
   it("keeps a newly started chat attached to its tab before sessions hydrate", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    );
     const user = userEvent.setup();
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.startHermesBridge.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
     mocks.listHermesSessions.mockImplementation(
       () => new Promise(() => undefined),
     );
 
-    render(<App />);
+    try {
+      render(<App />);
 
-    expect(
-      await screen.findByRole("heading", { name: HERO_GREETING }),
-    ).toBeInTheDocument();
+      expect(
+        await screen.findByRole("heading", { name: HERO_GREETING }),
+      ).toBeInTheDocument();
 
-    window.dispatchEvent(
-      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
-        detail: { prompt: "plan the release" },
-      }),
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: "plan the release" },
+        }),
+      );
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "plan the release",
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
+          0,
+        ),
+      );
+
+      const chatTab = await screen.findByRole("tab", {
+        name: "plan the release",
+      });
+      expect(chatTab).toHaveAttribute("data-active", "true");
+
+      await user.click(screen.getByRole("button", { name: "New tab" }));
+      expect(
+        await screen.findByRole("heading", { name: HERO_GREETING }),
+      ).toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: "1", metaKey: true });
+
+      await waitFor(() =>
+        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
+          0,
+        ),
+      );
+      expect(
+        screen.queryByRole("heading", { name: HERO_GREETING }),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("keeps each agent tab tied to its selected session", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
     );
+    const user = userEvent.setup();
 
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-        session_id: "runtime-session-2",
-        text: "plan the release",
-      }),
-    );
-    await waitFor(() =>
-      expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
-        0,
-      ),
-    );
+    try {
+      render(<App />);
 
-    const chatTab = await screen.findByRole("tab", {
-      name: "plan the release",
-    });
-    expect(chatTab).toHaveAttribute("data-active", "true");
+      expect(
+        await screen.findByRole("heading", { name: HERO_GREETING }),
+      ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "New tab" }));
-    expect(
-      await screen.findByRole("heading", { name: HERO_GREETING }),
-    ).toBeInTheDocument();
+      const firstSession = {
+        id: "session-1",
+        title: "First session",
+        preview: "First preview",
+        last_active: "2026-06-04T12:00:00Z",
+      };
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+            detail: {
+              sessions: [firstSession],
+              selectedSessionId: firstSession.id,
+              workingSessionIds: [],
+            },
+          }),
+        );
+      });
 
-    fireEvent.keyDown(window, { key: "1", metaKey: true });
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "First session" }),
+        ).toHaveAttribute("data-active", "true"),
+      );
 
-    await waitFor(() =>
-      expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
-        0,
-      ),
-    );
-    expect(
-      screen.queryByRole("heading", { name: HERO_GREETING }),
-    ).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "New tab" }));
+      expect(
+        await screen.findByRole("tab", { name: "New session" }),
+      ).toHaveAttribute("data-active", "true");
+
+      const secondSession = {
+        id: "session-2",
+        title: "Second session",
+        preview: "Second preview",
+        last_active: "2026-06-05T12:00:00Z",
+      };
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+            detail: {
+              sessions: [secondSession, firstSession],
+              selectedSessionId: secondSession.id,
+              workingSessionIds: [],
+            },
+          }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "Second session" }),
+        ).toHaveAttribute("data-active", "true"),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Show all 2 tabs" }));
+      await user.click(screen.getByRole("menuitem", { name: "First session" }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "First session" }),
+        ).toHaveAttribute("data-active", "true"),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("creates a loose note with Command-Shift-N but ignores bare n", async () => {
@@ -414,6 +517,75 @@ describe("App shortcuts", () => {
     );
   });
 
+  it("closes the active tab with Command-W", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
+
+    fireEvent.keyDown(window, { key: "w", metaKey: true });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("tab", { name: "New note" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+  });
+
+  it("closes the active tab from the native close-tab menu event", async () => {
+    render(<App />);
+    const closeTabListenerCount = () =>
+      mocks.listen.mock.calls.filter(([event]) => event === CLOSE_TAB_EVENT)
+        .length;
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() =>
+      expect(mocks.listeners.has(CLOSE_TAB_EVENT)).toBe(true),
+    );
+    expect(closeTabListenerCount()).toBe(1);
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
+    expect(closeTabListenerCount()).toBe(1);
+
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
+    expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    dialog.remove();
+
+    mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("tab", { name: "New note" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    expect(closeTabListenerCount()).toBe(1);
+  });
+
   it("opens settings from the native app menu event", async () => {
     render(<App />);
 
@@ -426,6 +598,46 @@ describe("App shortcuts", () => {
     expect(
       await screen.findByRole("heading", { name: "Appearance" }),
     ).toBeInTheDocument();
+  });
+
+  it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listeners.has("dictation-event")).toBe(true),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    mocks.dictationHelperCommand.mockClear();
+    mocks.openPrivacySettings.mockClear();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    expect(
+      await screen.findByText(
+        "Dictation can't paste into other apps until you grant accessibility access.",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Grant access" }));
+
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "request_accessibility_permission",
+    });
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "get_permission_status",
+      }),
+    );
+    expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("accessibility");
   });
 
   it("starts a session with Ctrl-N and creates a note with Ctrl-Shift-N on Windows", async () => {

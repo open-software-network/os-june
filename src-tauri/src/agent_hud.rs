@@ -41,7 +41,40 @@ pub fn agent_hud_show(app: AppHandle) -> Result<(), String> {
         return Ok(());
     };
     position_agent_hud_window(&window)?;
-    window.show().map_err(|error| error.to_string())
+    #[cfg(target_os = "macos")]
+    {
+        // The HUD is a passive status surface. Tauri's show() does
+        // makeKeyAndOrderFront, which steals key focus from whatever the user is
+        // typing in (the composer) on every agent event. Order it front WITHOUT
+        // taking key — a click still promotes it to key (canBecomeKeyWindow=YES)
+        // when the user actually interacts with it.
+        order_agent_hud_front_without_key(&window);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.show().map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn order_agent_hud_front_without_key(window: &WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let Ok(handle) = window.ns_window() else {
+        return;
+    };
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        let win = handle as *mut AnyObject;
+        let nil: *mut AnyObject = std::ptr::null_mut();
+        // orderFront: makes the panel visible and frontmost without making it
+        // key (unlike makeKeyAndOrderFront:), so focus stays put.
+        let _: () = msg_send![win, orderFront: nil];
+    }
 }
 
 #[tauri::command]

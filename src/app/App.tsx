@@ -18,7 +18,7 @@ import type {
   ReactNode,
 } from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
-import { TrialGate } from "../components/account/TrialGate";
+import { FundingGate } from "../components/account/FundingGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -85,7 +85,7 @@ import {
   listSessionFolders,
   openPrivacySettings,
   osAccountsLogout,
-  osAccountsTopUp,
+  osAccountsUpgrade,
   pauseRecording,
   removeNoteFromFolder,
   removeSessionFromFolder,
@@ -133,6 +133,7 @@ import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
   AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
+  CLOSE_TAB_EVENT,
   OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
   emitAgentMenuBarState,
@@ -163,7 +164,7 @@ import {
   markOnboardingComplete,
   shouldReplayOnboarding,
 } from "../lib/onboarding";
-import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
+import { shouldBlockOnFunding, shouldBlockOnSignIn } from "../lib/account-gate";
 import {
   checkScribeUpdate,
   relaunchScribe,
@@ -192,6 +193,8 @@ const AGENT_MENU_BAR_SESSION_LIMIT = 6;
 const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [
   250, 500, 1000, 2000, 4000, 8000,
 ];
+const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
+const ACCESSIBILITY_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -325,16 +328,26 @@ export function App() {
     { id: makeTabId(), nav: { view: isMacLikePlatform() ? "agent" : "notes" } },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0]!.id);
+  const tabsRef = useRef(tabs);
+  const activeTabIdRef = useRef(activeTabId);
   // Set while restoring a tab's snapshot into live state: the capture effect
   // skips writes until live navigation settles onto the target (note loads are
   // async), so a half-applied snapshot never overwrites the tab it came from.
   const restoreTargetRef = useRef<TabNav | null>(null);
-  const [activeAgentSession, setActiveAgentSession] =
-    useState<HermesSessionInfo>();
   // Reactive copy of the known agent sessions for the "view all" list and
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
+  const [activeAgentSessionSeed, setActiveAgentSessionSeed] =
+    useState<HermesSessionInfo>();
+  const setActiveAgentSession = useCallback(
+    (session: HermesSessionInfo | undefined) => {
+      setActiveAgentSessionId(session?.id);
+      setActiveAgentSessionSeed(session);
+    },
+    [],
+  );
   const [agentWorkingSessionIds, setAgentWorkingSessionIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -401,6 +414,8 @@ export function App() {
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
+  const [accessibilityRefreshRequest, setAccessibilityRefreshRequest] =
+    useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
     useState<UpdatePromptPayload<ScribeUpdate> | null>(null);
@@ -481,7 +496,7 @@ export function App() {
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
   const finishingSessionsRef = useRef<Set<string>>(new Set());
   // A dev build without the OS Accounts env vars (fresh workspace, no .env)
-  // can never complete sign-in, so the sign-in and trial gates would be dead
+  // can never complete sign-in, so the account gates would be dead
   // ends — skip them and let account-dependent features surface their own
   // errors. Release builds always gate; so do dev builds once configured.
   const devAccountsUnconfigured =
@@ -490,21 +505,23 @@ export function App() {
     (accountLoading || !!accountError || !account.configured);
   const signInRequired =
     !devAccountsUnconfigured && shouldBlockOnSignIn(account);
-  const trialRequired =
-    !devAccountsUnconfigured && !signInRequired && shouldBlockOnTrial(account);
+  const fundingRequired =
+    !devAccountsUnconfigured &&
+    !signInRequired &&
+    shouldBlockOnFunding(account);
   const [onboardingDone, setOnboardingDone] = useState(() => {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();
   });
-  // The wizard handles sign-in and the free trial itself, so it gates on
-  // onboarding state alone; AccountGate/TrialGate remain for users who
-  // finished onboarding and later signed out or lapsed.
+  // The wizard handles sign-in, permissions, and hands-on practice. Funding
+  // only blocks once the account snapshot positively reports no spendable
+  // credits.
   const onboardingRequired = !accountLoading && !onboardingDone;
   // Onboarding counts as blocked so bootstrap, update checks, and the eager
   // permission probes hold off until the wizard finishes — the wizard owns
   // the permission prompts while it's on screen.
   const appBlocked =
-    accountLoading || signInRequired || trialRequired || onboardingRequired;
+    accountLoading || signInRequired || fundingRequired || onboardingRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -572,11 +589,10 @@ export function App() {
       originFolderId: activeView === "meetings" ? originFolderId : undefined,
       originAllNotes: activeView === "meetings" ? originAllNotes : undefined,
       folderId: activeView === "folders" ? state.selectedFolderId : undefined,
-      agentSessionId:
-        activeView === "agent" ? activeAgentSession?.id : undefined,
+      agentSessionId: activeView === "agent" ? activeAgentSessionId : undefined,
       agentSessionTitle:
         activeView === "agent"
-          ? agentSessionTabTitle(activeAgentSession)
+          ? agentSessionTabTitle(activeAgentSessionSeed)
           : undefined,
       agentOrigin: activeView === "agent" ? agentOrigin : undefined,
     }),
@@ -586,9 +602,9 @@ export function App() {
       originFolderId,
       originAllNotes,
       state.selectedFolderId,
-      activeAgentSession?.id,
-      activeAgentSession?.preview,
-      activeAgentSession?.title,
+      activeAgentSessionId,
+      activeAgentSessionSeed?.preview,
+      activeAgentSessionSeed?.title,
       agentOrigin,
     ],
   );
@@ -612,6 +628,14 @@ export function App() {
       ),
     );
   }, [liveNav, activeTabId]);
+
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
 
   // Keep the latest selected note id reachable from applyNav without making it
   // a dependency (which would rebuild the callback on every note change).
@@ -654,7 +678,8 @@ export function App() {
               title: nav.agentSessionTitle,
             })
           : undefined;
-        setActiveAgentSession(session);
+        setActiveAgentSessionId(nav.agentSessionId);
+        setActiveAgentSessionSeed(session);
       } else {
         setActiveAgentSession(undefined);
       }
@@ -682,6 +707,10 @@ export function App() {
     },
     [agentSessions],
   );
+  const applyNavRef = useRef(applyNav);
+  useEffect(() => {
+    applyNavRef.current = applyNav;
+  }, [applyNav]);
 
   function activateTab(id: string) {
     if (id === activeTabId) return;
@@ -708,7 +737,7 @@ export function App() {
   // agent workspace opens on the hero instead of restoring the last
   // conversation. Mirrors handleNewAgentSession (applyNav alone would only swap
   // state, leaving the previous chat on screen under a "New chat" label).
-  function armNewChatLive() {
+  const armNewChatLive = useCallback(() => {
     restoreTargetRef.current = { view: "agent" };
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
@@ -720,7 +749,7 @@ export function App() {
         new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
       );
     }, 0);
-  }
+  }, []);
 
   // The "+" / ⌘T affordance: a new tab is always a fresh chat.
   function openNewChatTab() {
@@ -736,28 +765,38 @@ export function App() {
     armNewChatLive();
   }
 
-  function closeTab(id: string) {
-    if (tabs.length <= 1) {
-      // Never leave the strip empty — reset the sole tab to a fresh chat.
-      const fresh = { id: makeTabId(), nav: defaultNav() };
-      setTabs([fresh]);
-      setActiveTabId(fresh.id);
-      armNewChatLive();
-      return;
-    }
-    const index = tabs.findIndex((tab) => tab.id === id);
-    if (index < 0) return;
-    const next = tabs.filter((tab) => tab.id !== id);
-    setTabs(next);
-    if (id === activeTabId) {
-      // Focus the right neighbor, falling back to the left — browser behavior.
-      const neighbor = next[index] ?? next[index - 1];
-      if (neighbor) {
-        setActiveTabId(neighbor.id);
-        applyNav(neighbor.nav);
+  const closeTab = useCallback(
+    (id: string) => {
+      const currentTabs = tabsRef.current;
+      const currentActiveTabId = activeTabIdRef.current;
+
+      if (currentTabs.length <= 1) {
+        // Never leave the strip empty — reset the sole tab to a fresh chat.
+        const fresh = { id: makeTabId(), nav: defaultNav() };
+        tabsRef.current = [fresh];
+        activeTabIdRef.current = fresh.id;
+        setTabs([fresh]);
+        setActiveTabId(fresh.id);
+        armNewChatLive();
+        return;
       }
-    }
-  }
+      const index = currentTabs.findIndex((tab) => tab.id === id);
+      if (index < 0) return;
+      const next = currentTabs.filter((tab) => tab.id !== id);
+      tabsRef.current = next;
+      setTabs(next);
+      if (id === currentActiveTabId) {
+        // Focus the right neighbor, falling back to the left — browser behavior.
+        const neighbor = next[index] ?? next[index - 1];
+        if (neighbor) {
+          activeTabIdRef.current = neighbor.id;
+          setActiveTabId(neighbor.id);
+          applyNavRef.current(neighbor.nav);
+        }
+      }
+    },
+    [armNewChatLive],
+  );
 
   // Keep only the given tab, focusing it. From the tab right-click menu.
   function closeOtherTabs(id: string) {
@@ -795,7 +834,24 @@ export function App() {
     );
   }
 
-  // Tab keyboard shortcuts: ⌘T new, ⌘[ / ⌘] cycle, ⌘1-9 jump (9 = last).
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen(CLOSE_TAB_EVENT, () => {
+      if (document.querySelector('[role="dialog"]')) return;
+      closeTab(activeTabIdRef.current);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [closeTab]);
+
+  // Tab keyboard shortcuts: ⌘T new, ⌘W close, ⌘[ / ⌘] cycle, ⌘1-9 jump
+  // (9 = last).
   // isPrimaryShortcut handles the cross-platform modifier (⌘ on mac, Ctrl on
   // Windows) and rejects Alt/Shift. No dependency array — re-bound each render
   // so it closes over current tabs, matching the search/new-note effects below.
@@ -807,6 +863,11 @@ export function App() {
       if (key.toLowerCase() === "t") {
         event.preventDefault();
         openNewChatTab();
+        return;
+      }
+      if (key.toLowerCase() === "w") {
+        event.preventDefault();
+        closeTab(activeTabId);
         return;
       }
       if (key === "]" || key === "}") {
@@ -1205,6 +1266,17 @@ export function App() {
       if (!detail) return;
       agentMenuBarSessionsRef.current = detail.sessions;
       setAgentSessions(detail.sessions);
+      if (activeViewRef.current === "agent") {
+        const selectedSessionId = detail.selectedSessionId;
+        if (selectedSessionId) {
+          setActiveAgentSessionId(selectedSessionId);
+          setActiveAgentSessionSeed((current) =>
+            current?.id === selectedSessionId ? current : undefined,
+          );
+        } else {
+          setActiveAgentSession(undefined);
+        }
+      }
       // "New session" started from a project: file the first brand-new
       // session that gets selected; switching to a known session instead
       // abandons the intent.
@@ -1377,9 +1449,12 @@ export function App() {
       (sessionId) => {
         setAgentOrigin(undefined);
         if (!sessionId) {
+          setActiveAgentSession(undefined);
           setActiveView("agent");
           return;
         }
+        setActiveAgentSessionId(sessionId);
+        setActiveAgentSessionSeed(undefined);
         const cachedSession = agentMenuBarSessionsRef.current.find(
           (session) => session.id === sessionId,
         );
@@ -1607,6 +1682,37 @@ export function App() {
     return () => window.removeEventListener("focus", refresh);
   }, [appBlocked, state.recordingStatus?.state]);
 
+  // After the user asks to grant Accessibility, keep checking briefly while
+  // macOS System Settings is in front. This avoids relying on a single webview
+  // focus event, which can be missed after the native TCC prompt hands off to
+  // System Settings.
+  useEffect(() => {
+    if (
+      appBlocked ||
+      !accessibilityBlocked ||
+      accessibilityRefreshRequest === 0
+    ) {
+      return;
+    }
+    function poll() {
+      void dictationHelperCommand({ type: "get_permission_status" }).catch(
+        () => undefined,
+      );
+    }
+    poll();
+    const interval = window.setInterval(
+      poll,
+      ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS,
+    );
+    const timeout = window.setTimeout(() => {
+      window.clearInterval(interval);
+    }, ACCESSIBILITY_PERMISSION_REFRESH_TIMEOUT_MS);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
+    };
+  }, [accessibilityBlocked, accessibilityRefreshRequest, appBlocked]);
+
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
   }
@@ -1624,13 +1730,10 @@ export function App() {
   }
 
   function handleEnableAccessibility() {
-    void dictationHelperCommand({ type: "request_accessibility_permission" })
-      .catch(() => undefined)
-      .finally(() => {
-        window.setTimeout(() => {
-          void openPrivacySettings("accessibility");
-        }, 200);
-      });
+    setAccessibilityRefreshRequest((request) => request + 1);
+    void dictationHelperCommand({
+      type: "request_accessibility_permission",
+    }).catch(() => undefined);
   }
 
   useEffect(() => {
@@ -2407,21 +2510,24 @@ export function App() {
     const tick = window.setInterval(() => {
       setRecordingInactivityNow(Date.now());
     }, 1000);
-    const timeout = window.setTimeout(() => {
-      const currentStatus = recordingStatusRef.current;
-      const sessionId = recordingInactivityPrompt.sessionId;
-      recordingInactivityTrackerRef.current = { sessionId };
-      setRecordingInactivityPrompt(null);
-      if (
-        currentStatus?.sessionId !== sessionId ||
-        currentStatus.state !== "recording"
-      ) {
-        return;
-      }
-      void handlePauseRecording(sessionId).then((paused) => {
-        if (paused) void notifyRecordingAutoPaused(sessionId);
-      });
-    }, Math.max(0, recordingInactivityPrompt.expiresAt - Date.now()));
+    const timeout = window.setTimeout(
+      () => {
+        const currentStatus = recordingStatusRef.current;
+        const sessionId = recordingInactivityPrompt.sessionId;
+        recordingInactivityTrackerRef.current = { sessionId };
+        setRecordingInactivityPrompt(null);
+        if (
+          currentStatus?.sessionId !== sessionId ||
+          currentStatus.state !== "recording"
+        ) {
+          return;
+        }
+        void handlePauseRecording(sessionId).then((paused) => {
+          if (paused) void notifyRecordingAutoPaused(sessionId);
+        });
+      },
+      Math.max(0, recordingInactivityPrompt.expiresAt - Date.now()),
+    );
 
     return () => {
       window.clearInterval(tick);
@@ -2486,7 +2592,6 @@ export function App() {
         <OnboardingFlow
           account={account}
           onAccountChanged={handleAccountChanged}
-          onRefreshAccount={refreshAccount}
           onComplete={() => {
             markOnboardingComplete();
             setOnboardingDone(true);
@@ -2514,7 +2619,7 @@ export function App() {
     );
   }
 
-  if (trialRequired) {
+  if (fundingRequired) {
     return (
       <main className="account-gate-shell">
         <div
@@ -2523,7 +2628,7 @@ export function App() {
           data-tauri-drag-region
           onPointerDown={handleTitlebarPointerDown}
         />
-        <TrialGate
+        <FundingGate
           account={account}
           onRefresh={refreshAccount}
           onSignOut={() => void handleSignOut()}
@@ -2725,7 +2830,11 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
-          {accessibilityBlocked ? <PermissionBanner /> : null}
+          {accessibilityBlocked ? (
+            <PermissionBanner
+              onEnableAccessibility={handleEnableAccessibility}
+            />
+          ) : null}
           <div
             ref={mainPanelBodyRef}
             className="main-panel-body"
@@ -2803,7 +2912,8 @@ export function App() {
                 // The origin crumbs render inside the workspace's own sticky
                 // session bar, so they persist while the chat scrolls beneath.
                 <AgentWorkspace
-                  initialSession={activeAgentSession}
+                  initialSession={activeAgentSessionSeed}
+                  initialSessionId={activeAgentSessionId}
                   onSessionSelected={setActiveAgentSession}
                   origin={
                     agentOriginFolder
@@ -3123,7 +3233,7 @@ export function App() {
                         }
                       }}
                       onTopUp={() =>
-                        void osAccountsTopUp().catch((err: unknown) =>
+                        void osAccountsUpgrade().catch((err: unknown) =>
                           setError(messageFromError(err)),
                         )
                       }

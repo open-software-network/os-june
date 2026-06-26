@@ -8,15 +8,19 @@ import {
   useState,
 } from "react";
 import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
+import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
+import { IconFileText } from "central-icons/IconFileText";
 
 import { CategoryIcon } from "./CategoryIcon";
 import type { ReportCategoryDef } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
+import type { BuiltinComposerSlashCommandDef } from "../../../lib/agent-composer-slash-commands";
 
 const SKILL_DETAIL_HOVER_INTENT_MS = 150;
 
 export type ComposerSlashCommandItem =
   | { kind: "category"; category: ReportCategoryDef }
+  | { kind: "builtin"; command: BuiltinComposerSlashCommandDef }
   | { kind: "skill"; skill: HermesSkillInfo };
 
 export type CategorySuggestionListProps = {
@@ -113,11 +117,11 @@ export const CategorySuggestionList = forwardRef<
     [items, command],
   );
 
-  const showSkillDetail = useCallback(
+  const showCommandDetail = useCallback(
     (index: number, row = rowRefs.current.get(index) ?? null) => {
       const item = items[index];
       const menu = menuRef.current;
-      if (item?.kind !== "skill" || !menu || !row || !skillHasDetail(item)) {
+      if (!item || !menu || !row || !commandHasDetail(item)) {
         setDetail(null);
         return;
       }
@@ -161,7 +165,7 @@ export const CategorySuggestionList = forwardRef<
             const next = (index + 1) % items.length;
             setActiveSource("keyboard");
             cancelHoverIntent();
-            window.requestAnimationFrame(() => showSkillDetail(next));
+            window.requestAnimationFrame(() => showCommandDetail(next));
             return next;
           });
           return true;
@@ -171,7 +175,7 @@ export const CategorySuggestionList = forwardRef<
             const next = (index - 1 + items.length) % items.length;
             setActiveSource("keyboard");
             cancelHoverIntent();
-            window.requestAnimationFrame(() => showSkillDetail(next));
+            window.requestAnimationFrame(() => showCommandDetail(next));
             return next;
           });
           return true;
@@ -183,7 +187,7 @@ export const CategorySuggestionList = forwardRef<
         return false;
       },
     }),
-    [items, selected, choose, showSkillDetail, cancelHoverIntent],
+    [items, selected, choose, showCommandDetail, cancelHoverIntent],
   );
 
   if (items.length === 0) {
@@ -199,13 +203,15 @@ export const CategorySuggestionList = forwardRef<
     detail &&
     detail.index === selected &&
     detailItem &&
-    commandItemKey(detailItem) === detail.key &&
-    detailItem.kind === "skill"
+    commandItemKey(detailItem) === detail.key
       ? detailItem
       : null;
   const categories = items
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => item.kind === "category");
+  const builtins = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.kind === "builtin");
   const skills = items
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => item.kind === "skill");
@@ -234,6 +240,12 @@ export const CategorySuggestionList = forwardRef<
             setDetail(null);
           }}
         >
+          {builtins.length ? (
+            <div className="agent-category-menu-section" role="presentation">
+              <div className="agent-category-menu-section-label">Commands</div>
+              {builtins.map(({ item, index }) => renderCommandRow(item, index))}
+            </div>
+          ) : null}
           {categories.map(({ item, index }) => renderCommandRow(item, index))}
           {skills.length ? (
             <div className="agent-category-menu-section" role="presentation">
@@ -243,23 +255,23 @@ export const CategorySuggestionList = forwardRef<
           ) : null}
         </div>
       </div>
-      {activeDetail?.kind === "skill" ? (
+      {activeDetail && commandHasDetail(activeDetail) ? (
         <div
           className="agent-category-menu-detail-card"
           data-side={detail?.side}
           style={{ top: detail?.top ?? 0 }}
         >
           <p className="agent-category-menu-detail-title">
-            {activeDetail.skill.name}
+            {commandItemDetailTitle(activeDetail)}
           </p>
-          {activeDetail.skill.category ? (
+          {commandItemDetailMeta(activeDetail) ? (
             <p className="agent-category-menu-detail-meta">
-              {activeDetail.skill.category}
+              {commandItemDetailMeta(activeDetail)}
             </p>
           ) : null}
-          {activeDetail.skill.description?.trim() ? (
+          {commandItemDetailDescription(activeDetail) ? (
             <p className="agent-category-menu-detail-desc">
-              {activeDetail.skill.description.trim()}
+              {commandItemDetailDescription(activeDetail)}
             </p>
           ) : null}
         </div>
@@ -290,13 +302,13 @@ export const CategorySuggestionList = forwardRef<
           setSelected(index);
           setActiveSource("pointer");
           const row = event.currentTarget;
-          hoverIntent(() => showSkillDetail(index, row));
+          hoverIntent(() => showCommandDetail(index, row));
         }}
         onFocus={(event) => {
           setSelected(index);
           setActiveSource("keyboard");
           cancelHoverIntent();
-          showSkillDetail(index, event.currentTarget);
+          showCommandDetail(index, event.currentTarget);
         }}
       >
         <span
@@ -307,6 +319,8 @@ export const CategorySuggestionList = forwardRef<
         >
           {item.kind === "category" ? (
             <CategoryIcon category={item.category.key} size={16} />
+          ) : item.kind === "builtin" ? (
+            commandItemIcon(item)
           ) : (
             <IconBuildingBlocks size={16} aria-hidden />
           )}
@@ -323,18 +337,50 @@ export const CategorySuggestionList = forwardRef<
 CategorySuggestionList.displayName = "CategorySuggestionList";
 
 function commandItemKey(item: ComposerSlashCommandItem) {
-  return item.kind === "category"
-    ? `category:${item.category.key}`
-    : `skill:${item.skill.name}`;
+  if (item.kind === "category") return `category:${item.category.key}`;
+  if (item.kind === "builtin") return `builtin:${item.command.name}`;
+  return `skill:${item.skill.name}`;
 }
 
 function commandItemLabel(item: ComposerSlashCommandItem) {
-  return item.kind === "category" ? item.category.label : item.skill.name;
+  if (item.kind === "category") return item.category.label;
+  if (item.kind === "builtin") return item.command.label;
+  return item.skill.name;
 }
 
-function skillHasDetail(item: ComposerSlashCommandItem) {
-  return (
-    item.kind === "skill" &&
-    Boolean(item.skill.description?.trim() || item.skill.category?.trim())
+function commandHasDetail(item: ComposerSlashCommandItem) {
+  if (item.kind === "builtin") return Boolean(item.command.description.trim());
+  if (item.kind === "skill") {
+    return Boolean(
+      item.skill.description?.trim() || item.skill.category?.trim(),
+    );
+  }
+  return false;
+}
+
+function commandItemDetailTitle(item: ComposerSlashCommandItem) {
+  if (item.kind === "builtin") return `/${item.command.name}`;
+  if (item.kind === "skill") return item.skill.name;
+  return item.category.label;
+}
+
+function commandItemDetailMeta(item: ComposerSlashCommandItem) {
+  if (item.kind === "skill") return item.skill.category?.trim() ?? "";
+  return "";
+}
+
+function commandItemDetailDescription(item: ComposerSlashCommandItem) {
+  if (item.kind === "builtin") return item.command.description.trim();
+  if (item.kind === "skill") return item.skill.description?.trim() ?? "";
+  return "";
+}
+
+function commandItemIcon(
+  item: Extract<ComposerSlashCommandItem, { kind: "builtin" }>,
+) {
+  return item.command.name === "file" ? (
+    <IconFileText size={16} aria-hidden />
+  ) : (
+    <IconConsoleSimple size={16} aria-hidden />
   );
 }

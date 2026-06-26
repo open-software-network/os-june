@@ -1,0 +1,24 @@
+{
+  "name": "reasoning-and-status",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "Reasoning/thinking deltas interleaved with a status update. thinking.delta and reasoning.delta -> reasoning; status.update -> lifecycle.",
+  "frames": [
+    {
+      "type": "status.update",
+      "session_id": "sess-reason",
+      "payload": { "status": "Reading files" }
+    },
+    {
+      "type": "thinking.delta",
+      "session_id": "sess-reason",
+      "payload": { "delta": "Let me check the close handler first. " }
+    },
+    {
+      "type": "reasoning.delta",
+      "session_id": "sess-reason",
+      "payload": { "delta": "The reconnect is coalesced via connectPromise." }
+    }
+  ]
+}

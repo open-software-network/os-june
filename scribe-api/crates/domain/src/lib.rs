@@ -20,6 +20,8 @@ pub enum ActionSlug {
     DictateTranscribe,
     NoteGenerate,
     NoteTranscribe,
+    WebFetch,
+    WebSearch,
 }
 
 impl ActionSlug {
@@ -30,6 +32,8 @@ impl ActionSlug {
             Self::DictateTranscribe => "dictate_transcribe",
             Self::NoteGenerate => "note_generate",
             Self::NoteTranscribe => "note_transcribe",
+            Self::WebFetch => "web_fetch",
+            Self::WebSearch => "web_search",
         }
     }
 }
@@ -188,6 +192,62 @@ pub struct AgentChatRequest {
     pub model: ModelId,
 }
 
+/// Which upstream engine Venice should run a web search against. Brave is the
+/// default and runs under zero data retention; Google is anonymized and
+/// proxied through Venice so the query is not associated with an identity.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProvider {
+    #[default]
+    Brave,
+    Google,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebSearchRequest {
+    pub query: String,
+    /// Number of results to return. The provider clamps this to its own bounds;
+    /// `None` lets the provider apply its default.
+    pub limit: Option<u32>,
+    pub provider: WebSearchProvider,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchResults {
+    pub query: String,
+    pub provider: String,
+    pub results: Vec<WebSearchResult>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchResult {
+    pub title: String,
+    pub url: String,
+    /// A short snippet or description of the result, when the provider supplies
+    /// one.
+    pub snippet: Option<String>,
+    /// Publication date as reported by the provider, when available.
+    pub published_at: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebFetchRequest {
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebFetchResult {
+    pub url: String,
+    /// The page rendered as markdown.
+    pub content: String,
+    /// The content format the provider returned (currently always `markdown`).
+    pub format: String,
+    pub provider: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct AuthorizeRequest {
     pub user_id: UserId,
@@ -203,11 +263,12 @@ pub struct ChargeRequest {
     pub idempotency_key: String,
 }
 
-/// A user-submitted bug report from the desktop app, paired with the agent's
+/// A user-submitted report from the desktop app, paired with the agent's
 /// own diagnostic assessment of the issue when one was produced.
 #[derive(Clone, Debug)]
 pub struct IssueReport {
     pub user_id: UserId,
+    pub category: Option<String>,
     pub description: String,
     pub agent_diagnosis: Option<String>,
     /// Names of everything the user attached, including files whose bytes
@@ -279,6 +340,16 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+}
+
+#[async_trait]
+pub trait WebSearcher: Send + Sync {
+    async fn search(&self, request: WebSearchRequest) -> Result<WebSearchResults, DomainError>;
+}
+
+#[async_trait]
+pub trait WebFetcher: Send + Sync {
+    async fn fetch(&self, request: WebFetchRequest) -> Result<WebFetchResult, DomainError>;
 }
 
 #[async_trait]

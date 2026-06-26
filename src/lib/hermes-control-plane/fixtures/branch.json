@@ -1,0 +1,18 @@
+{
+  "name": "branch",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A session fork/branch from an earlier message. No classifier branch yet -> unsupported. GAP feature 07 (session branching / fork from message) is the consumer. Locked as honest current behavior; replay test asserts unsupported with rawType set.",
+  "frames": [
+    {
+      "type": "branch",
+      "session_id": "sess-branch",
+      "payload": {
+        "from_message_id": "m-3",
+        "new_session_id": "sess-branch-fork",
+        "title": "Alternative approach"
+      }
+    }
+  ]
+}

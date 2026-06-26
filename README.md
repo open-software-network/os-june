@@ -285,6 +285,12 @@ Start with:
 - [docs/release-windows.md](docs/release-windows.md)
 - [docs/reproducible-builds.md](docs/reproducible-builds.md)
 
+Bumping the bundled Hermes runtime follows its own gate. Work through
+[docs/hermes-upgrade-checklist.md](docs/hermes-upgrade-checklist.md) (start a new
+pin note from [docs/hermes-upstream-template.md](docs/hermes-upstream-template.md)),
+then run `pnpm hermes:upgrade-check` to confirm the compatibility matrix, the
+pin note, and the checklist all name the same version.
+
 ## License
 
 June is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).

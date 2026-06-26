@@ -73,6 +73,7 @@ import {
   selectedModel,
 } from "./ModelPickerDialog";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { InstalledSkillsSection } from "./InstalledSkillsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
@@ -176,6 +177,7 @@ export type SettingsTab =
   | "audio"
   | "models"
   | "agent"
+  | "skills"
   | "about";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -186,6 +188,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "audio", label: "Audio" },
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
+  { id: "skills", label: "Installed skills" },
   { id: "about", label: "About" },
 ];
 
@@ -1195,6 +1198,8 @@ export function AppSettings({
         ) : null}
 
         {activeTab === "agent" ? <AgentSettingsSection /> : null}
+
+        {activeTab === "skills" ? <InstalledSkillsSection /> : null}
 
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">

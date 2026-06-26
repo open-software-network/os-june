@@ -1,11 +1,12 @@
 ---
 name: repo-build-pr
 description: >-
-  Use when the user invokes /build or asks to turn a feature prompt, bug
-  report, screenshot, PR comment, or freeform repo task into an implementation
-  for os-june: study the prompt, work in one or more git worktrees based on
-  complexity, open a draft PR, wait for Greptile and Codex review, address only
-  relevant feedback, request a final review, and mark the PR ready for review.
+  Use when the user invokes /repo-build-pr (or $repo-build-pr in Codex), or asks
+  to build, implement, ship, or fix something in os-june from a feature prompt,
+  bug report, screenshot, PR comment, or freeform repo task: study the prompt,
+  work in one or more git worktrees based on complexity, open a draft PR, wait
+  for Greptile and Codex review, address only relevant feedback, request a final
+  review, and mark the PR ready for review.
 ---
 
 # Repo build PR
@@ -14,7 +15,7 @@ Use this skill for the end-to-end implementation loop in `open-software-network/
 
 ## Intake
 
-Treat everything after `/build` as the build prompt. If the user did not use the literal slash command but asks for the same workflow, use this skill anyway.
+Treat everything after `/repo-build-pr` (or `$repo-build-pr` in Codex) as the build prompt. If the user did not use the literal command but asks to build, implement, ship, or fix something in the repo, use this skill anyway.
 
 1. Read the prompt carefully and restate the concrete objective, constraints, and likely affected surface area.
 2. Read repo instructions before editing:
@@ -90,6 +91,7 @@ Use a draft PR for the first publish.
    git push -u origin "$(git branch --show-current)"
    ```
 5. Open a draft PR against the chosen base. The PR body should include:
+   - task ID from the prompt or live issue data, including `Closes <TASK-ID>` when a tracker Issue exists
    - what changed
    - why it changed
    - validation run

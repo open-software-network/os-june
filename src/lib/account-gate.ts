@@ -9,14 +9,31 @@ export function shouldBlockOnSignIn(account: AccountStatus): boolean {
   return !account.signedIn;
 }
 
-// Membership is mandatory: every user must be on a subscription (trialing or
-// active) to use the app at all — credits alone do NOT grant access, so a
-// leftover promo balance or a cancelled subscriber with unspent top-ups still
-// lands on the trial gate. An unknown subscription state (transient fetch
-// failure) also blocks; the gate's poll and the account hook's focus refresh
-// recover it within seconds, which beats silently admitting non-members.
-export function shouldBlockOnTrial(account: AccountStatus): boolean {
-  if (!account.signedIn) return false;
+export function hasLiveSubscription(account: AccountStatus): boolean {
   const status = account.subscription?.status;
-  return status !== "trialing" && status !== "active";
+  return status === "trialing" || status === "active";
+}
+
+function hasKnownNonLiveSubscription(account: AccountStatus): boolean {
+  const subscription = account.subscription;
+  if (!subscription) return false;
+  if (hasLiveSubscription(account)) return false;
+  if (subscription.subscribed === false) return true;
+
+  const status = subscription.status;
+  return typeof status === "string" && status.length > 0;
+}
+
+// New users start from their OS Accounts credits, not a card-gated
+// subscription. Only block the shell when the backend positively reports a
+// zero-or-negative balance and a non-live subscription state. Older account
+// snapshots may omit `credits` or subscription status; treat those as usable
+// and let the metered action return a precise out-of-credits error if needed.
+export function shouldBlockOnFunding(account: AccountStatus): boolean {
+  if (!account.signedIn) return false;
+  if (hasLiveSubscription(account)) return false;
+  if (!hasKnownNonLiveSubscription(account)) return false;
+
+  const credits = account.balance?.credits;
+  return typeof credits === "number" && credits <= 0;
 }

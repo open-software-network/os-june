@@ -45,6 +45,16 @@ const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
+const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
+const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
+const JUNE_CONTEXT_MCP_SCRIPT: &str = include_str!("hermes/june_context_mcp.py");
+const JUNE_WEB_MCP_SERVER_NAME: &str = "june_web";
+const JUNE_WEB_MCP_SCRIPT_NAME: &str = "june_web_mcp.py";
+const JUNE_WEB_MCP_SCRIPT: &str = include_str!("hermes/june_web_mcp.py");
+/// Environment variable the `june_web` MCP reads its loopback proxy token from.
+/// Kept out of argv so it does not appear in process listings.
+const JUNE_WEB_MCP_TOKEN_ENV: &str = "JUNE_WEB_PROXY_TOKEN";
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -61,6 +71,29 @@ Privacy is your defining trait, by architecture rather than promise. When asked 
 - Open Software never trains on the user's data.
 
 You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The tools themselves are
+/// discovered through the `june_context` MCP server configured below; this
+/// prompt note teaches the model when to spend tool calls on that local data.
+const JUNE_SOUL_CONTEXT_MD: &str = r#"
+June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. This calibrates June's first-turn
+/// behavior around the existing Hermes clarify capability: ask only when the
+/// missing detail materially changes the work, and otherwise keep moving.
+const JUNE_SOUL_CLARIFY_MD: &str = r#"
+Clarifying questions: before acting on a request, especially the first user message in a new session, decide whether the user's goal, target, constraints, and success criteria are clear enough to proceed. If the request is ambiguous, has multiple reasonable interpretations, or a wrong assumption would spend meaningful time, use the clarify capability to ask one or two concise questions before using tools, modifying files, spending money, or starting long work. If a conservative path is obvious and cheap to correct, proceed and state your assumption instead of adding friction. Do not ask questions for routine, low-risk, or already clear requests.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The `web_search` and `web_fetch`
+/// tools are discovered through the `june_web` MCP server configured below;
+/// this note teaches the model when to reach for them. Web access runs through
+/// the app's privacy-preserving proxy, so the model should treat it as a
+/// first-class capability.
+const JUNE_SOUL_WEB_MD: &str = r#"
+Web tools: you have a `june_web` MCP toolset with `web_search` and `web_fetch`. Use `web_search` for current information, recent events, or facts you are not sure of, then `web_fetch` to read a specific result or URL in full as markdown. Reach for these instead of guessing when an answer may have changed since your training, and base your reply only on what the results actually say. Some sites block automated fetching; if a fetch is refused, search for another source.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -289,6 +322,18 @@ pub struct StartHermesBridgeRequest {
 pub struct ToggleHermesCapabilityRequest {
     pub name: String,
     pub enabled: bool,
+}
+
+/// Developer-only request to resume a June session in Hermes' own raw TUI.
+/// `unrestricted` mirrors the per-session mode the frontend already tracks
+/// (`sessionUnrestricted`); the spawn applies the matching Seatbelt jail so the
+/// debug session runs under the exact same profile June used.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenHermesTuiDebugRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub unrestricted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -521,6 +566,18 @@ pub fn start_on_app_start(app: &tauri::App) {
     });
 }
 
+#[tauri::command]
+pub async fn ensure_hermes_bridge_gateway(bridge: State<'_, HermesBridge>) -> Result<(), AppError> {
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections.first() else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running.",
+        ));
+    };
+    ensure_hermes_gateway_running(connection).await
+}
+
 async fn start_hermes_bridge_inner(
     app: &AppHandle,
     bridge: &HermesBridge,
@@ -568,7 +625,15 @@ async fn start_hermes_bridge_inner(
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(bridge).await?;
-    sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy.token)?;
+    let june_context_mcp = sync_june_context_mcp(app, &command)?;
+    let june_web_mcp = sync_june_web_mcp(app, &command)?;
+    sync_hermes_config(
+        &hermes_home,
+        provider_proxy.port,
+        &provider_proxy.token,
+        &june_context_mcp,
+        &june_web_mcp,
+    )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
     // its tool calls, and any subprocess it forks all inherit the profile, so
@@ -735,6 +800,19 @@ async fn ensure_provider_proxy(bridge: &HermesBridge) -> Result<SharedProviderPr
 struct SharedProviderProxyInfo {
     port: u16,
     token: String,
+}
+
+#[derive(Debug, Clone)]
+struct JuneContextMcpConfig {
+    command: String,
+    script_path: PathBuf,
+    database_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneWebMcpConfig {
+    command: String,
+    script_path: PathBuf,
 }
 
 #[tauri::command]
@@ -1260,37 +1338,78 @@ pub async fn ensure_hermes_bridge_session(
             "Hermes session ID is required.",
         ));
     }
-    let mut body = serde_json::json!({ "id": session_id });
-    if let Some(title) = request
+    let title = request
         .title
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        body["title"] = serde_json::Value::String(title.to_string());
-    }
-    if let Some(model) = request
+        .map(ToString::to_string);
+    let model = request
         .model
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let unchanged = || {
+        serde_json::json!({
+            "object": "hermes.session.ensure",
+            "id": session_id,
+            "created": false,
+            "updated": false
+        })
+    };
+
+    // Hermes dashboard v0.17 no longer creates sessions over REST. The live
+    // session is created through the gateway; REST is only a best-effort title
+    // update for the sidebar/session browser. Model-only switches stay in the
+    // frontend session override and live gateway dispatch path.
+    let title = match title {
+        Some(title) => title,
+        None => return Ok(unchanged()),
+    };
+    let patch_body = serde_json::json!({ "title": title.clone() });
+    match hermes_api_json(
+        &bridge,
+        reqwest::Method::PATCH,
+        &format!("/api/sessions/{}", urlencoding::encode(session_id)),
+        Some(patch_body),
+    )
+    .await
     {
-        body["model"] = serde_json::Value::String(model.to_string());
-    }
-    match hermes_api_json(&bridge, reqwest::Method::POST, "/api/sessions", Some(body)).await {
-        Ok(value) => Ok(value),
-        Err(error)
-            if error.code == "hermes_bridge_api_failed"
-                && error.message.starts_with("Hermes API returned 409") =>
-        {
-            Ok(serde_json::json!({
-                "object": "hermes.session.ensure",
-                "id": session_id,
-                "created": false
-            }))
+        Ok(value) => return Ok(value),
+        Err(error) if hermes_api_status(&error, 404) || hermes_api_status(&error, 405) => {
+            let mut legacy_body = serde_json::json!({ "id": session_id, "title": title });
+            if let Some(model) = model {
+                legacy_body["model"] = serde_json::Value::String(model);
+            }
+            match hermes_api_json(
+                &bridge,
+                reqwest::Method::POST,
+                "/api/sessions",
+                Some(legacy_body),
+            )
+            .await
+            {
+                Ok(value) => Ok(value),
+                Err(error)
+                    if hermes_api_status(&error, 404)
+                        || hermes_api_status(&error, 405)
+                        || hermes_api_status(&error, 409) =>
+                {
+                    Ok(unchanged())
+                }
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error),
     }
+}
+
+fn hermes_api_status(error: &AppError, status_code: u16) -> bool {
+    error.code == "hermes_bridge_api_failed"
+        && error
+            .message
+            .starts_with(&format!("Hermes API returned {status_code}"))
 }
 
 #[tauri::command]
@@ -1859,17 +1978,49 @@ async fn hermes_api_json(
 async fn start_hermes_gateway_if_needed(
     connection: &HermesBridgeConnection,
 ) -> Result<(), AppError> {
-    let status = hermes_connection_json(connection, reqwest::Method::GET, "/api/status", None)
-        .await
-        .unwrap_or_else(|_| serde_json::json!({}));
-    if status
-        .get("gateway_running")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
+    if hermes_gateway_running(connection).await.unwrap_or(false) {
         return Ok(());
     }
     spawn_hermes_gateway_start(connection)
+}
+
+async fn ensure_hermes_gateway_running(
+    connection: &HermesBridgeConnection,
+) -> Result<(), AppError> {
+    if hermes_gateway_running(connection).await.unwrap_or(false) {
+        return Ok(());
+    }
+
+    run_hermes_gateway_start(connection).await?;
+    wait_for_hermes_gateway(connection).await
+}
+
+async fn hermes_gateway_running(connection: &HermesBridgeConnection) -> Result<bool, AppError> {
+    let status =
+        hermes_connection_json(connection, reqwest::Method::GET, "/api/status", None).await?;
+    Ok(status
+        .get("gateway_running")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false))
+}
+
+async fn wait_for_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+    const GATEWAY_READY_TIMEOUT: Duration = Duration::from_secs(10);
+    const GATEWAY_READY_POLL: Duration = Duration::from_millis(250);
+
+    let started = Instant::now();
+    loop {
+        if hermes_gateway_running(connection).await.unwrap_or(false) {
+            return Ok(());
+        }
+        if started.elapsed() >= GATEWAY_READY_TIMEOUT {
+            return Err(AppError::new(
+                "hermes_gateway_start_failed",
+                "`hermes gateway start` completed, but the gateway is still not running. See logs/gateway-start.log.",
+            ));
+        }
+        tokio::time::sleep(GATEWAY_READY_POLL).await;
+    }
 }
 
 /// Starts the messaging gateway by running `hermes gateway start` as a direct
@@ -1888,16 +2039,7 @@ async fn start_hermes_gateway_if_needed(
 /// `<hermes_home>/logs/gateway-start.log` (the same file the bridge's action
 /// runner appends to) and the exit status is reaped in the background.
 fn spawn_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(), AppError> {
-    let hermes_home = PathBuf::from(&connection.hermes_home);
-    let mut cmd = build_hermes_gateway_start_command(connection, &hermes_home);
-    match open_gateway_start_log(&hermes_home) {
-        Some((log_for_stdout, log_for_stderr)) => {
-            cmd.stdout(log_for_stdout).stderr(log_for_stderr);
-        }
-        None => {
-            cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        }
-    }
+    let mut cmd = hermes_gateway_start_command(connection);
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_gateway_start_failed",
@@ -1916,6 +2058,45 @@ fn spawn_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(),
         }
     });
     Ok(())
+}
+
+async fn run_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+    let mut cmd = hermes_gateway_start_command(connection);
+    let status = tauri::async_runtime::spawn_blocking(move || cmd.status())
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "hermes_gateway_start_failed",
+                format!("Could not wait for `hermes gateway start`. {error}"),
+            )
+        })?
+        .map_err(|error| {
+            AppError::new(
+                "hermes_gateway_start_failed",
+                format!("Could not run `hermes gateway start`. {error}"),
+            )
+        })?;
+    if !status.success() {
+        return Err(AppError::new(
+            "hermes_gateway_start_failed",
+            format!("`hermes gateway start` exited with {status}. See logs/gateway-start.log."),
+        ));
+    }
+    Ok(())
+}
+
+fn hermes_gateway_start_command(connection: &HermesBridgeConnection) -> Command {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = build_hermes_gateway_start_command(connection, &hermes_home);
+    match open_gateway_start_log(&hermes_home) {
+        Some((log_for_stdout, log_for_stderr)) => {
+            cmd.stdout(log_for_stdout).stderr(log_for_stderr);
+        }
+        None => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
+    cmd
 }
 
 /// Pure command construction so a test can assert the spawn is the bare hermes
@@ -1956,6 +2137,220 @@ fn open_gateway_start_log(hermes_home: &Path) -> Option<(std::fs::File, std::fs:
     );
     let clone = file.try_clone().ok()?;
     Some((file, clone))
+}
+
+/// The bare `hermes` arguments that resume a session in the raw TUI. Mirror of
+/// the frontend's `buildHermesTuiResumeArgs`: `--tui --resume <id>`, with the
+/// mode applied at spawn (the Seatbelt wrapper), never as a flag. Pure so a
+/// test can pin the exact argument vector.
+fn hermes_tui_resume_args(session_id: &str) -> Vec<String> {
+    vec![
+        "--tui".to_string(),
+        "--resume".to_string(),
+        session_id.to_string(),
+    ]
+}
+
+/// Single-quotes a value for safe interpolation into the POSIX launcher script.
+/// `'` is closed, escaped, and reopened (`'\''`) so no session id or path can
+/// break out of the quoting and inject shell.
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Builds the POSIX shell launcher the TUI debug terminal runs. Pure and
+/// deterministic so a test can assert the exact body. The script:
+///
+/// 1. echoes the session->TUI trace line (so the developer sees, in the very
+///    terminal they are debugging in, which June session this maps to),
+/// 2. exports the same isolated `HERMES_HOME` / token / sandbox-status env the
+///    dashboard spawn uses, scrubbing the inherited values first, and
+/// 3. `exec`s the runtime — wrapped in `sandbox-exec -f <profile>` when the
+///    session is sandboxed, bare when unrestricted — so the debug session runs
+///    under the exact same profile and jail June used.
+///
+/// Every interpolated value is single-quoted, so ids/paths can't inject shell.
+fn build_hermes_tui_debug_launcher_script(
+    program: &str,
+    args: &[String],
+    hermes_home: &Path,
+    token: &str,
+    environment_hint: Option<&str>,
+    sandbox_profile: Option<&Path>,
+    trace_line: &str,
+) -> String {
+    let mut script = String::new();
+    script.push_str("#!/bin/sh\n");
+    script.push_str("# June developer debug fallback: resume a June session in Hermes' raw TUI.\n");
+    script.push_str("# This is NOT June's primary UI. Generated by the June app.\n");
+    script.push_str(&format!("echo {}\n", shell_single_quote(trace_line)));
+    // Scrub then re-set the isolated env, matching apply_isolated_hermes_env so
+    // the TUI sees the same home/token/hint as June's dashboard runtime.
+    for name in ISOLATED_HERMES_ENV_VARS {
+        script.push_str(&format!("unset {name}\n"));
+    }
+    script.push_str(&format!(
+        "export HERMES_HOME={}\n",
+        shell_single_quote(&hermes_home.to_string_lossy())
+    ));
+    script.push_str(&format!(
+        "export HERMES_DASHBOARD_SESSION_TOKEN={}\n",
+        shell_single_quote(token)
+    ));
+    script.push_str("export NO_PROXY='127.0.0.1,localhost,::1'\n");
+    script.push_str("export no_proxy='127.0.0.1,localhost,::1'\n");
+    if let Some(hint) = environment_hint {
+        script.push_str(&format!(
+            "export HERMES_ENVIRONMENT_HINT={}\n",
+            shell_single_quote(hint)
+        ));
+    }
+    let quoted_args: Vec<String> = args.iter().map(|arg| shell_single_quote(arg)).collect();
+    let invocation = match sandbox_profile {
+        Some(profile) => format!(
+            "exec {} -f {} {} {}",
+            shell_single_quote(SANDBOX_EXEC_PATH),
+            shell_single_quote(&profile.to_string_lossy()),
+            shell_single_quote(program),
+            quoted_args.join(" ")
+        ),
+        None => format!(
+            "exec {} {}",
+            shell_single_quote(program),
+            quoted_args.join(" ")
+        ),
+    };
+    script.push_str(&invocation);
+    script.push('\n');
+    script
+}
+
+/// Opens a June session in Hermes' own raw TUI in a Terminal window — a
+/// developer-only fallback for isolating whether a bug lives in June's
+/// adapter/UI or in Hermes itself. Resolves the hermes binary, `HERMES_HOME`,
+/// and the per-session Seatbelt jail exactly like the dashboard spawn, so the
+/// debug session resumes the same session id under the same profile and mode.
+///
+/// macOS only: it launches a generated `.command` launcher via `open -a
+/// Terminal`. On other platforms it returns an explanatory error rather than
+/// pretending to launch.
+#[tauri::command]
+pub async fn open_hermes_tui_debug(
+    app: AppHandle,
+    request: OpenHermesTuiDebugRequest,
+) -> Result<(), AppError> {
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err(AppError::new(
+            "hermes_tui_debug_invalid",
+            "A session id is required to open the Hermes TUI debug session.",
+        ));
+    }
+
+    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let command_resolution = resolve_hermes_command(&app, &hermes_home).await?;
+    let command = command_resolution.command;
+
+    // Mirror the dashboard spawn's mode resolution: unrestricted => no jail;
+    // otherwise prepare the Seatbelt profile (None when the jail can't engage
+    // on this machine). The token is fresh and unused by the TUI's local
+    // session store, but kept for env parity with the dashboard runtime.
+    let full_mode = request.unrestricted;
+    let agent_cli_access = agent_cli_access_enabled(&app);
+    let sandbox_profile = if full_mode {
+        None
+    } else {
+        prepare_sandbox(&app, &hermes_home, agent_cli_access)
+    };
+    let sandbox_available = if full_mode {
+        sandbox_would_engage(&app, &hermes_home)
+    } else {
+        sandbox_profile.is_some()
+    };
+    let environment_hint = environment_hint_for_spawn(full_mode, sandbox_available);
+    let mode_label = if full_mode {
+        "unrestricted"
+    } else {
+        "sandboxed"
+    };
+    let trace_line = format!(
+        "Hermes TUI debug: resuming June session {session_id} in raw TUI ({mode_label} mode). Same session id, same profile as June."
+    );
+    // Trace link in the app log too, so the mapping survives even if the
+    // terminal window is closed.
+    eprintln!("{trace_line}");
+
+    let token = random_token();
+    let args = hermes_tui_resume_args(&session_id);
+    let script = build_hermes_tui_debug_launcher_script(
+        &command,
+        &args,
+        &hermes_home,
+        &token,
+        environment_hint,
+        sandbox_profile.as_deref(),
+        &trace_line,
+    );
+
+    launch_hermes_tui_debug_terminal(&hermes_home, &session_id, &script)
+}
+
+/// Writes the launcher script under `<hermes_home>/logs` and opens it in
+/// Terminal. macOS-only; the script is the unit-tested artifact, this is the
+/// thin environment-dependent shell around it.
+#[cfg(target_os = "macos")]
+fn launch_hermes_tui_debug_terminal(
+    hermes_home: &Path,
+    session_id: &str,
+    script: &str,
+) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let log_dir = hermes_home.join("logs");
+    fs::create_dir_all(&log_dir)
+        .map_err(|error| AppError::new("hermes_tui_debug_failed", error.to_string()))?;
+    // A `.command` file opens in Terminal and runs on launch. Name it by
+    // session so repeated opens of the same session reuse one file.
+    let sanitized: String = session_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let script_path = log_dir.join(format!("tui-debug-{sanitized}.command"));
+    fs::write(&script_path, script)
+        .map_err(|error| AppError::new("hermes_tui_debug_failed", error.to_string()))?;
+    let mut perms = fs::metadata(&script_path)
+        .map_err(|error| AppError::new("hermes_tui_debug_failed", error.to_string()))?
+        .permissions();
+    perms.set_mode(0o700);
+    fs::set_permissions(&script_path, perms)
+        .map_err(|error| AppError::new("hermes_tui_debug_failed", error.to_string()))?;
+
+    let status = Command::new("/usr/bin/open")
+        .arg("-a")
+        .arg("Terminal")
+        .arg(&script_path)
+        .status()
+        .map_err(|error| AppError::new("hermes_tui_debug_failed", error.to_string()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "hermes_tui_debug_failed",
+            format!("Terminal launch returned status {status}."),
+        ))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launch_hermes_tui_debug_terminal(
+    _hermes_home: &Path,
+    _session_id: &str,
+    _script: &str,
+) -> Result<(), AppError> {
+    Err(AppError::new(
+        "hermes_tui_debug_unsupported",
+        "The Hermes TUI debug fallback is available on macOS only.",
+    ))
 }
 
 async fn hermes_connection_json(
@@ -2679,7 +3074,13 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
     let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
-    let profile = build_sandbox_profile(&home, &write_roots, agent_cli_access);
+    let protected_write_paths = sandbox_protected_write_paths(hermes_home);
+    let profile = build_sandbox_profile(
+        &home,
+        &write_roots,
+        &protected_write_paths,
+        agent_cli_access,
+    );
     let app_data_dir = crate::app_paths::app_data_dir(app).ok()?;
     if std::fs::create_dir_all(&app_data_dir).is_err() {
         return None;
@@ -2784,13 +3185,23 @@ fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
     canonical
 }
 
+#[cfg(target_os = "macos")]
+fn sandbox_protected_write_paths(hermes_home: &Path) -> Vec<PathBuf> {
+    vec![hermes_home.join("config.yaml")]
+}
+
 /// Renders the Seatbelt (SBPL) profile text. Strategy: allow broadly, because
 /// the embedded Python runtime needs wide syscall, mach-service, and exec
 /// rights and any tighter base brings the runtime down; then deny every write
 /// and re-grant only the app-owned roots, and deny reads of credential stores.
 /// Pure (no IO) so it can be unit-tested.
 #[cfg(target_os = "macos")]
-fn build_sandbox_profile(home: &Path, write_roots: &[PathBuf], agent_cli_access: bool) -> String {
+fn build_sandbox_profile(
+    home: &Path,
+    write_roots: &[PathBuf],
+    protected_write_paths: &[PathBuf],
+    agent_cli_access: bool,
+) -> String {
     let mut out = String::new();
     out.push_str("(version 1)\n");
     out.push_str(";; June desktop agent sandbox — generated by Scribe, do not edit.\n");
@@ -2809,6 +3220,20 @@ fn build_sandbox_profile(home: &Path, write_roots: &[PathBuf], agent_cli_access:
         ));
     }
     out.push_str(")\n\n");
+
+    if !protected_write_paths.is_empty() {
+        out.push_str(
+            ";; June-owned runtime control files: readable by Hermes, never agent-writable.\n",
+        );
+        out.push_str("(deny file-write*\n");
+        for path in protected_write_paths {
+            out.push_str(&format!(
+                "  (literal {})\n",
+                sbpl_quote(&path.to_string_lossy())
+            ));
+        }
+        out.push_str(")\n\n");
+    }
 
     if agent_cli_access {
         out.push_str(";; Agent CLI state (explicit user opt-in from Settings > Agent):\n");
@@ -2952,10 +3377,80 @@ const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
     "context_engine",
 ];
 
+fn sync_june_context_mcp(
+    app: &AppHandle,
+    hermes_command: &str,
+) -> Result<JuneContextMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_CONTEXT_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_CONTEXT_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+
+    let paths = crate::app_paths::AppPaths::from_data_dir(data_dir)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+
+    Ok(JuneContextMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+        database_path: paths.database_path,
+    })
+}
+
+fn sync_june_web_mcp(app: &AppHandle, hermes_command: &str) -> Result<JuneWebMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_WEB_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_WEB_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
+
+    Ok(JuneWebMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+    })
+}
+
+fn hermes_python_command(hermes_command: &str) -> String {
+    let command_path = Path::new(hermes_command);
+    if let Some(parent) = command_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        let candidates = if cfg!(target_os = "windows") {
+            ["python.exe", "python"]
+        } else {
+            ["python3", "python"]
+        };
+        for candidate in candidates {
+            let path = parent.join(candidate);
+            if path.exists() {
+                return path.to_string_lossy().into_owned();
+            }
+        }
+    }
+    default_python_command().to_string()
+}
+
+fn default_python_command() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "python"
+    } else {
+        "python3"
+    }
+}
+
 fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    june_context_mcp: &JuneContextMcpConfig,
+    june_web_mcp: &JuneWebMcpConfig,
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
@@ -2965,6 +3460,8 @@ fn sync_hermes_config(
         provider_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs(),
+        Some(june_context_mcp),
+        Some(june_web_mcp),
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -2980,6 +3477,8 @@ fn render_hermes_config(
     provider_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
+    june_context_mcp: Option<&JuneContextMcpConfig>,
+    june_web_mcp: Option<&JuneWebMcpConfig>,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
         "  external_dirs: []\n".to_string()
@@ -2990,6 +3489,12 @@ fn render_hermes_config(
         }
         block
     };
+    let mcp_servers_block = render_mcp_servers_config(
+        june_context_mcp,
+        june_web_mcp,
+        base_url,
+        provider_proxy_token,
+    );
     format!(
         r#"model:
   default: {model}
@@ -3004,10 +3509,79 @@ display:
 platform_toolsets:
   cron: [{cron_toolsets}]
 skills:
-{skills_block}"#,
+{skills_block}{mcp_servers_block}"#,
         model = yaml_string(model),
         base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
+    )
+}
+
+/// Renders the `mcp_servers:` block listing every built-in MCP server June
+/// registers. Both entries live under one key so Hermes deep-merges a single
+/// map; an empty map is emitted when neither is configured.
+fn render_mcp_servers_config(
+    context: Option<&JuneContextMcpConfig>,
+    web: Option<&JuneWebMcpConfig>,
+    base_url: &str,
+    proxy_token: &str,
+) -> String {
+    let mut entries = String::new();
+    if let Some(config) = context {
+        entries.push_str(&render_context_mcp_entry(config));
+    }
+    if let Some(config) = web {
+        entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
+    }
+    if entries.is_empty() {
+        return "mcp_servers: {}\n".to_string();
+    }
+    format!("mcp_servers:\n{entries}")
+}
+
+fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {database_path}
+    env:
+      PYTHONUNBUFFERED: "1"
+    timeout: 30
+    connect_timeout: 10
+"#,
+        server_name = JUNE_CONTEXT_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        database_path = yaml_string(&config.database_path.to_string_lossy()),
+    )
+}
+
+/// The web MCP gets the loopback proxy base URL as an argument and the proxy
+/// token via the environment (kept out of argv). The token is the same one the
+/// model block already carries as `api_key`, so it adds no new secret to the
+/// file.
+fn render_web_mcp_entry(config: &JuneWebMcpConfig, base_url: &str, proxy_token: &str) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: 30
+    connect_timeout: 10
+"#,
+        server_name = JUNE_WEB_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        token_env = JUNE_WEB_MCP_TOKEN_ENV,
+        token = yaml_string(proxy_token),
     )
 }
 
@@ -3047,9 +3621,11 @@ fn sync_june_soul(
         } else {
             JUNE_SOUL_CLI_BLOCKED_MD
         };
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}")
+        format!(
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+        )
     } else {
-        JUNE_SOUL_MD.to_string()
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -3333,6 +3909,12 @@ async fn handle_scribe_provider_connection(
                 }
             }
         }
+        ("POST", "/v1/web/search") => {
+            forward_web_tool(&mut stream, "/v1/web/search", &request.body).await?;
+        }
+        ("POST", "/v1/web/fetch") => {
+            forward_web_tool(&mut stream, "/v1/web/fetch", &request.body).await?;
+        }
         _ => {
             write_json_response(
                 &mut stream,
@@ -3513,6 +4095,42 @@ async fn write_json_response(
     write_raw_response(stream, status, "application/json", &body).await
 }
 
+/// Forwards a web tool request to the Scribe API and relays its `ApiResponse`
+/// envelope back to the loopback caller (the `june_web` MCP) verbatim. The
+/// access token is added inside `scribe_api`, so it never reaches the MCP. A
+/// 4xx/5xx envelope (e.g. a blocked site, or an out-of-credits 402) is passed
+/// through unchanged so the agent gets the backend's own usable message.
+async fn forward_web_tool(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    request_body: &[u8],
+) -> io::Result<()> {
+    let body = serde_json::from_slice::<serde_json::Value>(request_body)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    match crate::scribe_api::forward_web_request(path, &body).await {
+        Ok(response) => {
+            write_raw_response(
+                stream,
+                response.status,
+                &response.content_type,
+                &response.body,
+            )
+            .await
+        }
+        Err(error) => {
+            write_json_response(
+                stream,
+                502,
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("Web request failed: {}", error.message),
+                }),
+            )
+            .await
+        }
+    }
+}
+
 async fn write_raw_response(
     stream: &mut tokio::net::TcpStream,
     status: u16,
@@ -3637,6 +4255,14 @@ mod tests {
             path: "/v1/models".to_string(),
             headers: vec![("Authorization".to_string(), value.to_string())],
             body: Vec::new(),
+        }
+    }
+
+    fn test_june_context_mcp_config() -> JuneContextMcpConfig {
+        JuneContextMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/scribe/hermes-mcp/june_context_mcp.py"),
+            database_path: PathBuf::from("/tmp/scribe/notes.sqlite3"),
         }
     }
 
@@ -3781,8 +4407,15 @@ mod tests {
             PathBuf::from("/Users/dev/.agents/skills"),
             PathBuf::from("/shared/team-skills"),
         ];
-        let config =
-            render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web, memory", &dirs);
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web, memory",
+            &dirs,
+            None,
+            None,
+        );
 
         assert!(config.contains("model:\n  default: \"glm\""));
         assert!(config.contains("  cron: [web, memory]"));
@@ -3793,10 +4426,98 @@ mod tests {
 
     #[test]
     fn render_hermes_config_emits_empty_external_dirs_when_none() {
-        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[]);
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web",
+            &[],
+            None,
+            None,
+        );
 
         assert!(config.contains("skills:\n  external_dirs: []\n"));
         assert!(!config.contains("    - "));
+    }
+
+    fn test_june_web_mcp_config() -> JuneWebMcpConfig {
+        JuneWebMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/scribe/hermes-mcp/june_web_mcp.py"),
+        }
+    }
+
+    #[test]
+    fn render_hermes_config_registers_june_context_mcp_server() {
+        let context = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "proxy-tok",
+            "web",
+            &[],
+            Some(&context),
+            Some(&web),
+        );
+
+        // Both built-in servers live under one mcp_servers map.
+        assert!(config.contains("mcp_servers:\n  june_context:\n"));
+        assert!(config.contains("  june_web:\n"));
+        assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
+        assert!(config.contains("      - \"/tmp/scribe/hermes-mcp/june_context_mcp.py\"\n"));
+        assert!(config.contains("      - \"/tmp/scribe/notes.sqlite3\"\n"));
+        // The web server gets the loopback proxy URL as an arg and the proxy
+        // token via env, never as a direct credential the MCP must hold.
+        assert!(config.contains("      - \"/tmp/scribe/hermes-mcp/june_web_mcp.py\"\n"));
+        assert!(config.contains("      - \"http://127.0.0.1:9/v1\"\n"));
+        assert!(config.contains("      JUNE_WEB_PROXY_TOKEN: \"proxy-tok\"\n"));
+    }
+
+    #[test]
+    fn render_hermes_config_emits_empty_mcp_servers_without_configs() {
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web",
+            &[],
+            None,
+            None,
+        );
+
+        assert!(config.contains("mcp_servers: {}\n"));
+    }
+
+    #[test]
+    fn hermes_python_command_prefers_the_runtime_venv_python() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let bin = home
+            .path()
+            .join("venv")
+            .join(if cfg!(target_os = "windows") {
+                "Scripts"
+            } else {
+                "bin"
+            });
+        std::fs::create_dir_all(&bin).expect("bin");
+        let hermes = bin.join(if cfg!(target_os = "windows") {
+            "hermes.exe"
+        } else {
+            "hermes"
+        });
+        let python = bin.join(if cfg!(target_os = "windows") {
+            "python.exe"
+        } else {
+            "python"
+        });
+        std::fs::write(&hermes, "").expect("hermes");
+        std::fs::write(&python, "").expect("python");
+
+        assert_eq!(
+            hermes_python_command(&hermes.to_string_lossy()),
+            python.to_string_lossy()
+        );
     }
 
     #[test]
@@ -3871,6 +4592,121 @@ mod tests {
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn gateway_start_reports_nonzero_exit() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let connection = HermesBridgeConnection {
+            base_url: "http://127.0.0.1:1".to_string(),
+            ws_url: "ws://127.0.0.1:1/api/ws".to_string(),
+            token: "session-token".to_string(),
+            port: 1,
+            command: "/usr/bin/false".to_string(),
+            hermes_home: home.path().to_string_lossy().into_owned(),
+            cwd: None,
+            provider_proxy_port: 2,
+            pid: 3,
+            sandboxed: true,
+            full_mode: false,
+        };
+
+        let error = run_hermes_gateway_start(&connection)
+            .await
+            .expect_err("nonzero gateway start exits fail");
+
+        assert_eq!(error.code, "hermes_gateway_start_failed");
+        assert!(error.message.contains("exited"));
+    }
+
+    #[test]
+    fn tui_resume_args_are_tui_resume_session_and_carry_no_mode_flag() {
+        // Mirror of the frontend's buildHermesTuiResumeArgs: `--tui --resume
+        // <id>`. The mode is applied by the Seatbelt wrapper at spawn, never as
+        // a flag, so the args must be identical for sandboxed and unrestricted.
+        assert_eq!(
+            hermes_tui_resume_args("sess-42"),
+            ["--tui", "--resume", "sess-42"]
+        );
+        let args = hermes_tui_resume_args("sess-42");
+        assert!(!args.iter().any(|a| a == "--yolo" || a == "--safe-mode"));
+    }
+
+    #[test]
+    fn tui_debug_launcher_wraps_sandboxed_spawn_in_sandbox_exec() {
+        let args = hermes_tui_resume_args("sess-1");
+        let script = build_hermes_tui_debug_launcher_script(
+            "/opt/hermes/bin/hermes",
+            &args,
+            Path::new("/tmp/hermes-home"),
+            "tok",
+            Some(JUNE_HINT_SANDBOXED),
+            Some(Path::new("/tmp/profile.sb")),
+            "trace: june session sess-1",
+        );
+
+        // Sandboxed sessions must resume under the same Seatbelt jail June used.
+        assert!(script.contains(&format!(
+            "exec '{SANDBOX_EXEC_PATH}' -f '/tmp/profile.sb' '/opt/hermes/bin/hermes' '--tui' '--resume' 'sess-1'"
+        )));
+        // The isolated env is set, matching the dashboard runtime. The hint is
+        // single-quoted (and its own apostrophes escaped) like every value.
+        assert!(script.contains("export HERMES_HOME='/tmp/hermes-home'"));
+        assert!(script.contains("export HERMES_DASHBOARD_SESSION_TOKEN='tok'"));
+        assert!(script.contains(&format!(
+            "export HERMES_ENVIRONMENT_HINT={}",
+            shell_single_quote(JUNE_HINT_SANDBOXED)
+        )));
+        // Stale inherited values are scrubbed first.
+        assert!(script.contains("unset HERMES_HOME"));
+        // The session->TUI trace line is echoed in the terminal.
+        assert!(script.contains("echo 'trace: june session sess-1'"));
+    }
+
+    #[test]
+    fn tui_debug_launcher_runs_bare_hermes_when_unrestricted() {
+        let args = hermes_tui_resume_args("sess-2");
+        let script = build_hermes_tui_debug_launcher_script(
+            "/opt/hermes/bin/hermes",
+            &args,
+            Path::new("/tmp/hermes-home"),
+            "tok",
+            Some(JUNE_HINT_UNRESTRICTED),
+            None,
+            "trace: june session sess-2",
+        );
+
+        // No jail => no sandbox-exec wrapper; the runtime is launched directly.
+        assert!(script.contains("exec '/opt/hermes/bin/hermes' '--tui' '--resume' 'sess-2'"));
+        assert!(!script.contains(SANDBOX_EXEC_PATH));
+        assert!(script.contains(&format!(
+            "export HERMES_ENVIRONMENT_HINT={}",
+            shell_single_quote(JUNE_HINT_UNRESTRICTED)
+        )));
+    }
+
+    #[test]
+    fn tui_debug_launcher_quotes_session_id_to_block_shell_injection() {
+        // A hostile session id must not break out of the single-quoting and
+        // run arbitrary shell in the launcher.
+        let args = hermes_tui_resume_args("a'; rm -rf ~ #");
+        let script = build_hermes_tui_debug_launcher_script(
+            "/opt/hermes/bin/hermes",
+            &args,
+            Path::new("/tmp/hermes-home"),
+            "tok",
+            None,
+            None,
+            "trace",
+        );
+        // The id stays one inert single-quoted literal: its embedded quote is
+        // escaped (`'\''`), so `rm` is data passed to --resume, never a command.
+        assert!(script.contains("'a'\\''; rm -rf ~ #'"));
+        // The dangerous form would be the id's quote left UNescaped (`'a';`),
+        // which would close the literal and run `rm` as a command. It must not
+        // appear: the only `'a'` is immediately followed by the `\` escape.
+        assert!(!script.contains("'a';"));
+    }
+
     #[test]
     fn environment_hint_states_the_mode_each_runtime_serves() {
         // Each runtime process serves exactly one per-session mode, so the
@@ -3937,7 +4773,9 @@ mod tests {
         // allowlist, never the full default toolset.
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_hermes_config(home.path(), 4242, "proxy-token").expect("sync config");
+        let mcp = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        sync_hermes_config(home.path(), 4242, "proxy-token", &mcp, &web).expect("sync config");
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
         assert!(config.contains("platform_toolsets:"));
@@ -3996,6 +4834,45 @@ mod tests {
         // ...and warns not to confuse it with the CLI's own sandbox flag,
         // which is the wrong layer (what the screenshot agent got wrong).
         assert!(soul.contains("NOT the CLI's own sandbox"));
+    }
+
+    #[test]
+    fn june_soul_describes_local_context_tools() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_context"));
+        assert!(soul.contains("meeting notes"));
+        assert!(soul.contains("dictation history"));
+        assert!(soul.contains("Query it on demand"));
+    }
+
+    #[test]
+    fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("Clarifying questions"));
+        assert!(soul.contains("first user message in a new session"));
+        assert!(soul.contains("multiple reasonable interpretations"));
+        assert!(soul.contains("use the clarify capability"));
+        assert!(soul.contains("Do not ask questions for routine"));
+    }
+
+    #[test]
+    fn june_soul_describes_web_tools() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_web"));
+        assert!(soul.contains("web_search"));
+        assert!(soul.contains("web_fetch"));
     }
 
     #[test]
@@ -4189,7 +5066,10 @@ mod tests {
     fn sandbox_profile_jails_writes_to_allowed_roots() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
-        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace), false);
+        let config_path = workspace.join("config.yaml");
+        let protected = vec![config_path.clone()];
+        let profile =
+            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &protected, false);
 
         // Allow-everything base, then a hard write-jail re-granting the root.
         assert!(profile.contains("(allow default)"));
@@ -4197,12 +5077,19 @@ mod tests {
         assert!(
             profile.contains("(subpath \"/Users/test/Library/Application Support/scribe/hermes\")")
         );
+        assert!(profile.contains(
+            "(literal \"/Users/test/Library/Application Support/scribe/hermes/config.yaml\")"
+        ));
         // The re-grant must come after the blanket write deny, or it's a no-op.
         let deny_at = profile.find("(deny file-write*)").expect("deny present");
         let grant_at = profile
             .find("(allow file-write*\n  (subpath")
             .expect("grant present");
         assert!(deny_at < grant_at);
+        let protected_deny_at = profile
+            .find(";; June-owned runtime control files: readable by Hermes, never agent-writable.")
+            .expect("protected deny present");
+        assert!(grant_at < protected_deny_at);
 
         // Credential stores stay unreadable even though reads are otherwise open.
         assert!(profile.contains("(deny file-read*"));
@@ -4221,7 +5108,7 @@ mod tests {
     fn sandbox_profile_opt_in_grants_agent_cli_state_only() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
-        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace), true);
+        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace), &[], true);
 
         // The CLI state dirs become writable...
         assert!(profile.contains("(subpath \"/Users/test/.claude\")"));
@@ -4279,7 +5166,9 @@ mod tests {
         std::fs::create_dir_all(home.join(".ssh")).expect("create .ssh");
         std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
 
-        let profile_text = build_sandbox_profile(&home, std::slice::from_ref(&workspace), false);
+        let protected = vec![workspace.join("config.yaml")];
+        let profile_text =
+            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &protected, false);
         let profile_path = home.join("test.sb");
         std::fs::write(&profile_path, &profile_text).expect("write profile");
 
@@ -4301,6 +5190,28 @@ mod tests {
             out.status.success() && inside.exists(),
             "workspace write should be allowed: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Denied: June's generated config stays readable but not writable by
+        // the sandboxed agent, even though it sits under the writable root.
+        let protected_config = workspace.join("config.yaml");
+        run(&format!(
+            "echo bad > {}",
+            sbpl_shell_quote(&protected_config)
+        ));
+        assert!(
+            !protected_config.exists(),
+            "generated config must stay protected from sandboxed writes"
+        );
+        let protected_tmp = workspace.join("config.yaml.tmp");
+        run(&format!(
+            "echo bad > {tmp} && mv {tmp} {config}",
+            tmp = sbpl_shell_quote(&protected_tmp),
+            config = sbpl_shell_quote(&protected_config),
+        ));
+        assert!(
+            !protected_config.exists(),
+            "generated config must also reject atomic replacement"
         );
 
         // Denied: write outside the workspace (home root is not a write root here).
@@ -4333,7 +5244,8 @@ mod tests {
         let workspace = home.join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
 
-        let profile_text = build_sandbox_profile(&home, std::slice::from_ref(&workspace), true);
+        let profile_text =
+            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &[], true);
         let profile_path = home.join("test.sb");
         std::fs::write(&profile_path, &profile_text).expect("write profile");
 

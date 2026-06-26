@@ -1,6 +1,7 @@
 import {
   createHermesBridgeCronJob,
   deleteHermesBridgeCronJob,
+  ensureHermesBridgeGateway,
   hermesBridgeCronJobAction,
   hermesBridgeCronJobs,
   hermesBridgeStatus,
@@ -98,11 +99,21 @@ export function routineUnrestricted(
 }
 
 /** The dashboard API lives on the bridge process, so make sure one is up
- * before calling — same lazy-start the gateway client used to do. */
+ * before calling. */
 async function withBridge<T>(run: () => Promise<T>): Promise<T> {
   const status = await hermesBridgeStatus();
   if (!status.running) await startHermesBridge();
   return run();
+}
+
+/** Cron jobs are fired by Hermes's launchd-managed gateway. Require it only
+ * for operations that create or enable future work; read and cleanup actions
+ * must still work when the gateway is unhealthy. */
+async function withScheduler<T>(run: () => Promise<T>): Promise<T> {
+  return withBridge(async () => {
+    await ensureHermesBridgeGateway();
+    return run();
+  });
 }
 
 function routineFromRecord(record: HermesCronJobRecord): RoutineJob {
@@ -152,7 +163,7 @@ export async function createRoutine(input: {
   name?: string;
   unrestricted?: boolean;
 }): Promise<RoutineJob> {
-  return withBridge(async () => {
+  return withScheduler(async () => {
     const created = await createHermesBridgeCronJob({
       prompt: input.prompt,
       schedule: input.schedule,
@@ -176,6 +187,14 @@ export type RoutineUpdates = {
   unrestricted?: boolean;
 };
 
+/** Update keys that are purely cosmetic and have no effect on a future run,
+ * so editing only these can stay on the bridge-only path. Everything else
+ * (schedule, prompt, the toolset/script fields `unrestricted` expands to, and
+ * any field added later) must go through withScheduler so an unloaded gateway
+ * gets brought back up — otherwise the edit is "saved but never fires".
+ * Safe-by-default: a key not listed here forces the scheduler. */
+const BRIDGE_ONLY_SAFE_UPDATE_KEYS = new Set<string>(["name"]);
+
 export async function updateRoutine(
   jobId: string,
   updates: RoutineUpdates,
@@ -191,7 +210,13 @@ export async function updateRoutine(
     payload.script = null;
     payload.no_agent = false;
   }
-  const record = await withBridge(() =>
+  // Require the gateway whenever the edit touches any future-run-affecting
+  // field; only edits limited to bridge-only-safe keys may skip it.
+  const touchesRunAffectingField = Object.keys(payload).some(
+    (key) => !BRIDGE_ONLY_SAFE_UPDATE_KEYS.has(key),
+  );
+  const run = touchesRunAffectingField ? withScheduler : withBridge;
+  const record = await run(() =>
     updateHermesBridgeCronJob(jobId, payload),
   );
   return routineFromRecord(record);
@@ -202,14 +227,14 @@ export function pauseRoutine(jobId: string) {
 }
 
 export function resumeRoutine(jobId: string) {
-  return withBridge(() => hermesBridgeCronJobAction(jobId, "resume"));
+  return withScheduler(() => hermesBridgeCronJobAction(jobId, "resume"));
 }
 
 /** Queues an immediate run. The launchd-managed gateway picks the job up on
  * its next scheduler tick, so the run starts within about a minute — and
  * only if the gateway is running. */
 export function triggerRoutine(jobId: string) {
-  return withBridge(() => hermesBridgeCronJobAction(jobId, "trigger"));
+  return withScheduler(() => hermesBridgeCronJobAction(jobId, "trigger"));
 }
 
 export function removeRoutine(jobId: string) {

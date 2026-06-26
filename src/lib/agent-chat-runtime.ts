@@ -12,6 +12,9 @@ import {
 } from "./hermes-adapter";
 import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
+import { STEER_EVENT_TYPE, steeringPartText } from "./hermes-session-steer";
+import { parseHermesMode } from "./hermes-control-plane";
+import { toolActivityLabel } from "./agent-tool-labels";
 
 export type LiveHermesEvent = HermesGatewayEvent & {
   receivedAt: string;
@@ -67,11 +70,50 @@ export type AgentChatClarifyPart = {
   status: "pending" | "resolved";
 };
 
+/** A privilege-escalation (`sudo.request`) the agent is blocked on until the
+ * user explicitly approves or denies. `command`/`reason`/`mode` are optional —
+ * Hermes may omit any of them, so the card still renders an approve/deny prompt
+ * when they're absent. `approved` records the resolution for a revisited
+ * transcript. */
+export type AgentChatSudoPart = {
+  type: "sudo";
+  id: string;
+  sessionId?: string;
+  command?: string;
+  reason?: string;
+  mode?: "sandboxed" | "unrestricted";
+  approved?: boolean;
+  status: "pending" | "resolved";
+};
+
+/** A `secret.request` the agent is blocked on until the user provides a value.
+ * This part NEVER carries the secret value — only the metadata about which
+ * secret is wanted (`keyName`) and an optional `reason`. The entered value
+ * lives transiently in the input component and is sent straight to the gateway,
+ * never onto a part, the turn tree, or any export. */
+export type AgentChatSecretPart = {
+  type: "secret";
+  id: string;
+  sessionId?: string;
+  keyName?: string;
+  reason?: string;
+  status: "pending" | "resolved";
+};
+
 /** A turn-level condition the user can act on (today: the turn died because
  * the balance ran out), rendered as a notice card instead of raw error text. */
 export type AgentChatNoticePart = {
   type: "notice";
   kind: "credits";
+  text: string;
+};
+
+/** A mid-run instruction the user steered into a still-working session (feature
+ * 06), rendered as a quiet "Steering" system item so the transcript records
+ * what the user redirected June toward. It carries only the instruction text —
+ * the gateway ack is not part of the transcript. */
+export type AgentChatSteeringPart = {
+  type: "steering";
   text: string;
 };
 
@@ -82,7 +124,10 @@ export type AgentChatPart =
   | AgentChatToolPart
   | AgentChatApprovalPart
   | AgentChatClarifyPart
-  | AgentChatNoticePart;
+  | AgentChatSudoPart
+  | AgentChatSecretPart
+  | AgentChatNoticePart
+  | AgentChatSteeringPart;
 
 export type AgentChatTurn = {
   id: string;
@@ -95,6 +140,16 @@ export type AgentChatTurn = {
   isScheduledRun?: boolean;
 };
 
+function sortAgentChatTurns(turns: AgentChatTurn[]) {
+  return turns
+    .map((turn, index) => ({ turn, index }))
+    .sort(
+      (a, b) =>
+        a.turn.createdAt.localeCompare(b.turn.createdAt) || a.index - b.index,
+    )
+    .map(({ turn }) => turn);
+}
+
 export function buildAgentChatTurns(
   messages: AgentMessageDto[],
   toolEvents: AgentToolEventDto[],
@@ -103,11 +158,11 @@ export function buildAgentChatTurns(
   const turns = messages.map(messageToTurn);
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
+  return sortAgentChatTurns(
+    turns.filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    ),
+  );
 }
 
 export function buildHermesSessionChatTurns(
@@ -126,7 +181,7 @@ export function buildHermesSessionChatTurns(
         createAssistantTurn(turns, messageTimestamp(message));
       upsertToolPart(turn.parts, {
         id,
-        name: message.tool_name ?? "Tool",
+        name: toolActivityLabel(message.tool_name ?? undefined),
         text: textFromHermesContent(message.content) ?? "",
         status: "complete",
       });
@@ -174,7 +229,7 @@ export function buildHermesSessionChatTurns(
         turn.parts.push({
           type: "tool",
           id: call.id,
-          name: humanizeToolName(call.name),
+          name: toolActivityLabel(call.name, call.arguments),
           text:
             textFromHermesContent(result?.content) ??
             stringifyObject(call.arguments) ??
@@ -202,11 +257,11 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
+  return sortAgentChatTurns(
+    turns.filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    ),
+  );
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
@@ -342,6 +397,26 @@ function appendLiveHermesEvents(
 
   for (const event of events) {
     const text = eventText(event);
+    if (event.type === STEER_EVENT_TYPE) {
+      // A user instruction steered into the running turn (feature 06). It is a
+      // local, first-party event — not a Hermes frame — so it gets its own
+      // quiet system turn at its `receivedAt` order. Close any open assistant
+      // turn so the instruction reads as a beat between what June was doing and
+      // what it does next.
+      const instruction = steeringPartText(event.payload).trim();
+      if (instruction) {
+        turns.push({
+          id: `steering:${event.receivedAt}:${turns.length}`,
+          role: "system",
+          createdAt: event.receivedAt,
+          status: "complete",
+          parts: [{ type: "steering", text: instruction }],
+        });
+        currentAssistant = null;
+      }
+      continue;
+    }
+
     if (event.type === "message.start") {
       currentAssistant = createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";
@@ -482,14 +557,14 @@ function appendLiveHermesEvents(
         currentAssistant.status = "complete";
       }
       const payload = event.payload as Record<string, unknown> | undefined;
+      const name =
+        stringValue(payload?.name) ??
+        stringValue(payload?.tool_name) ??
+        stringValue(payload?.tool) ??
+        "tool";
       upsertToolPart(currentAssistant.parts, {
         id: toolEventKey(event),
-        name: humanizeToolName(
-          stringValue(payload?.name) ??
-            stringValue(payload?.tool_name) ??
-            stringValue(payload?.tool) ??
-            "tool",
-        ),
+        name: toolActivityLabel(name, payload),
         text,
         status,
       });
@@ -574,6 +649,92 @@ function appendLiveHermesEvents(
       continue;
     }
 
+    if (event.type === "sudo.request") {
+      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+      currentAssistant.status = "running";
+      const payload = event.payload as Record<string, unknown> | undefined;
+      upsertSudoPart(currentAssistant.parts, {
+        id:
+          stringValue(payload?.request_id) ??
+          stringValue(payload?.id) ??
+          `sudo:${event.receivedAt}`,
+        sessionId: event.session_id,
+        command: stringValue(payload?.command, true),
+        reason: stringValue(payload?.reason, true),
+        mode: parseHermesMode(payload?.mode),
+        status: "pending",
+      });
+      continue;
+    }
+
+    if (event.type === "sudo.response") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      // Hermes spells the outcome `granted`; `approved` is accepted as a synonym
+      // so a slightly different gateway build still resolves the card.
+      const granted =
+        typeof payload?.granted === "boolean"
+          ? payload.granted
+          : typeof payload?.approved === "boolean"
+            ? payload.approved
+            : undefined;
+      upsertSudoPart(
+        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
+        {
+          id:
+            stringValue(payload?.request_id) ??
+            stringValue(payload?.id) ??
+            `sudo:${event.receivedAt}`,
+          sessionId: event.session_id,
+          mode: parseHermesMode(payload?.mode),
+          approved: granted,
+          status: "resolved",
+        },
+      );
+      continue;
+    }
+
+    if (event.type === "secret.request") {
+      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+      currentAssistant.status = "running";
+      const payload = event.payload as Record<string, unknown> | undefined;
+      // Read ONLY the metadata fields — never `value`/`api_key`, even if the
+      // gateway erroneously includes them, so the secret value can never reach
+      // a part or the serialized turn tree.
+      upsertSecretPart(currentAssistant.parts, {
+        id:
+          stringValue(payload?.request_id) ??
+          stringValue(payload?.id) ??
+          `secret:${event.receivedAt}`,
+        sessionId: event.session_id,
+        keyName:
+          stringValue(payload?.key_name) ??
+          stringValue(payload?.keyName) ??
+          stringValue(payload?.key) ??
+          stringValue(payload?.name),
+        reason: stringValue(payload?.reason, true),
+        status: "pending",
+      });
+      continue;
+    }
+
+    if (event.type === "secret.response") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      // Again metadata only: the response carries a `provided` flag, never the
+      // value the user typed.
+      upsertSecretPart(
+        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
+        {
+          id:
+            stringValue(payload?.request_id) ??
+            stringValue(payload?.id) ??
+            `secret:${event.receivedAt}`,
+          sessionId: event.session_id,
+          status: "resolved",
+        },
+      );
+      continue;
+    }
+
     if (event.type === "error") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNotice(text) : undefined;
@@ -595,13 +756,29 @@ function appendLiveHermesEvents(
 }
 
 function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
+  // A live assistant turn's `createdAt` is the client's event receive time,
+  // while the user/persisted turns it follows carry server timestamps. Those
+  // clocks differ, so a raw sort by `createdAt` can float the assistant above
+  // the user turn that triggered it — surfacing as a duplicated, misplaced
+  // "Thinking…" (the mis-sorted turn shows its own indicator while the gap
+  // indicator also fires because the user turn is now last). Clamp to the
+  // latest existing turn so an appended turn never sorts before the turns it
+  // causally follows; the sort's index tiebreak then keeps a same-timestamp
+  // user turn first.
+  const latestExisting = turns.reduce(
+    (latest, existing) =>
+      existing.createdAt > latest ? existing.createdAt : latest,
+    "",
+  );
+  const orderedCreatedAt =
+    latestExisting > createdAt ? latestExisting : createdAt;
   // The `turns.length` suffix keeps ids unique when several turns are created
   // within the same millisecond, while staying deterministic across rebuilds
   // of the same event list (these ids are used as React keys).
   const turn: AgentChatTurn = {
-    id: `assistant:${createdAt}:${turns.length}`,
+    id: `assistant:${orderedCreatedAt}:${turns.length}`,
     role: "assistant",
-    createdAt,
+    createdAt: orderedCreatedAt,
     status: "running",
     parts: [],
   };
@@ -718,6 +895,10 @@ function completeRunningParts(parts: AgentChatPart[]) {
       part.status = "resolved";
     if (part.type === "clarify" && part.status === "pending")
       part.status = "resolved";
+    if (part.type === "sudo" && part.status === "pending")
+      part.status = "resolved";
+    if (part.type === "secret" && part.status === "pending")
+      part.status = "resolved";
   }
 }
 
@@ -732,7 +913,8 @@ function upsertToolPart(
         (!next.id && part.name === next.name && part.status === "running")),
   );
   if (existing) {
-    existing.name = next.name || existing.name;
+    existing.name =
+      next.name && next.name !== "Tool" ? next.name : existing.name;
     existing.status = next.status;
     if (next.text && next.text !== existing.text) {
       existing.text = appendLogText(existing.text, next.text);
@@ -805,6 +987,67 @@ function upsertClarifyPart(
     question: next.question,
     choices: next.choices,
     answer: next.answer,
+    status: next.status,
+  });
+}
+
+function upsertSudoPart(
+  parts: AgentChatPart[],
+  next: Pick<AgentChatSudoPart, "id" | "status"> &
+    Partial<
+      Pick<
+        AgentChatSudoPart,
+        "command" | "reason" | "mode" | "approved" | "sessionId"
+      >
+    >,
+) {
+  const existing = parts.find(
+    (part): part is AgentChatSudoPart =>
+      part.type === "sudo" && part.id === next.id,
+  );
+  if (existing) {
+    existing.command = next.command ?? existing.command;
+    existing.reason = next.reason ?? existing.reason;
+    existing.mode = next.mode ?? existing.mode;
+    existing.approved = next.approved ?? existing.approved;
+    existing.sessionId = next.sessionId || existing.sessionId;
+    existing.status = next.status;
+    return;
+  }
+  parts.push({
+    type: "sudo",
+    id: next.id,
+    sessionId: next.sessionId,
+    command: next.command,
+    reason: next.reason,
+    mode: next.mode,
+    approved: next.approved,
+    status: next.status,
+  });
+}
+
+function upsertSecretPart(
+  parts: AgentChatPart[],
+  next: Pick<AgentChatSecretPart, "id" | "status"> &
+    Partial<Pick<AgentChatSecretPart, "keyName" | "reason" | "sessionId">>,
+) {
+  const existing = parts.find(
+    (part): part is AgentChatSecretPart =>
+      part.type === "secret" && part.id === next.id,
+  );
+  if (existing) {
+    existing.keyName = next.keyName ?? existing.keyName;
+    existing.reason = next.reason ?? existing.reason;
+    existing.sessionId = next.sessionId || existing.sessionId;
+    existing.status = next.status;
+    return;
+  }
+  parts.push({
+    type: "secret",
+    id: next.id,
+    sessionId: next.sessionId,
+    keyName: next.keyName,
+    reason: next.reason,
     status: next.status,
   });
 }
@@ -953,7 +1196,10 @@ function contextCompactionPreview(value: string) {
     : "Earlier turns were compacted into a reference summary.";
 }
 
-function textFromHermesContent(value: unknown, depth = 0): string | undefined {
+export function textFromHermesContent(
+  value: unknown,
+  depth = 0,
+): string | undefined {
   if (value === null || value === undefined || depth > 4) return undefined;
   if (typeof value === "string") {
     if (!value.trim()) return undefined;
@@ -1068,6 +1314,14 @@ function partText(part: AgentChatPart) {
   if (part.type === "approval") return part.command || part.description;
   if (part.type === "clarify")
     return [part.question, part.answer ?? ""].join(" ");
+  // A sudo/secret card is meaningful even with no extra text — its presence
+  // blocks the turn — so report a non-empty marker so the turn isn't filtered
+  // out as empty. The secret value is never part of this (it never reaches a
+  // part), so nothing sensitive is reported here.
+  if (part.type === "sudo")
+    return [part.command ?? "", part.reason ?? "", "sudo"].join(" ");
+  if (part.type === "secret")
+    return [part.keyName ?? "", part.reason ?? "", "secret"].join(" ");
   if (part.type === "context") return part.preview || part.text;
   return part.text;
 }
@@ -1122,12 +1376,4 @@ function timestampString(value: unknown) {
     return value.toISOString();
   }
   return new Date().toISOString();
-}
-
-function humanizeToolName(value: string) {
-  return value
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
 }

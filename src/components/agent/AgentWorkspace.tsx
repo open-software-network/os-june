@@ -2,10 +2,13 @@ import { listen } from "@tauri-apps/api/event";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
+import { IconBolt } from "central-icons/IconBolt";
+import { IconBranchSimple } from "central-icons/IconBranchSimple";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
+import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconFolder1 } from "central-icons/IconFolder1";
@@ -19,6 +22,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
 import { IconAnonymous } from "central-icons/IconAnonymous";
+import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
@@ -27,11 +31,13 @@ import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
+import { IconCheckCircle2 } from "central-icons/IconCheckCircle2";
 import { IconConcise } from "central-icons/IconConcise";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconGauge } from "central-icons/IconGauge";
 import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconHistory } from "central-icons/IconHistory";
@@ -61,6 +67,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { BackButton } from "../ui/BackButton";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -91,7 +98,8 @@ import {
   listVeniceModels,
   listAgentTasks,
   downloadHermesBridgeFile,
-  osAccountsTopUp,
+  openHermesTuiDebug,
+  osAccountsUpgrade,
   providerModelSettings,
   retryAgentTask,
   sendAgentMessage,
@@ -144,6 +152,54 @@ import {
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
 import {
+  classifyHermesEvent,
+  createHermesMethods,
+  hermesModeFor,
+  isHermesFeatureSupported,
+  isSensitiveKey,
+  type HermesMode,
+} from "../../lib/hermes-control-plane";
+import {
+  attachImageToSession,
+  attachmentStateFrom,
+  pendingImageAttachments,
+  type HermesAttachmentState,
+} from "../../lib/hermes-image-attach";
+import {
+  parseSessionUsage,
+  type SessionUsage,
+} from "../../lib/hermes-session-usage";
+import {
+  parseCompressSessionResult,
+  type CompressSessionResult,
+} from "../../lib/hermes-session-compress";
+import {
+  isBranchableMessageId,
+  parseBranchSessionResult,
+  type BranchSessionResult,
+} from "../../lib/hermes-session-branch";
+import {
+  normalizeSteerText,
+  steeringLiveEvent,
+} from "../../lib/hermes-session-steer";
+import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
+import { pendingActionStore } from "../../lib/hermes-pending-actions";
+import { hermesActivityStore } from "../../lib/hermes-activity-store";
+import {
+  hermesArtifactStore,
+  // The store's record shape collides by name with this file's local
+  // `AgentArtifact` (the file-viewer card), so alias it.
+  type AgentArtifact as TimelineArtifact,
+} from "../../lib/hermes-artifact-store";
+import { SessionUsagePanel } from "./SessionUsagePanel";
+import {
+  AgentActivityDrawer,
+  AgentArtifactsSection,
+} from "./AgentActivityDrawer";
+import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
+import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
+import { HermesTracePanel } from "./HermesTracePanel";
+import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
   dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
@@ -151,6 +207,7 @@ import {
   type ModelPrivacyBadge,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
+import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import {
   contextLabel,
@@ -183,6 +240,13 @@ import {
   skillSlashResolutionError,
 } from "../../lib/skill-slash-commands";
 import {
+  isBuiltinComposerSlashCommand,
+  parseBuiltinComposerSlashCommand,
+  parseSlashFileArguments,
+  resolveSlashModel,
+  slashModelResolutionError,
+} from "../../lib/agent-composer-slash-commands";
+import {
   ComposerEditor,
   type ComposerEditorHandle,
 } from "./composer/ComposerEditor";
@@ -200,6 +264,10 @@ import {
   sessionUnrestricted,
 } from "../../lib/agent-session-modes";
 import {
+  HERMES_TUI_DEBUG_WARNING,
+  hermesTuiDebugAvailable,
+} from "../../lib/hermes-tui-debug";
+import {
   AGENT_CLI_ACCESS_ENABLED_MESSAGE,
   hasAgentCliAccessRequest,
   stripAgentCliAccessRequest,
@@ -208,11 +276,13 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   repairContractionSpacing,
+  textFromHermesContent,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
   type LiveHermesEvent,
 } from "../../lib/agent-chat-runtime";
+import { toolActivitySentence } from "../../lib/agent-tool-labels";
 import {
   buildAgentChatGallery,
   buildAgentErrorGallery,
@@ -231,6 +301,9 @@ const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
   AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[
     AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS.length - 1
   ] ?? 2000;
+const QUEUED_STEER_RETRY_DELAY_MS = 300;
+const RESTORED_QUEUED_STEER_RECONCILE_DELAY_MS = 1000;
+const RESTORED_QUEUED_STEER_BUSY_RECONCILE_DELAY_MS = 3000;
 
 // What the user reads instead of the gateway's "session busy" rejection. No
 // action in the pill — the composer's send slot already shows stop while
@@ -242,6 +315,19 @@ const SESSION_BUSY_NOTICE = "June is still working on the previous message.";
 // so the match is stable. Other errors (downloads, renames…) have no single
 // retryable action, so they only offer dismiss.
 const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
+
+// A pending request (approval/sudo/secret/clarify) can only be answered by the
+// runtime process that asked for it. When that runtime ends, the session's data
+// still loads, but the gateway answers "Session not found" on respond — the
+// request is now permanently unanswerable. Every respond handler treats this as
+// terminal: it retires the dead-end card and shows SESSION_GONE_MESSAGE rather
+// than leaking the raw "Hermes API returned 404 ... Session not found" error.
+const SESSION_GONE_MESSAGE =
+  "This session has ended, so the request can no longer be answered.";
+
+function isSessionGoneError(message: string): boolean {
+  return message.toLowerCase().includes("session not found");
+}
 
 // Dev-tools response gallery handle. Registered at module scope so
 // __agentGallery() exists from app launch — registering it inside the component
@@ -623,6 +709,19 @@ const HERO_SHORTCUT_COUNT = 3;
 // the deck advances (300ms fade + 2 × 90ms stagger, see .agent-hero-chip).
 const HERO_ROTATE_MS = 8000;
 const HERO_CHIP_SWAP_MS = 500;
+const PROVISIONAL_HERMES_SESSION_PREFIX = "pending:new-session:";
+
+function makeProvisionalHermesSessionId() {
+  return `${PROVISIONAL_HERMES_SESSION_PREFIX}${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
+function isProvisionalHermesSessionId(sessionId?: string | null) {
+  return Boolean(
+    sessionId && sessionId.startsWith(PROVISIONAL_HERMES_SESSION_PREFIX),
+  );
+}
 
 // Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
 // is the identity permutation: tests that mock Math.random get the curated
@@ -657,11 +756,17 @@ export type AgentNewSessionDetail = {
 type PendingIssueReport = {
   category: ReportCategory;
   description: string;
+  followUps: string[];
   attachmentNames: string[];
   /** Workspace paths captured at submit, so the files can be uploaded with
    * the report even after the composer clears its attachment chips. */
   attachmentPaths: string[];
+  /** Existing sessions can have old assistant replies; only use diagnoses
+   * produced after this queued report turn started. */
+  diagnosisStartedAt?: string;
 };
+
+type HermesToolEventPhase = "start" | "progress" | "complete";
 
 type AgentWorkspaceError = {
   message: string;
@@ -691,7 +796,25 @@ type AgentArtifact = {
 
 type AgentAttachment = ImportedHermesFile & {
   id: string;
+  /** Structured attach status (feature 19). Tracks whether this import has been
+   * sent to the model via image.attach: imported (ready) → attached (acked) →
+   * or failed. Carries file refs only, never the image bytes. Files stay
+   * `imported` (they only ride along as a path in the prompt). */
+  attach: HermesAttachmentState;
 };
+
+/** Thrown when a structured image attach fails so the prompt is NOT sent with a
+ * missing image (feature 19). Carries the attachments with their failed status
+ * so submit()'s catch can restore the chips showing what didn't go through. */
+class AttachBlockedError extends Error {
+  constructor(
+    message: string,
+    readonly attachments: AgentAttachment[],
+  ) {
+    super(message);
+    this.name = "AttachBlockedError";
+  }
+}
 
 type PreparedComposerSubmission = {
   displayContent: string;
@@ -736,6 +859,7 @@ export type AgentWorkspaceOrigin = {
 
 type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
+  initialSessionId?: string;
   origin?: AgentWorkspaceOrigin;
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
 };
@@ -744,7 +868,10 @@ type AgentWorkspaceProps = {
 // state that exists nowhere outside this component: the optimistic list entry
 // (title + preview), the just-sent user bubble Hermes hasn't persisted yet,
 // the working/waiting flags that drive the reconcile poll, the stored→runtime
-// session mapping, the buffered live events, and the title override.
+// session mapping, the buffered live events, the title override, and any
+// queued issue report draft, the review-ready report waiting for the user to
+// send, and the delayed diagnosis refresh that makes the final June answer
+// available to the report payload.
 // Navigating away (e.g. to Settings) unmounts the workspace; without this
 // snapshot the remount restores only the selected id from localStorage, and a
 // session whose first turn hasn't persisted renders as an empty "Untitled
@@ -759,10 +886,39 @@ type AgentSessionContinuity = {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  activeToolCallsBySession: Record<string, Record<string, number>>;
+  pendingIssueReports: Record<string, PendingIssueReport>;
+  reviewableIssueReports: Record<string, PendingIssueReport>;
+  diagnosisRefreshIssueReportSessionIds: string[];
+  submittingIssueReportSessionIds: string[];
+};
+
+type IssueReportDeliveryResult =
+  | { sent: true }
+  | { sent: false; errorMessage: string };
+
+type IssueReportDeliverySettledDetail = {
+  sessionId: string;
+  report: PendingIssueReport;
+  result: IssueReportDeliveryResult;
+};
+
+type IssueReportFollowUpSubmitFailedDetail = {
+  sessionId: string;
+  queuedReport: PendingIssueReport;
+  restoreReport?: PendingIssueReport;
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
+const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY =
+  "scribe:agent:reviewable-issue-reports";
+const ISSUE_REPORT_DELIVERY_SETTLED_EVENT =
+  "june-agent-issue-report-delivery-settled";
+const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
+  "june-agent-issue-report-follow-up-submit-failed";
+const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
+const ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS = 1500;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
 
 function sessionComposerDraftKey(sessionId: string) {
@@ -791,6 +947,32 @@ function forgetComposerDraft(key: string | null) {
   if (key) agentComposerDrafts.delete(key);
 }
 
+function activeToolCallsRecord(
+  activeToolCallsBySession: Map<string, Map<string, number>>,
+): Record<string, Record<string, number>> {
+  return Object.fromEntries(
+    Array.from(activeToolCallsBySession.entries())
+      .filter(([, tools]) => tools.size > 0)
+      .map(([sessionId, tools]) => [sessionId, Object.fromEntries(tools)]),
+  );
+}
+
+function activeToolCallsMap(
+  activeToolCallsBySession: Record<string, Record<string, number>> | undefined,
+) {
+  return new Map(
+    Object.entries(activeToolCallsBySession ?? {}).map(([sessionId, tools]) => [
+      sessionId,
+      new Map(
+        Object.entries(tools).filter(
+          (entry): entry is [string, number] =>
+            Number.isFinite(entry[1]) && entry[1] > 0,
+        ),
+      ),
+    ]),
+  );
+}
+
 function captureSessionContinuity(state: {
   sessionItems: HermesSessionInfo[];
   pendingMessages: Record<string, HermesSessionMessage[]>;
@@ -799,6 +981,11 @@ function captureSessionContinuity(state: {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  activeToolCallsBySession: Record<string, Record<string, number>>;
+  pendingIssueReports: Record<string, PendingIssueReport>;
+  reviewableIssueReports: Record<string, PendingIssueReport>;
+  diagnosisRefreshIssueReportSessionIds: Set<string>;
+  submittingIssueReportSessionIds: Set<string>;
 }): AgentSessionContinuity | null {
   const activeIds = new Set([
     ...state.workingSessionIds,
@@ -806,6 +993,21 @@ function captureSessionContinuity(state: {
   ]);
   for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
     if (pending.length > 0) activeIds.add(sessionId);
+  }
+  for (const sessionId of Object.keys(state.reviewableIssueReports)) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of Object.keys(state.pendingIssueReports)) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of state.diagnosisRefreshIssueReportSessionIds) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of state.submittingIssueReportSessionIds) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of Object.keys(state.activeToolCallsBySession)) {
+    activeIds.add(sessionId);
   }
   if (activeIds.size === 0) return null;
   const pick = <T,>(record: Record<string, T>) =>
@@ -822,7 +1024,237 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
+    activeToolCallsBySession: pick(state.activeToolCallsBySession),
+    pendingIssueReports: pick(state.pendingIssueReports),
+    reviewableIssueReports: pick(state.reviewableIssueReports),
+    diagnosisRefreshIssueReportSessionIds: [
+      ...state.diagnosisRefreshIssueReportSessionIds,
+    ].filter((sessionId) => activeIds.has(sessionId)),
+    submittingIssueReportSessionIds: [
+      ...state.submittingIssueReportSessionIds,
+    ].filter((sessionId) => activeIds.has(sessionId)),
   };
+}
+
+function persistedReviewableIssueReports(): Record<string, PendingIssueReport> {
+  try {
+    const raw = window.localStorage.getItem(
+      REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY,
+    );
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([sessionId, value]) => [sessionId, persistedIssueReport(value)])
+        .filter(
+          (entry): entry is [string, PendingIssueReport] =>
+            typeof entry[0] === "string" && entry[1] !== undefined,
+        ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistReviewableIssueReports(
+  reports: Record<string, PendingIssueReport>,
+) {
+  try {
+    const entries = Object.entries(reports);
+    if (entries.length === 0) {
+      window.localStorage.removeItem(REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(entries)),
+    );
+  } catch {
+    // Best-effort: app reload restore can fail without blocking the report flow.
+  }
+}
+
+function persistedIssueReport(value: unknown): PendingIssueReport | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Partial<PendingIssueReport>;
+  if (
+    !isReportCategory(candidate.category) ||
+    typeof candidate.description !== "string" ||
+    !Array.isArray(candidate.followUps) ||
+    !Array.isArray(candidate.attachmentNames) ||
+    !Array.isArray(candidate.attachmentPaths)
+  ) {
+    return undefined;
+  }
+  const followUps = candidate.followUps.filter(
+    (followUp): followUp is string => typeof followUp === "string",
+  );
+  const attachmentNames = candidate.attachmentNames.filter(
+    (name): name is string => typeof name === "string",
+  );
+  const attachmentPaths = candidate.attachmentPaths.filter(
+    (path): path is string => typeof path === "string",
+  );
+  return {
+    category: candidate.category,
+    description: candidate.description,
+    followUps,
+    attachmentNames,
+    attachmentPaths,
+    ...(typeof candidate.diagnosisStartedAt === "string"
+      ? { diagnosisStartedAt: candidate.diagnosisStartedAt }
+      : {}),
+  };
+}
+
+function updateContinuityAfterIssueReportDelivery(
+  detail: IssueReportDeliverySettledDetail,
+) {
+  if (!sessionContinuity) return;
+  const reviewableIssueReports = {
+    ...sessionContinuity.reviewableIssueReports,
+  };
+  const pendingIssueReports = { ...sessionContinuity.pendingIssueReports };
+  const diagnosisRefreshIssueReportSessionIds = new Set(
+    sessionContinuity.diagnosisRefreshIssueReportSessionIds,
+  );
+  if (
+    detail.result.sent &&
+    reviewableIssueReports[detail.sessionId] === detail.report
+  ) {
+    delete reviewableIssueReports[detail.sessionId];
+    diagnosisRefreshIssueReportSessionIds.delete(detail.sessionId);
+  } else if (!detail.result.sent && !pendingIssueReports[detail.sessionId]) {
+    reviewableIssueReports[detail.sessionId] =
+      reviewableIssueReports[detail.sessionId] ?? detail.report;
+  }
+  persistReviewableIssueReports(reviewableIssueReports);
+  sessionContinuity = captureSessionContinuity({
+    sessionItems: sessionContinuity.sessionItems,
+    pendingMessages: sessionContinuity.pendingMessages,
+    workingSessionIds: new Set(sessionContinuity.workingSessionIds),
+    waitingSessionIds: new Set(sessionContinuity.waitingSessionIds),
+    runtimeSessionIds: sessionContinuity.runtimeSessionIds,
+    liveEvents: sessionContinuity.liveEvents,
+    titleOverrides: sessionContinuity.titleOverrides,
+    activeToolCallsBySession: sessionContinuity.activeToolCallsBySession,
+    pendingIssueReports,
+    reviewableIssueReports,
+    diagnosisRefreshIssueReportSessionIds,
+    submittingIssueReportSessionIds: new Set(
+      sessionContinuity.submittingIssueReportSessionIds.filter(
+        (sessionId) => sessionId !== detail.sessionId,
+      ),
+    ),
+  });
+}
+
+function updateContinuityAfterIssueReportFollowUpSubmitFailed(
+  detail: IssueReportFollowUpSubmitFailedDetail,
+) {
+  if (!sessionContinuity) return;
+  const pendingIssueReports = { ...sessionContinuity.pendingIssueReports };
+  if (pendingIssueReports[detail.sessionId] === detail.queuedReport) {
+    delete pendingIssueReports[detail.sessionId];
+  }
+  const reviewableIssueReports = {
+    ...sessionContinuity.reviewableIssueReports,
+  };
+  if (detail.restoreReport && !reviewableIssueReports[detail.sessionId]) {
+    reviewableIssueReports[detail.sessionId] = detail.restoreReport;
+  }
+  persistReviewableIssueReports(reviewableIssueReports);
+  sessionContinuity = captureSessionContinuity({
+    sessionItems: sessionContinuity.sessionItems,
+    pendingMessages: sessionContinuity.pendingMessages,
+    workingSessionIds: new Set(sessionContinuity.workingSessionIds),
+    waitingSessionIds: new Set(sessionContinuity.waitingSessionIds),
+    runtimeSessionIds: sessionContinuity.runtimeSessionIds,
+    liveEvents: sessionContinuity.liveEvents,
+    titleOverrides: sessionContinuity.titleOverrides,
+    activeToolCallsBySession: sessionContinuity.activeToolCallsBySession,
+    pendingIssueReports,
+    reviewableIssueReports,
+    diagnosisRefreshIssueReportSessionIds: new Set(
+      sessionContinuity.diagnosisRefreshIssueReportSessionIds,
+    ),
+    submittingIssueReportSessionIds: new Set(
+      sessionContinuity.submittingIssueReportSessionIds,
+    ),
+  });
+}
+
+function dispatchIssueReportDeliverySettled(
+  detail: IssueReportDeliverySettledDetail,
+) {
+  updateContinuityAfterIssueReportDelivery(detail);
+  window.dispatchEvent(
+    new CustomEvent<IssueReportDeliverySettledDetail>(
+      ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
+      { detail },
+    ),
+  );
+}
+
+function dispatchIssueReportFollowUpSubmitFailed(
+  detail: IssueReportFollowUpSubmitFailedDetail,
+) {
+  updateContinuityAfterIssueReportFollowUpSubmitFailed(detail);
+  window.dispatchEvent(
+    new CustomEvent<IssueReportFollowUpSubmitFailedDetail>(
+      ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
+      { detail },
+    ),
+  );
+}
+
+function issueReportDescription(report: PendingIssueReport) {
+  const followUps = report.followUps
+    .map((followUp) => followUp.trim())
+    .filter(Boolean);
+  if (followUps.length === 0) return report.description;
+  return [
+    report.description,
+    "",
+    "Follow-up comments:",
+    ...followUps.map((followUp, index) => `${index + 1}. ${followUp}`),
+  ].join("\n");
+}
+
+function appendIssueReportFollowUp(
+  report: PendingIssueReport,
+  followUp: string,
+  attachmentNames: string[],
+  attachmentPaths: string[],
+): PendingIssueReport {
+  return {
+    ...report,
+    followUps: [
+      ...report.followUps,
+      followUp.trim() || "No follow-up text was typed; see the attachments.",
+    ],
+    attachmentNames: [...report.attachmentNames, ...attachmentNames],
+    attachmentPaths: [...report.attachmentPaths, ...attachmentPaths],
+  };
+}
+
+function messageAfterIssueReportDiagnosisBoundary(
+  message: HermesSessionMessage,
+  report: PendingIssueReport,
+) {
+  if (!report.diagnosisStartedAt) return true;
+  const messageTime = hermesMessageTimestampMs(message);
+  const boundaryTime = Date.parse(report.diagnosisStartedAt);
+  if (!Number.isFinite(boundaryTime)) return true;
+  return (
+    messageTime !== undefined &&
+    messageTime >= boundaryTime - ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS
+  );
 }
 
 /** Test hook: the snapshot is module state, so a test that unmounts with a
@@ -835,10 +1267,11 @@ export function resetAgentSessionContinuity() {
 
 export function AgentWorkspace({
   initialSession,
+  initialSessionId: initialSessionIdProp,
   origin,
   onSessionSelected,
 }: AgentWorkspaceProps = {}) {
-  const initialSessionId = initialSession?.id;
+  const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
   // previous mount captured on unmount, if any session was still mid-run.
   const [continuity] = useState(() => sessionContinuity);
@@ -871,6 +1304,27 @@ export function AgentWorkspace({
   // in the composer notice slot until dismissed by the next send.
   const [issueReportNotice, setIssueReportNotice] =
     useState<AgentWorkspaceNotice | null>(null);
+  // Honest result of the last model switch (feature 10): scoped to the session
+  // it acted on so it survives background refreshes and disappears when the
+  // user moves to another conversation. A null sessionId means it reports a
+  // default-only change shown on the hero.
+  const [modelSwitchNotice, setModelSwitchNotice] = useState<{
+    message: string;
+    sessionId: string | null;
+  } | null>(null);
+  // Feature 07: after a successful fork, the banner that tells the user the
+  // freshly-opened session was branched from another. Keyed by the NEW
+  // session's id so it shows only while that session is selected, then clears
+  // itself once they navigate away.
+  const [branchedNotice, setBranchedNotice] = useState<{
+    sessionId: string;
+    sourceTitle: string;
+  } | null>(null);
+  // Which message a branch is currently in flight for, so its action shows a
+  // disabled/working state and double-clicks can't fork twice.
+  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(
+    null,
+  );
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -944,6 +1398,11 @@ export function AgentWorkspace({
     },
     [],
   );
+  const clearErrorForSession = useCallback((sessionId: string) => {
+    setErrorState((current) =>
+      current?.sessionId === sessionId ? null : current,
+    );
+  }, []);
   const [heroGreeting, setHeroGreeting] = useState(advanceHeroGreeting);
   const heroGreetingConsumedRef = useRef(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
@@ -982,6 +1441,20 @@ export function AgentWorkspace({
     () => new Set(continuity?.workingSessionIds),
   );
   const workingSessionIdsRef = useRef<Set<string>>(workingSessionIds);
+  const [toolCallSessionIds, setToolCallSessionIds] = useState<Set<string>>(
+    () => new Set(Object.keys(continuity?.activeToolCallsBySession ?? {})),
+  );
+  const toolCallSessionIdsRef = useRef<Set<string>>(toolCallSessionIds);
+  // Steers we've sent that Hermes may not have delivered yet. Hermes only
+  // injects a steer into the next tool result, so a no-tool turn drops it; we
+  // track the text and resend it as a follow-up on completion when no tool
+  // consumed it (cleared on a tool.complete or a clean terminal).
+  const pendingSteerBySessionIdRef = useRef<
+    Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
+  >({});
+  const activeToolCallsBySessionRef = useRef<Map<string, Map<string, number>>>(
+    activeToolCallsMap(continuity?.activeToolCallsBySession),
+  );
   const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
     () => new Set(continuity?.waitingSessionIds),
   );
@@ -1011,6 +1484,7 @@ export function AgentWorkspace({
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>(
     [],
   );
+  const generationModelsRef = useRef<VeniceModelDto[]>([]);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] =
     useState<ComposerModelFlyout>(null);
@@ -1034,6 +1508,13 @@ export function AgentWorkspace({
   const [filesystemLoading, setFilesystemLoading] = useState(false);
   const [artifactPanel, setArtifactPanel] =
     useState<AgentArtifactPanelState | null>(null);
+  // The session whose usage/cost panel is open, or null. Self-contained for
+  // feature 09; feature 11's activity drawer will later host the same panel.
+  const [usagePanelSessionId, setUsagePanelSessionId] = useState<string | null>(
+    null,
+  );
+  // The session whose context-compaction dialog is open, or null (feature 08).
+  const [compactSessionId, setCompactSessionId] = useState<string | null>(null);
   // Dev-only sample files seeded by window.__agentFiles — surfaced alongside
   // the conversation's own artifacts so the viewer can be exercised at will.
   const [devArtifacts, setDevArtifacts] = useState<AgentArtifact[]>([]);
@@ -1042,6 +1523,14 @@ export function AgentWorkspace({
   >({});
   const [clarifySubmitting, setClarifySubmitting] = useState<
     Record<string, string>
+  >({});
+  // Sudo records which choice (approve/deny) is in flight per request id;
+  // secret records only that a submit is in flight (NEVER the value).
+  const [sudoSubmitting, setSudoSubmitting] = useState<
+    Record<string, "approve" | "deny">
+  >({});
+  const [secretSubmitting, setSecretSubmitting] = useState<
+    Record<string, true>
   >({});
   // Whether "Agent CLI access" (Settings, Agent tab) is on — drives the
   // in-chat request card June can raise via its soul token. undefined until
@@ -1093,10 +1582,42 @@ export function AgentWorkspace({
   // the fetch *started*) — the scroll-settling logic needs the landing.
   const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(newSessionMode);
-  // sessionId -> the report captured at submit time, delivered to the June
-  // team once the agent's diagnostic turn reaches a terminal event.
+  // sessionId -> the report captured for the active report turn. Once June's
+  // diagnostic turn finishes, it moves to reviewableIssueReports so the user
+  // can add context or send it.
   const pendingIssueReportsRef = useRef<Map<string, PendingIssueReport>>(
+    new Map(Object.entries(continuity?.pendingIssueReports ?? {})),
+  );
+  const [reviewableIssueReports, setReviewableIssueReports] = useState<
+    Record<string, PendingIssueReport>
+  >(() => ({
+    ...persistedReviewableIssueReports(),
+    ...(continuity?.reviewableIssueReports ?? {}),
+  }));
+  const reviewableIssueReportsRef = useRef<Record<string, PendingIssueReport>>(
+    reviewableIssueReports,
+  );
+  const [
+    diagnosisRefreshIssueReportSessionIds,
+    setDiagnosisRefreshIssueReportSessionIds,
+  ] = useState<Set<string>>(
+    () => new Set(continuity?.diagnosisRefreshIssueReportSessionIds ?? []),
+  );
+  const diagnosisRefreshIssueReportSessionIdsRef = useRef<Set<string>>(
+    diagnosisRefreshIssueReportSessionIds,
+  );
+  const issueReportDiagnosisRefreshesRef = useRef<Map<string, Promise<void>>>(
     new Map(),
+  );
+  const deferredFailedIssueReportDeliverySessionIdsRef = useRef<Set<string>>(
+    new Set(),
+  );
+  const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] =
+    useState<Set<string>>(
+      () => new Set(continuity?.submittingIssueReportSessionIds ?? []),
+    );
+  const submittingIssueReportSessionIdsRef = useRef<Set<string>>(
+    submittingIssueReportSessionIds,
   );
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
@@ -1115,13 +1636,206 @@ export function AgentWorkspace({
   // startNewTask for the sidebar/settings report entry points.
   const pendingSeedCategoryRef = useRef<ReportCategory | null>(null);
 
+  function setReviewableIssueReport(
+    sessionId: string,
+    report: PendingIssueReport | null,
+  ) {
+    const next = { ...reviewableIssueReportsRef.current };
+    if (report) {
+      next[sessionId] = report;
+    } else {
+      delete next[sessionId];
+    }
+    reviewableIssueReportsRef.current = next;
+    persistReviewableIssueReports(next);
+    setReviewableIssueReports(next);
+  }
+
+  function setIssueReportDiagnosisRefreshing(
+    sessionId: string,
+    refreshing: boolean,
+  ) {
+    const next = new Set(diagnosisRefreshIssueReportSessionIdsRef.current);
+    if (refreshing) {
+      next.add(sessionId);
+    } else {
+      next.delete(sessionId);
+    }
+    diagnosisRefreshIssueReportSessionIdsRef.current = next;
+    setDiagnosisRefreshIssueReportSessionIds(next);
+  }
+
+  function queueIssueReportDiagnosisRefresh(sessionId: string, delayMs = 300) {
+    setIssueReportDiagnosisRefreshing(sessionId, true);
+    let refresh: Promise<void>;
+    refresh = new Promise<void>((resolve) => {
+      window.setTimeout(() => {
+        void refreshHermesSession(sessionId).finally(resolve);
+      }, delayMs);
+    }).finally(() => {
+      if (issueReportDiagnosisRefreshesRef.current.get(sessionId) === refresh) {
+        issueReportDiagnosisRefreshesRef.current.delete(sessionId);
+        setIssueReportDiagnosisRefreshing(sessionId, false);
+      }
+    });
+    issueReportDiagnosisRefreshesRef.current.set(sessionId, refresh);
+    return refresh;
+  }
+
+  function waitForIssueReportDiagnosisRefresh(sessionId: string) {
+    if (!diagnosisRefreshIssueReportSessionIdsRef.current.has(sessionId)) {
+      return Promise.resolve();
+    }
+    return (
+      issueReportDiagnosisRefreshesRef.current.get(sessionId) ??
+      queueIssueReportDiagnosisRefresh(sessionId)
+    );
+  }
+
+  function promotePendingIssueReportToReview(
+    sessionId: string,
+    options: { queueDiagnosisRefresh: boolean },
+  ) {
+    const issueReport = pendingIssueReportsRef.current.get(sessionId);
+    if (!issueReport) return false;
+    pendingIssueReportsRef.current.delete(sessionId);
+    deferredFailedIssueReportDeliverySessionIdsRef.current.delete(sessionId);
+    setReviewableIssueReport(sessionId, issueReport);
+    if (options.queueDiagnosisRefresh) {
+      queueIssueReportDiagnosisRefresh(sessionId);
+    } else {
+      setIssueReportDiagnosisRefreshing(sessionId, false);
+    }
+    return true;
+  }
+
+  function setIssueReportSubmitting(sessionId: string, submitting: boolean) {
+    const next = new Set(submittingIssueReportSessionIdsRef.current);
+    if (submitting) {
+      next.add(sessionId);
+    } else {
+      next.delete(sessionId);
+    }
+    submittingIssueReportSessionIdsRef.current = next;
+    setSubmittingIssueReportSessionIds(next);
+  }
+
+  useEffect(() => {
+    function onIssueReportDeliverySettled(event: Event) {
+      const detail = (event as CustomEvent<IssueReportDeliverySettledDetail>)
+        .detail;
+      if (!detail?.sessionId) return;
+      setIssueReportSubmitting(detail.sessionId, false);
+      if (detail.result.sent) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
+          detail.sessionId,
+        );
+        if (
+          reviewableIssueReportsRef.current[detail.sessionId] === detail.report
+        ) {
+          setReviewableIssueReport(detail.sessionId, null);
+        }
+        return;
+      }
+      if (pendingIssueReportsRef.current.has(detail.sessionId)) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.add(
+          detail.sessionId,
+        );
+      } else if (!reviewableIssueReportsRef.current[detail.sessionId]) {
+        setReviewableIssueReport(detail.sessionId, detail.report);
+      }
+      setError(detail.result.errorMessage, { sessionId: detail.sessionId });
+    }
+
+    function onIssueReportFollowUpSubmitFailed(event: Event) {
+      const detail = (
+        event as CustomEvent<IssueReportFollowUpSubmitFailedDetail>
+      ).detail;
+      if (!detail?.sessionId) return;
+      if (
+        pendingIssueReportsRef.current.get(detail.sessionId) ===
+        detail.queuedReport
+      ) {
+        pendingIssueReportsRef.current.delete(detail.sessionId);
+      }
+      if (
+        detail.restoreReport &&
+        !reviewableIssueReportsRef.current[detail.sessionId]
+      ) {
+        setReviewableIssueReport(detail.sessionId, detail.restoreReport);
+      }
+    }
+
+    window.addEventListener(
+      ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
+      onIssueReportDeliverySettled,
+    );
+    window.addEventListener(
+      ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
+      onIssueReportFollowUpSubmitFailed,
+    );
+    return () => {
+      window.removeEventListener(
+        ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
+        onIssueReportDeliverySettled,
+      );
+      window.removeEventListener(
+        ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
+        onIssueReportFollowUpSubmitFailed,
+      );
+    };
+  }, [setError]);
+
+  useEffect(() => {
+    for (const sessionId of diagnosisRefreshIssueReportSessionIdsRef.current) {
+      queueIssueReportDiagnosisRefresh(sessionId);
+    }
+  }, []);
+
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
   }, [runtimeSessionIds]);
 
   useEffect(() => {
+    const restoredSessionIds = continuity?.workingSessionIds ?? [];
+    if (!restoredSessionIds.length) return;
+    let cancelled = false;
+
+    void (async () => {
+      for (const sessionId of restoredSessionIds) {
+        const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
+        if (!runtimeSessionId) continue;
+        try {
+          const gateway = await ensureHermesGateway(
+            sessionUnrestricted(sessionId),
+          );
+          if (cancelled || !workingSessionIdsRef.current.has(sessionId)) {
+            continue;
+          }
+          attachHermesSessionEventListener({
+            gateway,
+            runtimeSessionId,
+            sessionDisplayTitle:
+              hermesSessionItemsRef.current.find(
+                (session) => session.id === sessionId,
+              )?.title ?? "Agent session",
+            storedSessionId: sessionId,
+          });
+        } catch {
+          // The working-session poll still reconciles if reconnecting fails.
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
     workingSessionIdsRef.current = workingSessionIds;
+    toolCallSessionIdsRef.current = toolCallSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
     pendingHermesMessagesRef.current = pendingHermesMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
@@ -1129,9 +1843,71 @@ export function AgentWorkspace({
     hermesSessionItems,
     pendingHermesMessages,
     selectedHermesSessionId,
+    toolCallSessionIds,
     waitingSessionIds,
     workingSessionIds,
   ]);
+
+  const setSessionToolCallActive = useCallback(
+    (sessionId: string, active: boolean) => {
+      setToolCallSessionIds((current) => {
+        const next = new Set(current);
+        if (active) {
+          next.add(sessionId);
+        } else {
+          next.delete(sessionId);
+        }
+        toolCallSessionIdsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  function clearSessionToolCalls(sessionId: string) {
+    activeToolCallsBySessionRef.current.delete(sessionId);
+    setSessionToolCallActive(sessionId, false);
+  }
+
+  function updateSessionToolCallActivity(
+    sessionId: string,
+    event: HermesGatewayEvent,
+    phase: HermesToolEventPhase,
+  ) {
+    const eventKey = toolEventActivityKey(event);
+    const current = new Map(
+      activeToolCallsBySessionRef.current.get(sessionId) ?? [],
+    );
+
+    if (phase === "progress" && eventKey === undefined) {
+      return current.size > 0;
+    }
+
+    const key = eventKey ?? "__anonymous_tool__";
+
+    if (phase === "start") {
+      current.set(key, (current.get(key) ?? 0) + 1);
+    } else if (phase === "progress") {
+      if (!current.has(key)) current.set(key, 1);
+    } else {
+      const count = current.get(key) ?? 0;
+      if (count > 1) {
+        current.set(key, count - 1);
+      } else {
+        current.delete(key);
+      }
+    }
+
+    if (current.size > 0) {
+      activeToolCallsBySessionRef.current.set(sessionId, current);
+      setSessionToolCallActive(sessionId, true);
+      return true;
+    }
+
+    activeToolCallsBySessionRef.current.delete(sessionId);
+    setSessionToolCallActive(sessionId, false);
+    return false;
+  }
 
   const setSessionWorking = useCallback(
     (sessionId: string, working: boolean) => {
@@ -1165,22 +1941,27 @@ export function AgentWorkspace({
     [],
   );
 
-  const clearSessionActivity = useCallback((sessionId: string) => {
-    const nextWorking = new Set(workingSessionIdsRef.current);
-    nextWorking.delete(sessionId);
-    workingSessionIdsRef.current = nextWorking;
-    setWorkingSessionIds(nextWorking);
+  const clearSessionActivity = useCallback(
+    (sessionId: string) => {
+      clearSessionToolCalls(sessionId);
 
-    const nextWaiting = new Set(waitingSessionIdsRef.current);
-    nextWaiting.delete(sessionId);
-    waitingSessionIdsRef.current = nextWaiting;
-    setWaitingSessionIds(nextWaiting);
+      const nextWorking = new Set(workingSessionIdsRef.current);
+      nextWorking.delete(sessionId);
+      workingSessionIdsRef.current = nextWorking;
+      setWorkingSessionIds(nextWorking);
 
-    return {
-      activeCount: nextWorking.size + nextWaiting.size,
-      needsUserCount: nextWaiting.size,
-    };
-  }, []);
+      const nextWaiting = new Set(waitingSessionIdsRef.current);
+      nextWaiting.delete(sessionId);
+      waitingSessionIdsRef.current = nextWaiting;
+      setWaitingSessionIds(nextWaiting);
+
+      return {
+        activeCount: nextWorking.size + nextWaiting.size,
+        needsUserCount: nextWaiting.size,
+      };
+    },
+    [setSessionToolCallActive],
+  );
 
   // Shared teardown for a session that is going away: its messages, pending
   // sends, working/waiting flags, live gateway listener, and buffered live
@@ -1195,6 +1976,11 @@ export function AgentWorkspace({
         return next;
       });
       clearSessionActivity(sessionId);
+      // Feature 11: a deleted session has no activity to show, so drop its row
+      // from the activity drawer's store as well.
+      hermesActivityStore.clearSession(sessionId);
+      // Feature 14: likewise drop its artifact timeline.
+      hermesArtifactStore.clearSession(sessionId);
       sessionGatewayUnlistenRef.current.get(sessionId)?.();
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
       setLiveEvents(liveEventsRef.current);
@@ -1219,6 +2005,9 @@ export function AgentWorkspace({
     if (selectedHermesSessionId && !selectedHermesSession) return;
     onSessionSelected?.(selectedHermesSession);
   }, [onSessionSelected, selectedHermesSession, selectedHermesSessionId]);
+  const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(
+    selectedHermesSessionId,
+  );
   const activeGenerationModelId =
     selectedHermesSessionId && !newSessionMode
       ? selectedHermesSession?.model?.trim() || defaultGenerationModelId
@@ -1275,6 +2064,25 @@ export function AgentWorkspace({
     return () => window.removeEventListener("keydown", onKey);
   }, [artifactPanelOpen]);
 
+  // While June is mid-run, Escape interrupts the agent (mirrors the Stop
+  // button) so the keyboard alone both adds context (Enter -> steer) and halts
+  // the run. Cooperates with other Escape owners via defaultPrevented.
+  useEffect(() => {
+    if (
+      !selectedHermesSessionId ||
+      !workingSessionIds.has(selectedHermesSessionId)
+    )
+      return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        event.preventDefault();
+        void stopHermesSession(selectedHermesSessionId);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedHermesSessionId, workingSessionIds]);
+
   // Dev-tools sample file seeder (window.__agentFiles, registered at module
   // scope above): imports one file per preview path into the real workspace
   // and opens the viewer's list on them.
@@ -1317,6 +2125,150 @@ export function AgentWorkspace({
     issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
       : null;
+  // The model-switch notice (feature 10) shows on the session it acted on; a
+  // null sessionId is the default-only notice, shown while no session is open.
+  const visibleModelSwitchNotice =
+    modelSwitchNotice &&
+    modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
+      ? modelSwitchNotice.message
+      : null;
+  // Unsupported Hermes events for the selected session surface a generic,
+  // recoverable notice (and sanitized dev details). Subscribing to the store's
+  // version re-derives the notice whenever a new unsupported frame lands.
+  const unsupportedStoreVersion = useSyncExternalStore(
+    unsupportedEventStore.subscribe,
+    unsupportedEventStore.getVersion,
+    unsupportedEventStore.getVersion,
+  );
+  const unsupportedNotice = useMemo(
+    () => unsupportedEventStore.activeNotice(selectedHermesSessionId),
+    // `unsupportedStoreVersion` is the change signal; the lookup reads live state.
+    [unsupportedStoreVersion, selectedHermesSessionId],
+  );
+  // Resolve a session id to its display title for an activity-drawer row,
+  // falling back to the raw id when the session isn't in the loaded list
+  // (unknown title must never crash or blank the row).
+  const titleForPendingSession = useCallback(
+    (sessionId: string) =>
+      hermesSessionItems.find((session) => session.id === sessionId)?.title,
+    [hermesSessionItems],
+  );
+
+  // Feature 11: the Agent activity drawer. Subscribing to the activity store's
+  // version re-derives the rows whenever any session's activity changes; the
+  // drawer is one toggled, top-level surface that shows every session at once.
+  //
+  // TEMPORARILY HIDDEN: the drawer's "open session" routes by the row's id,
+  // which is the ephemeral runtime session id, not the durable stored id, so it
+  // opens the wrong session (or none). Until that runtime->stored resolution is
+  // fixed, the entry-point toggle is gated off below. The whole feature (drawer,
+  // subagent watch, stop, artifacts timeline) stays mounted and tested; flip
+  // this flag back to true to restore it.
+  const ACTIVITY_DRAWER_ENABLED = false;
+  const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
+  const activityStoreVersion = useSyncExternalStore(
+    hermesActivityStore.subscribe,
+    hermesActivityStore.getVersion,
+    hermesActivityStore.getVersion,
+  );
+  const activityRecords = useMemo(
+    () => hermesActivityStore.getRecords(),
+    // `activityStoreVersion` is the change signal; the read returns live rows.
+    [activityStoreVersion],
+  );
+  // The store only knows the count once a session has reported activity; treat a
+  // never-touched store as "loading" so the very first paint shows a spinner
+  // copy rather than the empty state flashing before any event lands.
+  const activityStatus: "loading" | "ready" =
+    activityStoreVersion === 0 ? "loading" : "ready";
+  // Open a session from a drawer row: clear new-session mode, switch panel +
+  // selection.
+  const openSessionFromDrawer = useCallback((sessionId: string) => {
+    newSessionModeRef.current = false;
+    setNewSessionMode(false);
+    setActivePanel("chat");
+    selectedHermesSessionIdRef.current = sessionId;
+    setSelectedHermesSessionId(sessionId);
+    setSelectedTaskId(undefined);
+  }, []);
+  // Drawer Steer routes into the live steer flow: open the session and focus
+  // the main composer, where typing while June works steers the running turn
+  // via `steerActiveSession`. The drawer only offers Steer for sessions that
+  // are actually steerable (see `canSteerSession` below, aligned with
+  // `workingSessionIds`).
+  const steerSessionFromDrawer = useCallback(
+    (sessionId: string) => {
+      openSessionFromDrawer(sessionId);
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focus();
+      });
+    },
+    [openSessionFromDrawer],
+  );
+  // Count of sessions currently doing work — the toggle badge. Re-derived from
+  // the same version signal as the rows.
+  const activeAgentCount = useMemo(
+    () => hermesActivityStore.activeCount(),
+    [activityStoreVersion],
+  );
+  // Resolve a session's model from the loaded session list for the drawer (no
+  // provider is tracked on the session record, so only `model` is supplied;
+  // feature 09's usage panel remains the authority for full cost/provider).
+  const modelForActivitySession = useCallback(
+    (sessionId: string) => {
+      const model = hermesSessionItems.find(
+        (session) => session.id === sessionId,
+      )?.model;
+      return model ? { model } : undefined;
+    },
+    [hermesSessionItems],
+  );
+
+  // Feature 14: the per-session artifact timeline behind the drawer's
+  // "Artifacts" section. Mirrors the activity-store wiring above: subscribe to
+  // the singleton's version, and read the SELECTED session's artifacts (the one
+  // the user is viewing) so the section tracks the conversation in front of
+  // them. A click adapts the record onto the existing artifact-panel preview
+  // flow (see `openTimelineArtifact`).
+  const artifactStoreVersion = useSyncExternalStore(
+    hermesArtifactStore.subscribe,
+    hermesArtifactStore.getVersion,
+    hermesArtifactStore.getVersion,
+  );
+  const timelineArtifacts = useMemo(
+    () =>
+      selectedHermesSessionId
+        ? hermesArtifactStore.getRecordsForSession(selectedHermesSessionId)
+        : [],
+    // `artifactStoreVersion` is the change signal; the read returns live rows.
+    [selectedHermesSessionId, artifactStoreVersion],
+  );
+
+  // Feature 15: the dev/debug raw-trace panel. Holds the session it was opened
+  // for; `undefined` means closed. Dev-gated where it renders (HermesTracePanel
+  // returns null in production), so this state is inert in shipped builds.
+  const [rawTraceSession, setRawTraceSession] = useState<string | undefined>(
+    undefined,
+  );
+  const selectedIssueReportReview = selectedHermesSessionId
+    ? reviewableIssueReports[selectedHermesSessionId]
+    : undefined;
+  const visibleIssueReportReview =
+    selectedHermesSessionId && selectedIssueReportReview
+      ? {
+          report: selectedIssueReportReview,
+          sessionId: selectedHermesSessionId,
+          submitting: submittingIssueReportSessionIds.has(
+            selectedHermesSessionId,
+          ),
+        }
+      : undefined;
+  const visibleIssueReportHasUnsentContext = Boolean(
+    visibleIssueReportReview && (draft.trim() || attachments.length),
+  );
+  const visibleIssueReportImportingFiles = Boolean(
+    visibleIssueReportReview && importingFiles,
+  );
   // Holds the prior render's heroMode. Read by both the composer auto-grow
   // effect (to skip its glide across a hero transition) and the hero→dock FLIP
   // below (to detect the hero handoff); the FLIP effect, which runs last, is
@@ -1592,14 +2544,18 @@ export function AgentWorkspace({
         modelsResponse.selectedModel;
       if (requestId === generationModelRequestSequence.current) {
         defaultGenerationModelIdRef.current = selectedModelId;
+        generationModelsRef.current = modelsResponse.models;
         setGenerationModels(modelsResponse.models);
         setDefaultGenerationModelId(selectedModelId);
       }
+      return { models: modelsResponse.models, selectedModelId };
     } catch {
       if (requestId === generationModelRequestSequence.current) {
         defaultGenerationModelIdRef.current = "";
+        generationModelsRef.current = [];
         setDefaultGenerationModelId("");
       }
+      return null;
     }
   }, []);
 
@@ -1651,60 +2607,91 @@ export function AgentWorkspace({
     void loadGenerationModel();
   }
 
+  // Switching the model always writes the global text-model default (Settings'
+  // model rows and this pill refresh through the same changed event). When a
+  // session is open, it ALSO switches that live session via Hermes
+  // command.dispatch (/model …) — and the UI only claims the running session
+  // moved when Hermes accepts the dispatch (feature 10). The gateway result is
+  // the source of truth: raw model.switch/model.changed frames classify as
+  // unsupported, so there is no confirming event to wait on.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
-    try {
-      const sessionId = newSessionModeRef.current
-        ? undefined
-        : selectedHermesSessionIdRef.current;
-      if (sessionId) {
-        const previousModel = hermesSessionItemsRef.current.find(
-          (session) => session.id === sessionId,
-        )?.model;
-        const previousOverride = sessionModelOverridesRef.current[sessionId];
-        sessionModelOverridesRef.current = {
-          ...sessionModelOverridesRef.current,
-          [sessionId]: modelId,
-        };
-        setHermesSessionItems((current) =>
-          current.map((session) =>
-            session.id === sessionId
-              ? { ...session, model: modelId }
-              : session,
-          ),
-        );
-        try {
-          await ensureHermesBridgeSession({ sessionId, model: modelId });
-        } catch (err) {
-          if (previousOverride) {
-            sessionModelOverridesRef.current = {
-              ...sessionModelOverridesRef.current,
-              [sessionId]: previousOverride,
-            };
-          } else {
-            const { [sessionId]: _removed, ...remainingOverrides } =
-              sessionModelOverridesRef.current;
-            sessionModelOverridesRef.current = remainingOverrides;
-          }
-          setHermesSessionItems((current) =>
-            current.map((session) =>
-              session.id === sessionId && session.model === modelId
-                ? { ...session, model: previousModel }
-                : session,
-            ),
-          );
-          throw err;
-        }
-        return;
-      }
-
-      await setVeniceModel("generation", modelId);
-      defaultGenerationModelIdRef.current = modelId;
-      setDefaultGenerationModelId(modelId);
-      dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
-    } catch (err) {
-      setError(messageFromError(err));
+    const chosen = generationModelsRef.current.find(
+      (model) => model.id === modelId,
+    );
+    // Defense in depth: the picker already hides tool-less models, but the
+    // agent bricks without function calling, so refuse one rather than switch.
+    if (chosen && !modelSupportsTools(chosen)) {
+      setError(
+        `${chosen.name} can't run June's tools, so it can't be used for the agent.`,
+      );
+      return false;
     }
+    const modelName = chosen?.name ?? modelId;
+    const sessionId = newSessionModeRef.current
+      ? undefined
+      : selectedHermesSessionIdRef.current;
+
+    // No open chat: changing the model updates the global generation default.
+    if (!sessionId) {
+      try {
+        await setVeniceModel("generation", modelId);
+        defaultGenerationModelIdRef.current = modelId;
+        setDefaultGenerationModelId(modelId);
+        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
+        setError(null);
+      } catch (err) {
+        setError(messageFromError(err));
+        return false;
+      }
+      setModelSwitchNotice({
+        message: resolveModelSwitchOutcome({
+          hasActiveSession: false,
+          dispatchSucceeded: false,
+          modelName,
+        }).notice,
+        sessionId: null,
+      });
+      return true;
+    }
+
+    // Open chat: override the model for THIS chat only (never the global
+    // default), then dispatch /model to the live session so the running turn
+    // switches immediately. Hermes session metadata updates are title-only, so
+    // the local per-chat override is the source of truth for this row.
+    sessionModelOverridesRef.current = {
+      ...sessionModelOverridesRef.current,
+      [sessionId]: modelId,
+    };
+    setHermesSessionItems((current) =>
+      current.map((session) =>
+        session.id === sessionId ? { ...session, model: modelId } : session,
+      ),
+    );
+    let dispatchSucceeded = false;
+    try {
+      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      await createHermesMethods(gateway).switchActiveSessionModel({
+        mode: hermesModeFor(sessionId),
+        sessionId,
+        model: modelId,
+      });
+      dispatchSucceeded = true;
+    } catch {
+      // The per-chat override is saved; the notice explains the running session
+      // is unchanged and the new model applies next session.
+      dispatchSucceeded = false;
+    }
+    setError(null);
+    setModelSwitchNotice({
+      message: resolveModelSwitchOutcome({
+        hasActiveSession: true,
+        dispatchSucceeded,
+        modelName,
+      }).notice,
+      sessionId,
+    });
+    return true;
   }
 
   useEffect(() => {
@@ -1742,13 +2729,15 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = initialSessionId;
     setSelectedHermesSessionId(initialSessionId);
     setSelectedTaskId(undefined);
-    if (initialSession) {
-      setHermesSessionItems((current) =>
-        current.some((session) => session.id === initialSession.id)
-          ? current
-          : [initialSession, ...current],
-      );
-    }
+  }, [initialSessionId]);
+
+  useEffect(() => {
+    if (!initialSession || initialSession.id !== initialSessionId) return;
+    setHermesSessionItems((current) =>
+      current.some((session) => session.id === initialSession.id)
+        ? current
+        : [initialSession, ...current],
+    );
   }, [initialSession, initialSessionId]);
 
   // Remember the open conversation for the restore-on-mount above. Entering
@@ -1757,6 +2746,7 @@ export function AgentWorkspace({
   // beats landing on the hero screen.
   useEffect(() => {
     if (selectedHermesSessionId) {
+      if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
       writeLastOpenSessionId(selectedHermesSessionId);
     }
   }, [selectedHermesSessionId]);
@@ -1768,10 +2758,18 @@ export function AgentWorkspace({
     // real fetch lands.
     if (!hermesSessionsHydrated) return;
     dispatchAgentSessionsChanged({
-      sessions: hermesSessionItems,
-      selectedSessionId: selectedHermesSessionId,
-      workingSessionIds: Array.from(workingSessionIds),
-      waitingSessionIds: Array.from(waitingSessionIds),
+      sessions: hermesSessionItems.filter(
+        (session) => !isProvisionalHermesSessionId(session.id),
+      ),
+      selectedSessionId: isProvisionalHermesSessionId(selectedHermesSessionId)
+        ? undefined
+        : selectedHermesSessionId,
+      workingSessionIds: Array.from(workingSessionIds).filter(
+        (sessionId) => !isProvisionalHermesSessionId(sessionId),
+      ),
+      waitingSessionIds: Array.from(waitingSessionIds).filter(
+        (sessionId) => !isProvisionalHermesSessionId(sessionId),
+      ),
     });
   }, [
     hermesSessionsHydrated,
@@ -1795,6 +2793,11 @@ export function AgentWorkspace({
       removeHermesSessionLocally,
     };
     gatewayCloseHandlerRef.current = (fullMode: boolean) => {
+      // Feature 04: a disconnect is NOT a resolution — pending actions must
+      // survive it. markDisconnected is intentionally a no-op on state; the
+      // reconcile after a successful reconnect (below) is what marks anything
+      // unconfirmed as stale rather than dropping it.
+      pendingActionStore.markDisconnected();
       void recoverFromGatewayClose(fullMode);
     };
   });
@@ -1815,7 +2818,9 @@ export function AgentWorkspace({
 
     const pending = pendingNewSessionRequest();
     if (pending) {
-      void windowEventHandlersRef.current.startNewTask(pending);
+      void windowEventHandlersRef.current.startNewTask(pending, {
+        deferCategorySeed: true,
+      });
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
@@ -1831,6 +2836,7 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
+    if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     let cancelled = false;
     listSessionMessagesOrdered(selectedHermesSessionId)
       .then((messages) => {
@@ -1864,6 +2870,9 @@ export function AgentWorkspace({
           setSessionWorking(selectedHermesSessionId, true);
         }
         if (sessionHasAssistantAfterLatestUser(combined)) {
+          promotePendingIssueReportToReview(selectedHermesSessionId, {
+            queueDiagnosisRefresh: false,
+          });
           const wasActive = sessionHasActiveWork(
             selectedHermesSessionId,
             workingSessionIdsRef.current,
@@ -1891,11 +2900,15 @@ export function AgentWorkspace({
         }
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(messageFromError(err), {
-            sessionId: selectedHermesSessionId,
-          });
-        }
+        if (cancelled) return;
+        const message = messageFromError(err);
+        // A freshly created/migrated session can briefly 404 here before its
+        // record is queryable over REST (the gateway creates it; visibility
+        // lags a beat). That transient "Session not found" is benign — the
+        // working-gated poll re-loads once it resolves — so don't flash it as
+        // an error banner (JUN-116).
+        if (isSessionGoneError(message)) return;
+        setError(message, { sessionId: selectedHermesSessionId });
       });
     return () => {
       cancelled = true;
@@ -1904,6 +2917,7 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
+    if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     void loadFilesystemSnapshot();
   }, [bridge.running, selectedHermesSessionId, selectedHermesMessages.length]);
 
@@ -1961,6 +2975,15 @@ export function AgentWorkspace({
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
+        activeToolCallsBySession: activeToolCallsRecord(
+          activeToolCallsBySessionRef.current,
+        ),
+        pendingIssueReports: Object.fromEntries(pendingIssueReportsRef.current),
+        reviewableIssueReports: reviewableIssueReportsRef.current,
+        diagnosisRefreshIssueReportSessionIds:
+          diagnosisRefreshIssueReportSessionIdsRef.current,
+        submittingIssueReportSessionIds:
+          submittingIssueReportSessionIdsRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -2146,15 +3169,154 @@ export function AgentWorkspace({
     };
   }
 
+  async function handleBuiltinComposerSlashCommand(commandText: string) {
+    if (categoryRef.current) return false;
+    const parsed = parseBuiltinComposerSlashCommand(commandText);
+    if (!parsed) return false;
+
+    if (parsed.name === "model") {
+      await runModelSlashCommand(parsed.argument, commandText);
+      return true;
+    }
+
+    await runFileSlashCommand(parsed.argument, commandText);
+    return true;
+  }
+
+  async function runModelSlashCommand(argument: string, commandText: string) {
+    const query = argument.trim();
+    if (!query) {
+      clearComposerCommandDraft(commandText);
+      openComposerModelPicker();
+      return;
+    }
+
+    const models = await generationModelsForSlashCommand();
+    if (!models.length) {
+      setError("Could not load models. Try again in a moment.");
+      return;
+    }
+
+    const resolution = resolveSlashModel(query, models);
+    if (resolution.status !== "resolved") {
+      setError(slashModelResolutionError(resolution));
+      return;
+    }
+
+    const selected = await handleSelectGenerationModel(resolution.model.id);
+    if (selected) clearComposerCommandDraft(commandText);
+  }
+
+  async function generationModelsForSlashCommand() {
+    if (generationModelsRef.current.length) return generationModelsRef.current;
+    const loaded = await loadGenerationModel();
+    return loaded?.models ?? generationModelsRef.current;
+  }
+
+  async function runFileSlashCommand(argument: string, commandText: string) {
+    if (!argument.trim()) {
+      clearComposerCommandDraft(commandText);
+      await pickAttachments();
+      return;
+    }
+
+    const parsed = parseSlashFileArguments(argument);
+    if (parsed.status === "error") {
+      setError(parsed.message);
+      return;
+    }
+    if (!parsed.paths.length) {
+      clearComposerCommandDraft(commandText);
+      await pickAttachments();
+      return;
+    }
+
+    const imported = await importDroppedFilePaths(parsed.paths);
+    if (imported) clearComposerCommandDraft(commandText);
+  }
+
+  function clearComposerCommandDraft(commandText: string) {
+    if (draftRef.current.trim() !== commandText.trim()) return;
+    if (categoryRef.current) return;
+    composerEditorRef.current?.clear();
+    draftRef.current = "";
+    categoryRef.current = null;
+    setDraft("");
+    setCategory(null);
+    rememberComposerDraft(
+      composerDraftKeyRef.current,
+      "",
+      null,
+      attachmentsRef.current,
+    );
+  }
+
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const message = draft.trim();
-    if ((!message && !attachments.length) || submitting || importingFiles)
+    if (
+      (!message && !attachments.length) ||
+      submitting ||
+      importingFiles ||
+      selectedHermesSessionIsProvisional
+    )
       return;
+    if (message && (await handleBuiltinComposerSlashCommand(message))) return;
+    // June is mid-run: send the message straight into the loop via steer so
+    // June picks it up after the current tool call (adds context without
+    // interrupting — Escape or Stop interrupts instead). Plain-text follow-ups
+    // to an existing session only; attachments, reports, and new-session sends
+    // take the full submit path below.
+    if (
+      message &&
+      !attachments.length &&
+      !category &&
+      !newSessionModeRef.current &&
+      selectedHermesSessionId &&
+      workingSessionIdsRef.current.has(selectedHermesSessionId)
+    ) {
+      const steerSessionId = selectedHermesSessionId;
+      // Delivery guarantee. Hermes only injects a steer into the next tool
+      // result and rejects the RPC during a no-tool phase, so the steer alone
+      // is unreliable. Record the text, attempt the steer (best effort — a
+      // success a tool later drains is the mid-run path), and on the turn's
+      // clean completion resend anything still pending as a follow-up.
+      // `registered` tracks whether Hermes accepted the steer, so a
+      // tool.complete only clears ones a tool could actually have drained.
+      const steerEntry = { text: message, accepted: false, toolDrained: false };
+      pendingSteerBySessionIdRef.current = {
+        ...pendingSteerBySessionIdRef.current,
+        [steerSessionId]: [
+          ...(pendingSteerBySessionIdRef.current[steerSessionId] ?? []),
+          steerEntry,
+        ],
+      };
+      void steerActiveSession(steerSessionId, message)
+        .then(() => {
+          steerEntry.accepted = true;
+        })
+        .catch((err: unknown) => {
+          // A rejected steer (common during a no-tool phase) is not fatal — the
+          // completion fallback still delivers it. Don't alarm the user.
+          if (import.meta.env.DEV) {
+            console.debug("[steer] rejected; will deliver as follow-up", err);
+          }
+        });
+      clearComposerDraft();
+      composerEditorRef.current?.focus();
+      return;
+    }
     // The composer's category chip makes this a report: wrap the prompt to
     // frame it for the team and queue the delivery. Captured before the
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
+    const reportFollowUpSessionId =
+      !reportCategory && !newSessionModeRef.current && selectedHermesSessionId
+        ? selectedHermesSessionId
+        : null;
+    const reportFollowUp = reportFollowUpSessionId
+      ? reviewableIssueReportsRef.current[reportFollowUpSessionId]
+      : undefined;
     const submittedDraftKey = composerDraftKeyRef.current;
     // A typed hero submit plays the same teardown as a run shortcut: greeting
     // up, suggestions down during the session-create latency. Without it they
@@ -2164,8 +3326,36 @@ export function AgentWorkspace({
     setSubmitting(true);
     let clearedDraft = false;
     let clearedAttachments = false;
+    let clearedIssueReportReview:
+      | {
+          sessionId: string;
+          report: PendingIssueReport;
+          queuedReport?: PendingIssueReport;
+          deliveryWasSubmitting: boolean;
+        }
+      | undefined;
     try {
       const prepared = await prepareComposerSubmission(message, attachments);
+      const nextIssueReport: PendingIssueReport | undefined = reportCategory
+        ? {
+            category: reportCategory,
+            // An attachments-only send has no typed text, but the server
+            // requires a description; the report must not bounce there.
+            description:
+              prepared.typedMessage ||
+              "No description was typed; see the attachments.",
+            followUps: [],
+            attachmentNames: attachments.map((attachment) => attachment.name),
+            attachmentPaths: attachments.map((attachment) => attachment.path),
+          }
+        : reportFollowUp
+          ? appendIssueReportFollowUp(
+              reportFollowUp,
+              prepared.typedMessage,
+              attachments.map((attachment) => attachment.name),
+              attachments.map((attachment) => attachment.path),
+            )
+          : undefined;
       if (
         draftRef.current.trim() === message &&
         categoryRef.current === reportCategory
@@ -2182,6 +3372,17 @@ export function AgentWorkspace({
         setComposerAttachments([]);
         clearedAttachments = true;
       }
+      if (reportFollowUpSessionId && reportFollowUp) {
+        setReviewableIssueReport(reportFollowUpSessionId, null);
+        clearedIssueReportReview = {
+          sessionId: reportFollowUpSessionId,
+          report: reportFollowUp,
+          queuedReport: nextIssueReport,
+          deliveryWasSubmitting: submittingIssueReportSessionIdsRef.current.has(
+            reportFollowUpSessionId,
+          ),
+        };
+      }
       setIssueReportNotice(null);
       await submitHermesSession(
         reportCategory
@@ -2191,26 +3392,15 @@ export function AgentWorkspace({
         {
           displayContent: prepared.displayContent,
           titleContent: prepared.titleContent,
-          ...(reportCategory
-            ? {
-                issueReport: {
-                  category: reportCategory,
-                  // An attachments-only send has no typed text, but the server
-                  // requires a description; the report must not bounce there.
-                  description:
-                    prepared.typedMessage ||
-                    "No description was typed; see the attachments.",
-                  attachmentNames: attachments.map(
-                    (attachment) => attachment.name,
-                  ),
-                  attachmentPaths: attachments.map(
-                    (attachment) => attachment.path,
-                  ),
-                },
-              }
-            : {}),
+          attachments,
+          ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
         },
       );
+      if (reportFollowUpSessionId) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
+          reportFollowUpSessionId,
+        );
+      }
       setError(null);
       setBusyNotice(null);
     } catch (err) {
@@ -2227,9 +3417,42 @@ export function AgentWorkspace({
         );
       }
       if (clearedAttachments) {
+        // A blocked image attach carries the failed-status chips so the user
+        // sees which image didn't go through; fall back to the originals
+        // otherwise.
+        const restore =
+          err instanceof AttachBlockedError ? err.attachments : attachments;
         setComposerAttachments((current) =>
-          current.length ? current : attachments,
+          current.length ? current : restore,
         );
+      }
+      if (clearedIssueReportReview) {
+        const shouldRestoreIssueReportReview =
+          !clearedIssueReportReview.deliveryWasSubmitting ||
+          submittingIssueReportSessionIdsRef.current.has(
+            clearedIssueReportReview.sessionId,
+          ) ||
+          deferredFailedIssueReportDeliverySessionIdsRef.current.has(
+            clearedIssueReportReview.sessionId,
+          );
+        if (clearedIssueReportReview.queuedReport) {
+          dispatchIssueReportFollowUpSubmitFailed({
+            sessionId: clearedIssueReportReview.sessionId,
+            queuedReport: clearedIssueReportReview.queuedReport,
+            ...(shouldRestoreIssueReportReview
+              ? { restoreReport: clearedIssueReportReview.report }
+              : {}),
+          });
+        }
+        if (shouldRestoreIssueReportReview) {
+          deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
+            clearedIssueReportReview.sessionId,
+          );
+          setReviewableIssueReport(
+            clearedIssueReportReview.sessionId,
+            clearedIssueReportReview.report,
+          );
+        }
       }
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
@@ -2244,6 +3467,10 @@ export function AgentWorkspace({
       // On success the hero is gone; on failure this fades the greeting and
       // suggestions back in behind the restored draft.
       setHeroLeaving(false);
+      // Keep the typing flow after a send: a new-session send re-mounts the
+      // composer, so defer a frame to focus the live instance — otherwise focus
+      // is dropped and can land on the always-on-top agent HUD.
+      window.requestAnimationFrame(() => composerEditorRef.current?.focus());
     }
   }
 
@@ -2275,7 +3502,7 @@ export function AgentWorkspace({
     items: T[],
     importItem: (item: T) => Promise<ImportedHermesFile>,
   ) {
-    if (!items.length) return;
+    if (!items.length) return true;
     setImportingFiles(true);
     try {
       // One at a time on purpose: a dropped file's bytes can be 50 MB, so
@@ -2290,12 +3517,18 @@ export function AgentWorkspace({
         ...imported.map((file) => ({
           ...file,
           id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
+          // Seed the structured attach status (feature 19). Images become
+          // `kind:"image"`, status `imported` — eligible for image.attach on
+          // the next submit. No bytes are kept here.
+          attach: attachmentStateFrom(file),
         })),
       ]);
       setError(null);
       void loadFilesystemSnapshot();
+      return true;
     } catch (err) {
       setError(messageFromError(err));
+      return false;
     } finally {
       setImportingFiles(false);
     }
@@ -2306,7 +3539,7 @@ export function AgentWorkspace({
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
       .filter(Boolean)
       .slice(0, 8);
-    await importAttachments(uniquePaths, importHermesBridgeFile);
+    return importAttachments(uniquePaths, importHermesBridgeFile);
   }
 
   // DOM drops are how Finder files actually arrive: Tauri's drag-drop
@@ -2373,11 +3606,12 @@ export function AgentWorkspace({
         multiple: true,
         title: "Attach files",
       });
-      if (!selected) return;
+      if (!selected) return false;
       const paths = Array.isArray(selected) ? selected : [selected];
-      await importDroppedFilePaths(paths);
+      return await importDroppedFilePaths(paths);
     } catch (err) {
       setError(messageFromError(err));
+      return false;
     }
   }
 
@@ -2393,13 +3627,16 @@ export function AgentWorkspace({
   async function deliverIssueReport(
     sessionId: string,
     report: PendingIssueReport,
-  ) {
+  ): Promise<IssueReportDeliveryResult> {
     let agentDiagnosis: string | undefined;
     try {
       const messages = await listHermesSessionMessages(sessionId);
       agentDiagnosis = messages
         .slice()
         .reverse()
+        .filter((message) =>
+          messageAfterIssueReportDiagnosisBoundary(message, report),
+        )
         .map((message) =>
           message.role === "assistant" ? visibleHermesMessageText(message) : "",
         )
@@ -2411,12 +3648,13 @@ export function AgentWorkspace({
     try {
       await submitIssueReport({
         category: report.category,
-        description: report.description,
+        description: issueReportDescription(report),
         agentDiagnosis,
         attachmentNames: report.attachmentNames,
         attachmentPaths: report.attachmentPaths,
         sessionId,
       });
+      clearErrorForSession(sessionId);
       if (selectedHermesSessionIdRef.current === sessionId) {
         setIssueReportNotice({
           message:
@@ -2424,11 +3662,487 @@ export function AgentWorkspace({
           sessionId,
         });
       }
+      return { sent: true };
     } catch (err) {
-      setError(`The issue report could not be sent. ${messageFromError(err)}`, {
-        sessionId,
-      });
+      const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
+      setError(errorMessage, { sessionId });
+      return { sent: false, errorMessage };
     }
+  }
+
+  async function sendReviewableIssueReport(sessionId: string) {
+    if (submittingIssueReportSessionIdsRef.current.has(sessionId)) return;
+    const report = reviewableIssueReportsRef.current[sessionId];
+    if (!report) return;
+    setIssueReportSubmitting(sessionId, true);
+    let result: IssueReportDeliveryResult | undefined;
+    try {
+      await withTimeout(
+        waitForIssueReportDiagnosisRefresh(sessionId),
+        ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS,
+        "Issue report diagnosis refresh timed out.",
+      ).catch(() => undefined);
+      result = await deliverIssueReport(sessionId, report);
+      if (
+        result.sent &&
+        reviewableIssueReportsRef.current[sessionId] === report
+      ) {
+        setReviewableIssueReport(sessionId, null);
+      }
+    } finally {
+      setIssueReportSubmitting(sessionId, false);
+      if (result) {
+        dispatchIssueReportDeliverySettled({ sessionId, report, result });
+      }
+    }
+  }
+
+  /**
+   * Attach this turn's pending images to the live session via image.attach
+   * (feature 19), updating each chip's status and feeding the artifact timeline.
+   * The base64 is read on demand from the workspace file (hermesBridgeFilePreview
+   * returns a data url), passed straight to the typed attachImage, and discarded;
+   * it never lands on composer state and the trace entry is redacted to a byte
+   * count. Throws a single blocking error if any image failed so the prompt is
+   * not sent with a missing image.
+   */
+  async function attachPendingImages(
+    gateway: HermesGatewayClient,
+    runtimeSessionId: string,
+    storedSessionId: string,
+    turnAttachments: AgentAttachment[],
+  ) {
+    const pending = pendingImageAttachments(
+      turnAttachments.map((attachment) => attachment.attach),
+    );
+    if (!pending.length) return;
+    const methods = createHermesMethods(gateway);
+    const deps = {
+      attachImage: methods.attachImage,
+      readImageData: (path: string) => hermesBridgeFilePreview(path),
+      isSupported: () => isHermesFeatureSupported("image.attach"),
+    };
+    const mode = hermesModeFor(storedSessionId);
+    const failures: string[] = [];
+    // The submit() flow has already cleared the composer chips by the time this
+    // runs; track the per-attachment status here so a blocking failure can
+    // restore the chips WITH their failed status (not the stale imported one).
+    const nextStates = new Map<string, HermesAttachmentState>();
+    for (const attachment of pending) {
+      const result = await attachImageToSession(
+        attachment,
+        runtimeSessionId,
+        deps,
+      );
+      // The RPC keys off the runtime (live process) session id, but the chip
+      // state, artifact timeline, and trace all key off the STORED session id —
+      // the identity the rest of the UI uses (event handler, drawer, trace
+      // panel). Re-stamp the result's session id to the stored one.
+      const state: HermesAttachmentState = {
+        ...result.state,
+        sessionId: storedSessionId,
+      };
+      nextStates.set(attachment.localId, state);
+      // Reflect the new status on the matching chip if it is still mounted
+      // (matched by localId, stable across the submit). Refs/ids only, no bytes.
+      setComposerAttachments((current) =>
+        current.map((item) =>
+          item.attach.localId === attachment.localId
+            ? { ...item, attach: state }
+            : item,
+        ),
+      );
+      if (result.artifact) {
+        hermesArtifactStore.recordArtifact(
+          { ...result.artifact, sessionId: storedSessionId },
+          mode,
+        );
+      }
+      if (result.trace) {
+        hermesTraceBuffer.recordOutbound({
+          ...result.trace,
+          sessionId: storedSessionId,
+        });
+      }
+      // A gated-off runtime returns an error notice but leaves status
+      // `imported` (the path-in-prompt fallback still carries the image) — that
+      // is not a blocking failure.
+      if (result.state.status === "failed" && result.error) {
+        failures.push(result.error);
+      }
+    }
+    if (failures.length) {
+      // Carry the failed-status chips so submit()'s catch restores them with
+      // the failure visible and the user can retry or remove them.
+      throw new AttachBlockedError(
+        failures[0],
+        turnAttachments.map((item) => {
+          const next = nextStates.get(item.attach.localId);
+          return next ? { ...item, attach: next } : item;
+        }),
+      );
+    }
+  }
+
+  function startOptimisticHermesSession({
+    displayContent,
+    model,
+    title,
+  }: {
+    displayContent: string;
+    model?: string;
+    title: string;
+  }) {
+    const sessionId = makeProvisionalHermesSessionId();
+    const createdAt = new Date().toISOString();
+    const userMessage: HermesSessionMessage = {
+      id: `pending:user:${Date.now()}`,
+      role: "user",
+      content: displayContent,
+      timestamp: createdAt,
+    };
+    heroExitViaThreadRef.current = true;
+    newSessionModeRef.current = false;
+    setNewSessionMode(false);
+    selectedHermesSessionIdRef.current = sessionId;
+    setSelectedHermesSessionId(sessionId);
+    setSelectedTaskId(undefined);
+    setHermesSessionItems((current) => [
+      {
+        id: sessionId,
+        title,
+        preview: displayContent,
+        started_at: createdAt,
+        last_active: createdAt,
+        message_count: 1,
+        ...(model ? { model } : {}),
+      },
+      ...current,
+    ]);
+    setPendingHermesMessages((current) => {
+      const next = {
+        ...current,
+        [sessionId]: [...(current[sessionId] ?? []), userMessage],
+      };
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    setSessionWorking(sessionId, true);
+    setSessionWaiting(sessionId, false);
+    dispatchAgentSessionStatus({
+      title,
+      prompt: displayContent,
+      status: "starting",
+      summary: "Starting June.",
+    });
+    return { createdAt, id: sessionId, userMessage };
+  }
+
+  function migrateOptimisticHermesSession({
+    createdAt,
+    displayContent,
+    fromSessionId,
+    model,
+    title,
+    toSessionId,
+  }: {
+    createdAt: string;
+    displayContent: string;
+    fromSessionId: string;
+    model?: string;
+    title: string;
+    toSessionId: string;
+  }) {
+    if (fromSessionId === toSessionId) return;
+    setHermesSessionItems((current) => {
+      const replacement: HermesSessionInfo = {
+        id: toSessionId,
+        title,
+        preview: displayContent,
+        started_at: createdAt,
+        last_active: createdAt,
+        message_count: 1,
+        ...(model ? { model } : {}),
+      };
+      let replaced = false;
+      const next = current.flatMap((session) => {
+        if (session.id === toSessionId) return [];
+        if (session.id === fromSessionId) {
+          replaced = true;
+          return [{ ...session, ...replacement }];
+        }
+        return [session];
+      });
+      return replaced ? next : [replacement, ...next];
+    });
+    setHermesSessionMessages((current) =>
+      moveRecordKey(current, fromSessionId, toSessionId),
+    );
+    setPendingHermesMessages((current) => {
+      const next = moveRecordKey(current, fromSessionId, toSessionId);
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    liveEventsRef.current = moveRecordKey(
+      liveEventsRef.current,
+      fromSessionId,
+      toSessionId,
+    );
+    setLiveEvents(liveEventsRef.current);
+    setWorkingSessionIds((current) => {
+      const next = new Set(current);
+      if (next.delete(fromSessionId)) next.add(toSessionId);
+      workingSessionIdsRef.current = next;
+      return next;
+    });
+    setWaitingSessionIds((current) => {
+      const next = new Set(current);
+      if (next.delete(fromSessionId)) next.add(toSessionId);
+      waitingSessionIdsRef.current = next;
+      return next;
+    });
+    selectedHermesSessionIdRef.current = toSessionId;
+    setSelectedHermesSessionId(toSessionId);
+  }
+
+  function removeOptimisticHermesSession(
+    optimisticSessionId: string,
+    realSessionId?: string,
+  ) {
+    const ids = new Set(
+      [optimisticSessionId, realSessionId].filter(
+        (sessionId): sessionId is string => Boolean(sessionId),
+      ),
+    );
+    setHermesSessionItems((current) =>
+      current.filter((session) => !ids.has(session.id)),
+    );
+    setHermesSessionMessages((current) => {
+      let next = current;
+      for (const id of ids) next = omitRecordKey(next, id);
+      return next;
+    });
+    setPendingHermesMessages((current) => {
+      let next = current;
+      for (const id of ids) next = omitRecordKey(next, id);
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    let nextLiveEvents = liveEventsRef.current;
+    for (const id of ids) nextLiveEvents = omitRecordKey(nextLiveEvents, id);
+    liveEventsRef.current = nextLiveEvents;
+    setLiveEvents(nextLiveEvents);
+    setWorkingSessionIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      workingSessionIdsRef.current = next;
+      return next;
+    });
+    setWaitingSessionIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      waitingSessionIdsRef.current = next;
+      return next;
+    });
+    const selectedSessionId = selectedHermesSessionIdRef.current;
+    if (selectedSessionId && ids.has(selectedSessionId)) {
+      selectedHermesSessionIdRef.current = undefined;
+      setSelectedHermesSessionId(undefined);
+      newSessionModeRef.current = true;
+      setNewSessionMode(true);
+    }
+  }
+
+  function attachHermesSessionEventListener({
+    gateway,
+    runtimeSessionId,
+    sessionDisplayTitle,
+    storedSessionId,
+  }: {
+    gateway: HermesGatewayClient;
+    runtimeSessionId: string;
+    sessionDisplayTitle: string;
+    storedSessionId: string;
+  }) {
+    sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
+    let unlisten = () => {};
+    const removeListener = gateway.onEvent((event) => {
+      if (
+        event.session_id !== runtimeSessionId &&
+        event.session_id !== storedSessionId
+      )
+        return;
+      const liveEvent = { ...event, receivedAt: new Date().toISOString() };
+      // Run every live frame through the typed control plane alongside the
+      // existing string-based handling below. This is the first consumer of
+      // the classifier: it doesn't drive rendering yet (later features migrate
+      // families onto it incrementally), but it proves the live path is typed
+      // and surfaces any raw type June can't yet model. Unknown frames classify
+      // as `unsupported` rather than being dropped, so a Hermes upgrade that
+      // adds an event shows up in dev instead of silently doing nothing.
+      const classified = classifyHermesEvent(liveEvent);
+      // Feature 15: record every inbound frame (raw type + the kind it
+      // classified to) into the bounded, sanitized trace buffer so the dev/debug
+      // trace panel can reconstruct the session. recordInbound re-classifies and
+      // sanitizes internally; nothing raw is retained.
+      hermesTraceBuffer.recordInbound(liveEvent);
+      if (classified.kind === "unsupported") {
+        // Feed the bounded per-session store so the user gets a recoverable
+        // notice (when this is the active session) and developers get a
+        // sanitized, issue-report-safe export. The payload is already sanitized
+        // by the classifier; nothing raw is retained or logged.
+        unsupportedEventStore.record(classified);
+        if (import.meta.env.DEV) {
+          console.debug(
+            "[hermes] unsupported event",
+            classified.rawType,
+            classified.sanitizedPayload,
+          );
+        }
+      } else if (classified.kind === "pending_action") {
+        // Feature 04: aggregate this blocker into the pending-action store
+        // keyed by mode + session + request. The session's mode comes from its
+        // recorded opt-in (sudo carries its own; the rest derive it here). A
+        // fresh event for a known request also re-confirms a row that went
+        // stale across a reconnect (see the store's reconcile logic).
+        pendingActionStore.record(classified, hermesModeFor(storedSessionId));
+      }
+      // Feature 11: roll EVERY classified event into the global activity store
+      // that backs the Agent activity drawer. The store is total and ignores
+      // unattributable events, so one unconditional call covers all kinds; it
+      // derives the session's phase (running/waiting/background/error/complete),
+      // current tool, and subagent count from the normalized event — never from
+      // the raw frame (raw JSON belongs to feature 15's trace panel).
+      hermesActivityStore.record(classified, hermesModeFor(storedSessionId));
+      // Feature 14: extract any file/artifact reference this event carries into
+      // the per-session artifact timeline behind the drawer's "Artifacts"
+      // section. The store is total and only acts on `tool` completions that
+      // name a known file/url field (conservative — never parses prose), so one
+      // unconditional call is safe for every kind. Mode rides along so each
+      // artifact can show its blast radius (sandboxed copy vs unrestricted path).
+      hermesArtifactStore.record(classified, hermesModeFor(storedSessionId));
+      const nextSessionEvents = [
+        ...(liveEventsRef.current[storedSessionId] ?? []),
+        liveEvent,
+      ].slice(-200);
+      liveEventsRef.current = {
+        ...liveEventsRef.current,
+        [storedSessionId]: nextSessionEvents,
+      };
+      setLiveEvents(liveEventsRef.current);
+      const toolEventPhase = hermesToolEventPhase(event.type);
+      if (toolEventPhase === "complete") {
+        // Hermes drains every accepted steer into the tool result it just
+        // produced (run_agent.steer). Mark the pending entries drained rather
+        // than removing them here: whether a steer was ACCEPTED is settled
+        // asynchronously (the steer RPC's .then), which can resolve AFTER this
+        // event, so the consume-vs-resend decision is deferred to the terminal
+        // handler where both flags are final. Removing on `registered` alone
+        // here would resubmit a steer that was accepted + drained before its
+        // .then ran (the duplicate-delivery race).
+        const list = pendingSteerBySessionIdRef.current[storedSessionId];
+        if (list) {
+          for (const entry of list) entry.toolDrained = true;
+        }
+      }
+      const hasActiveToolCalls =
+        toolEventPhase !== undefined
+          ? updateSessionToolCallActivity(
+              storedSessionId,
+              event,
+              toolEventPhase,
+            )
+          : toolCallSessionIdsRef.current.has(storedSessionId);
+      const status = agentStatusFromHermesEvent(event);
+      if (status === "waitingForUser") {
+        setSessionWorking(storedSessionId, false);
+        setSessionWaiting(storedSessionId, true);
+      } else if (status === "running") {
+        setSessionWaiting(storedSessionId, false);
+        setSessionWorking(storedSessionId, true);
+      }
+      const activityCounts =
+        status === "completed" || status === "failed" || status === "cancelled"
+          ? clearSessionActivity(storedSessionId)
+          : undefined;
+      if (activityCounts) {
+        // Feature 04: the session reached a terminal state (completed, a
+        // terminal error, or an interrupt) — the agent is no longer blocked, so
+        // any of its outstanding "Needs you" rows are moot. Clear them so the
+        // sidebar "Needs you" count never shows a dead blocker for a finished
+        // session.
+        pendingActionStore.resolveSession(storedSessionId);
+      }
+      if (status) {
+        dispatchAgentSessionStatus({
+          sessionId: storedSessionId,
+          title: sessionDisplayTitle,
+          status,
+          summary: agentStatusSummaryFromHermesEvent(event, status),
+          ...activityCounts,
+        });
+      }
+      if (isTerminalHermesEvent(event.type)) {
+        unlisten();
+        if (!activityCounts) {
+          clearSessionActivity(storedSessionId);
+        }
+        // Delivery guarantee: any steer not consumed by a tool result this turn
+        // (Hermes only injects steers into tool output) would otherwise be lost.
+        // On a clean completion resend the leftovers as a follow-up so the
+        // message always reaches June; drop them on a failed/cancelled run.
+        const unconsumedSteers =
+          status === "completed"
+            ? pendingSteerBySessionIdRef.current[storedSessionId]?.filter(
+                // Consumed = Hermes accepted it AND a tool result drained it.
+                // Resend the rest (rejected, or accepted but no tool ran).
+                (entry) => !(entry.accepted && entry.toolDrained),
+              )
+            : undefined;
+        delete pendingSteerBySessionIdRef.current[storedSessionId];
+        if (unconsumedSteers?.length) {
+          const followUpSession = hermesSessionItemsRef.current.find(
+            (session) => session.id === storedSessionId,
+          );
+          if (followUpSession) {
+            const followUpText = unconsumedSteers
+              .map((entry) => entry.text)
+              .join("\n");
+            window.setTimeout(() => {
+              void submitHermesSession(followUpText, followUpSession).catch(
+                (err: unknown) => {
+                  // The follow-up never reached June (e.g. a gateway reconnect
+                  // or a still-busy session right after completion). Surface it
+                  // rather than silently losing the instruction.
+                  setError(messageFromError(err), {
+                    sessionId: storedSessionId,
+                  });
+                },
+              );
+            }, 0);
+          }
+        }
+        // The diagnostic turn is over (even on error): let the user append
+        // anything June's summary surfaced before sending the bundled report.
+        const promotedIssueReport = promotePendingIssueReportToReview(
+          storedSessionId,
+          { queueDiagnosisRefresh: true },
+        );
+        if (!promotedIssueReport) {
+          window.setTimeout(() => {
+            void refreshHermesSession(storedSessionId);
+          }, 300);
+        }
+      }
+    });
+    unlisten = () => {
+      removeListener();
+      if (sessionGatewayUnlistenRef.current.get(storedSessionId) === unlisten) {
+        sessionGatewayUnlistenRef.current.delete(storedSessionId);
+      }
+    };
+    sessionGatewayUnlistenRef.current.set(storedSessionId, unlisten);
+    return unlisten;
   }
 
   async function submitHermesSession(
@@ -2438,6 +4152,11 @@ export function AgentWorkspace({
       issueReport?: PendingIssueReport;
       displayContent?: string;
       titleContent?: string;
+      /** Imported attachments for this turn. Image attachments are sent to the
+       * session via the structured image.attach flow (feature 19) once the
+       * session id is known and before prompt.submit; a failed attach throws to
+       * block the send so the user can retry. */
+      attachments?: AgentAttachment[];
     },
   ) {
     const displayContent = options?.displayContent ?? content;
@@ -2460,41 +4179,107 @@ export function AgentWorkspace({
       targetSessionId || options?.issueReport
         ? undefined
         : agentSessionTitleForPrompt(titleContent);
+    const fallbackSessionTitle = options?.issueReport
+      ? "Issue report"
+      : explicitSession?.title?.trim() ||
+        explicitSession?.preview?.trim() ||
+        titleFromPrompt(titleContent);
+    const optimisticSession = targetSessionId
+      ? undefined
+      : startOptimisticHermesSession({
+          displayContent,
+          title: fallbackSessionTitle,
+          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+        });
+    let storedSessionIdForRollback: string | undefined;
+    const rollbackOptimisticBeforePrompt = (err: unknown): never => {
+      if (optimisticSession) {
+        removeOptimisticHermesSession(
+          optimisticSession.id,
+          storedSessionIdForRollback,
+        );
+      }
+      throw err;
+    };
     // The Unrestricted opt-in is made per session: a new session applies the
     // picker draft, and a follow-up routes to the runtime process matching
     // the mode its session was created with. Without this, one Unrestricted
     // session would leave the runtime unsandboxed under every other
     // session's follow-ups.
-    const gateway = await ensureHermesGateway(
-      targetSessionId
-        ? sessionUnrestricted(targetSessionId)
-        : fullModeDraftRef.current,
-    );
-    const sessionTitle = titlePromise ? await titlePromise : undefined;
-    const created = targetSessionId
-      ? undefined
-      : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
-          title: options?.issueReport
-            ? "Issue report"
-            : (sessionTitle ?? titleFromPrompt(titleContent)),
-          cols: 96,
-          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-        });
-    const storedSessionId =
-      targetSessionId ?? created?.stored_session_id ?? created?.session_id;
-    if (!storedSessionId) throw new Error("Hermes did not create a session.");
-    if (options?.issueReport && !targetSessionId) {
+    const { created, gateway, sessionTitle, storedSessionId } =
+      await (async () => {
+        const [nextGateway, nextSessionTitle] = await Promise.all([
+          ensureHermesGateway(
+            targetSessionId
+              ? sessionUnrestricted(targetSessionId)
+              : fullModeDraftRef.current,
+          ),
+          titlePromise ?? Promise.resolve(undefined),
+        ]);
+        const nextCreated = targetSessionId
+          ? undefined
+          : await nextGateway.request<HermesRuntimeSessionResponse>(
+              "session.create",
+              {
+                title: nextSessionTitle ?? fallbackSessionTitle,
+                cols: 96,
+                ...(targetSessionModelId
+                  ? { model: targetSessionModelId }
+                  : {}),
+              },
+            );
+        const nextStoredSessionId =
+          targetSessionId ??
+          nextCreated?.stored_session_id ??
+          nextCreated?.session_id;
+        if (!nextStoredSessionId) {
+          throw new Error("Hermes did not create a session.");
+        }
+        return {
+          created: nextCreated,
+          gateway: nextGateway,
+          sessionTitle: nextSessionTitle,
+          storedSessionId: nextStoredSessionId,
+        };
+      })().catch(rollbackOptimisticBeforePrompt);
+    storedSessionIdForRollback = storedSessionId;
+    const queuedIssueReport = options?.issueReport;
+    if (queuedIssueReport && targetSessionId) {
+      queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
+    }
+    const clearQueuedIssueReport = () => {
+      if (
+        queuedIssueReport &&
+        pendingIssueReportsRef.current.get(storedSessionId) ===
+          queuedIssueReport
+      ) {
+        pendingIssueReportsRef.current.delete(storedSessionId);
+      }
+    };
+    if (options?.issueReport) {
       pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
     }
     if (!targetSessionId) {
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
     }
-    const sessionDisplayTitle = options?.issueReport
-      ? "Issue report"
-      : explicitSession?.title?.trim() ||
-        explicitSession?.preview?.trim() ||
-        sessionTitle ||
-        titleFromPrompt(titleContent);
+    const sessionDisplayTitle = sessionTitle || fallbackSessionTitle;
+    const ensureStoredHermesSession = () =>
+      ensureHermesBridgeSession({
+        sessionId: storedSessionId,
+        title: sessionDisplayTitle,
+        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+      });
+    if (optimisticSession) {
+      await ensureStoredHermesSession().catch(rollbackOptimisticBeforePrompt);
+      migrateOptimisticHermesSession({
+        createdAt: optimisticSession.createdAt,
+        displayContent,
+        fromSessionId: optimisticSession.id,
+        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+        title: sessionDisplayTitle,
+        toSessionId: storedSessionId,
+      });
+    }
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
@@ -2506,93 +4291,125 @@ export function AgentWorkspace({
       // bridge closure). Re-map the current list so the order doesn't matter.
       setHermesSessionItems((current) => applySessionTitleOverrides(current));
     }
-    await withTimeout(
-      ensureHermesBridgeSession({
-        sessionId: storedSessionId,
-        title: sessionDisplayTitle,
-        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-      }),
-      2500,
-    ).catch(() => undefined);
-    const runtimeSessionId =
-      created?.session_id ??
-      runtimeSessionIds[storedSessionId] ??
-      (
-        await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-          session_id: storedSessionId,
-          cols: 96,
-        })
-      ).session_id;
-    if (!runtimeSessionId)
-      throw new Error("Hermes did not resume the session.");
-    const createdAt = new Date().toISOString();
-    // A new session (no target id) means the hero is handing over to a fresh
-    // thread — arm the composer glide. Sending into an existing session leaves
-    // the flag alone so a later hero dismissal via the sidebar stays instant.
-    if (!targetSessionId) heroExitViaThreadRef.current = true;
-    newSessionModeRef.current = false;
-    setNewSessionMode(false);
+    if (!optimisticSession) {
+      await withTimeout(ensureStoredHermesSession(), 2500).catch(
+        () => undefined,
+      );
+    }
+    let runtimeSessionId: string | undefined;
+    try {
+      runtimeSessionId =
+        created?.session_id ??
+        runtimeSessionIds[storedSessionId] ??
+        (
+          await gateway.request<HermesRuntimeSessionResponse>(
+            "session.resume",
+            {
+              session_id: storedSessionId,
+              cols: 96,
+            },
+          )
+        ).session_id;
+    } catch (err) {
+      clearQueuedIssueReport();
+      if (optimisticSession) {
+        removeOptimisticHermesSession(
+          optimisticSession.id,
+          storedSessionIdForRollback,
+        );
+      }
+      throw err;
+    }
+    if (!runtimeSessionId) {
+      clearQueuedIssueReport();
+      rollbackOptimisticBeforePrompt(
+        new Error("Hermes did not resume the session."),
+      );
+    }
+    // Feature 19: send any imported images to the session through the
+    // structured image.attach flow before the prompt, so the model/tools see
+    // them as first-class inputs (not just a path mentioned in prose) and an
+    // image-edit prompt names a concrete source. A failed attach throws here,
+    // which the submit() catch turns into a restored composer the user can
+    // retry — the prompt is NOT sent with a silently-missing image.
+    try {
+      await attachPendingImages(
+        gateway,
+        runtimeSessionId,
+        storedSessionId,
+        options?.attachments ?? [],
+      );
+    } catch (err) {
+      clearQueuedIssueReport();
+      rollbackOptimisticBeforePrompt(err);
+    }
+    const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
     setRuntimeSessionIds((current) => ({
       ...current,
       [storedSessionId]: runtimeSessionId,
     }));
-    selectedHermesSessionIdRef.current = storedSessionId;
-    setSelectedHermesSessionId(storedSessionId);
-    setSelectedTaskId(undefined);
-    const optimisticSession: HermesSessionInfo = {
-      id: storedSessionId,
-      title: sessionDisplayTitle,
-      preview: displayContent,
-      started_at: createdAt,
-      last_active: createdAt,
-      message_count: 1,
-      ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-    };
-    if (!targetSessionId) onSessionSelected?.(optimisticSession);
-    setHermesSessionItems((current) => {
-      const existingSession = current.find(
-        (session) => session.id === storedSessionId,
-      );
-      if (existingSession) {
-        const mergedSession: HermesSessionInfo = targetSessionId
-          ? {
-              ...existingSession,
-              ...(existingSession.title?.trim()
-                ? { preview: displayContent }
-                : {}),
-              last_active: createdAt,
-              message_count:
-                typeof existingSession.message_count === "number"
-                  ? existingSession.message_count + 1
-                  : optimisticSession.message_count,
-              ...(targetSessionModelId && !existingSession.model?.trim()
-                ? { model: targetSessionModelId }
-                : {}),
-            }
-          : { ...existingSession, ...optimisticSession };
-        return current.map((session) =>
-          session.id === storedSessionId ? mergedSession : session,
+    if (!optimisticSession) {
+      newSessionModeRef.current = false;
+      setNewSessionMode(false);
+      selectedHermesSessionIdRef.current = storedSessionId;
+      setSelectedHermesSessionId(storedSessionId);
+      setSelectedTaskId(undefined);
+      const optimisticSessionItem: HermesSessionInfo = {
+        id: storedSessionId,
+        title: sessionDisplayTitle,
+        preview: displayContent,
+        started_at: createdAt,
+        last_active: createdAt,
+        message_count: 1,
+        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+      };
+      setHermesSessionItems((current) => {
+        const existingSession = current.find(
+          (session) => session.id === storedSessionId,
         );
-      }
-      return [optimisticSession, ...current];
-    });
+        if (existingSession) {
+          const mergedSession: HermesSessionInfo = targetSessionId
+            ? {
+                ...existingSession,
+                ...(existingSession.title?.trim()
+                  ? { preview: displayContent }
+                  : {}),
+                last_active: createdAt,
+                message_count:
+                  typeof existingSession.message_count === "number"
+                    ? existingSession.message_count + 1
+                    : optimisticSessionItem.message_count,
+                ...(targetSessionModelId && !existingSession.model?.trim()
+                  ? { model: targetSessionModelId }
+                  : {}),
+              }
+            : { ...existingSession, ...optimisticSessionItem };
+          return current.map((session) =>
+            session.id === storedSessionId ? mergedSession : session,
+          );
+        }
+        return [optimisticSessionItem, ...current];
+      });
+    }
     const pendingUserMessage: HermesSessionMessage = {
-      id: `pending:user:${Date.now()}`,
+      id: optimisticSession?.userMessage.id ?? `pending:user:${Date.now()}`,
       role: "user",
       content: displayContent,
       timestamp: createdAt,
     };
-    setPendingHermesMessages((current) => {
-      const next = {
-        ...current,
-        [storedSessionId]: [
-          ...(current[storedSessionId] ?? []),
-          pendingUserMessage,
-        ],
-      };
-      pendingHermesMessagesRef.current = next;
-      return next;
-    });
+    if (!optimisticSession) {
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [storedSessionId]: [
+            ...(current[storedSessionId] ?? []),
+            pendingUserMessage,
+          ],
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+    }
     setSessionWorking(storedSessionId, true);
     setSessionWaiting(storedSessionId, false);
     dispatchAgentSessionStatus({
@@ -2602,71 +4419,23 @@ export function AgentWorkspace({
       status: "running",
       summary: "June is working.",
     });
-    sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
-    const removeListener = gateway.onEvent((event) => {
-      if (
-        event.session_id !== runtimeSessionId &&
-        event.session_id !== storedSessionId
-      )
-        return;
-      const liveEvent = { ...event, receivedAt: new Date().toISOString() };
-      const nextSessionEvents = [
-        ...(liveEventsRef.current[storedSessionId] ?? []),
-        liveEvent,
-      ].slice(-200);
-      liveEventsRef.current = {
-        ...liveEventsRef.current,
-        [storedSessionId]: nextSessionEvents,
-      };
-      setLiveEvents(liveEventsRef.current);
-      const status = agentStatusFromHermesEvent(event);
-      if (status === "waitingForUser") {
-        setSessionWorking(storedSessionId, false);
-        setSessionWaiting(storedSessionId, true);
-      } else if (status === "running") {
-        setSessionWaiting(storedSessionId, false);
-        setSessionWorking(storedSessionId, true);
-      }
-      const activityCounts =
-        status === "completed" || status === "failed" || status === "cancelled"
-          ? clearSessionActivity(storedSessionId)
-          : undefined;
-      if (status) {
-        dispatchAgentSessionStatus({
-          sessionId: storedSessionId,
-          title: sessionDisplayTitle,
-          status,
-          summary: agentStatusSummaryFromHermesEvent(event, status),
-          ...activityCounts,
-        });
-      }
-      if (isTerminalHermesEvent(event.type)) {
-        unlisten();
-        if (!activityCounts) {
-          clearSessionActivity(storedSessionId);
-        }
-        // The diagnostic turn is over (even on error): file the report now so
-        // the user's description isn't lost to a failed investigation.
-        const issueReport = pendingIssueReportsRef.current.get(storedSessionId);
-        if (issueReport) {
-          pendingIssueReportsRef.current.delete(storedSessionId);
-        }
-        window.setTimeout(() => {
-          void refreshHermesSession(storedSessionId);
-          if (issueReport) {
-            void deliverIssueReport(storedSessionId, issueReport);
-          }
-        }, 300);
-      }
+    attachHermesSessionEventListener({
+      gateway,
+      runtimeSessionId,
+      sessionDisplayTitle,
+      storedSessionId,
     });
-    const unlisten = () => {
-      removeListener();
-      if (sessionGatewayUnlistenRef.current.get(storedSessionId) === unlisten) {
-        sessionGatewayUnlistenRef.current.delete(storedSessionId);
-      }
-    };
-    sessionGatewayUnlistenRef.current.set(storedSessionId, unlisten);
     try {
+      // Feature 15: record the outbound prompt.submit in the trace buffer. Its
+      // params are sanitized before storage (the text is the user's own prompt,
+      // kept; any secret-like value would be masked). This is the primary
+      // outbound call from this surface; other RPCs go direct via
+      // gateway.request and are not yet traced (see feature 15 notes).
+      hermesTraceBuffer.recordOutbound({
+        sessionId: storedSessionId,
+        method: "prompt.submit",
+        params: { session_id: runtimeSessionId, text: content },
+      });
       await gateway.request("prompt.submit", {
         session_id: runtimeSessionId,
         text: content,
@@ -2675,9 +4444,16 @@ export function AgentWorkspace({
         suppressStartupRequestError: !hermesSessionsHydratedRef.current,
       });
     } catch (err) {
+      // Record the rejection so the trace panel shows failed outbound calls
+      // alongside the inbound stream. messageFromError yields a user-safe string.
+      hermesTraceBuffer.recordError({
+        sessionId: storedSessionId,
+        method: "prompt.submit",
+        message: messageFromError(err),
+      });
       // A queued report must not outlive its failed prompt; submit() re-arms
-      // issue-report mode so the retry files it again.
-      pendingIssueReportsRef.current.delete(storedSessionId);
+      // issue-report mode so the retry can queue it again.
+      clearQueuedIssueReport();
       // The prompt never entered the session, so its optimistic bubble must
       // not linger — a retained pending message renders below every later
       // persisted message and reads as a send the agent ignored.
@@ -2697,7 +4473,7 @@ export function AgentWorkspace({
         // working state. Callers translate this into the composer notice.
         throw err;
       }
-      unlisten();
+      sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
       setSessionWorking(storedSessionId, false);
       setSessionWaiting(storedSessionId, false);
       dispatchAgentSessionStatus({
@@ -2737,6 +4513,72 @@ export function AgentWorkspace({
     await gateway.connect(wsUrl);
     return gateway;
   }
+
+  // Fetches normalized usage/cost for one session (feature 09). Routes through
+  // the gateway matching the session's recorded write-access mode, calls the
+  // typed session.usage wrapper, and parses the raw result defensively. The
+  // panel injects this so it stays decoupled from the gateway and reusable by
+  // feature 11's activity drawer.
+  const fetchSessionUsage = useCallback(
+    async (storedSessionId: string): Promise<SessionUsage> => {
+      const gateway = await ensureHermesGateway(
+        sessionUnrestricted(storedSessionId),
+      );
+      const methods = createHermesMethods(gateway);
+      const usageFor = async (runtimeId: string) =>
+        parseSessionUsage(
+          storedSessionId,
+          await methods.getSessionUsage({ sessionId: runtimeId }),
+        );
+      // session.usage reads the LIVE runtime, keyed by the runtime id — not the
+      // stored id the panel passes. Use the cached runtime if it is still alive;
+      // if it has been torn down between turns ("session not found"), resume the
+      // session to spin up a fresh runtime and retry once. Mirrors the send
+      // flow's cached-or-resume resolution (see submit()).
+      const cached = runtimeSessionIdsRef.current[storedSessionId];
+      if (cached) {
+        try {
+          return await usageFor(cached);
+        } catch (err) {
+          if (!isSessionGoneError(messageFromError(err))) throw err;
+        }
+      }
+      const resumed = await gateway.request<HermesRuntimeSessionResponse>(
+        "session.resume",
+        { session_id: storedSessionId, cols: 96 },
+      );
+      const runtimeSessionId = resumed.session_id;
+      if (!runtimeSessionId) {
+        throw new Error("Hermes did not resume the session.");
+      }
+      setRuntimeSessionIds((current) => ({
+        ...current,
+        [storedSessionId]: runtimeSessionId,
+      }));
+      return usageFor(runtimeSessionId);
+    },
+    // Stable closure over refs and imported helpers; deps intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // Compacts one session's context (feature 08). Routes through the gateway
+  // matching the session's recorded write-access mode, calls the typed
+  // session.compress wrapper, and parses the raw result defensively so the
+  // dialog can show token savings when reported. The dialog injects this so it
+  // stays decoupled from the gateway, mirroring fetchSessionUsage.
+  const compressSessionContext = useCallback(
+    async (sessionId: string): Promise<CompressSessionResult> => {
+      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      const raw = await createHermesMethods(gateway).compressSession({
+        sessionId,
+      });
+      return parseCompressSessionResult(sessionId, raw);
+    },
+    // Same stable-closure rationale as fetchSessionUsage above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   // "Try again" on a connection-shaped error banner: rebuild the bridge +
   // gateway connection and reload sessions, surfacing whatever still fails.
@@ -2792,6 +4634,11 @@ export function AgentWorkspace({
     } finally {
       gatewayRecoveringRef.current.delete(fullMode);
     }
+    // Feature 04: the gateway is back. Any pending action not re-announced by a
+    // fresh event is now unverifiable across the drop, so mark it stale —
+    // visible but visually distinct — rather than silently dropping a possible
+    // blocker. A re-announced request flips its row back to open in the feed.
+    pendingActionStore.reconcileAfterReconnect();
     for (const sessionId of activeSessionIds) {
       void refreshHermesSession(sessionId);
     }
@@ -2822,20 +4669,7 @@ export function AgentWorkspace({
   // locally-working session absent from it (or sitting idle) for two
   // consecutive polls gets its activity cleared. Two misses, not one: a
   // just-submitted prompt can race the runtime session registering.
-  async function reconcileWorkingSessionsAgainstRuntime() {
-    const working = Array.from(workingSessionIdsRef.current);
-    const misses = workingReconcileMissesRef.current;
-    for (const sessionId of misses.keys()) {
-      if (!working.includes(sessionId)) misses.delete(sessionId);
-    }
-    if (working.length === 0) return;
-    // Working sessions may span both runtime processes; ask each mode that
-    // has one and union the answers. A mode we can't reach keeps its
-    // sessions' current state rather than guessing — so a one-gateway
-    // failure must not mark the other mode's sessions dead either.
-    const modes = Array.from(
-      new Set(working.map((sessionId) => sessionUnrestricted(sessionId))),
-    );
+  async function liveRuntimeSessionsForModes(modes: boolean[]) {
     let rows: Array<{ id?: string; session_key?: string; status?: string }> =
       [];
     const reachableModes = new Set<boolean>();
@@ -2858,7 +4692,6 @@ export function AgentWorkspace({
         // than guess, while the reachable mode still reconciles below.
       }
     }
-    if (reachableModes.size === 0) return;
     const live = new Set<string>();
     for (const row of rows) {
       // "idle" means the runtime session exists but isn't processing a turn.
@@ -2866,15 +4699,42 @@ export function AgentWorkspace({
       if (row.session_key) live.add(String(row.session_key));
       if (row.id) live.add(String(row.id));
     }
+    return { live, reachableModes };
+  }
+
+  function runtimeSnapshotHasSession(
+    snapshot: { live: Set<string> },
+    sessionId: string,
+  ) {
+    const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
+    return (
+      snapshot.live.has(sessionId) ||
+      Boolean(runtimeSessionId && snapshot.live.has(runtimeSessionId))
+    );
+  }
+
+  async function reconcileWorkingSessionsAgainstRuntime() {
+    const working = Array.from(workingSessionIdsRef.current);
+    const misses = workingReconcileMissesRef.current;
+    for (const sessionId of misses.keys()) {
+      if (!working.includes(sessionId)) misses.delete(sessionId);
+    }
+    if (working.length === 0) return;
+    // Working sessions may span both runtime processes; ask each mode that
+    // has one and union the answers. A mode we can't reach keeps its
+    // sessions' current state rather than guessing — so a one-gateway
+    // failure must not mark the other mode's sessions dead either.
+    const modes = Array.from(
+      new Set(working.map((sessionId) => sessionUnrestricted(sessionId))),
+    );
+    const snapshot = await liveRuntimeSessionsForModes(modes);
+    if (snapshot.reachableModes.size === 0) return;
     for (const sessionId of working) {
       // Sessions of an unreachable mode were not in any answer we got;
       // counting them as misses would mark live work dead.
-      if (!reachableModes.has(sessionUnrestricted(sessionId))) continue;
-      const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
-      if (
-        live.has(sessionId) ||
-        (runtimeSessionId && live.has(runtimeSessionId))
-      ) {
+      if (!snapshot.reachableModes.has(sessionUnrestricted(sessionId)))
+        continue;
+      if (runtimeSnapshotHasSession(snapshot, sessionId)) {
         misses.delete(sessionId);
         continue;
       }
@@ -2885,7 +4745,7 @@ export function AgentWorkspace({
       }
       misses.delete(sessionId);
       const activityCounts = clearSessionActivity(sessionId);
-      // "completed" (not "failed") keeps the tray quiet: its title falls back
+      // "completed" (not "failed") keeps the status quiet: its title falls back
       // to lastStatus when nothing is active, and a stale "running" there
       // would still render "Working…".
       dispatchAgentSessionStatus({
@@ -2944,6 +4804,9 @@ export function AgentWorkspace({
       if (
         sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
       ) {
+        promotePendingIssueReportToReview(sessionId, {
+          queueDiagnosisRefresh: false,
+        });
         const wasActive = sessionHasActiveWork(
           sessionId,
           workingSessionIdsRef.current,
@@ -2967,7 +4830,12 @@ export function AgentWorkspace({
       }
       await loadHermesSessions();
     } catch (err) {
-      setError(messageFromError(err), { sessionId });
+      const message = messageFromError(err);
+      // Background refresh racing a just-created session: a transient
+      // "Session not found" 404 resolves on the next poll, so don't surface
+      // it as an error banner (JUN-116).
+      if (isSessionGoneError(message)) return;
+      setError(message, { sessionId });
     }
   }
 
@@ -2992,10 +4860,13 @@ export function AgentWorkspace({
         session_id: sessionId,
         payload: { request_id: requestId, choice },
       });
+      // Feature 04: the user just answered this approval — clear its global
+      // "Needs you" row immediately (the response itself is the resolution).
+      pendingActionStore.resolveRequest(sessionId, requestId);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
-      if (message.toLowerCase().includes("session not found")) {
+      if (isSessionGoneError(message)) {
         // The runtime session is gone. Scrub only the affected session/task —
         // including its waiting flag, so the "Needs you" badge clears —
         // without clobbering other healthy sessions' working state or live
@@ -3015,9 +4886,14 @@ export function AgentWorkspace({
           liveEventKey,
         );
         setLiveEvents(liveEventsRef.current);
+        // The request can never be answered now — retire its card so neither the
+        // sidebar count nor the inline prompt offers a dead-end "Respond".
+        pendingActionStore.resolveRequest(sessionId, requestId);
         void loadHermesSessions();
+        setError(SESSION_GONE_MESSAGE, { sessionId });
+      } else {
+        setError(message, { sessionId });
       }
-      setError(message, { sessionId });
     } finally {
       setApprovalSubmitting((current) => {
         const next = { ...current };
@@ -3044,11 +4920,117 @@ export function AgentWorkspace({
         type: "clarify.response",
         payload: { request_id: requestId, answer },
       });
+      // Feature 04: the user answered the clarification — clear its pending record.
+      pendingActionStore.resolveRequest(liveEventKey, requestId);
       setError(null);
     } catch (err) {
-      setError(messageFromError(err));
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        // The runtime is gone, so this clarification can never be answered —
+        // retire its card and say so plainly instead of leaking the raw 404.
+        pendingActionStore.resolveRequest(liveEventKey, requestId);
+        setError(SESSION_GONE_MESSAGE);
+      } else {
+        setError(message);
+      }
     } finally {
       setClarifySubmitting((current) => {
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+    }
+  }
+
+  // Sudo (privilege escalation) is resolved through the typed control-plane
+  // method (sudo.respond), not a hand-written request, so the wire shape stays
+  // in one place. The optimistic sudo.response event flips the card to
+  // resolved before the gateway round-trips.
+  async function respondToSudo(
+    liveEventKey: string,
+    sessionId: string,
+    requestId: string,
+    approved: boolean,
+    mode?: HermesMode,
+    unrestricted = false,
+  ) {
+    setSudoSubmitting((current) => ({
+      ...current,
+      [requestId]: approved ? "approve" : "deny",
+    }));
+    try {
+      const gateway = await ensureHermesGateway(unrestricted);
+      await createHermesMethods(gateway).respondToSudo({
+        sessionId,
+        requestId,
+        approved,
+        mode,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "sudo.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, granted: approved, mode },
+      });
+      // Feature 04: the user resolved the sudo prompt — clear its pending record.
+      pendingActionStore.resolveRequest(sessionId, requestId);
+      setError(null);
+    } catch (err) {
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        // The runtime is gone, so this prompt can never be answered — retire
+        // its card and say so plainly instead of leaking the raw 404.
+        pendingActionStore.resolveRequest(sessionId, requestId);
+        setError(SESSION_GONE_MESSAGE, { sessionId });
+      } else {
+        setError(message, { sessionId });
+      }
+    } finally {
+      setSudoSubmitting((current) => {
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+    }
+  }
+
+  // Secret entry: the value arrives here only to be handed to the gateway via
+  // the typed secret.respond method, and is never stored, logged, or placed on
+  // an event. The optimistic secret.response carries ONLY a `provided` flag.
+  async function respondToSecret(
+    liveEventKey: string,
+    sessionId: string,
+    requestId: string,
+    value: string,
+    unrestricted = false,
+  ) {
+    setSecretSubmitting((current) => ({ ...current, [requestId]: true }));
+    try {
+      const gateway = await ensureHermesGateway(unrestricted);
+      await createHermesMethods(gateway).respondToSecret({
+        sessionId,
+        requestId,
+        value,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "secret.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, provided: true },
+      });
+      // Feature 04: the user provided the secret — clear its pending record.
+      pendingActionStore.resolveRequest(sessionId, requestId);
+      setError(null);
+    } catch (err) {
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        // The runtime is gone, so this secret prompt can never be answered —
+        // retire its card and say so plainly instead of leaking the raw 404.
+        pendingActionStore.resolveRequest(sessionId, requestId);
+        setError(SESSION_GONE_MESSAGE, { sessionId });
+      } else {
+        setError(message, { sessionId });
+      }
+    } finally {
+      setSecretSubmitting((current) => {
         const next = { ...current };
         delete next[requestId];
         return next;
@@ -3076,6 +5058,69 @@ export function AgentWorkspace({
     }
   }
 
+  // Feature 07: fork the conversation into a NEW session that starts from the
+  // given message, through the typed control-plane method (session.branch).
+  // The source session is never mutated. The returned session id is
+  // AUTHORITATIVE — we open whatever the gateway minted, never a local guess —
+  // and the new session inherits the source's write-access mode so a follow-up
+  // routes to the right runtime. On failure the UI stays in the source session
+  // with an actionable banner.
+  async function branchFromMessage(
+    sessionId: string | undefined,
+    fromMessageId: string,
+    modeSessionId = sessionId,
+  ) {
+    if (branchingMessageId) return;
+    if (!sessionId) {
+      setError(
+        "Cannot branch from this message because its session is unavailable.",
+        {
+          sessionId: modeSessionId ?? null,
+        },
+      );
+      return;
+    }
+    setBranchingMessageId(fromMessageId);
+    const sourceTitle =
+      hermesSessionItems.find(
+        (session) => session.id === sessionId || session.id === modeSessionId,
+      )?.title ?? "this session";
+    const unrestricted = sessionUnrestricted(modeSessionId);
+    try {
+      const gateway = await ensureHermesGateway(unrestricted);
+      const raw = await createHermesMethods(gateway).branchSession({
+        sessionId,
+        fromMessageId,
+      });
+      const result: BranchSessionResult | undefined = parseBranchSessionResult(
+        raw,
+        { sourceSessionId: sessionId, sourceMessageId: fromMessageId },
+      );
+      if (!result) {
+        throw new Error("Hermes did not return a branched session.");
+      }
+      // Carry the source session's write-access mode onto the fork so its
+      // follow-ups route to the matching runtime (mirrors session.create).
+      rememberSessionMode(result.sessionId, unrestricted);
+      // Open the fork. Selecting it triggers the message-fetch effect, which
+      // fills the forked transcript. The source session is left untouched.
+      newSessionModeRef.current = false;
+      setNewSessionMode(false);
+      setSelectedTaskId(undefined);
+      selectedHermesSessionIdRef.current = result.sessionId;
+      setSelectedHermesSessionId(result.sessionId);
+      setActivePanel("chat");
+      setBranchedNotice({ sessionId: result.sessionId, sourceTitle });
+      setError(null);
+      await loadHermesSessions();
+    } catch (err) {
+      // Leave the UI in the source session; surface the failure there.
+      setError(messageFromError(err), { sessionId });
+    } finally {
+      setBranchingMessageId(null);
+    }
+  }
+
   function pushLiveEvent(key: string, event: HermesGatewayEvent) {
     const liveEvent = { ...event, receivedAt: new Date().toISOString() };
     const nextEvents = [...(liveEventsRef.current[key] ?? []), liveEvent].slice(
@@ -3088,7 +5133,40 @@ export function AgentWorkspace({
     setLiveEvents(liveEventsRef.current);
   }
 
-  async function startNewTask(request?: AgentNewSessionDetail) {
+  // Feature 06: steer a STILL-WORKING session with a mid-run instruction,
+  // through the dedicated typed control-plane method (session.steer) — never
+  // prompt.submit, which the gateway rejects with 4009 while a turn runs. On a
+  // gateway ack we record the user's instruction as a local "Steering" system
+  // item in the transcript (pushed onto the same live-event channel Hermes
+  // frames use, so it orders and survives re-renders for free). Rejections
+  // bubble to the caller (the composer input) so it can keep the unsent text
+  // and show recoverable copy; the typed wrapper stays the only seam that knows
+  // the wire shape.
+  async function steerActiveSession(sessionId: string, text: string) {
+    const instruction = normalizeSteerText(text);
+    if (!instruction) return;
+    // Show the instruction in the transcript right away so the user sees it
+    // landed — the gateway ack can lag a beat behind a fast send, and we never
+    // want a sent message to silently vanish.
+    pushLiveEvent(
+      sessionId,
+      steeringLiveEvent({
+        sessionId,
+        text: instruction,
+        receivedAt: new Date().toISOString(),
+      }),
+    );
+    const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+    await createHermesMethods(gateway).steerSession({
+      sessionId,
+      text: instruction,
+    });
+  }
+
+  async function startNewTask(
+    request?: AgentNewSessionDetail,
+    options: { deferCategorySeed?: boolean } = {},
+  ) {
     clearPendingNewSessionRequest();
     const seedCategory = request?.category ?? null;
     // A seeded report never auto-submits: the category chip lands in the
@@ -3124,7 +5202,7 @@ export function AgentWorkspace({
     pendingSeedCategoryRef.current = seedCategory;
     if (seedCategory) {
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      seedComposerCategory();
+      seedComposerCategory({ defer: options.deferCategorySeed });
     } else if (initialPrompt) {
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       composerEditorRef.current?.setContent(initialPrompt);
@@ -3186,6 +5264,16 @@ export function AgentWorkspace({
     });
   }
 
+  function editUserPrompt(text: string) {
+    composerEditorRef.current?.setContent(text, null);
+    setDraft(text);
+    setCategory(null);
+    draftRef.current = text;
+    categoryRef.current = null;
+    setComposerAttachments([]);
+    rememberComposerDraft(composerDraftKeyRef.current, text, null, []);
+  }
+
   function setComposerAttachments(
     nextValue:
       | AgentAttachment[]
@@ -3208,18 +5296,29 @@ export function AgentWorkspace({
   /** Applies any pending seed category to the composer chip once the editor is
    * available. Called from startNewTask (best-effort, the editor may not be
    * mounted yet) and again from ComposerEditor's onReady. */
-  function seedComposerCategory() {
-    const seed = pendingSeedCategoryRef.current;
-    if (!seed) return;
+  function seedComposerCategory(options: { defer?: boolean } = {}) {
+    if (!pendingSeedCategoryRef.current) return;
     const editor = composerEditorRef.current;
     // Not mounted yet (cold open) — leave it pending for onReady to apply.
     if (!editor) return;
-    pendingSeedCategoryRef.current = null;
-    window.setTimeout(() => {
-      if (pendingSeedCategoryRef.current) return;
-      editor.setContent("", seed);
+    const applySeed = () => {
+      const seed = pendingSeedCategoryRef.current;
+      const currentEditor = composerEditorRef.current;
+      if (!seed || !currentEditor) return;
+      pendingSeedCategoryRef.current = null;
+      draftRef.current = "";
+      categoryRef.current = seed;
+      setDraft("");
+      setCategory(seed);
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, "", seed);
-    }, 0);
+      restoredComposerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
+      currentEditor.setContent("", seed);
+    };
+    if (options.defer) {
+      window.setTimeout(applySeed, 0);
+    } else {
+      applySeed();
+    }
   }
 
   // Run shortcuts fire the session directly — the prompt never touches the
@@ -3301,7 +5400,20 @@ export function AgentWorkspace({
     // to working (and on a gateway drop no terminal event ever comes to do
     // it). The interrupt then fires below to actually halt the runtime agent.
     sessionGatewayUnlistenRef.current.get(sessionId)?.();
+    // Interrupting tears the listener down before any cancelled terminal event
+    // reaches the terminal handler, so clear the delivery-guarantee steers here
+    // too -- otherwise a steer typed-then-stopped lingers and could auto-submit
+    // as a follow-up after a later run in the same session.
+    delete pendingSteerBySessionIdRef.current[sessionId];
     const activityCounts = clearSessionActivity(sessionId);
+    // Feature 11: the per-session listener is gone, so no terminal frame will
+    // reach the activity store to retire this row. Record a synthetic terminal
+    // lifecycle so the drawer flips the session out of "running" the instant
+    // the user clicks stop (the row persists, now reading as complete).
+    hermesActivityStore.record(
+      { kind: "lifecycle", sessionId, status: "cancelled" },
+      hermesModeFor(sessionId),
+    );
     dispatchAgentSessionStatus({
       sessionId,
       title:
@@ -3335,6 +5447,30 @@ export function AgentWorkspace({
       // the transcript reflects the partial turn.
       void refreshHermesSession(sessionId);
     }
+  }
+
+  // Feature 13: interrupt ONE background subagent from the activity drawer. The
+  // drawer already vetted the target (active subagent, trustworthy id/handle,
+  // confirmed when mid file/tool work) and owns the optimistic "stopping"
+  // overlay, so this just routes the call to the gateway that owns the parent
+  // session. `subagentId` is the trustworthy Hermes id/handle; the RPC's
+  // session id is the runtime id (as the whole-session interrupt uses). The
+  // promise is returned so the drawer can reconcile: a rejection (the subagent
+  // already finished) drops the overlay and the row settles from the event
+  // stream rather than showing a noisy failure.
+  async function stopHermesSubagent({
+    sessionId,
+    subagentId,
+  }: {
+    sessionId: string;
+    subagentId: string;
+  }): Promise<unknown> {
+    const runtimeSessionId = runtimeSessionIds[sessionId] ?? sessionId;
+    const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+    return createHermesMethods(gateway).interruptSubagent({
+      sessionId: runtimeSessionId,
+      subagentId,
+    });
   }
 
   async function retryTask(taskId: string) {
@@ -3471,6 +5607,8 @@ export function AgentWorkspace({
       return next;
     });
     scrubHermesSessionState(sessionId);
+    pendingIssueReportsRef.current.delete(sessionId);
+    setReviewableIssueReport(sessionId, null);
     forgetComposerDraft(sessionComposerDraftKey(sessionId));
     // Every deletion funnels through here (the in-workspace delete and the
     // sidebar/sessions-list AGENT_DELETE_SESSION_EVENT), so this is the one
@@ -3691,6 +5829,31 @@ export function AgentWorkspace({
   const openArtifact = (artifact: AgentArtifact) =>
     setArtifactPanel({ view: "file", artifact });
 
+  // Feature 14: open an artifact from the drawer's timeline. The timeline's
+  // record (hermes-artifact-store's AgentArtifact) is a different, richer shape
+  // than the file-viewer's local AgentArtifact, so adapt it onto the EXISTING
+  // preview flow rather than building a second viewer: a filesystem-backed
+  // artifact opens in the same `AgentArtifactPanel` (which fetches via
+  // hermes_bridge_file_preview / _file_text), and a remote url opens in the
+  // browser. A failed access has nothing to preview, so it stays inert.
+  const openTimelineArtifact = useCallback((artifact: TimelineArtifact) => {
+    if (artifact.action === "failed") return;
+    if (artifact.kind === "url") {
+      if (artifact.path) window.open(artifact.path, "_blank", "noopener");
+      return;
+    }
+    if (!artifact.path) return;
+    setArtifactPanel({
+      view: "file",
+      artifact: {
+        name: artifact.displayName ?? artifact.path,
+        path: artifact.path,
+        rootLabel: artifact.mode === "unrestricted" ? "Local" : "Workspace",
+        size: null,
+      },
+    });
+  }, []);
+
   // Aggregate size of the rendered conversation so streaming deltas — which
   // grow text inside an existing turn without changing any count — still keep
   // the scroller pinned to the bottom.
@@ -3905,6 +6068,48 @@ export function AgentWorkspace({
               <DotSpinner />
               {busyNotice ?? SESSION_BUSY_NOTICE}
             </motion.p>
+          ) : visibleIssueReportReview ? (
+            <motion.div
+              key="issue-report-review"
+              className="agent-composer-notice agent-composer-notice-action"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span>
+                {visibleIssueReportReview.report.followUps.length
+                  ? "Follow-up added. Add more context in chat, or send it to the June team."
+                  : "Report ready. Add more context in chat, or send it to the June team."}
+              </span>
+              <button
+                type="button"
+                className="agent-composer-notice-button"
+                disabled={
+                  visibleIssueReportReview.submitting ||
+                  visibleIssueReportImportingFiles ||
+                  visibleIssueReportHasUnsentContext
+                }
+                onClick={() =>
+                  void sendReviewableIssueReport(
+                    visibleIssueReportReview.sessionId,
+                  )
+                }
+              >
+                {visibleIssueReportReview.submitting ||
+                visibleIssueReportImportingFiles ? (
+                  <DotSpinner className="agent-composer-notice-button-spinner" />
+                ) : null}
+                {visibleIssueReportReview.submitting
+                  ? "Sending"
+                  : visibleIssueReportImportingFiles
+                    ? "Attaching files"
+                    : visibleIssueReportHasUnsentContext
+                      ? "Send message first"
+                      : "Send report"}
+              </button>
+            </motion.div>
           ) : visibleIssueReportNotice ? (
             <motion.p
               key="issue-report-notice"
@@ -3917,6 +6122,18 @@ export function AgentWorkspace({
             >
               {visibleIssueReportNotice}
             </motion.p>
+          ) : visibleModelSwitchNotice ? (
+            <motion.p
+              key="model-switch-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              {visibleModelSwitchNotice}
+            </motion.p>
           ) : null}
         </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
@@ -3926,7 +6143,8 @@ export function AgentWorkspace({
                 <span
                   key={attachment.id}
                   className="agent-attachment-chip"
-                  title={attachment.name}
+                  data-attach-status={attachment.attach.status}
+                  title={attachment.attach.error ?? attachment.name}
                 >
                   {attachment.previewDataUrl ? (
                     <img
@@ -3940,6 +6158,14 @@ export function AgentWorkspace({
                   <span className="agent-attachment-name">
                     {attachment.name}
                   </span>
+                  {attachmentStatusLabel(attachment.attach) ? (
+                    <span
+                      className="agent-attachment-status"
+                      data-attach-status={attachment.attach.status}
+                    >
+                      {attachmentStatusLabel(attachment.attach)}
+                    </span>
+                  ) : null}
                   <button
                     type="button"
                     aria-label={`Remove ${attachment.name}`}
@@ -3969,7 +6195,8 @@ export function AgentWorkspace({
               if (
                 !skills &&
                 !skillCommandLoading &&
-                text.trimStart().startsWith("/")
+                text.trimStart().startsWith("/") &&
+                !isBuiltinComposerSlashCommand(text)
               ) {
                 void loadSkillCommands({ silent: true });
               }
@@ -3983,7 +6210,7 @@ export function AgentWorkspace({
             onSubmit={() => void submit()}
             onReady={() => {
               restoreComposerDraft(composerDraftKeyRef.current);
-              seedComposerCategory();
+              seedComposerCategory({ defer: true });
             }}
           />
           <div className="agent-composer-toolbar">
@@ -4047,6 +6274,7 @@ export function AgentWorkspace({
                 <IconMicrophone size={18} />
               </button>
               {selectedHermesSessionId &&
+              !selectedHermesSessionIsProvisional &&
               workingSessionIds.has(selectedHermesSessionId) ? (
                 // While June works, stop owns the send slot — sending would
                 // only bounce off the gateway's busy guard anyway.
@@ -4069,6 +6297,7 @@ export function AgentWorkspace({
                   disabled={
                     submitting ||
                     importingFiles ||
+                    selectedHermesSessionIsProvisional ||
                     (!draft.trim() && !attachments.length)
                   }
                   aria-label={
@@ -4237,6 +6466,37 @@ export function AgentWorkspace({
     />
   ) : !newSessionMode && selectedHermesSessionId ? (
     <div ref={listRef} className="agent-timeline">
+      <UnsupportedEventNotice
+        notice={unsupportedNotice}
+        // Dev/debug context gates the raw-trace affordance. Reuse the same DEV
+        // signal feature 01 used; feature 15 can swap in a richer debug toggle.
+        debugEnabled={import.meta.env.DEV}
+        onOpenRawTrace={(sessionId) => {
+          // Feature 15: open the dev/debug raw trace panel for this session.
+          // The panel itself is dev-gated (renders null in production), so this
+          // is inert in shipped builds even if the affordance were reached.
+          setRawTraceSession(sessionId);
+        }}
+        onStopSession={() => void stopHermesSession(selectedHermesSessionId)}
+        onReportIssue={() => {
+          // The sanitized, secret-free trace bundle for this session is the
+          // payload an issue report should attach (payload previews come from
+          // `sanitizePayload`; there is no real reporting surface yet — see the
+          // feature 15 notes). Logged in dev until that surface lands.
+          if (import.meta.env.DEV) {
+            console.debug(
+              "[hermes] report issue trace bundle",
+              hermesTraceBuffer.exportSanitizedTrace(selectedHermesSessionId),
+            );
+          }
+        }}
+      />
+      <HermesTracePanel
+        buffer={hermesTraceBuffer}
+        open={rawTraceSession !== undefined}
+        sessionId={rawTraceSession}
+        onClose={() => setRawTraceSession(undefined)}
+      />
       {hermesTurns.map((turn) => (
         <AgentChatTurnRow
           key={turn.id}
@@ -4245,6 +6505,8 @@ export function AgentWorkspace({
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
+          sudoSubmitting={sudoSubmitting}
+          secretSubmitting={secretSubmitting}
           cliAccess={{
             enabled: cliAccessEnabled,
             submitting: cliAccessSubmitting,
@@ -4264,7 +6526,7 @@ export function AgentWorkspace({
             )
           }
           onTopUp={() =>
-            void osAccountsTopUp().catch((err: unknown) =>
+            void osAccountsUpgrade().catch((err: unknown) =>
               setError(messageFromError(err)),
             )
           }
@@ -4276,6 +6538,34 @@ export function AgentWorkspace({
               sessionUnrestricted(selectedHermesSessionId),
             )
           }
+          onSudo={(part, approved) =>
+            void respondToSudo(
+              selectedHermesSessionId,
+              part.sessionId ?? selectedHermesSessionId,
+              part.id,
+              approved,
+              part.mode,
+              sessionUnrestricted(selectedHermesSessionId),
+            )
+          }
+          onSecret={(part, value) =>
+            void respondToSecret(
+              selectedHermesSessionId,
+              part.sessionId ?? selectedHermesSessionId,
+              part.id,
+              value,
+              sessionUnrestricted(selectedHermesSessionId),
+            )
+          }
+          onBranch={(messageId, sessionId) =>
+            void branchFromMessage(
+              sessionId ?? selectedHermesSessionId,
+              messageId,
+              selectedHermesSessionId,
+            )
+          }
+          branchingMessageId={branchingMessageId}
+          onEditUserPrompt={editUserPrompt}
         />
       ))}
       {workingSessionIds.has(selectedHermesSessionId) &&
@@ -4330,6 +6620,8 @@ export function AgentWorkspace({
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
+            sudoSubmitting={sudoSubmitting}
+            secretSubmitting={secretSubmitting}
             cliAccess={{
               enabled: cliAccessEnabled,
               submitting: cliAccessSubmitting,
@@ -4340,7 +6632,7 @@ export function AgentWorkspace({
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
             onTopUp={() =>
-              void osAccountsTopUp().catch((err: unknown) =>
+              void osAccountsUpgrade().catch((err: unknown) =>
                 setError(messageFromError(err)),
               )
             }
@@ -4363,6 +6655,30 @@ export function AgentWorkspace({
                 sessionUnrestricted(selectedTask.hermesSessionId),
               )
             }
+            onSudo={(part, approved) => {
+              const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
+              if (!sessionId) return;
+              void respondToSudo(
+                selectedTask.id,
+                sessionId,
+                part.id,
+                approved,
+                part.mode,
+                sessionUnrestricted(selectedTask.hermesSessionId),
+              );
+            }}
+            onSecret={(part, value) => {
+              const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
+              if (!sessionId) return;
+              void respondToSecret(
+                selectedTask.id,
+                sessionId,
+                part.id,
+                value,
+                sessionUnrestricted(selectedTask.hermesSessionId),
+              );
+            }}
+            onEditUserPrompt={editUserPrompt}
           />
         ))}
         {workingTaskIds.has(selectedTask.id) &&
@@ -4380,6 +6696,50 @@ export function AgentWorkspace({
       data-artifact-panel={artifactPanel ? "open" : undefined}
       data-hero={heroMode ? "true" : undefined}
     >
+      {/* Feature 11: the Agent activity drawer and its toggle. One top-level
+          surface so it shows every session's live activity, not
+          just the selected one. The toggle is hidden while the drawer is open
+          (the drawer carries its own close control) and surfaces the count of
+          sessions currently doing work.
+          Gated by ACTIVITY_DRAWER_ENABLED (currently false): with no toggle the
+          drawer is unreachable, since nothing else flips activityDrawerOpen to
+          true. See the flag's note for the open-wrong-session bug it parks. */}
+      {ACTIVITY_DRAWER_ENABLED && !activityDrawerOpen ? (
+        <button
+          type="button"
+          className="agent-activity-toggle"
+          onClick={() => setActivityDrawerOpen(true)}
+          aria-label="Show agent activity"
+        >
+          <IconBolt size={15} ariaHidden />
+          <span className="agent-activity-toggle-label">Activity</span>
+          {activeAgentCount > 0 ? (
+            <span className="agent-activity-toggle-count" aria-hidden>
+              {activeAgentCount}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
+      <AgentActivityDrawer
+        open={activityDrawerOpen}
+        records={activityRecords}
+        status={activityStatus}
+        now={Date.now()}
+        titleForSession={titleForPendingSession}
+        modelForSession={modelForActivitySession}
+        onOpenSession={openSessionFromDrawer}
+        onSteerSession={steerSessionFromDrawer}
+        canSteerSession={(sessionId) => workingSessionIds.has(sessionId)}
+        onStopSession={(sessionId) => void stopHermesSession(sessionId)}
+        onStopSubagent={stopHermesSubagent}
+        onClose={() => setActivityDrawerOpen(false)}
+        footer={
+          <AgentArtifactsSection
+            artifacts={timelineArtifacts}
+            onOpenArtifact={openTimelineArtifact}
+          />
+        }
+      />
       {!heroMode &&
       !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
         <AgentSessionBar
@@ -4396,7 +6756,9 @@ export function AgentWorkspace({
           // runtime from another session is still up. The hero composer's
           // picker covers the new-session draft.
           fullMode={
-            !newSessionMode && sessionUnrestricted(selectedHermesSessionId)
+            !newSessionMode &&
+            !selectedHermesSessionIsProvisional &&
+            sessionUnrestricted(selectedHermesSessionId)
           }
           title={
             !newSessionMode && selectedHermesSessionId
@@ -4404,13 +6766,48 @@ export function AgentWorkspace({
               : undefined
           }
           onRename={
-            !newSessionMode && selectedHermesSessionId
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
               ? (title) => renameHermesSession(selectedHermesSessionId, title)
               : undefined
           }
           onDelete={
-            !newSessionMode && selectedHermesSessionId
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
               ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
+              : undefined
+          }
+          onShowUsage={
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
+              ? () => setUsagePanelSessionId(selectedHermesSessionId)
+              : undefined
+          }
+          onCompactContext={
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
+              ? () => setCompactSessionId(selectedHermesSessionId)
+              : undefined
+          }
+          // Dev builds only: open the raw Hermes TUI on this exact session,
+          // under the same sandbox/unrestricted mode June used for it. Lets a
+          // developer tell a June adapter/UI bug apart from a Hermes one.
+          onOpenTuiDebug={
+            hermesTuiDebugAvailable() &&
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
+              ? () => {
+                  setError(null);
+                  void openHermesTuiDebug({
+                    sessionId: selectedHermesSessionId,
+                    unrestricted: sessionUnrestricted(selectedHermesSessionId),
+                  }).catch((err: unknown) => setError(messageFromError(err)));
+                }
               : undefined
           }
         />
@@ -4498,6 +6895,13 @@ export function AgentWorkspace({
                   onDismiss={() => setError(null)}
                 />
               ) : null}
+              {branchedNotice &&
+              branchedNotice.sessionId === selectedHermesSessionId ? (
+                <AgentBranchedBanner
+                  sourceTitle={branchedNotice.sourceTitle}
+                  onDismiss={() => setBranchedNotice(null)}
+                />
+              ) : null}
               {detailContent}
               {composer}
             </section>
@@ -4522,6 +6926,36 @@ export function AgentWorkspace({
                 document.querySelector(".app-shell") ?? document.body,
               )
             : null}
+          {usagePanelSessionId
+            ? createPortal(
+                <div
+                  className="agent-usage-overlay"
+                  role="presentation"
+                  onClick={(event) => {
+                    if (event.target === event.currentTarget) {
+                      setUsagePanelSessionId(null);
+                    }
+                  }}
+                >
+                  <SessionUsagePanel
+                    sessionId={usagePanelSessionId}
+                    fetchUsage={fetchSessionUsage}
+                    onClose={() => setUsagePanelSessionId(null)}
+                  />
+                </div>,
+                document.querySelector(".app-shell") ?? document.body,
+              )
+            : null}
+          {/* Dialog portals to document.body itself, so it is mounted directly
+              rather than wrapped in an overlay like the usage panel. */}
+          {compactSessionId ? (
+            <SessionCompactDialog
+              open
+              sessionId={compactSessionId}
+              compress={compressSessionContext}
+              onClose={() => setCompactSessionId(null)}
+            />
+          ) : null}
         </>
       )}
     </section>
@@ -5167,6 +7601,9 @@ function AgentSessionBar({
   onToggleArtifacts,
   onRename,
   onDelete,
+  onShowUsage,
+  onCompactContext,
+  onOpenTuiDebug,
 }: {
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
@@ -5177,6 +7614,11 @@ function AgentSessionBar({
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
   onDelete?: () => void;
+  onShowUsage?: () => void;
+  onCompactContext?: () => void;
+  /** Developer-only: open this session in Hermes' raw TUI. Undefined (and the
+   * menu item absent) in production builds. */
+  onOpenTuiDebug?: () => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title ?? "");
@@ -5207,7 +7649,9 @@ function AgentSessionBar({
     if (onRename && next && next !== title) onRename(next);
   }
 
-  const hasMenu = Boolean(onRename || onDelete);
+  const hasMenu = Boolean(
+    onRename || onDelete || onShowUsage || onCompactContext || onOpenTuiDebug,
+  );
 
   return (
     <div className="detail-bar agent-session-bar" data-tauri-drag-region>
@@ -5311,6 +7755,32 @@ function AgentSessionBar({
                 className="sidebar-identity-menu agent-session-menu"
                 role="menu"
               >
+                {onShowUsage ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onShowUsage();
+                    }}
+                  >
+                    <IconGauge size={14} />
+                    Usage
+                  </button>
+                ) : null}
+                {onCompactContext ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onCompactContext();
+                    }}
+                  >
+                    <IconConcise size={14} />
+                    Compact context
+                  </button>
+                ) : null}
                 {onRename ? (
                   <button
                     type="button"
@@ -5338,6 +7808,25 @@ function AgentSessionBar({
                     <IconTrashCan size={14} />
                     Delete session
                   </button>
+                ) : null}
+                {onOpenTuiDebug ? (
+                  <>
+                    <div className="context-menu-separator" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      // Debug-only fallback: resume this session in Hermes' raw
+                      // TUI to tell a June adapter/UI bug from a Hermes one.
+                      title={HERMES_TUI_DEBUG_WARNING}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onOpenTuiDebug();
+                      }}
+                    >
+                      <IconConsole size={14} />
+                      Debug with Hermes TUI
+                    </button>
+                  </>
                 ) : null}
               </div>
             ) : null}
@@ -5523,7 +8012,7 @@ export function SkillsToolsPanel({
           skill={selectedSkill}
           value={skillDraft}
           onBack={requestCloseSkillEditor}
-          onCancel={() => setSkillDraft(skillDocument?.content ?? "")}
+          onCancel={requestCloseSkillEditor}
           onChange={setSkillDraft}
           onSave={() => void saveSkill()}
         />
@@ -5679,24 +8168,19 @@ function SkillEditorPanel({
           <p className="agent-skill-editor-readonly-note">
             Read-only. This skill loads from ~/.agents/skills. Edit it on disk.
           </p>
-        ) : (
-          <>
-            <button
-              type="button"
-              disabled={!dirty || saving || loading}
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              disabled={!dirty || saving || loading || !document}
-              onClick={onSave}
-            >
-              {saving ? "Saving..." : "Save changes"}
-            </button>
-          </>
+        ) : null}
+        <button type="button" disabled={saving || loading} onClick={onCancel}>
+          Cancel
+        </button>
+        {readOnly ? null : (
+          <button
+            type="button"
+            className="primary-action primary-solid"
+            disabled={!dirty || saving || loading || !document}
+            onClick={onSave}
+          >
+            {saving ? "Saving..." : "Save changes"}
+          </button>
         )}
       </footer>
     </section>
@@ -6329,9 +8813,13 @@ function AgentResponseGallery({
               artifacts={section.artifacts}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
+              sudoSubmitting={{}}
+              secretSubmitting={{}}
               thinkingOpen={(key) => thinkingOpenByKey[key] ?? false}
               onApproval={galleryNoop}
               onClarify={galleryNoop}
+              onSudo={galleryNoop}
+              onSecret={galleryNoop}
               onDownloadArtifact={galleryNoop}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
@@ -6348,20 +8836,29 @@ function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
   clarifySubmitting,
+  sudoSubmitting,
+  secretSubmitting,
   cliAccess,
   thinkingOpen,
   onApproval,
   onClarify,
+  onSudo,
+  onSecret,
   onDownloadArtifact,
   onOpenArtifact,
   onThinkingOpenChange,
   onTopUp,
+  onBranch,
+  onEditUserPrompt,
+  branchingMessageId,
   turn,
 }: {
   activeThinkingKey?: string;
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
+  sudoSubmitting: Record<string, "approve" | "deny">;
+  secretSubmitting: Record<string, true>;
   /** State + handler for June's in-chat Agent CLI access request card.
    * Optional so the dev gallery can render rows without the live setting. */
   cliAccess?: AgentCliAccessCardProps;
@@ -6374,10 +8871,26 @@ function AgentChatTurnRow({
     part: Extract<AgentChatPart, { type: "clarify" }>,
     answer: string,
   ) => void;
+  onSudo: (
+    part: Extract<AgentChatPart, { type: "sudo" }>,
+    approved: boolean,
+  ) => void;
+  onSecret: (
+    part: Extract<AgentChatPart, { type: "secret" }>,
+    value: string,
+  ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
+  onEditUserPrompt?: (text: string) => void;
+  /** Fork the conversation from this turn into a new session (feature 07).
+   * Optional: only Hermes-session rows pass it — task rows and the dev gallery
+   * omit it, so the action is absent there. */
+  onBranch?: (messageId: string, sessionId?: string) => void;
+  /** The message id a branch is currently in flight for, so its action shows a
+   * working/disabled state. */
+  branchingMessageId?: string | null;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -6392,11 +8905,11 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "tool" }> =>
       part.type === "tool",
   );
-  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
-  // "Thought" disclosure so the conversation isn't littered with terminal rows.
-  const thinkingRunning =
-    reasoningParts.some((part) => part.status === "running") ||
-    toolParts.some((part) => part.status === "running");
+  // The disclosure owns internal reasoning only. Tool/action rows stay visible
+  // outside it so users can see what June is doing without expanding Thought.
+  const thinkingRunning = reasoningParts.some(
+    (part) => part.status === "running",
+  );
   const completedThinkingKey = `turn:${turn.id}:thinking`;
   const thinkingKey =
     thinkingRunning && activeThinkingKey
@@ -6409,6 +8922,8 @@ function AgentChatTurnRow({
     activeThinkingKey !== undefined &&
     thinkingOpen(activeThinkingKey);
   const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
+  const [copied, setCopied] = useState(false);
+  const copyResetTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const wasRunning = wasThinkingRunningRef.current;
@@ -6417,7 +8932,7 @@ function AgentChatTurnRow({
       !wasRunning ||
       thinkingRunning ||
       activeThinkingKey === undefined ||
-      reasoningParts.length + toolParts.length === 0 ||
+      reasoningParts.length === 0 ||
       !thinkingOpen(activeThinkingKey)
     ) {
       return;
@@ -6434,11 +8949,96 @@ function AgentChatTurnRow({
     toolParts.length,
   ]);
 
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    },
+    [],
+  );
+
   const contextParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "context" }> =>
       part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const copyText = copyableTextForTurn(turn);
+  const userPromptText = turn.role === "user" ? copyText : "";
+
+  async function copyTurn() {
+    if (!copyText) return;
+    try {
+      if (!navigator.clipboard?.writeText) return;
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copyResetTimerRef.current = undefined;
+      }, 1400);
+    } catch {
+      // Clipboard can fail in restricted contexts; leave the transcript alone.
+    }
+  }
+
+  // Per-turn transcript actions. Branch is rendered only on Hermes-session rows
+  // (which pass `onBranch`); it self-disables when the turn id is not a
+  // persisted message id (see isBranchableMessageId).
+  const branchSessionId = branchSourceSessionIdForTurn(turn);
+  const branchAction = onBranch ? (
+    <BranchFromHereAction
+      messageId={turn.id}
+      sessionId={branchSessionId}
+      onBranch={onBranch}
+      submitting={branchingMessageId === turn.id}
+    />
+  ) : null;
+  const copyAction = copyText ? (
+    <button
+      type="button"
+      className="agent-turn-action"
+      aria-label={copied ? "Copied message" : "Copy message"}
+      title={copied ? "Copied" : "Copy message"}
+      data-copied={copied ? "true" : undefined}
+      onClick={() => void copyTurn()}
+    >
+      {copied ? (
+        <IconCheckmark1Small size={13} aria-hidden />
+      ) : (
+        <IconClipboard size={13} aria-hidden />
+      )}
+      <span>{copied ? "Copied" : "Copy"}</span>
+    </button>
+  ) : null;
+  const editAction =
+    turn.role === "user" &&
+    !turn.isScheduledRun &&
+    userPromptText &&
+    onEditUserPrompt ? (
+      <button
+        type="button"
+        className="agent-turn-action"
+        aria-label="Edit message"
+        title="Edit message"
+        onClick={() => onEditUserPrompt(userPromptText)}
+      >
+        <IconPencilLine size={13} aria-hidden />
+        <span>Edit</span>
+      </button>
+    ) : null;
+  const turnActions =
+    copyAction || editAction || branchAction ? (
+      <div className="agent-turn-actions">
+        <div className="agent-turn-actions-inner">
+          {copyAction}
+          {editAction}
+          {branchAction}
+        </div>
+      </div>
+    ) : null;
 
   if (
     contextParts.length &&
@@ -6479,6 +9079,7 @@ function AgentChatTurnRow({
             />
           ))}
         </div>
+        {turnActions}
       </article>
     );
   }
@@ -6486,14 +9087,20 @@ function AgentChatTurnRow({
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
       <div className="agent-assistant-turn-body">
-        {reasoningParts.length > 0 || toolParts.length > 0 ? (
+        {reasoningParts.length > 0 ? (
           <AgentThinkingGroup
             reasoning={reasoningParts}
-            tools={toolParts}
             running={thinkingRunning}
             open={thinkingIsOpen}
             onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
+        ) : null}
+        {toolParts.length > 0 ? (
+          <div className="agent-tool-stack">
+            {toolParts.map((tool) => (
+              <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+            ))}
+          </div>
         ) : null}
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
@@ -6535,10 +9142,30 @@ function AgentChatTurnRow({
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
             />
+          ) : part.type === "sudo" ? (
+            <SudoPart
+              key={`${turn.id}:sudo:${part.id}`}
+              part={part}
+              submitting={sudoSubmitting[part.id]}
+              onSudo={onSudo}
+            />
+          ) : part.type === "secret" ? (
+            <SecretPart
+              key={`${turn.id}:secret:${part.id}`}
+              part={part}
+              submitting={secretSubmitting[part.id]}
+              onSecret={onSecret}
+            />
           ) : part.type === "notice" ? (
             <CreditsNoticePart
               key={`${turn.id}:notice:${index}`}
               onTopUp={onTopUp}
+            />
+          ) : part.type === "steering" ? (
+            <SteeringPart
+              key={`${turn.id}:steering:${index}`}
+              createdAt={turn.createdAt}
+              part={part}
             />
           ) : null,
         )}
@@ -6551,10 +9178,40 @@ function AgentChatTurnRow({
           <p className="agent-assistant-empty">
             <span className="text-shimmer">Thinking…</span>
           </p>
-        ) : null}
+        ) : (
+          // No actions on an empty/in-flight turn. There is nothing useful to
+          // copy or fork from yet.
+          turnActions
+        )}
       </div>
     </article>
   );
+}
+
+function copyableTextForTurn(turn: AgentChatTurn): string {
+  if (turn.role === "user") return userPromptTextForTurn(turn);
+  if (turn.role !== "assistant") return "";
+  return turn.parts
+    .filter(
+      (part): part is Extract<AgentChatPart, { type: "text" }> =>
+        part.type === "text",
+    )
+    .map((part) => stripAgentCliAccessRequest(part.text).trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function userPromptTextForTurn(turn: AgentChatTurn): string {
+  return turn.parts
+    .filter(
+      (part): part is Extract<AgentChatPart, { type: "text" }> =>
+        part.type === "text",
+    )
+    .map((part) => displayedComposerUserMessageText(part.text).trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 }
 
 function ContextCompactionPart({
@@ -6580,6 +9237,185 @@ function ContextCompactionPart({
       </summary>
       <MarkdownContent markdown={part.text} />
     </details>
+  );
+}
+
+/**
+ * Confirmation + result dialog for session context compaction (feature 08).
+ *
+ * Decoupled from the gateway like {@link SessionUsagePanel}: it takes a
+ * `compress(sessionId)` that already calls the typed `session.compress` wrapper
+ * and returns a normalized {@link CompressSessionResult}. That keeps the dialog
+ * trivially testable and lets AgentWorkspace own the gateway plumbing.
+ *
+ * The flow is three honest phases:
+ * - `idle`: explain what compaction does. The copy never claims the original
+ *   transcript is kept verbatim; it warns "Older messages may be summarized."
+ * - `working`: the compress call is in flight; the action shows a busy label.
+ * - `done` / `error`: on success, a "Context compacted" item (plus token
+ *   savings when the result reports before/after). On failure, a clear message
+ *   — and a busy-specific one when Hermes rejects mid-run with 4009 — with a
+ *   "Try again". Nothing crashes and no savings are invented.
+ */
+export function SessionCompactDialog({
+  open,
+  sessionId,
+  compress,
+  onClose,
+}: {
+  open: boolean;
+  sessionId: string;
+  compress: (sessionId: string) => Promise<CompressSessionResult>;
+  onClose: () => void;
+}) {
+  const [phase, setPhase] = useState<"idle" | "working" | "done" | "error">(
+    "idle",
+  );
+  const [result, setResult] = useState<CompressSessionResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Guards against a resolve landing after a newer run or after close/reopen.
+  const requestSeq = useRef(0);
+
+  // Reset to the confirmation each time the dialog (re)opens so a prior run's
+  // result or error never leaks into a fresh session's confirmation.
+  useEffect(() => {
+    if (open) {
+      requestSeq.current++;
+      setPhase("idle");
+      setResult(null);
+      setErrorMessage(null);
+    }
+  }, [open]);
+
+  function runCompaction() {
+    const seq = ++requestSeq.current;
+    setPhase("working");
+    setErrorMessage(null);
+    compress(sessionId).then(
+      (next) => {
+        if (seq !== requestSeq.current) return;
+        setResult(next);
+        setPhase("done");
+      },
+      (err) => {
+        if (seq !== requestSeq.current) return;
+        setErrorMessage(
+          isSessionBusyError(err)
+            ? "June is running right now. Wait for the current turn to finish, then compact context."
+            : "Couldn't compact context. Please try again.",
+        );
+        setPhase("error");
+      },
+    );
+  }
+
+  const working = phase === "working";
+
+  return (
+    <Dialog
+      open={open}
+      onClose={() => {
+        if (!working) onClose();
+      }}
+      title="Compact context"
+      leading={<IconConcise size={16} aria-hidden />}
+      width={440}
+      disableBackdropClose={working}
+      footer={
+        phase === "done" ? (
+          <button type="button" className="primary-action" onClick={onClose}>
+            Done
+          </button>
+        ) : phase === "error" ? (
+          <>
+            <button type="button" className="primary-action" onClick={onClose}>
+              Close
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={runCompaction}
+            >
+              Try again
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={onClose}
+              disabled={working}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={runCompaction}
+              disabled={working}
+            >
+              {working ? "Compacting…" : "Compact context"}
+            </button>
+          </>
+        )
+      }
+    >
+      <div className="agent-compact-body">
+        {phase === "done" ? (
+          <CompactSuccess result={result} />
+        ) : phase === "error" ? (
+          <InlineNotice
+            className="agent-compact-error"
+            tone="destructive"
+            role="alert"
+            body={errorMessage ?? "Couldn't compact context. Please try again."}
+          />
+        ) : (
+          <>
+            <p className="agent-compact-explainer">
+              This summarizes older context so the agent can continue with a
+              smaller working memory.
+            </p>
+            <p className="agent-compact-caveat">
+              Older messages may be summarized. The agent keeps a reference
+              summary rather than the full earlier transcript.
+            </p>
+          </>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Success body for {@link SessionCompactDialog}: a confirmation line, plus the
+ * before/after token reading ONLY when the result reported both (never a
+ * guessed or partial figure). */
+function CompactSuccess({ result }: { result: CompressSessionResult | null }) {
+  const before = result?.beforeTokens;
+  const after = result?.afterTokens;
+  const hasSavings = before !== undefined && after !== undefined;
+  const saved = hasSavings ? Math.max(0, before - after) : undefined;
+
+  return (
+    <div className="agent-compact-success" role="status">
+      <p className="agent-compact-success-line">
+        <IconCheckCircle2 size={15} aria-hidden />
+        Context compacted
+      </p>
+      {hasSavings ? (
+        <p className="agent-compact-savings">
+          {before.toLocaleString()} to {after.toLocaleString()} tokens
+          {saved !== undefined && saved > 0
+            ? ` (${saved.toLocaleString()} saved)`
+            : ""}
+        </p>
+      ) : (
+        <p className="agent-compact-savings" data-unavailable="true">
+          The agent now continues with a smaller working memory.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -6611,6 +9447,27 @@ function AgentErrorBanner({
   );
 }
 
+// Feature 07: confirms the freshly-opened session was forked from another, so
+// the user understands why they're suddenly in a new (but pre-populated)
+// thread. role="status" (not "alert") — this is reassurance, not an error.
+function AgentBranchedBanner({
+  sourceTitle,
+  onDismiss,
+}: {
+  sourceTitle: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="agent-branched-banner" role="status">
+      <IconBranchSimple size={14} aria-hidden />
+      <p>Branched from {sourceTitle}</p>
+      <button type="button" aria-label="Dismiss" onClick={onDismiss}>
+        <IconCrossMedium size={14} />
+      </button>
+    </div>
+  );
+}
+
 function visibleAgentWorkspaceError(
   error: AgentWorkspaceError | null,
   selectedSessionId: string | undefined,
@@ -6635,11 +9492,34 @@ function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
       actions={
         onTopUp ? (
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
-            Add funds
+            Upgrade
           </button>
         ) : undefined
       }
     />
+  );
+}
+
+/** A "Steering" system item (feature 06): the instruction the user redirected
+ * June toward mid-run, recorded quietly in the transcript so the conversation
+ * shows what changed course. Mirrors {@link ContextCompactionPart}'s quiet,
+ * timestamped system-row styling. */
+function SteeringPart({
+  createdAt,
+  part,
+}: {
+  createdAt: string;
+  part: Extract<AgentChatPart, { type: "steering" }>;
+}) {
+  return (
+    <div className="agent-steering-item">
+      <span className="agent-steering-icon" aria-hidden>
+        <IconArrowCornerDownRight size={14} />
+      </span>
+      <span className="agent-steering-label">Steering</span>
+      <span className="agent-steering-text">{part.text}</span>
+      <time>{relativeDate(createdAt)}</time>
+    </div>
   );
 }
 
@@ -7021,22 +9901,319 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
   return "Resolved";
 }
 
+export function branchSourceSessionIdForTurn(
+  turn: Pick<AgentChatTurn, "parts">,
+) {
+  for (const part of turn.parts) {
+    if (!("sessionId" in part)) continue;
+    const sessionId = part.sessionId?.trim();
+    if (sessionId) return sessionId;
+  }
+  return undefined;
+}
+
+/** The per-message "Branch from here" action (feature 07). Forks the
+ * conversation into a NEW session that starts from this message, leaving the
+ * source session untouched. Message-level branching is honest only when the
+ * turn is backed by a persisted Hermes message id; for in-flight/synthetic
+ * turns the button is disabled and explains that the fork point is available
+ * once the message is saved (see {@link isBranchableMessageId}). The branch
+ * itself flows through the typed `branchSession` method via `onBranch`. */
+export function BranchFromHereAction({
+  messageId,
+  onBranch,
+  sessionId,
+  submitting,
+}: {
+  messageId: string;
+  onBranch: (messageId: string, sessionId?: string) => void;
+  sessionId?: string;
+  submitting?: boolean;
+}) {
+  const branchable = isBranchableMessageId(messageId);
+  const disabled = submitting || !branchable;
+  return (
+    <button
+      type="button"
+      className="agent-turn-action"
+      // The disabled reason is honest, not silent: a synthetic/in-flight turn
+      // has no persisted id Hermes can fork from yet.
+      title={
+        branchable
+          ? "Branch from here"
+          : "Branching is available once the message is saved"
+      }
+      aria-label="Branch from here"
+      disabled={disabled}
+      onClick={() => onBranch(messageId, sessionId)}
+    >
+      <IconBranchSimple size={13} aria-hidden />
+      <span>Branch from here</span>
+    </button>
+  );
+}
+
+/** A privilege-escalation prompt (`sudo.request`). Approval is EXPLICIT: the
+ * card surfaces the command and reason Hermes gave (degrading gracefully when
+ * either is absent) and shows the execution mode so the user understands the
+ * blast radius before granting. Resolution flows through the typed
+ * `respondToSudo` method. Mirrors the approval card chrome. */
+export function SudoPart({
+  onSudo,
+  part,
+  submitting,
+}: {
+  onSudo: (
+    part: Extract<AgentChatPart, { type: "sudo" }>,
+    approved: boolean,
+  ) => void;
+  part: Extract<AgentChatPart, { type: "sudo" }>;
+  submitting?: "approve" | "deny";
+}) {
+  const disabled = Boolean(submitting) || part.status !== "pending";
+  const resolved = part.status !== "pending" || submitting !== undefined;
+  // Absent mode defaults to the safe direction (sandboxed) so the card never
+  // implies more access than is being granted.
+  const mode: HermesMode = part.mode ?? "sandboxed";
+  const unrestricted = mode === "unrestricted";
+  const decided =
+    part.approved ?? (submitting ? submitting === "approve" : undefined);
+
+  return (
+    <article className="agent-approval-card" data-status={part.status}>
+      <span className="agent-tool-icon">
+        {unrestricted ? (
+          <IconShieldCrossed size={14} />
+        ) : (
+          <IconShieldCheck size={14} />
+        )}
+      </span>
+      <div>
+        <div className="agent-tool-title">
+          <span>Privilege escalation requested</span>
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
+            {part.status === "pending" ? "Waiting" : "Resolved"}
+          </span>
+        </div>
+        <p>
+          {part.reason ??
+            "June needs elevated permissions before it can continue."}
+        </p>
+        {part.command ? <pre>{part.command}</pre> : null}
+        <p
+          className="agent-sudo-mode"
+          data-mode={mode}
+          title={
+            unrestricted
+              ? "Runs with full write access, outside June's sandbox."
+              : "Runs inside June's write sandbox."
+          }
+        >
+          {unrestricted ? (
+            <IconShieldCrossed size={12} aria-hidden />
+          ) : (
+            <IconShieldCheck size={12} aria-hidden />
+          )}
+          {unrestricted
+            ? "Will run unrestricted (full write access)"
+            : "Will run sandboxed (limited write access)"}
+        </p>
+        {resolved ? (
+          <p
+            className="agent-approval-result"
+            data-choice={decided ? "once" : "deny"}
+          >
+            {decided ? (
+              <IconCheckmark1Small size={14} />
+            ) : (
+              <IconCrossMedium size={14} />
+            )}
+            {decided
+              ? submitting
+                ? "Approving"
+                : "Approved"
+              : submitting
+                ? "Denying"
+                : "Denied"}
+          </p>
+        ) : (
+          <div className="agent-approval-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={disabled}
+              onClick={() => onSudo(part, true)}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost agent-approval-deny"
+              disabled={disabled}
+              onClick={() => onSudo(part, false)}
+            >
+              Deny
+            </button>
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+/** A `secret.request` prompt. SECURITY: the entered value lives ONLY in this
+ * component's local state, is sent straight to the gateway via the typed
+ * `respondToSecret` method, and is wiped on submit, cancel, and unmount. It is
+ * never logged, never placed on a part/event, and never echoed (the input is a
+ * password field). The requested key name is redacted when it looks sensitive
+ * so a token name can't leak into the transcript either. */
+export function SecretPart({
+  onSecret,
+  onCancel,
+  part,
+  submitting,
+}: {
+  onSecret: (
+    part: Extract<AgentChatPart, { type: "secret" }>,
+    value: string,
+  ) => void;
+  onCancel?: (part: Extract<AgentChatPart, { type: "secret" }>) => void;
+  part: Extract<AgentChatPart, { type: "secret" }>;
+  submitting?: true;
+}) {
+  const [value, setValue] = useState("");
+  const inputId = useId();
+  const disabled = part.status !== "pending" || submitting !== undefined;
+  const label = part.keyName ? redactedKeyName(part.keyName) : undefined;
+
+  // Defense in depth: clear the entered value if the card unmounts (navigation,
+  // resolution) so it never lingers in a detached React tree.
+  useEffect(() => {
+    return () => setValue("");
+  }, []);
+
+  function submit() {
+    const entered = value;
+    if (!entered) return;
+    // Hand the value off, then immediately wipe local state — the value never
+    // outlives the submit call here.
+    onSecret(part, entered);
+    setValue("");
+  }
+
+  function cancel() {
+    setValue("");
+    onCancel?.(part);
+  }
+
+  return (
+    <article className="agent-approval-card" data-status={part.status}>
+      <span className="agent-tool-icon">
+        <IconLock size={14} />
+      </span>
+      <div>
+        <div className="agent-tool-title">
+          <span>Secret requested</span>
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
+            {part.status === "pending" ? "Waiting" : "Provided"}
+          </span>
+        </div>
+        <p>
+          {part.reason ?? "June needs a secret value before it can continue."}
+        </p>
+        {label ? (
+          <p className="agent-secret-key">
+            <span>Key</span>
+            <code>{label}</code>
+          </p>
+        ) : null}
+        {part.status === "pending" ? (
+          <form
+            className="agent-secret-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submit();
+            }}
+          >
+            <label htmlFor={inputId} className="agent-secret-label">
+              Secret value
+            </label>
+            <input
+              id={inputId}
+              type="password"
+              className="agent-secret-input"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              // The browser must never store or suggest this value.
+              data-1p-ignore
+              data-lpignore="true"
+              disabled={disabled}
+              value={value}
+              placeholder="Paste the value"
+              onChange={(event) => setValue(event.currentTarget.value)}
+            />
+            <p className="agent-secret-note">
+              Sent straight to the agent and never saved, logged, or shown.
+            </p>
+            <div className="agent-approval-actions">
+              <button
+                type="submit"
+                className="btn btn-secondary"
+                disabled={disabled || !value}
+              >
+                {submitting ? "Submitting" : "Submit"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost agent-approval-deny"
+                disabled={submitting !== undefined}
+                onClick={cancel}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <p className="agent-approval-result" data-choice="once">
+            <IconCheckmark1Small size={14} />
+            Secret provided
+          </p>
+        )}
+      </div>
+    </article>
+  );
+}
+
+/** Masks a requested key name when it matches the shared sensitive-key pattern
+ * (TOKEN, API_KEY, SECRET, PASSWORD, PRIVATE_KEY, CREDENTIAL), so even the
+ * label can't leak a token name into the transcript. Benign names (e.g.
+ * GITHUB_USERNAME) pass through unchanged. */
+function redactedKeyName(keyName: string) {
+  return isSensitiveKey(keyName) ? "[redacted]" : keyName;
+}
+
 function AgentThinkingGroup({
   open,
   onOpenChange,
   reasoning,
-  tools,
   running,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   reasoning: Extract<AgentChatPart, { type: "reasoning" }>[];
-  tools: Extract<AgentChatPart, { type: "tool" }>[];
   running: boolean;
 }) {
   // Collapsed by default to a short label — "Thinking" while it works, "Thought"
-  // once done (terracotta while live). Expanding reveals the reasoning prose and
-  // any terminal calls it ran, nested together.
+  // once done (terracotta while live). Expanding reveals only the reasoning
+  // prose; tool/action rows render outside this disclosure.
   const reasoningText = reasoning
     .map((part) => part.text)
     .join("\n\n")
@@ -7058,9 +10235,6 @@ function AgentThinkingGroup({
         {reasoningText ? (
           <div className="agent-reasoning-text">{reasoningText}</div>
         ) : null}
-        {tools.map((tool) => (
-          <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
-        ))}
       </div>
     </details>
   );
@@ -7982,16 +11156,6 @@ function stringValue(value: unknown, preserveWhitespace = false) {
   return undefined;
 }
 
-function humanizeToolName(value: string) {
-  return value
-    .replace(/^tools?[._-]/i, "")
-    .replaceAll("_", " ")
-    .replaceAll("-", " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
 function capabilityMatches(
   item: HermesSkillInfo | HermesToolsetInfo | HermesMessagingPlatformInfo,
   query: string,
@@ -8291,6 +11455,25 @@ function isTerminalHermesEvent(type: string) {
   );
 }
 
+function hermesToolEventPhase(type: string): HermesToolEventPhase | undefined {
+  const normalized = type.toLowerCase();
+  if (normalized === "tool.complete") return "complete";
+  if (normalized === "tool.start") return "start";
+  if (normalized === "tool.progress") return "progress";
+  return undefined;
+}
+
+function toolEventActivityKey(event: HermesGatewayEvent) {
+  const payload = event.payload as Record<string, unknown> | undefined;
+  return (
+    stringValue(payload?.tool_id) ??
+    stringValue(payload?.tool_call_id) ??
+    stringValue(payload?.call_id) ??
+    stringValue(payload?.id) ??
+    stringValue(payload?.request_id)
+  );
+}
+
 function agentStatusFromHermesEvent(
   event: HermesGatewayEvent,
 ): AgentSessionStatusKind | undefined {
@@ -8334,7 +11517,7 @@ function agentStatusSummaryFromHermesEvent(
       stringValue(payload?.name) ??
       stringValue(payload?.tool_name) ??
       stringValue(payload?.tool);
-    return name ? `Using ${humanizeToolName(name)}.` : "Using a tool.";
+    return toolActivitySentence(name, payload);
   }
   if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
     return "Thinking.";
@@ -8344,8 +11527,8 @@ function agentStatusSummaryFromHermesEvent(
 
 function visibleHermesMessageText(message: HermesSessionMessage) {
   const text =
-    textFromHermesValue(message.content) ??
-    textFromHermesValue(message.text) ??
+    textFromHermesContent(message.content) ??
+    textFromHermesContent(message.text) ??
     "";
   return displayedComposerUserMessageText(stripHermesVisibleContext(text));
 }
@@ -8364,6 +11547,20 @@ function sameAgentAttachments(
     left.length === right.length &&
     left.every((attachment, index) => attachment.id === right[index]?.id)
   );
+}
+
+/** Short, sentence-case status word for an attachment chip (feature 19). Empty
+ * for the resting imported/pending states — the chip already reads as "ready";
+ * only the terminal attached/failed states earn a label. No dashes. */
+function attachmentStatusLabel(state: HermesAttachmentState): string {
+  switch (state.status) {
+    case "attached":
+      return "Attached";
+    case "failed":
+      return "Couldn't attach";
+    default:
+      return "";
+  }
 }
 
 function commandTokensForResolutions(
@@ -8393,25 +11590,6 @@ function displayedComposerUserMessageText(content: string): string {
     text = next;
   }
   return text;
-}
-
-function textFromHermesValue(value: unknown): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value === "string") return value.trim() ? value.trim() : undefined;
-  if (typeof value === "number" || typeof value === "boolean")
-    return String(value);
-  if (Array.isArray(value)) {
-    const text = value.map((item) => textFromHermesValue(item) ?? "").join("");
-    return text.trim() ? text.trim() : undefined;
-  }
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    for (const key of ["text", "content", "message", "output_text"]) {
-      const text = textFromHermesValue(record[key]);
-      if (text) return text;
-    }
-  }
-  return undefined;
 }
 
 function sameVisibleMessageText(left: string, right: string) {
@@ -8640,6 +11818,23 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
   if (!(key in record)) return record;
   const next = { ...record };
   delete next[key];
+  return next;
+}
+
+function moveRecordKey<T>(
+  record: Record<string, T[]>,
+  from: string,
+  to: string,
+) {
+  const moved = record[from] ?? [];
+  const existing = record[to] ?? [];
+  const next = { ...record };
+  delete next[from];
+  if (moved.length || existing.length) {
+    next[to] = [...existing, ...moved];
+  } else {
+    delete next[to];
+  }
   return next;
 }
 

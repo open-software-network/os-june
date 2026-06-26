@@ -1,0 +1,14 @@
+{
+  "name": "interrupt",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "An interrupt/stop signal for the running turn. No classifier branch yet -> unsupported. GAP feature 13 (subagent interrupt / stop control) is the consumer. Locked as honest current behavior; replay test asserts unsupported with rawType set.",
+  "frames": [
+    {
+      "type": "interrupt",
+      "session_id": "sess-interrupt",
+      "payload": { "reason": "user pressed stop", "scope": "turn" }
+    }
+  ]
+}

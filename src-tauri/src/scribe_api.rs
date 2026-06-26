@@ -15,7 +15,7 @@ use std::{
 // record, and the v0.0.3 DMG shipped pointing at it.
 const DEFAULT_SCRIBE_API_URL: &str = "https://scribe-api.opensoftware.co";
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
-const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_PROXY_MAX_MESSAGES: usize = 64;
 const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
@@ -371,6 +371,41 @@ pub async fn proxy_agent_chat_completions(
         });
     }
     Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+/// A buffered Scribe API response forwarded verbatim to the local web MCP.
+pub struct WebProxyResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+/// Forwards a web tool request (`/v1/web/search` or `/v1/web/fetch`) to the
+/// Scribe API with the user's access token, returning the raw response so the
+/// caller can pass the `ApiResponse` envelope straight through. The access
+/// token never leaves this process; the MCP only ever talks to the loopback
+/// proxy.
+pub async fn forward_web_request(
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<WebProxyResponse, AppError> {
+    let response = authed_send(path, |client, url, token| {
+        client.post(url).bearer_auth(token).json(body)
+    })
+    .await?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = response.bytes().await.map_err(network_error)?;
+    Ok(WebProxyResponse {
+        status,
+        content_type,
+        body: bytes.to_vec(),
+    })
 }
 
 fn limit_agent_chat_messages_for_proxy(body: &mut serde_json::Value) {
@@ -963,7 +998,7 @@ where
     if envelope.error_code == Some(ERR_INSUFFICIENT_CREDITS) {
         return Err(AppError::new(
             "insufficient_credits",
-            "Your balance is too low. Add funds to continue.",
+            "Your balance is too low. Upgrade to continue.",
         ));
     }
     let _ = path;

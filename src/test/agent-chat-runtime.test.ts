@@ -122,6 +122,168 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("preserves same-timestamp Hermes user-before-assistant source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "user-message",
+        role: "user",
+        content: "Please check this.",
+        timestamp: createdAt,
+      },
+      {
+        id: "assistant-message",
+        role: "assistant",
+        content: "Thinking about it.",
+        timestamp: createdAt,
+      },
+    ]);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("preserves same-timestamp task user-before-assistant source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const messages: AgentMessageDto[] = [
+      {
+        id: "user-message",
+        taskId: "task-1",
+        role: "user",
+        content: "Please check this.",
+        createdAt,
+      },
+      {
+        id: "assistant-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "Thinking about it.",
+        createdAt,
+      },
+    ];
+
+    const turns = buildAgentChatTurns(messages, []);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("preserves same-timestamp Hermes assistant-before-user source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-message",
+        role: "assistant",
+        content: "Here is the answer.",
+        timestamp: createdAt,
+      },
+      {
+        id: "user-follow-up",
+        role: "user",
+        content: "One more thing.",
+        timestamp: createdAt,
+      },
+    ]);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["assistant", "user"]);
+  });
+
+  it("preserves same-timestamp task assistant-before-user source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const messages: AgentMessageDto[] = [
+      {
+        id: "assistant-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "Here is the answer.",
+        createdAt,
+      },
+      {
+        id: "user-follow-up",
+        taskId: "task-1",
+        role: "user",
+        content: "One more thing.",
+        createdAt,
+      },
+    ];
+
+    const turns = buildAgentChatTurns(messages, []);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["assistant", "user"]);
+  });
+
+  it("preserves same-timestamp Hermes same-role source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "z-message",
+        role: "assistant",
+        content: "First assistant row.",
+        timestamp: createdAt,
+      },
+      {
+        id: "a-message",
+        role: "assistant",
+        content: "Second assistant row.",
+        timestamp: createdAt,
+      },
+    ]);
+
+    expect(
+      turns.map((turn) => {
+        const textPart = turn.parts.find((part) => part.type === "text");
+        return textPart?.type === "text" ? textPart.text : "";
+      }),
+    ).toEqual(["First assistant row.", "Second assistant row."]);
+  });
+
+  it("preserves same-timestamp task same-role source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const messages: AgentMessageDto[] = [
+      {
+        id: "z-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "First assistant row.",
+        createdAt,
+      },
+      {
+        id: "a-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "Second assistant row.",
+        createdAt,
+      },
+    ];
+
+    const turns = buildAgentChatTurns(messages, []);
+
+    expect(
+      turns.map((turn) => {
+        const textPart = turn.parts.find((part) => part.type === "text");
+        return textPart?.type === "text" ? textPart.text : "";
+      }),
+    ).toEqual(["First assistant row.", "Second assistant row."]);
+  });
+
+  it("keeps synthetic same-timestamp assistant turns in source order", () => {
+    const receivedAt = "2026-06-11T12:00:00.000Z";
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      Array.from({ length: 12 }, (_, index) => ({
+        type: "message.complete",
+        receivedAt,
+        payload: { text: `Reply ${index}` },
+      })),
+    );
+
+    expect(
+      turns.map((turn) => {
+        const textPart = turn.parts.find((part) => part.type === "text");
+        return textPart?.type === "text" ? textPart.text : "";
+      }),
+    ).toEqual(Array.from({ length: 12 }, (_, index) => `Reply ${index}`));
+  });
+
   it("strips explicit skill context from persisted Hermes user messages", () => {
     const turns = buildHermesSessionChatTurns([
       {
@@ -855,6 +1017,108 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.status).toBe("complete");
   });
 
+  it("labels live terminal tool rows by the activity in their payload", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "terminal",
+            command: "curl https://example.com/docs",
+          },
+        },
+      ],
+    );
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Browsing",
+      status: "running",
+    });
+  });
+
+  it("keeps inferred tool labels when progress frames omit the tool name", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "terminal",
+            command: "curl https://example.com/docs",
+          },
+        },
+        {
+          type: "tool.progress",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: {
+            tool_id: "tool-1",
+            output: "Fetched 42 lines",
+          },
+        },
+        {
+          type: "tool.complete",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          payload: {
+            tool_id: "tool-1",
+            result: "Done",
+          },
+        },
+      ],
+    );
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Browsing",
+      status: "complete",
+    });
+    expect(tool?.type === "tool" ? tool.text : "").toContain(
+      "Fetched 42 lines",
+    );
+  });
+
+  it("keeps inferred labels when persisted tool result messages arrive", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-06-04T10:00:00.000Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: {
+              name: "list_files",
+              arguments: { path: "src" },
+            },
+          },
+        ]),
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "list_files",
+        content: "src/App.tsx",
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Reading files",
+      status: "complete",
+    });
+    expect(tool?.type === "tool" ? tool.text : "").toContain("src/App.tsx");
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],
@@ -967,7 +1231,7 @@ describe("Agent chat runtime", () => {
 
   it("keeps assistant prose about credits as ordinary text", () => {
     const prose =
-      "If you see insufficient_credits errors, top up from settings.";
+      "If you see insufficient_credits errors, upgrade from settings.";
     const turns = buildHermesSessionChatTurns([
       {
         id: "1",

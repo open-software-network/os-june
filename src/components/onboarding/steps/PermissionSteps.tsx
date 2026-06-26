@@ -115,15 +115,11 @@ export function PermissionsStep({
   function openAccessibilitySettings() {
     // Fire the helper's prompting check first: it registers the dictation
     // helper in the Accessibility list (so there's a toggle to flip) and
-    // shows the native dialog. Open the pane only after that IPC resolves —
-    // sequenced, not concurrent, so the registration lands before System
-    // Settings can steal focus from the prompt. (Same dance as
-    // PermissionBanner.)
-    void dictationHelperCommand({ type: "request_accessibility_permission" })
-      .catch(() => undefined)
-      .finally(() => {
-        void openPrivacySettings("accessibility");
-      });
+    // shows the native dialog. Let macOS own the System Settings handoff so
+    // the native prompt is not left open behind a programmatic settings launch.
+    void dictationHelperCommand({
+      type: "request_accessibility_permission",
+    }).catch(() => undefined);
   }
 
   return (

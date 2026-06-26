@@ -260,7 +260,30 @@ describe("NoteEditor", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Transcribing audio...",
     );
+    expect(
+      screen.getByRole("progressbar", { name: "Note processing progress" }),
+    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
     expect(screen.getByText("Previous system transcript")).toBeInTheDocument();
+  });
+
+  it("shows transcript progress before any transcript text exists", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          processingStatus: "transcribing",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Transcribing audio...",
+    );
+    expect(
+      screen.getByRole("progressbar", { name: "Note processing progress" }),
+    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
+    expect(screen.queryByText("No transcript is available yet.")).toBeNull();
   });
 
   it("orders source transcript turns by persisted turn metadata", () => {
@@ -542,6 +565,23 @@ describe("NoteEditor", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows validating progress in the notes tab", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "validating",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing audio...");
+    expect(
+      screen.getByRole("progressbar", { name: "Note processing progress" }),
+    ).toHaveAttribute("aria-valuetext", "Audio stage in progress");
+  });
+
   it("shows a queued count when a follow-up recording is stacked", () => {
     render(
       <NoteEditor
@@ -558,6 +598,9 @@ describe("NoteEditor", () => {
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent("Generating notes");
     expect(status).toHaveTextContent("+1");
+    expect(
+      screen.getByRole("progressbar", { name: "Note processing progress" }),
+    ).toHaveAttribute("aria-valuetext", "Summary stage in progress");
   });
 
   it("starts recording immediately without a consent gate", async () => {

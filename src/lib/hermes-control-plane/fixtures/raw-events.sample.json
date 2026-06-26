@@ -1,0 +1,128 @@
+{
+  "_comment": "Sample raw Hermes gateway frames, one per known event family, for replay tests. Fixture DATA lives beside the module; the test files that consume it live in src/test/ (vite.config only runs tests from there). Feature 05 extends this into a full replay corpus.",
+  "events": [
+    { "type": "gateway.ready" },
+    {
+      "type": "session.info",
+      "session_id": "s1",
+      "payload": { "status": "ready" }
+    },
+    {
+      "type": "message.start",
+      "session_id": "s1",
+      "payload": { "message_id": "m1" }
+    },
+    {
+      "type": "message.delta",
+      "session_id": "s1",
+      "payload": { "message_id": "m1", "delta": "Hello" }
+    },
+    {
+      "type": "message.complete",
+      "session_id": "s1",
+      "payload": { "message_id": "m1", "text": "Hello world" }
+    },
+    {
+      "type": "thinking.delta",
+      "session_id": "s1",
+      "payload": { "delta": "thinking..." }
+    },
+    {
+      "type": "reasoning.delta",
+      "session_id": "s1",
+      "payload": { "delta": "reasoning..." }
+    },
+    {
+      "type": "status.update",
+      "session_id": "s1",
+      "payload": { "status": "Reading files" }
+    },
+    {
+      "type": "tool.start",
+      "session_id": "s1",
+      "payload": { "tool_call_id": "t1", "name": "read_file" }
+    },
+    {
+      "type": "tool.progress",
+      "session_id": "s1",
+      "payload": { "tool_call_id": "t1", "output": "..." }
+    },
+    {
+      "type": "tool.complete",
+      "session_id": "s1",
+      "payload": { "tool_call_id": "t1", "result": "done" }
+    },
+    {
+      "type": "clarify.request",
+      "session_id": "s1",
+      "payload": {
+        "request_id": "c1",
+        "question": "Which file?",
+        "choices": ["a", "b"]
+      }
+    },
+    {
+      "type": "approval.request",
+      "session_id": "s1",
+      "payload": {
+        "request_id": "a1",
+        "tool_name": "shell",
+        "command": "rm -rf build",
+        "description": "Delete the build dir"
+      }
+    },
+    {
+      "type": "sudo.request",
+      "session_id": "s1",
+      "payload": {
+        "request_id": "su1",
+        "command": "apt install foo",
+        "reason": "needs root",
+        "mode": "unrestricted"
+      }
+    },
+    {
+      "type": "secret.request",
+      "session_id": "s1",
+      "payload": {
+        "request_id": "se1",
+        "key_name": "OPENAI_API_KEY",
+        "reason": "to call the API",
+        "api_key": "sk-should-never-appear"
+      }
+    },
+    {
+      "type": "subagent.start",
+      "session_id": "s1",
+      "payload": {
+        "subagent_id": "sub1",
+        "goal": "Research the codebase",
+        "parent_session_id": "s1"
+      }
+    },
+    {
+      "type": "subagent.progress",
+      "session_id": "s1",
+      "payload": { "subagent_id": "sub1", "summary": "Halfway done" }
+    },
+    {
+      "type": "subagent.complete",
+      "session_id": "s1",
+      "payload": { "subagent_id": "sub1", "summary": "Found 3 files" }
+    },
+    {
+      "type": "error",
+      "session_id": "s1",
+      "payload": {
+        "message": "Something failed",
+        "code": 500,
+        "authorization": "Bearer secret-token"
+      }
+    },
+    {
+      "type": "some.future.event",
+      "session_id": "s1",
+      "payload": { "whatever": true }
+    }
+  ]
+}

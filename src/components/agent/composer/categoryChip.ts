@@ -19,6 +19,7 @@ import {
 } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import { matchSkillSlashSuggestions } from "../../../lib/skill-slash-commands";
+import { matchBuiltinComposerSlashCommands } from "../../../lib/agent-composer-slash-commands";
 
 /** Node name for the inline category chip. Distinct from the generic
  * "mention" node so the composer's chip styling never bleeds into (or
@@ -181,7 +182,11 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
             .run();
           return;
         }
-        insertSkillSlashCommand(editor, item.skill.name, range);
+        if (item.kind === "builtin") {
+          insertSlashCommandText(editor, item.command.insertText, range);
+          return;
+        }
+        insertSlashCommandText(editor, `/${item.skill.name} `, range);
       },
       render: () => {
         let renderer: ReactRenderer<
@@ -351,11 +356,16 @@ function composerSlashCommandItems(
   query: string,
   skills: HermesSkillInfo[] | null | undefined,
 ): ComposerSlashCommandItem[] {
+  const builtins = matchBuiltinComposerSlashCommands(query).map((command) => ({
+    kind: "builtin" as const,
+    command,
+  }));
   const categories = matchReportCategories(query).map((category) => ({
     kind: "category" as const,
     category,
   }));
   return [
+    ...builtins,
     ...categories,
     ...matchSkillSlashSuggestions(query, skills, SLASH_MENU_SKILL_LIMIT).map(
       (skill) => ({
@@ -366,12 +376,11 @@ function composerSlashCommandItems(
   ];
 }
 
-function insertSkillSlashCommand(
+function insertSlashCommandText(
   editor: Editor,
-  skillName: string,
+  text: string,
   range: { from: number; to: number },
 ) {
-  const text = `/${skillName} `;
   editor
     .chain()
     .focus()

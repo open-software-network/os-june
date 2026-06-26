@@ -1,0 +1,41 @@
+{
+  "name": "provider-account-error",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "Upstream provider / account failures. A generic `error` frame -> error (message + code surfaced, secret-like fields redacted). Bespoke `provider.error` / `account.error` types have no classifier branch -> unsupported. SECURITY: the error payload below embeds a bearer token under an `authorization` key and a long token under a benign key; the error branch surfaces only message/code, and unsupported sanitizes its payload, so neither token may appear in the serialized event. Tokens are OBVIOUSLY FAKE placeholders.",
+  "_leakCanary": "Bearer FAKE-PROVIDER-TOKEN-do-not-use-aaaaaaaaaaaaaaaaaaaa",
+  "frames": [
+    {
+      "type": "error",
+      "session_id": "sess-provider",
+      "payload": {
+        "message": "Upstream provider returned 401 Unauthorized",
+        "code": 401,
+        "recoverable": false,
+        "authorization": "Bearer FAKE-PROVIDER-TOKEN-do-not-use-aaaaaaaaaaaaaaaaaaaa",
+        "context": {
+          "api_key": "sk-FAKE-account-key-do-not-use-bbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "type": "provider.error",
+      "session_id": "sess-provider",
+      "payload": {
+        "provider": "openai",
+        "message": "rate limited",
+        "retry_after_s": 30,
+        "token": "FAKE-RATE-LIMIT-TOKEN-do-not-use-cccccccccccccccccccc"
+      }
+    },
+    {
+      "type": "account.error",
+      "session_id": "sess-provider",
+      "payload": {
+        "message": "insufficient credits",
+        "balance_cents": 0
+      }
+    }
+  ]
+}

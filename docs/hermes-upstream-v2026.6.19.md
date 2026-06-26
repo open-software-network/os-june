@@ -62,3 +62,72 @@ No required app code migration was found for the existing June agent, skills, me
 - Expose image editing by wiring existing file/image attachments into the upstream `image_generate` edit inputs.
 - Expose background subagent watch handles by adding UI for pending work, completion events, and reopened sessions.
 - Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces.
+
+## Compatibility matrix
+
+June keeps a machine-readable compatibility matrix at
+`src/lib/hermes-control-plane/compatibility/`. It records, per pinned Hermes
+version, which control-plane methods are wired into UI, which classified events
+render, and which first-party feature surfaces exist. Query it through
+`isHermesFeatureSupported(feature)` and `getFeatureStatus(feature)`.
+
+The matrix `hermesVersion` MUST match this note's pin (`v2026.6.19`). On every
+Hermes pin bump:
+
+1. Update `PINNED_HERMES_VERSION` in `compatibility/matrix.ts` to the new pin.
+2. Re-audit every entry honestly: a surface is `supported` only when June both
+   handles it and ships UI/flow for it with tests. Newly added upstream surfaces
+   start as `planned` or `unsupported`, never `supported`.
+3. Add any new method, event, or feature key the bump introduces.
+
+## Release-gate smoke test
+
+The static matrix above records what June claims to support. The smoke test
+proves the claim against a live runtime. It launches Hermes exactly as the app
+does (`hermes dashboard --no-open --host 127.0.0.1 --port <port>`), polls
+`/api/status` with the bearer token, connects `/api/ws?token=...`, and runs a
+minimal JSON-RPC checklist.
+
+Run it locally or in release CI:
+
+```text
+pnpm test:hermes-smoke
+```
+
+Two phases, gated independently:
+
+- Protocol smoke (default; no provider key): start, status, ws connect,
+  `session.create`, `session.active_list`, `command.dispatch /model` (accepted
+  or a known controlled error), `session.interrupt`. No model tokens are spent.
+- Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
+  has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
+  for a completion. It costs provider tokens, so it is off by default.
+
+Environment variables:
+
+- `SCRIBE_HERMES_COMMAND`: absolute path to a `hermes` binary. Highest priority
+  (mirrors the Rust override). When unset, the script probes the same
+  user-local venv locations the bridge falls back to.
+- `HERMES_SMOKE_MODEL=1`: also run the model-costing `prompt.submit` phase.
+- `HERMES_SMOKE_TIMEOUT_MS`: per-step RPC timeout (default 120000).
+- `HERMES_SMOKE_READY_MS`: readiness-wait budget (default 45000, matches the
+  bridge `READY_TIMEOUT`).
+- `HERMES_SMOKE_KEEP_HOME`: keep the throwaway `HERMES_HOME` for inspection.
+
+Skip behavior: when no Hermes binary is found, the script prints
+"Hermes runtime not found, skipping." and exits 0. That keeps it safe on
+developer machines and on PR CI (which has no bundled runtime). A failed phase
+exits 1 and writes a `hermes-smoke-failure-<timestamp>.log` artifact.
+
+The pure helpers it relies on (token shape, ws-url and status-url construction,
+the dashboard arg vector, JSON-RPC request/response framing, binary discovery)
+live in `src/lib/hermes-smoke/helpers.ts` and are unit-tested in
+`src/test/hermes-smoke.test.ts`, so `pnpm test` stays green with no runtime.
+
+On a Hermes pin bump (feature 20 checklist), run `pnpm test:hermes-smoke`
+against the new bundled runtime (point `SCRIBE_HERMES_COMMAND` at the extracted
+binary, or run it inside the build that bundles it) BEFORE flipping any matrix
+entry to `supported`. The Node version must support `--experimental-strip-types`
+(Node 22.6+; CI pins Node 22).
+
+This is a required step in the feature 20 upgrade checklist.

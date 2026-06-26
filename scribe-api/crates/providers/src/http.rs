@@ -8,6 +8,10 @@ pub fn default_client() -> Client {
     build_client(DEFAULT_TIMEOUT)
 }
 
+pub fn client_with_timeout(timeout: Duration) -> Client {
+    build_client(timeout)
+}
+
 pub fn jwks_client() -> Client {
     build_client(Duration::from_secs(5))
 }

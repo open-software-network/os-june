@@ -774,7 +774,9 @@ pub fn dictation_helper_command(
     command: serde_json::Value,
 ) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
-    let _ = &app;
+    if helper_command_resets_shortcut_activation(&command) {
+        reset_shortcut_activation(&app);
+    }
 
     #[cfg(not(target_os = "macos"))]
     if state
@@ -787,6 +789,13 @@ pub fn dictation_helper_command(
     }
 
     send_helper_command(&state, command)
+}
+
+fn helper_command_resets_shortcut_activation(command: &serde_json::Value) -> bool {
+    matches!(
+        command.get("type").and_then(serde_json::Value::as_str),
+        Some("stop_and_paste" | "discard_recording" | "toggle_listening")
+    )
 }
 
 #[tauri::command]
@@ -2096,8 +2105,10 @@ fn emit_dictation_cleanup_skipped(app: &AppHandle, provider: &str, error: &AppEr
 
 fn looks_like_instruction_response(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
-    normalized.starts_with("sure")
+    looks_like_report_summary_response(&normalized)
+        || normalized.starts_with("sure")
         || normalized.starts_with("here")
+        || normalized.starts_with("summary:")
         || normalized.starts_with("the transcript ")
         || normalized.starts_with("the user expresses")
         || normalized.starts_with("the user did")
@@ -2118,6 +2129,27 @@ fn looks_like_instruction_response(value: &str) -> bool {
         || normalized.contains(" spelled correctly ")
         || normalized.contains("rewritten text")
         || normalized.contains("normalized transcript")
+}
+
+fn looks_like_report_summary_response(normalized: &str) -> bool {
+    normalized.starts_with("bug report assessment")
+        || normalized.starts_with("user report summary")
+        || normalized.starts_with("what likely happened")
+        || normalized.starts_with("likely affected component")
+        || normalized.starts_with("notes for the team")
+        || normalized.contains(" user report summary")
+        || normalized.contains(" bug report assessment")
+        || normalized.contains(" what likely happened")
+        || normalized.contains(" likely affected component")
+        || normalized.contains(" notes for the team")
+        || ((normalized.starts_with("user performed ")
+            || normalized.starts_with("user reported ")
+            || normalized.starts_with("the user performed")
+            || normalized.starts_with("the user reported"))
+            && (normalized.contains("long dictation")
+                || normalized.contains("instead of producing")
+                || normalized.contains("summary-like")
+                || normalized.contains("transcription pipeline")))
 }
 
 fn spawn_dictation_history_write(app: AppHandle, transcript: TranscriptionProviderResult) {
@@ -2225,6 +2257,19 @@ fn outcome_from_clean_transcript(
             event: Some(no_text_event_for_observed_audio(observed_audio_level)),
             transcript: None,
         },
+        transcript if looks_like_instruction_response(&transcript.text) => {
+            DictationTranscriptionOutcome {
+                helper_command: serde_json::json!({ "type": "discard_recording" }),
+                event: Some(serde_json::json!({
+                    "type": "error",
+                    "payload": {
+                        "code": "dictation_response_invalid",
+                        "message": "Dictation returned a summary instead of dictated text. Try again.",
+                    },
+                })),
+                transcript: None,
+            }
+        }
         transcript => {
             if let Some(prompt) = agent_session_prompt_from_dictation(&transcript.text) {
                 DictationTranscriptionOutcome {
@@ -3627,6 +3672,52 @@ mod tests {
     }
 
     #[test]
+    fn external_hands_free_stop_allows_push_to_talk_again() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + Duration::from_millis(1)
+            ),
+            None
+        );
+
+        controller.reset();
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + Duration::from_millis(2)
+            ),
+            Some(DictationCommand::StartListening)
+        );
+    }
+
+    #[test]
+    fn direct_helper_listening_commands_reset_shortcut_activation() {
+        assert!(helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "stop_and_paste" })
+        ));
+        assert!(helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "discard_recording" })
+        ));
+        assert!(helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "toggle_listening" })
+        ));
+        assert!(!helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "start_shortcut_capture" })
+        ));
+    }
+
+    #[test]
     fn successful_transcription_maps_to_paste_command() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
@@ -3650,6 +3741,28 @@ mod tests {
             outcome.transcript.as_ref().map(|item| item.text.as_str()),
             Some("Paste this transcript.")
         );
+    }
+
+    #[test]
+    fn summary_like_transcription_discards_with_visible_error() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "User performed a very long dictation session. Instead of producing a full transcription, the app emitted an error.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+            DictationStyle::Standard,
+        );
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({ "type": "discard_recording" })
+        );
+        assert!(outcome.transcript.is_none());
+        let event = outcome.event.expect("summary-like text emits an error");
+        assert_eq!(event["payload"]["code"], "dictation_response_invalid");
+        assert!(!is_silent_transcription_error(&event));
     }
 
     #[test]
@@ -4128,9 +4241,18 @@ mod tests {
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
+        assert!(looks_like_instruction_response(
+            "Bug Report Assessment: The user performed a long dictation session."
+        ));
+        assert!(looks_like_instruction_response(
+            "User report summary: User performed a long dictation session."
+        ));
         assert!(!looks_like_instruction_response("Hello, \"testing\"."));
         assert!(!looks_like_instruction_response(
             "The user story for this sprint covers the dictation page."
+        ));
+        assert!(!looks_like_instruction_response(
+            "User reported the bug to support."
         ));
     }
 

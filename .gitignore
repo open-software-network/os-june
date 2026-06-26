@@ -28,3 +28,7 @@ keys/
 .tmp/
 coverage
 .tauri-hermes/
+
+# Agent worktrees
+.claude/worktrees/
+.worktrees/

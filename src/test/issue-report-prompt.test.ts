@@ -39,6 +39,15 @@ describe("issue report prompt display", () => {
     expect(bug).toContain("bug report");
     expect(feedback).toContain("sharing feedback");
     expect(feature).toContain("requesting a feature");
+    expect(bug).toContain("Issue 1: <short title>");
+    expect(feedback).toContain("Issue 1: <short title>");
+    expect(feature).toContain("Issue 1: <short title>");
+
+    // Every report opens with the Issue 1 heading, so even single-issue
+    // reports carry a model-written title scribe-api can lift verbatim.
+    for (const wrapped of [bug, feedback, feature]) {
+      expect(wrapped).toContain("Start with a numbered section titled exactly");
+    }
 
     // All three wrap the user's words identically, so the transcript strips
     // them back to exactly what was typed.

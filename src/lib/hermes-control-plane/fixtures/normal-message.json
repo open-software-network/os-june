@@ -1,0 +1,38 @@
+{
+  "name": "normal-message",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A plain assistant turn: connection ready, session info, then a streamed message start/delta/complete. Expected kinds: lifecycle, lifecycle, transcript x3.",
+  "frames": [
+    { "type": "gateway.ready" },
+    {
+      "type": "session.info",
+      "session_id": "sess-normal",
+      "payload": { "status": "ready" }
+    },
+    {
+      "type": "message.start",
+      "session_id": "sess-normal",
+      "payload": { "message_id": "m-1", "role": "assistant" }
+    },
+    {
+      "type": "message.delta",
+      "session_id": "sess-normal",
+      "payload": { "message_id": "m-1", "delta": "Sure, here is the plan: " }
+    },
+    {
+      "type": "message.delta",
+      "session_id": "sess-normal",
+      "payload": { "message_id": "m-1", "delta": "step one." }
+    },
+    {
+      "type": "message.complete",
+      "session_id": "sess-normal",
+      "payload": {
+        "message_id": "m-1",
+        "text": "Sure, here is the plan: step one."
+      }
+    }
+  ]
+}

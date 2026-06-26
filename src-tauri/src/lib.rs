@@ -22,6 +22,9 @@ use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
+const CLOSE_TAB_MENU_ID: &str = "close_tab";
+const CLOSE_TAB_EVENT: &str = "scribe://close-tab";
+const CLOSE_WINDOW_MENU_ID: &str = "close_window_main";
 const OPEN_SETTINGS_MENU_ID: &str = "open_settings";
 const OPEN_SETTINGS_EVENT: &str = "scribe://open-settings";
 
@@ -113,6 +116,14 @@ pub fn run() {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
                 return;
             }
+            if event.id().as_ref() == CLOSE_TAB_MENU_ID {
+                emit_close_tab_if_main_window_focused(app);
+                return;
+            }
+            if event.id().as_ref() == CLOSE_WINDOW_MENU_ID {
+                close_main_window(app);
+                return;
+            }
             if event.id().as_ref() == OPEN_SETTINGS_MENU_ID {
                 #[cfg(target_os = "macos")]
                 show_main_window(app);
@@ -153,6 +164,7 @@ pub fn run() {
             commands::retry_agent_task,
             commands::list_agent_tool_events,
             hermes_bridge::hermes_bridge_status,
+            hermes_bridge::ensure_hermes_bridge_gateway,
             hermes_bridge::hermes_bridge_skills,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
@@ -180,6 +192,7 @@ pub fn run() {
             hermes_bridge::update_hermes_bridge_messaging_platform,
             hermes_bridge::hermes_agent_cli_access,
             hermes_bridge::set_hermes_agent_cli_access,
+            hermes_bridge::open_hermes_tui_debug,
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
@@ -225,12 +238,9 @@ pub fn run() {
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
-            os_accounts::os_accounts_top_up,
+            os_accounts::os_accounts_upgrade,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
-            os_accounts::os_accounts_prepare_trial_checkout,
-            os_accounts::os_accounts_start_trial_checkout,
-            focus_main_window
         ])
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
@@ -278,7 +288,7 @@ fn single_instance_enabled_for_build(debug_assertions: bool, force_dev: bool) ->
 
 #[cfg(all(test, desktop))]
 mod tests {
-    use super::single_instance_enabled_for_build;
+    use super::{should_emit_close_tab_event, single_instance_enabled_for_build};
 
     #[test]
     fn single_instance_is_disabled_for_dev_builds_by_default() {
@@ -293,6 +303,13 @@ mod tests {
     #[test]
     fn single_instance_remains_enabled_for_release_builds() {
         assert!(single_instance_enabled_for_build(false, false));
+    }
+
+    #[test]
+    fn close_tab_menu_emits_only_when_main_window_focus_is_known_true() {
+        assert!(should_emit_close_tab_event(Some(true)));
+        assert!(!should_emit_close_tab_event(Some(false)));
+        assert!(!should_emit_close_tab_event(None));
     }
 }
 
@@ -353,7 +370,22 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         handle,
         "File",
         true,
-        &[&PredefinedMenuItem::close_window(handle, None)?],
+        &[
+            &MenuItem::with_id(
+                handle,
+                CLOSE_TAB_MENU_ID,
+                "Close tab",
+                true,
+                Some("CmdOrCtrl+W"),
+            )?,
+            &MenuItem::with_id(
+                handle,
+                CLOSE_WINDOW_MENU_ID,
+                "Close window",
+                true,
+                Some("CmdOrCtrl+Shift+W"),
+            )?,
+        ],
     )?;
     let edit_menu = Submenu::with_items(
         handle,
@@ -383,8 +415,6 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         &[
             &PredefinedMenuItem::minimize(handle, None)?,
             &PredefinedMenuItem::maximize(handle, None)?,
-            &PredefinedMenuItem::separator(handle)?,
-            &PredefinedMenuItem::close_window(handle, None)?,
         ],
     )?;
     let help_menu = Submenu::with_id_and_items(handle, HELP_SUBMENU_ID, "Help", true, &[])?;
@@ -422,19 +452,28 @@ fn repair_agent_task_statuses_on_app_start(app: &tauri::App) {
     });
 }
 
-/// Bring the app back to the foreground. The trial flow calls this when the
-/// subscription poll detects checkout finished in the browser, so the user
-/// lands back in June without hunting for the window.
-#[tauri::command]
-fn focus_main_window(app: tauri::AppHandle) {
-    #[cfg(target_os = "macos")]
-    show_main_window(&app);
-    #[cfg(not(target_os = "macos"))]
+fn close_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        #[cfg(target_os = "macos")]
+        let _ = window.hide();
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.close();
     }
+}
+
+fn emit_close_tab_if_main_window_focused(app: &tauri::AppHandle) {
+    if should_emit_close_tab_event(main_window_focus_state(app)) {
+        let _ = app.emit_to("main", CLOSE_TAB_EVENT, ());
+    }
+}
+
+fn main_window_focus_state(app: &tauri::AppHandle) -> Option<bool> {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+}
+
+fn should_emit_close_tab_event(main_window_focused: Option<bool>) -> bool {
+    main_window_focused == Some(true)
 }
 
 #[tauri::command]
