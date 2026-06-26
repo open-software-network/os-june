@@ -176,6 +176,22 @@ const AGENT_CLI_STATE_DIRS: &[&str] = &[
 /// through randomly suffixed temp names (`.claude.json.<hash>` + rename).
 const AGENT_CLI_STATE_FILE_PREFIXES: &[&str] = &[".claude.json"];
 
+/// The single Hermes config file the sandboxed runtime owns, relative to
+/// `$HERMES_HOME`. June's native admin surfaces (skill toggle, MCP add,
+/// catalog install, skill config) all persist through Hermes' `save_config`,
+/// which lives inside the jailed runtime process, so the jail must let the
+/// runtime rewrite its own config or every admin mutation fails with a 500.
+const HERMES_CONFIG_FILE: &str = "config.yaml";
+
+/// `save_config` writes `config.yaml` atomically: it streams a temp file then
+/// `os.replace()`s it onto the real path. The replace needs write+unlink on the
+/// target and the temp, and the temp is named with a random suffix
+/// (`.config_<random>.tmp`), so it must be granted via a prefix regex rather
+/// than a literal — exactly like `AGENT_CLI_STATE_FILE_PREFIXES` does for
+/// Claude Code's `.claude.json.<hash>` atomic writes. The prefix is relative to
+/// `$HERMES_HOME`; the trailing wildcard covers the random suffix.
+const HERMES_CONFIG_ATOMIC_TEMP_PREFIX: &str = ".config_";
+
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
     "HERMES_CONFIG",
@@ -3074,11 +3090,13 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
     let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
-    let protected_write_paths = sandbox_protected_write_paths(hermes_home);
+    let config_write_path = sandbox_config_write_path(hermes_home);
+    let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     let profile = build_sandbox_profile(
         &home,
         &write_roots,
-        &protected_write_paths,
+        &config_write_path,
+        &config_temp_prefix,
         agent_cli_access,
     );
     let app_data_dir = crate::app_paths::app_data_dir(app).ok()?;
@@ -3185,9 +3203,20 @@ fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
     canonical
 }
 
+/// The Hermes config file the jailed runtime persists through `save_config`,
+/// as an absolute path under `$HERMES_HOME`. Returned separately from the broad
+/// write roots so the grant is auditable and scoped to exactly this one file.
 #[cfg(target_os = "macos")]
-fn sandbox_protected_write_paths(hermes_home: &Path) -> Vec<PathBuf> {
-    vec![hermes_home.join("config.yaml")]
+fn sandbox_config_write_path(hermes_home: &Path) -> PathBuf {
+    hermes_home.join(HERMES_CONFIG_FILE)
+}
+
+/// Absolute atomic-temp prefix for `config.yaml` writes under `$HERMES_HOME`
+/// (e.g. `…/hermes/.config_`). Granted as a regex prefix so the random suffix
+/// in `.config_<random>.tmp` is covered.
+#[cfg(target_os = "macos")]
+fn sandbox_config_temp_prefix(hermes_home: &Path) -> PathBuf {
+    hermes_home.join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
 }
 
 /// Renders the Seatbelt (SBPL) profile text. Strategy: allow broadly, because
@@ -3199,7 +3228,8 @@ fn sandbox_protected_write_paths(hermes_home: &Path) -> Vec<PathBuf> {
 fn build_sandbox_profile(
     home: &Path,
     write_roots: &[PathBuf],
-    protected_write_paths: &[PathBuf],
+    config_write_path: &Path,
+    config_temp_prefix: &Path,
     agent_cli_access: bool,
 ) -> String {
     let mut out = String::new();
@@ -3221,19 +3251,28 @@ fn build_sandbox_profile(
     }
     out.push_str(")\n\n");
 
-    if !protected_write_paths.is_empty() {
-        out.push_str(
-            ";; June-owned runtime control files: readable by Hermes, never agent-writable.\n",
-        );
-        out.push_str("(deny file-write*\n");
-        for path in protected_write_paths {
-            out.push_str(&format!(
-                "  (literal {})\n",
-                sbpl_quote(&path.to_string_lossy())
-            ));
-        }
-        out.push_str(")\n\n");
-    }
+    // June's own config sync (the Rust host, unsandboxed) rewrites config.yaml
+    // at every spawn, but the *sandboxed runtime* also persists it in-session
+    // through Hermes' `save_config` whenever an admin surface mutates skills,
+    // toolsets, or MCP servers. That write is atomic: a `.config_<random>.tmp`
+    // is streamed then `os.replace`d onto config.yaml, which needs write+unlink
+    // on the target and the temp. The temp already lives under a write root
+    // ($HERMES_HOME), but spell out both the config file and its random-suffixed
+    // temp prefix explicitly so the grant is auditable and survives any future
+    // tightening of the broad roots. Nothing outside $HERMES_HOME is widened.
+    out.push_str(";; Hermes' own config.yaml: the jailed runtime persists admin changes\n");
+    out.push_str(";; through save_config (atomic temp + os.replace). Grant the file and its\n");
+    out.push_str(";; random-suffixed atomic temp; everything else stays under the write jail.\n");
+    out.push_str("(allow file-write*\n");
+    out.push_str(&format!(
+        "  (literal {})\n",
+        sbpl_quote(&config_write_path.to_string_lossy())
+    ));
+    out.push_str(&format!(
+        "  (regex #\"^{}.*$\")\n",
+        sbpl_regex_escape(&config_temp_prefix.to_string_lossy())
+    ));
+    out.push_str(")\n\n");
 
     if agent_cli_access {
         out.push_str(";; Agent CLI state (explicit user opt-in from Settings > Agent):\n");
@@ -5052,10 +5091,15 @@ mod tests {
     fn sandbox_profile_jails_writes_to_allowed_roots() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
-        let config_path = workspace.join("config.yaml");
-        let protected = vec![config_path.clone()];
-        let profile =
-            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &protected, false);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            false,
+        );
 
         // Allow-everything base, then a hard write-jail re-granting the root.
         assert!(profile.contains("(allow default)"));
@@ -5063,8 +5107,15 @@ mod tests {
         assert!(
             profile.contains("(subpath \"/Users/test/Library/Application Support/scribe/hermes\")")
         );
+        // The sandboxed runtime owns config.yaml: it must be able to persist
+        // admin mutations through save_config's atomic temp + os.replace.
         assert!(profile.contains(
             "(literal \"/Users/test/Library/Application Support/scribe/hermes/config.yaml\")"
+        ));
+        // The atomic temp is granted via a prefix regex (random suffix), with
+        // the path's dots escaped so the grant can't widen.
+        assert!(profile.contains(
+            "(regex #\"^/Users/test/Library/Application Support/scribe/hermes/\\.config_.*$\")"
         ));
         // The re-grant must come after the blanket write deny, or it's a no-op.
         let deny_at = profile.find("(deny file-write*)").expect("deny present");
@@ -5072,10 +5123,10 @@ mod tests {
             .find("(allow file-write*\n  (subpath")
             .expect("grant present");
         assert!(deny_at < grant_at);
-        let protected_deny_at = profile
-            .find(";; June-owned runtime control files: readable by Hermes, never agent-writable.")
-            .expect("protected deny present");
-        assert!(grant_at < protected_deny_at);
+        let config_grant_at = profile
+            .find(";; Hermes' own config.yaml: the jailed runtime persists admin changes")
+            .expect("config grant present");
+        assert!(deny_at < config_grant_at);
 
         // Credential stores stay unreadable even though reads are otherwise open.
         assert!(profile.contains("(deny file-read*"));
@@ -5094,7 +5145,15 @@ mod tests {
     fn sandbox_profile_opt_in_grants_agent_cli_state_only() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
-        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace), &[], true);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            true,
+        );
 
         // The CLI state dirs become writable...
         assert!(profile.contains("(subpath \"/Users/test/.claude\")"));
@@ -5152,9 +5211,15 @@ mod tests {
         std::fs::create_dir_all(home.join(".ssh")).expect("create .ssh");
         std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
 
-        let protected = vec![workspace.join("config.yaml")];
-        let profile_text =
-            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &protected, false);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile_text = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            false,
+        );
         let profile_path = home.join("test.sb");
         std::fs::write(&profile_path, &profile_text).expect("write profile");
 
@@ -5178,26 +5243,31 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        // Denied: June's generated config stays readable but not writable by
-        // the sandboxed agent, even though it sits under the writable root.
-        let protected_config = workspace.join("config.yaml");
-        run(&format!(
-            "echo bad > {}",
-            sbpl_shell_quote(&protected_config)
-        ));
+        // Allowed: the sandboxed runtime persists its own config.yaml through
+        // save_config — a directly written file must succeed.
+        let config = workspace.join("config.yaml");
+        let out = run(&format!("echo cfg > {}", sbpl_shell_quote(&config)));
         assert!(
-            !protected_config.exists(),
-            "generated config must stay protected from sandboxed writes"
+            out.status.success() && config.exists(),
+            "direct config write should be allowed: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
-        let protected_tmp = workspace.join("config.yaml.tmp");
-        run(&format!(
-            "echo bad > {tmp} && mv {tmp} {config}",
-            tmp = sbpl_shell_quote(&protected_tmp),
-            config = sbpl_shell_quote(&protected_config),
+        std::fs::remove_file(&config).expect("reset config");
+
+        // Allowed: the real save_config path — stream a random-suffixed
+        // `.config_<random>.tmp` then os.replace (mv) it onto config.yaml. This
+        // is the exact operation the jail denied before, breaking every admin
+        // mutation with an HTTP 500.
+        let config_tmp = workspace.join(".config_vsc99h39.tmp");
+        let out = run(&format!(
+            "echo cfg > {tmp} && mv {tmp} {config}",
+            tmp = sbpl_shell_quote(&config_tmp),
+            config = sbpl_shell_quote(&config),
         ));
         assert!(
-            !protected_config.exists(),
-            "generated config must also reject atomic replacement"
+            out.status.success() && config.exists(),
+            "atomic config replacement should be allowed: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
 
         // Denied: write outside the workspace (home root is not a write root here).
@@ -5230,8 +5300,15 @@ mod tests {
         let workspace = home.join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
 
-        let profile_text =
-            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &[], true);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile_text = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            true,
+        );
         let profile_path = home.join("test.sb");
         std::fs::write(&profile_path, &profile_text).expect("write profile");
 
