@@ -512,6 +512,38 @@ describe("AppSettings", () => {
     await waitFor(() => expect(onAccountRefresh).toHaveBeenCalledOnce());
   });
 
+  it("shows billing recovery for past-due subscriptions with credits", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: { credits: 1200, usdMillis: 1200 },
+          subscription: {
+            subscribed: true,
+            status: "past_due",
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(screen.getByText("Billing needs attention")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Manage billing" }));
+    expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByText("Opened your account portal in the browser."),
+    ).toBeInTheDocument();
+  });
+
   it("hides billing and sign-out controls in local mode", () => {
     render(
       <AppSettings
