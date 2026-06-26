@@ -361,6 +361,83 @@ export function mcpToolFilteringScenario(): FakeHermesScenario {
   };
 }
 
+/** A rich MCP catalog (spec 15): a Nous-approved catalog covering the four auth
+ * shapes the install prompt must handle — no auth, API key (required env), OAuth,
+ * and third-party auth — plus one already-installed-but-disabled entry. Catalog
+ * install is a backgrounded action that progresses over polls and adds the server
+ * to the MCP inventory, so the "installed entries appear in MCP servers" path is
+ * exercised end to end. */
+export function mcpCatalogBrowseScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-catalog",
+    mcpServers: [],
+    mcpCatalog: [
+      {
+        name: "fetch",
+        title: "Fetch",
+        description: "Fetch and read web pages",
+        transport: "stdio",
+        auth: "none",
+        installed: false,
+        default_tools: ["fetch"],
+        source: "nous",
+        command: "mcp-server-fetch",
+      },
+      {
+        name: "github",
+        title: "GitHub",
+        description: "Issues, pull requests, and repository tools",
+        transport: "http",
+        auth: "api-key",
+        required_env: [
+          { key: "GITHUB_TOKEN", label: "GitHub personal access token" },
+        ],
+        installed: false,
+        url: "https://api.githubcopilot.com/mcp",
+      },
+      {
+        name: "linear",
+        title: "Linear",
+        description: "Linear issues over an OAuth-authenticated server",
+        transport: "http-oauth",
+        auth: "oauth",
+        requires_oauth: true,
+        installed: false,
+        url: "https://mcp.linear.app/sse",
+      },
+      {
+        name: "stripe",
+        title: "Stripe",
+        description: "Stripe data behind third-party authorization",
+        transport: "http",
+        auth: "third-party",
+        installed: false,
+        url: "https://mcp.stripe.com",
+      },
+      {
+        name: "filesystem",
+        title: "Filesystem",
+        description: "Local filesystem access",
+        transport: "stdio",
+        auth: "none",
+        installed: true,
+        enabled: false,
+        command: "mcp-server-filesystem",
+      },
+    ],
+    backgroundActions: true,
+    actionScripts: {
+      "catalog-install": {
+        states: [
+          { state: "queued" },
+          { state: "running", progress: 50, message: "Installing" },
+          { state: "succeeded", progress: 100 },
+        ],
+      },
+    },
+  };
+}
+
 /** Gateway restart pending: backgrounded restart that progresses over polls.
  * Drives the restart banner/flow and post-restart invalidation. */
 export function gatewayRestartPendingScenario(): FakeHermesScenario {

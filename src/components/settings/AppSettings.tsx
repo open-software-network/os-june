@@ -74,6 +74,7 @@ import {
 } from "./ModelPickerDialog";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
+import { McpCatalogSection } from "./McpCatalogSection";
 import { McpServersSection } from "./McpServersSection";
 import { SkillsHubSection } from "./SkillsHubSection";
 import { ToolsetsSection } from "./ToolsetsSection";
@@ -182,6 +183,7 @@ export type SettingsTab =
   | "agent"
   | "skills"
   | "mcp"
+  | "mcp-catalog"
   | "skills-hub"
   | "toolsets"
   | "about";
@@ -196,6 +198,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "agent", label: "Agent" },
   { id: "skills", label: "Installed skills" },
   { id: "mcp", label: "MCP servers" },
+  { id: "mcp-catalog", label: "MCP catalog" },
   { id: "skills-hub", label: "Skills hub" },
   { id: "toolsets", label: "Toolsets" },
   { id: "about", label: "About" },
@@ -1211,6 +1214,7 @@ export function AppSettings({
         {activeTab === "skills" ? <InstalledSkillsSection /> : null}
 
         {activeTab === "mcp" ? <McpServersSection /> : null}
+        {activeTab === "mcp-catalog" ? <McpCatalogSection /> : null}
         {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
         {activeTab === "toolsets" ? <ToolsetsSection /> : null}
 
