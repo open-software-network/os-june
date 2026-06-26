@@ -1670,7 +1670,7 @@ input:focus-visible,
   display: flex;
   gap: var(--sp-1);
   width: 100%;
-  margin-top: var(--sp-1);
+  margin-top: var(--sp-px);
   opacity: 0;
   transition: opacity 0.12s ease-out;
 }
@@ -1690,7 +1690,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  padding: var(--sp-1) var(--sp-2);
+  padding: var(--sp-px) var(--sp-1);
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
