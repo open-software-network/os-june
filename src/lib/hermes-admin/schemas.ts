@@ -1559,6 +1559,114 @@ export function readConfigPath(
 }
 
 // ----------------------------------------------------------------------------
+// Profiles (`GET /api/profiles`, `POST /api/profiles`, `GET /api/profiles/sessions`)
+// ----------------------------------------------------------------------------
+
+/** A Hermes profile as reported by `GET /api/profiles`. Hermes isolates config,
+ * env, SOUL, memory, sessions, skills, cron, and state per profile; June reads
+ * just enough to list, dedupe, and surface what an existing profile is for. */
+export type HermesProfileSummary = {
+  /** The profile id/slug, the value other endpoints scope by. */
+  name: string;
+  /** Human description when the profile declares one. */
+  description?: string;
+  /** Provider id this profile generates with, when reported. */
+  provider?: string;
+  /** Generation model id, when reported. */
+  model?: string;
+  /** True when this is the currently active profile. */
+  active?: boolean;
+  raw: unknown;
+};
+
+export function parseProfile(raw: unknown): HermesProfileSummary | undefined {
+  if (typeof raw === "string") {
+    // A bare list of names is tolerated (`["default", "research"]`).
+    const name = nonEmptyString(raw);
+    return name ? { name, raw } : undefined;
+  }
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const name = pickString([record], ["name", "id", "slug", "profile"]);
+  if (!name) return undefined;
+  return {
+    name,
+    description: pickString([record], ["description", "summary", "desc"]),
+    provider: pickString([record], ["provider"]),
+    model: pickString(
+      [record],
+      ["model", "generation_model", "generationModel"],
+    ),
+    active: pickBool([record], ["active", "is_active", "current"]),
+    raw,
+  };
+}
+
+/** `GET /api/profiles` returns either a bare array or `{ profiles: [...] }`. */
+export function parseProfileList(raw: unknown): HermesProfileSummary[] {
+  const items = listFrom(raw, ["profiles", "items", "data"]);
+  return items
+    .map(parseProfile)
+    .filter((p): p is HermesProfileSummary => p !== undefined);
+}
+
+/** A live/recent session row from `GET /api/profiles/sessions`. June reads it to
+ * confirm a freshly-created profile's test session actually started. */
+export type HermesProfileSession = {
+  /** Session id, when reported. */
+  id?: string;
+  /** The profile the session belongs to, when reported. */
+  profile?: string;
+  /** Session status string (e.g. `running`), when reported. */
+  status?: string;
+  raw: unknown;
+};
+
+export function parseProfileSession(
+  raw: unknown,
+): HermesProfileSession | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  return {
+    id: pickString([record], ["id", "session_id", "sessionId"]),
+    profile: pickString([record], ["profile", "profile_name", "profileName"]),
+    status: pickString([record], ["status", "state"]),
+    raw,
+  };
+}
+
+export function parseProfileSessionList(raw: unknown): HermesProfileSession[] {
+  const items = listFrom(raw, ["sessions", "items", "data"]);
+  return items
+    .map(parseProfileSession)
+    .filter((s): s is HermesProfileSession => s !== undefined);
+}
+
+/** The result of `POST /api/profiles`. The contract documents only a 2xx, so
+ * June reads the created profile name back defensively (falling back to the
+ * requested name) plus any `ok` ack. */
+export type HermesProfileCreateResult = {
+  ok: boolean;
+  name: string;
+  raw: unknown;
+};
+
+export function parseProfileCreateResult(
+  requestedName: string,
+  raw: unknown,
+): HermesProfileCreateResult {
+  const record = asRecord(raw);
+  const nested = record ? asRecord(record.profile) : undefined;
+  return {
+    ok: pickBool([record], ["ok", "success", "created"]) ?? true,
+    name:
+      pickString([record, nested], ["name", "id", "slug", "profile"]) ??
+      requestedName,
+    raw,
+  };
+}
+
+// ----------------------------------------------------------------------------
 // Shared helpers
 // ----------------------------------------------------------------------------
 

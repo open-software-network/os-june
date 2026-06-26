@@ -36,6 +36,9 @@ import {
   parseMcpServer,
   parseMcpServerList,
   parseMcpTestResult,
+  parseProfileCreateResult,
+  parseProfileList,
+  parseProfileSessionList,
   parseSkillContent,
   parseSkillList,
   parseToggleResult,
@@ -52,6 +55,9 @@ import {
   type HermesMcpCatalogEntry,
   type HermesMcpServerInfo,
   type HermesMcpTestResult,
+  type HermesProfileCreateResult,
+  type HermesProfileSession,
+  type HermesProfileSummary,
   type HermesSkillContent,
   type HermesSkillInfo,
   type HermesToggleResult,
@@ -125,6 +131,28 @@ export type HermesInstallCatalogPayload = {
   env?: Record<string, string>;
   enable?: boolean;
   profile?: string;
+} & Record<string, unknown>;
+
+/** Payload for `POST /api/profiles`, matching the dashboard's `ProfileCreate`
+ * schema (v2026.6.19). `name` is the only required field. `clone_from_default`
+ * seeds the new profile from June's default (so it inherits June's identity and
+ * bundled skills unless `no_skills` is set); `keep_skills` narrows which bundled
+ * skills survive; `hub_skills` installs optional hub skills at create time;
+ * `mcp_servers` attaches MCP servers. `provider`/`model` set the generation
+ * model. The SOUL/instructions are NOT part of this body — they are written
+ * after create via `PUT /api/profiles/{name}/soul`. */
+export type HermesCreateProfilePayload = {
+  name: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  clone_from?: string;
+  clone_from_default?: boolean;
+  clone_all?: boolean;
+  no_skills?: boolean;
+  keep_skills?: string[];
+  hub_skills?: string[];
+  mcp_servers?: HermesAddMcpServerPayload[];
 } & Record<string, unknown>;
 
 /**
@@ -203,6 +231,34 @@ export type HermesAdminClient = {
     ): Promise<MutationOutcome<HermesActionStatus | undefined>>;
   };
 
+  readonly profiles: {
+    /** Lists the Hermes profiles. `GET /api/profiles`. Used by the builder to
+     * dedupe the new profile's name/slug against existing ones and to offer a
+     * clone source. NOT profile-scoped — it lists ALL profiles. */
+    list(): Promise<HermesProfileSummary[]>;
+    /** Creates a profile. `POST /api/profiles` with `ProfileCreate`. NOT
+     * profile-scoped (it creates a new profile; the active-profile query would
+     * be meaningless). Applies next session — the new profile is available to
+     * sessions started under it, it does not alter the running gateway. */
+    create(
+      payload: HermesCreateProfilePayload,
+    ): Promise<MutationOutcome<HermesProfileCreateResult>>;
+    /** Writes a profile's SOUL/instructions. `PUT /api/profiles/{name}/soul`
+     * with `ProfileSoulUpdate` (`{ content }`). Called after create when the
+     * builder collected a custom SOUL. */
+    setSoul(
+      name: string,
+      content: string,
+    ): Promise<MutationOutcome<{ ok: boolean }>>;
+    /** Lists live/recent profile sessions. `GET /api/profiles/sessions`. The
+     * builder polls this to confirm a started test session is running. */
+    sessions(): Promise<HermesProfileSession[]>;
+    /** Starts a test session for a profile by making it active and opening a
+     * terminal. `POST /api/profiles/active` then
+     * `POST /api/profiles/{name}/open-terminal`. */
+    startTestSession(name: string): Promise<MutationOutcome<{ ok: boolean }>>;
+  };
+
   readonly gateway: {
     status(): Promise<HermesGatewayStatus>;
     restart(): Promise<MutationOutcome<HermesActionStatus | undefined>>;
@@ -279,6 +335,7 @@ export function createHermesAdminClient(
     skills: makeSkills(send),
     toolsets: makeToolsets(send),
     mcp: makeMcp(send),
+    profiles: makeProfiles(send),
     gateway: makeGateway(send),
     actions: {
       status(actionName: string) {
@@ -485,6 +542,81 @@ function makeMcp(send: AdminTransport): HermesAdminClient["mcp"] {
         actionFromMutationResponse,
       );
       return outcome("mcp.installCatalog", action, action?.action);
+    },
+  };
+}
+
+function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
+  return {
+    list() {
+      // Lists ALL profiles — not scoped to the active one.
+      return send(
+        { method: "GET", path: "/api/profiles", scopeToProfile: false },
+        parseProfileList,
+      );
+    },
+    async create(payload) {
+      // Create is global (it makes a new profile); the active-profile query is
+      // meaningless here, so it opts out of profile scoping. The body carries no
+      // secret-shaped fields (model/skill ids, not keys); MCP env values, if
+      // any, are redacted by the transport's structural sanitizer.
+      const result = await send(
+        {
+          method: "POST",
+          path: "/api/profiles",
+          body: payload,
+          scopeToProfile: false,
+        },
+        (raw) => parseProfileCreateResult(payload.name, raw),
+      );
+      return outcome("profile.create", result);
+    },
+    async setSoul(name, content) {
+      const result = await send(
+        {
+          method: "PUT",
+          path: `/api/profiles/${encodeURIComponent(name)}/soul`,
+          body: { content },
+          scopeToProfile: false,
+        },
+        (raw) => ({ ok: okFrom(raw) }),
+      );
+      return outcome("profile.setSoul", result);
+    },
+    sessions() {
+      return send(
+        {
+          method: "GET",
+          path: "/api/profiles/sessions",
+          scopeToProfile: false,
+        },
+        parseProfileSessionList,
+      );
+    },
+    async startTestSession(name) {
+      // Make the new profile active, then open a terminal session under it. Both
+      // are global profile operations, so neither is profile-query-scoped.
+      await send(
+        {
+          method: "POST",
+          path: "/api/profiles/active",
+          body: { name },
+          scopeToProfile: false,
+        },
+        (raw) => ({ ok: okFrom(raw) }),
+      );
+      const result = await send(
+        {
+          method: "POST",
+          path: `/api/profiles/${encodeURIComponent(name)}/open-terminal`,
+          scopeToProfile: false,
+        },
+        (raw) => ({ ok: okFrom(raw) }),
+      );
+      // Reuse the create timing/notification surface — starting a session is the
+      // immediate consequence of a create, so the caller treats it as part of
+      // the create flow rather than a distinct durable mutation.
+      return outcome("profile.create", result);
     },
   };
 }

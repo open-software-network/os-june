@@ -41,6 +41,8 @@ export type AdminMutation =
   | "env.delete"
   | "config.set"
   | "config.delete"
+  | "profile.create"
+  | "profile.setSoul"
   | "gateway.restart";
 
 /**
@@ -79,6 +81,10 @@ const TIMING: Readonly<Record<AdminMutation, ApplicationTiming>> =
     "env.delete": "gateway-restart",
     "config.set": "next-session",
     "config.delete": "next-session",
+    // A new profile and its SOUL are read when a session starts under that
+    // profile; creating it does not change the running gateway or live sessions.
+    "profile.create": "next-session",
+    "profile.setSoul": "next-session",
     "gateway.restart": "immediate",
   });
 
@@ -144,6 +150,10 @@ export function mutationNotification(
       return `Saved ${subject}. New sessions use the new value.`;
     case "config.delete":
       return `Cleared ${subject}. New sessions use the default.`;
+    case "profile.create":
+      return `Created profile ${subject}. Start a session under it to use it.`;
+    case "profile.setSoul":
+      return `Saved instructions for ${subject}. New sessions use them.`;
     case "gateway.restart":
       return `Gateway restarted. Tool inventory refreshed.`;
   }

@@ -158,6 +158,14 @@ export type FakeCatalogEntry = {
   url?: string;
 };
 
+export type FakeProfile = {
+  name: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  active?: boolean;
+};
+
 export type FakeHubResult = {
   identifier: string;
   name?: string;
@@ -220,6 +228,12 @@ export type FakeHermesScenario = {
   mcpCatalog?: FakeCatalogEntry[];
   hubResults?: FakeHubResult[];
   gateway?: { gateway_running?: boolean; version?: string };
+  /** Existing profiles, served by GET /api/profiles and grown by POST. */
+  profiles?: FakeProfile[];
+  /** When set, POST /api/profiles fails with this status (rollback testing). */
+  profileCreateError?: { status: number; code?: string; error?: string };
+  /** When set, PUT /api/profiles/{name}/soul fails with this status. */
+  profileSoulError?: { status: number; code?: string; error?: string };
   /** Initial env keys (values never returned). */
   env?: Record<string, string>;
   /** Initial config tree, served by GET /api/config and mutated by PUT/DELETE
@@ -269,6 +283,24 @@ export class FakeHermesServer {
   private mcpCatalog: FakeCatalogEntry[];
   private hubResults: FakeHubResult[];
   private gateway: { gateway_running: boolean; version: string };
+  private profiles: FakeProfile[];
+  private activeProfile: string;
+  private profileSessions: Array<{
+    id: string;
+    profile: string;
+    status: string;
+  }> = [];
+  private readonly profileCreateError?: {
+    status: number;
+    code?: string;
+    error?: string;
+  };
+  private readonly profileSoulError?: {
+    status: number;
+    code?: string;
+    error?: string;
+  };
+  private profileSessionSeq = 0;
   private env: Record<string, string>;
   private config: Record<string, unknown>;
   private readonly backgroundActions: boolean;
@@ -292,6 +324,15 @@ export class FakeHermesServer {
       gateway_running: scenario.gateway?.gateway_running ?? false,
       version: scenario.gateway?.version ?? PINNED_HERMES_VERSION,
     };
+    this.profiles = clone(
+      scenario.profiles ?? [{ name: "default", active: true }],
+    );
+    this.activeProfile =
+      this.profiles.find((p) => p.active)?.name ??
+      this.profiles[0]?.name ??
+      "default";
+    this.profileCreateError = scenario.profileCreateError;
+    this.profileSoulError = scenario.profileSoulError;
     this.env = clone(scenario.env ?? {});
     this.config = clone(scenario.config ?? {});
     this.backgroundActions = scenario.backgroundActions ?? false;
@@ -505,6 +546,57 @@ export class FakeHermesServer {
       return this.actionStatus(actionMatch.name);
     }
 
+    // Profiles. GET lists, POST creates, PUT /{name}/soul writes the SOUL,
+    // GET /sessions lists sessions, POST /active sets active,
+    // POST /{name}/open-terminal starts a session.
+    if (method === "GET" && path === "/api/profiles") {
+      return json(200, { profiles: this.profiles });
+    }
+    if (method === "POST" && path === "/api/profiles") {
+      return this.createProfile(body);
+    }
+    if (method === "GET" && path === "/api/profiles/sessions") {
+      return json(200, { sessions: this.profileSessions });
+    }
+    if (method === "POST" && path === "/api/profiles/active") {
+      const name = (body as { name?: unknown })?.name;
+      if (typeof name !== "string" || name.length === 0) {
+        throw new HttpError(422, {
+          code: "validation_error",
+          error: "field required: name",
+        });
+      }
+      this.activeProfile = name;
+      return json(200, { ok: true, active: name });
+    }
+    const soulMatch = matchPath(path, "/api/profiles/:name/soul");
+    if (method === "PUT" && soulMatch) {
+      if (this.profileSoulError) {
+        throw new HttpError(this.profileSoulError.status, {
+          code: this.profileSoulError.code ?? "error",
+          error: this.profileSoulError.error ?? "soul write failed",
+        });
+      }
+      const content = (body as { content?: unknown })?.content;
+      if (typeof content !== "string") {
+        throw new HttpError(422, {
+          code: "validation_error",
+          error: "field required: content",
+        });
+      }
+      return json(200, { ok: true, name: soulMatch.name });
+    }
+    const terminalMatch = matchPath(path, "/api/profiles/:name/open-terminal");
+    if (method === "POST" && terminalMatch) {
+      const id = `session-${++this.profileSessionSeq}`;
+      this.profileSessions.push({
+        id,
+        profile: terminalMatch.name,
+        status: "running",
+      });
+      return json(200, { ok: true, session_id: id });
+    }
+
     // Env. Matches the real contract: PUT to set, DELETE with the key in the
     // BODY (not the path), GET to list (values masked, never returned), and
     // POST /reveal to read one plaintext value on demand.
@@ -582,6 +674,38 @@ export class FakeHermesServer {
     }
 
     throw new HttpError(404, { code: "not_found", error: `no route ${path}` });
+  }
+
+  // --- Profile helpers -----------------------------------------------------
+
+  private createProfile(body: unknown): Response {
+    if (this.profileCreateError) {
+      throw new HttpError(this.profileCreateError.status, {
+        code: this.profileCreateError.code ?? "error",
+        error: this.profileCreateError.error ?? "profile create failed",
+      });
+    }
+    const payload = (body as Partial<FakeProfile> & { name?: string }) ?? {};
+    if (typeof payload.name !== "string" || payload.name.length === 0) {
+      throw new HttpError(422, {
+        code: "validation_error",
+        error: "field required: name",
+      });
+    }
+    if (this.profiles.some((p) => p.name === payload.name)) {
+      throw new HttpError(409, {
+        code: "conflict",
+        error: "profile already exists",
+      });
+    }
+    const profile: FakeProfile = {
+      name: payload.name,
+      description: payload.description,
+      provider: payload.provider,
+      model: payload.model,
+    };
+    this.profiles.push(profile);
+    return json(200, { ok: true, profile });
   }
 
   // --- MCP helpers ---------------------------------------------------------
