@@ -10863,6 +10863,73 @@ input:focus-visible,
   border-color: var(--border);
 }
 
+/* MCP catalog — reuses the MCP servers + skills-hub structure, with a few
+ * catalog-specific bits: a clickable entry name, the install-status pill, the
+ * Nous-approved trust line, and the install requirement / default-tool lists. */
+.mcp-catalog-name {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mcp-catalog-name:hover {
+  text-decoration: underline;
+}
+
+.mcp-catalog-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-catalog-status[data-tone="ok"] {
+  background: color-mix(
+    in oklch,
+    var(--positive, var(--ring-focus)) 18%,
+    transparent
+  );
+  color: var(--foreground);
+}
+
+.mcp-catalog-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.mcp-catalog-requirements,
+.mcp-catalog-tools {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.mcp-catalog-requirements-title,
+.mcp-catalog-tools-title {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.mcp-catalog-requirements-list {
+  margin: 0;
+  padding-left: var(--sp-4);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
 /* Dictionary toolbar — small search left (reuses .folders-search), primary
  * add action right. Sits at the top of the dictionary settings card. */
 .dictionary-toolbar {

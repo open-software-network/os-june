@@ -102,10 +102,31 @@ export type FakeCatalogEntry = {
   name: string;
   /** Optional separate slug/id; real catalog entries are keyed by `name`. */
   id?: string;
+  title?: string;
   description?: string;
   transport: "stdio" | "http" | "http-oauth";
   installed?: boolean;
+  /** When installed, whether the resulting server is enabled. */
+  enabled?: boolean;
   requires_oauth?: boolean;
+  /** Classified auth requirement (api-key / oauth / third-party / none). */
+  auth?: "api-key" | "oauth" | "third-party" | "none";
+  /** Env values the entry requires before connecting. Reported as metadata only
+   * (never values); the install request supplies the values. */
+  required_env?: Array<{
+    key: string;
+    label?: string;
+    required?: boolean;
+    secret?: boolean;
+  }>;
+  /** Default tools the entry exposes / preselects. */
+  default_tools?: string[];
+  /** Trust/source label. */
+  source?: string;
+  /** For an installed-via-catalog server: the command/url to register in the MCP
+   * inventory so "installed entries appear in MCP servers" is exercised. */
+  command?: string;
+  url?: string;
 };
 
 export type FakeHubResult = {
@@ -365,13 +386,23 @@ export class FakeHermesServer {
       // MCPCatalogInstall requires `name` (NOT `id`) — reject a missing name
       // with 422 so a client sending the wrong field fails loudly, as real
       // Hermes would.
-      const installName = (body as { name?: unknown })?.name;
+      const installBody = (body ?? {}) as {
+        name?: unknown;
+        env?: Record<string, string>;
+        enable?: unknown;
+      };
+      const installName = installBody.name;
       if (typeof installName !== "string" || installName.length === 0) {
         throw new HttpError(422, {
           code: "validation_error",
           error: "field required: name",
         });
       }
+      this.installCatalogEntry(
+        installName,
+        installBody.env,
+        installBody.enable,
+      );
       return this.startOrComplete("catalog-install");
     }
 
@@ -471,6 +502,41 @@ export class FakeHermesServer {
     };
     this.mcpServers.push(server);
     return json(200, stripMcpSecrets(server));
+  }
+
+  /** Mirrors a real catalog install: registers an MCP server in the inventory
+   * (so it then appears in `GET /api/mcp/servers`) and marks the catalog entry
+   * installed. The env values supplied at install are stored on the server but,
+   * like any secret, are never echoed back in a GET. Idempotent on the server
+   * name (a reinstall does not duplicate the row). */
+  private installCatalogEntry(
+    name: string,
+    env: Record<string, string> | undefined,
+    enable: unknown,
+  ): void {
+    const entry = this.mcpCatalog.find((e) => e.name === name);
+    const transport = entry?.transport ?? "stdio";
+    const enabled = enable !== false;
+    if (entry) {
+      entry.installed = true;
+      entry.enabled = enabled;
+    }
+    if (!this.mcpServers.some((s) => s.name === name)) {
+      this.mcpServers.push({
+        name,
+        enabled,
+        transport,
+        command:
+          entry?.command ?? (transport === "stdio" ? `mcp-${name}` : undefined),
+        url:
+          entry?.url ??
+          (transport !== "stdio" ? `https://mcp.test/${name}` : undefined),
+        auth_status:
+          transport === "http-oauth" ? "unauthenticated" : "not-required",
+        status: "untested",
+        env,
+      });
+    }
   }
 
   private testMcpServer(name: string): Response {

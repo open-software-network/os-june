@@ -435,34 +435,180 @@ export function parseMcpTestResult(
 // MCP catalog (`GET /api/mcp/catalog`, `POST /api/mcp/catalog/install`)
 // ----------------------------------------------------------------------------
 
+/** How a catalog entry authenticates, classified for the install prompt:
+ * `api-key` needs one or more env values (an API key / token), `oauth` runs a
+ * browser sign-in after install, `third-party` needs the user to authorize in an
+ * external system, `none` needs nothing, `unknown` when the wire is silent. */
+export type HermesMcpCatalogAuthKind =
+  | "api-key"
+  | "oauth"
+  | "third-party"
+  | "none"
+  | "unknown";
+
+/** One env value a catalog entry requires before it can connect. The KEY is not
+ * secret (it is an env var name like `GITHUB_TOKEN`); the VALUE the user supplies
+ * IS secret and is sent through the install endpoint, never logged. */
+export type HermesMcpCatalogEnvRequirement = {
+  /** The env var name to prompt for (e.g. `GITHUB_TOKEN`). */
+  key: string;
+  /** A human label/help for the field, when reported. */
+  label?: string;
+  /** True when this value must be supplied for install (defaults true). */
+  required?: boolean;
+  /** True when this is a secret (masked input). Defaults true for api-key-style
+   * requirements; an entry can mark a non-secret value false. */
+  secret?: boolean;
+};
+
 export type HermesMcpCatalogEntry = {
+  /** Stable identifier for display/dedupe; falls back to the install name. */
   id: string;
+  /** The install identifier — `MCPCatalogInstall` requires this as `name`. */
+  installName: string;
   name: string;
   description?: string;
   transport: HermesMcpTransport;
+  /** How the entry authenticates, classified for the install prompt. */
+  auth: HermesMcpCatalogAuthKind;
+  /** Env values the entry requires before it connects (api-key style). */
+  requiredEnv?: HermesMcpCatalogEnvRequirement[];
   /** True when this catalog entry is already installed as a server. */
   installed?: boolean;
+  /** When installed, whether the resulting server is enabled. Lets the UI tell
+   * "installed, disabled" from "enabled". `undefined` when not installed or not
+   * reported. */
+  enabled?: boolean;
   /** True when the entry requires an OAuth login after install. */
   requiresOauth?: boolean;
   /** Whether the entry runs a local subprocess (sandbox/full-mode relevant). */
   requiresSubprocess?: boolean;
+  /** Default tool names the entry exposes / preselects, when reported. */
+  defaultTools?: string[];
+  /** Trust/source label (this is a Nous-approved catalog, but the wire may carry
+   * a finer-grained source string). */
+  source?: string;
   raw: unknown;
 };
+
+/** Classifies a catalog entry's auth requirement from the wire. Prefers an
+ * explicit `auth`/`auth_kind`, then infers from OAuth flags / required env. */
+function parseMcpCatalogAuth(
+  record: Record<string, unknown>,
+  transport: HermesMcpTransport,
+  hasEnv: boolean,
+): HermesMcpCatalogAuthKind {
+  const explicit = nonEmptyString(
+    record.auth ?? record.auth_kind ?? record.authKind ?? record.auth_type,
+  )?.toLowerCase();
+  if (explicit === "oauth") return "oauth";
+  if (
+    explicit === "api-key" ||
+    explicit === "api_key" ||
+    explicit === "apikey" ||
+    explicit === "key" ||
+    explicit === "token" ||
+    explicit === "bearer"
+  ) {
+    return "api-key";
+  }
+  if (
+    explicit === "third-party" ||
+    explicit === "third_party" ||
+    explicit === "thirdparty" ||
+    explicit === "external"
+  ) {
+    return "third-party";
+  }
+  if (explicit === "none" || explicit === "not-required") return "none";
+  // Infer when not explicit.
+  const oauth = pickBool(
+    [record],
+    ["requires_oauth", "requiresOauth", "oauth"],
+  );
+  if (oauth === true || transport === "http-oauth") return "oauth";
+  if (hasEnv) return "api-key";
+  return "unknown";
+}
+
+/** Reads the env requirements a catalog entry declares. Tolerates an array of
+ * `{ key, label, required, secret }` / strings, or a `{ KEY: meta }` map. Reads
+ * KEY NAMES and metadata only — never any value. */
+function parseCatalogEnvRequirements(
+  value: unknown,
+): HermesMcpCatalogEnvRequirement[] | undefined {
+  const out: HermesMcpCatalogEnvRequirement[] = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const str = nonEmptyString(entry);
+      if (str) {
+        out.push({ key: str });
+        continue;
+      }
+      const record = asRecord(entry);
+      if (!record) continue;
+      const key = pickString([record], ["key", "name", "env", "variable"]);
+      if (!key) continue;
+      out.push({
+        key,
+        label: pickString([record], ["label", "description", "help", "hint"]),
+        required: pickBool([record], ["required", "is_required"]),
+        secret: pickBool([record], ["secret", "is_secret", "sensitive"]),
+      });
+    }
+  } else {
+    const record = asRecord(value);
+    if (record) {
+      for (const [key, meta] of Object.entries(record)) {
+        if (!key.trim()) continue;
+        const metaRecord = asRecord(meta);
+        out.push({
+          key,
+          label: metaRecord
+            ? pickString([metaRecord], ["label", "description", "help"])
+            : undefined,
+          required: metaRecord
+            ? pickBool([metaRecord], ["required", "is_required"])
+            : undefined,
+          secret: metaRecord
+            ? pickBool([metaRecord], ["secret", "is_secret"])
+            : undefined,
+        });
+      }
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 export function parseMcpCatalogEntry(
   raw: unknown,
 ): HermesMcpCatalogEntry | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
-  const id = pickString([record], ["id", "slug", "name", "key"]);
-  if (!id) return undefined;
+  // The install identifier is `name` (MCPCatalogInstall); an `id`/`slug` is for
+  // display only. Require at least one of them.
+  const installName =
+    pickString([record], ["name", "id", "slug", "key"]) ?? undefined;
+  if (!installName) return undefined;
+  const id = pickString([record], ["id", "slug", "name", "key"]) ?? installName;
   const transport = parseMcpTransport(record);
+  const requiredEnv = parseCatalogEnvRequirements(
+    record.required_env ??
+      record.requiredEnv ??
+      record.env_requirements ??
+      record.env ??
+      record.required_keys,
+  );
   return {
     id,
-    name: pickString([record], ["name", "title", "label"]) ?? id,
+    installName,
+    name: pickString([record], ["title", "label", "name"]) ?? installName,
     description: pickString([record], ["description", "summary", "desc"]),
     transport,
+    auth: parseMcpCatalogAuth(record, transport, Boolean(requiredEnv)),
+    requiredEnv,
     installed: pickBool([record], ["installed", "is_installed", "present"]),
+    enabled: pickBool([record], ["enabled", "active", "is_enabled"]),
     requiresOauth:
       pickBool([record], ["requires_oauth", "requiresOauth", "oauth"]) ??
       (transport === "http-oauth" ? true : undefined),
@@ -471,6 +617,10 @@ export function parseMcpCatalogEntry(
         [record],
         ["requires_subprocess", "requiresSubprocess", "local"],
       ) ?? (transport === "stdio" ? true : undefined),
+    defaultTools: pickStringArray(
+      record.default_tools ?? record.defaultTools ?? record.tools,
+    ),
+    source: pickString([record], ["source", "publisher", "origin", "vendor"]),
     raw,
   };
 }
