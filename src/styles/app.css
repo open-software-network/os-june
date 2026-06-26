@@ -12407,6 +12407,168 @@ input:focus-visible,
   line-height: 1.45;
 }
 
+/* Security / sandbox-boundary labels (spec 19). */
+.mcp-server-security-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcp-server-security-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-server-security-label[data-tone="caution"] {
+  background: color-mix(in oklch, var(--warm-strong) 14%, transparent);
+  color: var(--warm-strong);
+}
+
+.mcp-server-risk-note,
+.mcp-server-allowlist-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-server-risk-note[data-tier="high"] {
+  color: var(--warm-strong);
+}
+
+.mcp-confirm-body {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-confirm-lead {
+  color: var(--foreground);
+}
+
+.mcp-confirm-reason {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* MCP security page (spec 19): exposure policy + label legend. */
+.mcp-security-card {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.mcp-security-policy-head {
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-security-policy {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.mcp-security-policy-option {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcp-security-policy-option[data-selected="true"] {
+  border-color: var(--ring-focus);
+  background: color-mix(in oklch, var(--ring-focus) 8%, transparent);
+}
+
+.mcp-security-policy-option:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.mcp-security-policy-option-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.mcp-security-policy-option-label {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.mcp-security-policy-recommended {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-2);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--ring-focus) 18%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-security-policy-option-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-security-legend {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcp-security-legend-item {
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-security-legend-blurb {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-security-note,
+.mcp-security-write-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-security-write-error {
+  color: var(--destructive);
+}
+
 .mcp-server-meta {
   display: flex;
   flex-wrap: wrap;

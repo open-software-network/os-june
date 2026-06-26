@@ -14,15 +14,20 @@ import { IconShield } from "central-icons/IconShield";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useId, useMemo, useState } from "react";
 import {
+  ALLOWLIST_RECOMMENDATION,
   authMeta,
+  classifyServerRisk,
   emptyDraft,
+  enableConfirmationFor,
   filterServers,
   hasAvailableTools,
+  inlineSecurityLabels,
   isLocalSubprocess,
   oauthStateFor,
   oauthStatusMeta,
   redactedEnv,
   redactedHeaders,
+  securityLabelsFor,
   serverArgs,
   statusMeta,
   transportMeta,
@@ -124,11 +129,30 @@ export function McpServersView({
   const [query, setQuery] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [toDelete, setToDelete] = useState<HermesMcpServerInfo | undefined>();
+  // A high-risk server enable is gated behind a confirmation. This holds the
+  // server awaiting a confirmed enable; a disable or a low-risk enable applies
+  // straight away.
+  const [toEnable, setToEnable] = useState<HermesMcpServerInfo | undefined>();
 
   const visible = useMemo(
     () => filterServers(state.servers, query),
     [state.servers, query],
   );
+
+  /** Routes a toggle: disabling is never gated; enabling a high-risk server
+   * opens a confirmation, while a standard enable applies immediately. The
+   * heuristic is a WARNING only — the user can always confirm. */
+  function handleToggle(server: HermesMcpServerInfo, enabled: boolean) {
+    if (!enabled) {
+      state.setEnabled(server.name, false);
+      return;
+    }
+    if (classifyServerRisk(server).requiresConfirmation) {
+      setToEnable(server);
+      return;
+    }
+    state.setEnabled(server.name, true);
+  }
 
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
@@ -237,7 +261,7 @@ export function McpServersView({
                   test={state.tests.get(server.name)}
                   oauthLogin={oauth?.logins.get(server.name)}
                   onSignIn={oauth ? () => oauth.signIn(server.name) : undefined}
-                  onToggle={(enabled) => state.setEnabled(server.name, enabled)}
+                  onToggle={(enabled) => handleToggle(server, enabled)}
                   onTest={() => void state.test(server.name)}
                   onDelete={() => setToDelete(server)}
                 />
@@ -264,6 +288,14 @@ export function McpServersView({
         onClose={() => setToDelete(undefined)}
         onConfirm={async () => {
           if (toDelete) await state.remove(toDelete.name);
+        }}
+      />
+
+      <EnableServerDialog
+        server={toEnable}
+        onClose={() => setToEnable(undefined)}
+        onConfirm={() => {
+          if (toEnable) state.setEnabled(toEnable.name, true);
         }}
       />
     </section>
@@ -347,6 +379,12 @@ function ServerRow({
   const labelId = `mcp-server-${cssId(server.name)}`;
   const tools = test?.result?.tools ?? server.tools ?? [];
   const oauth = usesOauth(server);
+  const securityLabels = inlineSecurityLabels(securityLabelsFor(server));
+  const risk = classifyServerRisk(server);
+  // Recommend an allowlist only after the server has tested successfully, so the
+  // advice lands when the user can act on a real tool list (filtering is owned
+  // by the tool selection surface, spec 16).
+  const testedOk = test?.result?.ok === true || server.status === "connected";
 
   return (
     <li className="mcp-server-row" data-enabled={server.enabled}>
@@ -376,6 +414,23 @@ function ServerRow({
         </p>
 
         <p className="mcp-server-blurb">{transport.blurb}</p>
+
+        <SecurityLabels labels={securityLabels} />
+
+        {risk.tier === "high" ? (
+          <p className="mcp-server-risk-note" data-tier="high" role="note">
+            <IconExclamationCircle size={13} ariaHidden />
+            {risk.reasons[0]?.detail ??
+              "This server can take high-impact actions."}
+          </p>
+        ) : null}
+
+        {risk.tier === "high" && testedOk ? (
+          <p className="mcp-server-allowlist-note" role="note">
+            <IconShield size={13} ariaHidden />
+            {ALLOWLIST_RECOMMENDATION}
+          </p>
+        ) : null}
 
         <div className="mcp-server-meta">
           <span className="mcp-server-status" data-tone={status.tone}>
@@ -439,6 +494,34 @@ function ServerRow({
         </span>
       </div>
     </li>
+  );
+}
+
+/** The security/sandbox-boundary labels a server earns (local subprocess /
+ * remote server / OAuth / secret-backed / sandbox constrained / unrestricted
+ * capable), each with a tooltip blurb. Pure presentation of the derived labels;
+ * the derivation and copy live in `mcp-security-view`. */
+function SecurityLabels({
+  labels,
+}: {
+  labels: ReturnType<typeof securityLabelsFor>;
+}) {
+  if (labels.length === 0) return null;
+  return (
+    <ul className="mcp-server-security-labels" aria-label="Security labels">
+      {labels.map((entry) => (
+        <li
+          key={entry.code}
+          className="mcp-server-security-label"
+          data-code={entry.code}
+          data-tone={entry.tone}
+          title={entry.blurb}
+        >
+          <IconShield size={11} ariaHidden />
+          {entry.label}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1053,6 +1136,42 @@ function DeleteServerDialog({
       description={description}
       confirmLabel="Delete server"
       destructive
+    />
+  );
+}
+
+/** The confirmation gate before enabling a high-risk server. Leads with the
+ * file-tools warning (the spec's exact copy for local servers), then lists the
+ * matched reasons. This NEVER blocks: the user can always confirm. */
+function EnableServerDialog({
+  server,
+  onClose,
+  onConfirm,
+}: {
+  server?: HermesMcpServerInfo;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const confirmation = server ? enableConfirmationFor(server) : undefined;
+  return (
+    <ConfirmDialog
+      open={Boolean(server)}
+      onClose={onClose}
+      onConfirm={onConfirm}
+      title={confirmation?.title ?? "Enable server?"}
+      description={
+        confirmation ? (
+          <span className="mcp-confirm-body">
+            <span className="mcp-confirm-lead">{confirmation.lead}</span>
+            {confirmation.reasons.map((reason, index) => (
+              <span key={index} className="mcp-confirm-reason">
+                {reason}
+              </span>
+            ))}
+          </span>
+        ) : undefined
+      }
+      confirmLabel="Enable server"
     />
   );
 }

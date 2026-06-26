@@ -16,12 +16,16 @@ import {
   catalogStatusMeta,
   catalogStatusOf,
   catalogTransportMeta,
+  classifyEntryRisk,
   emptyInstallDraft,
   envRequirementsFor,
   filterCatalog,
+  inlineSecurityLabels,
+  installConfirmationFor,
   isLocalSubprocessEntry,
   needsAuthHandoff,
   needsCredentials,
+  securityLabelsForEntry,
   validateInstallDraft,
   useMcpCatalog,
   type HermesAdminMode,
@@ -31,6 +35,7 @@ import {
   type McpInstallDraft,
 } from "../../lib/hermes-admin";
 import { AdminNotifications } from "./AdminNotifications";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 
 type McpCatalogSectionProps = {
@@ -76,6 +81,9 @@ export function McpCatalogView({
   const [query, setQuery] = useState("");
   const [inspecting, setInspecting] = useState<string>();
   const [installing, setInstalling] = useState<string>();
+  // A high-risk install is gated behind a confirmation before the credential /
+  // direct-install path runs. This holds the entry awaiting that confirmation.
+  const [toConfirm, setToConfirm] = useState<string>();
 
   const visible = useMemo(
     () => filterCatalog(state.entries, query),
@@ -88,15 +96,29 @@ export function McpCatalogView({
   const toInstall = installing
     ? state.entries.find((entry) => entry.installName === installing)
     : undefined;
+  const confirmEntry = toConfirm
+    ? state.entries.find((entry) => entry.installName === toConfirm)
+    : undefined;
 
   const isUnavailable = state.status === "unavailable";
   const isLoadingFirst = state.status === "loading";
   const isErrored = state.status === "error";
   const hasEntries = state.entries.length > 0;
 
-  /** Routes an install: an entry that needs credentials opens the install dialog;
-   * otherwise it installs straight away with no extra env. */
+  /** Routes an install: a high-risk entry first asks for confirmation (a WARNING
+   * gate, never a block); an entry that needs credentials opens the install
+   * dialog; otherwise it installs straight away with no extra env. */
   function startInstall(entry: HermesMcpCatalogEntry) {
+    if (classifyEntryRisk(entry).requiresConfirmation) {
+      setToConfirm(entry.installName);
+      return;
+    }
+    proceedInstall(entry);
+  }
+
+  /** The install path after any confirmation: credentials dialog or direct
+   * install. */
+  function proceedInstall(entry: HermesMcpCatalogEntry) {
     if (needsCredentials(entry)) {
       setInstalling(entry.installName);
       return;
@@ -227,6 +249,16 @@ export function McpCatalogView({
           setInstalling(undefined);
         }}
       />
+
+      <ConfirmInstallDialog
+        entry={confirmEntry}
+        onClose={() => setToConfirm(undefined)}
+        onConfirm={() => {
+          const entry = confirmEntry;
+          setToConfirm(undefined);
+          if (entry) proceedInstall(entry);
+        }}
+      />
     </section>
   );
 }
@@ -295,6 +327,8 @@ function CatalogRow({
   const auth = catalogAuthMeta(entry.auth);
   const status = catalogStatusMeta(catalogStatusOf(entry));
   const labelId = `mcp-catalog-${cssId(entry.installName)}`;
+  const securityLabels = inlineSecurityLabels(securityLabelsForEntry(entry));
+  const risk = classifyEntryRisk(entry);
 
   return (
     <li className="mcp-server-row mcp-catalog-row">
@@ -331,6 +365,16 @@ function CatalogRow({
         ) : (
           <p className="mcp-server-blurb">{transport.blurb}</p>
         )}
+
+        <CatalogSecurityLabels labels={securityLabels} />
+
+        {risk.tier === "high" ? (
+          <p className="mcp-server-risk-note" data-tier="high" role="note">
+            <IconExclamationCircle size={13} ariaHidden />
+            {risk.reasons[0]?.detail ??
+              "This server can take high-impact actions."}
+          </p>
+        ) : null}
 
         <p className="mcp-catalog-trust">
           <IconShieldCheck size={12} ariaHidden />
@@ -708,6 +752,70 @@ function InstallDialog({
         </p>
       </div>
     </Dialog>
+  );
+}
+
+/** The security/sandbox-boundary labels a catalog entry will earn once
+ * installed (local subprocess / remote server / OAuth / secret-backed / sandbox
+ * constrained / unrestricted capable). Pure presentation; the derivation and
+ * copy live in `mcp-security-view`. */
+function CatalogSecurityLabels({
+  labels,
+}: {
+  labels: ReturnType<typeof securityLabelsForEntry>;
+}) {
+  if (labels.length === 0) return null;
+  return (
+    <ul className="mcp-server-security-labels" aria-label="Security labels">
+      {labels.map((entry) => (
+        <li
+          key={entry.code}
+          className="mcp-server-security-label"
+          data-code={entry.code}
+          data-tone={entry.tone}
+          title={entry.blurb}
+        >
+          <IconShield size={11} ariaHidden />
+          {entry.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The confirmation gate before installing a high-risk catalog entry. Leads with
+ * the file-tools warning (the spec's exact copy for local servers), then lists
+ * the matched reasons. This NEVER blocks: the user can always confirm. */
+function ConfirmInstallDialog({
+  entry,
+  onClose,
+  onConfirm,
+}: {
+  entry?: HermesMcpCatalogEntry;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const confirmation = entry ? installConfirmationFor(entry) : undefined;
+  return (
+    <ConfirmDialog
+      open={Boolean(entry)}
+      onClose={onClose}
+      onConfirm={onConfirm}
+      title={confirmation?.title ?? "Install server?"}
+      description={
+        confirmation ? (
+          <span className="mcp-confirm-body">
+            <span className="mcp-confirm-lead">{confirmation.lead}</span>
+            {confirmation.reasons.map((reason, index) => (
+              <span key={index} className="mcp-confirm-reason">
+                {reason}
+              </span>
+            ))}
+          </span>
+        ) : undefined
+      }
+      confirmLabel="Install server"
+    />
   );
 }
 
