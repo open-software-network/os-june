@@ -3910,16 +3910,13 @@ export function AgentWorkspace({
     }
     const sessionDisplayTitle = sessionTitle || fallbackSessionTitle;
     const ensureStoredHermesSession = () =>
-      withTimeout(
-        ensureHermesBridgeSession({
-          sessionId: storedSessionId,
-          title: sessionDisplayTitle,
-          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-        }),
-        2500,
-      ).catch(() => undefined);
+      ensureHermesBridgeSession({
+        sessionId: storedSessionId,
+        title: sessionDisplayTitle,
+        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+      });
     if (optimisticSession) {
-      await ensureStoredHermesSession();
+      await ensureStoredHermesSession().catch(rollbackOptimisticBeforePrompt);
       migrateOptimisticHermesSession({
         createdAt: optimisticSession.createdAt,
         displayContent,
@@ -3941,7 +3938,9 @@ export function AgentWorkspace({
       setHermesSessionItems((current) => applySessionTitleOverrides(current));
     }
     if (!optimisticSession) {
-      await ensureStoredHermesSession();
+      await withTimeout(ensureStoredHermesSession(), 2500).catch(
+        () => undefined,
+      );
     }
     let runtimeSessionId: string | undefined;
     try {

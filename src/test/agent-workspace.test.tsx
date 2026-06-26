@@ -5935,17 +5935,22 @@ describe("AgentWorkspace", () => {
     );
     expect(releaseEnsure).toBeDefined();
 
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+        await Promise.resolve();
+      });
 
-    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
-      "session-2",
-    );
-    expect(screen.queryByText(/Hermes API returned 404/)).toBeNull();
+      expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
+        "session-2",
+      );
+      expect(screen.queryByText(/Hermes API returned 404/)).toBeNull();
 
-    act(() => releaseEnsure?.());
+      act(() => releaseEnsure?.());
+    } finally {
+      vi.useRealTimers();
+    }
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
