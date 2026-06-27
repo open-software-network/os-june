@@ -185,6 +185,29 @@ describe("sanitizeText", () => {
     expect(out).not.toContain(resetToken);
   });
 
+  it("redacts 32-character opaque tokens in sensitive absolute URL paths", () => {
+    const resetToken = "d".repeat(32);
+    const out = sanitizeText(
+      `Reset at https://app.example/reset-password/${resetToken}?view=1`,
+    );
+
+    expect(out).toContain("https://app.example/reset-password/[redacted]");
+    expect(out).not.toContain(resetToken);
+  });
+
+  it("redacts opaque tokens in relative sensitive URL paths", () => {
+    const resetToken = "e".repeat(40);
+    const shareToken = "f".repeat(32);
+    const out = sanitizeText(
+      `Request failed: GET /reset-password/${resetToken}?view=1 and ./share/${shareToken}.`,
+    );
+
+    expect(out).toContain("GET /reset-password/[redacted]?view=1");
+    expect(out).toContain("./share/[redacted]");
+    expect(out).not.toContain(resetToken);
+    expect(out).not.toContain(shareToken);
+  });
+
   it("preserves opaque-looking path segments in ordinary URLs", () => {
     const docId = "abcdef0123456789abcdef0123456789abcdef01";
     const out = sanitizeText(

@@ -39,7 +39,9 @@ const KNOWN_SECRET_PATTERN =
   /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})\b/g;
 const NAMED_SECRET_FRAGMENT_PATTERN =
   /\b[A-Za-z0-9_-]*(?:token|secret|credential|password|api[_-]?key)[A-Za-z0-9_-]*\b/gi;
-const LONG_OPAQUE_TOKEN_PATTERN = /\b[A-Za-z0-9_-]{40,}\b/g;
+const OPAQUE_TOKEN_PATTERN = /\b[A-Za-z0-9_-]{32,}\b/g;
+const RELATIVE_PATH_CANDIDATE_PATTERN =
+  /(^|[\s"'(])((?:[A-Z]+\s+)?(?:\.{0,2}\/)[^\s"'<>),;]+)/g;
 const SENSITIVE_URL_PATH_SEGMENT_PATTERN =
   /^(?:auth|callback|callbacks|credential|credentials|download|downloads|file|files|invite|invites|oauth|password|passwords|private|reset|secret|secrets|share|shares|signed|token|tokens)$/i;
 const SENSITIVE_URL_HOST_FRAGMENT_PATTERN =
@@ -135,6 +137,7 @@ function isSensitiveAssignmentKey(key: string): boolean {
 }
 
 type RedactTokenOptions = {
+  minOpaqueTokenLength?: number;
   preservePathSegments?: boolean;
 };
 
@@ -142,7 +145,7 @@ function redactTokenFragments(
   value: string,
   options: RedactTokenOptions = { preservePathSegments: true },
 ): string {
-  return redactSensitiveAssignments(value)
+  return redactSensitiveRelativePathTokens(redactSensitiveAssignments(value))
     .replace(BEARER_PATTERN, (match) =>
       match.replace(/\s+\S+$/u, " [redacted]"),
     )
@@ -151,9 +154,70 @@ function redactTokenFragments(
     .replace(NAMED_SECRET_FRAGMENT_PATTERN, (match) =>
       match.length >= 16 && /[0-9_-]/u.test(match) ? REDACTED : match,
     )
-    .replace(LONG_OPAQUE_TOKEN_PATTERN, (match, offset, source) =>
+    .replace(OPAQUE_TOKEN_PATTERN, (match, offset, source) =>
       redactLongOpaqueToken(match, offset, source, options),
     );
+}
+
+function redactSensitiveRelativePathTokens(value: string): string {
+  return value.replace(
+    RELATIVE_PATH_CANDIDATE_PATTERN,
+    (_match, prefix: string, candidate: string) => {
+      let path = candidate;
+      let suffix = "";
+      while (/[),.;!?]$/u.test(path)) {
+        suffix = `${path.at(-1) ?? ""}${suffix}`;
+        path = path.slice(0, -1);
+      }
+      return `${prefix}${redactSensitiveRelativePath(path)}${suffix}`;
+    },
+  );
+}
+
+function redactSensitiveRelativePath(candidate: string): string {
+  const methodMatch = /^([A-Z]+\s+)(.+)$/u.exec(candidate);
+  const methodPrefix = methodMatch?.[1] ?? "";
+  const path = methodMatch?.[2] ?? candidate;
+  const suffixStart = firstPathSuffixIndex(path);
+  const pathname = suffixStart === -1 ? path : path.slice(0, suffixStart);
+  const suffix = suffixStart === -1 ? "" : path.slice(suffixStart);
+  const segments = pathname.split("/");
+  const meaningful = segments.filter(
+    (segment) => segment && segment !== "." && segment !== "..",
+  );
+  const sensitivePosition = meaningful.findIndex((segment) =>
+    isSensitivePathSegment(segment),
+  );
+
+  if (sensitivePosition === -1) return candidate;
+  // Avoid treating arbitrary filesystem paths as URLs: without an HTTP-ish
+  // method prefix, require the sensitive route to appear near the path root.
+  if (!methodPrefix && sensitivePosition > 1) return candidate;
+
+  let seenSensitiveSegment = false;
+  const redacted = segments.map((segment) => {
+    if (isSensitivePathSegment(segment)) {
+      seenSensitiveSegment = true;
+      return segment;
+    }
+    if (seenSensitiveSegment && isOpaquePathToken(segment, 32)) {
+      return REDACTED;
+    }
+    return segment;
+  });
+  return `${methodPrefix}${redacted.join("/")}${suffix}`;
+}
+
+function firstPathSuffixIndex(path: string): number {
+  const query = path.indexOf("?");
+  const hash = path.indexOf("#");
+  if (query === -1) return hash;
+  if (hash === -1) return query;
+  return Math.min(query, hash);
+}
+
+function isOpaquePathToken(segment: string, minLength: number): boolean {
+  return segment.length >= minLength && /^[A-Za-z0-9_-]+$/u.test(segment);
 }
 
 function redactLongOpaqueToken(
@@ -162,6 +226,7 @@ function redactLongOpaqueToken(
   source: string,
   options: RedactTokenOptions,
 ): string {
+  if (match.length < (options.minOpaqueTokenLength ?? 40)) return match;
   const before = offset > 0 ? source.at(offset - 1) : undefined;
   const after = source.at(offset + match.length);
   if (
@@ -287,6 +352,7 @@ function sanitizeUrl(value: string): string | undefined {
     if (sanitizeUrlFragment(url, sensitiveUrlContext)) changed = true;
 
     return redactTokenFragments(changed ? url.toString() : value, {
+      minOpaqueTokenLength: sensitiveUrlContext ? 32 : undefined,
       preservePathSegments: !(
         changed || sensitiveUrlContext
       ),
