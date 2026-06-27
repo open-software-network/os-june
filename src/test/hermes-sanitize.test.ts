@@ -277,6 +277,17 @@ describe("sanitizeText", () => {
     expect(out).not.toContain("abc123");
   });
 
+  it("redacts codes in bare nested relative callback routes", () => {
+    const out = sanitizeText(
+      "Auth failed at /projects/123/oauth/callback?code=abc123&state=ok",
+    );
+
+    expect(out).toContain(
+      "/projects/123/oauth/callback?code=[redacted]&state=ok",
+    );
+    expect(out).not.toContain("abc123");
+  });
+
   it("redacts codes in relative sensitive route query strings", () => {
     const out = sanitizeText(
       "Request failed: url=/reset-password?code=abc123&state=ok path=/share?code=def456",
@@ -313,6 +324,13 @@ describe("sanitizeText", () => {
   it("preserves plain macOS private temp paths", () => {
     const path =
       "/private/var/folders/abcdef1234567890abcdef1234567890/T/report.txt";
+    const out = sanitizeText(`Read ${path}`);
+
+    expect(out).toContain(path);
+  });
+
+  it("preserves extensionless artifact paths under common directories", () => {
+    const path = `/tmp/download/${"j".repeat(40)}`;
     const out = sanitizeText(`Read ${path}`);
 
     expect(out).toContain(path);
@@ -461,6 +479,16 @@ describe("sanitizeText", () => {
     expect(out).not.toContain(String.raw`abc\'def`);
     expect(out).not.toContain("abc");
     expect(out).not.toContain("def");
+  });
+
+  it("redacts escaped JSON sensitive fields inside longer text", () => {
+    const out = sanitizeText(
+      String.raw`Request failed: {\"access_token\":\"abc123\",\"note\":\"safe\"}`,
+    );
+
+    expect(out).toContain(String.raw`\"access_token\":\"[redacted]\"`);
+    expect(out).toContain(String.raw`\"note\":\"safe\"`);
+    expect(out).not.toContain("abc123");
   });
 
   it("redacts websocket URL tokens inside longer text", () => {

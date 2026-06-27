@@ -27,6 +27,10 @@ const SENSITIVE_SINGLE_QUOTED_ASSIGNMENT_PATTERN = new RegExp(
   `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY_PATTERN})\\2(\\s*[:=]\\s*)'((?:\\\\.|[^'\\\\\\r\\n])*)'`,
   "gi",
 );
+const SENSITIVE_ESCAPED_DOUBLE_QUOTED_ASSIGNMENT_PATTERN = new RegExp(
+  `(^|[?#&\\s,;({\\[])(\\\\")(${SENSITIVE_ASSIGNMENT_KEY_PATTERN})(\\\\")(\\s*:\\s*)(\\\\")((?:(?!\\\\").)*)(\\\\")`,
+  "gi",
+);
 const SENSITIVE_TEXT_ASSIGNMENT_PATTERN = new RegExp(
   `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY_PATTERN})\\2(\\s*[:=]\\s*)(?:(?:bearer|basic)\\s+)?([^\\s"'<>),;&]+)`,
   "gi",
@@ -89,6 +93,23 @@ function redactSensitiveAssignments(value: string): string {
     .replace(
       SENSITIVE_RELATIVE_CALLBACK_CODE_PATTERN,
       (_match, prefix: string) => `${prefix}${REDACTED}`,
+    )
+    .replace(
+      SENSITIVE_ESCAPED_DOUBLE_QUOTED_ASSIGNMENT_PATTERN,
+      (
+        match: string,
+        prefix: string,
+        keyOpenQuote: string,
+        key: string,
+        keyCloseQuote: string,
+        separator: string,
+        valueOpenQuote: string,
+        _value: string,
+        valueCloseQuote: string,
+      ) => {
+        if (!isSensitiveAssignmentKey(key)) return match;
+        return `${prefix}${keyOpenQuote}${key}${keyCloseQuote}${separator}${valueOpenQuote}${REDACTED}${valueCloseQuote}`;
+      },
     )
     .replace(
       SENSITIVE_DOUBLE_QUOTED_ASSIGNMENT_PATTERN,
@@ -227,13 +248,15 @@ function redactSensitiveRelativePath(
   ) {
     return candidate;
   }
-  // Avoid treating arbitrary filesystem paths as URLs: without an HTTP-ish
-  // method/hash-route prefix, require the sensitive route to appear near the
-  // path root.
-  if (
-    !hasRouteContext && sensitivePosition > 1
-  )
-    return candidate;
+  // Avoid treating arbitrary filesystem paths as URLs. For unlabeled paths,
+  // only root-sensitive routes get path-segment redaction; nested callback
+  // routes still get sensitive query/hash params scrubbed below.
+  if (!hasRouteContext && sensitivePosition > 0) {
+    const redactedSuffix = redactSensitiveContextParams(suffix);
+    return redactedSuffix === suffix
+      ? candidate
+      : `${methodPrefix}${routePrefix}${pathname}${redactedSuffix}`;
+  }
 
   let seenSensitiveSegment = false;
   const redacted = segments.map((segment) => {
