@@ -3,13 +3,14 @@ name: agent-e2e-qa
 description: >-
   Run live, agent-driven end-to-end QA for os-june by opening the real app or
   web preview, clicking through changed flows, inspecting visible state,
-  recording video, capturing screenshots/logs, and reporting pass/fail
-  evidence. Use when a user asks for full integration testing, live app QA,
-  visual inspection, "open the app and use it", "click through it", "record
-  the QA run", native Tauri verification, WKWebView inspection, onboarding
-  smoke tests, HUD/tray/hotkey checks, or manual QA replacement by an agent.
-  Compose Browser, Chrome, Computer Use, terminal commands, and repo tests as
-  appropriate.
+  recording and compressing video, attaching QA videos to PRs through
+  os-platform file uploads, capturing screenshots/logs, and reporting
+  pass/fail evidence. Use when a user asks for full integration testing, live
+  app QA, visual inspection, "open the app and use it", "click through it",
+  "record the QA run", "attach the video to the PR", native Tauri
+  verification, WKWebView inspection, onboarding smoke tests, HUD/tray/hotkey
+  checks, or manual QA replacement by an agent. Compose Browser, Chrome,
+  Computer Use, terminal commands, and repo tests as appropriate.
 ---
 
 # Agent E2E QA
@@ -89,6 +90,29 @@ captured.
 - After stopping, verify the file exists and is non-empty with `ls -lh`. Include
   the recording path in `Artifacts`. If recording is unavailable, keep the run
   going with screenshots/logs and list the missing video in `Gaps`.
+- Compress the recording before sharing it. Prefer the bundled helper, which
+  creates a 720p, 10 fps, no-audio H.264 MP4 under the os-platform file cap:
+  ```bash
+  python3 .agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py \
+    .tmp/qa-recordings/<timestamp>-<slug>.mov
+  ```
+  Use `--max-bytes`, `QA_VIDEO_MAX_BYTES`, `--bitrate-kbps`, or
+  `--min-bitrate-kbps` only when the default adaptive compression misses the
+  size target. If `ffmpeg` is unavailable, report compressed video as
+  `BLOCKED` or a `Gaps` item and keep the QA evidence path moving with raw video
+  and screenshots.
+- Attach a video to a PR only when the user asked for PR sharing or the QA
+  charter explicitly allows it. Public os-platform uploads are downloadable by
+  anyone with the URL, so pass `--confirm-public` only after that confirmation:
+  ```bash
+  python3 .agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py \
+    .tmp/qa-recordings/<timestamp>-<slug>.mov \
+    --upload --confirm-public --comment-pr <pr-number>
+  ```
+  The helper reads `OS_PLATFORM_API_KEY` or
+  `SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY`, falling back to
+  `scribe-api/.env` when present, and uploads with `is_public=true` and
+  `purpose=attachment`.
 - Do not commit binary recordings unless the user explicitly asks. Prefer
   attaching or sharing the artifact path outside git.
 
@@ -151,8 +175,9 @@ read that skill before using the tool.
    - stale loading states
    - console errors
    - unexpected account, billing, or permission prompts
-7. Stop the screen recording, verify the output file, and include it in the
-   evidence.
+7. Stop the screen recording, verify the output file, compress it with
+   `prepare_qa_video.py`, and include the raw path, compressed path, and public
+   URL or PR comment when one was requested.
 8. If something fails, capture the exact repro sequence, screenshot/log proof,
    and likely code owner files. Do not keep clicking until the failure is
    obscured.
@@ -172,7 +197,8 @@ Checks:
 - PASS/FAIL/BLOCKED - story or flow - evidence
 
 Artifacts:
-- video path, screenshot/log paths, or PR comments
+- raw video path, compressed video path, os-platform URL, screenshot/log paths,
+  or PR comments
 
 Gaps:
 - anything not proven and why
