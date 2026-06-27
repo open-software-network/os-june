@@ -125,6 +125,23 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).not.toContain("user:pass");
   });
 
+  it("does not preserve raw sensitive non-artifact urls", () => {
+    const callbackUrl =
+      "https://auth.example.com/oauth/callback?code=oauth-code-123&state=ok";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "fetch_url",
+      url: callbackUrl,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event.payload)).not.toContain("oauth-code-123");
+    expect(JSON.stringify(event)).not.toContain("oauth-code-123");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).not.toContain("oauth-code-123");
+    expect(artifact.path).toContain("code=[redacted]");
+  });
+
   it("does not preserve credential-shaped non-url artifact fields", () => {
     const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const event = toolClassified("tool.complete", "s1", {

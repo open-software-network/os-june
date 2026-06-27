@@ -62,11 +62,35 @@ export function artifactLocationsFromPayload(payload: unknown): string[] {
 export function artifactNavigationLocationsFromPayload(
   payload: unknown,
 ): string[] {
-  const locations = artifactLocationsFromPayload(payload);
-  return locations.filter(
-    (location) =>
-      isArtifactUrlLocation(location) || looksLikeFilesystemPath(location),
-  );
+  const record = asRecord(payload);
+  if (!record) return [];
+
+  const out: string[] = [];
+  const push = (value: unknown) => {
+    const str = nonEmptyString(value);
+    const location = str ? stripUrlUserinfo(str) : undefined;
+    if (!location) return;
+    if (isArtifactUrlLocation(location)) {
+      if (!shouldPreserveRawArtifactUrl(location)) return;
+    } else if (!looksLikeFilesystemPath(location)) {
+      return;
+    }
+    if (!out.includes(location)) out.push(location);
+  };
+
+  for (const key of SINGULAR_LOCATION_KEYS) push(record[key]);
+
+  for (const key of PATH_SHAPED_LOCATION_KEYS) {
+    const value = record[key];
+    if (typeof value === "string" && looksLikeLocation(value)) push(value);
+  }
+
+  for (const key of ARRAY_LOCATION_KEYS) {
+    const value = record[key];
+    if (Array.isArray(value)) for (const item of value) push(item);
+  }
+
+  return out;
 }
 
 function stripUrlUserinfo(value: string): string {
@@ -105,4 +129,65 @@ function looksLikeFilesystemPath(value: string): boolean {
     trimmed.startsWith("~/") ||
     /^[a-z]:[\\/]/i.test(trimmed)
   );
+}
+
+function shouldPreserveRawArtifactUrl(value: string): boolean {
+  if (!hasSensitiveUrlParam(value)) return true;
+  return isLikelyArtifactUrl(value);
+}
+
+function hasSensitiveUrlParam(value: string): boolean {
+  try {
+    const url = new URL(value);
+    for (const key of url.searchParams.keys()) {
+      if (isSensitiveUrlParamKey(key)) return true;
+    }
+    const hash = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
+    const hashQueryIndex = hash.indexOf("?");
+    const hashQuery =
+      hashQueryIndex !== -1
+        ? hash.slice(hashQueryIndex + 1)
+        : hash.startsWith("?")
+          ? hash.slice(1)
+          : hash.includes("=")
+            ? hash
+            : "";
+    if (!hashQuery) return false;
+    for (const key of new URLSearchParams(hashQuery).keys()) {
+      if (isSensitiveUrlParamKey(key)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function isSensitiveUrlParamKey(key: string): boolean {
+  return /(?:^|[_-])(?:access[_-]?token|auth|code|credential|id[_-]?token|jwt|key|password|refresh[_-]?token|secret|session|sid|signature|sig|token)(?:[_-]|$)/i.test(
+    key,
+  );
+}
+
+function isLikelyArtifactUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const pathname = url.pathname.toLowerCase();
+    if (
+      /(?:^|\/)(?:auth|authorize|callback|login|oauth|reset|token)(?:\/|$)/.test(
+        pathname,
+      )
+    ) {
+      return false;
+    }
+    const parts = pathname.split("/").filter(Boolean);
+    const basename = parts[parts.length - 1] ?? "";
+    if (/\.[a-z0-9]{1,12}$/.test(basename)) return true;
+    return parts.some((part) =>
+      /^(?:artifact|artifacts|attachment|attachments|download|downloads|export|exports|file|files|image|images)$/.test(
+        part,
+      ),
+    );
+  } catch {
+    return false;
+  }
 }
