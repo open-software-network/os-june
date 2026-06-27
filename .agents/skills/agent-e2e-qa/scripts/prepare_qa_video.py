@@ -322,7 +322,7 @@ def comment_on_pr(url: str, path: pathlib.Path, args: argparse.Namespace) -> Non
     body = (
         "QA video artifact\n\n"
         f"- Video: {url}\n"
-        f"- Local compressed file: `{path}` ({human_size(path.stat().st_size)})"
+        f"- Compressed file: `{path.name}` ({human_size(path.stat().st_size)})"
     )
     command = ["gh", "pr", "comment", str(args.comment_pr), "--body", body]
     if args.github_repo:

@@ -562,14 +562,31 @@ async function main() {
     await page.waitForFunction(() => window.__qaComplete === true, {
       timeout: args.timeoutMs,
     });
-    completed = true;
-    await page.waitForTimeout(1_000);
+    await page.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll(".agent-assistant-turn-body")).some((element) => {
+          const text = element.textContent?.trim();
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return (
+            text &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            rect.width > 0 &&
+            rect.height > 0
+          );
+        }),
+      { timeout: args.timeoutMs },
+    );
 
     const assistantTexts = await page
       .locator(".agent-assistant-turn-body")
-      .allInnerTexts()
-      .catch(() => []);
+      .allInnerTexts();
     assistantText = assistantTexts.join("\n\n").trim();
+    if (!assistantText) {
+      throw new Error("No visible assistant reply rendered after completion");
+    }
+    completed = true;
     screenshotPath = join(outDir, `${stamp}-background-agent-${slugFor(args.prompt)}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
   } finally {
