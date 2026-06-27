@@ -403,6 +403,16 @@ describe("sanitizeText", () => {
     expect(out).not.toContain("sid123");
   });
 
+  it("redacts encoded base64 route tokens", () => {
+    const out = sanitizeText(
+      "Download failed at https://host.example/download/YWJjZA%3D%3D?view=1",
+    );
+
+    expect(out).toContain("/download/[redacted]?view=1");
+    expect(out).not.toContain("YWJjZA%3D%3D");
+    expect(out).not.toContain("YWJjZA==");
+  });
+
   it("redacts short OAuth codes in sensitive callback URLs", () => {
     const out = sanitizeText(
       "Auth failed at https://auth.example.com/oauth/callback?code=abc123&state=ok",

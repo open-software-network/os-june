@@ -273,6 +273,22 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).toContain("/download/[redacted]");
   });
 
+  it("does not preserve raw encoded relative download url tokens", () => {
+    const downloadUrl = "/download/YWJjZA%3D%3D";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "download_file",
+      url: downloadUrl,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event.payload)).not.toContain("YWJjZA%3D%3D");
+    expect(JSON.stringify(event)).not.toContain("YWJjZA%3D%3D");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).not.toContain("YWJjZA%3D%3D");
+    expect(artifact.path).toContain("/download/[redacted]");
+  });
+
   it("preserves signed download urls with filenames", () => {
     const signedUrl =
       "https://app.example.com/download/report.pdf?token=signed-token-123&view=1";

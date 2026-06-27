@@ -318,8 +318,9 @@ function isRouteSecretSegment(segment: string): boolean {
   }
   return (
     normalized.length >= 4 &&
-    /^[A-Za-z0-9_-]+$/u.test(normalized) &&
-    /[A-Za-z0-9]/u.test(normalized)
+    ((/^[A-Za-z0-9_-]+$/u.test(normalized) &&
+      /[A-Za-z0-9]/u.test(normalized)) ||
+      /^[A-Za-z0-9+/]+={0,2}$/u.test(normalized))
   );
 }
 
