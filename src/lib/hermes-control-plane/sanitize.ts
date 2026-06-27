@@ -217,14 +217,21 @@ function redactSensitiveRelativePath(
   );
 
   if (sensitivePosition === -1) return candidate;
+  const hasRouteContext = Boolean(
+    methodPrefix || routePrefix || hasRouteLabelPrefix,
+  );
+  if (
+    !hasRouteContext &&
+    sensitivePosition === 0 &&
+    /^private$/i.test(meaningful[0] ?? "")
+  ) {
+    return candidate;
+  }
   // Avoid treating arbitrary filesystem paths as URLs: without an HTTP-ish
   // method/hash-route prefix, require the sensitive route to appear near the
   // path root.
   if (
-    !methodPrefix &&
-    !routePrefix &&
-    !hasRouteLabelPrefix &&
-    sensitivePosition > 1
+    !hasRouteContext && sensitivePosition > 1
   )
     return candidate;
 

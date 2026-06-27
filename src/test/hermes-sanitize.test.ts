@@ -310,6 +310,14 @@ describe("sanitizeText", () => {
     expect(out).toContain("/tmp/access_token_notes.md");
   });
 
+  it("preserves plain macOS private temp paths", () => {
+    const path =
+      "/private/var/folders/abcdef1234567890abcdef1234567890/T/report.txt";
+    const out = sanitizeText(`Read ${path}`);
+
+    expect(out).toContain(path);
+  });
+
   it("preserves opaque-looking path segments in ordinary URLs", () => {
     const docId = "abcdef0123456789abcdef0123456789abcdef01";
     const out = sanitizeText(
