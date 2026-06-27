@@ -195,6 +195,16 @@ describe("sanitizeText", () => {
     expect(out).not.toContain("secret-token-123");
   });
 
+  it("redacts short OAuth codes in sensitive callback URLs", () => {
+    const out = sanitizeText(
+      "Auth failed at https://auth.example.com/oauth/callback?code=abc123&state=ok",
+    );
+
+    expect(out).toContain("state=ok");
+    expect(out).toContain("code=");
+    expect(out).not.toContain("abc123");
+  });
+
   it("redacts short key-value token fragments inside longer text", () => {
     const out = sanitizeText(
       "Request failed: token=1234 access_token=abc123 value=4321 url=/callback?key=short-key&view=1 hash=#access_token=hash-token&state=ok monkey=banana",

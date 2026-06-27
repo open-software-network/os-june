@@ -65,6 +65,10 @@ function isSensitiveUrlQueryKey(key: string): boolean {
   return isSensitiveKey(key) || /^key$/i.test(key);
 }
 
+function isSensitiveUrlContextQueryKey(key: string): boolean {
+  return /^code$/i.test(key);
+}
+
 /**
  * Redacts secret-shaped fragments inside otherwise human-readable text. Use this
  * for fields that are intentionally surfaced as strings, such as error
@@ -258,8 +262,12 @@ function sanitizeUrl(value: string): string | undefined {
       changed = true;
     }
 
+    const sensitiveUrlContext = hasSensitiveUrlPathContext(url);
     for (const key of Array.from(url.searchParams.keys())) {
-      if (isSensitiveUrlQueryKey(key)) {
+      if (
+        isSensitiveUrlQueryKey(key) ||
+        (sensitiveUrlContext && isSensitiveUrlContextQueryKey(key))
+      ) {
         url.searchParams.set(key, REDACTED);
         changed = true;
       }
@@ -267,7 +275,7 @@ function sanitizeUrl(value: string): string | undefined {
 
     return redactTokenFragments(changed ? url.toString() : value, {
       preservePathSegments: !(
-        changed || hasSensitiveUrlPathContext(url)
+        changed || sensitiveUrlContext
       ),
     });
   } catch {
