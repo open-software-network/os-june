@@ -67,23 +67,27 @@ export function artifactNavigationLocationsFromPayload(
   if (!record) return [];
 
   const out: string[] = [];
-  const push = (value: unknown) => {
+  const push = (value: unknown, key?: string) => {
     const str = nonEmptyString(value);
     const location = str ? stripUrlUserinfo(str) : undefined;
     if (!location) return;
     if (isArtifactUrlLocation(location)) {
       if (!shouldPreserveRawArtifactUrl(location)) return;
-    } else if (!shouldPreserveRawFilesystemLocation(location)) {
+    } else if (
+      !shouldPreserveRawFilesystemLocation(location, isUrlLocationKey(key))
+    ) {
       return;
     }
     if (!out.includes(location)) out.push(location);
   };
 
-  for (const key of SINGULAR_LOCATION_KEYS) push(record[key]);
+  for (const key of SINGULAR_LOCATION_KEYS) push(record[key], key);
 
   for (const key of PATH_SHAPED_LOCATION_KEYS) {
     const value = record[key];
-    if (typeof value === "string" && looksLikeLocation(value)) push(value);
+    if (typeof value === "string" && looksLikeLocation(value)) {
+      push(value, key);
+    }
   }
 
   for (const key of ARRAY_LOCATION_KEYS) {
@@ -190,9 +194,14 @@ function hasSensitiveUrlPathToken(value: string): boolean {
   }
 }
 
-function shouldPreserveRawFilesystemLocation(value: string): boolean {
+function shouldPreserveRawFilesystemLocation(
+  value: string,
+  useUrlRouteGate: boolean,
+): boolean {
   if (!looksLikeFilesystemPath(value)) return false;
-  if (hasSensitiveRoutePathToken(locationPathname(value), false)) return false;
+  if (hasSensitiveRoutePathToken(locationPathname(value), useUrlRouteGate)) {
+    return false;
+  }
   if (!hasSensitiveRelativeLocationParam(value)) return true;
   return isLikelyArtifactPathname(locationPathname(value));
 }
@@ -258,6 +267,10 @@ function isLikelyArtifactPathname(pathname: string): boolean {
       part,
     ),
   );
+}
+
+function isUrlLocationKey(key: string | undefined): boolean {
+  return key === "url" || key === "uri";
 }
 
 function hasSensitiveRoutePathToken(
