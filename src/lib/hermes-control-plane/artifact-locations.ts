@@ -182,8 +182,8 @@ function hasSensitiveUrlPathToken(value: string): boolean {
   try {
     const url = new URL(value);
     return (
-      hasSensitiveRoutePathToken(url.pathname) ||
-      hasSensitiveRoutePathToken(hashPathname(url.hash))
+      hasSensitiveRoutePathToken(url.pathname, true) ||
+      hasSensitiveRoutePathToken(hashPathname(url.hash), true)
     );
   } catch {
     return false;
@@ -192,7 +192,7 @@ function hasSensitiveUrlPathToken(value: string): boolean {
 
 function shouldPreserveRawFilesystemLocation(value: string): boolean {
   if (!looksLikeFilesystemPath(value)) return false;
-  if (hasSensitiveRoutePathToken(locationPathname(value))) return false;
+  if (hasSensitiveRoutePathToken(locationPathname(value), false)) return false;
   if (!hasSensitiveRelativeLocationParam(value)) return true;
   return isLikelyArtifactPathname(locationPathname(value));
 }
@@ -260,10 +260,15 @@ function isLikelyArtifactPathname(pathname: string): boolean {
   );
 }
 
-function hasSensitiveRoutePathToken(pathname: string): boolean {
+function hasSensitiveRoutePathToken(
+  pathname: string,
+  includeArtifactRoutePrefixes: boolean,
+): boolean {
   if (!pathname) return false;
   const parts = pathname.split("/").filter(Boolean);
-  const sensitiveIndex = parts.findIndex(isSensitiveRawRouteSegment);
+  const sensitiveIndex = parts.findIndex((part) =>
+    isSensitiveRawRouteSegment(part, includeArtifactRoutePrefixes),
+  );
   if (sensitiveIndex === -1) return false;
   return parts
     .slice(sensitiveIndex + 1)
@@ -278,11 +283,15 @@ function hashPathname(hash: string): string {
   return fragment.includes("=") ? "" : fragment;
 }
 
-function isSensitiveRawRouteSegment(segment: string): boolean {
+function isSensitiveRawRouteSegment(
+  segment: string,
+  includeArtifactRoutePrefixes: boolean,
+): boolean {
   const normalized = safeDecodeURIComponent(segment).toLowerCase();
-  return /(?:^|[-_])(?:auth|authorize|callback|callbacks|credential|credentials|invite|invites|login|oauth|password|passwords|reset|secret|secrets|share|shares|signed|token|tokens)(?:[-_]|$)/.test(
-    normalized,
-  );
+  const routePattern = includeArtifactRoutePrefixes
+    ? /(?:^|[-_])(?:auth|authorize|callback|callbacks|credential|credentials|download|downloads|file|files|invite|invites|login|oauth|password|passwords|private|reset|secret|secrets|share|shares|signed|token|tokens)(?:[-_]|$)/
+    : /(?:^|[-_])(?:auth|authorize|callback|callbacks|credential|credentials|invite|invites|login|oauth|password|passwords|reset|secret|secrets|share|shares|signed|token|tokens)(?:[-_]|$)/;
+  return routePattern.test(normalized);
 }
 
 function isRouteSecretSegment(segment: string): boolean {

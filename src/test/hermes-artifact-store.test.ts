@@ -240,6 +240,40 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).toContain("signed-token-123");
   });
 
+  it("does not preserve raw download url path tokens", () => {
+    const downloadUrl =
+      "https://app.example.com/download/download-token-123?view=1";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "download_file",
+      url: downloadUrl,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event.payload)).not.toContain("download-token-123");
+    expect(JSON.stringify(event)).not.toContain("download-token-123");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).not.toContain("download-token-123");
+    expect(artifact.path).toContain("/download/[redacted]");
+  });
+
+  it("preserves signed download urls with filenames", () => {
+    const signedUrl =
+      "https://app.example.com/download/report.pdf?token=signed-token-123&view=1";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "download_file",
+      url: signedUrl,
+    });
+
+    expect(event.artifactLocations).toEqual([signedUrl]);
+    expect(JSON.stringify(event.payload)).not.toContain("signed-token-123");
+    expect(JSON.stringify(event)).not.toContain("signed-token-123");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).toBe(signedUrl);
+    expect(artifact.path).toContain("signed-token-123");
+  });
+
   it("does not preserve signed artifact urls with dotted route tokens", () => {
     const jwt =
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzaGFyZSJ9.signature123";
