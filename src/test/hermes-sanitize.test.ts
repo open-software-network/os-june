@@ -174,16 +174,20 @@ describe("sanitizeText", () => {
 
   it("redacts quoted key-value token fragments inside longer text", () => {
     const out = sanitizeText(
-      `Request failed: {"access_token":"abc123"} token: "1234" password: 'pw' note="safe"`,
+      `Request failed: {"access_token":"abc123"} token: "1234" password: 'abc def' password='abc,def' authorization: Basic dXNlcjpwYXNz note="safe"`,
     );
 
     expect(out).toContain(`"access_token":"[redacted]"`);
     expect(out).toContain(`token: "[redacted]"`);
     expect(out).toContain(`password: '[redacted]'`);
+    expect(out).toContain(`password='[redacted]'`);
+    expect(out).toContain(`authorization: [redacted]`);
     expect(out).toContain(`note="safe"`);
     expect(out).not.toContain("abc123");
     expect(out).not.toContain("1234");
-    expect(out).not.toContain("'pw'");
+    expect(out).not.toContain("abc def");
+    expect(out).not.toContain("abc,def");
+    expect(out).not.toContain("dXNlcjpwYXNz");
   });
 
   it("redacts websocket URL tokens inside longer text", () => {
