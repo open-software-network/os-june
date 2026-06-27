@@ -59,6 +59,16 @@ export function artifactLocationsFromPayload(payload: unknown): string[] {
   return out;
 }
 
+export function artifactNavigationLocationsFromPayload(
+  payload: unknown,
+): string[] {
+  const locations = artifactLocationsFromPayload(payload);
+  return locations.filter(
+    (location) =>
+      isArtifactUrlLocation(location) || looksLikeFilesystemPath(location),
+  );
+}
+
 function stripUrlUserinfo(value: string): string {
   if (!isArtifactUrlLocation(value)) return value;
   try {
@@ -82,4 +92,17 @@ function looksLikeLocation(value: string): boolean {
 
 export function isArtifactUrlLocation(value: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+}
+
+function looksLikeFilesystemPath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("\\") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../") ||
+    trimmed.startsWith("~/") ||
+    /^[a-z]:[\\/]/i.test(trimmed)
+  );
 }

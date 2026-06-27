@@ -139,6 +139,23 @@ describe("artifactsFromToolEvent", () => {
     expect(JSON.stringify(artifacts)).not.toContain(secret);
   });
 
+  it("preserves extensionless local artifact paths before payload redaction", () => {
+    const path = `/download/${"a".repeat(32)}`;
+    const event = toolClassified("tool.complete", "s1", {
+      name: "download_file",
+      path,
+    });
+
+    expect(JSON.stringify(event.payload)).toContain("/download/[redacted]");
+    expect(JSON.stringify(event)).not.toContain(path);
+    expect(event.artifactLocations).toEqual([path]);
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).toBe(path);
+    expect(artifact.path).not.toContain("[redacted]");
+    expect(artifact.displayName).toBe("a".repeat(32));
+  });
+
   it("derives the display name from the path basename", () => {
     const event = toolClassified("tool.complete", "s1", {
       name: "write_file",
