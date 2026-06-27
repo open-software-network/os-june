@@ -183,10 +183,14 @@ async function delay(ms) {
   await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
-async function waitForStatus({ host, port, token, child }) {
+async function waitForStatus({ host, port, token, child, getChildError = () => null }) {
   const deadline = Date.now() + 45_000;
   let lastError = "timeout";
   while (Date.now() < deadline) {
+    const childError = getChildError();
+    if (childError) {
+      throw new Error(`Hermes failed to launch: ${describeError(childError)}`);
+    }
     if (child.exitCode !== null) {
       throw new Error(`Hermes exited before readiness, code ${child.exitCode}`);
     }
@@ -450,6 +454,43 @@ async function stopChild(child) {
   if (child.exitCode === null) child.kill("SIGKILL");
 }
 
+function removeHermesHome(hermesHome, keepHermesHome) {
+  if (!keepHermesHome && hermesHome) rmSync(hermesHome, { recursive: true, force: true });
+}
+
+function registerHermesCleanup({ hermesHome, keepHermesHome, childRef }) {
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    const child = childRef.current;
+    if (child && child.exitCode === null && !child.killed) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // Best-effort cleanup during process exit.
+      }
+    }
+    removeHermesHome(hermesHome, keepHermesHome);
+  };
+  const handleSigint = () => {
+    cleanup();
+    process.exit(130);
+  };
+  const handleSigterm = () => {
+    cleanup();
+    process.exit(143);
+  };
+  process.once("SIGINT", handleSigint);
+  process.once("SIGTERM", handleSigterm);
+  process.once("exit", cleanup);
+  return () => {
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+    process.off("exit", cleanup);
+  };
+}
+
 function describeError(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -495,11 +536,18 @@ async function main() {
   const port = await allocatePort(host);
   const token = randomToken();
   const hermesHome = mkdtempSync(join(root, ".tmp/qa-hermes-"));
+  const childRef = { current: null };
+  const unregisterCleanup = registerHermesCleanup({
+    hermesHome,
+    keepHermesHome: args.keepHermesHome,
+    childRef,
+  });
   mkdirSync(join(hermesHome, "workspace"), { recursive: true });
   copyFileSync(sourceConfig, join(hermesHome, "config.yaml"));
   const sourceEnv = join(sourceHermesHome, ".env");
   if (existsSync(sourceEnv)) copyFileSync(sourceEnv, join(hermesHome, ".env"));
 
+  let childLaunchError = null;
   const child = spawn(hermesCommand, ["dashboard", "--no-open", "--host", host, "--port", String(port)], {
     cwd: hermesHome,
     env: {
@@ -511,6 +559,10 @@ async function main() {
       no_proxy: "127.0.0.1,localhost,::1",
     },
     stdio: ["ignore", "pipe", "pipe"],
+  });
+  childRef.current = child;
+  child.once("error", (error) => {
+    childLaunchError = error;
   });
   let hermesStderr = "";
   child.stderr?.on("data", (chunk) => {
@@ -528,7 +580,7 @@ async function main() {
   const consoleMessages = [];
 
   try {
-    await waitForStatus({ host, port, token, child });
+    await waitForStatus({ host, port, token, child, getChildError: () => childLaunchError });
     const connection = connectionFor({ host, port, token, hermesCommand, hermesHome });
     browser = await chromium.launch({
       executablePath: chromeExecutable,
@@ -599,7 +651,8 @@ async function main() {
     }
     if (browser) await browser.close().catch(() => {});
     await stopChild(child);
-    if (!args.keepHermesHome) rmSync(hermesHome, { recursive: true, force: true });
+    removeHermesHome(hermesHome, args.keepHermesHome);
+    unregisterCleanup();
   }
 
   const result = {
