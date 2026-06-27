@@ -192,7 +192,10 @@ async function waitForStatus({ host, port, token, child }) {
     }
     try {
       const response = await fetch(`http://${host}:${port}/api/status`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "X-Hermes-Session-Token": token,
+        },
         signal: AbortSignal.timeout(5_000),
       });
       if (response.ok) {
@@ -321,7 +324,9 @@ function browserInitScript() {
           if (
             type === "message.complete" ||
             type === "session.idle" ||
-            type === "turn.complete"
+            type === "turn.complete" ||
+            type === "turn.completed" ||
+            type === "session.completed"
           ) {
             window.__qaComplete = true;
           }

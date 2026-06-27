@@ -44,8 +44,14 @@ def human_size(num_bytes: int) -> str:
     return f"{num_bytes} B"
 
 
-def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, capture_output=True, check=False)
+def run(cmd: list[str], input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        text=True,
+        input=input_text,
+        capture_output=True,
+        check=False,
+    )
 
 
 def binary_candidates(name: str) -> list[str]:
@@ -241,6 +247,10 @@ def absolute_download_url(base_url: str, download_url: str) -> str:
     return f"{base}/{download_url}"
 
 
+def curl_config_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def upload_video(path: pathlib.Path, args: argparse.Namespace, root: pathlib.Path) -> str:
     if args.visibility == "public" and not args.confirm_public:
         raise SystemExit(
@@ -257,6 +267,7 @@ def upload_video(path: pathlib.Path, args: argparse.Namespace, root: pathlib.Pat
     endpoint = f"{base_url}/v1/files"
     content_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
     is_public = "true" if args.visibility == "public" else "false"
+    curl_config = f'header = "Authorization: Bearer {curl_config_value(api_key)}"\n'
     result = run(
         [
             "curl",
@@ -264,15 +275,16 @@ def upload_video(path: pathlib.Path, args: argparse.Namespace, root: pathlib.Pat
             "-X",
             "POST",
             endpoint,
-            "-H",
-            f"Authorization: Bearer {api_key}",
+            "--config",
+            "-",
             "-F",
             f"file=@{path};type={content_type};filename={path.name}",
             "-F",
             f"is_public={is_public}",
             "-F",
             "purpose=attachment",
-        ]
+        ],
+        input_text=curl_config,
     )
     if result.returncode != 0:
         raise SystemExit(result.stderr.strip() or "curl upload failed")
