@@ -15,6 +15,8 @@ This gives June three QA layers:
 2. Agent-driven live QA for product workflows: `$agent-e2e-qa` starts the app,
    chooses Browser, Chrome, or Computer Use, records and compresses the
    walkthrough as video when possible, then reports pass/fail evidence.
+   Background browser recording is preferred for web-reachable flows when the
+   user is actively using their desktop.
 3. Promoted browser or native automation for stable walkthroughs that do not
    depend on secrets, production accounts, hardware, subjective layout review,
    or macOS permission prompts.
@@ -30,6 +32,10 @@ levels of confirmation before side effects.
 A skill can make the routing decision at runtime:
 
 - Browser for web preview, DOM assertions, console errors, and screenshots.
+- Background Playwright for web-reachable agent flows that should record video
+  without bringing June or Chrome to the foreground. The bundled helper can
+  shim the Tauri shell while routing prompts through a real isolated Hermes
+  dashboard.
 - Chrome for flows that intentionally hand off to the user's browser session.
 - Computer Use for native Tauri windows, overlays, hotkeys, menu bar, tray,
   file pickers, permission panes, and audio UI.
@@ -65,10 +71,20 @@ when those surfaces were not covered.
 
 Video artifacts should be prepared through the skill helper at
 `.agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py`. It transcodes raw
-macOS screen recordings to no-audio H.264 MP4, targets the os-platform file
-cap, uploads with `is_public=true` and `purpose=attachment` only when PR sharing
-was requested, and can comment the resulting URL on a GitHub PR. Public
-os-platform video links are visible to anyone with the URL.
+macOS screen recordings or Playwright `.webm` captures to no-audio H.264 MP4,
+targets the os-platform file cap, uploads with `is_public=true` and
+`purpose=attachment` only when PR sharing was requested, and can comment the
+resulting URL on a GitHub PR. Public os-platform video links are visible to
+anyone with the URL.
+
+For the background agent prompt path, use:
+
+```bash
+.agents/skills/agent-e2e-qa/scripts/run_background_agent_prompt.mjs --prompt "hi"
+python3 .agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py \
+  .tmp/qa-recordings/<timestamp>-background-agent-hi.webm \
+  --upload --confirm-public --comment-pr <pr-number>
+```
 
 ## Promotion criteria
 
@@ -94,8 +110,9 @@ flows, but it should not replace Computer Use for visual or OS-level proof.
 
 The project skill lives at `.agents/skills/agent-e2e-qa/SKILL.md`. It defines
 the decision tree, tool routing, walkthrough loop, and evidence format for live
-integration QA. Its bundled `scripts/prepare_qa_video.py` helper handles video
-compression, os-platform upload, and optional PR comments.
+integration QA. Its bundled `scripts/run_background_agent_prompt.mjs` helper
+records headless browser agent runs, and `scripts/prepare_qa_video.py` handles
+video compression, os-platform upload, and optional PR comments.
 
 ## Example run
 

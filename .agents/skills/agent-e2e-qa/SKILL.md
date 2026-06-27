@@ -27,6 +27,11 @@ Pick the narrowest surface that proves the behavior.
 - **Web preview**: Use `pnpm dev` and Browser for React-only flows, standalone
   preview pages, onboarding preview, HUD demo pages, and visual smoke tests that
   do not require real Tauri commands.
+- **Background browser video**: Use the bundled Playwright helper for
+  web-reachable agent flows when the user is actively using the desktop or does
+  not need to watch the run. This avoids foreground macOS screen capture. It may
+  shim the Tauri shell while routing prompts through a real isolated Hermes
+  dashboard.
 - **Native Tauri app**: Use `pnpm tauri:dev` and Computer Use for WKWebView,
   native windows, tray/menu behavior, macOS permissions, dictation hotkeys,
   microphone/system audio, update prompts, and any flow that depends on Rust
@@ -81,6 +86,18 @@ captured.
   Run it as a long-running terminal session and stop it with Ctrl-C when the
   walkthrough is complete. Add `-V <seconds>` only when a hard maximum duration
   is useful.
+- For background browser agent runs, prefer the bundled helper instead of
+  `screencapture`:
+  ```bash
+  .agents/skills/agent-e2e-qa/scripts/run_background_agent_prompt.mjs \
+    --prompt "hi"
+  ```
+  The helper starts an isolated tokenized Hermes dashboard using the local
+  Hermes config, opens the Vite app in headless Chrome, records Playwright video
+  under `.tmp/qa-recordings/`, shims only the Tauri shell calls needed by the web
+  surface, and waits for a visible assistant completion. If `playwright-core` is
+  not already available, install it outside repo dependencies with
+  `npm install --prefix .tmp/playwright-tools playwright-core@latest`.
 - Do not record microphone audio unless the user explicitly requests and
   approves it; `screencapture -g` uses the default input and may capture private
   speech or room audio.
@@ -96,6 +113,8 @@ captured.
   python3 .agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py \
     .tmp/qa-recordings/<timestamp>-<slug>.mov
   ```
+  The helper also accepts Playwright `.webm` recordings from background browser
+  runs.
   Use `--max-bytes`, `QA_VIDEO_MAX_BYTES`, `--bitrate-kbps`, or
   `--min-bitrate-kbps` only when the default adaptive compression misses the
   size target. If `ffmpeg` is unavailable, report compressed video as
@@ -190,7 +209,7 @@ Report results with this shape:
 Environment:
 - Worktree/branch:
 - Command:
-- Surface: web preview | native Tauri | Chrome handoff
+- Surface: web preview | background browser | native Tauri | Chrome handoff
 - Data mode:
 
 Checks:

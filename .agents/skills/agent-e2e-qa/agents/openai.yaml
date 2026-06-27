@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent E2E QA"
-  short_description: "Record, compress, and attach live QA walkthroughs."
-  default_prompt: "Use $agent-e2e-qa to run a recorded and compressed live QA walkthrough for the changed June app flow."
+  short_description: "Record, compress, and attach live or background QA walkthroughs."
+  default_prompt: "Use $agent-e2e-qa to run a recorded and compressed QA walkthrough for the changed June app flow."
