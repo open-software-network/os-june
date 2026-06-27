@@ -196,6 +196,27 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).toContain("report.pdf");
   });
 
+  it("does not preserve signed artifact urls with dotted route tokens", () => {
+    const jwt =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzaGFyZSJ9.signature123";
+    const signedUrl = `https://app.example.com/share/${jwt}/report.pdf?token=signed-token-123&view=1`;
+    const event = toolClassified("tool.complete", "s1", {
+      name: "download_file",
+      url: signedUrl,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event.payload)).not.toContain(jwt);
+    expect(JSON.stringify(event.payload)).not.toContain("signed-token-123");
+    expect(JSON.stringify(event)).not.toContain(jwt);
+    expect(JSON.stringify(event)).not.toContain("signed-token-123");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).not.toContain(jwt);
+    expect(artifact.path).not.toContain("signed-token-123");
+    expect(artifact.path).toContain("report.pdf");
+  });
+
   it("does not preserve raw relative share route path tokens", () => {
     const shareRoute = "/share/share-token-123";
     const event = toolClassified("tool.complete", "s1", {
