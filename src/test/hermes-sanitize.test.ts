@@ -174,6 +174,17 @@ describe("sanitizeText", () => {
     expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
   });
 
+  it("redacts opaque tokens after compound sensitive URL path segments", () => {
+    const resetToken = "c".repeat(40);
+    const out = sanitizeText(
+      `Reset at https://app.example/reset-password/${resetToken}?view=1 or https://app.example/password_reset/${resetToken}.`,
+    );
+
+    expect(out).toContain("https://app.example/reset-password/[redacted]");
+    expect(out).toContain("https://app.example/password_reset/[redacted]");
+    expect(out).not.toContain(resetToken);
+  });
+
   it("preserves opaque-looking path segments in ordinary URLs", () => {
     const docId = "abcdef0123456789abcdef0123456789abcdef01";
     const out = sanitizeText(
@@ -255,12 +266,27 @@ describe("sanitizeText", () => {
     expect(out).not.toContain("hash-token");
   });
 
+  it("redacts suffixed sensitive assignment keys inside longer text", () => {
+    const out = sanitizeText(
+      "Request failed: client_secret=abc123 session_token=def456 id_token=ghi789 note=safe",
+    );
+
+    expect(out).toContain("client_secret=[redacted]");
+    expect(out).toContain("session_token=[redacted]");
+    expect(out).toContain("id_token=[redacted]");
+    expect(out).toContain("note=safe");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+    expect(out).not.toContain("ghi789");
+  });
+
   it("redacts quoted key-value token fragments inside longer text", () => {
     const out = sanitizeText(
-      `Request failed: {"access_token":"abc123"} token: "1234" password: 'abc def' value: 'secret value' password='abc,def' authorization: Basic dXNlcjpwYXNz note="safe"`,
+      `Request failed: {"access_token":"abc123","client_secret":"def456"} token: "1234" password: 'abc def' value: 'secret value' password='abc,def' authorization: Basic dXNlcjpwYXNz note="safe"`,
     );
 
     expect(out).toContain(`"access_token":"[redacted]"`);
+    expect(out).toContain(`"client_secret":"[redacted]"`);
     expect(out).toContain(`token: "[redacted]"`);
     expect(out).toContain(`password: '[redacted]'`);
     expect(out).toContain(`value: '[redacted]'`);
@@ -268,6 +294,7 @@ describe("sanitizeText", () => {
     expect(out).toContain(`authorization: [redacted]`);
     expect(out).toContain(`note="safe"`);
     expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
     expect(out).not.toContain("1234");
     expect(out).not.toContain("abc def");
     expect(out).not.toContain("secret value");

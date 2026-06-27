@@ -17,18 +17,20 @@ const REDACTED = "[redacted]";
 const URL_REDACTION_VALUE = "redacted";
 const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`]+/gi;
 const BEARER_PATTERN = /\bbearer\s+[^\s"'<>]+/gi;
-const SENSITIVE_ASSIGNMENT_KEY =
-  "token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|key|secret|password|passphrase|private[_-]?key|credential|authorization|value|pin|otp";
+const SENSITIVE_ASSIGNMENT_KEY_PATTERN =
+  "(?:key|[A-Za-z0-9_-]*(?:(?:token|secret|password|passphrase|credential|authorization|value|pin|otp)|api[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)";
 const SENSITIVE_DOUBLE_QUOTED_ASSIGNMENT_PATTERN = new RegExp(
-  `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY})\\2(\\s*[:=]\\s*)"((?:\\\\.|[^"\\\\\\r\\n])*)"`,
+  `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY_PATTERN})\\2(\\s*[:=]\\s*)"((?:\\\\.|[^"\\\\\\r\\n])*)"`,
   "gi",
 );
 const SENSITIVE_SINGLE_QUOTED_ASSIGNMENT_PATTERN = new RegExp(
-  `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY})\\2(\\s*[:=]\\s*)'((?:\\\\.|[^'\\\\\\r\\n])*)'`,
+  `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY_PATTERN})\\2(\\s*[:=]\\s*)'((?:\\\\.|[^'\\\\\\r\\n])*)'`,
   "gi",
 );
-const SENSITIVE_TEXT_ASSIGNMENT_PATTERN =
-  /(^|[?#&\s,;({\[])(["']?)(token|access[_-]?token|refresh[_-]?token|api[_-]?key|key|secret|password|passphrase|private[_-]?key|credential|authorization|value|pin|otp)\2(\s*[:=]\s*)(?:(?:bearer|basic)\s+)?([^\s"'<>),;&]+)/gi;
+const SENSITIVE_TEXT_ASSIGNMENT_PATTERN = new RegExp(
+  `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY_PATTERN})\\2(\\s*[:=]\\s*)(?:(?:bearer|basic)\\s+)?([^\\s"'<>),;&]+)`,
+  "gi",
+);
 const SENSITIVE_RELATIVE_CALLBACK_CODE_PATTERN =
   /((?:^|[\s"'(])(?:[A-Z]+\s+)?(?:\.{0,2}\/)[^\s"'<>]*?(?:auth|oauth|callback)[^\s"'<>]*?[?&#]code=)([^&#\s"'<>),;]+)/gi;
 const JWT_PATTERN =
@@ -39,7 +41,7 @@ const NAMED_SECRET_FRAGMENT_PATTERN =
   /\b[A-Za-z0-9_-]*(?:token|secret|credential|password|api[_-]?key)[A-Za-z0-9_-]*\b/gi;
 const LONG_OPAQUE_TOKEN_PATTERN = /\b[A-Za-z0-9_-]{40,}\b/g;
 const SENSITIVE_URL_PATH_SEGMENT_PATTERN =
-  /^(?:auth|callback|callbacks|credential|credentials|download|downloads|file|files|invite|invites|oauth|private|reset|secret|secrets|share|shares|signed|token|tokens)$/i;
+  /^(?:auth|callback|callbacks|credential|credentials|download|downloads|file|files|invite|invites|oauth|password|passwords|private|reset|secret|secrets|share|shares|signed|token|tokens)$/i;
 const SENSITIVE_URL_HOST_FRAGMENT_PATTERN =
   /(?:^|[.-])(?:auth|download|downloads|file|files|private|reset|secret|share|signed|token)(?:[.-]|$)/i;
 
@@ -89,37 +91,47 @@ function redactSensitiveAssignments(value: string): string {
     .replace(
       SENSITIVE_DOUBLE_QUOTED_ASSIGNMENT_PATTERN,
       (
-        _match,
+        match: string,
         prefix: string,
         keyQuote: string,
         key: string,
         separator: string,
-      ) =>
-        `${prefix}${keyQuote}${key}${keyQuote}${separator}"${REDACTED}"`,
+      ) => {
+        if (!isSensitiveAssignmentKey(key)) return match;
+        return `${prefix}${keyQuote}${key}${keyQuote}${separator}"${REDACTED}"`;
+      },
     )
     .replace(
       SENSITIVE_SINGLE_QUOTED_ASSIGNMENT_PATTERN,
       (
-        _match,
+        match: string,
         prefix: string,
         keyQuote: string,
         key: string,
         separator: string,
-      ) =>
-        `${prefix}${keyQuote}${key}${keyQuote}${separator}'${REDACTED}'`,
+      ) => {
+        if (!isSensitiveAssignmentKey(key)) return match;
+        return `${prefix}${keyQuote}${key}${keyQuote}${separator}'${REDACTED}'`;
+      },
     )
     .replace(
       SENSITIVE_TEXT_ASSIGNMENT_PATTERN,
       (
-        _match,
+        match: string,
         prefix: string,
         keyQuote: string,
         key: string,
         separator: string,
         _value: string,
-      ) =>
-        `${prefix}${keyQuote}${key}${keyQuote}${separator}${REDACTED}`,
+      ) => {
+        if (!isSensitiveAssignmentKey(key)) return match;
+        return `${prefix}${keyQuote}${key}${keyQuote}${separator}${REDACTED}`;
+      },
     );
+}
+
+function isSensitiveAssignmentKey(key: string): boolean {
+  return isSensitiveKey(key) || /^key$/i.test(key);
 }
 
 type RedactTokenOptions = {
@@ -331,7 +343,23 @@ function hasSensitiveUrlPathContext(url: URL): boolean {
 function hasSensitivePathSegments(path: string): boolean {
   return path
     .split("/")
-    .some((segment) => SENSITIVE_URL_PATH_SEGMENT_PATTERN.test(segment));
+    .some((segment) => isSensitivePathSegment(segment));
+}
+
+function isSensitivePathSegment(segment: string): boolean {
+  const normalized = safeDecodeURIComponent(segment);
+  if (SENSITIVE_URL_PATH_SEGMENT_PATTERN.test(normalized)) return true;
+  return normalized
+    .split(/[-_]+/)
+    .some((part) => SENSITIVE_URL_PATH_SEGMENT_PATTERN.test(part));
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function sanitizeUrlMatch(match: string): string {
