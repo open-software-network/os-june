@@ -391,6 +391,18 @@ describe("sanitizeText", () => {
     expect(out).not.toContain("sig123");
   });
 
+  it("keeps redaction markers unencoded in sanitized URLs", () => {
+    const out = sanitizeText(
+      "Reset failed at https://app.example.com/reset-password/abc123?session=sid123&view=1",
+    );
+
+    expect(out).toContain("/reset-password/[redacted]");
+    expect(out).toContain("session=[redacted]");
+    expect(out).not.toContain("%5Bredacted%5D");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("sid123");
+  });
+
   it("redacts short OAuth codes in sensitive callback URLs", () => {
     const out = sanitizeText(
       "Auth failed at https://auth.example.com/oauth/callback?code=abc123&state=ok",

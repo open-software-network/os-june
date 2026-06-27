@@ -438,7 +438,7 @@ function sanitizeUrl(value: string): string | undefined {
     if (sanitizeUrlFragment(url, sensitiveUrlContext)) changed = true;
     if (sanitizeUrlRoutePathTokens(url)) changed = true;
 
-    return redactTokenFragments(changed ? url.toString() : value, {
+    return redactTokenFragments(changed ? sanitizedUrlString(url) : value, {
       minOpaqueTokenLength: sensitiveUrlContext ? 32 : undefined,
       preservePathSegments: !(
         changed || sensitiveUrlContext
@@ -447,6 +447,10 @@ function sanitizeUrl(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function sanitizedUrlString(url: URL): string {
+  return url.toString().replace(/%5Bredacted%5D/gi, REDACTED);
 }
 
 function redactSensitiveUrlParams(
