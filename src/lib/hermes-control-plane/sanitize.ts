@@ -132,8 +132,7 @@ function redactLongOpaqueToken(
     before === "/" ||
     before === "\\" ||
     after === "/" ||
-    after === "\\" ||
-    after === "."
+    after === "\\"
   ) {
     return match;
   }

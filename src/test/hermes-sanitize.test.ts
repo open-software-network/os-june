@@ -150,6 +150,18 @@ describe("sanitizeText", () => {
     expect(out).not.toContain("opaque-token-value-987654321");
   });
 
+  it("redacts generic opaque tokens before sentence periods without breaking artifact paths", () => {
+    const token = "a".repeat(40);
+    const artifactId = "1234567890abcdef1234567890abcdef12345678";
+    const out = sanitizeText(
+      `Request failed with ${token}. Artifact at /tmp/artifacts/${artifactId}.png.`,
+    );
+
+    expect(out).toContain("[redacted].");
+    expect(out).not.toContain(token);
+    expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
+  });
+
   it("redacts sensitive URL params inside longer text", () => {
     const out = sanitizeText(
       "Fetch failed for https://example.com/callback?key=plain-api-key-123&token=secret-token-123&view=1.",
