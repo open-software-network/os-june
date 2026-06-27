@@ -13,7 +13,8 @@ This gives June three QA layers:
 1. Deterministic CI for contracts and logic: `pnpm test`, `pnpm test:rust`,
    `pnpm test:scribe-api`, and targeted Rust or Vitest suites.
 2. Agent-driven live QA for product workflows: `$agent-e2e-qa` starts the app,
-   chooses Browser, Chrome, or Computer Use, then records pass/fail evidence.
+   chooses Browser, Chrome, or Computer Use, records the walkthrough as video
+   when possible, then reports pass/fail evidence.
 3. Promoted browser or native automation for stable walkthroughs that do not
    depend on secrets, production accounts, hardware, subjective layout review,
    or macOS permission prompts.
@@ -37,8 +38,8 @@ A skill can make the routing decision at runtime:
 
 The skill also forces an evidence contract, which matters more than just
 "clicked around" completion. A useful live QA result needs the command used, the
-surface tested, the data mode, pass/fail checks, screenshots or logs, and clear
-gaps for anything that was blocked.
+surface tested, the data mode, pass/fail checks, a video recording when
+available, screenshots or logs, and clear gaps for anything that was blocked.
 
 ## Repo-specific runbook
 

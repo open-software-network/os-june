@@ -3,12 +3,13 @@ name: agent-e2e-qa
 description: >-
   Run live, agent-driven end-to-end QA for os-june by opening the real app or
   web preview, clicking through changed flows, inspecting visible state,
-  capturing screenshots/logs, and reporting pass/fail evidence. Use when a
-  user asks for full integration testing, live app QA, visual inspection,
-  "open the app and use it", "click through it", native Tauri verification,
-  WKWebView inspection, onboarding smoke tests, HUD/tray/hotkey checks, or
-  manual QA replacement by an agent. Compose Browser, Chrome, Computer Use,
-  terminal commands, and repo tests as appropriate.
+  recording video, capturing screenshots/logs, and reporting pass/fail
+  evidence. Use when a user asks for full integration testing, live app QA,
+  visual inspection, "open the app and use it", "click through it", "record
+  the QA run", native Tauri verification, WKWebView inspection, onboarding
+  smoke tests, HUD/tray/hotkey checks, or manual QA replacement by an agent.
+  Compose Browser, Chrome, Computer Use, terminal commands, and repo tests as
+  appropriate.
 ---
 
 # Agent E2E QA
@@ -62,6 +63,35 @@ confirmation at action time before performing that side effect.
 Keep terminal sessions running only while they are needed. Before ending the
 turn, stop or clearly identify any dev server or app process left running.
 
+## Video Recording
+
+Record live QA walkthroughs by default. Start recording before the first app
+interaction and stop it only after the final visible pass/fail state is
+captured.
+
+- Save recordings under `.tmp/qa-recordings/` so large `.mov` files stay out of
+  git. Use a timestamped, descriptive name such as
+  `.tmp/qa-recordings/20260627-123000-agent-hi.mov`.
+- On macOS, prefer the built-in recorder:
+  ```bash
+  mkdir -p .tmp/qa-recordings
+  screencapture -v -C -k .tmp/qa-recordings/<timestamp>-<slug>.mov
+  ```
+  Run it as a long-running terminal session and stop it with Ctrl-C when the
+  walkthrough is complete. Add `-V <seconds>` only when a hard maximum duration
+  is useful.
+- Do not record microphone audio unless the user explicitly requests and
+  approves it; `screencapture -g` uses the default input and may capture private
+  speech or room audio.
+- If macOS blocks recording behind Screen Recording permission, ask the user to
+  grant permission or report video as `BLOCKED`. Do not change OS privacy
+  settings through Computer Use without confirmation.
+- After stopping, verify the file exists and is non-empty with `ls -lh`. Include
+  the recording path in `Artifacts`. If recording is unavailable, keep the run
+  going with screenshots/logs and list the missing video in `Gaps`.
+- Do not commit binary recordings unless the user explicitly asks. Prefer
+  attaching or sharing the artifact path outside git.
+
 ## Charter
 
 Before clicking, state the QA charter in one or two sentences:
@@ -98,29 +128,32 @@ read that skill before using the tool.
 ## Walkthrough Loop
 
 1. Start the selected app surface and wait for it to be ready.
-2. Capture baseline evidence:
+2. Start the screen recording and note the output path.
+3. Capture baseline evidence:
    - URL or process/app name
    - initial screenshot
    - console/runtime errors if Browser is used
    - relevant terminal log lines
-3. Drive the app like a user:
+4. Drive the app like a user:
    - click visible controls by accessible name when possible
    - type realistic text
    - use keyboard shortcuts when that is the product behavior
    - wait for visible state changes, not arbitrary sleeps
-4. After each meaningful step, verify the expected state using the cheapest
+5. After each meaningful step, verify the expected state using the cheapest
    reliable signal:
    - DOM role/text/state for Browser
    - screenshot plus visible labels for Computer Use
    - app logs or local database only when visible UI cannot prove the state
-5. Check for regressions around the touched surface:
+6. Check for regressions around the touched surface:
    - blank screens
    - modal/popover layering
    - clipped text or overlapping controls
    - stale loading states
    - console errors
    - unexpected account, billing, or permission prompts
-6. If something fails, capture the exact repro sequence, screenshot/log proof,
+7. Stop the screen recording, verify the output file, and include it in the
+   evidence.
+8. If something fails, capture the exact repro sequence, screenshot/log proof,
    and likely code owner files. Do not keep clicking until the failure is
    obscured.
 
@@ -139,7 +172,7 @@ Checks:
 - PASS/FAIL/BLOCKED - story or flow - evidence
 
 Artifacts:
-- screenshot/log paths or PR comments
+- video path, screenshot/log paths, or PR comments
 
 Gaps:
 - anything not proven and why
