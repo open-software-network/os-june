@@ -18,7 +18,7 @@ const URL_REDACTION_VALUE = "redacted";
 const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`]+/gi;
 const BEARER_PATTERN = /\bbearer\s+[^\s"'<>]+/gi;
 const SENSITIVE_ASSIGNMENT_KEY =
-  "token|access[_-]?token|refresh[_-]?token|api[_-]?key|key|secret|password|passphrase|private[_-]?key|credential|authorization|pin|otp";
+  "token|access[_-]?token|refresh[_-]?token|api[_-]?key|key|secret|password|passphrase|private[_-]?key|credential|authorization|value|pin|otp";
 const SENSITIVE_DOUBLE_QUOTED_ASSIGNMENT_PATTERN = new RegExp(
   `(^|[?#&\\s,;({\\[])(["']?)(${SENSITIVE_ASSIGNMENT_KEY})\\2(\\s*[:=]\\s*)"((?:\\\\.|[^"\\\\\\r\\n])*)"`,
   "gi",
@@ -28,7 +28,7 @@ const SENSITIVE_SINGLE_QUOTED_ASSIGNMENT_PATTERN = new RegExp(
   "gi",
 );
 const SENSITIVE_TEXT_ASSIGNMENT_PATTERN =
-  /(^|[?#&\s,;({\[])(["']?)(token|access[_-]?token|refresh[_-]?token|api[_-]?key|key|secret|password|passphrase|private[_-]?key|credential|authorization|pin|otp)\2(\s*[:=]\s*)(?:(?:bearer|basic)\s+)?([^\s"'<>),;&]+)/gi;
+  /(^|[?#&\s,;({\[])(["']?)(token|access[_-]?token|refresh[_-]?token|api[_-]?key|key|secret|password|passphrase|private[_-]?key|credential|authorization|value|pin|otp)\2(\s*[:=]\s*)(?:(?:bearer|basic)\s+)?([^\s"'<>),;&]+)/gi;
 const JWT_PATTERN =
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
 const KNOWN_SECRET_PATTERN =
@@ -227,10 +227,13 @@ function isLikelySecretValue(value: string): boolean {
 }
 
 function sanitizeString(value: string): string {
-  const sanitizedUrl = sanitizeUrl(value);
-  if (sanitizedUrl !== undefined) return sanitizedUrl;
+  const trimmed = value.trim();
+  if (looksLikeStandalonePathOrUrl(trimmed) && looksLikeUrl(trimmed)) {
+    const sanitizedUrl = sanitizeUrl(value);
+    if (sanitizedUrl !== undefined) return sanitizedUrl;
+  }
   if (isLikelySecretValue(value)) return REDACTED;
-  if (looksLikeStandalonePathOrUrl(value.trim())) return sanitizeText(value);
+  if (looksLikeStandalonePathOrUrl(trimmed)) return sanitizeText(value);
   return sanitizeText(value);
 }
 

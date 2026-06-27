@@ -186,36 +186,54 @@ describe("sanitizeText", () => {
 
   it("redacts short key-value token fragments inside longer text", () => {
     const out = sanitizeText(
-      "Request failed: token=1234 access_token=abc123 url=/callback?key=short-key&view=1 hash=#access_token=hash-token&state=ok monkey=banana",
+      "Request failed: token=1234 access_token=abc123 value=4321 url=/callback?key=short-key&view=1 hash=#access_token=hash-token&state=ok monkey=banana",
     );
 
     expect(out).toContain("token=[redacted]");
     expect(out).toContain("access_token=[redacted]");
+    expect(out).toContain("value=[redacted]");
     expect(out).toContain("view=1");
     expect(out).toContain("state=ok");
     expect(out).toContain("monkey=banana");
     expect(out).not.toContain("1234");
     expect(out).not.toContain("abc123");
+    expect(out).not.toContain("4321");
     expect(out).not.toContain("short-key");
     expect(out).not.toContain("hash-token");
   });
 
   it("redacts quoted key-value token fragments inside longer text", () => {
     const out = sanitizeText(
-      `Request failed: {"access_token":"abc123"} token: "1234" password: 'abc def' password='abc,def' authorization: Basic dXNlcjpwYXNz note="safe"`,
+      `Request failed: {"access_token":"abc123"} token: "1234" password: 'abc def' value: 'secret value' password='abc,def' authorization: Basic dXNlcjpwYXNz note="safe"`,
     );
 
     expect(out).toContain(`"access_token":"[redacted]"`);
     expect(out).toContain(`token: "[redacted]"`);
     expect(out).toContain(`password: '[redacted]'`);
+    expect(out).toContain(`value: '[redacted]'`);
     expect(out).toContain(`password='[redacted]'`);
     expect(out).toContain(`authorization: [redacted]`);
     expect(out).toContain(`note="safe"`);
     expect(out).not.toContain("abc123");
     expect(out).not.toContain("1234");
     expect(out).not.toContain("abc def");
+    expect(out).not.toContain("secret value");
     expect(out).not.toContain("abc,def");
     expect(out).not.toContain("dXNlcjpwYXNz");
+  });
+
+  it("redacts mixed text that starts with a credentialed URL", () => {
+    const out = sanitizePayload({
+      message: "https://user:pass@example.com/foo token=abc123",
+    }) as Record<string, unknown>;
+
+    expect(out.message).toContain(
+      "https://redacted:redacted@example.com/foo",
+    );
+    expect(out.message).toContain("token=[redacted]");
+    expect(out.message).not.toContain("user:pass");
+    expect(out.message).not.toContain("abc123");
+    expect(out.message).not.toContain("%20token");
   });
 
   it("redacts escaped quoted key-value token fragments inside longer text", () => {
