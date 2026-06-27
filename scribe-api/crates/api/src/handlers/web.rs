@@ -79,15 +79,15 @@ pub(crate) async fn fetch(
         return Err(ApiError::bad_request("url_required"));
     }
     validation::validate_text_len("url", &url, validation::MAX_WEB_URL_CHARS)?;
-    match validate_public_http_url(&url) {
-        Ok(()) => {}
+    let url = match validate_public_http_url(&url) {
+        Ok(canonical_url) => canonical_url,
         Err(FetchUrlValidationError::NonHttp) => {
             return Err(ApiError::bad_request("url_must_be_http"));
         }
         Err(FetchUrlValidationError::NonPublicHost) => {
             return Err(ApiError::bad_request("url_must_be_public_http"));
         }
-    }
+    };
     let output = state
         .web()
         .fetch(WebFetchParams {
@@ -119,15 +119,15 @@ enum FetchUrlValidationError {
 /// locally. Domain names are rejected because the upstream scraper receives and
 /// resolves only the original URL, so an API-side DNS preflight cannot bind the
 /// address that is ultimately fetched.
-fn validate_public_http_url(url: &str) -> Result<(), FetchUrlValidationError> {
+fn validate_public_http_url(url: &str) -> Result<String, FetchUrlValidationError> {
     let parsed = Url::parse(url).map_err(|_| FetchUrlValidationError::NonHttp)?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(FetchUrlValidationError::NonHttp);
     }
 
     match parsed.host() {
-        Some(Host::Ipv4(addr)) if is_public_ipv4(addr) => Ok(()),
-        Some(Host::Ipv6(addr)) if is_public_ipv6(addr) => Ok(()),
+        Some(Host::Ipv4(addr)) if is_public_ipv4(addr) => Ok(parsed.to_string()),
+        Some(Host::Ipv6(addr)) if is_public_ipv6(addr) => Ok(parsed.to_string()),
         Some(_) | None => Err(FetchUrlValidationError::NonPublicHost),
     }
 }
@@ -241,19 +241,27 @@ mod tests {
     fn accepts_public_http_and_https_literal_ips() {
         assert_eq!(
             validate_public_http_url("https://93.184.216.34/post"),
-            Ok(())
+            Ok("https://93.184.216.34/post".to_string())
         );
         assert_eq!(
             validate_public_http_url("https://[2606:2800:220:1:248:1893:25c8:1946]/post"),
-            Ok(())
+            Ok("https://[2606:2800:220:1:248:1893:25c8:1946]/post".to_string())
         );
         assert_eq!(
             validate_public_http_url("http://[64:ff9b::5db8:d822]/post"),
-            Ok(())
+            Ok("http://[64:ff9b::5db8:d822]/post".to_string())
         );
         assert_eq!(
             validate_public_http_url("http://[2002:5db8:d822::]/post"),
-            Ok(())
+            Ok("http://[2002:5db8:d822::]/post".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalizes_public_literal_urls_before_forwarding() {
+        assert_eq!(
+            validate_public_http_url("http://93.184.216.34\\@169.254.169.254/"),
+            Ok("http://93.184.216.34/@169.254.169.254/".to_string())
         );
     }
 

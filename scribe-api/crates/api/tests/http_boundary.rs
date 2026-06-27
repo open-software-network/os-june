@@ -337,8 +337,31 @@ async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await?;
     assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["url"], "https://93.184.216.34/post");
     assert_eq!(body["data"]["format"], "markdown");
     assert_eq!(body["data"]["content"], "# Heading\n\nBody.");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_fetch_forwards_canonical_url() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/fetch",
+        &serde_json::json!({
+            "url": "http://93.184.216.34\\@169.254.169.254/",
+            "requestId": "req-1"
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(
+        body["data"]["url"],
+        "http://93.184.216.34/@169.254.169.254/"
+    );
     Ok(())
 }
 
