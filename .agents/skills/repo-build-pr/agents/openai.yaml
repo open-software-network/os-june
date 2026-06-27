@@ -1,3 +1,4 @@
 interface:
   display_name: "Repo Build PR"
-  short_description: "Implement /build prompts in worktrees, open PRs, and run the review loop."
+  short_description: "Build PRs with live QA and reviewer evidence."
+  default_prompt: "Use $repo-build-pr to implement this change, validate it with the app when useful, and open a draft PR."

@@ -4,9 +4,12 @@ description: >-
   Use when the user invokes /repo-build-pr (or $repo-build-pr in Codex), or asks
   to build, implement, ship, or fix something in os-june from a feature prompt,
   bug report, screenshot, PR comment, or freeform repo task: study the prompt,
-  work in one or more git worktrees based on complexity, open a draft PR, wait
-  for Greptile and Codex review, address only relevant feedback, request a final
-  review, and mark the PR ready for review.
+  work in one or more git worktrees based on complexity, validate changes with
+  deterministic checks plus agent-driven live app walkthroughs when useful,
+  record and attach reviewer-friendly QA videos when the change benefits from
+  visual evidence, open a draft PR, wait for Greptile and Codex review, address
+  only relevant feedback, request a final review, and mark the PR ready for
+  review.
 ---
 
 # Repo build PR
@@ -79,6 +82,26 @@ Choose checks based on touched files. For example:
 
 If a check cannot run because of local tooling, missing services, or credentials, say exactly what blocked it and what evidence still supports the PR.
 
+### Live app walkthroughs
+
+Use `$agent-e2e-qa` as the default human-like validation layer whenever the change affects a user-visible workflow or would be hard to trust from code and terminal output alone. Load that skill before running the walkthrough.
+
+Run an agent-driven walkthrough for changes that touch:
+
+- app UI, onboarding, settings, HUDs, trays, native windows, permissions, or visual layout
+- agent conversations, prompt flows, streaming states, error states, or background runs
+- auth, account, checkout, external browser handoff, file upload/download, or other integration paths
+- bug fixes with a reproducible user sequence
+- behavior that reviewers can understand faster by seeing it operate
+
+Skip live walkthroughs for narrow docs-only, test-only, build config, pure refactor, or low-level utility changes when no user-visible behavior is affected. Say why it was skipped in the PR validation notes.
+
+Pick the least invasive surface from `$agent-e2e-qa`: Browser or the background Playwright helper for web-reachable flows, Computer Use for native-only Tauri behavior, and Chrome only for flows that depend on the user's browser session. Do not perform live billing, enter credentials, record microphone audio, or expose private data without explicit user confirmation.
+
+Treat walkthrough failures as validation failures. Fix the issue, rerun the relevant deterministic checks, and rerun the live walkthrough before asking for final review. If the live surface is blocked by permissions, credentials, hardware, or unavailable services, include `BLOCKED` evidence and the remaining risk.
+
+Record, compress, upload, and attach a QA video to the PR when human reviewers would benefit from seeing the result, such as visual/UI changes, native interactions, agent behavior, fixed bug repros, or "the test is the demo" flows. Prefer `.agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py --upload --confirm-public --comment-pr <pr-number>` after the user or task has authorized public PR sharing. Include the video URL or PR comment in the validation evidence.
+
 ## Publish
 
 Use a draft PR for the first publish.
@@ -95,6 +118,7 @@ Use a draft PR for the first publish.
    - what changed
    - why it changed
    - validation run
+   - live agent walkthrough evidence, video links, or the reason no live walkthrough was useful
    - known gaps or skipped checks
 6. Watch initial CI with:
    ```bash
@@ -134,10 +158,11 @@ Do not apply bot feedback mechanically. The user explicitly wants judgment: addr
 After fixing accepted feedback:
 
 1. Re-run the relevant validation.
-2. Commit and push follow-up changes.
-3. Re-check PR comments, review threads, and CI.
-4. Request final review from Greptile and Codex using the repo's current trigger convention. For Codex, post the exact PR comment `@codex review`. If Greptile's convention is unclear, leave a clear PR comment tagging the observed Greptile identity and asking for another pass.
-5. Mark the PR ready for review only after the final review request is posted and there are no known local blockers:
+2. If the follow-up changed user-visible behavior, rerun the relevant `$agent-e2e-qa` walkthrough and refresh PR video evidence when reviewers benefit from seeing the new result.
+3. Commit and push follow-up changes.
+4. Re-check PR comments, review threads, and CI.
+5. Request final review from Greptile and Codex using the repo's current trigger convention. For Codex, post the exact PR comment `@codex review`. If Greptile's convention is unclear, leave a clear PR comment tagging the observed Greptile identity and asking for another pass.
+6. Mark the PR ready for review only after the final review request is posted and there are no known local blockers:
    ```bash
    gh pr ready <number>
    ```
