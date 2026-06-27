@@ -69,7 +69,12 @@ def binary_candidates(name: str) -> list[str]:
 
 def find_working_binary(name: str) -> str | None:
     for candidate in binary_candidates(name):
-        result = run([candidate, "-version"])
+        if not pathlib.Path(candidate).is_file():
+            continue
+        try:
+            result = run([candidate, "-version"])
+        except FileNotFoundError:
+            continue
         if result.returncode == 0:
             return candidate
     return None

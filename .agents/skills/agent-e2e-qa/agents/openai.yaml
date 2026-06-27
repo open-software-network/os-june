@@ -1,4 +1,16 @@
 interface:
   display_name: "Agent E2E QA"
   short_description: "Record, compress, and attach live or background QA walkthroughs."
-  default_prompt: "Use $agent-e2e-qa to run a recorded and compressed QA walkthrough for the changed June app flow."
+  default_prompt: "Use $agent-e2e-qa with Browser, Chrome, Computer Use, and terminal context to run a recorded QA walkthrough for the changed June app flow."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "browser"
+      description: "Browser for web preview QA, DOM checks, console inspection, screenshots, and visual smoke tests."
+    - type: "mcp"
+      value: "chrome"
+      description: "Chrome for external browser handoffs, account/session-dependent flows, and reviewer-visible browser state."
+    - type: "mcp"
+      value: "computer-use"
+      description: "Computer Use for native Tauri windows, macOS prompts, tray/HUD checks, and controls Browser cannot inspect."
