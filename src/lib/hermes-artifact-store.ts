@@ -41,6 +41,7 @@ import type { HermesMode, JuneHermesEvent } from "./hermes-control-plane";
 import {
   artifactLocationsFromPayload,
   asRecord,
+  isArtifactUrlLocation,
   nonEmpty,
 } from "./hermes-control-plane";
 
@@ -308,10 +309,20 @@ export function artifactsFromToolEvent(
 
   const payload = asRecord(event.payload) ?? {};
 
-  const locations =
+  const preservedNavigationLocations =
     event.artifactLocations && event.artifactLocations.length > 0
       ? dedupeLocations(event.artifactLocations)
-      : artifactLocationsFromPayload(payload);
+      : [];
+  const sanitizedPayloadLocations = artifactLocationsFromPayload(payload);
+  const locations =
+    preservedNavigationLocations.length > 0
+      ? dedupeLocations([
+          ...preservedNavigationLocations,
+          ...sanitizedPayloadLocations.filter(
+            (location) => !isArtifactUrlLocation(location),
+          ),
+        ])
+      : sanitizedPayloadLocations;
   if (locations.length === 0) return [];
 
   const failed = hasError(payload);

@@ -125,6 +125,20 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).not.toContain("user:pass");
   });
 
+  it("does not preserve credential-shaped non-url artifact fields", () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "write_file",
+      file: secret,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event)).not.toContain(secret);
+
+    const artifacts = artifactsFromToolEvent(event);
+    expect(JSON.stringify(artifacts)).not.toContain(secret);
+  });
+
   it("derives the display name from the path basename", () => {
     const event = toolClassified("tool.complete", "s1", {
       name: "write_file",

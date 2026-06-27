@@ -7,7 +7,10 @@ import type {
 } from "./events";
 import { parseHermesMode } from "./events";
 import type { RawHermesPayload } from "./raw-types";
-import { artifactLocationsFromPayload } from "./artifact-locations";
+import {
+  artifactLocationsFromPayload,
+  isArtifactUrlLocation,
+} from "./artifact-locations";
 import { sanitizePayload, sanitizeText } from "./sanitize";
 
 /**
@@ -120,7 +123,9 @@ function classifyTool(
         ? "progress"
         : "complete";
   const artifactLocations =
-    payload === undefined ? [] : artifactLocationsFromPayload(payload);
+    payload === undefined
+      ? []
+      : artifactLocationsFromPayload(payload).filter(isArtifactUrlLocation);
   const event: JuneHermesEvent = {
     kind: "tool",
     sessionId: sessionId ?? "",

@@ -60,7 +60,7 @@ export function artifactLocationsFromPayload(payload: unknown): string[] {
 }
 
 function stripUrlUserinfo(value: string): string {
-  if (!looksLikeUrl(value)) return value;
+  if (!isArtifactUrlLocation(value)) return value;
   try {
     const url = new URL(value);
     if (!url.username && !url.password) return value;
@@ -76,10 +76,10 @@ function stripUrlUserinfo(value: string): string {
 function looksLikeLocation(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;
-  if (looksLikeUrl(trimmed)) return true;
+  if (isArtifactUrlLocation(trimmed)) return true;
   return trimmed.includes("/") || trimmed.includes("\\");
 }
 
-function looksLikeUrl(value: string): boolean {
+export function isArtifactUrlLocation(value: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
 }
