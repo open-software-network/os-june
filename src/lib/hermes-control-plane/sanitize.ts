@@ -36,6 +36,10 @@ const KNOWN_SECRET_PATTERN =
 const NAMED_SECRET_FRAGMENT_PATTERN =
   /\b[A-Za-z0-9_-]*(?:token|secret|credential|password|api[_-]?key)[A-Za-z0-9_-]*\b/gi;
 const LONG_OPAQUE_TOKEN_PATTERN = /\b[A-Za-z0-9_-]{40,}\b/g;
+const SENSITIVE_URL_PATH_SEGMENT_PATTERN =
+  /^(?:auth|callback|callbacks|credential|credentials|download|downloads|file|files|invite|invites|oauth|private|reset|secret|secrets|share|shares|signed|token|tokens)$/i;
+const SENSITIVE_URL_HOST_FRAGMENT_PATTERN =
+  /(?:^|[.-])(?:auth|download|downloads|file|files|private|reset|secret|share|signed|token)(?:[.-]|$)/i;
 
 /** Cap on how deep we recurse, so a cyclic or pathologically nested payload
  * can't hang or blow the stack. Beyond this, the subtree is dropped. */
@@ -262,11 +266,20 @@ function sanitizeUrl(value: string): string | undefined {
     }
 
     return redactTokenFragments(changed ? url.toString() : value, {
-      preservePathSegments: false,
+      preservePathSegments: !(
+        changed || hasSensitiveUrlPathContext(url)
+      ),
     });
   } catch {
     return undefined;
   }
+}
+
+function hasSensitiveUrlPathContext(url: URL): boolean {
+  if (SENSITIVE_URL_HOST_FRAGMENT_PATTERN.test(url.hostname)) return true;
+  return url.pathname
+    .split("/")
+    .some((segment) => SENSITIVE_URL_PATH_SEGMENT_PATTERN.test(segment));
 }
 
 function sanitizeUrlMatch(match: string): string {

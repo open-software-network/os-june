@@ -162,7 +162,7 @@ describe("sanitizeText", () => {
     expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
   });
 
-  it("redacts opaque tokens in absolute URL paths without breaking filesystem paths", () => {
+  it("redacts opaque tokens in sensitive absolute URL paths without breaking filesystem paths", () => {
     const urlToken = "b".repeat(40);
     const artifactId = "1234567890abcdef1234567890abcdef12345678";
     const out = sanitizeText(
@@ -172,6 +172,17 @@ describe("sanitizeText", () => {
     expect(out).toContain("https://files.example/download/[redacted]?view=1");
     expect(out).not.toContain(urlToken);
     expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
+  });
+
+  it("preserves opaque-looking path segments in ordinary URLs", () => {
+    const docId = "abcdef0123456789abcdef0123456789abcdef01";
+    const out = sanitizeText(
+      `See https://docs.example.com/path/${docId}?view=compact#section`,
+    );
+
+    expect(out).toContain(
+      `https://docs.example.com/path/${docId}?view=compact#section`,
+    );
   });
 
   it("redacts sensitive URL params inside longer text", () => {
