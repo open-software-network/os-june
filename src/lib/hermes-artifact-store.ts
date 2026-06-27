@@ -43,6 +43,7 @@ import {
   asRecord,
   isArtifactUrlLocation,
   nonEmpty,
+  sanitizeText,
 } from "./hermes-control-plane";
 
 /**
@@ -314,12 +315,18 @@ export function artifactsFromToolEvent(
       ? dedupeLocations(event.artifactLocations)
       : [];
   const sanitizedPayloadLocations = artifactLocationsFromPayload(payload);
+  const sanitizedPreservedNavigationLocations = new Set(
+    preservedNavigationLocations.map((location) => sanitizeText(location)),
+  );
   const locations =
     preservedNavigationLocations.length > 0
       ? dedupeLocations([
           ...preservedNavigationLocations,
           ...sanitizedPayloadLocations.filter(
-            (location) => !isArtifactUrlLocation(location),
+            (location) =>
+              !isArtifactUrlLocation(location) &&
+              !preservedNavigationLocations.includes(location) &&
+              !sanitizedPreservedNavigationLocations.has(location),
           ),
         ])
       : sanitizedPayloadLocations;

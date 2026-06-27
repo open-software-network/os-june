@@ -1,4 +1,5 @@
 import { asRecord, nonEmptyString } from "./parse";
+import { isSensitiveKey } from "./sanitize";
 
 // Known singular payload keys that hold a file path or url. Mirrors the field
 // names the artifact timeline understands (snake_case + camelCase).
@@ -72,7 +73,7 @@ export function artifactNavigationLocationsFromPayload(
     if (!location) return;
     if (isArtifactUrlLocation(location)) {
       if (!shouldPreserveRawArtifactUrl(location)) return;
-    } else if (!looksLikeFilesystemPath(location)) {
+    } else if (!shouldPreserveRawFilesystemLocation(location)) {
       return;
     }
     if (!out.includes(location)) out.push(location);
@@ -152,42 +153,94 @@ function hasSensitiveUrlParam(value: string): boolean {
           : hash.includes("=")
             ? hash
             : "";
-    if (!hashQuery) return false;
-    for (const key of new URLSearchParams(hashQuery).keys()) {
-      if (isSensitiveUrlParamKey(key)) return true;
-    }
-    return false;
+    return hasSensitiveQueryParam(hashQuery);
   } catch {
     return false;
   }
 }
 
 function isSensitiveUrlParamKey(key: string): boolean {
-  return /(?:^|[_-])(?:access[_-]?token|auth|code|credential|id[_-]?token|jwt|key|password|refresh[_-]?token|secret|session|sid|signature|sig|token)(?:[_-]|$)/i.test(
-    key,
+  return (
+    isSensitiveKey(key) ||
+    /^key$/i.test(key) ||
+    /^(?:code|jwt|session|sid|sig|signature)$/i.test(key)
   );
 }
 
 function isLikelyArtifactUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    const pathname = url.pathname.toLowerCase();
-    if (
-      /(?:^|\/)(?:auth|authorize|callback|login|oauth|reset|token)(?:\/|$)/.test(
-        pathname,
-      )
-    ) {
-      return false;
-    }
-    const parts = pathname.split("/").filter(Boolean);
-    const basename = parts[parts.length - 1] ?? "";
-    if (/\.[a-z0-9]{1,12}$/.test(basename)) return true;
-    return parts.some((part) =>
-      /^(?:artifact|artifacts|attachment|attachments|download|downloads|export|exports|file|files|image|images)$/.test(
-        part,
-      ),
-    );
+    return isLikelyArtifactPathname(url.pathname);
   } catch {
     return false;
   }
+}
+
+function shouldPreserveRawFilesystemLocation(value: string): boolean {
+  if (!looksLikeFilesystemPath(value)) return false;
+  if (!hasSensitiveRelativeLocationParam(value)) return true;
+  return isLikelyArtifactPathname(locationPathname(value));
+}
+
+function hasSensitiveRelativeLocationParam(value: string): boolean {
+  const queryIndex = value.indexOf("?");
+  if (queryIndex !== -1) {
+    const hashAfterQuery = value.indexOf("#", queryIndex);
+    const query =
+      hashAfterQuery === -1
+        ? value.slice(queryIndex + 1)
+        : value.slice(queryIndex + 1, hashAfterQuery);
+    if (hasSensitiveQueryParam(query)) return true;
+  }
+
+  const hashIndex = value.indexOf("#");
+  if (hashIndex === -1) return false;
+  const hash = value.slice(hashIndex + 1);
+  const hashQueryIndex = hash.indexOf("?");
+  const hashQuery =
+    hashQueryIndex !== -1
+      ? hash.slice(hashQueryIndex + 1)
+      : hash.includes("=")
+        ? hash
+        : "";
+  return hasSensitiveQueryParam(hashQuery);
+}
+
+function hasSensitiveQueryParam(query: string): boolean {
+  if (!query) return false;
+  for (const key of new URLSearchParams(query).keys()) {
+    if (isSensitiveUrlParamKey(key)) return true;
+  }
+  return false;
+}
+
+function locationPathname(value: string): string {
+  const queryIndex = value.indexOf("?");
+  const hashIndex = value.indexOf("#");
+  const suffixIndex =
+    queryIndex === -1
+      ? hashIndex
+      : hashIndex === -1
+        ? queryIndex
+        : Math.min(queryIndex, hashIndex);
+  return suffixIndex === -1 ? value : value.slice(0, suffixIndex);
+}
+
+function isLikelyArtifactPathname(pathname: string): boolean {
+  const lower = pathname.toLowerCase();
+  if (
+    /(?:^|\/)(?:auth|authorize|callback|login|oauth|reset|token)(?:\/|$)/.test(
+      lower,
+    )
+  ) {
+    return false;
+  }
+  const parts = lower.split("/").filter(Boolean);
+  const basename = parts[parts.length - 1] ?? "";
+  if (/\.[a-z0-9]{1,12}$/.test(basename)) return true;
+  return parts.some((part) =>
+    /^(?:artifact|artifacts|attachment|attachments|download|downloads|export|exports|file|files|image|images)$/.test(
+      part,
+    ),
+  );
 }

@@ -142,6 +142,39 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).toContain("code=[redacted]");
   });
 
+  it("does not preserve raw sensitive relative auth routes", () => {
+    const callbackRoute = "/oauth/callback?code=oauth-code-123&state=ok";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "fetch_url",
+      url: callbackRoute,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event.payload)).not.toContain("oauth-code-123");
+    expect(JSON.stringify(event)).not.toContain("oauth-code-123");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).not.toContain("oauth-code-123");
+    expect(artifact.path).toContain("code=[redacted]");
+  });
+
+  it("does not preserve raw non-artifact urls with authorization params", () => {
+    const authUrl =
+      "https://api.example.com/me?authorization=Bearer%20secret-token-123&view=1";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "fetch_url",
+      url: authUrl,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event.payload)).not.toContain("secret-token-123");
+    expect(JSON.stringify(event)).not.toContain("secret-token-123");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).not.toContain("secret-token-123");
+    expect(artifact.path).toContain("authorization=");
+  });
+
   it("does not preserve credential-shaped non-url artifact fields", () => {
     const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const event = toolClassified("tool.complete", "s1", {
@@ -167,7 +200,9 @@ describe("artifactsFromToolEvent", () => {
     expect(JSON.stringify(event)).not.toContain(path);
     expect(event.artifactLocations).toEqual([path]);
 
-    const [artifact] = artifactsFromToolEvent(event);
+    const artifacts = artifactsFromToolEvent(event);
+    expect(artifacts).toHaveLength(1);
+    const [artifact] = artifacts;
     expect(artifact.path).toBe(path);
     expect(artifact.path).not.toContain("[redacted]");
     expect(artifact.displayName).toBe("a".repeat(32));
