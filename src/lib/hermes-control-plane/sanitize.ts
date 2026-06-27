@@ -29,6 +29,8 @@ const SENSITIVE_SINGLE_QUOTED_ASSIGNMENT_PATTERN = new RegExp(
 );
 const SENSITIVE_TEXT_ASSIGNMENT_PATTERN =
   /(^|[?#&\s,;({\[])(["']?)(token|access[_-]?token|refresh[_-]?token|api[_-]?key|key|secret|password|passphrase|private[_-]?key|credential|authorization|value|pin|otp)\2(\s*[:=]\s*)(?:(?:bearer|basic)\s+)?([^\s"'<>),;&]+)/gi;
+const SENSITIVE_RELATIVE_CALLBACK_CODE_PATTERN =
+  /((?:^|[\s"'(])(?:[A-Z]+\s+)?(?:\.{0,2}\/)[^\s"'<>]*?(?:auth|oauth|callback)[^\s"'<>]*?[?&#]code=)([^&#\s"'<>),;]+)/gi;
 const JWT_PATTERN =
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
 const KNOWN_SECRET_PATTERN =
@@ -80,6 +82,10 @@ export function sanitizeText(value: string): string {
 
 function redactSensitiveAssignments(value: string): string {
   return value
+    .replace(
+      SENSITIVE_RELATIVE_CALLBACK_CODE_PATTERN,
+      (_match, prefix: string) => `${prefix}${REDACTED}`,
+    )
     .replace(
       SENSITIVE_DOUBLE_QUOTED_ASSIGNMENT_PATTERN,
       (
