@@ -357,6 +357,18 @@ describe("sanitizeText", () => {
     expect(out).not.toContain("secret-token-123");
   });
 
+  it("redacts short session and signature URL params", () => {
+    const out = sanitizeText(
+      "Fetch failed for https://app.example.com/callback?session=abc123&signature=sig123&view=1.",
+    );
+
+    expect(out).toContain("view=1");
+    expect(out).toContain("session=");
+    expect(out).toContain("signature=");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("sig123");
+  });
+
   it("redacts short OAuth codes in sensitive callback URLs", () => {
     const out = sanitizeText(
       "Auth failed at https://auth.example.com/oauth/callback?code=abc123&state=ok",

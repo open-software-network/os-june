@@ -133,8 +133,10 @@ function looksLikeFilesystemPath(value: string): boolean {
 }
 
 function shouldPreserveRawArtifactUrl(value: string): boolean {
-  if (!hasSensitiveUrlParam(value)) return true;
-  return isLikelyArtifactUrl(value);
+  const likelyArtifactUrl = isLikelyArtifactUrl(value);
+  if (hasSensitiveUrlParam(value)) return likelyArtifactUrl;
+  if (hasSensitiveUrlPathToken(value)) return false;
+  return true;
 }
 
 function hasSensitiveUrlParam(value: string): boolean {
@@ -171,6 +173,20 @@ function isLikelyArtifactUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return isLikelyArtifactPathname(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function hasSensitiveUrlPathToken(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const sensitiveIndex = parts.findIndex(isSensitiveAuthRouteSegment);
+    if (sensitiveIndex === -1) return false;
+    return parts
+      .slice(sensitiveIndex + 1)
+      .some((part) => isRouteSecretSegment(part));
   } catch {
     return false;
   }
@@ -243,4 +259,24 @@ function isLikelyArtifactPathname(pathname: string): boolean {
       part,
     ),
   );
+}
+
+function isSensitiveAuthRouteSegment(segment: string): boolean {
+  const normalized = safeDecodeURIComponent(segment).toLowerCase();
+  return /(?:^|[-_])(?:auth|authorize|callback|login|oauth|password|reset|secret|token)(?:[-_]|$)/.test(
+    normalized,
+  );
+}
+
+function isRouteSecretSegment(segment: string): boolean {
+  const normalized = safeDecodeURIComponent(segment);
+  return normalized.length >= 4 && /^[A-Za-z0-9_-]+$/u.test(normalized);
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

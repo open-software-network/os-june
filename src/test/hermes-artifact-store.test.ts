@@ -142,6 +142,23 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).toContain("code=[redacted]");
   });
 
+  it("does not preserve raw auth url path tokens", () => {
+    const resetUrl =
+      "https://app.example.com/reset-password/reset-token-123?view=1";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "fetch_url",
+      url: resetUrl,
+    });
+
+    expect(event.artifactLocations).toBeUndefined();
+    expect(JSON.stringify(event.payload)).not.toContain("reset-token-123");
+    expect(JSON.stringify(event)).not.toContain("reset-token-123");
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.path).not.toContain("reset-token-123");
+    expect(artifact.path).toContain("reset-password/[redacted]");
+  });
+
   it("does not preserve raw sensitive relative auth routes", () => {
     const callbackRoute = "/oauth/callback?code=oauth-code-123&state=ok";
     const event = toolClassified("tool.complete", "s1", {

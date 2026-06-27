@@ -72,7 +72,11 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 function isSensitiveUrlQueryKey(key: string): boolean {
-  return isSensitiveKey(key) || /^key$/i.test(key);
+  return (
+    isSensitiveKey(key) ||
+    /^key$/i.test(key) ||
+    /^(?:jwt|session|sid|sig|signature)$/i.test(key)
+  );
 }
 
 function isSensitiveUrlContextQueryKey(key: string): boolean {
@@ -547,9 +551,11 @@ function hasSensitivePathSegments(path: string): boolean {
 function isSensitivePathSegment(segment: string): boolean {
   const normalized = safeDecodeURIComponent(segment);
   if (SENSITIVE_URL_PATH_SEGMENT_PATTERN.test(normalized)) return true;
-  return normalized
-    .split(/[-_]+/)
-    .some((part) => SENSITIVE_URL_PATH_SEGMENT_PATTERN.test(part));
+  const parts = normalized.split(/[-_]+/).filter(Boolean);
+  return (
+    parts.length > 0 &&
+    parts.every((part) => SENSITIVE_URL_PATH_SEGMENT_PATTERN.test(part))
+  );
 }
 
 function safeDecodeURIComponent(value: string): string {
