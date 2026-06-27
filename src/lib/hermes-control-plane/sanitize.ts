@@ -108,7 +108,14 @@ function redactSensitiveAssignments(value: string): string {
     );
 }
 
-function redactTokenFragments(value: string): string {
+type RedactTokenOptions = {
+  preservePathSegments?: boolean;
+};
+
+function redactTokenFragments(
+  value: string,
+  options: RedactTokenOptions = { preservePathSegments: true },
+): string {
   return redactSensitiveAssignments(value)
     .replace(BEARER_PATTERN, (match) =>
       match.replace(/\s+\S+$/u, " [redacted]"),
@@ -118,21 +125,25 @@ function redactTokenFragments(value: string): string {
     .replace(NAMED_SECRET_FRAGMENT_PATTERN, (match) =>
       match.length >= 16 && /[0-9_-]/u.test(match) ? REDACTED : match,
     )
-    .replace(LONG_OPAQUE_TOKEN_PATTERN, redactLongOpaqueToken);
+    .replace(LONG_OPAQUE_TOKEN_PATTERN, (match, offset, source) =>
+      redactLongOpaqueToken(match, offset, source, options),
+    );
 }
 
 function redactLongOpaqueToken(
   match: string,
   offset: number,
   source: string,
+  options: RedactTokenOptions,
 ): string {
   const before = offset > 0 ? source.at(offset - 1) : undefined;
   const after = source.at(offset + match.length);
   if (
-    before === "/" ||
-    before === "\\" ||
-    after === "/" ||
-    after === "\\"
+    options.preservePathSegments &&
+    (before === "/" ||
+      before === "\\" ||
+      after === "/" ||
+      after === "\\")
   ) {
     return match;
   }
@@ -247,7 +258,9 @@ function sanitizeUrl(value: string): string | undefined {
       }
     }
 
-    return redactTokenFragments(changed ? url.toString() : value);
+    return redactTokenFragments(changed ? url.toString() : value, {
+      preservePathSegments: false,
+    });
   } catch {
     return undefined;
   }

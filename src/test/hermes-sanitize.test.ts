@@ -162,6 +162,18 @@ describe("sanitizeText", () => {
     expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
   });
 
+  it("redacts opaque tokens in absolute URL paths without breaking filesystem paths", () => {
+    const urlToken = "b".repeat(40);
+    const artifactId = "1234567890abcdef1234567890abcdef12345678";
+    const out = sanitizeText(
+      `Download https://files.example/download/${urlToken}?view=1 and inspect /tmp/artifacts/${artifactId}.png`,
+    );
+
+    expect(out).toContain("https://files.example/download/[redacted]?view=1");
+    expect(out).not.toContain(urlToken);
+    expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
+  });
+
   it("redacts sensitive URL params inside longer text", () => {
     const out = sanitizeText(
       "Fetch failed for https://example.com/callback?key=plain-api-key-123&token=secret-token-123&view=1.",

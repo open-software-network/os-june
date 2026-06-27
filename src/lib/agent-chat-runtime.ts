@@ -13,7 +13,7 @@ import {
 import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
 import { STEER_EVENT_TYPE, steeringPartText } from "./hermes-session-steer";
-import { parseHermesMode } from "./hermes-control-plane";
+import { parseHermesMode, sanitizeText } from "./hermes-control-plane";
 import { toolActivityLabel } from "./agent-tool-labels";
 
 export type LiveHermesEvent = HermesGatewayEvent & {
@@ -737,14 +737,15 @@ function appendLiveHermesEvents(
 
     if (event.type === "error") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const notice = text ? creditsNotice(text) : undefined;
+      const safeText = text ? sanitizeText(text) : "";
+      const notice = safeText ? creditsNotice(safeText) : undefined;
       if (notice) {
         currentAssistant.parts.push(notice);
       } else {
         upsertToolPart(currentAssistant.parts, {
           id: `error:${event.receivedAt}`,
           name: "Error",
-          text: text || "The agent reported an error.",
+          text: safeText || "The agent reported an error.",
           status: "failed",
         });
       }
