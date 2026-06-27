@@ -107,7 +107,9 @@ function loadPlaywright(root) {
     createRequire(join(root, "package.json")),
   ];
   const tempPackage = join(root, ".tmp/playwright-tools/package.json");
+  const tempModulePackage = join(root, ".tmp/playwright-tools/node_modules/playwright-core/package.json");
   if (existsSync(tempPackage)) candidateRequires.push(createRequire(tempPackage));
+  if (existsSync(tempModulePackage)) candidateRequires.push(createRequire(tempModulePackage));
 
   for (const req of candidateRequires) {
     try {
@@ -129,7 +131,8 @@ function parseViewport(raw) {
 }
 
 function firstExisting(paths) {
-  return paths.find((path) => path && existsSync(path)) || "";
+  const existing = paths.find((path) => path && existsSync(path));
+  return existing ? resolve(existing) : "";
 }
 
 function resolveHermesCommand(requested) {
