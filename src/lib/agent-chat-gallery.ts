@@ -219,7 +219,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: CREDITS_SECTION_LABEL,
       description:
-        "A turn that died on a billing failure renders as a notice card with a top-up action instead of the raw provider error.",
+        "A turn that died on a billing failure renders as a notice card with an upgrade action instead of the raw provider error.",
       turns: [
         assistantTurn("credits", [
           {

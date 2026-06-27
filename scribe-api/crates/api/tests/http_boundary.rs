@@ -329,7 +329,7 @@ async fn integration_web_search_requires_request_id() -> Result<(), Box<dyn Erro
 async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/fetch",
-        &serde_json::json!({ "url": "https://example.com/post", "requestId": "req-1" }),
+        &serde_json::json!({ "url": "https://93.184.216.34/post", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
@@ -337,8 +337,31 @@ async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await?;
     assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["url"], "https://93.184.216.34/post");
     assert_eq!(body["data"]["format"], "markdown");
     assert_eq!(body["data"]["content"], "# Heading\n\nBody.");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_fetch_forwards_canonical_url() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/fetch",
+        &serde_json::json!({
+            "url": "http://93.184.216.34\\@169.254.169.254/",
+            "requestId": "req-1"
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(
+        body["data"]["url"],
+        "http://93.184.216.34/@169.254.169.254/"
+    );
     Ok(())
 }
 
@@ -346,7 +369,7 @@ async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> 
 async fn integration_web_fetch_blocked_site_returns_bad_request() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/fetch",
-        &serde_json::json!({ "url": "https://x.com/some/post", "requestId": "req-1" }),
+        &serde_json::json!({ "url": "https://93.184.216.34/x.com/some/post", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
@@ -372,6 +395,25 @@ async fn integration_web_fetch_rejects_non_http_url() -> Result<(), Box<dyn Erro
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
     assert_eq!(body["message"], "url_must_be_http");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_fetch_rejects_private_network_url() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/fetch",
+        &serde_json::json!({
+            "url": "http://169.254.169.254/latest/meta-data",
+            "requestId": "req-1"
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "url_must_be_public_http");
     Ok(())
 }
 

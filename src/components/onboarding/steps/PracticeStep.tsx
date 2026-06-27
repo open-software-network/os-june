@@ -31,7 +31,7 @@ export function DictationPracticeStep({
 }) {
   const [value, setValue] = useState("");
   const [greeted, setGreeted] = useState(false);
-  const succeeded = value.trim().length >= 4;
+  const succeeded = value.trim().length > 0;
 
   const capture = useShortcutCapture({
     kind: "push_to_talk",

@@ -16,7 +16,7 @@ use std::{
     error::Error as StdError,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex as StdMutex, OnceLock,
+        OnceLock,
     },
     time::Duration,
 };
@@ -30,10 +30,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
 // Scopes Scribe needs. profile:read for /me, billing:read for /billing/balance,
-// billing:write so the app can mint the free-trial Stripe Checkout session
-// itself (POST /billing/subscription) instead of detouring through the portal,
-// credits:spend so Scribe API can authorize-and-charge against the user's
-// wallet for transcription / generation / dictation work.
+// billing:write for subscription checkout, and credits:spend so Scribe API can
+// authorize-and-charge against the user's credits for transcription /
+// generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read billing:read billing:write credits:spend";
 // Scribe's OS Accounts token store. Keep this app-scoped so Scribe does not
 // touch credentials written by other Open Software apps on startup.
@@ -55,22 +54,6 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const ERR_TOKEN_EXPIRED: i64 = 3001;
-// ApiError::conflict — POST /billing/subscription returns this when a
-// non-canceled subscription already exists for the user.
-const ERR_CONFLICT: i64 = 4001;
-// ApiError::unprocessable — returned for a return_url the accounts
-// deployment hasn't allowlisted (or hasn't learned about yet).
-const ERR_UNPROCESSABLE: i64 = 4201;
-/// AppError code for "the stored grant lacks a scope the direct checkout
-/// needs". The frontend reacts by re-running sign-in (which requests the
-/// current scope set) and retrying, instead of falling back to the portal.
-/// Mirrored in src/lib/trial-checkout.ts.
-const TRIAL_CHECKOUT_NEEDS_REAUTH: &str = "trial_checkout_needs_reauth";
-
-/// Tauri event fired when the `osscribe://billing/callback` deep link lands —
-/// the user just finished (or canceled) Stripe Checkout in the browser.
-/// Payload is the outcome string: "success" or "cancel".
-pub const BILLING_CALLBACK_EVENT: &str = "os-accounts-billing-callback";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static REFRESH_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
@@ -82,6 +65,7 @@ struct Envelope<T> {
     data: Option<T>,
     success: bool,
     error_code: Option<i64>,
+    message: Option<String>,
 }
 
 /// Token pair. Stored in the OS keychain by default, **never** handed to the webview.
@@ -108,7 +92,7 @@ struct BalanceWire {
 }
 
 #[derive(Deserialize)]
-struct SubscribeWire {
+struct CheckoutSessionWire {
     url: String,
 }
 
@@ -198,7 +182,7 @@ pub struct AccountStatus {
     /// API) or the fetch failed — distinct from "not subscribed".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscription: Option<AccountSubscription>,
-    /// The accounts portal origin, where the free-trial flow lives.
+    /// The accounts portal origin, where funding and billing live.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub portal_url: Option<String>,
 }
@@ -497,11 +481,6 @@ pub async fn os_accounts_login(
     let code = await_authorization_code(&cfg, &flow, &login_url, &csrf).await?;
     let pair = exchange_code(&cfg, &code, &verifier, &redirect_uri).await?;
     store_tokens(&pair).await?;
-    // The identity may have changed (a sign-in is not always preceded by an
-    // app-mediated logout); a checkout minted for the previous identity must
-    // not survive into this one.
-    clear_prepared_checkout();
-
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     set_cached_signed_in(true);
     Ok(AccountStatus {
@@ -533,7 +512,6 @@ pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(),
 #[tauri::command]
 pub async fn os_accounts_logout() -> Result<(), AppError> {
     if local_dev_enabled() {
-        clear_prepared_checkout();
         set_cached_signed_in(true);
         return Ok(());
     }
@@ -546,23 +524,37 @@ pub async fn os_accounts_logout() -> Result<(), AppError> {
             .await;
     }
     clear_tokens().await;
-    clear_prepared_checkout();
     set_cached_signed_in(false);
     Ok(())
 }
 
 #[tauri::command]
-pub fn os_accounts_top_up() -> Result<(), AppError> {
+pub async fn os_accounts_upgrade() -> Result<(), AppError> {
     if local_dev_enabled() {
         return Ok(());
     }
     let cfg = Config::load();
-    open_in_browser(cfg.accounts_url.trim_end_matches('/'))
+    if !cfg.configured() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    let session: CheckoutSessionWire =
+        authed_post(&cfg, "/billing/subscription", serde_json::json!({})).await?;
+    let url = session.url.trim();
+    if url.is_empty() {
+        return Err(AppError::new(
+            "empty_response",
+            "OS Accounts returned no checkout URL.",
+        ));
+    }
+    open_in_browser(url)
 }
 
 /// Opens the accounts portal in the default browser. The webview swallows
 /// `target="_blank"` anchors, so any in-app "go to the portal" affordance
-/// (trial gate, billing) must route through this command.
+/// (funding, billing, referrals) must route through this command.
 #[tauri::command]
 pub fn os_accounts_open_portal() -> Result<(), AppError> {
     if local_dev_enabled() {
@@ -598,229 +590,6 @@ pub async fn os_accounts_referral_summary() -> Result<ReferralSummary, AppError>
     Ok(summary.into())
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
-pub enum TrialCheckout {
-    /// Stripe Checkout is open in the system browser; the caller should poll
-    /// the subscription status until it flips to trialing/active.
-    CheckoutOpened,
-    /// The accounts API reported a live subscription already exists — the
-    /// caller should refresh the account snapshot instead of waiting.
-    AlreadySubscribed,
-}
-
-/// Where Stripe (via the portal's /return bounce page) sends the user after
-/// trial checkout. Release builds only: the custom scheme reaches the app
-/// through the OS registration of the bundled .app; `tauri dev` has no such
-/// registration, so dev checkouts keep the portal-default destination and
-/// rely on the status poll.
-#[cfg(not(debug_assertions))]
-const BILLING_RETURN_URL: &str = "osscribe://billing/callback";
-#[cfg(debug_assertions)]
-const BILLING_RETURN_URL: &str = "";
-
-/// A minted-but-not-opened Stripe Checkout session, cached so the click that
-/// follows only has to launch the browser instead of paying for the
-/// token-refresh + session-mint round trips while the user stares at an
-/// "Opening checkout" button.
-struct PreparedCheckout {
-    url: String,
-    minted_at: std::time::Instant,
-}
-
-/// Stripe keeps Checkout sessions live for 24 hours; this stays far inside
-/// that so a consumed cache entry never points at an expired session.
-const PREPARED_CHECKOUT_TTL: Duration = Duration::from_secs(30 * 60);
-
-static PREPARED_CHECKOUT: StdMutex<Option<PreparedCheckout>> = StdMutex::new(None);
-
-/// Serializes the prepare path. Without it, concurrent prepare calls (a
-/// remounting pitch screen, an effect double-fire) both see an empty cache
-/// and both mint a Stripe Checkout session — the loser's store overwrites
-/// the winner's and the discarded session sits open against Stripe's limits
-/// for 24 hours. The loser of this lock re-checks the cache once it acquires
-/// and reuses the winner's mint instead. Async because it is held across the
-/// mint's awaits; `PREPARED_CHECKOUT` above stays a std mutex because it is
-/// only ever held for a read or a swap.
-static PREPARE_TRIAL_CHECKOUT_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
-
-fn take_fresh_prepared_checkout() -> Option<String> {
-    let mut slot = PREPARED_CHECKOUT.lock().ok()?;
-    let prepared = slot.take()?;
-    (prepared.minted_at.elapsed() < PREPARED_CHECKOUT_TTL).then_some(prepared.url)
-}
-
-/// A prepared checkout is minted under the signed-in user's Stripe identity,
-/// so it must die at every identity boundary — logout and completed login.
-/// Left cached, the next user on this machine could consume it within the
-/// TTL and attach their payment to the previous user's subscription.
-fn clear_prepared_checkout() {
-    if let Ok(mut slot) = PREPARED_CHECKOUT.lock() {
-        *slot = None;
-    }
-}
-
-fn store_prepared_checkout(url: String) {
-    if let Ok(mut slot) = PREPARED_CHECKOUT.lock() {
-        *slot = Some(PreparedCheckout {
-            url,
-            minted_at: std::time::Instant::now(),
-        });
-    }
-}
-
-fn prepared_checkout_is_fresh() -> bool {
-    PREPARED_CHECKOUT
-        .lock()
-        .ok()
-        .and_then(|slot| {
-            slot.as_ref()
-                .map(|prepared| prepared.minted_at.elapsed() < PREPARED_CHECKOUT_TTL)
-        })
-        .unwrap_or(false)
-}
-
-enum MintedTrialCheckout {
-    Url(String),
-    AlreadySubscribed,
-}
-
-/// Mint the subscription Stripe Checkout session directly from the app (the
-/// user's own token authorizes it) — no detour through the portal's billing
-/// page. This is the slow part of starting a trial: up to a token refresh
-/// plus the accounts API creating the session at Stripe.
-async fn mint_trial_checkout() -> Result<MintedTrialCheckout, AppError> {
-    if local_dev_enabled() {
-        return Ok(MintedTrialCheckout::AlreadySubscribed);
-    }
-    let cfg = Config::load();
-    if !cfg.configured() {
-        return Err(AppError::new(
-            "os_accounts_unconfigured",
-            "OS Accounts is not configured for this build.",
-        ));
-    }
-    let url = format!("{}/billing/subscription", cfg.api_url.trim_end_matches('/'));
-    let mut access = access_token().await?;
-    // Ask for a deep-link return first; an accounts deployment without the
-    // return-url allowlist 422s, so retry once without it rather than losing
-    // the direct-Stripe path entirely.
-    let mut return_url = (!BILLING_RETURN_URL.is_empty()).then_some(BILLING_RETURN_URL);
-    let mut refreshed = false;
-    for _ in 0..3 {
-        let body = match return_url {
-            Some(value) => serde_json::json!({ "return_url": value }),
-            None => serde_json::json!({}),
-        };
-        let resp: Envelope<SubscribeWire> = http_client()
-            .post(&url)
-            .bearer_auth(&access)
-            .json(&body)
-            .send()
-            .await
-            .map_err(net_error)?
-            .json()
-            .await
-            .map_err(net_error)?;
-        if resp.success {
-            let session = resp
-                .data
-                .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."))?;
-            return Ok(MintedTrialCheckout::Url(session.url));
-        }
-        match resp.error_code {
-            Some(ERR_CONFLICT) => return Ok(MintedTrialCheckout::AlreadySubscribed),
-            Some(ERR_UNPROCESSABLE) if return_url.is_some() => {
-                return_url = None;
-            }
-            // 3001 doubles as "token expired" and "missing scope". Refresh
-            // once; if a freshly refreshed token still 3001s, the grant
-            // itself predates a scope this build requests (refresh can never
-            // broaden a grant) — only an interactive re-auth can fix that.
-            Some(ERR_TOKEN_EXPIRED) if !refreshed => {
-                refreshed = true;
-                access = refresh_locked(&cfg).await?;
-            }
-            Some(ERR_TOKEN_EXPIRED) => {
-                return Err(AppError::new(
-                    TRIAL_CHECKOUT_NEEDS_REAUTH,
-                    "Your sign-in predates the billing permission June now uses. Sign in again to continue.",
-                ));
-            }
-            _ => break,
-        }
-    }
-    Err(AppError::new(
-        "trial_checkout_unavailable",
-        "Could not start the free trial checkout.",
-    ))
-}
-
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
-pub enum TrialCheckoutPrepared {
-    /// A Checkout session is minted and cached; the next start call opens it
-    /// without any network round trips.
-    Ready,
-    /// The accounts API reported a live subscription already exists — the
-    /// caller should refresh the account snapshot instead of pitching.
-    AlreadySubscribed,
-}
-
-/// Pre-mint the Stripe Checkout session while the user is still reading the
-/// trial pitch, so the "Start free trial" click feels instant. Best-effort:
-/// callers swallow failures and the start command falls back to minting on
-/// the spot. Never triggers an interactive re-auth — that stays on the
-/// explicit click path.
-#[tauri::command]
-pub async fn os_accounts_prepare_trial_checkout() -> Result<TrialCheckoutPrepared, AppError> {
-    if local_dev_enabled() {
-        return Ok(TrialCheckoutPrepared::AlreadySubscribed);
-    }
-    // Held across the mint so overlapping prepare calls can't both reach
-    // Stripe; the freshness re-check below then answers the loser from the
-    // winner's cache entry. See PREPARE_TRIAL_CHECKOUT_LOCK.
-    let _prepare_guard = PREPARE_TRIAL_CHECKOUT_LOCK.lock().await;
-    if prepared_checkout_is_fresh() {
-        return Ok(TrialCheckoutPrepared::Ready);
-    }
-    match mint_trial_checkout().await? {
-        MintedTrialCheckout::AlreadySubscribed => Ok(TrialCheckoutPrepared::AlreadySubscribed),
-        MintedTrialCheckout::Url(url) => {
-            store_prepared_checkout(url);
-            Ok(TrialCheckoutPrepared::Ready)
-        }
-    }
-}
-
-/// One-click free trial: open the pre-minted Checkout session when one is
-/// cached (the instant path), otherwise mint and open in one go.
-///
-/// A persistent scope failure surfaces as `trial_checkout_needs_reauth` so
-/// the UI can re-run sign-in (picking up the scopes this build requests) and
-/// retry the direct path. Any other failure surfaces as an error the UI
-/// answers with the portal fallback.
-#[tauri::command]
-pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppError> {
-    if local_dev_enabled() {
-        return Ok(TrialCheckout::AlreadySubscribed);
-    }
-    // Consume the cached session rather than reusing it: each open gets a
-    // session that is known-unused, and the UI re-prepares in the background
-    // after a cancel.
-    if let Some(url) = take_fresh_prepared_checkout() {
-        open_in_browser(&url)?;
-        return Ok(TrialCheckout::CheckoutOpened);
-    }
-    match mint_trial_checkout().await? {
-        MintedTrialCheckout::AlreadySubscribed => Ok(TrialCheckout::AlreadySubscribed),
-        MintedTrialCheckout::Url(url) => {
-            open_in_browser(&url)?;
-            Ok(TrialCheckout::CheckoutOpened)
-        }
-    }
-}
-
 /// Register the deep-link handler at app setup. Forwards every exact
 /// `osscribe://auth/callback?...` URL to any in-flight login so the login
 /// flow can validate `state` before accepting it. Works in both cold-launch
@@ -840,21 +609,6 @@ pub fn setup_deep_link(app: &tauri::App) {
             return;
         };
         if url.scheme() != "osscribe" {
-            return;
-        }
-        // Post-checkout return from Stripe via the portal's /return bounce.
-        // Opening the link already brought the app to the foreground; tell
-        // the webview so the trial UI refreshes immediately instead of
-        // waiting out its poll interval.
-        if url.host_str() == Some("billing") && url.path() == "/callback" {
-            use tauri::Emitter;
-            let outcome = url
-                .query_pairs()
-                .find_map(|(key, value)| {
-                    (key == "subscription" || key == "checkout").then(|| value.into_owned())
-                })
-                .unwrap_or_else(|| "success".to_string());
-            let _ = app_handle.emit(BILLING_CALLBACK_EVENT, outcome);
             return;
         }
         // Match on the parsed URL components — `starts_with` would also
@@ -1296,10 +1050,59 @@ async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> R
         }
         return Err(AppError::new(
             "request_failed",
-            "OS Accounts request failed.",
+            accounts_request_failed_message(resp.message),
         ));
     }
     Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+async fn authed_post<T: for<'de> Deserialize<'de>>(
+    cfg: &Config,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<T, AppError> {
+    let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), path);
+    let mut access = access_token().await?;
+    for attempt in 0..2 {
+        let response = http_client()
+            .post(&url)
+            .bearer_auth(&access)
+            .json(&body)
+            .send()
+            .await
+            .map_err(net_error)?;
+        let status = response.status();
+        let body = response.text().await.map_err(net_error)?;
+        if body.trim().is_empty() {
+            return Err(empty_accounts_response(path, status));
+        }
+        let resp: Envelope<T> = serde_json::from_str(&body)
+            .map_err(|error| decode_accounts_response_error(path, error))?;
+        if resp.success {
+            return resp
+                .data
+                .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."));
+        }
+        if resp.error_code == Some(ERR_TOKEN_EXPIRED) && attempt == 0 {
+            access = refresh_locked(cfg).await?;
+            continue;
+        }
+        return Err(AppError::new(
+            "request_failed",
+            accounts_request_failed_message(resp.message),
+        ));
+    }
+    Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+fn accounts_request_failed_message(message: Option<String>) -> String {
+    match message.as_deref() {
+        Some("access token is missing required scope") => {
+            "Sign in again to refresh your billing permissions.".to_string()
+        }
+        Some(message) => message.to_string(),
+        None => "OS Accounts request failed.".to_string(),
+    }
 }
 
 fn empty_accounts_response(path: &str, status: reqwest::StatusCode) -> AppError {
@@ -1659,5 +1462,11 @@ mod tests {
     #[test]
     fn debug_builds_can_opt_into_the_production_keychain_service() {
         assert_eq!(keychain_service_for_build(true, true), KEYCHAIN_SERVICE);
+    }
+
+    #[test]
+    fn oauth_scope_allows_checkout_and_credit_spend() {
+        assert!(OAUTH_SCOPES.contains("billing:write"));
+        assert!(OAUTH_SCOPES.contains("credits:spend"));
     }
 }

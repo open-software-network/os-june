@@ -26,22 +26,22 @@ Wispr teaches **one** behavior (hold fn, talk). June must teach **three** — di
 
 ### Approaches considered
 
-- **A — Dictation-first spine, staged depth (recommended).** Full Wispr-style hands-on treatment for dictation only (it's the only feature that can deliver a live magic moment in the first 3 minutes — meetings need a meeting, agents need a task worth delegating). Meeting notes and agent get *show-don't-tell* demos plus the risk/privacy education in onboarding, with heavy permissions and first-runs deferred to just-in-time moments. ~20 screens, ≤7 minutes.
+- **A — Dictation-first spine, staged depth (recommended).** Full Wispr-style hands-on treatment for dictation only (it's the only feature that can deliver a live magic moment in the first 3 minutes — meetings need a meeting, agents need a task worth delegating). Meeting notes and agent get _show-don't-tell_ demos plus the risk/privacy education in onboarding, with heavy permissions and first-runs deferred to just-in-time moments. ~20 screens, ≤7 minutes.
 - **B — Three full tracks.** Hands-on practice for all three features up front. Highest comprehension, but 12+ minutes and meeting notes/agent practice would be fake-feeling (no real meeting, no real task). Drop-off risk too high.
 - **C — Dictation-only onboarding.** Fastest, but fails the explicit requirements: users must learn meeting notes, the agent, the privacy model, and the agent's risks during onboarding.
 
-**Recommendation: A.** It preserves Wispr's pacing (magic moment by minute 3) while meeting every education requirement. The agent risk disclosure stays *inside* onboarding (it's a stated requirement), but the agent's file-access permission and first task happen just-in-time, where consent is informed by context.
+**Recommendation: A.** It preserves Wispr's pacing (magic moment by minute 3) while meeting every education requirement. The agent risk disclosure stays _inside_ onboarding (it's a stated requirement), but the agent's file-access permission and first task happen just-in-time, where consent is informed by context.
 
 ### Permissions strategy ("same permissions" + June's extras)
 
-| Permission | When asked | Why there |
-|---|---|---|
-| Microphone | Onboarding (Stage 3) | Core to dictation; same as Wispr. "June only listens while you hold the hotkey or while a meeting note is recording." |
-| Accessibility | Onboarding (Stage 3) | Core to dictation; same as Wispr. "Lets June type your words into whatever app you're using." |
-| Screen & System Audio Recording (for meeting audio) | Just-in-time, first meeting note | Scariest macOS permission; asking during onboarding with no meeting in sight tanks trust and grant-rates. Onboarding *previews* that this ask is coming. |
-| File access for the agent | Just-in-time, first agent task | The agent asks per-scope when given its first task; the onboarding risk screen previews this. Aligns with "nothing changes until you say yes." |
+| Permission                                          | When asked                       | Why there                                                                                                                                                |
+| --------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Microphone                                          | Onboarding (Stage 3)             | Core to dictation; same as Wispr. "June only listens while you hold the hotkey or while a meeting note is recording."                                    |
+| Accessibility                                       | Onboarding (Stage 3)             | Core to dictation; same as Wispr. "Lets June type your words into whatever app you're using."                                                            |
+| Screen & System Audio Recording (for meeting audio) | Just-in-time, first meeting note | Scariest macOS permission; asking during onboarding with no meeting in sight tanks trust and grant-rates. Onboarding _previews_ that this ask is coming. |
+| File access for the agent                           | Just-in-time, first agent task   | The agent asks per-scope when given its first task; the onboarding risk screen previews this. Aligns with "nothing changes until you say yes."           |
 
-Onboarding's permission recap screen explicitly sets the expectation: *"Two more permissions will come later, when they make sense: macOS will ask for system audio the first time you record a meeting, and the agent will ask before it touches your files."*
+Onboarding's permission recap screen explicitly sets the expectation: _"Two more permissions will come later, when they make sense: macOS will ask for system audio the first time you record a meeting, and the agent will ask before it touches your files."_
 
 ## 3. The flow
 
@@ -59,11 +59,12 @@ Layout language is Wispr's: split-screen (task left, illustration/demo right) fo
 
 **4. What should June take off your plate?** Multi-select chips: `Writing by voice` · `Meeting notes` · `Research & drafts` · `Digging through files` · `Recurring busywork`. Copy: "Select all that apply — we'll tailor your setup." This seeds the Learn-stage order and the first agent task suggestions.
 
-### Stage 2 — Privacy (2 screens) — *the June twist*
+### Stage 2 — Privacy (2 screens) — _the June twist_
 
 Wispr buries data-sharing as one screen. Privacy is June's reason to exist, so it gets a named stage — but only two screens, because trust is earned by behavior (the just-in-time asks, the approval gates), not by paragraphs.
 
 **5. "Private by architecture, not by promise."** Three cards (copy adapted from the landing branch):
+
 - **Local by default** — "The agent runs on your Mac. Files, sessions, memory, and state stay on your disk — never mirrored to a cloud."
 - **Private inference** — "When June needs a model, your prompt goes out through private routing to zero-retention models by default. Nothing stored. No training on your data. Ever."
 - **Verifiable** — "Our code is open source and our backend runs in a secure enclave (TEE). You don't have to trust us — you can check." Link: `Verify it yourself ↗`
@@ -72,15 +73,15 @@ Right panel: a simple animated diagram — your Mac (files/memory/agent inside a
 
 **6. Choose your data sharing preference.** Single toggle, **default OFF** (Wispr makes you choose; June's brand demands the private default): "Share anonymized usage analytics to help improve June." Below: "Either way: we store only your account, login, and billing records. Your prompts, transcripts, files, and memory are not on that list. Change anytime in Settings → Privacy." Link: `Learn how we use data`.
 
-### Stage 3 — Permissions (3 screens) — *mirrors Wispr exactly*
+### Stage 3 — Permissions (3 screens) — _mirrors Wispr exactly_
 
 **7. Microphone.** Card: "Allow June to use your microphone — June only listens while you hold the hotkey or while a meeting note is recording." `Allow` + ⓘ. Right: screencast of the macOS mic dialog with cursor moving to OK.
 
 **8. Accessibility.** Card: "Allow June to type for you — this lets June put your spoken words into whatever app you're using." Right: screencast of System Settings → Privacy & Security → Accessibility with the June toggle flipping.
 
-**9. Trust recap.** "Thanks for trusting us — here's the full picture." Checkmark cards: `June can use your microphone ✓` `June can type anywhere ✓`. Below, two *preview* cards (greyed, no checkmark): `System audio — macOS will ask the first time you record a meeting` and `Your files — the agent asks before it touches anything`. This is the screen that converts the permissions stage from extraction into a contract.
+**9. Trust recap.** "Thanks for trusting us — here's the full picture." Checkmark cards: `June can use your microphone ✓` `June can type anywhere ✓`. Below, two _preview_ cards (greyed, no checkmark): `System audio — macOS will ask the first time you record a meeting` and `Your files — the agent asks before it touches anything`. This is the screen that converts the permissions stage from extraction into a contract.
 
-### Stage 4 — Set up (3 screens) — *same as Wispr*
+### Stage 4 — Set up (3 screens) — _same as Wispr_
 
 **10. Test your microphone.** "Do you see green bars while you speak?" Live level meter. `Change microphone` / `Yes`. Sub: "We recommend built-in or wired microphones — Bluetooth is less reliable."
 
@@ -88,7 +89,7 @@ Right panel: a simple animated diagram — your Mac (files/memory/agent inside a
 
 **12. Test the hotkey.** "Hold `fn` — does the key light up while you press it?" `Edit shortcut` / `No` / `Yes`.
 
-### Stage 5 — Learn (8 screens) — *dictation hands-on, then notes, then the agent*
+### Stage 5 — Learn (8 screens) — _dictation hands-on, then notes, then the agent_
 
 **Dictation (4 screens, Wispr's playbook):**
 
@@ -96,7 +97,7 @@ Right panel: a simple animated diagram — your Mac (files/memory/agent inside a
 
 **14. Practice 1 — reply to a message.** Simulated chat app, incoming "Hey {name}, what's up?" Prompt: "Hold `fn`, say something, then release."
 
-**15. Practice 2 — write an email, hands free.** Simulated email. Guided script: *"Umm hi Greg. Let's connect soon. Are you available Friday at 3, no actually 4? Best, {name}."* The output appears clean — no "umm," the time reads 4. Caption: "June formats for you and fixes your mistakes." (This single rep teaches the entire value prop of AI-cleaned dictation.)
+**15. Practice 2 — write an email, hands free.** Simulated email. Guided script: _"Umm hi Greg. Let's connect soon. Are you available Friday at 3, no actually 4? Best, {name}."_ The output appears clean — no "umm," the time reads 4. Caption: "June formats for you and fixes your mistakes." (This single rep teaches the entire value prop of AI-cleaned dictation.)
 
 **16. Reward.** Dark screen: "Nice job! You just spoke **{n}× faster** than the average typist." Then the time-saved slider: "With June you could save **{x} hours a week**."
 
@@ -108,9 +109,9 @@ Right panel: a simple animated diagram — your Mac (files/memory/agent inside a
 
 **Agent (2 screens — intro + the honesty screen):**
 
-**19. Intro.** "Hand off real work." Copy: "Give June a task, not just a question. Draft the doc, dig through the files, pull the research together — the agent works on your Mac and comes back with it done." Right panel: the approval-card preview from the landing page — *"June found the file and prepared the edit. Nothing changes until you say yes."* `Approve` / `Decline`.
+**19. Intro.** "Hand off real work." Copy: "Give June a task, not just a question. Draft the doc, dig through the files, pull the research together — the agent works on your Mac and comes back with it done." Right panel: the approval-card preview from the landing page — _"June found the file and prepared the edit. Nothing changes until you say yes."_ `Approve` / `Decline`.
 
-**20. The honesty screen.** (Full copy in §4 below.) States plainly that the agent can make mistakes, explains what guardrails exist, and draws the line between private inference and the consequences of agent actions. Ends with an explicit acknowledgment checkbox — a seatbelt moment, not a EULA. This screen is *not skippable*; it gates the agent feature, not the app.
+**20. The honesty screen.** (Full copy in §4 below.) States plainly that the agent can make mistakes, explains what guardrails exist, and draws the line between private inference and the consequences of agent actions. Ends with an explicit acknowledgment checkbox — a seatbelt moment, not a EULA. This screen is _not skippable_; it gates the agent feature, not the app.
 
 ### Stage 6 — Personalize & finish (3 screens)
 
@@ -142,8 +143,8 @@ Right panel: a simple animated diagram — your Mac (files/memory/agent inside a
 > The agent asks before it edits or deletes files, sends anything, or spends anything. Every session has a full activity log, and you can stop it at any moment. Nothing changes until you say yes.
 >
 > **3. Private inference protects your data — it doesn't approve the agent's actions.**
-> When June *thinks*, your prompts go to zero-retention models: nothing stored, nothing trained on. That's the privacy of inference, and it's always on.
-> When the agent *acts* — visits a website, calls a tool you've connected, sends an email you approved — the other side sees what it shares, exactly as if you'd done it yourself. June keeps your data private; it can't make the rest of the internet private. That's why you're the approval step.
+> When June _thinks_, your prompts go to zero-retention models: nothing stored, nothing trained on. That's the privacy of inference, and it's always on.
+> When the agent _acts_ — visits a website, calls a tool you've connected, sends an email you approved — the other side sees what it shares, exactly as if you'd done it yourself. June keeps your data private; it can't make the rest of the internet private. That's why you're the approval step.
 >
 > ☐ I understand the agent can make mistakes, and I stay in control of what it does.
 > `Meet the agent`
@@ -168,74 +169,38 @@ The structural insight this screen encodes: **inference privacy is a property of
 
 ---
 
-## 7. Membership funnel integration (2026-06-10)
+## 7. No-card onboarding and funding (2026-06-24)
 
-The original wizard treated sign-up and the free trial as someone else's
-problem — sign-in lived on a separate gate before the wizard, and the trial
-was a second gate that bounced users through the accounts portal:
+The onboarding path should get a signed-in user into the product before any
+payment handoff. OS Accounts owns the starting grant, so June should trust the
+account snapshot instead of minting trials or opening checkout from the
+desktop app.
 
-> open app → sign up in browser → return → **click "Start free trial"** →
-> land on the portal home → **find and click "Start free trial" again** →
-> Stripe Checkout → pay → **manually find your way back to the app**.
+### Current funnel
 
-Three clicks and a navigation dead-end between a signed-up user and a paying
-one. The redesign folds both into the wizard and removes every step that
-doesn't earn its keep:
+Progress bar: **Sign in -> Permissions -> Try it**
 
-### The new funnel
-
-Progress bar: **Welcome → Privacy → Permissions → Set up → Free trial → Learn → Finish**
-
-1. **Welcome doubles as sign-up (step 1).** The old standalone AccountGate
-   became the wizard's first step, so the progress bar frames the very first
-   screen — users see the whole map before committing. The browser handoff
-   returns via the `osscribe://` deep link; the step flips to a
-   "Welcome, {name}!" greeting on its own.
-2. **The trial ask moved to *after* permissions and setup, right before the
-   hands-on practice.** Two reasons:
-   - *Investment*: by the trial screen the user has granted two permissions
-     and configured their hotkey — maximum sunk cost before the card ask.
-   - *Necessity + payoff*: the dictation practice runs the real, metered
-     pipeline, so it needs the trial's credits — and it means the magic
-     moment lands seconds after payment, not before it.
-3. **One click to Stripe, no portal page.** The app mints the subscription
-   Checkout session itself (`POST /billing/subscription` with the user's own
-   token — requires the `billing:write` scope) and opens the Stripe URL
-   directly. The portal's "Start free trial" page is gone from the path. If
-   the direct mint fails (older token without the scope, subscriptions
-   disabled), the app falls back to opening the portal — nobody is stranded.
-4. **The return trip is automatic — twice over.** Release builds ask the
-   accounts API for a `return_url` of `osscribe://billing/callback`, so
-   Stripe's success page (via the portal's `/return` bounce) deep-links
-   straight back into June, which refreshes the subscription on the spot; a
-   checkout cancel returns to the trial pitch with a friendly note, not an
-   error. Independently, while checkout is open the app polls the
-   subscription status every 2.5s and pulls itself to the foreground
-   (`focus_main_window`) the instant it flips to `trialing` — so the loop
-   closes even on deployments without the return-url allowlist, where the
-   API 422s the `return_url` and the app retries without it.
-5. **Resume on relaunch.** The wizard persists the current step
-   (`june.onboarding.resumeStep`), so quitting mid-checkout doesn't replay
-   the whole flow. Steps re-verify their own state: the sign-in step skips
-   itself when signed in, the trial step skips itself when a subscription is
-   already live (which also makes wizard re-runs after a version bump cheap
-   for existing members).
+1. **Sign-in stays inside onboarding.** The first step sends the user through
+   OS Accounts and returns via the `osscribe://` deep link. After the account
+   snapshot refreshes, the wizard continues without asking for card details.
+2. **Permissions come before practice.** Microphone, accessibility, and
+   platform-specific setup still happen before the hands-on step so the first
+   real action can work.
+3. **Practice is the value proof.** The user reaches dictation practice with
+   the starting credits that OS Accounts grants to new accounts. Onboarding
+   never opens Stripe, the OS Accounts portal, or a trial checkout.
 
 ### Post-onboarding gates
 
-AccountGate (signed out) and TrialGate (lapsed/canceled/past-due) remain for
-users who finished onboarding. TrialGate now uses the same one-click
-checkout + auto-detect machinery (`src/lib/trial-checkout.ts`); past-due
-still routes to the portal's billing management.
+`AccountGate` blocks signed-out users. `FundingGate` blocks only accounts that
+are signed in, have a known zero credit balance, and do not have a live
+subscription. Unknown credit snapshots are allowed through so the metered
+actions can make the final decision. Past-due billing opens the OS Accounts
+portal; zero-credit accounts open the same portal to add credits.
 
 ### Server dependencies
 
-- The June OAuth client's `allowed_scopes` in the OS Accounts admin console
-  must include `billing:write`, or every direct checkout falls back to the
-  portal flow. Tokens issued before this change lack the scope until the
-  next sign-in; the fallback covers them.
-- The accounts deployment needs `osscribe://` in its
-  `server.allowed_return_url_prefixes` (os-accounts PR adding `return_url`
-  support to the checkout endpoints) for the deep-link return; without it
-  the app silently retries checkout creation without a `return_url` and the
-  poll-based return takes over.
+- OS Accounts should grant the initial credits for new users server-side.
+- The June OAuth scopes should stay read/spend focused:
+  `profile:read billing:read credits:spend`. The desktop app should not need
+  `billing:write` because billing changes happen in OS Accounts.

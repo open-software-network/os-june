@@ -93,8 +93,8 @@ export function NoteFailureBanner({
       <p className="note-failure-message">
         {isBalanceIssue
           ? audioPreserved
-            ? "Your balance ran out. Your recording is saved locally, so add funds and retry."
-            : "Your balance is too low. Add funds to continue."
+            ? "Your balance ran out. Your recording is saved locally, so upgrade and retry."
+            : "Your balance is too low. Upgrade to continue."
           : (displayMessage ?? "June couldn't finish processing this note.")}
         {!isBalanceIssue && audioPreserved
           ? " Your recording is saved locally, so you can retry."
@@ -108,7 +108,7 @@ export function NoteFailureBanner({
             onClick={onTopUp}
             disabled={retrying}
           >
-            Add funds
+            Upgrade
           </button>
         ) : null}
         <button

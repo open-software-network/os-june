@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
+import { shouldBlockOnFunding, shouldBlockOnSignIn } from "../lib/account-gate";
 import type { AccountStatus } from "../lib/tauri";
 
 describe("shouldBlockOnSignIn", () => {
@@ -21,7 +21,7 @@ describe("shouldBlockOnSignIn", () => {
   });
 });
 
-describe("shouldBlockOnTrial", () => {
+describe("shouldBlockOnFunding", () => {
   function signedIn(overrides: Partial<AccountStatus> = {}): AccountStatus {
     return {
       signedIn: true,
@@ -32,14 +32,14 @@ describe("shouldBlockOnTrial", () => {
   }
 
   it("never blocks signed-out users (the sign-in gate owns that)", () => {
-    expect(shouldBlockOnTrial({ signedIn: false, configured: true })).toBe(
+    expect(shouldBlockOnFunding({ signedIn: false, configured: true })).toBe(
       false,
     );
   });
 
-  it("blocks a fresh signup with no subscription", () => {
+  it("blocks an account with known zero credits and no subscription", () => {
     expect(
-      shouldBlockOnTrial(
+      shouldBlockOnFunding(
         signedIn({
           balance: { credits: 0, usdMillis: 0 },
           subscription: { subscribed: false },
@@ -48,31 +48,31 @@ describe("shouldBlockOnTrial", () => {
     ).toBe(true);
   });
 
-  it("blocks credit holders without a subscription — membership is mandatory", () => {
+  it("allows credit holders without a subscription", () => {
     expect(
-      shouldBlockOnTrial(
+      shouldBlockOnFunding(
         signedIn({
           balance: { credits: 5000, usdMillis: 5000 },
           subscription: { subscribed: false },
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("blocks a cancelled subscriber even with unspent credits", () => {
+  it("allows canceled subscribers with unspent credits", () => {
     expect(
-      shouldBlockOnTrial(
+      shouldBlockOnFunding(
         signedIn({
           balance: { credits: 1200, usdMillis: 1200 },
           subscription: { subscribed: false, status: "canceled" },
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("allows a trialing subscriber even at zero balance", () => {
     expect(
-      shouldBlockOnTrial(
+      shouldBlockOnFunding(
         signedIn({
           balance: { credits: 0, usdMillis: 0 },
           subscription: { subscribed: true, status: "trialing" },
@@ -83,7 +83,7 @@ describe("shouldBlockOnTrial", () => {
 
   it("allows an active subscriber even at zero balance (credit-line floor)", () => {
     expect(
-      shouldBlockOnTrial(
+      shouldBlockOnFunding(
         signedIn({
           balance: { credits: 0, usdMillis: 0 },
           subscription: { subscribed: true, status: "active" },
@@ -94,7 +94,7 @@ describe("shouldBlockOnTrial", () => {
 
   it("blocks a past-due subscriber with no credits left", () => {
     expect(
-      shouldBlockOnTrial(
+      shouldBlockOnFunding(
         signedIn({
           balance: { credits: 0, usdMillis: 0 },
           subscription: { subscribed: true, status: "past_due" },
@@ -103,10 +103,39 @@ describe("shouldBlockOnTrial", () => {
     ).toBe(true);
   });
 
-  it("blocks when the subscription state is unknown until a refresh resolves it", () => {
-    expect(shouldBlockOnTrial(signedIn({ balance: { usdMillis: 0 } }))).toBe(
-      true,
+  it("blocks explicit non-live subscription statuses with no credits left", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: 0, usdMillis: 0 },
+          subscription: { subscribed: true, status: "incomplete" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("allows zero-credit users while subscription state is unknown", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: 0, usdMillis: 0 },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: 0, usdMillis: 0 },
+          subscription: { subscribed: true },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("allows unknown credit snapshots and lets metered actions decide", () => {
+    expect(shouldBlockOnFunding(signedIn({ balance: { usdMillis: 0 } }))).toBe(
+      false,
     );
-    expect(shouldBlockOnTrial(signedIn())).toBe(true);
+    expect(shouldBlockOnFunding(signedIn())).toBe(false);
   });
 });

@@ -998,7 +998,7 @@ where
     if envelope.error_code == Some(ERR_INSUFFICIENT_CREDITS) {
         return Err(AppError::new(
             "insufficient_credits",
-            "Your balance is too low. Add funds to continue.",
+            "Your balance is too low. Upgrade to continue.",
         ));
     }
     let _ = path;
