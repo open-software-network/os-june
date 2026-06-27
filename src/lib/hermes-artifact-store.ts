@@ -314,8 +314,8 @@ export function artifactsFromToolEvent(
       ? dedupeLocations(event.artifactLocations)
       : [];
   const sanitizedPayloadLocations = artifactLocationsFromPayload(payload);
-  const sanitizedPreservedNavigationLocations = new Set(
-    preservedNavigationLocations.map((location) => sanitizeText(location)),
+  const preservedNavigationLocationKeys = new Set(
+    preservedNavigationLocations.map((location) => locationDedupeKey(location)),
   );
   const locations =
     preservedNavigationLocations.length > 0
@@ -324,7 +324,9 @@ export function artifactsFromToolEvent(
           ...sanitizedPayloadLocations.filter(
             (location) =>
               !preservedNavigationLocations.includes(location) &&
-              !sanitizedPreservedNavigationLocations.has(location),
+              !preservedNavigationLocationKeys.has(
+                locationDedupeKey(location),
+              ),
           ),
         ])
       : sanitizedPayloadLocations;
@@ -362,6 +364,18 @@ function dedupeLocations(values: readonly string[]): string[] {
   };
   for (const value of values) push(value);
   return out;
+}
+
+function locationDedupeKey(location: string): string {
+  const sanitized = sanitizeText(location);
+  try {
+    const url = new URL(sanitized);
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return sanitized;
+  }
 }
 
 /**

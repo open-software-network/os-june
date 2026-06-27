@@ -120,7 +120,9 @@ describe("artifactsFromToolEvent", () => {
     expect(JSON.stringify(event)).not.toContain("signed-token-123");
     expect(event.artifactLocations).toEqual([safeNavigationUrl]);
 
-    const [artifact] = artifactsFromToolEvent(event);
+    const artifacts = artifactsFromToolEvent(event);
+    expect(artifacts).toHaveLength(1);
+    const [artifact] = artifacts;
     expect(artifact.path).toBe(safeNavigationUrl);
     expect(artifact.path).not.toContain("user:pass");
   });
