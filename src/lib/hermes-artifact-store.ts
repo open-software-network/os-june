@@ -38,7 +38,11 @@
  */
 
 import type { HermesMode, JuneHermesEvent } from "./hermes-control-plane";
-import { asRecord, nonEmpty } from "./hermes-control-plane";
+import {
+  artifactLocationsFromPayload,
+  asRecord,
+  nonEmpty,
+} from "./hermes-control-plane";
 
 /**
  * Cap on the number of artifacts kept per session. A long agent run touches many
@@ -290,8 +294,10 @@ export const hermesArtifactStore = createHermesArtifactStore();
  *   modified, read → read, download → downloaded, import → downloaded), and any
  *   error field on the payload downgrades it to `failed`.
  *
- * The payload here is already sanitized by the classifier, so secret-bearing
- * fields are redacted before we ever read them.
+ * The classifier also carries a narrow pre-redaction `artifactLocations` list
+ * for navigation-only fields, so signed download URLs stay clickable while the
+ * trace/tool-card payload remains sanitized. Older/manual events fall back to
+ * extracting from the sanitized payload.
  */
 export function artifactsFromToolEvent(
   event: JuneHermesEvent,
@@ -300,10 +306,12 @@ export function artifactsFromToolEvent(
   const sessionId = nonEmpty(event.sessionId);
   if (!sessionId) return [];
 
-  const payload = asRecord(event.payload);
-  if (!payload) return [];
+  const payload = asRecord(event.payload) ?? {};
 
-  const locations = locationsFromPayload(payload);
+  const locations =
+    event.artifactLocations && event.artifactLocations.length > 0
+      ? dedupeLocations(event.artifactLocations)
+      : artifactLocationsFromPayload(payload);
   if (locations.length === 0) return [];
 
   const failed = hasError(payload);
@@ -330,59 +338,15 @@ export function artifactsFromToolEvent(
   });
 }
 
-/**
- * Pull location strings out of the known fields, in priority order. Singular
- * fields first, then array fields. Deduped, preserving order.
- */
-function locationsFromPayload(payload: Record<string, unknown>): string[] {
+function dedupeLocations(values: readonly string[]): string[] {
   const out: string[] = [];
   const push = (value: unknown) => {
     const str = nonEmpty(typeof value === "string" ? value : undefined);
     if (str && !out.includes(str)) out.push(str);
   };
-
-  for (const key of SINGULAR_LOCATION_KEYS) push(payload[key]);
-  // Ambiguous keys (a "destination"/"dest" is just as often a queue name,
-  // channel, or host as a file path): only accept their value when it actually
-  // looks like a filesystem path or url, so a `send_to_queue {destination:
-  // "my-queue"}` never mints a phantom artifact. Conservative by design.
-  for (const key of PATH_SHAPED_LOCATION_KEYS) {
-    const value = payload[key];
-    if (typeof value === "string" && looksLikeLocation(value)) push(value);
-  }
-  for (const key of ARRAY_LOCATION_KEYS) {
-    const value = payload[key];
-    if (Array.isArray(value)) for (const item of value) push(item);
-  }
+  for (const value of values) push(value);
   return out;
 }
-
-// Known singular payload keys that hold a file path or url. Mirrors the field
-// names the rest of the runtime already reads (snake_case + camelCase).
-const SINGULAR_LOCATION_KEYS = [
-  "path",
-  "file_path",
-  "filePath",
-  "filename",
-  "file",
-  "target_path",
-  "targetPath",
-  "url",
-  "uri",
-] as const;
-
-// Singular keys whose names DON'T guarantee a filesystem meaning. We only treat
-// their value as a location when it has a path/url shape (see
-// {@link looksLikeLocation}).
-const PATH_SHAPED_LOCATION_KEYS = ["destination", "dest"] as const;
-
-// Known array payload keys holding multiple paths.
-const ARRAY_LOCATION_KEYS = [
-  "paths",
-  "file_paths",
-  "filePaths",
-  "files",
-] as const;
 
 /**
  * Infer the action from the tool name. Defaults to `read` (the least-privileged,
@@ -432,17 +396,6 @@ function kindForLocation(location: string): ArtifactKind {
 
 function isImageExtension(name: string): boolean {
   return /\.(png|jpe?g|gif|webp|svg|heic|bmp|tiff?)$/i.test(name);
-}
-
-/** Whether a string carries a filesystem-path or url shape: a `scheme://`, or a
- * `/` or `\` separator somewhere in it. Used to gate ambiguous payload keys
- * (`destination`/`dest`) so a bare queue/channel/host name doesn't mint an
- * artifact. */
-function looksLikeLocation(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return true;
-  return trimmed.includes("/") || trimmed.includes("\\");
 }
 
 /** A cheap "we could show this inline" hint. The actual preview is fetched

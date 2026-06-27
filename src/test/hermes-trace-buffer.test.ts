@@ -204,6 +204,21 @@ describe("createHermesTraceBuffer", () => {
       // Safe text is preserved.
       expect(entry.payloadPreview).toContain("safe-text");
     });
+
+    it("redacts signed artifact url tokens in inbound trace previews", () => {
+      const buffer = createHermesTraceBuffer();
+      buffer.recordInbound(
+        rawFrame("tool.complete", "s1", {
+          name: "download_file",
+          url: "https://files.example.com/report.pdf?token=signed-token-123&view=1",
+        }),
+      );
+
+      const entry = buffer.entriesFor("s1")[0];
+      expect(entry.payloadPreview).toContain("view=1");
+      expect(entry.payloadPreview).toContain("token=");
+      expect(entry.payloadPreview).not.toContain("signed-token-123");
+    });
   });
 
   describe("exportSanitizedTrace", () => {

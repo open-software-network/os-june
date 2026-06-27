@@ -7,6 +7,7 @@ import type {
 } from "./events";
 import { parseHermesMode } from "./events";
 import type { RawHermesPayload } from "./raw-types";
+import { artifactLocationsFromPayload } from "./artifact-locations";
 import { sanitizePayload, sanitizeText } from "./sanitize";
 
 /**
@@ -118,7 +119,9 @@ function classifyTool(
       : type === "tool.progress"
         ? "progress"
         : "complete";
-  return {
+  const artifactLocations =
+    payload === undefined ? [] : artifactLocationsFromPayload(payload);
+  const event: JuneHermesEvent = {
     kind: "tool",
     sessionId: sessionId ?? "",
     toolCallId:
@@ -135,6 +138,12 @@ function classifyTool(
     // case a tool's args happen to embed a secret.
     payload: payload === undefined ? undefined : sanitizePayload(payload),
   };
+  if (artifactLocations.length === 0) return event;
+  Object.defineProperty(event, "artifactLocations", {
+    value: artifactLocations,
+    enumerable: false,
+  });
+  return event;
 }
 
 function classifyPendingAction(

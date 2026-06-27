@@ -87,6 +87,25 @@ describe("artifactsFromToolEvent", () => {
     expect(artifact.path).toBe("https://example.com/report.pdf");
   });
 
+  it("opens signed artifact urls while keeping the tool payload redacted", () => {
+    const signedUrl =
+      "https://files.example.com/report.pdf?token=signed-token-123&view=1";
+    const event = toolClassified("tool.complete", "s1", {
+      name: "download_file",
+      url: signedUrl,
+    });
+
+    expect(JSON.stringify(event.payload)).not.toContain("signed-token-123");
+    expect(JSON.stringify(event)).not.toContain("signed-token-123");
+    expect(event.artifactLocations).toEqual([signedUrl]);
+
+    const [artifact] = artifactsFromToolEvent(event);
+    expect(artifact.kind).toBe("url");
+    expect(artifact.action).toBe("downloaded");
+    expect(artifact.path).toBe(signedUrl);
+    expect(artifact.displayName).toBe("report.pdf");
+  });
+
   it("derives the display name from the path basename", () => {
     const event = toolClassified("tool.complete", "s1", {
       name: "write_file",

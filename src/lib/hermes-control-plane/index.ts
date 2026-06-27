@@ -44,6 +44,7 @@ export * from "./event-classifier";
 export * from "./methods";
 export * from "./sanitize";
 export * from "./raw-types";
+export * from "./artifact-locations";
 export * from "./replay";
 export * from "./compatibility";
 export * from "./parse";
