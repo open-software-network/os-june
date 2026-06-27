@@ -24,7 +24,6 @@ import { createPortal } from "react-dom";
 import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
 import { IconArrowUp } from "central-icons/IconArrowUp";
-import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
@@ -619,24 +618,6 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     description: "Describe what you remember; June tracks it down.",
     prompt:
       "Find <a file I half-remember> on my computer and tell me where it is.",
-    action: "prefill",
-  },
-  {
-    key: "describe-screenshots",
-    icon: <IconCameraSparkle size={18} />,
-    title: "Find the right screenshot",
-    description: "June looks through them so you don't have to.",
-    prompt:
-      "Look through the recent screenshots on my Desktop and in my Downloads folder, open each one, and tell me what it shows so I can find the one I'm looking for. Don't rename, move, or change anything.",
-    action: "run",
-  },
-  {
-    key: "draft-document",
-    icon: <IconPencilLine size={18} />,
-    title: "Draft a document",
-    description: "Start a write-up and get it as a downloadable file.",
-    prompt:
-      "Draft a <kind of document> about <topic>, then save it as a Markdown file in your workspace so I can download it.",
     action: "prefill",
   },
   {
