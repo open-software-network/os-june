@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findPreviousRelease,
   formatChangelog,
   parseGitLogRecords,
   parsePreviousReleaseLine,
@@ -23,6 +24,20 @@ describe("parsePreviousReleaseLine", () => {
     expect(
       parsePreviousReleaseLine(`b1fc9eb${field}Fix system audio (#511)`),
     ).toBeUndefined();
+  });
+});
+
+describe("findPreviousRelease", () => {
+  it("ignores newer non-release subjects even if they mention release commits elsewhere", () => {
+    const log = [
+      `newer${field}Document release: v0.0.22 rollback notes`,
+      `older${field}release: v0.0.22 (#508)`,
+    ].join("\n");
+
+    expect(findPreviousRelease(log)).toEqual({
+      hash: "older",
+      version: "0.0.22",
+    });
   });
 });
 

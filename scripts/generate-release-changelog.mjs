@@ -15,6 +15,10 @@ export function parsePreviousReleaseLine(line) {
   return { hash, version: match[1] };
 }
 
+export function findPreviousRelease(log) {
+  return log.split("\n").map(parsePreviousReleaseLine).find(Boolean);
+}
+
 export function parseGitLogRecords(log) {
   return log
     .split(RECORD_SEPARATOR)
@@ -83,13 +87,10 @@ function previousRelease() {
   const output = git([
     "log",
     "--first-parent",
-    "--grep=^release: v[0-9]",
     `--format=%H${FIELD_SEPARATOR}%s`,
-    "-n",
-    "1",
     "HEAD",
   ]);
-  return parsePreviousReleaseLine(output);
+  return findPreviousRelease(output);
 }
 
 function commitsSince(hash) {
