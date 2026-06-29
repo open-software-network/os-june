@@ -843,6 +843,7 @@ type AgentWorkspaceProps = {
   initialSessionId?: string;
   origin?: AgentWorkspaceOrigin;
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
+  topUpLabel?: string;
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -1251,6 +1252,7 @@ export function AgentWorkspace({
   initialSessionId: initialSessionIdProp,
   origin,
   onSessionSelected,
+  topUpLabel = "Upgrade",
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -6512,6 +6514,7 @@ export function AgentWorkspace({
               setError(messageFromError(err)),
             )
           }
+          topUpLabel={topUpLabel}
           onClarify={(part, answer) =>
             void respondToClarify(
               selectedHermesSessionId,
@@ -6618,6 +6621,7 @@ export function AgentWorkspace({
                 setError(messageFromError(err)),
               )
             }
+            topUpLabel={topUpLabel}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -8830,6 +8834,7 @@ function AgentChatTurnRow({
   onOpenArtifact,
   onThinkingOpenChange,
   onTopUp,
+  topUpLabel,
   onBranch,
   onEditUserPrompt,
   branchingMessageId,
@@ -8865,6 +8870,7 @@ function AgentChatTurnRow({
   onOpenArtifact?: (artifact: AgentArtifact) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
+  topUpLabel?: string;
   onEditUserPrompt?: (text: string) => void;
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
@@ -9142,6 +9148,7 @@ function AgentChatTurnRow({
             <CreditsNoticePart
               key={`${turn.id}:notice:${index}`}
               onTopUp={onTopUp}
+              topUpLabel={topUpLabel}
             />
           ) : part.type === "steering" ? (
             <SteeringPart
@@ -9463,7 +9470,13 @@ function visibleAgentWorkspaceError(
 // transcript — the chat runtime folds it into a notice part, and this card is
 // how the user learns the turn stopped and what to do about it. No title —
 // icon + one sentence + the action, Claude-style.
-function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
+function CreditsNoticePart({
+  onTopUp,
+  topUpLabel = "Upgrade",
+}: {
+  onTopUp?: () => void;
+  topUpLabel?: string;
+}) {
   return (
     <InlineNotice
       className="agent-credits-notice"
@@ -9474,7 +9487,7 @@ function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
       actions={
         onTopUp ? (
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
-            Upgrade
+            {topUpLabel}
           </button>
         ) : undefined
       }

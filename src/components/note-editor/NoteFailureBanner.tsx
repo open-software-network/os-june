@@ -9,6 +9,7 @@ type Props = {
   audioPreserved: boolean;
   onRetry: () => void | Promise<void>;
   onTopUp: () => void;
+  topUpLabel?: string;
 };
 
 // String match (see isInsufficientCreditsMessage) is intentional and a known
@@ -62,10 +63,12 @@ export function NoteFailureBanner({
   audioPreserved,
   onRetry,
   onTopUp,
+  topUpLabel = "Upgrade",
 }: Props) {
   const kind = classifyFailure(errorMessage);
   const isBalanceIssue = kind === "balance_low";
   const displayMessage = userFacingFailureMessage(errorMessage);
+  const topUpAction = topUpLabel.toLowerCase();
   // Local busy flag so a fast double-click can't fire onRetry twice. The
   // banner unmounts when the note transitions out of `failed` status, so we
   // don't need to reset this state ourselves; the catch covers the case
@@ -93,8 +96,8 @@ export function NoteFailureBanner({
       <p className="note-failure-message">
         {isBalanceIssue
           ? audioPreserved
-            ? "Your balance ran out. Your recording is saved locally, so upgrade and retry."
-            : "Your balance is too low. Upgrade to continue."
+            ? `Your balance ran out. Your recording is saved locally, so ${topUpAction} and retry.`
+            : `Your balance is too low. ${topUpLabel} to continue.`
           : (displayMessage ?? "June couldn't finish processing this note.")}
         {!isBalanceIssue && audioPreserved
           ? " Your recording is saved locally, so you can retry."
@@ -108,7 +111,7 @@ export function NoteFailureBanner({
             onClick={onTopUp}
             disabled={retrying}
           >
-            Upgrade
+            {topUpLabel}
           </button>
         ) : null}
         <button

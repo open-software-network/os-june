@@ -56,6 +56,7 @@ type NoteEditorProps = {
   onFinishRecording: (sessionId: string) => void;
   onRetry: () => void | Promise<void>;
   onTopUp: () => void;
+  topUpLabel?: string;
   onRecoverRecording: (sessionId: string) => void;
   onDiscardRecording: (sessionId: string) => void;
   onAssignFolder: (folderId: string) => void;
@@ -143,6 +144,7 @@ export function NoteEditor({
   onFinishRecording,
   onRetry,
   onTopUp,
+  topUpLabel,
   onRecoverRecording,
   onDiscardRecording,
   onAssignFolder,
@@ -327,6 +329,7 @@ export function NoteEditor({
             audioPreserved={!!(note.audio || note.audioSources?.length)}
             onRetry={onRetry}
             onTopUp={onTopUp}
+            topUpLabel={topUpLabel}
           />
         ) : null}
         {activeTab === "transcription" ? (

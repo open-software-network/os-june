@@ -6545,6 +6545,36 @@ describe("AgentWorkspace", () => {
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
   });
 
+  it("renders an out-of-credits notice with a top-up action for subscribed users", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "How are the subagents doing",
+        timestamp: "2026-06-10T10:00:00Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content:
+          "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}",
+        timestamp: "2026-06-10T10:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace topUpLabel="Top up credits" />);
+
+    expect(
+      await screen.findByText(/June stopped because your balance ran out/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Top up credits" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
+  });
+
   it("shows every error surface via the __agentErrors() dev handle", async () => {
     const agentErrors = (
       window as unknown as { __agentErrors: (show?: boolean) => string }

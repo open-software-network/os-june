@@ -164,7 +164,11 @@ import {
   markOnboardingComplete,
   shouldReplayOnboarding,
 } from "../lib/onboarding";
-import { shouldBlockOnFunding, shouldBlockOnSignIn } from "../lib/account-gate";
+import {
+  depletedBalanceActionLabel,
+  shouldBlockOnFunding,
+  shouldBlockOnSignIn,
+} from "../lib/account-gate";
 import {
   checkScribeUpdate,
   relaunchScribe,
@@ -521,6 +525,7 @@ export function App() {
     !devAccountsUnconfigured &&
     !signInRequired &&
     shouldBlockOnFunding(account);
+  const topUpLabel = depletedBalanceActionLabel(account);
   const [onboardingDone, setOnboardingDone] = useState(() => {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();
@@ -2927,6 +2932,7 @@ export function App() {
                   initialSession={activeAgentSessionSeed}
                   initialSessionId={activeAgentSessionId}
                   onSessionSelected={setActiveAgentSession}
+                  topUpLabel={topUpLabel}
                   origin={
                     agentOriginFolder
                       ? {
@@ -3249,6 +3255,7 @@ export function App() {
                           setError(messageFromError(err)),
                         )
                       }
+                      topUpLabel={topUpLabel}
                       onAssignFolder={(folderId) =>
                         void handleSetNoteFolder(selectedNote.id, folderId)
                       }
