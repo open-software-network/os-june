@@ -8,6 +8,7 @@ pub mod domain;
 pub mod hermes_bridge;
 pub mod june_api;
 pub mod macos_accessibility;
+pub mod macos_input;
 pub mod macos_menu_icons;
 pub mod meeting_detection;
 pub mod meeting_hud;
