@@ -723,8 +723,10 @@ pub fn set_dictation_shortcut(
         DictationShortcutKind::PushToTalk => settings.push_to_talk_shortcut = shortcut,
         DictationShortcutKind::Toggle => settings.toggle_shortcut = shortcut,
     })?;
-    reset_shortcut_activation(&app);
+    // Apply first so a held push-to-talk rebind can emit its synthetic release
+    // into the still-active activation controller.
     apply_shortcut_settings(&app, &settings)?;
+    reset_shortcut_activation(&app);
 
     set_hotkey_status(&hotkey_status, hotkey_ready_event(&settings));
     Ok(settings)
