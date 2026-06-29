@@ -5781,6 +5781,126 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
   });
 
+  it("opens the model picker from the warning when several vision models qualify", async () => {
+    // With more than one image-capable model, the banner action defers to the
+    // existing picker instead of guessing; one candidate switches directly.
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "qwen-vl",
+          name: "Qwen VL",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling", "supportsVision"],
+        },
+        {
+          provider: "venice",
+          id: "gpt-vision",
+          name: "GPT Vision",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling", "supportsVision"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Switch to a vision model" }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "Choose text model" }),
+    ).toBeInTheDocument();
+  });
+
+  it("attaches the image when the active model id is unresolved", async () => {
+    // Regression: a stale or not-yet-loaded model id must not be assumed
+    // non-vision. The image still attaches via image.attach_bytes rather than
+    // silently downgrading to the text-only fallback.
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "model-not-in-catalog",
+      models: [
+        {
+          provider: "venice",
+          id: "kimi-k2-6",
+          name: "Kimi K2.6",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "what is in this image?");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method]) => method === "image.attach_bytes",
+        ),
+      ).toBe(true),
+    );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).not.toContain("does not support image input");
+  });
+
   it("shows no image-input warning when the selected model reads images", async () => {
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
     render(<AgentWorkspace />);

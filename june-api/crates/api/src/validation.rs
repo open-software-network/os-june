@@ -82,7 +82,7 @@ fn validate_json_shape(
     match value {
         Value::String(text) => {
             let chars = text.chars().count();
-            if chars > MAX_AGENT_STRING_CHARS && !is_agent_image_data_url(text) {
+            if chars > MAX_AGENT_STRING_CHARS {
                 return Err(ApiError::bad_request("string_too_long"));
             }
             *total_string_chars = total_string_chars.saturating_add(chars);
@@ -105,8 +105,29 @@ fn validate_json_shape(
             }
         }
         Value::Object(object) => {
-            for value in object.values() {
-                validate_json_shape(value, depth + 1, total_string_chars)?;
+            for (key, child) in object {
+                // The only sanctioned home for a large base64 image is
+                // messages[].content[].image_url.url. Exempt exactly that string
+                // from BOTH the per-string and aggregate guards; every other
+                // string (metadata, tool descriptions, …) stays subject to them,
+                // so an oversized data URL can't be smuggled into an unrelated
+                // field to bypass the cap.
+                if key == "image_url"
+                    && let Some(image) = child.as_object()
+                    && image
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .is_some_and(is_agent_image_data_url)
+                {
+                    for (field, value) in image {
+                        if field == "url" {
+                            continue;
+                        }
+                        validate_json_shape(value, depth + 2, total_string_chars)?;
+                    }
+                    continue;
+                }
+                validate_json_shape(child, depth + 1, total_string_chars)?;
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
@@ -234,6 +255,50 @@ mod tests {
             validate_agent_chat_body(&json!({
                 "model": "text-model",
                 "messages": [{ "role": "user", "content": text }],
+            })),
+            Err(ApiError::BadRequest { message, .. }) if message == "string_too_long"
+        ));
+    }
+
+    #[test]
+    fn agent_body_accepts_image_data_url_over_aggregate_limit() {
+        // A real screenshot can exceed the aggregate prompt-char cap on its own;
+        // the image_url.url payload must be exempt from the aggregate count too,
+        // not just the per-string limit, or sending a screenshot 400s.
+        let image = format!(
+            "data:image/png;base64,{}",
+            "a".repeat(MAX_AGENT_TOTAL_STRING_CHARS + 1)
+        );
+
+        assert!(
+            validate_agent_chat_body(&json!({
+                "model": "text-model",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "describe this" },
+                        { "type": "image_url", "image_url": { "url": image } },
+                    ],
+                }],
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn agent_body_rejects_image_data_url_outside_image_url_field() {
+        // The exemption is structural: a large data:image payload smuggled into
+        // an unrelated field must NOT bypass the per-string guard.
+        let image = format!(
+            "data:image/png;base64,{}",
+            "a".repeat(MAX_AGENT_STRING_CHARS + 1)
+        );
+
+        assert!(matches!(
+            validate_agent_chat_body(&json!({
+                "model": "text-model",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "metadata": { "note": image },
             })),
             Err(ApiError::BadRequest { message, .. }) if message == "string_too_long"
         ));

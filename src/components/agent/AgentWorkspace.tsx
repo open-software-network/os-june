@@ -2024,16 +2024,20 @@ export function AgentWorkspace({
   );
   // Mirror the send-time fallback trigger (pendingImageAttachments +
   // !modelSupportsImageInput) so the banner appears exactly when a submit would
-  // strip the image and downgrade to the text-only prompt. While the model list
-  // is still loading generationModel is undefined; stay silent rather than warn
-  // on an unknown model.
+  // strip the image and downgrade to the text-only prompt. Resolve strictly via
+  // find (not generationModel, which is a zero-capability stub for an unknown
+  // id) so an unresolved/stale model stays silent rather than warning and being
+  // treated as non-vision.
+  const resolvedGenerationModel = activeGenerationModelId
+    ? generationModels.find((model) => model.id === activeGenerationModelId)
+    : undefined;
   const composerHasPendingImage =
     pendingImageAttachments(attachments.map((attachment) => attachment.attach))
       .length > 0;
   const showImageInputWarning =
     composerHasPendingImage &&
-    !!generationModel &&
-    !modelSupportsImageInput(generationModel);
+    !!resolvedGenerationModel &&
+    !modelSupportsImageInput(resolvedGenerationModel);
   const selectedHermesMessages = useMemo(() => {
     if (!selectedHermesSessionId) return [];
     return [
@@ -4189,13 +4193,24 @@ export function AgentWorkspace({
     const pendingImages = pendingImageAttachments(
       turnAttachments.map((attachment) => attachment.attach),
     );
+    // Resolve strictly from the catalog: selectedModelOption synthesizes a
+    // zero-capability stub for an unknown id, which would read as non-vision and
+    // wrongly downgrade a vision-capable (but stale/not-yet-loaded) model. find
+    // returns undefined when unresolved so the guard below skips the fallback.
     const targetGenerationModel = targetSessionModelId
-      ? selectedModelOption(generationModelsRef.current, targetSessionModelId)
+      ? generationModelsRef.current.find(
+          (model) => model.id === targetSessionModelId,
+        )
       : undefined;
     const imageInputFallbackContent =
+      // Only downgrade to the text-only fallback when the model is KNOWN to lack
+      // image input. An unresolved model id (stale or not-yet-loaded catalog)
+      // must NOT be assumed non-vision, or a vision-capable session would
+      // silently drop the image and never call attachPendingImages. Mirrors the
+      // composer banner's `!!generationModel && !modelSupportsImageInput` guard.
       pendingImages.length &&
-      (!targetGenerationModel ||
-        !modelSupportsImageInput(targetGenerationModel))
+      targetGenerationModel &&
+      !modelSupportsImageInput(targetGenerationModel)
         ? unsupportedImageInputPrompt({
             displayContent,
             imageNames: pendingImages.map(
@@ -6293,7 +6308,8 @@ export function AgentWorkspace({
                 className="agent-composer-image-warning-icon"
               />
               <span className="agent-composer-image-warning-text">
-                {generationModel?.name ?? "This model"} can't read images.
+                {resolvedGenerationModel?.name ?? "This model"} can't read
+                images.
               </span>
               {visionModelOptions.length ? (
                 <button
