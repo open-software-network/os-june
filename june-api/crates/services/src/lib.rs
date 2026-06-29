@@ -867,7 +867,7 @@ mod tests {
                 });
             }
             if self.fail_charge {
-                return Err(DomainError::UpstreamProvider);
+                return Err(DomainError::MeteringProvider);
             }
             Ok(Receipt {
                 credits_charged: request.credits,

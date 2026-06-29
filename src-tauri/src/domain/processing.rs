@@ -2059,6 +2059,13 @@ mod tests {
             ),
             "The transcription provider could not process this audio."
         );
+        assert_eq!(
+            user_facing_transcription_failure_message(
+                "june_request_failed",
+                "metering_provider_failed"
+            ),
+            "Billing is temporarily unavailable. Please try again in a moment."
+        );
     }
 
     #[test]
