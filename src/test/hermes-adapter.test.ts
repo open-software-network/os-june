@@ -159,12 +159,14 @@ describe("Hermes adapter", () => {
         },
         {
           id: "child-worker",
+          source: "tool",
           title: "Browse source 1",
           parent_session_id: "parent-session",
           last_active: "2026-06-11T12:01:00Z",
         },
         {
           id: "camel-child-worker",
+          subagentId: "worker-2",
           title: "Browse source 2",
           parentSessionId: "parent-session",
           last_active: "2026-06-11T12:02:00Z",
@@ -173,6 +175,32 @@ describe("Hermes adapter", () => {
     });
 
     expect(sessions.map((session) => session.id)).toEqual(["parent-session"]);
+  });
+
+  it("preserves compressed continuation sessions from the top-level session list", () => {
+    const sessions = normalizeHermesSessionsResponse({
+      sessions: [
+        {
+          id: "continuation-session",
+          source: "tui",
+          title: "Long research request (2)",
+          parent_session_id: "parent-session",
+          last_active: "2026-06-11T12:02:00Z",
+        },
+        {
+          id: "parent-session",
+          source: "tui",
+          title: "Long research request",
+          end_reason: "compression",
+          last_active: "2026-06-11T12:01:00Z",
+        },
+      ],
+    });
+
+    expect(sessions.map((session) => session.id)).toEqual([
+      "continuation-session",
+      "parent-session",
+    ]);
   });
 
   it("lists only cron-sourced sessions as scheduled runs", async () => {

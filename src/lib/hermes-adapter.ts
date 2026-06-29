@@ -54,15 +54,32 @@ export function normalizeHermesSessionsResponse(response: unknown) {
 }
 
 function isDelegatedSubagentSession(session: HermesSessionInfo) {
-  const parentSessionId = sessionParentSessionId(session);
-  return parentSessionId !== undefined && parentSessionId !== session.id;
+  return (
+    sessionSource(session) === "tool" ||
+    sessionKind(session) === "subagent" ||
+    sessionKind(session) === "delegate_task" ||
+    hasSubagentId(session)
+  );
 }
 
-function sessionParentSessionId(session: HermesSessionInfo) {
-  const parentSessionId = session.parent_session_id ?? session.parentSessionId;
-  return typeof parentSessionId === "string" && parentSessionId.trim()
-    ? parentSessionId.trim()
-    : undefined;
+function sessionSource(session: HermesSessionInfo) {
+  return normalizeSessionMarker(session.source);
+}
+
+function sessionKind(session: HermesSessionInfo) {
+  return normalizeSessionMarker(
+    session.session_type ?? session.sessionType ?? session.kind,
+  );
+}
+
+function hasSubagentId(session: HermesSessionInfo) {
+  return Boolean(
+    normalizeSessionMarker(session.subagent_id ?? session.subagentId),
+  );
+}
+
+function normalizeSessionMarker(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
 /** Hermes tags scheduled-routine runs with source "cron". */
