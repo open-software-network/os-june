@@ -230,10 +230,9 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: ./scripts/bundle-hermes-runtime.sh
 
-      - name: Build, sign, notarize, and publish updater release
+      - name: Build and sign production app artifacts
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -245,25 +244,18 @@ jobs:
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         with:
-          owner: open-software-network
-          repo: os-june-releases
-          tagName: v${{ env.VERSION }}
-          releaseName: June v${{ env.VERSION }}
-          releaseBody: "Stable June release v${{ env.VERSION }}."
-          releaseCommitish: main
-          # Plain notes only: the in-app update dialog renders latest.json's
-          # `notes` as plain text, so GitHub's auto-generated markdown would show
-          # raw (## headings, @-mentions). Keep notes = the plain releaseBody.
-          generateReleaseNotes: false
           args: --bundles app,dmg --target universal-apple-darwin
-          # v0.6.x input name (was uploadUpdaterJson/uploadUpdaterSignatures,
-          # which this version ignores). Generates + uploads latest.json; the
-          # .sig updater signatures are uploaded alongside it automatically.
-          includeUpdaterJson: true
+          # Do not pass tagName or releaseId here. tauri-action uploads release
+          # assets as soon as it sees either input, but the DMG is created after
+          # app notarization and needs its own notarization gate first.
+          includeUpdaterJson: false
 
-      - name: Upload stable macOS download alias
+      - name: Notarize, verify, and publish production release assets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ steps.apple-api-key.outputs.path }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -281,11 +273,106 @@ jobs:
             fi
             exit 1
           fi
-          stable_dmg="$RUNNER_TEMP/June_universal.dmg"
-          legacy_dmg="$RUNNER_TEMP/June_aarch64.dmg"
-          cp "${dmgs[0]}" "$stable_dmg"
-          cp "${dmgs[0]}" "$legacy_dmg"
-          gh release upload "v$VERSION" "$stable_dmg" "$legacy_dmg" \
+
+          dmg="${dmgs[0]}"
+          xcrun notarytool submit "$dmg" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type install --verbose "$dmg"
+
+          app_archives=(
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+          )
+          app_signatures=(
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          )
+          if [ "${#app_archives[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one app updater archive, found ${#app_archives[@]}"
+            printf 'App archive candidates:\n'
+            if [ "${#app_archives[@]}" -eq 0 ]; then
+              printf ' - <none>\n'
+            else
+              printf ' - %s\n' "${app_archives[@]}"
+            fi
+            exit 1
+          fi
+          if [ "${#app_signatures[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one app updater signature, found ${#app_signatures[@]}"
+            printf 'App signature candidates:\n'
+            if [ "${#app_signatures[@]}" -eq 0 ]; then
+              printf ' - <none>\n'
+            else
+              printf ' - %s\n' "${app_signatures[@]}"
+            fi
+            exit 1
+          fi
+
+          release_dir="$RUNNER_TEMP/production-release-assets"
+          rm -rf "$release_dir"
+          mkdir -p "$release_dir"
+          stable_dmg="$release_dir/June_universal.dmg"
+          legacy_dmg="$release_dir/June_aarch64.dmg"
+          app_archive="$release_dir/June_universal.app.tar.gz"
+          app_signature="$release_dir/June_universal.app.tar.gz.sig"
+          latest_json="$release_dir/latest.json"
+          cp "$dmg" "$stable_dmg"
+          cp "$dmg" "$legacy_dmg"
+          cp "${app_archives[0]}" "$app_archive"
+          cp "${app_signatures[0]}" "$app_signature"
+
+          SIGNATURE_PATH="$app_signature" \
+          LATEST_JSON_PATH="$latest_json" \
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const version = process.env.VERSION;
+          const signature = fs.readFileSync(process.env.SIGNATURE_PATH, "utf8");
+          const url = `https://github.com/open-software-network/os-june-releases/releases/download/v${version}/June_universal.app.tar.gz`;
+          const platform = { signature, url };
+          const latest = {
+            version,
+            notes: `Stable June release v${version}.`,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "darwin-aarch64": platform,
+              "darwin-x86_64": platform,
+              "darwin-aarch64-app": platform,
+              "darwin-x86_64-app": platform,
+            },
+          };
+          fs.writeFileSync(
+            process.env.LATEST_JSON_PATH,
+            `${JSON.stringify(latest, null, 2)}\n`,
+          );
+          NODE
+
+          release_notes="Stable June release v$VERSION."
+          if gh release view "v$VERSION" --repo open-software-network/os-june-releases >/dev/null 2>&1; then
+            gh release edit "v$VERSION" \
+              --repo open-software-network/os-june-releases \
+              --title "June v$VERSION" \
+              --notes "$release_notes"
+          else
+            gh release create "v$VERSION" \
+              --repo open-software-network/os-june-releases \
+              --title "June v$VERSION" \
+              --notes "$release_notes" \
+              --target main
+          fi
+
+          gh release upload "v$VERSION" \
+            "$dmg" \
+            "$stable_dmg" \
+            "$legacy_dmg" \
+            "$app_archive" \
+            "$app_signature" \
+            "$latest_json" \
             --repo open-software-network/os-june-releases \
             --clobber
 

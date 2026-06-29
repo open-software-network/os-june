@@ -77,9 +77,11 @@ The workflow performs the release steps in order:
    shipped under `Resources/native/hermes` so first launch needs no network
    install. Adds roughly 110 MB compressed to the DMG.
 7. Builds the `universal-apple-darwin` app and DMG with `tauri-action`.
-8. Signs with the Apple Developer ID cert, notarizes with Apple API key
-   credentials, signs updater artifacts with the Ed25519 updater key, and
-   publishes the release assets plus `latest.json` to
+8. Signs with the Apple Developer ID cert, notarizes the app with Apple API key
+   credentials, and signs updater artifacts with the Ed25519 updater key.
+9. Submits the generated DMG itself to Apple notarization, staples the DMG
+   ticket, verifies Gatekeeper install assessment, then overwrites the
+   versioned DMG asset plus the stable download aliases in
    `open-software-network/os-june-releases`.
 
 The app polls:
