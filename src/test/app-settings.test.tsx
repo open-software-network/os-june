@@ -46,7 +46,7 @@ const mocks = vi.hoisted(() => ({
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
   deleteDictionaryEntry: vi.fn(),
-  scribeOpenVerifyPage: vi.fn(),
+  juneOpenVerifyPage: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -83,7 +83,7 @@ vi.mock("../lib/tauri", () => ({
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
   deleteDictionaryEntry: mocks.deleteDictionaryEntry,
-  scribeOpenVerifyPage: mocks.scribeOpenVerifyPage,
+  juneOpenVerifyPage: mocks.juneOpenVerifyPage,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -171,7 +171,7 @@ describe("AppSettings", () => {
       language,
     }));
     mocks.listDictionaryEntries.mockResolvedValue([]);
-    mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
+    mocks.juneOpenVerifyPage.mockResolvedValue(undefined);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
@@ -349,12 +349,12 @@ describe("AppSettings", () => {
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
               name: "sample.pdf",
-              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/sample.pdf",
               kind: "file",
               size: 1700,
               modifiedAt: "2026-06-04T18:39:00Z",
@@ -364,12 +364,12 @@ describe("AppSettings", () => {
         {
           id: "memory",
           label: "Memory",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/memory",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/memory",
           description: "Persistent Hermes memory files and stores.",
           entries: [
             {
               name: "USER.md",
-              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/memory/USER.md",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/memory/USER.md",
               kind: "file",
               size: 39,
               modifiedAt: "2026-06-04T18:47:00Z",
@@ -562,7 +562,7 @@ describe("AppSettings", () => {
 
     expect(
       screen.getByText(
-        "Requests use your local Scribe API. No OpenSoftware account is used.",
+        "Requests use your local June API. No OpenSoftware account is used.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -666,7 +666,7 @@ describe("AppSettings", () => {
       payload: JSON.stringify({
         type: "mic_test_ready",
         payload: {
-          path: "/tmp/os-scribe-mic-test.m4a",
+          path: "/tmp/os-june-mic-test.m4a",
           durationMs: 5000,
           observedAudioLevel: "0.72",
         },
@@ -725,7 +725,7 @@ describe("AppSettings", () => {
       payload: JSON.stringify({
         type: "mic_test_ready",
         payload: {
-          path: "/tmp/os-scribe-mic-test.m4a",
+          path: "/tmp/os-june-mic-test.m4a",
           durationMs: 5000,
           observedAudioLevel: "0.72",
         },
@@ -769,7 +769,7 @@ describe("AppSettings", () => {
       payload: JSON.stringify({
         type: "mic_test_ready",
         payload: {
-          path: "/tmp/os-scribe-mic-test.m4a",
+          path: "/tmp/os-june-mic-test.m4a",
           durationMs: 5000,
           observedAudioLevel: "0.72",
         },
@@ -819,7 +819,7 @@ describe("AppSettings", () => {
       payload: JSON.stringify({
         type: "mic_test_ready",
         payload: {
-          path: "/tmp/os-scribe-mic-test.m4a",
+          path: "/tmp/os-june-mic-test.m4a",
           durationMs: 5000,
           observedAudioLevel: "0.72",
         },
@@ -1639,7 +1639,7 @@ describe("AppSettings", () => {
 
   it("opens the server attestation page from About through Rust", async () => {
     // Not an anchor: the webview drops target="_blank" navigations, so the
-    // button must invoke the scribe_open_verify_page command instead.
+    // button must invoke the june_open_verify_page command instead.
     render(
       <AppSettings
         account={signedInAccount}
@@ -1658,7 +1658,7 @@ describe("AppSettings", () => {
     await user.click(
       await screen.findByRole("button", { name: "Verify server" }),
     );
-    expect(mocks.scribeOpenVerifyPage).toHaveBeenCalledOnce();
+    expect(mocks.juneOpenVerifyPage).toHaveBeenCalledOnce();
   });
 
   it("replays onboarding from About in dev builds", async () => {

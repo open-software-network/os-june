@@ -40,8 +40,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          # Both repos were renamed (os-scribe -> os-june, os-scribe-releases
-          # -> os-june-releases); the token request rejects old names even
+          # Release artifacts use the June repository names; the token request rejects old names even
           # though the App installation follows renames.
           repositories: os-june,os-june-releases
 
@@ -109,7 +108,7 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          PRODUCTION_SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
+          PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         run: |
           set -euo pipefail
           missing=0
@@ -126,7 +125,7 @@ jobs:
             PRODUCTION_OS_ACCOUNTS_URL \
             PRODUCTION_OS_ACCOUNTS_API_URL \
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
-            PRODUCTION_SCRIBE_API_URL
+            PRODUCTION_JUNE_API_URL
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required for a production auto-update release."
@@ -203,8 +202,8 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-          keychain="$RUNNER_TEMP/os-scribe-signing.keychain-db"
-          keychain_password="os-scribe-$RANDOM-$RANDOM"
+          keychain="$RUNNER_TEMP/os-june-signing.keychain-db"
+          keychain_password="os-june-$RANDOM-$RANDOM"
           cert="$RUNNER_TEMP/certificate.p12"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
           security create-keychain -p "$keychain_password" "$keychain"
@@ -244,7 +243,7 @@ jobs:
           OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
+          JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         with:
           owner: open-software-network
           repo: os-june-releases

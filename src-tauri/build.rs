@@ -12,7 +12,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_API_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
-    println!("cargo:rerun-if-env-changed=SCRIBE_API_URL");
+    println!("cargo:rerun-if-env-changed=JUNE_API_URL");
     clean_legacy_helper_bundles();
     build_system_audio_helper();
     build_dictation_helper();
@@ -103,7 +103,7 @@ fn hermes_agent_pinned_commit(manifest_dir: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
-/// Remove pre-rename ("OS Scribe") helper bundles from `.tauri-helper` so
+/// Remove pre-rename ("June") helper bundles from `.tauri-helper` so
 /// stale copies don't linger next to the renamed June bundles.
 fn clean_legacy_helper_bundles() {
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
@@ -118,7 +118,7 @@ fn clean_legacy_helper_bundles() {
     else {
         return;
     };
-    for legacy in ["OS Scribe.app", "OS Scribe Dictation Helper.app"] {
+    for legacy in ["June.app", "June Dictation Helper.app"] {
         let _ = std::fs::remove_dir_all(helper_dir.join(legacy));
     }
 }
@@ -188,7 +188,7 @@ fn build_system_audio_helper() {
   <key>CFBundleExecutable</key>
   <string>june-system-audio-recorder</string>
   <key>CFBundleIdentifier</key>
-  <string>co.opensoftware.scribe.audio-capture</string>
+  <string>co.opensoftware.june.audio-capture</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -300,7 +300,7 @@ fn build_dictation_helper() {
   <key>CFBundleExecutable</key>
   <string>june-dictation-helper</string>
   <key>CFBundleIdentifier</key>
-  <string>co.opensoftware.scribe.dictation-helper</string>
+  <string>co.opensoftware.june.dictation-helper</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

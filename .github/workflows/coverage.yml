@@ -65,8 +65,8 @@ jobs:
           path: src-tauri/target/llvm-cov/html
           if-no-files-found: error
 
-  scribe-api:
-    name: Scribe API coverage artifacts
+  june-api:
+    name: June API coverage artifacts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -76,13 +76,13 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@528e28158500e8adf409c61ac0eaa6bdd47f49ca # cargo-llvm-cov
       - name: cargo llvm-cov
-        working-directory: scribe-api
+        working-directory: june-api
         env:
           RUST_BACKTRACE: 1
         run: cargo llvm-cov --workspace --all-features --html --output-dir target/llvm-cov/html
       - name: Upload coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: scribe-api-rust-coverage
-          path: scribe-api/target/llvm-cov/html
+          name: june-api-rust-coverage
+          path: june-api/target/llvm-cov/html
           if-no-files-found: error

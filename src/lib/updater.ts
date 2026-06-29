@@ -1,9 +1,9 @@
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 
-export type ScribeUpdate = Update;
+export type JuneUpdate = Update;
 
-export function checkScribeUpdate() {
+export function checkJuneUpdate() {
   // No explicit target: let the runtime report its own platform and match it
   // against the manifest. We only publish darwin-aarch64 today (ADR-0001:
   // Intel is intentionally unsupported), but that scope lives in the published
@@ -12,6 +12,6 @@ export function checkScribeUpdate() {
   return check();
 }
 
-export function relaunchScribe() {
+export function relaunchJune() {
   return relaunch();
 }

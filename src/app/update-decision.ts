@@ -48,7 +48,7 @@ export type UpdateInstallProgress = {
   contentLength?: number;
 };
 
-export async function checkForScribeUpdate<TUpdate extends UpdaterUpdate>(
+export async function checkForJuneUpdate<TUpdate extends UpdaterUpdate>(
   deps: UpdateCheckDeps<TUpdate>,
   mode: UpdateCheckMode,
 ) {
@@ -68,7 +68,7 @@ export async function checkForScribeUpdate<TUpdate extends UpdaterUpdate>(
   }
 }
 
-export function startPeriodicScribeUpdateChecks(
+export function startPeriodicJuneUpdateChecks(
   runUpdateCheck: (mode: UpdateCheckMode) => void,
   intervalMs = UPDATE_CHECK_INTERVAL_MS,
 ) {
@@ -79,14 +79,14 @@ export function startPeriodicScribeUpdateChecks(
   return () => window.clearInterval(timer);
 }
 
-export async function prepareScribeUpdate<TUpdate extends UpdaterUpdate>({
+export async function prepareJuneUpdate<TUpdate extends UpdaterUpdate>({
   update,
   reportProgress,
   reportReady,
   reportFailure,
 }: PrepareUpdateDeps<TUpdate>) {
   try {
-    await downloadAndInstallScribeUpdate(update, reportProgress);
+    await downloadAndInstallJuneUpdate(update, reportProgress);
     reportReady({
       update,
       version: update.version,
@@ -97,21 +97,21 @@ export async function prepareScribeUpdate<TUpdate extends UpdaterUpdate>({
   }
 }
 
-export async function installScribeUpdate<TUpdate extends UpdaterUpdate>({
+export async function installJuneUpdate<TUpdate extends UpdaterUpdate>({
   update,
   relaunch,
   reportProgress,
   reportFailure,
 }: InstallUpdateDeps<TUpdate>) {
   try {
-    await downloadAndInstallScribeUpdate(update, reportProgress);
+    await downloadAndInstallJuneUpdate(update, reportProgress);
     await relaunch();
   } catch (error) {
     reportFailure(messageFromUnknown(error));
   }
 }
 
-async function downloadAndInstallScribeUpdate<TUpdate extends UpdaterUpdate>(
+async function downloadAndInstallJuneUpdate<TUpdate extends UpdaterUpdate>(
   update: TUpdate,
   reportProgress: (progress: UpdateInstallProgress) => void,
 ) {

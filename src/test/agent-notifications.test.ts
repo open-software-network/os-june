@@ -18,9 +18,9 @@ describe("agent notifications", () => {
     vi.clearAllMocks();
     delete (
       globalThis as typeof globalThis & {
-        __scribeAgentNotificationTimes?: Map<string, number>;
+        __juneAgentNotificationTimes?: Map<string, number>;
       }
-    ).__scribeAgentNotificationTimes;
+    ).__juneAgentNotificationTimes;
   });
 
   it("formats attention-worthy agent statuses", () => {
@@ -71,7 +71,7 @@ describe("agent notifications", () => {
     expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
       title: "June needs your input",
       body: "Approve execute_code.",
-      group: "scribe-agent-session-1",
+      group: "june-agent-session-1",
       sound: "Ping",
     });
   });
@@ -92,7 +92,7 @@ describe("agent notifications", () => {
     expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
       title: "June finished",
       body: "Make a PDF",
-      group: "scribe-agent-session-2",
+      group: "june-agent-session-2",
       sound: "Ping",
     });
   });
@@ -159,9 +159,9 @@ describe("agent notifications", () => {
       expect(notificationMocks.sendNotification).toHaveBeenCalledTimes(2);
       const recent = (
         globalThis as typeof globalThis & {
-          __scribeAgentNotificationTimes?: Map<string, number>;
+          __juneAgentNotificationTimes?: Map<string, number>;
         }
-      ).__scribeAgentNotificationTimes;
+      ).__juneAgentNotificationTimes;
       expect(recent?.size).toBe(1);
     } finally {
       vi.useRealTimers();

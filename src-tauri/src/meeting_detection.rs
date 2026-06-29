@@ -44,13 +44,13 @@ impl MeetingDetectionState {
         &mut self,
         signed_in: bool,
         active_external_input: bool,
-        os_scribe_capture_active: bool,
+        os_june_capture_active: bool,
     ) -> Option<MeetingDetectionEvent> {
         if !signed_in {
             return self.clear();
         }
 
-        let should_be_active = active_external_input && !os_scribe_capture_active;
+        let should_be_active = active_external_input && !os_june_capture_active;
         if should_be_active {
             self.inactive_polls = 0;
             if !self.active {
@@ -773,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn detector_suppresses_while_os_scribe_capture_is_active() {
+    fn detector_suppresses_while_os_june_capture_is_active() {
         let mut state = MeetingDetectionState::default();
 
         assert_eq!(state.update(true, true, true), None);
@@ -817,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn detector_clears_when_os_scribe_capture_starts() {
+    fn detector_clears_when_os_june_capture_starts() {
         let mut state = MeetingDetectionState::default();
         assert_eq!(
             state.update(true, true, false),

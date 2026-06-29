@@ -129,7 +129,7 @@ any matrix entry to `supported`:
 pnpm test:hermes-smoke
 ```
 
-Point `SCRIBE_HERMES_COMMAND` at the extracted binary, or run it inside the
+Point `JUNE_HERMES_COMMAND` at the extracted binary, or run it inside the
 build that bundles it. The protocol phase needs no provider key; set
 `HERMES_SMOKE_MODEL=1` (with a real provider key in the runtime config) to also
 run the model-costing `prompt.submit` phase. See the pin note's "Release-gate

@@ -1,0 +1,21 @@
+services:
+  june-api:
+    image: ${JUNE_IMAGE}
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    # App secrets are encrypted per-CVM via Phala sealed env (`phala envs`) and
+    # injected at boot by ${VAR} interpolation — reference each one, unquoted.
+    # An empty `KEY: ""` clobbers the sealed value with a blank; omitting the ref
+    # injects nothing — both leave the app seeing the config as missing.
+    # Docs: https://docs.phala.com/phala-cloud/phala-cloud-user-guides/create-cvm/set-secure-environment-variables
+    # DSTACK_DOCKER_* (registry auth) is consumed by the prelaunch, not the app.
+    environment:
+      - RUST_LOG=june=info,june_api=info,june_services=info,june_providers=info,tower_http=info
+      - JUNE__OS_ACCOUNTS__API_URL=${JUNE__OS_ACCOUNTS__API_URL}
+      - JUNE__OS_ACCOUNTS__APP_API_KEY=${JUNE__OS_ACCOUNTS__APP_API_KEY}
+      - JUNE__UPSTREAMS__OPENAI__API_KEY=${JUNE__UPSTREAMS__OPENAI__API_KEY}
+      - JUNE__UPSTREAMS__VENICE__API_KEY=${JUNE__UPSTREAMS__VENICE__API_KEY}
+      - JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY=${JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY}

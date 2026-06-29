@@ -1,5 +1,5 @@
 name: setup-rust
-description: Install the Rust toolchain pinned in scribe-api/rust-toolchain.toml plus mold and registry/target caches.
+description: Install the Rust toolchain pinned in june-api/rust-toolchain.toml plus mold and registry/target caches.
 runs:
   using: composite
   steps:
@@ -13,7 +13,7 @@ runs:
       id: toolchain
       shell: bash
       run: |
-        channel=$(grep -E '^channel' scribe-api/rust-toolchain.toml | head -1 | cut -d'"' -f2)
+        channel=$(grep -E '^channel' june-api/rust-toolchain.toml | head -1 | cut -d'"' -f2)
         echo "channel=$channel" >> "$GITHUB_OUTPUT"
 
     - name: Install Rust toolchain
@@ -29,21 +29,21 @@ runs:
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-        key: cargo-registry-${{ runner.os }}-${{ hashFiles('scribe-api/Cargo.lock') }}
+        key: cargo-registry-${{ runner.os }}-${{ hashFiles('june-api/Cargo.lock') }}
         restore-keys: |
           cargo-registry-${{ runner.os }}-
 
     - name: Cache cargo target
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
-        path: scribe-api/target
-        key: cargo-target-${{ runner.os }}-${{ hashFiles('scribe-api/Cargo.lock') }}
+        path: june-api/target
+        key: cargo-target-${{ runner.os }}-${{ hashFiles('june-api/Cargo.lock') }}
         restore-keys: |
           cargo-target-${{ runner.os }}-
 
     - name: Configure mold as default linker
       shell: bash
-      working-directory: scribe-api
+      working-directory: june-api
       run: |
         mkdir -p .cargo
         cat > .cargo/config.toml <<'EOF'

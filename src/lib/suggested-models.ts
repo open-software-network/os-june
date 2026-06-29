@@ -27,7 +27,7 @@ export type SuggestedModel = {
  * - Whisper Large v3: best multilingual accuracy at the same low price.
  *
  * The default text model (DEFAULT_GENERATION_MODEL in the Rust providers
- * module, mirrored by the frontend and scribe-api defaults) is the first
+ * module, mirrored by the frontend and june-api defaults) is the first
  * generation pick here; keep them in sync when this changes.
  *
  * Ids are matched against the live catalog at render time, so a delisted

@@ -150,8 +150,8 @@ final class SystemAudioRecorder {
             try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
         cleanupStaleAggregateDevices(named: "June System Audio")
-        // Also sweep aggregates left behind by pre-rename "OS Scribe" builds.
-        cleanupStaleAggregateDevices(named: "OS Scribe System Audio")
+        // Also sweep aggregates left behind by pre-rename "June" builds.
+        cleanupStaleAggregateDevices(named: "June System Audio")
         if !checkOnly {
             acquirePowerAssertion()
         }

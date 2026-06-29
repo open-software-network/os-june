@@ -149,13 +149,13 @@ trait LiveTranscriptProvider {
 ```
 
 The project toolchain already satisfies the Rust 1.75+ requirement for direct
-`async fn` in traits (`scribe-api` pins Rust 1.95). If this boundary needs to be
+`async fn` in traits (`june-api` pins Rust 1.95). If this boundary needs to be
 used as an object-safe trait, implement it with `async_trait` or an explicit
 boxed future instead of relying on direct `async fn` trait object dispatch.
 
 Provider implementations can differ internally:
 
-- `ChunkedPreview` can use short rolling WAV windows and the existing Scribe API
+- `ChunkedPreview` can use short rolling WAV windows and the existing June API
   transcription path. It is less immediate, but it keeps the private,
   saved-audio-first posture and avoids a proprietary realtime dependency.
 - `StreamingDeltas` can use OpenAI, Google, AWS, Azure, or another provider with
@@ -172,7 +172,7 @@ Ship an experiment that provides useful live visibility without changing the
 final transcript contract.
 
 - Capture 5-10 second rolling windows per source.
-- Send windows to Scribe API using a new preview action or a constrained variant
+- Send windows to June API using a new preview action or a constrained variant
   of the current transcription endpoint.
 - Prompt each chunk with recent preview text to reduce repeated words.
 - Emit provisional `LiveTranscriptEvent` records to the frontend.
@@ -185,7 +185,7 @@ Implemented Phase 1 behavior:
 - The microphone capture callback feeds a bounded preview channel while the WAV
   writer remains the priority.
 - Preview workers transcribe 8 second microphone chunks as `preview=true`
-  Scribe API requests.
+  June API requests.
 - The API validates the model and audio, enforces a server-side preview duration
   cap, authorizes a wallet hold, and settles it with a zero-credit charge before
   returning the preview receipt.
@@ -201,7 +201,7 @@ and gives users confidence during the recording.
 Add a provider capability for true streaming deltas.
 
 - Gate cloud streaming behind explicit provider selection and privacy copy.
-- Keep raw audio inside the current Scribe API trust boundary when possible.
+- Keep raw audio inside the current June API trust boundary when possible.
 - Prefer server-side WebSocket or gRPC bridges so provider keys stay out of the
   desktop app.
 - Normalize every provider into the same frontend event shape.

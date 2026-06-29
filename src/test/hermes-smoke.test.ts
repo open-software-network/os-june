@@ -187,19 +187,19 @@ describe("parseRpcFrame — mirrors HermesGatewayClient.handleMessage", () => {
 });
 
 describe("resolveHermesCommand — mirrors resolve_hermes_command discovery", () => {
-  it("honors SCRIBE_HERMES_COMMAND when it points at an existing file", () => {
+  it("honors JUNE_HERMES_COMMAND when it points at an existing file", () => {
     // Use this very test file as a stand-in for an existing executable path.
     const self = new URL(import.meta.url).pathname;
     const resolved = resolveHermesCommand({
-      env: { SCRIBE_HERMES_COMMAND: self },
+      env: { JUNE_HERMES_COMMAND: self },
       fileExists: (p) => p === self,
     });
     expect(resolved).toEqual({ command: self, source: "env_override" });
   });
 
-  it("trims and ignores a blank SCRIBE_HERMES_COMMAND", () => {
+  it("trims and ignores a blank JUNE_HERMES_COMMAND", () => {
     const resolved = resolveHermesCommand({
-      env: { SCRIBE_HERMES_COMMAND: "   " },
+      env: { JUNE_HERMES_COMMAND: "   " },
       fileExists: () => false,
       candidates: [],
     });

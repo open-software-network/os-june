@@ -63,7 +63,7 @@ describe("folders UI", () => {
     (
       window as unknown as { __sidebarStates?: (show?: boolean) => string }
     ).__sidebarStates?.(false);
-    window.localStorage.removeItem("scribe:pinned-agent-session-ids");
+    window.localStorage.removeItem("june:pinned-agent-session-ids");
     hermesMocks.listHermesSessions.mockResolvedValue([]);
     hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
   });
@@ -270,7 +270,7 @@ describe("folders UI", () => {
         screen.getByRole("region", { name: "Pinned agent sessions" }),
       ).getByText("Fetch os platform issues"),
     ).toBeInTheDocument();
-    expect(window.localStorage.getItem("scribe:pinned-agent-session-ids")).toBe(
+    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe(
       '["session-1"]',
     );
 
@@ -284,7 +284,7 @@ describe("folders UI", () => {
     expect(
       screen.queryByRole("region", { name: "Pinned agent sessions" }),
     ).toBeNull();
-    expect(window.localStorage.getItem("scribe:pinned-agent-session-ids")).toBe(
+    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe(
       "[]",
     );
   });

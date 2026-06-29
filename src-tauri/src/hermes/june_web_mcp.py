@@ -4,7 +4,7 @@
 The June app writes this script into the managed Hermes home and registers it
 as the built-in `june_web` MCP server. The tools call the June app's local
 provider proxy (loopback only), which adds the user's access token and forwards
-to the Scribe API's `/v1/web/search` and `/v1/web/fetch` endpoints. Those run on
+to the June API's `/v1/web/search` and `/v1/web/fetch` endpoints. Those run on
 Venice's privacy-preserving augment endpoints, so the agent never talks to a
 third party directly and the access token never leaves the Rust process.
 

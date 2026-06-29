@@ -100,16 +100,12 @@ describe("Routines Hermes integration", () => {
       schedule: "0 9 * * *",
       name: "Morning brief",
     });
-    expect(
-      mocks.startHermesBridge.mock.invocationCallOrder[0],
-    ).toBeLessThan(
+    expect(mocks.startHermesBridge.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.ensureHermesBridgeGateway.mock.invocationCallOrder[0],
     );
     expect(
       mocks.ensureHermesBridgeGateway.mock.invocationCallOrder[0],
-    ).toBeLessThan(
-      mocks.createHermesBridgeCronJob.mock.invocationCallOrder[0],
-    );
+    ).toBeLessThan(mocks.createHermesBridgeCronJob.mock.invocationCallOrder[0]);
   });
 
   it("ensures the persistent gateway before resuming or rescheduling a routine", async () => {

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   UPDATE_CHECK_INTERVAL_MS,
-  checkForScribeUpdate,
-  installScribeUpdate,
-  prepareScribeUpdate,
-  startPeriodicScribeUpdateChecks,
+  checkForJuneUpdate,
+  installJuneUpdate,
+  prepareJuneUpdate,
+  startPeriodicJuneUpdateChecks,
   type UpdaterUpdate,
 } from "../app/update-decision";
 
@@ -20,11 +20,11 @@ function update(body?: string): UpdaterUpdate {
   };
 }
 
-describe("checkForScribeUpdate", () => {
+describe("checkForJuneUpdate", () => {
   it("prompts with version and release notes when an update is available", async () => {
     const prompt = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => update(" Fixes transcription. "),
         prompt,
@@ -46,7 +46,7 @@ describe("checkForScribeUpdate", () => {
     const prompt = vi.fn();
     const reportNoUpdate = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => null,
         prompt,
@@ -64,7 +64,7 @@ describe("checkForScribeUpdate", () => {
     const prompt = vi.fn();
     const reportNoUpdate = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => null,
         prompt,
@@ -81,7 +81,7 @@ describe("checkForScribeUpdate", () => {
   it("reports no update for a manual check", async () => {
     const reportNoUpdate = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => null,
         prompt: vi.fn(),
@@ -98,7 +98,7 @@ describe("checkForScribeUpdate", () => {
     const prompt = vi.fn();
     const reportFailure = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => {
           throw new Error("signature mismatch");
@@ -115,13 +115,13 @@ describe("checkForScribeUpdate", () => {
   });
 });
 
-describe("startPeriodicScribeUpdateChecks", () => {
+describe("startPeriodicJuneUpdateChecks", () => {
   it("runs periodic checks until stopped", () => {
     vi.useFakeTimers();
     const runUpdateCheck = vi.fn();
 
     try {
-      const stop = startPeriodicScribeUpdateChecks(runUpdateCheck);
+      const stop = startPeriodicJuneUpdateChecks(runUpdateCheck);
 
       vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS - 1);
       expect(runUpdateCheck).not.toHaveBeenCalled();
@@ -139,13 +139,13 @@ describe("startPeriodicScribeUpdateChecks", () => {
   });
 });
 
-describe("installScribeUpdate", () => {
+describe("installJuneUpdate", () => {
   it("reports download progress, installs, and relaunches", async () => {
     const candidate = update("notes");
     const relaunch = vi.fn(async () => undefined);
     const reportProgress = vi.fn();
 
-    await installScribeUpdate({
+    await installJuneUpdate({
       update: candidate,
       relaunch,
       reportProgress,
@@ -167,13 +167,13 @@ describe("installScribeUpdate", () => {
   });
 });
 
-describe("prepareScribeUpdate", () => {
+describe("prepareJuneUpdate", () => {
   it("reports download progress and marks the update ready without relaunching", async () => {
     const candidate = update(" Ready after relaunch. ");
     const reportProgress = vi.fn();
     const reportReady = vi.fn();
 
-    await prepareScribeUpdate({
+    await prepareJuneUpdate({
       update: candidate,
       reportProgress,
       reportReady,

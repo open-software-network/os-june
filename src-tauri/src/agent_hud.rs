@@ -6,10 +6,10 @@ use tauri::{
 
 const AGENT_HUD_WINDOW_LABEL: &str = "agent-hud";
 const MAIN_WINDOW_LABEL: &str = "main";
-const AGENT_OPEN_EVENT: &str = "scribe:agent:open";
+const AGENT_OPEN_EVENT: &str = "june:agent:open";
 // Fired at the webview when the panel swallows a right- or ctrl-click so the
 // in-DOM menu can open. Mirrored by the listener in src/agent-hud.ts.
-const AGENT_HUD_CONTEXT_MENU_EVENT: &str = "scribe:agent-hud:context-menu";
+const AGENT_HUD_CONTEXT_MENU_EVENT: &str = "june:agent-hud:context-menu";
 const AGENT_HUD_WINDOW_WIDTH: f64 = 304.0;
 const AGENT_HUD_COLLAPSED_WINDOW_HEIGHT: f64 = 58.0;
 

@@ -26,7 +26,7 @@ research, drafts, and routines.
 
 The product is designed around a simple privacy contract: your app state,
 recordings, transcripts, files, sessions, and agent memory live on your machine
-by default. When June needs model inference, requests go through Scribe API, a
+by default. When June needs model inference, requests go through June API, a
 TEE-attested backend that keeps provider keys server-side and routes private
 model calls through Venice by default.
 
@@ -39,7 +39,7 @@ model calls through Venice by default.
 | Dictation          | Records a push-to-talk or toggle shortcut, cleans up the transcript, pastes it into the previously focused app, and restores the clipboard when possible. |
 | Agent sessions     | Runs a local Hermes-based agent runtime for research, drafts, file work, and routines with approval gates before sensitive actions.                       |
 | Projects           | Groups meeting notes and agent sessions around the work they belong to.                                                                                   |
-| Model choice       | Lets users choose transcription, dictation cleanup, title, and note-generation models from the Scribe API model catalog.                                  |
+| Model choice       | Lets users choose transcription, dictation cleanup, title, and note-generation models from the June API model catalog.                                    |
 
 ## Repository overview
 
@@ -48,14 +48,14 @@ June ships the full desktop product and the backend that powers metered AI calls
 ```text
 src/          React and TypeScript frontend
 src-tauri/   Tauri v2 Rust desktop backend and native helpers
-scribe-api/  Confidential backend for transcription, generation, models, and billing
+june-api/  Confidential backend for transcription, generation, models, and billing
 docs/        Product, release, backend, and architecture notes
 specs/       Feature specs, plans, contracts, and validation notes
 ```
 
 The desktop app never stores OpenAI, Venice, or OS Accounts App API keys. Those
-belong only in Scribe API. The client authenticates the signed-in user through
-OS Accounts, sends requests to Scribe API, and Scribe API handles provider calls
+belong only in June API. The client authenticates the signed-in user through
+OS Accounts, sends requests to June API, and June API handles provider calls
 and OS Accounts metering.
 
 ## Platform support
@@ -75,15 +75,15 @@ the desktop app:
 
 ```sh
 cp .env.example .env
-cp scribe-api/.env.example scribe-api/.env
-# Edit scribe-api/.env and set SCRIBE__UPSTREAMS__VENICE__API_KEY.
+cp june-api/.env.example june-api/.env
+# Edit june-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```
 
-`pnpm tauri:dev` starts Vite and a local Scribe API when their ports are free.
+`pnpm tauri:dev` starts Vite and a local June API when their ports are free.
 If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the script
-reuses the existing service. Set `VITE_PORT` or `SCRIBE_API_PORT` to choose a
+reuses the existing service. Set `VITE_PORT` or `JUNE_API_PORT` to choose a
 different port.
 
 Replay first-run onboarding without wiping all app data:
@@ -99,78 +99,78 @@ The example env files default to open source local mode:
 - no OS Accounts login
 - no billing or credit charges
 - no provider keys in the desktop env
-- Scribe API accepts the local bearer token shared by `.env` and
-  `scribe-api/.env`
+- June API accepts the local bearer token shared by `.env` and
+  `june-api/.env`
 
-Provider keys belong only in `scribe-api/.env`. For the default local setup,
-set `SCRIBE__UPSTREAMS__VENICE__API_KEY` to a Venice API key. Add
-`SCRIBE__UPSTREAMS__OPENAI__API_KEY` only if you want to use OpenAI
+Provider keys belong only in `june-api/.env`. For the default local setup,
+set `JUNE__UPSTREAMS__VENICE__API_KEY` to a Venice API key. Add
+`JUNE__UPSTREAMS__OPENAI__API_KEY` only if you want to use OpenAI
 transcription models.
 
 Copy the env files:
 
 ```sh
 cp .env.example .env
-cp scribe-api/.env.example scribe-api/.env
+cp june-api/.env.example june-api/.env
 ```
 
 Use the root `.env` for desktop runtime configuration:
 
-- `SCRIBE_API_URL`
-- `OS_SCRIBE_LOCAL_DEV`
-- `OS_SCRIBE_LOCAL_DEV_BEARER_TOKEN`
-- `OS_SCRIBE_LOCAL_DEV_USER_ID`
+- `JUNE_API_URL`
+- `OS_JUNE_LOCAL_DEV`
+- `OS_JUNE_LOCAL_DEV_BEARER_TOKEN`
+- `OS_JUNE_LOCAL_DEV_USER_ID`
 - initial model defaults such as `VENICE_TRANSCRIPTION_MODEL` and
   `VENICE_GENERATION_MODEL`
 - optional `OS_NOTETAKER_TRANSCRIPTION_LANGUAGE`
 
-Use `scribe-api/.env` for server-side secrets and local auth:
+Use `june-api/.env` for server-side secrets and local auth:
 
-- `SCRIBE__LOCAL_DEV__ENABLED`
-- `SCRIBE__LOCAL_DEV__BEARER_TOKEN`
-- `SCRIBE__UPSTREAMS__VENICE__API_KEY`
-- `SCRIBE__UPSTREAMS__OPENAI__API_KEY`
-- optional `SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` for filing in-app
+- `JUNE__LOCAL_DEV__ENABLED`
+- `JUNE__LOCAL_DEV__BEARER_TOKEN`
+- `JUNE__UPSTREAMS__VENICE__API_KEY`
+- `JUNE__UPSTREAMS__OPENAI__API_KEY`
+- optional `JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` for filing in-app
   issue reports into the fixed June os-platform project
-- optional provider base URLs such as `SCRIBE__UPSTREAMS__VENICE__BASE_URL`
+- optional provider base URLs such as `JUNE__UPSTREAMS__VENICE__BASE_URL`
 
 The local bearer token must match in both env files. It is not an OS Accounts
 token. It is just the shared secret used by the local desktop app and local
-Scribe API. The Scribe API env example binds local mode to `127.0.0.1`; if you
+June API. The June API env example binds local mode to `127.0.0.1`; if you
 bind it to a network interface, replace the default local bearer token in both
 env files first. If you change the local dev user id, keep
-`OS_SCRIBE_LOCAL_DEV_USER_ID` in the root `.env` aligned with
-`SCRIBE__LOCAL_DEV__USER_ID` in `scribe-api/.env`.
+`OS_JUNE_LOCAL_DEV_USER_ID` in the root `.env` aligned with
+`JUNE__LOCAL_DEV__USER_ID` in `june-api/.env`.
 
 Do not put provider keys or OS Accounts App API keys in the root desktop `.env`.
 
-To expose your own models, edit [scribe-api/config.toml](scribe-api/config.toml)
+To expose your own models, edit [june-api/config.toml](june-api/config.toml)
 and add or change `[pricing."<model-id>"]` entries. Each priced model needs a
 provider, model type, display name, unit, and positive pricing rate. Then set
-the matching provider key and optional base URL in `scribe-api/.env`, and update
+the matching provider key and optional base URL in `june-api/.env`, and update
 the root `.env` default model ids if you want June to select those models on
 first launch.
 
 To run with OS Accounts and billing instead of local mode, set these flags off:
 
 ```sh
-OS_SCRIBE_LOCAL_DEV=0
-SCRIBE__LOCAL_DEV__ENABLED=false
+OS_JUNE_LOCAL_DEV=0
+JUNE__LOCAL_DEV__ENABLED=false
 ```
 
 Then fill the connected deployment settings:
 
-- `SCRIBE__OS_ACCOUNTS__API_URL`
-- `SCRIBE__OS_ACCOUNTS__APP_API_KEY`
+- `JUNE__OS_ACCOUNTS__API_URL`
+- `JUNE__OS_ACCOUNTS__APP_API_KEY`
 - `OS_ACCOUNTS_URL`
 - `OS_ACCOUNTS_API_URL`
 - `OS_ACCOUNTS_CLIENT_ID`
 - provider keys for every provider exposed in the pricing table
 
-You can also run Scribe API directly:
+You can also run June API directly:
 
 ```sh
-(cd scribe-api && cargo run -- serve)
+(cd june-api && cargo run -- serve)
 ```
 
 Restart `pnpm tauri:dev` after changing the root `.env`. The running Tauri
@@ -202,7 +202,7 @@ agent can use these skills but cannot modify them.
 
 ## Privacy and verification
 
-The production `scribe-api` backend runs in an Intel TDX confidential VM on
+The production `june-api` backend runs in an Intel TDX confidential VM on
 Phala Cloud. The running image is attested, so Phala and Open Software cannot
 quietly change the backend that handles audio, transcripts, prompts, and logs
 without that change appearing in the verification chain.
@@ -211,9 +211,9 @@ The chain has three public anchors:
 
 1. **Source:** this repository. The production image records the source commit
    in its OCI `org.opencontainers.image.revision` label.
-2. **Image:** [`build-scribe-api.yml`](.github/workflows/build-scribe-api.yml)
+2. **Image:** [`build-june-api.yml`](.github/workflows/build-june-api.yml)
    builds and publishes
-   [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-june/pkgs/container/scribe-api).
+   [`ghcr.io/open-software-network/june-api`](https://github.com/open-software-network/os-june/pkgs/container/june-api).
    Deploys pin immutable per-commit tags, and each deployed digest is recorded
    as a signed `deploy/<env>/<sha>` git tag.
 3. **Attestation:** the
@@ -221,7 +221,7 @@ The chain has three public anchors:
    proves the expected image is running inside an Intel TDX confidential VM.
 
 Every deployment also serves a self-contained walkthrough at
-[`/verify`](https://scribe-api.opensoftware.co/verify). It reports the exact
+[`/verify`](https://june-api.opensoftware.co/verify). It reports the exact
 commit and image running in the TEE and explains how to check each link.
 
 Everything leaving the TEE for model inference goes through Venice. By default,
@@ -248,7 +248,7 @@ The macOS bundle includes `NSMicrophoneUsageDescription` and
 If local permission state gets stuck during development, reset it with:
 
 ```sh
-tccutil reset Microphone co.opensoftware.scribe
+tccutil reset Microphone co.opensoftware.june
 ```
 
 ## Development commands
@@ -257,7 +257,7 @@ tccutil reset Microphone co.opensoftware.scribe
 pnpm lint
 pnpm test
 pnpm test:rust
-pnpm test:scribe-api
+pnpm test:june-api
 pnpm build
 pnpm tauri:build
 ```

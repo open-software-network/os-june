@@ -8,7 +8,7 @@ import {
 } from "../components/note-editor/NoteFailureBanner";
 
 describe("classifyFailure", () => {
-  it("treats Scribe's low-balance message as a balance issue", () => {
+  it("treats June's low-balance message as a balance issue", () => {
     expect(
       classifyFailure("Your balance is too low. Upgrade to continue."),
     ).toBe("balance_low");

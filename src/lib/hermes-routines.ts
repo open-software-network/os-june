@@ -216,9 +216,7 @@ export async function updateRoutine(
     (key) => !BRIDGE_ONLY_SAFE_UPDATE_KEYS.has(key),
   );
   const run = touchesRunAffectingField ? withScheduler : withBridge;
-  const record = await run(() =>
-    updateHermesBridgeCronJob(jobId, payload),
-  );
+  const record = await run(() => updateHermesBridgeCronJob(jobId, payload));
   return routineFromRecord(record);
 }
 

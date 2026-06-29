@@ -20,7 +20,7 @@ trap cleanup EXIT INT TERM
 
 cd "$ROOT_DIR"
 
-./scripts/run-scribe-api.sh &
+./scripts/run-june-api.sh &
 API_PID="$!"
 
 existing_frontend_pids="$(lsof -tiTCP:"$FRONTEND_PORT" -sTCP:LISTEN 2>/dev/null || true)"

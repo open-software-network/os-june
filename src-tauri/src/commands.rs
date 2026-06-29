@@ -51,7 +51,7 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
 #[tauri::command]
@@ -425,7 +425,7 @@ pub async fn save_agent_hermes_session(
 pub async fn suggest_agent_session_title(
     request: SuggestAgentSessionTitleRequest,
 ) -> Result<SuggestAgentSessionTitleResponse, AppError> {
-    let title = crate::scribe_api::suggest_agent_session_title(&request.prompt).await?;
+    let title = crate::june_api::suggest_agent_session_title(&request.prompt).await?;
     Ok(SuggestAgentSessionTitleResponse { title })
 }
 
@@ -435,7 +435,7 @@ pub async fn submit_issue_report(
     request: SubmitIssueReportRequest,
 ) -> Result<SubmitIssueReportResponse, AppError> {
     let app_version = app.package_info().version.to_string();
-    crate::scribe_api::submit_issue_report(&request, &app_version).await
+    crate::june_api::submit_issue_report(&request, &app_version).await
 }
 
 #[tauri::command]
@@ -443,7 +443,7 @@ pub async fn explain_agent_approval(
     request: ExplainAgentApprovalRequest,
 ) -> Result<ExplainAgentApprovalResponse, AppError> {
     let explanation =
-        crate::scribe_api::explain_agent_approval(&request.description, request.command.as_deref())
+        crate::june_api::explain_agent_approval(&request.description, request.command.as_deref())
             .await?;
     Ok(ExplainAgentApprovalResponse { explanation })
 }
@@ -562,13 +562,13 @@ pub async fn check_recording_source_readiness(
         .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))
 }
 
-/// Opens the scribe-api `/verify` page (enclave attestation, routing,
+/// Opens the june-api `/verify` page (enclave attestation, routing,
 /// retention) in the default browser. Must route through Rust: the webview
 /// installs no new-window handler, so `target="_blank"` anchors are silently
 /// dropped — same reason the accounts portal links go through a command.
 #[tauri::command]
-pub fn scribe_open_verify_page() -> Result<(), AppError> {
-    crate::os_accounts::open_in_browser(&crate::scribe_api::verify_url())
+pub fn june_open_verify_page() -> Result<(), AppError> {
+    crate::os_accounts::open_in_browser(&crate::june_api::verify_url())
 }
 
 #[tauri::command]

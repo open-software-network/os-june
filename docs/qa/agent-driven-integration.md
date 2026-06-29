@@ -11,7 +11,7 @@ have proven useful in repeated agent runs.
 This gives June three QA layers:
 
 1. Deterministic CI for contracts and logic: `pnpm test`, `pnpm test:rust`,
-   `pnpm test:scribe-api`, and targeted Rust or Vitest suites.
+   `pnpm test:june-api`, and targeted Rust or Vitest suites.
 2. Agent-driven live QA for product workflows: `$agent-e2e-qa` starts the app,
    chooses Browser, Chrome, or Computer Use, records and compresses the
    walkthrough as video when possible, then reports pass/fail evidence.
@@ -51,8 +51,8 @@ screenshots or logs, and clear gaps for anything that was blocked.
 ## Repo-specific runbook
 
 Default local data mode should avoid live OS Accounts unless the flow under test
-is specifically account or billing QA. `.env.example` and `scribe-api/.env.example`
-support local development with `OS_SCRIBE_LOCAL_DEV=1` and `local-dev-token`.
+is specifically account or billing QA. `.env.example` and `june-api/.env.example`
+support local development with `OS_JUNE_LOCAL_DEV=1` and `local-dev-token`.
 
 Use these entry points:
 
@@ -60,7 +60,7 @@ Use these entry points:
 - Native Tauri: `pnpm tauri:dev`
 - First-run onboarding replay: `pnpm tauri:dev --replay-onboarding`
 
-`pnpm tauri:dev` starts or reuses Vite at `127.0.0.1:1421` and the local Scribe
+`pnpm tauri:dev` starts or reuses Vite at `127.0.0.1:1421` and the local June
 API at `127.0.0.1:8080`. Before reusing an occupied port, verify that the
 process belongs to this repo.
 

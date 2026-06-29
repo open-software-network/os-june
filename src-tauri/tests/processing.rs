@@ -1,4 +1,4 @@
-use os_scribe_lib::domain::{
+use os_june_lib::domain::{
     processing::manual_notes_for_generation,
     types::{NoteDto, ProcessingStatus},
 };
@@ -83,8 +83,8 @@ fn manual_notes_for_generation_uses_preface_when_generated_note_was_appended_bel
 
 #[tokio::test]
 async fn generation_rejects_empty_transcript() {
-    let err = os_scribe_lib::scribe_api::generate_note_from_transcript(
-        os_scribe_lib::scribe_api::GenerationRequest {
+    let err = os_june_lib::june_api::generate_note_from_transcript(
+        os_june_lib::june_api::GenerationRequest {
             provider: "venice".to_string(),
             operation_id: None,
             title: "Empty".to_string(),

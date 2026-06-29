@@ -55,8 +55,8 @@ confirmation at action time before performing that side effect.
    the worktree that skill created.
 4. Ensure local development config exists:
    - `.env` should usually match `.env.example`.
-   - `scribe-api/.env` should usually match `scribe-api/.env.example`.
-   - Local mode uses `OS_SCRIBE_LOCAL_DEV=1` and `local-dev-token` so QA does
+   - `june-api/.env` should usually match `june-api/.env.example`.
+   - Local mode uses `OS_JUNE_LOCAL_DEV=1` and `local-dev-token` so QA does
      not require OS Accounts unless the specific flow is account QA.
 5. Choose a dev command:
    - Web only: `pnpm dev`
@@ -129,8 +129,8 @@ captured.
     --upload --confirm-public --comment-pr <pr-number>
   ```
   The helper reads `OS_PLATFORM_API_KEY` or
-  `SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY`, falling back to
-  `scribe-api/.env` when present, and uploads with `is_public=true` and
+  `JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY`, falling back to
+  `june-api/.env` when present, and uploads with `is_public=true` and
   `purpose=attachment`.
 - Do not commit binary recordings unless the user explicitly asks. Prefer
   attaching or sharing the artifact path outside git.

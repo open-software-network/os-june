@@ -46,11 +46,11 @@ type HudEntry = {
   session?: HermesSessionInfo;
 };
 
-const EXPANDED_KEY = "scribe:agent-hud:expanded";
+const EXPANDED_KEY = "june:agent-hud:expanded";
 // Emitted by the native panel (agent_hud.rs) when it swallows a right- or
 // ctrl-click so the WKWebView never raises its own context menu. Keep this in
 // sync with AGENT_HUD_CONTEXT_MENU_EVENT in agent_hud.rs.
-const AGENT_HUD_CONTEXT_MENU_EVENT = "scribe:agent-hud:context-menu";
+const AGENT_HUD_CONTEXT_MENU_EVENT = "june:agent-hud:context-menu";
 const MAX_VISIBLE_ROWS = 3;
 // Keep a finished session on screen long enough to actually read the "Done"
 // row before it fades out, rather than blinking away the instant it lands.

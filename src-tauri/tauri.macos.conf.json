@@ -1,6 +1,6 @@
 {
   "build": {
-    "runner": "../scripts/cargo-os-scribe-runner.sh"
+    "runner": "../scripts/cargo-os-june-runner.sh"
   },
   "bundle": {
     "targets": ["app", "dmg"],

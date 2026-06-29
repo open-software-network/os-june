@@ -124,19 +124,19 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       artifacts: [
         {
           name: "revenue-chart.png",
-          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/revenue-chart.png",
+          path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/revenue-chart.png",
           rootLabel: "Workspace",
           size: 31_000,
         },
         {
           name: "summary.md",
-          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/summary.md",
+          path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/summary.md",
           rootLabel: "Workspace",
           size: 4_200,
         },
         {
           name: "build-log.txt",
-          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/2026-06-09/run-4821/artifacts/logs/build-log.txt",
+          path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/2026-06-09/run-4821/artifacts/logs/build-log.txt",
           rootLabel: "Home",
           size: 1_280_000,
         },

@@ -1,4 +1,4 @@
-use os_scribe_lib::domain::types::{RecordingSource, RecordingSourceMode};
+use os_june_lib::domain::types::{RecordingSource, RecordingSourceMode};
 
 #[test]
 fn dual_source_mode_requires_microphone_and_system_sources() {

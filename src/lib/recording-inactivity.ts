@@ -27,9 +27,7 @@ export function nextRecordingInactivityDecision(
   }
 
   const sameSession = tracker.sessionId === status.sessionId;
-  const baseTracker = sameSession
-    ? tracker
-    : { sessionId: status.sessionId };
+  const baseTracker = sameSession ? tracker : { sessionId: status.sessionId };
 
   if (status.elapsedMs < RECORDING_INACTIVITY_MIN_ELAPSED_MS) {
     return {

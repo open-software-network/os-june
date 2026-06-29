@@ -29,7 +29,7 @@ import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
 import { isMacLikePlatform } from "../../lib/platform";
 import {
-  isInvalidScribeResponseMessage,
+  isInvalidJuneResponseMessage,
   NoteFailureBanner,
   userFacingFailureMessage,
 } from "./NoteFailureBanner";
@@ -1113,7 +1113,7 @@ function TranscriptTurn({
 }
 
 function sourceTurnFailureMessage(message?: string) {
-  if (message && isInvalidScribeResponseMessage(message)) {
+  if (message && isInvalidJuneResponseMessage(message)) {
     return "Audio for this part could not be transcribed.";
   }
   return userFacingFailureMessage(message) ?? "";

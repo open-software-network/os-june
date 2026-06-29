@@ -37,7 +37,7 @@ be in place before making `open-software-network/os-june` public.
 
 - Secret-oriented scans did not find committed `.env` files, private keys,
   signing certificates, or generated dependency directories.
-- `cargo audit --file scribe-api/Cargo.lock` is clean.
+- `cargo audit --file june-api/Cargo.lock` is clean.
 - `cargo audit --file src-tauri/Cargo.lock` reports no vulnerabilities after
   the desktop crate was moved off SQLx's umbrella package.
 - The desktop lockfile still includes Linux GTK warnings through Tauri's Linux

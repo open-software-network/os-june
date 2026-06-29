@@ -113,7 +113,7 @@ vi.mock("../lib/tauri", () => ({
   // these tests focused on the meetings surfaces.
   hermesBridgeStatus: vi.fn(async () => ({ running: false })),
   listAgentTasks: vi.fn(async () => ({ items: [] })),
-  scribeVerifyUrl: vi.fn(async () => ""),
+  juneVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: vi.fn(async () => ({
     settings: { generationModel: "" },
   })),
@@ -752,7 +752,7 @@ describe("notes recording reliability", () => {
           },
     );
     mocks.retryProcessing.mockRejectedValue({
-      code: "scribe_api_response_invalid",
+      code: "june_api_response_invalid",
       message: "The processing service returned an invalid response.",
     });
 

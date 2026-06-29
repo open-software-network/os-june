@@ -649,11 +649,11 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
-/** Opens the scribe-api /verify page (attestation, routing, retention) in
+/** Opens the june-api /verify page (attestation, routing, retention) in
  * the default browser. Routed through Rust because the webview drops
  * target="_blank" anchors. */
-export async function scribeOpenVerifyPage() {
-  return invoke<void>("scribe_open_verify_page");
+export async function juneOpenVerifyPage() {
+  return invoke<void>("june_open_verify_page");
 }
 
 export async function createNote(folderId?: string) {

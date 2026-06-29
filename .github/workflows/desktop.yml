@@ -202,7 +202,7 @@ jobs:
       - name: Verify Windows bundle
         shell: pwsh
         run: |
-          $exe = Get-Item "src-tauri/target/debug/os-scribe.exe" -ErrorAction Stop
+          $exe = Get-Item "src-tauri/target/debug/os-june.exe" -ErrorAction Stop
           if ($exe.Length -le 0) {
             throw "Windows app executable is empty."
           }

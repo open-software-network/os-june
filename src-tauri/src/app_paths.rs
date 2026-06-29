@@ -4,7 +4,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
-const USE_PROD_DATA_DIR_ENV: &str = "OS_SCRIBE_USE_PROD_DATA_DIR";
+const USE_PROD_DATA_DIR_ENV: &str = "OS_JUNE_USE_PROD_DATA_DIR";
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn release_builds_use_the_configured_data_dir() {
-        let data_dir = PathBuf::from("/tmp/co.opensoftware.scribe");
+        let data_dir = PathBuf::from("/tmp/co.opensoftware.june");
 
         assert_eq!(
             app_data_dir_for_build(data_dir.clone(), false, false),
@@ -149,17 +149,17 @@ mod tests {
 
     #[test]
     fn debug_builds_use_a_separate_dev_data_dir_by_default() {
-        let data_dir = PathBuf::from("/tmp/co.opensoftware.scribe");
+        let data_dir = PathBuf::from("/tmp/co.opensoftware.june");
 
         assert_eq!(
             app_data_dir_for_build(data_dir, true, false),
-            PathBuf::from("/tmp/co.opensoftware.scribe-dev")
+            PathBuf::from("/tmp/co.opensoftware.june-dev")
         );
     }
 
     #[test]
     fn debug_builds_can_opt_into_the_configured_data_dir() {
-        let data_dir = PathBuf::from("/tmp/co.opensoftware.scribe");
+        let data_dir = PathBuf::from("/tmp/co.opensoftware.june");
 
         assert_eq!(
             app_data_dir_for_build(data_dir.clone(), true, true),

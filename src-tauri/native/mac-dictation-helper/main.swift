@@ -877,7 +877,7 @@ final class FocusTargetController {
 
     private var lastExternalApp: NSRunningApplication?
     private let ignoredBundleIdentifiers: Set<String> = [
-        "co.opensoftware.scribe.dictation-helper",
+        "co.opensoftware.june.dictation-helper",
     ]
 
     private init() {}
@@ -958,7 +958,7 @@ enum SelectedDeviceRecorderError: LocalizedError {
 final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
-    private let queue = DispatchQueue(label: "co.opensoftware.scribe.dictation-recorder")
+    private let queue = DispatchQueue(label: "co.opensoftware.june.dictation-recorder")
     private let writer: AVAssetWriter
     private let writerInput: AVAssetWriterInput
     private var didStartWriting = false
@@ -1217,7 +1217,7 @@ enum AutoDetectInputMeterError: LocalizedError {
 final class AutoDetectInputMeter: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
-    private let queue = DispatchQueue(label: "co.opensoftware.scribe.dictation-auto-meter")
+    private let queue = DispatchQueue(label: "co.opensoftware.june.dictation-auto-meter")
     private let levelHandler: (Float) -> Void
     private var pendingLevel: Float = 0
     private var lastLevelEmit: TimeInterval = 0
@@ -1289,7 +1289,7 @@ final class AutoDetectInputMeter: NSObject, AVCaptureAudioDataOutputSampleBuffer
 }
 
 func autoDetectRawMeteringEnabled() -> Bool {
-    guard let rawValue = ProcessInfo.processInfo.environment["OS_SCRIBE_DICTATION_RAW_METER"] else {
+    guard let rawValue = ProcessInfo.processInfo.environment["OS_JUNE_DICTATION_RAW_METER"] else {
         return true
     }
     switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
@@ -1682,7 +1682,7 @@ final class DictationController {
 
     private func temporaryRecordingURL() -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("os-scribe-dictation-\(UUID().uuidString)")
+            .appendingPathComponent("os-june-dictation-\(UUID().uuidString)")
             .appendingPathExtension("m4a")
     }
 

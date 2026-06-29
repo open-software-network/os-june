@@ -105,7 +105,7 @@ Two phases, gated independently:
 
 Environment variables:
 
-- `SCRIBE_HERMES_COMMAND`: absolute path to a `hermes` binary. Highest priority
+- `JUNE_HERMES_COMMAND`: absolute path to a `hermes` binary. Highest priority
   (mirrors the Rust override). When unset, the script probes the same
   user-local venv locations the bridge falls back to.
 - `HERMES_SMOKE_MODEL=1`: also run the model-costing `prompt.submit` phase.
@@ -125,7 +125,7 @@ live in `src/lib/hermes-smoke/helpers.ts` and are unit-tested in
 `src/test/hermes-smoke.test.ts`, so `pnpm test` stays green with no runtime.
 
 On a Hermes pin bump (feature 20 checklist), run `pnpm test:hermes-smoke`
-against the new bundled runtime (point `SCRIBE_HERMES_COMMAND` at the extracted
+against the new bundled runtime (point `JUNE_HERMES_COMMAND` at the extracted
 binary, or run it inside the build that bundles it) BEFORE flipping any matrix
 entry to `supported`. The Node version must support `--experimental-strip-types`
 (Node 22.6+; CI pins Node 22).

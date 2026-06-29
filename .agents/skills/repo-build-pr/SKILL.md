@@ -70,14 +70,14 @@ pnpm test
 pnpm build
 pnpm test:rust
 cargo test --manifest-path src-tauri/Cargo.toml --locked
-cargo +1.95.0-aarch64-apple-darwin test --manifest-path scribe-api/Cargo.toml --all-targets --all-features --locked
+cargo +1.95.0-aarch64-apple-darwin test --manifest-path june-api/Cargo.toml --all-targets --all-features --locked
 ```
 
 Choose checks based on touched files. For example:
 
 - Frontend-only change: `pnpm run lint` plus the relevant frontend test or `pnpm test`.
 - Tauri Rust change: targeted `cargo test --manifest-path src-tauri/Cargo.toml --locked`, then broader checks if shared behavior changed.
-- Scribe API change: the pinned Rust toolchain command above.
+- June API change: the pinned Rust toolchain command above.
 - Docs or skill-only change: validate the skill structure and skip expensive app builds unless related files require them.
 
 If a check cannot run because of local tooling, missing services, or credentials, say exactly what blocked it and what evidence still supports the PR.

@@ -91,7 +91,7 @@ const mocks = vi.hoisted(() => ({
   preloadRecordingSounds: vi.fn(),
   providerModelSettings: vi.fn(),
   startHermesBridge: vi.fn(),
-  startPeriodicScribeUpdateChecks: vi.fn(),
+  startPeriodicJuneUpdateChecks: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
   gatewayRequest: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
@@ -137,7 +137,7 @@ vi.mock("../app/update-decision", async () => {
   );
   return {
     ...actual,
-    startPeriodicScribeUpdateChecks: mocks.startPeriodicScribeUpdateChecks,
+    startPeriodicJuneUpdateChecks: mocks.startPeriodicJuneUpdateChecks,
   };
 });
 
@@ -180,7 +180,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   listAgentTasks: mocks.listAgentTasks,
-  scribeVerifyUrl: vi.fn(async () => ""),
+  juneVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: mocks.providerModelSettings,
   listVeniceModels: mocks.listVeniceModels,
   startHermesBridge: mocks.startHermesBridge,
@@ -279,10 +279,12 @@ describe("App shortcuts", () => {
     mocks.startHermesBridge.mockResolvedValue({
       running: false,
     });
-    mocks.startPeriodicScribeUpdateChecks.mockReturnValue(vi.fn());
-    mocks.suggestAgentSessionTitle.mockImplementation(async (prompt: string) => ({
-      title: prompt,
-    }));
+    mocks.startPeriodicJuneUpdateChecks.mockReturnValue(vi.fn());
+    mocks.suggestAgentSessionTitle.mockImplementation(
+      async (prompt: string) => ({
+        title: prompt,
+      }),
+    );
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
@@ -320,9 +322,9 @@ describe("App shortcuts", () => {
 
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
       await waitFor(() =>
-        expect(mocks.startPeriodicScribeUpdateChecks).toHaveBeenCalledOnce(),
+        expect(mocks.startPeriodicJuneUpdateChecks).toHaveBeenCalledOnce(),
       );
-      expect(mocks.startPeriodicScribeUpdateChecks.mock.calls[0]?.[0]).toEqual(
+      expect(mocks.startPeriodicJuneUpdateChecks.mock.calls[0]?.[0]).toEqual(
         expect.any(Function),
       );
     } finally {

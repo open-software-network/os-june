@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 DEFAULT_MAX_BYTES = 300 * 1024 * 1024
 DEFAULT_API_BASE_URL = "https://app.opensoftware.co/api"
-ENV_KEY_NAMES = ("OS_PLATFORM_API_KEY", "SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY")
+ENV_KEY_NAMES = ("OS_PLATFORM_API_KEY", "JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY")
 
 
 def parse_size(raw: str) -> int:
@@ -220,7 +220,7 @@ def load_os_platform_key(root: pathlib.Path) -> str | None:
         if value:
             return value.strip()
 
-    env_file = root / "scribe-api" / ".env"
+    env_file = root / "june-api" / ".env"
     if not env_file.exists():
         return None
 

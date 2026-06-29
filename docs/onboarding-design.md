@@ -181,7 +181,7 @@ desktop app.
 Progress bar: **Sign in -> Permissions -> Try it**
 
 1. **Sign-in stays inside onboarding.** The first step sends the user through
-   OS Accounts and returns via the `osscribe://` deep link. After the account
+   OS Accounts and returns via the `osjune://` deep link. After the account
    snapshot refreshes, the wizard continues without asking for card details.
 2. **Permissions come before practice.** Microphone, accessibility, and
    platform-specific setup still happen before the hands-on step so the first

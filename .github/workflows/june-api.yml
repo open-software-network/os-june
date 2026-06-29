@@ -1,0 +1,61 @@
+name: june-api
+
+on:
+  pull_request:
+    paths:
+      - "june-api/**"
+      - ".github/workflows/june-api.yml"
+      - ".github/actions/setup-rust/**"
+  push:
+    branches: [main]
+    paths:
+      - "june-api/**"
+      - ".github/workflows/june-api.yml"
+      - ".github/actions/setup-rust/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: june-api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+      - name: cargo fmt
+        working-directory: june-api
+        run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+      - name: cargo clippy
+        working-directory: june-api
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+      - name: cargo test
+        working-directory: june-api
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo test --all-targets --all-features --locked
+
+# The coverage rerun of this suite lives in coverage.yml (manual-only): it
+# rebuilt and reran everything `test` already ran, gated nothing
+# (continue-on-error), and produced an artifact nothing downloads.

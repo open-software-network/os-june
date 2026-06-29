@@ -44,7 +44,7 @@ describe("issue report prompt display", () => {
     expect(feature).toContain("Issue 1: <short title>");
 
     // Every report opens with the Issue 1 heading, so even single-issue
-    // reports carry a model-written title scribe-api can lift verbatim.
+    // reports carry a model-written title june-api can lift verbatim.
     for (const wrapped of [bug, feedback, feature]) {
       expect(wrapped).toContain("Start with a numbered section titled exactly");
     }

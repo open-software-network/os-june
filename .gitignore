@@ -6,7 +6,7 @@ build/
 !.env.example
 
 target/
-scribe-api/target/
+june-api/target/
 debug/
 release/
 .tauri-helper/

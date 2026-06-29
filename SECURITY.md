@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes target `main` and the latest shipped June desktop and Scribe API
+Security fixes target `main` and the latest shipped June desktop and June API
 release. Older releases may receive fixes when the impact warrants it.
 
 ## Reporting a vulnerability
@@ -23,7 +23,7 @@ In scope:
 
 - June desktop app authentication, local storage, updater, permissions, and
   signed release flow.
-- Scribe API authentication, model proxying, billing authorization, request
+- June API authentication, model proxying, billing authorization, request
   validation, logging, and deployment configuration.
 - GitHub Actions, release automation, container publishing, and signing
   material handling.

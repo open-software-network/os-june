@@ -169,7 +169,7 @@ describe("meeting detection HUD", () => {
 
     await Promise.resolve();
     expect(mocks.emit).toHaveBeenCalledWith(
-      "scribe://meeting-start-transcription",
+      "june://meeting-start-transcription",
     );
     // A bounded advance, not runAllTimersAsync: jsdom drives rAF off the
     // faked setTimeout while the alpha ramp measures real time, so running

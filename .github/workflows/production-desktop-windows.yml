@@ -84,7 +84,7 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          PRODUCTION_SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
+          PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         run: |
           $missing = 0
           $required = @(
@@ -96,7 +96,7 @@ jobs:
             "PRODUCTION_OS_ACCOUNTS_URL",
             "PRODUCTION_OS_ACCOUNTS_API_URL",
             "PRODUCTION_OS_ACCOUNTS_CLIENT_ID",
-            "PRODUCTION_SCRIBE_API_URL"
+            "PRODUCTION_JUNE_API_URL"
           )
 
           foreach ($name in $required) {
@@ -201,7 +201,7 @@ jobs:
           OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
+          JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -211,7 +211,7 @@ jobs:
       - name: Verify Windows signatures and payload
         shell: pwsh
         run: |
-          $exe = Get-Item "src-tauri/target/release/os-scribe.exe" -ErrorAction Stop
+          $exe = Get-Item "src-tauri/target/release/os-june.exe" -ErrorAction Stop
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           if ($null -eq $setup) {
             throw "NSIS setup.exe was not produced."
@@ -242,7 +242,7 @@ jobs:
             throw "Could not inspect NSIS installer payload."
           }
           $listingText = ($listing -join "`n").Replace("\", "/")
-          foreach ($expected in @("os-scribe.exe", "WebView2Loader.dll")) {
+          foreach ($expected in @("os-june.exe", "WebView2Loader.dll")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {
               throw "NSIS installer payload does not include $expected."
             }

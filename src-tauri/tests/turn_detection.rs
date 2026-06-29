@@ -1,5 +1,5 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
-use os_scribe_lib::audio::turns::{
+use os_june_lib::audio::turns::{
     coalesce_turns_for_transcription, detect_turns, AudioTurn, DetectionSource,
 };
 use std::path::{Path, PathBuf};

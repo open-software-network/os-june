@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => ({
   setDictationLanguage: vi.fn(),
   setDictationShortcut: vi.fn(),
   osAccountsLogin: vi.fn(),
-  scribeOpenVerifyPage: vi.fn(),
+  juneOpenVerifyPage: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   listen: vi.fn(),
@@ -37,7 +37,7 @@ vi.mock("../lib/tauri", () => ({
   setDictationLanguage: mocks.setDictationLanguage,
   setDictationShortcut: mocks.setDictationShortcut,
   osAccountsLogin: mocks.osAccountsLogin,
-  scribeOpenVerifyPage: mocks.scribeOpenVerifyPage,
+  juneOpenVerifyPage: mocks.juneOpenVerifyPage,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
 }));

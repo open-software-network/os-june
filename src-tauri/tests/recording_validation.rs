@@ -1,5 +1,5 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
-use os_scribe_lib::{
+use os_june_lib::{
     audio::validation::{
         source_audio_passes_validation, validate_audio_artifact, AudioValidationConfig,
     },

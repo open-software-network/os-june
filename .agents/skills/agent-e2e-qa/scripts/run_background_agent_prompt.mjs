@@ -34,8 +34,8 @@ function parseArgs(argv) {
     headless: true,
     video: true,
     keepHermesHome: false,
-    hermesCommand: process.env.SCRIBE_HERMES_COMMAND || "",
-    sourceHermesHome: process.env.SCRIBE_HERMES_HOME || "",
+    hermesCommand: process.env.JUNE_HERMES_COMMAND || "",
+    sourceHermesHome: process.env.JUNE_HERMES_HOME || "",
     chromeExecutable: process.env.CHROME_EXECUTABLE || "",
   };
 
@@ -81,8 +81,8 @@ Options:
   --timeout-ms <ms>              Completion timeout. Default: ${DEFAULT_TIMEOUT_MS}
   --viewport <width>x<height>    Browser viewport and video size. Default: ${DEFAULT_VIEWPORT}
   --out-dir <path>               Artifact directory. Default: .tmp/qa-recordings
-  --hermes-command <path>        Hermes binary. Default: SCRIBE_HERMES_COMMAND or app dev runtime
-  --source-hermes-home <path>    Hermes home to copy config from. Default: SCRIBE_HERMES_HOME or app dev home
+  --hermes-command <path>        Hermes binary. Default: JUNE_HERMES_COMMAND or app dev runtime
+  --source-hermes-home <path>    Hermes home to copy config from. Default: JUNE_HERMES_HOME or app dev home
   --chrome-executable <path>     Chrome executable. Default: CHROME_EXECUTABLE or common macOS paths
   --headed                       Run a visible browser instead of headless
   --no-video                     Disable Playwright video recording
@@ -140,7 +140,7 @@ function resolveHermesCommand(requested) {
     requested,
     join(
       homedir(),
-      "Library/Application Support/co.opensoftware.scribe-dev/hermes-runtime/hermes-agent/venv/bin/hermes",
+      "Library/Application Support/co.opensoftware.june-dev/hermes-runtime/hermes-agent/venv/bin/hermes",
     ),
     join(homedir(), ".hermes/hermes-agent/venv/bin/hermes"),
     join(homedir(), ".local/bin/hermes"),
@@ -150,7 +150,7 @@ function resolveHermesCommand(requested) {
 function resolveSourceHermesHome(requested) {
   return firstExisting([
     requested,
-    join(homedir(), "Library/Application Support/co.opensoftware.scribe-dev/hermes"),
+    join(homedir(), "Library/Application Support/co.opensoftware.june-dev/hermes"),
     join(homedir(), ".hermes"),
   ]);
 }
@@ -556,7 +556,7 @@ async function main() {
     env: {
       ...process.env,
       HERMES_HOME: hermesHome,
-      SCRIBE_HERMES_HOME: hermesHome,
+      JUNE_HERMES_HOME: hermesHome,
       HERMES_DASHBOARD_SESSION_TOKEN: token,
       NO_PROXY: "127.0.0.1,localhost,::1",
       no_proxy: "127.0.0.1,localhost,::1",

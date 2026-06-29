@@ -1,6 +1,6 @@
 use crate::{
     domain::types::{RecordingSource, RecordingSourceMode},
-    scribe_api::{transcribe_saved_audio, TranscriptionRequest},
+    june_api::{transcribe_saved_audio, TranscriptionRequest},
 };
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
@@ -600,7 +600,7 @@ async fn transcribe_preview_chunk(
 
 fn preview_chunk_path(session_id: &str, segment_id: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "os-scribe-live-preview-{}-{}-{}.wav",
+        "os-june-live-preview-{}-{}-{}.wav",
         session_id,
         segment_id,
         Uuid::new_v4()

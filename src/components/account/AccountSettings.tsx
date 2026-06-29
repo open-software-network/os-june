@@ -29,7 +29,7 @@ export function AccountSettings({
         <h1 className="settings-title">Account</h1>
         <p className="settings-description">
           {account.localDev
-            ? "Local mode is active. June uses your local Scribe API without OpenSoftware sign-in or billing."
+            ? "Local mode is active. June uses your local June API without OpenSoftware sign-in or billing."
             : "Sign in with OpenSoftware to use your shared identity and balance across the network."}
         </p>
       </header>
@@ -117,7 +117,7 @@ export function AccountSettingsSection({
               </h3>
               <p className="settings-row-description">
                 {account.localDev
-                  ? "Requests use your local Scribe API. No OpenSoftware account is used."
+                  ? "Requests use your local June API. No OpenSoftware account is used."
                   : account.signedIn
                     ? (account.user?.email ??
                       `@${account.user?.handle ?? "account"}`)

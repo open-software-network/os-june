@@ -10,7 +10,9 @@ import {
 } from "../lib/recording-inactivity";
 import type { RecordingStatusDto } from "../lib/tauri";
 
-function status(overrides: Partial<RecordingStatusDto> = {}): RecordingStatusDto {
+function status(
+  overrides: Partial<RecordingStatusDto> = {},
+): RecordingStatusDto {
   return {
     sessionId: "session-1",
     state: "recording",

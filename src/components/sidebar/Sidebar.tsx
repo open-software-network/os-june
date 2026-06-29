@@ -135,11 +135,11 @@ type CommandPaletteGroup = {
 
 const AGENT_SIDEBAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_SIDEBAR_SESSION_LIMIT = 12;
-const PINNED_AGENT_SESSION_IDS_STORAGE_KEY = "scribe:pinned-agent-session-ids";
+const PINNED_AGENT_SESSION_IDS_STORAGE_KEY = "june:pinned-agent-session-ids";
 const AGENT_SIDEBAR_SESSION_RETRY_DELAYS_MS = [
   250, 500, 1000, 2000, 4000, 8000, 16000, 32000,
 ];
-const SIDEBAR_DEV_STATES_EVENT = "scribe:sidebar:dev-states";
+const SIDEBAR_DEV_STATES_EVENT = "june:sidebar:dev-states";
 const SIDEBAR_DEV_SESSION_IDS = {
   selected: "sidebar-state-selected",
   working: "sidebar-state-working",

@@ -274,7 +274,7 @@ describe("AgentWorkspace", () => {
     mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
       name: path.split("/").pop() ?? "attachment",
-      path: `/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
+      path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
       rootLabel: "Workspace",
       size: 1234,
       previewDataUrl: path.endsWith(".png")
@@ -284,7 +284,7 @@ describe("AgentWorkspace", () => {
     mocks.importHermesBridgeFileBytes.mockImplementation(
       async (name: string) => ({
         name,
-        path: `/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${name}`,
+        path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/${name}`,
         rootLabel: "Workspace",
         size: 5,
         previewDataUrl: null,
@@ -600,7 +600,7 @@ describe("AgentWorkspace", () => {
     // to dispatch a mount-time sessions-changed event selecting the old
     // session, which App reads as "switched to existing work" — dropping the
     // pending project assignment before the new session exists.
-    window.localStorage.setItem("scribe:agent:last-open-session", "session-1");
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now() }),
@@ -744,7 +744,7 @@ describe("AgentWorkspace", () => {
     expect(submitted.text).toContain(
       "Use these file paths when inspecting or operating on the files.",
     );
-    expect(submitted.text).not.toContain("Scribe Hermes");
+    expect(submitted.text).not.toContain("June Hermes");
     // The transcript shows the user's words only — the investigation
     // framing is plumbing between June and the runtime, never UI.
     expect(
@@ -789,7 +789,7 @@ describe("AgentWorkspace", () => {
         agentDiagnosis: "The screenshot shows the recorder stuck on saving.",
         attachmentNames: ["screenshot.png"],
         attachmentPaths: [
-          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
+          "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/screenshot.png",
         ],
         sessionId: "session-2",
       }),
@@ -1328,7 +1328,7 @@ describe("AgentWorkspace", () => {
         agentDiagnosis: "The recorder failed while saving.",
         attachmentNames: ["screenshot.png"],
         attachmentPaths: [
-          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
+          "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/screenshot.png",
         ],
         sessionId: "session-2",
       }),
@@ -2347,7 +2347,7 @@ describe("AgentWorkspace", () => {
         resolveImport = resolve;
       }).then(() => ({
         name,
-        path: `/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${name}`,
+        path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/${name}`,
         rootLabel: "Workspace",
         size: 5,
         previewDataUrl: null,
@@ -2401,7 +2401,7 @@ describe("AgentWorkspace", () => {
     await act(async () => {
       resolveImport?.({
         name: "logs.txt",
-        path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/logs.txt",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/logs.txt",
         rootLabel: "Workspace",
         size: 5,
         previewDataUrl: null,
@@ -3010,7 +3010,7 @@ describe("AgentWorkspace", () => {
   });
 
   it("restores the last open session after a reload", async () => {
-    window.localStorage.setItem("scribe:agent:last-open-session", "session-1");
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
     mocks.listHermesSessions.mockResolvedValue([
       {
         id: "session-2",
@@ -3418,9 +3418,9 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(
-        window.localStorage.getItem("scribe:agent:last-open-session"),
-      ).toBe("session-1"),
+      expect(window.localStorage.getItem("june:agent:last-open-session")).toBe(
+        "session-1",
+      ),
     );
 
     act(() => {
@@ -3433,7 +3433,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() =>
       expect(
-        window.localStorage.getItem("scribe:agent:last-open-session"),
+        window.localStorage.getItem("june:agent:last-open-session"),
       ).toBeNull(),
     );
     expect(
@@ -5003,13 +5003,13 @@ describe("AgentWorkspace", () => {
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
     const samplePath =
-      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf";
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/sample.pdf";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -5050,12 +5050,12 @@ describe("AgentWorkspace", () => {
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
               name: "report.md",
-              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/report.md",
               kind: "file",
               size: 1768,
               modifiedAt: "2026-06-04T18:39:00Z",
@@ -5097,13 +5097,13 @@ describe("AgentWorkspace", () => {
   it("opens a markdown artifact in the viewer panel with rendered content", async () => {
     const user = userEvent.setup();
     const reportPath =
-      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md";
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/report.md";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -5176,7 +5176,7 @@ describe("AgentWorkspace", () => {
   it.skip("shows a tool-touched file in the activity drawer's artifacts timeline and opens it in the preview flow", async () => {
     const user = userEvent.setup();
     const reportPath =
-      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/timeline.md";
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/timeline.md";
     mocks.hermesBridgeFileText.mockResolvedValue("# Timeline\n\nBody.");
 
     render(<AgentWorkspace />);
@@ -5247,7 +5247,7 @@ describe("AgentWorkspace", () => {
   it("lists every surfaced file behind the session bar files button", async () => {
     const user = userEvent.setup();
     const workspaceRoot =
-      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -5329,7 +5329,7 @@ describe("AgentWorkspace", () => {
   it("does not surface files only mentioned inside tool output", async () => {
     const user = userEvent.setup();
     const workspaceRoot =
-      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -5416,13 +5416,13 @@ describe("AgentWorkspace", () => {
 
   it("does not render download cards for files the user attached", async () => {
     const attachedPath =
-      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/june-context.md";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -5470,24 +5470,24 @@ describe("AgentWorkspace", () => {
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
               name: "notes.md",
-              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/notes.md",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/notes.md",
               kind: "file",
               size: 512,
               modifiedAt: "2026-06-04T18:39:00Z",
             },
             {
               name: "archive",
-              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/archive",
               kind: "directory",
               children: [
                 {
                   name: "notes.md",
-                  path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive/notes.md",
+                  path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/archive/notes.md",
                   kind: "file",
                   size: 512,
                   modifiedAt: "2026-06-04T18:39:00Z",
@@ -5517,13 +5517,13 @@ describe("AgentWorkspace", () => {
 
   it("renders generated workspace images as file cards without previews", async () => {
     const screenshotPath =
-      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/screenshot.png";
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/screenshot.png";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -5605,8 +5605,8 @@ describe("AgentWorkspace", () => {
     expect(submitted.text).toContain(
       "Use these file paths when inspecting or operating on the files.",
     );
-    expect(submitted.text).not.toContain("co.opensoftware.scribe");
-    expect(submitted.text).not.toContain("Scribe Hermes");
+    expect(submitted.text).not.toContain("co.opensoftware.june");
+    expect(submitted.text).not.toContain("June Hermes");
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
       "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
     );
@@ -5788,7 +5788,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
       name: "pasted-image.png",
-      path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/pasted-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/pasted-image.png",
       rootLabel: "Workspace",
       size: 5,
       previewDataUrl: "data:image/png;base64,preview",
@@ -5826,7 +5826,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
       name: "image.png",
-      path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/image.png",
       rootLabel: "Workspace",
       size: 3,
       previewDataUrl: "data:image/png;base64,preview",
@@ -6943,11 +6943,11 @@ describe("AgentWorkspace", () => {
       <AgentWorkspace
         initialSession={existingSession}
         origin={{
-          backLabel: "Back to Scribe",
+          backLabel: "Back to June",
           onBack,
           crumbs: [
             { label: "Projects", onClick: onOpenProjects },
-            { label: "Scribe", onClick: onBack },
+            { label: "June", onClick: onBack },
           ],
         }}
       />,
@@ -6955,8 +6955,8 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     expect(screen.getByText("Projects")).toBeInTheDocument();
-    expect(screen.getByText("Scribe")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Back to Scribe" }));
+    expect(screen.getByText("June")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to June" }));
     expect(onBack).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect(onOpenProjects).toHaveBeenCalled();

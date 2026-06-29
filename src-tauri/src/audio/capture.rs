@@ -144,7 +144,7 @@ pub fn start_capture(
     if active.is_some() {
         return Err(AppError::new(
             "recording_already_active",
-            "A previous recording is still active. Scribe attempted to save it locally; please try again.",
+            "A previous recording is still active. June attempted to save it locally; please try again.",
         ));
     }
 
@@ -192,7 +192,7 @@ pub fn start_capture(
     let stats_for_callback = Arc::clone(&stats);
     let paused_for_callback = Arc::clone(&paused_flag);
     let live_preview_available =
-        crate::scribe_api::configured() && crate::os_accounts::cached_signed_in();
+        crate::june_api::configured() && crate::os_accounts::cached_signed_in();
     let live_preview = if live_preview_available {
         Some(start_live_transcript_preview(
             app.clone(),

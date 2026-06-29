@@ -743,7 +743,7 @@ function messageFromError(err: unknown) {
   return "Routines are unavailable. Is June's agent running?";
 }
 
-const DESCRIBE_MODE_OPTIONS = [
+const DEJUNE_MODE_OPTIONS = [
   {
     unrestricted: false,
     icon: <IconShieldCheck size={16} aria-hidden />,
@@ -864,7 +864,7 @@ function DescribeBar({
             <p className="agent-sandbox-menu-title">
               What can this routine change?
             </p>
-            {DESCRIBE_MODE_OPTIONS.map((option) => (
+            {DEJUNE_MODE_OPTIONS.map((option) => (
               <button
                 key={option.title}
                 type="button"

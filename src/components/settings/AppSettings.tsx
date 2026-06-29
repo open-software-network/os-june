@@ -16,7 +16,7 @@ import {
   listVeniceModels,
   localAudioFileSrc,
   providerModelSettings,
-  scribeOpenVerifyPage,
+  juneOpenVerifyPage,
   setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
@@ -1265,7 +1265,7 @@ export function AppSettings({
                       type="button"
                       className="btn btn-secondary"
                       onClick={() =>
-                        void scribeOpenVerifyPage().catch(() => undefined)
+                        void juneOpenVerifyPage().catch(() => undefined)
                       }
                     >
                       Verify server

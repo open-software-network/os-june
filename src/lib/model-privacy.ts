@@ -16,7 +16,7 @@ export type ModelPrivacyFlags = {
 };
 
 export const PROVIDER_MODEL_SETTINGS_CHANGED_EVENT =
-  "scribe:provider-model-settings-changed";
+  "june:provider-model-settings-changed";
 
 export type ProviderModelSettingsChangedDetail = {
   mode: ProviderModelMode;

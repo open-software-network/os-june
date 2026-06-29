@@ -4,7 +4,7 @@ June ships in-app auto-updates using `tauri-plugin-updater` (single stable
 track). Because the source repo is private and the Tauri updater fetches its
 manifest over an **unauthenticated** GET, the signed + notarized artifacts and
 `latest.json` are published to a **separate public repo**
-(`open-software-network/os-scribe-releases`) rather than the private source
+(`open-software-network/os-june-releases`) rather than the private source
 repo's releases. When the source repo eventually goes public, the updater
 `endpoints` URL repoints to it and the releases repo is retired.
 
@@ -22,7 +22,7 @@ accepted
   buckets are currently not supported"); presigned URLs expire and cannot be
   baked into the app as a permanent endpoint, so the bucket would need a separate
   public proxy service in front — *more* infra than the alternative, for a
-  temporary need. Scribe API runs in a Phala TEE and is the wrong place to serve
+  temporary need. June API runs in a Phala TEE and is the wrong place to serve
   static files.
 - **Cloudflare R2 public bucket** — viable (native public URLs, optional custom
   domain). Kept as the upgrade path if a permanent, GitHub-independent update

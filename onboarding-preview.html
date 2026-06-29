@@ -16,7 +16,7 @@
                                        jump to a step (sign-in, permissions,
                                        dictation-practice)
     __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
-    localStorage.setItem("os-scribe:theme", "dark"); location.reload()
+    localStorage.setItem("os-june:theme", "dark"); location.reload()
 
   The preview opens signed out — the real first-run experience. Clicking
   "Continue with OpenSoftware" fake-signs-in as Sam Carter. "Change key" on
@@ -41,7 +41,7 @@
         try {
           var stored =
             new URLSearchParams(location.search).get("theme") ||
-            localStorage.getItem("os-scribe:theme");
+            localStorage.getItem("os-june:theme");
           var resolved =
             stored === "light" || stored === "dark"
               ? stored

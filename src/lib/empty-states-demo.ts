@@ -10,7 +10,7 @@
 
 import { useSyncExternalStore } from "react";
 
-const EMPTY_STATES_DEMO_EVENT = "scribe:empty-states-demo-changed";
+const EMPTY_STATES_DEMO_EVENT = "june:empty-states-demo-changed";
 
 let forced = false;
 

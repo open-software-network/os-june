@@ -32,7 +32,7 @@
  *   no-tool prompt and waits for a streamed completion.
  *
  * Environment:
- * - SCRIBE_HERMES_COMMAND   absolute path to a hermes binary (highest priority,
+ * - JUNE_HERMES_COMMAND   absolute path to a hermes binary (highest priority,
  *                           mirrors the Rust override). When unset, the script
  *                           probes the same bundled / managed / user-local venv
  *                           locations the bridge does.
@@ -95,15 +95,15 @@ async function main(): Promise<void> {
   });
 
   if (!resolved) {
-    const override = process.env.SCRIBE_HERMES_COMMAND?.trim();
+    const override = process.env.JUNE_HERMES_COMMAND?.trim();
     if (override) {
       console.log(
-        `hermes-smoke: SCRIBE_HERMES_COMMAND points at a missing file (${override}); ` +
+        `hermes-smoke: JUNE_HERMES_COMMAND points at a missing file (${override}); ` +
           "Hermes runtime not found, skipping.",
       );
     } else {
       console.log(
-        "hermes-smoke: Hermes runtime not found, skipping. Set SCRIBE_HERMES_COMMAND " +
+        "hermes-smoke: Hermes runtime not found, skipping. Set JUNE_HERMES_COMMAND " +
           "to a hermes binary, or install the bundled/managed runtime, to run the smoke test.",
       );
     }
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
     env: {
       ...process.env,
       HERMES_HOME: home,
-      SCRIBE_HERMES_HOME: home,
+      JUNE_HERMES_HOME: home,
       HERMES_DASHBOARD_SESSION_TOKEN: token,
       NO_PROXY: "127.0.0.1,localhost,::1",
       no_proxy: "127.0.0.1,localhost,::1",
@@ -281,7 +281,7 @@ function allocatePort(): Promise<number> {
 /** Writes the minimum config.yaml Hermes needs to boot its dashboard. The
  * model block is a placeholder: the protocol phase never calls the model, and
  * the model phase expects the operator to supply real provider config (or wire
- * SCRIBE_HERMES_COMMAND at a runtime that already has one). */
+ * JUNE_HERMES_COMMAND at a runtime that already has one). */
 function writeMinimalConfig(home: string): void {
   const config = [
     "model:",

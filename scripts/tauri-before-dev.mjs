@@ -10,9 +10,9 @@ const rootDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const apiDir = path.join(rootDir, "scribe-api");
+const apiDir = path.join(rootDir, "june-api");
 const frontendPort = Number.parseInt(process.env.VITE_PORT ?? "1421", 10);
-const apiPort = Number.parseInt(process.env.SCRIBE_API_PORT ?? "8080", 10);
+const apiPort = Number.parseInt(process.env.JUNE_API_PORT ?? "8080", 10);
 const shell = process.platform === "win32";
 
 let apiChild = null;
@@ -70,24 +70,24 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 }
 
 if (!fs.existsSync(path.join(apiDir, "Cargo.toml"))) {
-  console.error(`Could not find scribe-api/Cargo.toml under ${rootDir}`);
+  console.error(`Could not find june-api/Cargo.toml under ${rootDir}`);
   process.exit(1);
 }
 
 if (await portIsOpen(apiPort)) {
   console.error(
-    `Scribe API port ${apiPort} is already in use. Reusing it for Tauri dev.`,
+    `June API port ${apiPort} is already in use. Reusing it for Tauri dev.`,
   );
 } else {
   apiChild = spawnManaged(
-    "scribe-api",
+    "june-api",
     "cargo",
-    ["run", "-p", "scribe", "--", "serve"],
+    ["run", "-p", "june", "--", "serve"],
     apiDir,
   );
   apiChild.on("exit", (code, signal) => {
     if (shuttingDown) return;
-    console.error(`scribe-api exited with ${signal ?? code}`);
+    console.error(`june-api exited with ${signal ?? code}`);
     exitFromChild(code, signal);
   });
 }

@@ -8,7 +8,7 @@ Windows assets to the existing `open-software-network/os-june-releases` release.
 ## Windows support
 
 The Windows installer supports the app shell, OS Accounts sign-in, microphone
-recording, note generation, folders, and settings backed by the production Scribe
+recording, note generation, folders, and settings backed by the production June
 API. Global dictation shortcuts, dictation paste, macOS system-audio capture, and
 Seatbelt sandbox features are macOS-only.
 
@@ -36,7 +36,7 @@ Create or confirm these before cutting the first Windows release:
   password-protected, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
-  `PRODUCTION_SCRIBE_API_URL`.
+  `PRODUCTION_JUNE_API_URL`.
 
 Keep the Authenticode certificate separate from the Tauri updater key. The
 certificate establishes the Windows publisher signature. The updater key signs
@@ -74,7 +74,7 @@ The Windows workflow performs the release steps in order:
    checkout, a relocatable CPython, Python deps, prebuilt dashboard UI, and a
    relocatable `bin/hermes.exe` launcher.
 7. Authenticode-signs the bundled Hermes `.exe`, `.dll`, and `.pyd` binaries.
-8. Builds the Windows NSIS installer with production OS Accounts and Scribe API
+8. Builds the Windows NSIS installer with production OS Accounts and June API
    configuration embedded as fallback runtime config.
 9. Signs the app executable and NSIS installer through
    `scripts/windows-sign.ps1`.
@@ -101,7 +101,7 @@ Start-Process "$env:LOCALAPPDATA\June\June.exe"
 Confirm the signature status is `Valid`, the publisher is Open Software Network,
 the app launches as June, the sign-in copy mentions recording and notes without
 dictation, and the bundled agent starts on a clean VM with no Python installed.
-Record from the microphone and generate a note against production Scribe API
+Record from the microphone and generate a note against production June API
 before linking the installer publicly.
 
 For updater validation after a second Windows release, install an older

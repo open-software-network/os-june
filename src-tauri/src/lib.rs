@@ -6,13 +6,13 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
+pub mod june_api;
 pub mod macos_menu_icons;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
-pub mod scribe_api;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -21,12 +21,12 @@ use std::sync::OnceLock;
 use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
-const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
+const CHECK_FOR_UPDATES_EVENT: &str = "june://check-for-updates";
 const CLOSE_TAB_MENU_ID: &str = "close_tab";
-const CLOSE_TAB_EVENT: &str = "scribe://close-tab";
+const CLOSE_TAB_EVENT: &str = "june://close-tab";
 const CLOSE_WINDOW_MENU_ID: &str = "close_window_main";
 const OPEN_SETTINGS_MENU_ID: &str = "open_settings";
-const OPEN_SETTINGS_EVENT: &str = "scribe://open-settings";
+const OPEN_SETTINGS_EVENT: &str = "june://open-settings";
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -196,7 +196,7 @@ pub fn run() {
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
-            commands::scribe_open_verify_page,
+            commands::june_open_verify_page,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -277,7 +277,7 @@ pub fn run() {
 fn should_register_single_instance_plugin() -> bool {
     single_instance_enabled_for_build(
         cfg!(debug_assertions),
-        std::env::var_os("OS_SCRIBE_ENABLE_DEV_SINGLE_INSTANCE").is_some(),
+        std::env::var_os("OS_JUNE_ENABLE_DEV_SINGLE_INSTANCE").is_some(),
     )
 }
 

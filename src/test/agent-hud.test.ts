@@ -135,7 +135,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("true");
-    expect(localStorage.getItem("scribe:agent-hud:expanded")).toBe("true");
+    expect(localStorage.getItem("june:agent-hud:expanded")).toBe("true");
 
     pillElement().dispatchEvent(
       new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
@@ -143,7 +143,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("false");
-    expect(localStorage.getItem("scribe:agent-hud:expanded")).toBe("false");
+    expect(localStorage.getItem("june:agent-hud:expanded")).toBe("false");
   });
 
   it("does not re-show the native window when expanding an already visible HUD", async () => {
@@ -284,7 +284,7 @@ describe("agent HUD", () => {
     hideHudButton().click();
     await flushPromises();
 
-    expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
@@ -304,7 +304,7 @@ describe("agent HUD", () => {
     // The native panel swallows the right-/ctrl-click and emits this event;
     // the webview never sees a contextmenu event in the real app.
     const openMenuFromNative = mocks.listeners.get(
-      "scribe:agent-hud:context-menu",
+      "june:agent-hud:context-menu",
     );
     expect(openMenuFromNative).toBeDefined();
     openMenuFromNative?.({ payload: undefined });
@@ -316,7 +316,7 @@ describe("agent HUD", () => {
     hideHudButton().click();
     await flushPromises();
 
-    expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
@@ -583,7 +583,7 @@ describe("agent HUD", () => {
     hideHudButton().click();
     await flushPromises();
 
-    expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.emit).toHaveBeenCalledWith(
       AGENT_HUD_VISIBILITY_CHANGED_EVENT,
@@ -595,7 +595,7 @@ describe("agent HUD", () => {
   });
 
   it("honors a disabled flag saved under the legacy mascot key", async () => {
-    localStorage.setItem("scribe:mascot:enabled", "false");
+    localStorage.setItem("june:mascot:enabled", "false");
     await loadAgentHud();
 
     emitStatus({

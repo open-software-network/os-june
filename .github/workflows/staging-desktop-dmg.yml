@@ -71,7 +71,7 @@ jobs:
           STAGING_OS_ACCOUNTS_URL: ${{ secrets.STAGING_OS_ACCOUNTS_URL }}
           STAGING_OS_ACCOUNTS_API_URL: ${{ secrets.STAGING_OS_ACCOUNTS_API_URL }}
           STAGING_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
-          STAGING_SCRIBE_API_URL: ${{ secrets.STAGING_SCRIBE_API_URL }}
+          STAGING_JUNE_API_URL: ${{ secrets.STAGING_JUNE_API_URL }}
         run: |
           set -euo pipefail
           missing=0
@@ -85,7 +85,7 @@ jobs:
             STAGING_OS_ACCOUNTS_URL \
             STAGING_OS_ACCOUNTS_API_URL \
             STAGING_OS_ACCOUNTS_CLIENT_ID \
-            STAGING_SCRIBE_API_URL
+            STAGING_JUNE_API_URL
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required to build a staging distributable signed and notarized DMG."
@@ -105,13 +105,13 @@ jobs:
           OS_ACCOUNTS_URL: ${{ secrets.STAGING_OS_ACCOUNTS_URL }}
           OS_ACCOUNTS_API_URL: ${{ secrets.STAGING_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
-          SCRIBE_API_URL: ${{ secrets.STAGING_SCRIBE_API_URL }}
+          JUNE_API_URL: ${{ secrets.STAGING_JUNE_API_URL }}
         run: pnpm tauri:build:signed-dmg --target universal-apple-darwin
 
       - name: Upload DMG
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: os-scribe-staging-dmg-${{ github.sha }}
+          name: os-june-staging-dmg-${{ github.sha }}
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/dmg/*.dmg
@@ -121,7 +121,7 @@ jobs:
         run: |
           {
             echo "### Staging macOS DMG"
-            echo "This artifact is built against the staging OS Accounts and Scribe API environment."
+            echo "This artifact is built against the staging OS Accounts and June API environment."
             for dmg in src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/dmg/*.dmg; do
               [ -e "$dmg" ] || continue
               echo "- \`$dmg\`"

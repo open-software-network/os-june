@@ -375,7 +375,7 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
 // through import_hermes_bridge_file_bytes means every preview is fetched back
 // through the same Tauri commands and path validation a real agent file uses.
 // Dev builds only — like the gallery, the handle never ships.
-const AGENT_DEV_FILES_EVENT = "scribe:agent:dev-files";
+const AGENT_DEV_FILES_EVENT = "june:agent:dev-files";
 
 if (import.meta.env.DEV && typeof window !== "undefined") {
   (window as unknown as Record<string, unknown>).__agentFiles = (
@@ -661,7 +661,7 @@ export const HERO_GREETINGS = [
   "What can June take off your plate?",
 ] as const;
 
-const HERO_GREETING_INDEX_KEY = "scribe:agent:hero-greeting";
+const HERO_GREETING_INDEX_KEY = "june:agent:hero-greeting";
 
 function advanceHeroGreeting(): string {
   try {
@@ -831,7 +831,7 @@ type HermesRuntimeSessionResponse = {
 };
 
 /** Where the session was opened from — rendered as the leading crumbs in the
- * sticky session bar ("Projects / Scribe" or "Agents") with a back arrow. */
+ * sticky session bar ("Projects / June" or "Agents") with a back arrow. */
 export type AgentWorkspaceOrigin = {
   backLabel: string;
   onBack: () => void;
@@ -895,7 +895,7 @@ type IssueReportFollowUpSubmitFailedDetail = {
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
 const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY =
-  "scribe:agent:reviewable-issue-reports";
+  "june:agent:reviewable-issue-reports";
 const ISSUE_REPORT_DELIVERY_SETTLED_EVENT =
   "june-agent-issue-report-delivery-settled";
 const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
@@ -10491,7 +10491,7 @@ type AgentArtifactPreview =
 // roughly half the window), remembered across sessions. The live value is
 // the --agent-files-w custom property on .app-shell, which the panel, the
 // main card's margin, and the composer all share.
-const AGENT_FILES_WIDTH_KEY = "scribe:agent:files-panel-width";
+const AGENT_FILES_WIDTH_KEY = "june:agent:files-panel-width";
 const FILES_PANEL_MIN_W = 300;
 const FILES_PANEL_MAX_W = 600;
 
@@ -11917,7 +11917,7 @@ function moveRecordKey<T>(
 // Survives app restarts (localStorage, not sessionStorage): restoring an
 // existing conversation after a relaunch is always safe, unlike the pending
 // new-session marker, which must NOT outlive its navigation.
-const AGENT_LAST_OPEN_SESSION_KEY = "scribe:agent:last-open-session";
+const AGENT_LAST_OPEN_SESSION_KEY = "june:agent:last-open-session";
 
 // How long a second startNewTask call with the same prompt counts as an echo
 // of the first (marker + window event double-delivery) rather than a new ask.

@@ -1,10 +1,10 @@
-export const AGENT_HUD_ENABLED_KEY = "scribe:agent-hud:enabled";
+export const AGENT_HUD_ENABLED_KEY = "june:agent-hud:enabled";
 export const AGENT_HUD_VISIBILITY_CHANGED_EVENT =
-  "scribe:agent-hud:visibility-changed";
+  "june:agent-hud:visibility-changed";
 
 /* The HUD replaced the desktop mascot; honor the preference users set
  * under the old key so disabling the pet keeps the overlay hidden. */
-const LEGACY_ENABLED_KEY = "scribe:mascot:enabled";
+const LEGACY_ENABLED_KEY = "june:mascot:enabled";
 
 export type AgentHudVisibilityChangedDetail = {
   enabled: boolean;

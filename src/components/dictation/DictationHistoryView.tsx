@@ -53,7 +53,7 @@ type HistoryGroup = {
 // points at two *optional* power features (writing styles, personal
 // dictionary), so a dismiss is honored permanently — we don't badger people
 // about extras they've chosen to skip.
-const HINT_DISMISSED_KEY = "os-scribe:dictation-hint-dismissed";
+const HINT_DISMISSED_KEY = "os-june:dictation-hint-dismissed";
 
 // The card only surfaces once someone has clearly adopted dictation, so we
 // never stack setup suggestions on a newcomer who's still learning the gesture.

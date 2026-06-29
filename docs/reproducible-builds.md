@@ -1,4 +1,4 @@
-# Reproducible builds for `scribe-api`
+# Reproducible builds for `june-api`
 
 > **Status:** plan + implementation. This PR ships **Phase A** (deterministic
 > build) and **anchor (b)** (digest recorded as a git tag on deploy). Both need a
@@ -62,7 +62,7 @@ curl ".../v2/${repo}/manifests/${tag}"
 ```
 
 A `repo@sha256:digest` ref breaks this: `%%:*` cuts at the `:` inside `sha256:`,
-so `repo` becomes `…/scribe-api@sha256`, the manifest URL 404s, the prelaunch
+so `repo` becomes `…/june-api@sha256`, the manifest URL 404s, the prelaunch
 `exit 1`s, and the CVM never boots. **Any digest-pinned ref fails today; only
 tags work** — which is why #46 deploys `:<sha_short>`.
 
@@ -78,7 +78,7 @@ To reclaim digest-in-compose (the cleanest anchor), one of:
 The Dockerfile is multi-stage. Only the final `runtime` image is published and
 attested, so only inputs that reach it affect the digest:
 
-1. the `scribe` binary (`COPY --from=builder`)
+1. the `june` binary (`COPY --from=builder`)
 2. the `debian:bookworm-slim` base
 3. the CA certificate bundle
 4. file metadata (timestamps, ownership) in the layers
@@ -106,7 +106,7 @@ not the whole build.
 
 The numbered items below are what **this PR actually adds** (validate with a CI build):
 
-### 1. Pin base images by digest — `scribe-api/Dockerfile`
+### 1. Pin base images by digest — `june-api/Dockerfile`
 
 ```dockerfile
 FROM rust:1.95-bookworm@sha256:<resolve-at-impl> AS chef
@@ -117,7 +117,7 @@ FROM debian:bookworm-slim@sha256:<resolve-at-impl> AS runtime
 Digests resolved with `docker buildx imagetools inspect <image:tag>` at
 implementation time and committed.
 
-### 2. Deterministic compiler flags — `scribe-api/Dockerfile` (builder stage)
+### 2. Deterministic compiler flags — `june-api/Dockerfile` (builder stage)
 
 ```dockerfile
 FROM chef AS builder
@@ -126,29 +126,29 @@ ENV CARGO_INCREMENTAL=0 \
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --bin scribe
+RUN cargo build --release --bin june
 ```
 
-### 3. Replace apt certs with a copy — `scribe-api/Dockerfile` (runtime stage)
+### 3. Replace apt certs with a copy — `june-api/Dockerfile` (runtime stage)
 
 ```dockerfile
 FROM debian:bookworm-slim@sha256:<…> AS runtime
-RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin scribe
+RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin june
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
-COPY --from=builder /app/target/release/scribe /usr/local/bin/scribe
+COPY --from=builder /app/target/release/june /usr/local/bin/june
 COPY config.toml /app/config.toml
-USER scribe
+USER june
 EXPOSE 8080
-ENV RUST_LOG=scribe=info,scribe_api=info,scribe_services=info,scribe_providers=info,tower_http=info
-ENTRYPOINT ["scribe"]
+ENV RUST_LOG=june=info,june_api=info,june_services=info,june_providers=info,tower_http=info
+ENTRYPOINT ["june"]
 CMD ["serve"]
 ```
 
 (The `rust` base ships `ca-certificates`, so the bundle is copied from a pinned
 stage — no network fetch, no version drift.)
 
-### 4. Reproducible image export — `.github/workflows/build-scribe-api.yml`
+### 4. Reproducible image export — `.github/workflows/build-june-api.yml`
 
 `provenance: false`/`sbom: false` already merged (#44). Remaining work: compute
 the commit epoch and enable timestamp rewriting. Note we deploy by **tag**
@@ -168,8 +168,8 @@ form must keep pushing both (`name=img:<sha>,img:staging`):
         env:
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         with:
-          context: scribe-api
-          file: scribe-api/Dockerfile
+          context: june-api
+          file: june-api/Dockerfile
           provenance: false
           sbom: false
           outputs: type=image,"name=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }},${{ env.IMAGE }}:staging",push=true,rewrite-timestamp=true
@@ -192,13 +192,13 @@ Usage: verify-reproducible.sh <git-ref>
        docker buildx build --provenance=false --sbom=false \
        --build-arg GIT_SHA=$(git -C /tmp/verify rev-parse HEAD) \   # match CI: /verify stamps the commit into the runtime env
        --output type=image,rewrite-timestamp=true,push=false \
-       --metadata-file /tmp/meta.json /tmp/verify/scribe-api   # build the worktree, NOT cwd
+       --metadata-file /tmp/meta.json /tmp/verify/june-api   # build the worktree, NOT cwd
   3. local=$(jq -r '.["containerimage.digest"]' /tmp/meta.json)
   # Because we deploy by tag, the "expected" digest comes from resolving the
   # deployed tag (what the attestation references) — not from the attestation
   # directly. Optionally also assert against a committed release record.
   4. sha=$(git -C /tmp/verify rev-parse --short=7 HEAD)
-     expected=$(docker buildx imagetools inspect "ghcr.io/open-software-network/scribe-api:$sha" \
+     expected=$(docker buildx imagetools inspect "ghcr.io/open-software-network/june-api:$sha" \
                   --format '{{.Manifest.digest}}')
   5. [ "$local" = "$expected" ] && echo PASS || { echo "FAIL $local != $expected"; exit 1; }
      # (worktree removed by the EXIT trap regardless of pass/fail)

@@ -1,4 +1,4 @@
-use os_scribe_lib::{
+use os_june_lib::{
     audio::recovery::scan_recoverable_recordings,
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{ProcessingStatus, RecordingSourceMode, RecordingState},

@@ -275,7 +275,7 @@ pub fn helper_permission_check() -> Result<(), AppError> {
         ));
     }
     terminate_existing_helpers();
-    let temp = std::env::temp_dir().join(format!("os-scribe-audio-check-{}", uuid::Uuid::new_v4()));
+    let temp = std::env::temp_dir().join(format!("os-june-audio-check-{}", uuid::Uuid::new_v4()));
     let output_path = temp.with_extension("wav");
     let status_path = temp.with_extension("json");
     let pid_path = temp.with_extension("pid");
@@ -438,10 +438,10 @@ fn send_signal(pid: u32, signal: &str) {
 
 fn terminate_existing_helpers() {
     // Also match the pre-rename helper so a recorder left over from an older
-    // "OS Scribe" build still gets cleaned up.
+    // "June" build still gets cleaned up.
     let helper_names = [
         "june-system-audio-recorder",
-        "os-scribe-system-audio-recorder",
+        "os-june-system-audio-recorder",
     ];
     let mut pids: Vec<u32> = Vec::new();
     for helper_name in helper_names {

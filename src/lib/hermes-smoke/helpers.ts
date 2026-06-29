@@ -191,7 +191,7 @@ export function isControlledModelDispatchError(error: unknown): boolean {
 }
 
 /** Where a resolved Hermes command came from, for log clarity. `env_override`
- * mirrors `SCRIBE_HERMES_COMMAND`; `candidate` covers the bundled / managed /
+ * mirrors `JUNE_HERMES_COMMAND`; `candidate` covers the bundled / managed /
  * user-local venv paths the Rust side probes in order. */
 export type HermesCommandSource = "env_override" | "candidate";
 
@@ -215,7 +215,7 @@ export type ResolveHermesCommandOptions = {
 /**
  * Resolves the Hermes binary the smoke test should launch, mirroring the
  * discovery order in `resolve_hermes_command`:
- * 1. `SCRIBE_HERMES_COMMAND` if set, non-blank, and pointing at an existing file;
+ * 1. `JUNE_HERMES_COMMAND` if set, non-blank, and pointing at an existing file;
  * 2. otherwise the first existing path in `candidates`.
  *
  * Returns `null` when nothing is found, which is exactly the signal the script
@@ -225,7 +225,7 @@ export type ResolveHermesCommandOptions = {
 export function resolveHermesCommand(
   options: ResolveHermesCommandOptions,
 ): ResolvedHermesCommand | null {
-  const override = options.env.SCRIBE_HERMES_COMMAND?.trim();
+  const override = options.env.JUNE_HERMES_COMMAND?.trim();
   if (override) {
     return options.fileExists(override)
       ? { command: override, source: "env_override" }
