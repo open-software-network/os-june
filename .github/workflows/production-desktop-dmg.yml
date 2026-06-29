@@ -30,9 +30,10 @@ jobs:
     environment: production
     steps:
       # Mint a short-lived token from the release GitHub App, scoped to BOTH the
-      # private source repo (to push the version-bump branch and open a PR) and the
-      # public releases repo (tauri-action publishes there). One App is the sole
-      # release identity - org-owned, no personal PAT (docs/adr/0001 + infra runbook).
+      # private source repo (to push the version-bump branch) and the public
+      # releases repo (tauri-action publishes there). The release App remains
+      # the sole artifact publishing identity - org-owned, no personal PAT
+      # (docs/adr/0001 + infra runbook).
       - name: Mint release token (GitHub App)
         id: app-token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
@@ -291,11 +292,12 @@ jobs:
 
       # Open the version-bump PR only AFTER the release is published, so a
       # build/notarize failure never leaves an orphan `release:` PR with no
-      # matching release. The branch push and PR creation are authenticated as
-      # the release App via the checkout credentials and GH_TOKEN below.
+      # matching release. The branch push uses the release App credentials from
+      # checkout; PR create/edit uses GITHUB_TOKEN because the release App
+      # installation may not have pull-request write permission.
       - name: Open release version PR
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
