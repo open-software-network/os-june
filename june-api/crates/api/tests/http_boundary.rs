@@ -434,6 +434,13 @@ async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> 
     );
     let body = response_text(response).await?;
     assert!(body.contains("Verify this server"));
+    assert!(body.contains("<title>Verify this server</title>"));
+    assert!(body.contains("This server runs inside an Intel TDX confidential VM."));
+    assert!(body.contains("<dt>Version</dt>"));
+    assert!(!body.contains("Verify this server ·"));
+    assert!(!body.contains("<dt>Service</dt>"));
+    assert!(!body.to_ascii_lowercase().contains("scribe-api"));
+    assert!(!body.to_ascii_lowercase().contains("scribe api"));
     assert!(body.contains("ghcr.io/open-software-network/june-api:0123abc"));
     assert!(body.contains(&format!(
         "https://github.com/open-software-network/os-june/commit/{TEST_COMMIT}"

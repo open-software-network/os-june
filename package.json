@@ -2,7 +2,7 @@
   "name": "os-june",
   "version": "0.0.20",
   "private": true,
-  "license": "Apache-2.0",
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {

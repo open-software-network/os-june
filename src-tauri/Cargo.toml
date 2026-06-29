@@ -3,7 +3,7 @@ name = "os-june"
 version = "0.0.20"
 description = "June"
 authors = ["Open Software Network"]
-license = "Apache-2.0"
+license = "MIT"
 edition = "2021"
 rust-version = "1.80.0"
 

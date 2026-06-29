@@ -15,7 +15,7 @@
   <a href="https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c">
     <img alt="Phala Trust Center - TEE verified" src="https://img.shields.io/badge/Phala%20Trust%20Center-TEE%20verified-success">
   </a>
-  <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="Built with Tauri" src="https://img.shields.io/badge/desktop-Tauri-orange">
 </p>
 
@@ -293,7 +293,7 @@ pin note, and the checklist all name the same version.
 
 ## License
 
-June is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+June is licensed under the MIT License. See [LICENSE](LICENSE).
 
 Bundled third-party runtime notices are tracked in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
