@@ -3,6 +3,18 @@ import { osAccountsLogout, osAccountsStatus } from "./tauri";
 import type { AccountStatus } from "./tauri";
 
 const EMPTY_STATUS: AccountStatus = { signedIn: false, configured: false };
+const DEMO_ACCOUNT: AccountStatus = {
+  signedIn: true,
+  configured: true,
+  localDev: true,
+  user: {
+    id: "usr_browser_demo",
+    handle: "browser-demo",
+    displayName: "Browser demo",
+  },
+  balance: { credits: 0, usdMillis: 0 },
+  subscription: { subscribed: true, status: "active" },
+};
 
 export type UseAccountStatusOptions = {
   forceLogoutOnMount?: boolean;
@@ -25,6 +37,11 @@ export function useAccountStatus(
   const [error, setError] = useState<string>();
 
   const refresh = useCallback(async () => {
+    if (browserOnboardingDemoEnabled()) {
+      setAccount(DEMO_ACCOUNT);
+      setError(undefined);
+      return DEMO_ACCOUNT;
+    }
     try {
       const next = await osAccountsStatus();
       setAccount(next);
@@ -40,7 +57,7 @@ export function useAccountStatus(
     let cancelled = false;
     setLoading(true);
     async function loadInitialStatus() {
-      if (forceLogoutOnMount) {
+      if (forceLogoutOnMount && !browserOnboardingDemoEnabled()) {
         await osAccountsLogout();
       }
       await refresh();
@@ -76,6 +93,13 @@ export function useAccountStatus(
   }, [refresh]);
 
   return { account, loading, error, refresh, setAccount };
+}
+
+function browserOnboardingDemoEnabled() {
+  if (!import.meta.env.DEV || typeof window === "undefined") return false;
+  return (
+    new URLSearchParams(window.location.search).get("juneDemoAccount") === "1"
+  );
 }
 
 function messageFromError(err: unknown) {

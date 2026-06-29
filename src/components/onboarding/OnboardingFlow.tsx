@@ -55,10 +55,25 @@ type Props = {
 };
 
 function initialStepIndex(steps: StepId[]): number {
+  const demoStep = browserOnboardingDemoStep();
+  if (demoStep) {
+    const demoIndex = steps.indexOf(demoStep);
+    if (demoIndex !== -1) return demoIndex;
+  }
   const saved = onboardingResumeStep();
   if (!saved) return 0;
   const index = steps.indexOf(saved as StepId);
   return index === -1 ? 0 : index;
+}
+
+function browserOnboardingDemoStep(): StepId | null {
+  if (!import.meta.env.DEV || typeof window === "undefined") return null;
+  const step = new URLSearchParams(window.location.search).get("juneDemoStep");
+  return step === "sign-in" ||
+    step === "permissions" ||
+    step === "dictation-practice"
+    ? step
+    : null;
 }
 
 export function OnboardingFlow({

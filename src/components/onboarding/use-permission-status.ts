@@ -61,12 +61,16 @@ export function useSystemAudioStatus(active: boolean): {
   status: SystemAudioStatus;
   probe: () => void;
 } {
-  const [status, setStatus] = useState<SystemAudioStatus>("unknown");
+  const demoEnabled = browserOnboardingDemoEnabled();
+  const [status, setStatus] = useState<SystemAudioStatus>(
+    demoEnabled ? "granted" : "unknown",
+  );
   const statusRef = useRef(status);
   statusRef.current = status;
   const inflightRef = useRef(false);
 
   const probe = useCallback(() => {
+    if (demoEnabled) return;
     if (inflightRef.current) return;
     inflightRef.current = true;
     // Only the first probe shows the pending row; re-probes after a denial
@@ -94,7 +98,7 @@ export function useSystemAudioStatus(active: boolean): {
       .finally(() => {
         inflightRef.current = false;
       });
-  }, []);
+  }, [demoEnabled]);
 
   useEffect(() => {
     if (!active || statusRef.current !== "unknown") return;
@@ -117,11 +121,15 @@ export function useSystemAudioStatus(active: boolean): {
 }
 
 export function usePermissionStatuses(active: boolean): PermissionStatuses {
+  const demoEnabled = browserOnboardingDemoEnabled();
   const [statuses, setStatuses] = useState<PermissionStatuses>({
-    checked: false,
+    checked: demoEnabled,
+    microphone: demoEnabled ? "granted" : undefined,
+    accessibility: demoEnabled ? "granted" : undefined,
   });
 
   useEffect(() => {
+    if (demoEnabled) return;
     let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen<string>("dictation-event", (event) => {
@@ -152,9 +160,10 @@ export function usePermissionStatuses(active: boolean): PermissionStatuses {
       aborted = true;
       unlisten?.();
     };
-  }, []);
+  }, [demoEnabled]);
 
   useEffect(() => {
+    if (demoEnabled) return;
     if (!active) return;
     function poll() {
       void dictationHelperCommand({ type: "get_permission_status" }).catch(
@@ -168,7 +177,14 @@ export function usePermissionStatuses(active: boolean): PermissionStatuses {
       window.clearInterval(interval);
       window.removeEventListener("focus", poll);
     };
-  }, [active]);
+  }, [active, demoEnabled]);
 
   return statuses;
+}
+
+function browserOnboardingDemoEnabled() {
+  if (!import.meta.env.DEV || typeof window === "undefined") return false;
+  return (
+    new URLSearchParams(window.location.search).get("juneDemoAccount") === "1"
+  );
 }
