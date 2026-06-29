@@ -85,6 +85,7 @@ import {
   listSessionFolders,
   openPrivacySettings,
   osAccountsLogout,
+  osAccountsOpenPortal,
   osAccountsUpgrade,
   pauseRecording,
   removeNoteFromFolder,
@@ -166,6 +167,7 @@ import {
 } from "../lib/onboarding";
 import {
   depletedBalanceActionLabel,
+  shouldOpenPortalForDepletedBalance,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
@@ -526,6 +528,11 @@ export function App() {
     !signInRequired &&
     shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
+  const topUpOpensPortal = shouldOpenPortalForDepletedBalance(account);
+  const handleTopUp = useCallback(() => {
+    const action = topUpOpensPortal ? osAccountsOpenPortal : osAccountsUpgrade;
+    void action().catch((err: unknown) => setError(messageFromError(err)));
+  }, [topUpOpensPortal]);
   const [onboardingDone, setOnboardingDone] = useState(() => {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();
@@ -2933,6 +2940,7 @@ export function App() {
                   initialSessionId={activeAgentSessionId}
                   onSessionSelected={setActiveAgentSession}
                   topUpLabel={topUpLabel}
+                  onTopUp={handleTopUp}
                   origin={
                     agentOriginFolder
                       ? {
@@ -3250,11 +3258,7 @@ export function App() {
                           throw err;
                         }
                       }}
-                      onTopUp={() =>
-                        void osAccountsUpgrade().catch((err: unknown) =>
-                          setError(messageFromError(err)),
-                        )
-                      }
+                      onTopUp={handleTopUp}
                       topUpLabel={topUpLabel}
                       onAssignFolder={(folderId) =>
                         void handleSetNoteFolder(selectedNote.id, folderId)

@@ -6547,7 +6547,7 @@ describe("AgentWorkspace", () => {
 
   it("renders an out-of-credits notice with a top-up action for subscribed users", async () => {
     const user = userEvent.setup();
-    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    const onTopUp = vi.fn();
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "m1",
@@ -6564,7 +6564,7 @@ describe("AgentWorkspace", () => {
       },
     ]);
 
-    render(<AgentWorkspace topUpLabel="Top up credits" />);
+    render(<AgentWorkspace onTopUp={onTopUp} topUpLabel="Top up credits" />);
 
     expect(
       await screen.findByText(/June stopped because your balance ran out/),
@@ -6572,7 +6572,8 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Top up credits" }));
-    expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
+    expect(onTopUp).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
   it("shows every error surface via the __agentErrors() dev handle", async () => {

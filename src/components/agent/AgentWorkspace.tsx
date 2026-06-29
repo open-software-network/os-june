@@ -843,6 +843,7 @@ type AgentWorkspaceProps = {
   initialSessionId?: string;
   origin?: AgentWorkspaceOrigin;
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
+  onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
 };
 
@@ -1252,6 +1253,7 @@ export function AgentWorkspace({
   initialSessionId: initialSessionIdProp,
   origin,
   onSessionSelected,
+  onTopUp,
   topUpLabel = "Upgrade",
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
@@ -1381,6 +1383,12 @@ export function AgentWorkspace({
     },
     [],
   );
+  const handleTopUp = useCallback(() => {
+    const result = onTopUp ? onTopUp() : osAccountsUpgrade();
+    void Promise.resolve(result).catch((err: unknown) =>
+      setError(messageFromError(err)),
+    );
+  }, [onTopUp, setError]);
   const clearErrorForSession = useCallback((sessionId: string) => {
     setErrorState((current) =>
       current?.sessionId === sessionId ? null : current,
@@ -6509,11 +6517,7 @@ export function AgentWorkspace({
               sessionUnrestricted(selectedHermesSessionId),
             )
           }
-          onTopUp={() =>
-            void osAccountsUpgrade().catch((err: unknown) =>
-              setError(messageFromError(err)),
-            )
-          }
+          onTopUp={handleTopUp}
           topUpLabel={topUpLabel}
           onClarify={(part, answer) =>
             void respondToClarify(
@@ -6616,11 +6620,7 @@ export function AgentWorkspace({
             onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
-            onTopUp={() =>
-              void osAccountsUpgrade().catch((err: unknown) =>
-                setError(messageFromError(err)),
-              )
-            }
+            onTopUp={handleTopUp}
             topUpLabel={topUpLabel}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;

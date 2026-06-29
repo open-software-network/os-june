@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   depletedBalanceActionLabel,
+  shouldOpenPortalForDepletedBalance,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
@@ -163,5 +164,27 @@ describe("depletedBalanceActionLabel", () => {
         subscription: { subscribed: true, status: "active" },
       }),
     ).toBe("Top up credits");
+  });
+});
+
+describe("shouldOpenPortalForDepletedBalance", () => {
+  it("keeps unsubscribed users on checkout", () => {
+    expect(
+      shouldOpenPortalForDepletedBalance({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: false },
+      }),
+    ).toBe(false);
+  });
+
+  it("routes subscribed users to the account portal", () => {
+    expect(
+      shouldOpenPortalForDepletedBalance({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active" },
+      }),
+    ).toBe(true);
   });
 });
