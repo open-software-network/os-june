@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: production-desktop-release
@@ -29,10 +30,9 @@ jobs:
     environment: production
     steps:
       # Mint a short-lived token from the release GitHub App, scoped to BOTH the
-      # private source repo (to push the version-bump commit to main) and the
+      # private source repo (to push the version-bump branch and open a PR) and the
       # public releases repo (tauri-action publishes there). One App is the sole
-      # release identity — org-owned, no personal PAT — and is the ruleset bypass
-      # actor for when main is protected (docs/adr/0001 + infra runbook).
+      # release identity - org-owned, no personal PAT (docs/adr/0001 + infra runbook).
       - name: Mint release token (GitHub App)
         id: app-token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
@@ -48,8 +48,8 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          # Persist the App token so the later `git push origin main` (the
-          # version-bump commit) is authenticated as the App, not GITHUB_TOKEN.
+          # Persist the App token so the later release branch push is
+          # authenticated as the App, not GITHUB_TOKEN.
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
@@ -289,23 +289,62 @@ jobs:
             --repo open-software-network/os-june-releases \
             --clobber
 
-      # Push the version bump to main only AFTER the release is published, so a
-      # build/notarize failure never leaves an orphan `release:` commit on main
-      # with no matching release. The push is authenticated as the release App
-      # (token persisted by checkout above), so when main gets a ruleset, add
-      # this App to the bypass actors and the push keeps working
-      # (docs/adr/0001 + infra runbook).
-      - name: Commit release version
+      # Open the version-bump PR only AFTER the release is published, so a
+      # build/notarize failure never leaves an orphan `release:` PR with no
+      # matching release. The branch push and PR creation are authenticated as
+      # the release App via the checkout credentials and GH_TOKEN below.
+      - name: Open release version PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          if git diff --cached --quiet; then
+            echo "Release version files are already at v$VERSION; skipping version commit."
+            exit 0
+          fi
           git commit -m "release: v$VERSION"
           # Rebase onto anything that landed on main during the (~15 min) build so
-          # the push isn't rejected non-fast-forward after the release is live.
-          git pull --rebase origin main
-          git push origin main
+          # the release PR branch starts from the current main after the release is live.
+          git fetch origin main
+          git rebase origin/main
+
+          release_branch="release/v$VERSION"
+          git push --force-with-lease origin HEAD:"refs/heads/$release_branch"
+
+          body_file="$RUNNER_TEMP/release-pr-body.md"
+          cat > "$body_file" <<EOF
+          Bumps desktop release version files to v$VERSION.
+
+          The release artifacts were already published by this workflow. Merge this PR to record the version bump on main.
+          EOF
+
+          pr_number="$(
+            gh pr list \
+              --repo open-software-network/os-june \
+              --base main \
+              --head "$release_branch" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" \
+              --repo open-software-network/os-june \
+              --title "release: v$VERSION" \
+              --body-file "$body_file"
+            echo "Updated release version PR #$pr_number."
+          else
+            gh pr create \
+              --repo open-software-network/os-june \
+              --base main \
+              --head "$release_branch" \
+              --title "release: v$VERSION" \
+              --body-file "$body_file"
+          fi
 
       - name: Notify Slack on release
         if: ${{ success() }}
