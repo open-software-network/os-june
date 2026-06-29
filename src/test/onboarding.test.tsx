@@ -95,6 +95,19 @@ function systemAudioReadiness(granted: boolean): RecordingSourceReadinessDto {
   };
 }
 
+function systemAudioCaptureUnavailableReadiness(): RecordingSourceReadinessDto {
+  const readiness = systemAudioReadiness(false);
+  const system = readiness.sources.find((source) => source.source === "system");
+  if (system) {
+    system.permissionState = "granted";
+    system.deviceAvailable = true;
+    system.captureAvailable = false;
+    system.recoveryAction = "restartApp";
+    system.message = "Failed to create audio format for system tap.";
+  }
+  return readiness;
+}
+
 function shortcut(label: string) {
   return {
     code: "Fn",
@@ -627,6 +640,28 @@ describe("OnboardingFlow", () => {
       grantPermissions();
 
       await screen.findByText("Needs macOS 14.2 or later.");
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+      );
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("does not show System Settings copy when system audio permission is granted but capture is unavailable", async () => {
+    const restoreNavigator = stubMacNavigatorPlatform();
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(
+      systemAudioCaptureUnavailableReadiness(),
+    );
+    try {
+      await renderFlow();
+      grantPermissions();
+
+      expect(
+        screen.queryByText(
+          "Turned off in System Settings. Flip the toggle and June will notice.",
+        ),
+      ).not.toBeInTheDocument();
       await waitFor(() =>
         expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
       );

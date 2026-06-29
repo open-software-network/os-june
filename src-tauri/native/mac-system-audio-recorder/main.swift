@@ -180,6 +180,8 @@ final class SystemAudioRecorder {
 
         let tapDescription = CATapDescription(excludingProcesses: [], deviceUID: outputUID, stream: 0)
         tapDescription.uuid = UUID()
+        tapDescription.isMixdown = true
+        tapDescription.isMono = false
         tapDescription.muteBehavior = .unmuted
         tapDescription.name = "June System Audio"
 
@@ -193,8 +195,9 @@ final class SystemAudioRecorder {
         processTapID = tapID
 
         var streamDescription = try tapID.readAudioTapStreamBasicDescription()
+        log("tap format \(describeAudioFormat(streamDescription))")
         guard let inputFormat = AVAudioFormat(streamDescription: &streamDescription) else {
-            throw "Failed to create audio format for system tap."
+            throw "Failed to create audio format for system tap: \(describeAudioFormat(streamDescription))."
         }
         let targetFormat: AVAudioFormat
         if let fileFormat {
@@ -662,6 +665,19 @@ private func describeError(_ error: Error) -> String {
         return message
     }
     return error.localizedDescription
+}
+
+private func describeAudioFormat(_ description: AudioStreamBasicDescription) -> String {
+    [
+        "sampleRate=\(description.mSampleRate)",
+        "formatID=\(description.mFormatID)",
+        "flags=\(description.mFormatFlags)",
+        "bytesPerPacket=\(description.mBytesPerPacket)",
+        "framesPerPacket=\(description.mFramesPerPacket)",
+        "bytesPerFrame=\(description.mBytesPerFrame)",
+        "channels=\(description.mChannelsPerFrame)",
+        "bits=\(description.mBitsPerChannel)",
+    ].joined(separator: " ")
 }
 
 private func loadTCCFunction<T>(_ name: String, as type: T.Type, logURL: URL?) -> T? {

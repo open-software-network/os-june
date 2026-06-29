@@ -1105,8 +1105,21 @@ fn apply_system_audio_permission_probe_result(
         }
         Err(error) => {
             system.ready = false;
-            system.permission_state = "denied".to_string();
             system.capture_available = false;
+            match error.code.as_str() {
+                "system_audio_permission_denied" => {
+                    system.permission_state = "denied".to_string();
+                    system.recovery_action = Some("openSystemAudioSettings".to_string());
+                }
+                "system_audio_capture_unavailable" => {
+                    system.permission_state = "granted".to_string();
+                    system.recovery_action = Some("restartApp".to_string());
+                }
+                _ => {
+                    system.permission_state = "unknown".to_string();
+                    system.recovery_action = Some("restartApp".to_string());
+                }
+            }
             system.message = Some(error.message);
         }
     }
@@ -1787,6 +1800,26 @@ mod tests {
         assert_eq!(readiness.permission_state, "denied");
         assert!(!readiness.capture_available);
         assert_eq!(readiness.message.as_deref(), Some("Grant access."));
+    }
+
+    #[test]
+    fn failed_system_audio_capture_probe_keeps_permission_granted() {
+        let readiness = apply_system_audio_permission_probe_result(
+            system_readiness(),
+            Err(AppError::new(
+                "system_audio_capture_unavailable",
+                "Failed to create audio format for system tap.",
+            )),
+        );
+
+        assert!(!readiness.ready);
+        assert_eq!(readiness.permission_state, "granted");
+        assert!(!readiness.capture_available);
+        assert_eq!(readiness.recovery_action.as_deref(), Some("restartApp"));
+        assert_eq!(
+            readiness.message.as_deref(),
+            Some("Failed to create audio format for system tap.")
+        );
     }
 
     #[test]

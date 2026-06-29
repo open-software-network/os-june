@@ -95,12 +95,11 @@ impl SystemAudioCapture {
         };
         if ready.event == "error" {
             abort_failed_helper_start(&partial_path, &status_path, &pid_path);
-            return Err(AppError::new(
-                "system_audio_permission_denied",
-                ready
-                    .message
-                    .unwrap_or_else(|| "System audio capture failed.".to_string()),
-            ));
+            dump_helper_log(&log_path);
+            let message = ready
+                .message
+                .unwrap_or_else(|| "System audio capture failed.".to_string());
+            return Err(AppError::new(helper_error_code(&message), message));
         }
         let Some(pid) = read_pid(&pid_path) else {
             abort_failed_helper_start(&partial_path, &status_path, &pid_path);
@@ -317,12 +316,13 @@ pub fn helper_permission_check() -> Result<(), AppError> {
     }
     let result = match status {
         Ok(status) if status.event == "ready" || status.event == "level" => Ok(()),
-        Ok(status) if status.event == "error" => Err(AppError::new(
-            "system_audio_permission_denied",
-            status
+        Ok(status) if status.event == "error" => {
+            dump_helper_log(&log_path);
+            let message = status
                 .message
-                .unwrap_or_else(|| "System audio capture probe failed.".to_string()),
-        )),
+                .unwrap_or_else(|| "System audio capture probe failed.".to_string());
+            Err(AppError::new(helper_error_code(&message), message))
+        }
         Ok(status) => {
             dump_helper_log(&log_path);
             Err(AppError::new(
@@ -345,6 +345,22 @@ pub fn helper_permission_check() -> Result<(), AppError> {
     let _ = std::fs::remove_file(&pid_path);
     let _ = std::fs::remove_file(&log_path);
     result
+}
+
+fn helper_error_code(message: &str) -> &'static str {
+    if helper_error_is_permission_denied(message) {
+        "system_audio_permission_denied"
+    } else {
+        "system_audio_capture_unavailable"
+    }
+}
+
+fn helper_error_is_permission_denied(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("permission is denied")
+        || normalized.contains("permission was not granted")
+        || normalized.contains("permission has not been granted")
+        || normalized.contains("timed out waiting for system audio recording permission")
 }
 
 #[cfg(target_os = "macos")]
@@ -606,13 +622,25 @@ fn dump_helper_log(_path: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_helper_status, macos_version_string_supports_system_audio,
+        apply_helper_status, helper_error_code, macos_version_string_supports_system_audio,
         system_audio_min_macos_version_label, HelperStatus, SystemAudioStats,
     };
 
     #[test]
     fn system_audio_support_label_uses_shared_minimum_version() {
         assert_eq!(system_audio_min_macos_version_label(), "14.2");
+    }
+
+    #[test]
+    fn helper_error_code_distinguishes_permission_from_capture_failures() {
+        assert_eq!(
+            helper_error_code("System Audio Recording permission was not granted."),
+            "system_audio_permission_denied"
+        );
+        assert_eq!(
+            helper_error_code("Failed to create audio format for system tap."),
+            "system_audio_capture_unavailable"
+        );
     }
 
     #[test]
