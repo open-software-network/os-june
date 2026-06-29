@@ -2151,9 +2151,14 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     .await;
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
     let state = app.state::<HelperState>();
+    let pasted_text = paste_text_from_command(&outcome.helper_command).map(str::to_string);
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
         emit_dictation_event_value(&app, app_error_event(error));
         return;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(text) = pasted_text.as_deref() {
+        emit_in_process_paste_completed(&app, &state, text);
     }
     if let Some(transcript) = outcome.transcript.as_ref() {
         spawn_dictation_history_write(app.clone(), transcript.clone());
@@ -2161,6 +2166,30 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     if let Some(event) = outcome.event {
         emit_dictation_event_value(&app, event);
     }
+}
+
+fn paste_text_from_command(command: &serde_json::Value) -> Option<&str> {
+    (command.get("type").and_then(serde_json::Value::as_str) == Some("paste_text"))
+        .then(|| command.get("text").and_then(serde_json::Value::as_str))
+        .flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn emit_in_process_paste_completed(app: &AppHandle, state: &HelperState, text: &str) {
+    for event in paste_completion_events(text) {
+        emit_dictation_event_value(app, event);
+    }
+    let _ = send_helper_command(state, serde_json::json!({ "type": "discard_recording" }));
+}
+
+fn paste_completion_events(text: &str) -> [serde_json::Value; 2] {
+    [
+        serde_json::json!({
+            "type": "final_transcript",
+            "payload": { "text": text },
+        }),
+        serde_json::json!({ "type": "paste_completed" }),
+    ]
 }
 
 fn dictation_session_id() -> String {
@@ -3940,11 +3969,29 @@ mod tests {
                 "text": "Paste this transcript.",
             })
         );
+        assert_eq!(
+            paste_text_from_command(&outcome.helper_command),
+            Some("Paste this transcript.")
+        );
         assert!(outcome.event.is_none());
         assert_eq!(
             outcome.transcript.as_ref().map(|item| item.text.as_str()),
             Some("Paste this transcript.")
         );
+    }
+
+    #[test]
+    fn in_process_paste_completion_matches_helper_event_contract() {
+        let events = paste_completion_events("Paste this transcript.");
+
+        assert_eq!(
+            events[0],
+            serde_json::json!({
+                "type": "final_transcript",
+                "payload": { "text": "Paste this transcript." },
+            })
+        );
+        assert_eq!(events[1], serde_json::json!({ "type": "paste_completed" }));
     }
 
     #[test]
