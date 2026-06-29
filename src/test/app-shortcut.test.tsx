@@ -15,7 +15,12 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../lib/agent-events";
 import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
-import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
+import type {
+  AccountStatus,
+  BootstrapResponse,
+  NoteDto,
+  RecordingSourceReadinessDto,
+} from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -202,6 +207,32 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
     generatedContent: "Existing note",
     activeTab: "notes",
     ...overrides,
+  };
+}
+
+function recordingReadiness(systemReady: boolean): RecordingSourceReadinessDto {
+  return {
+    sourceMode: "microphonePlusSystem",
+    ready: systemReady,
+    sources: [
+      {
+        source: "microphone",
+        required: true,
+        ready: true,
+        permissionState: "granted",
+        deviceAvailable: true,
+        captureAvailable: true,
+      },
+      {
+        source: "system",
+        required: true,
+        ready: systemReady,
+        permissionState: systemReady ? "granted" : "denied",
+        deviceAvailable: true,
+        captureAvailable: systemReady,
+        recoveryAction: "openSystemAudioSettings",
+      },
+    ],
   };
 }
 
@@ -721,43 +752,8 @@ describe("App shortcuts", () => {
       "MacIntel",
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
     );
-    const deniedReadiness = {
-      sourceMode: "microphonePlusSystem",
-      ready: false,
-      sources: [
-        {
-          source: "microphone",
-          required: true,
-          ready: true,
-          permissionState: "granted",
-          deviceAvailable: true,
-          captureAvailable: true,
-        },
-        {
-          source: "system",
-          required: true,
-          ready: false,
-          permissionState: "denied",
-          deviceAvailable: true,
-          captureAvailable: false,
-          recoveryAction: "openSystemAudioSettings",
-        },
-      ],
-    };
-    const grantedReadiness = {
-      ...deniedReadiness,
-      ready: true,
-      sources: deniedReadiness.sources.map((source) =>
-        source.source === "system"
-          ? {
-              ...source,
-              ready: true,
-              permissionState: "granted",
-              captureAvailable: true,
-            }
-          : source,
-      ),
-    };
+    const deniedReadiness = recordingReadiness(false);
+    const grantedReadiness = recordingReadiness(true);
     mocks.checkRecordingSourceReadiness
       .mockResolvedValueOnce(deniedReadiness)
       .mockResolvedValue(grantedReadiness);
@@ -795,6 +791,71 @@ describe("App shortcuts", () => {
       await waitFor(() =>
         expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2),
       );
+      await waitFor(() => {
+        const allowedRow = screen
+          .getByText("System audio")
+          .closest(".settings-row");
+        expect(allowedRow).not.toBeNull();
+        expect(
+          within(allowedRow as HTMLElement).getByLabelText("Allowed"),
+        ).toBeInTheDocument();
+      });
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("does not overlap system audio readiness polls while a probe is pending", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    );
+    let resolveProbe: (value: RecordingSourceReadinessDto) => void = () => {};
+    const pendingProbe = new Promise<RecordingSourceReadinessDto>((resolve) => {
+      resolveProbe = resolve;
+    });
+    mocks.checkRecordingSourceReadiness
+      .mockResolvedValueOnce(recordingReadiness(false))
+      .mockReturnValue(pendingProbe);
+
+    try {
+      render(<App />);
+
+      await waitFor(() =>
+        expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
+      );
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+      act(() => {
+        mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+      });
+
+      expect(
+        await screen.findByRole("heading", { name: "Appearance" }),
+      ).toBeInTheDocument();
+      const blockedRow = screen
+        .getByText("System audio")
+        .closest(".settings-row");
+      expect(blockedRow).not.toBeNull();
+
+      fireEvent.click(
+        within(blockedRow as HTMLElement).getByRole("button", {
+          name: "Manage System audio permission",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2),
+      );
+
+      await new Promise((resolve) => window.setTimeout(resolve, 1_200));
+
+      expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        resolveProbe(recordingReadiness(true));
+        await pendingProbe;
+      });
       await waitFor(() => {
         const allowedRow = screen
           .getByText("System audio")

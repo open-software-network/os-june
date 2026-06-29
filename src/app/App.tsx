@@ -1744,12 +1744,18 @@ export function App() {
       return;
     }
     let cancelled = false;
+    let inFlight = false;
     function poll() {
+      if (inFlight) return;
+      inFlight = true;
       void checkRecordingSourceReadiness("microphonePlusSystem")
         .then((readiness) => {
           if (!cancelled) setSourceReadiness(readiness);
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false;
+        });
     }
     poll();
     const interval = window.setInterval(
