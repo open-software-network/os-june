@@ -110,9 +110,14 @@ pub fn source_audio_passes_validation(
     validation: &AudioValidationDto,
 ) -> bool {
     let has_usable_audio = validation.non_zero_size && validation.readable_audio;
+    let config = validation_config_for_source(source);
+    // A longer WAV can still be processed. A shorter WAV means local capture
+    // likely lost audio, which should block transcription.
+    let is_not_truncated = validation.actual_duration_ms + config.duration_tolerance_ms
+        >= validation.expected_duration_ms;
     match source {
-        RecordingSource::Microphone => has_usable_audio && validation.duration_within_tolerance,
-        RecordingSource::System => has_usable_audio && validation.duration_within_tolerance,
+        RecordingSource::Microphone => has_usable_audio && is_not_truncated,
+        RecordingSource::System => has_usable_audio && is_not_truncated,
     }
 }
 

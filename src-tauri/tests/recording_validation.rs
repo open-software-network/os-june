@@ -137,6 +137,31 @@ fn rejects_truncated_system_audio() {
 }
 
 #[test]
+fn accepts_longer_audio_with_duration_mismatch_warning() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("longer-than-clock.wav");
+    write_stereo_wav(&path, 6_000, 3_000);
+
+    let result = validate_audio_artifact(&path, 1_000, AudioValidationConfig::default())
+        .expect("validation should run");
+
+    assert_eq!(result.actual_duration_ms, 3_000);
+    assert!(!result.duration_within_tolerance);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("duration mismatch")));
+    assert!(source_audio_passes_validation(
+        RecordingSource::System,
+        &result
+    ));
+    assert!(source_audio_passes_validation(
+        RecordingSource::Microphone,
+        &result
+    ));
+}
+
+#[test]
 fn accepts_low_rms_audio_without_loudness_thresholds() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("quiet.wav");

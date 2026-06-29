@@ -906,6 +906,7 @@ async fn finish_recording_session(
             rms_amplitude: 0.0,
             warnings: vec!["No microphone validation was available.".to_string()],
         });
+    let primary_valid = source_audio_passes_validation(RecordingSource::Microphone, &validation);
     repos
         .update_recording_session(
             &finished.session_id,
@@ -921,7 +922,7 @@ async fn finish_recording_session(
             Some(validation.peak_amplitude),
             Some(validation.rms_amplitude),
             Some(serde_json::to_string(&validation).unwrap_or_default()),
-            if validation.duration_within_tolerance {
+            if primary_valid {
                 None
             } else {
                 Some(validation.warnings.join("; "))
@@ -1342,17 +1343,14 @@ pub async fn recover_recording(
             Some(validation.peak_amplitude),
             Some(validation.rms_amplitude),
             Some(serde_json::to_string(&validation).unwrap_or_default()),
-            if validation.duration_within_tolerance {
+            if source_audio_passes_validation(RecordingSource::Microphone, &validation) {
                 None
             } else {
                 Some(validation.warnings.join("; "))
             },
         )
         .await?;
-    if !(validation.non_zero_size
-        && validation.readable_audio
-        && validation.duration_within_tolerance)
-    {
+    if !source_audio_passes_validation(RecordingSource::Microphone, &validation) {
         repos
             .set_note_status(
                 &info.note_id,
