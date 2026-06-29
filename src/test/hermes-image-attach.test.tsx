@@ -73,7 +73,7 @@ describe("attachmentStateFrom", () => {
     expect(state.sessionId).toBe("ws-1");
   });
 
-  it("marks a non-image import as a file (not for image.attach)", () => {
+  it("marks a non-image import as a file (not for structured attach)", () => {
     const state = attachmentStateFrom(TEXT, "ws-1");
     expect(state.kind).toBe("file");
     expect(state.status).toBe("imported");
@@ -110,7 +110,7 @@ describe("attachImageToSession", () => {
     };
   }
 
-  it("reads bytes, calls image.attach, and flips status to attached", async () => {
+  it("reads bytes, calls image.attach_bytes, and flips status to attached", async () => {
     const deps = baseDeps();
     const result = await attachImageToSession(
       attachmentStateFrom(PNG, "ws-1"),
@@ -123,6 +123,7 @@ describe("attachImageToSession", () => {
       sessionId: "ws-1",
       mimeType: "image/png",
       dataBase64: "aGVsbG8=",
+      fileName: "diagram.png",
     });
     expect(result.state.status).toBe("attached");
     expect(result.state.hermesAttachmentId).toBe("att-9");
@@ -152,10 +153,10 @@ describe("attachImageToSession", () => {
       deps,
     );
     expect(result.trace).toBeDefined();
-    expect(result.trace?.method).toBe("image.attach");
+    expect(result.trace?.method).toBe("image.attach_bytes");
     const serialized = JSON.stringify(result.trace);
     expect(serialized).not.toContain("aGVsbG8=");
-    expect(serialized).not.toContain("data_base64");
+    expect(serialized).not.toContain("content_base64");
   });
 
   it("blocks with a failed status when the RPC rejects", async () => {

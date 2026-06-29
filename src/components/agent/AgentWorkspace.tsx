@@ -778,7 +778,7 @@ type AgentArtifact = {
 type AgentAttachment = ImportedHermesFile & {
   id: string;
   /** Structured attach status (feature 19). Tracks whether this import has been
-   * sent to the model via image.attach: imported (ready) → attached (acked) →
+   * sent to the model via image.attach_bytes: imported (ready) → attached (acked) →
    * or failed. Carries file refs only, never the image bytes. Files stay
    * `imported` (they only ride along as a path in the prompt). */
   attach: HermesAttachmentState;
@@ -3509,7 +3509,7 @@ export function AgentWorkspace({
           ...file,
           id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
           // Seed the structured attach status (feature 19). Images become
-          // `kind:"image"`, status `imported` — eligible for image.attach on
+          // `kind:"image"`, status `imported` — eligible for structured attach on
           // the next submit. No bytes are kept here.
           attach: attachmentStateFrom(file),
         })),
@@ -3689,7 +3689,7 @@ export function AgentWorkspace({
   }
 
   /**
-   * Attach this turn's pending images to the live session via image.attach
+   * Attach this turn's pending images to the live session via image.attach_bytes
    * (feature 19), updating each chip's status and feeding the artifact timeline.
    * The base64 is read on demand from the workspace file (hermesBridgeFilePreview
    * returns a data url), passed straight to the typed attachImage, and discarded;
@@ -3711,7 +3711,7 @@ export function AgentWorkspace({
     const deps = {
       attachImage: methods.attachImage,
       readImageData: (path: string) => hermesBridgeFilePreview(path),
-      isSupported: () => isHermesFeatureSupported("image.attach"),
+      isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
     };
     const mode = hermesModeFor(storedSessionId);
     const failures: string[] = [];
@@ -4144,7 +4144,7 @@ export function AgentWorkspace({
       displayContent?: string;
       titleContent?: string;
       /** Imported attachments for this turn. Image attachments are sent to the
-       * session via the structured image.attach flow (feature 19) once the
+       * session via the structured image attach flow (feature 19) once the
        * session id is known and before prompt.submit; a failed attach throws to
        * block the send so the user can retry. */
       attachments?: AgentAttachment[];
@@ -4318,7 +4318,7 @@ export function AgentWorkspace({
       );
     }
     // Feature 19: send any imported images to the session through the
-    // structured image.attach flow before the prompt, so the model/tools see
+    // structured image attach flow before the prompt, so the model/tools see
     // them as first-class inputs (not just a path mentioned in prose) and an
     // image-edit prompt names a concrete source. A failed attach throws here,
     // which the submit() catch turns into a restored composer the user can

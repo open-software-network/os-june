@@ -58,7 +58,7 @@ export type ArtifactKind = "file" | "image" | "directory" | "url" | "unknown";
  * What the agent did with the artifact. `failed` means the access errored (e.g.
  * a sandboxed write to an unrestricted path was denied). `attached` (feature 19)
  * means the user attached an image into the session via the structured
- * `image.attach` flow — it shows in the timeline like any other artifact.
+ * `image.attach_bytes` flow — it shows in the timeline like any other artifact.
  */
 export type ArtifactAction =
   | "created"

@@ -90,6 +90,7 @@ export type RawHermesMethodName =
   | "secret.respond"
   | "subagent.interrupt"
   | "image.attach"
+  | "image.attach_bytes"
   | (string & {});
 
 /**
