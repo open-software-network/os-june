@@ -52,7 +52,94 @@ pub(crate) fn validate_agent_chat_body(body: &Value) -> Result<(), ApiError> {
     validate_output_tokens(object.get("max_tokens"), "max_tokens")?;
     validate_output_tokens(object.get("max_completion_tokens"), "max_completion_tokens")?;
     let mut total_string_chars = 0usize;
-    validate_json_shape(body, 0, &mut total_string_chars)
+    // The ONLY sanctioned home for a large base64 image is
+    // messages[].content[].image_url.url. Validate that one path with the
+    // exemption; every other top-level field (metadata, tools, …) goes through
+    // the generic size guards with no exemption, so an oversized data URL can't
+    // be smuggled through a look-alike `image_url` field outside chat content.
+    for (key, value) in object {
+        if key == "messages" {
+            validate_messages(value, 1, &mut total_string_chars)?;
+        } else {
+            validate_json_shape(value, 1, &mut total_string_chars)?;
+        }
+    }
+    Ok(())
+}
+
+/// Walk `messages[]`, routing each message's `content` through the content-part
+/// validator so the image exemption only ever applies on that exact path.
+fn validate_messages(
+    value: &Value,
+    depth: usize,
+    total_string_chars: &mut usize,
+) -> Result<(), ApiError> {
+    if depth > MAX_AGENT_JSON_DEPTH {
+        return Err(ApiError::bad_request("json_too_deep"));
+    }
+    let Some(items) = value.as_array() else {
+        // Unexpected shape (not an array) — guard it generically.
+        return validate_json_shape(value, depth, total_string_chars);
+    };
+    for item in items {
+        if let Some(message) = item.as_object() {
+            for (key, child) in message {
+                if key == "content" {
+                    validate_message_content(child, depth + 2, total_string_chars)?;
+                } else {
+                    validate_json_shape(child, depth + 2, total_string_chars)?;
+                }
+            }
+        } else {
+            validate_json_shape(item, depth + 1, total_string_chars)?;
+        }
+    }
+    Ok(())
+}
+
+/// `content` is either a plain string or an array of parts; only an array part
+/// shaped `{"type":"image_url","image_url":{"url":"data:..."}}` gets the
+/// data-url exemption.
+fn validate_message_content(
+    value: &Value,
+    depth: usize,
+    total_string_chars: &mut usize,
+) -> Result<(), ApiError> {
+    if depth > MAX_AGENT_JSON_DEPTH {
+        return Err(ApiError::bad_request("json_too_deep"));
+    }
+    let Some(parts) = value.as_array() else {
+        return validate_json_shape(value, depth, total_string_chars);
+    };
+    for part in parts {
+        let Some(object) = part.as_object() else {
+            validate_json_shape(part, depth + 1, total_string_chars)?;
+            continue;
+        };
+        let is_image_part = object.get("type").and_then(Value::as_str) == Some("image_url");
+        for (key, child) in object {
+            // Exempt the one image_url.url string from BOTH the per-string and
+            // aggregate caps; every other string stays subject to them.
+            if is_image_part
+                && key == "image_url"
+                && let Some(image) = child.as_object()
+                && image
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_agent_image_data_url)
+            {
+                for (field, inner) in image {
+                    if field == "url" {
+                        continue;
+                    }
+                    validate_json_shape(inner, depth + 3, total_string_chars)?;
+                }
+                continue;
+            }
+            validate_json_shape(child, depth + 2, total_string_chars)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_output_tokens(value: Option<&Value>, field: &str) -> Result<(), ApiError> {
@@ -105,34 +192,12 @@ fn validate_json_shape(
             }
         }
         Value::Object(object) => {
-            // The only sanctioned home for a large base64 image is the
-            // `image_url.url` of a real content part, shaped
-            // {"type":"image_url","image_url":{"url":"data:..."}}. Require that
-            // sibling `type` marker before exempting the url, so an oversized
-            // data URL can't be smuggled through an arbitrarily-named `image_url`
-            // field elsewhere (metadata, tool descriptions) to bypass the caps.
-            let is_image_content_part =
-                object.get("type").and_then(Value::as_str) == Some("image_url");
-            for (key, child) in object {
-                // Exempt that one url string from BOTH the per-string and
-                // aggregate guards; every other string stays subject to them.
-                if is_image_content_part
-                    && key == "image_url"
-                    && let Some(image) = child.as_object()
-                    && image
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .is_some_and(is_agent_image_data_url)
-                {
-                    for (field, value) in image {
-                        if field == "url" {
-                            continue;
-                        }
-                        validate_json_shape(value, depth + 2, total_string_chars)?;
-                    }
-                    continue;
-                }
-                validate_json_shape(child, depth + 1, total_string_chars)?;
+            // Generic guard: no image exemption here. The data-url exemption is
+            // applied ONLY on the messages[].content[].image_url.url path (see
+            // validate_message_content), so a look-alike `image_url` object in
+            // any other field is fully subject to the size caps.
+            for value in object.values() {
+                validate_json_shape(value, depth + 1, total_string_chars)?;
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
@@ -324,6 +389,29 @@ mod tests {
                 "model": "text-model",
                 "messages": [{ "role": "user", "content": "hi" }],
                 "metadata": { "image_url": { "url": image } },
+            })),
+            Err(ApiError::BadRequest { message, .. }) if message == "string_too_long"
+        ));
+    }
+
+    #[test]
+    fn agent_body_rejects_image_content_part_outside_messages_content() {
+        // Path-scoped: a full image content part ("type":"image_url" + image_url)
+        // placed OUTSIDE messages[].content[] (e.g. in metadata) must NOT get the
+        // exemption — the data URL is still subject to the size guards.
+        let image = format!(
+            "data:image/png;base64,{}",
+            "a".repeat(MAX_AGENT_STRING_CHARS + 1)
+        );
+
+        assert!(matches!(
+            validate_agent_chat_body(&json!({
+                "model": "text-model",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "metadata": {
+                    "type": "image_url",
+                    "image_url": { "url": image },
+                },
             })),
             Err(ApiError::BadRequest { message, .. }) if message == "string_too_long"
         ));
