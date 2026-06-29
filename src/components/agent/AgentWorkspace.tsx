@@ -5848,6 +5848,8 @@ export function AgentWorkspace({
   // instantly; only turns arriving while the user is already reading glide.
   const settledScrollSelectionRef = useRef<string>();
   const transcriptShouldStickToBottomRef = useRef(true);
+  const transcriptProgrammaticScrollRef = useRef(false);
+  const transcriptProgrammaticScrollTimeoutRef = useRef<number | undefined>();
 
   // History for the selected conversation has landed: a session gets an entry
   // in hermesSessionMessages (even an empty one) once its fetch resolves;
@@ -5868,13 +5870,40 @@ export function AgentWorkspace({
     if (heroMode) return;
     const scroller = agentScrollRef.current;
     if (!scroller) return;
+    const clearProgrammaticScroll = () => {
+      transcriptProgrammaticScrollRef.current = false;
+      if (transcriptProgrammaticScrollTimeoutRef.current !== undefined) {
+        window.clearTimeout(transcriptProgrammaticScrollTimeoutRef.current);
+        transcriptProgrammaticScrollTimeoutRef.current = undefined;
+      }
+    };
     const updateStickiness = () => {
+      if (transcriptProgrammaticScrollRef.current) {
+        transcriptShouldStickToBottomRef.current = true;
+        if (isAgentTranscriptNearBottom(scroller)) clearProgrammaticScroll();
+        return;
+      }
       transcriptShouldStickToBottomRef.current =
         isAgentTranscriptNearBottom(scroller);
     };
+    const updateFromUserScroll = () => {
+      clearProgrammaticScroll();
+      window.requestAnimationFrame(updateStickiness);
+    };
     updateStickiness();
     scroller.addEventListener("scroll", updateStickiness, { passive: true });
-    return () => scroller.removeEventListener("scroll", updateStickiness);
+    scroller.addEventListener("wheel", updateFromUserScroll, {
+      passive: true,
+    });
+    scroller.addEventListener("touchmove", updateFromUserScroll, {
+      passive: true,
+    });
+    return () => {
+      scroller.removeEventListener("scroll", updateStickiness);
+      scroller.removeEventListener("wheel", updateFromUserScroll);
+      scroller.removeEventListener("touchmove", updateFromUserScroll);
+      clearProgrammaticScroll();
+    };
   }, [heroMode, selectedHermesSessionId, selectedTaskId]);
 
   useEffect(() => {
@@ -5900,6 +5929,18 @@ export function AgentWorkspace({
     }
     if (settled && !transcriptShouldStickToBottomRef.current) return;
     if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
+    if (settled) {
+      transcriptProgrammaticScrollRef.current = true;
+      if (transcriptProgrammaticScrollTimeoutRef.current !== undefined) {
+        window.clearTimeout(transcriptProgrammaticScrollTimeoutRef.current);
+      }
+      transcriptProgrammaticScrollTimeoutRef.current = window.setTimeout(() => {
+        transcriptProgrammaticScrollRef.current = false;
+        transcriptProgrammaticScrollTimeoutRef.current = undefined;
+      }, 800);
+    } else {
+      transcriptProgrammaticScrollRef.current = false;
+    }
     scroller.scrollTo({
       top: scroller.scrollHeight,
       behavior: settled ? "smooth" : "auto",
