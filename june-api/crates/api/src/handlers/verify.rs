@@ -57,7 +57,6 @@ fn render_page(info: &AttestationInfo) -> String {
     };
 
     PAGE_TEMPLATE
-        .replace("@SERVICE@", env!("CARGO_PKG_NAME"))
         .replace("@VERSION@", env!("CARGO_PKG_VERSION"))
         .replace("@COMMIT_VALUE@", &commit_value)
         .replace("@SHORT_SHA@", &short_sha)
@@ -71,7 +70,7 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Verify this server · @SERVICE@</title>
+<title>Verify this server</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -167,14 +166,14 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
 <header>
   <span class="badge">Intel TDX · Phala Cloud</span>
   <h1>Verify this server</h1>
-  <p class="lede">@SERVICE@ runs inside an Intel TDX confidential VM. This page is
+  <p class="lede">This server runs inside an Intel TDX confidential VM. This page is
   served from inside that VM and explains how to check, without trusting us,
   that the code running here is exactly the public source code.</p>
 </header>
 
 <h2>This deployment</h2>
 <dl class="facts">
-  <div><dt>Service</dt><dd><code>@SERVICE@</code> v@VERSION@</dd></div>
+  <div><dt>Version</dt><dd><code>v@VERSION@</code></dd></div>
   <div><dt>Source commit</dt><dd>@COMMIT_VALUE@</dd></div>
   <div><dt>Source code</dt><dd><a href="@REPO_URL@">@REPO_URL@</a></dd></div>
   <div><dt>Image</dt><dd><code>@IMAGE_REPO@:@SHORT_SHA@</code></dd></div>
@@ -289,6 +288,28 @@ mod tests {
         assert!(html.contains("ghcr.io/open-software-network/june-api:0123abc"));
         assert!(html.contains("https://trust.phala.com/app/15f8d2fd"));
         assert!(!html.contains("@SHORT_SHA@"));
+    }
+
+    #[test]
+    fn render_uses_product_neutral_verify_copy() {
+        let html = render_page(&info());
+
+        assert!(html.contains("<title>Verify this server</title>"));
+        assert!(html.contains("This server runs inside an Intel TDX confidential VM."));
+        assert!(html.contains(&format!(
+            "<div><dt>Version</dt><dd><code>v{}</code></dd></div>",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(!html.contains(&format!("Verify this server · {}", env!("CARGO_PKG_NAME"))));
+        assert!(!html.contains(&format!(
+            "{} runs inside an Intel TDX confidential VM",
+            env!("CARGO_PKG_NAME")
+        )));
+        assert!(!html.contains(&format!(
+            "<dt>Service</dt><dd><code>{}</code>",
+            env!("CARGO_PKG_NAME")
+        )));
+        assert!(!html.contains("@SERVICE@"));
     }
 
     #[test]
