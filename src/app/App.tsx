@@ -444,6 +444,12 @@ export function App() {
   const systemGranted = !!sourceReadiness?.sources.find(
     (source) => source.source === "system",
   )?.ready;
+  const recordingState = state.recordingStatus?.state;
+  const captureActive =
+    recordingState === "recording" ||
+    recordingState === "paused" ||
+    recordingState === "finalizing" ||
+    recordingState === "validating";
   const sourceMode: RecordingSourceMode =
     userWantsSystemAudio && systemGranted
       ? "microphonePlusSystem"
@@ -1686,12 +1692,6 @@ export function App() {
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
-    const recordingState = state.recordingStatus?.state;
-    const captureActive =
-      recordingState === "recording" ||
-      recordingState === "paused" ||
-      recordingState === "finalizing" ||
-      recordingState === "validating";
     function refresh() {
       void dictationHelperCommand({ type: "get_permission_status" }).catch(
         () => undefined,
@@ -1703,7 +1703,7 @@ export function App() {
     }
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [appBlocked, state.recordingStatus?.state]);
+  }, [appBlocked, captureActive]);
 
   // After the user asks to grant Accessibility, keep checking briefly while
   // macOS System Settings is in front. This avoids relying on a single webview
@@ -1740,7 +1740,12 @@ export function App() {
   // checking briefly while macOS is in front. This matches Accessibility's
   // permission flow and avoids relying on a single webview focus event.
   useEffect(() => {
-    if (appBlocked || systemGranted || systemAudioRefreshRequest === 0) {
+    if (
+      appBlocked ||
+      captureActive ||
+      systemGranted ||
+      systemAudioRefreshRequest === 0
+    ) {
       return;
     }
     let cancelled = false;
@@ -1770,7 +1775,7 @@ export function App() {
       window.clearInterval(interval);
       window.clearTimeout(timeout);
     };
-  }, [appBlocked, systemAudioRefreshRequest, systemGranted]);
+  }, [appBlocked, captureActive, systemAudioRefreshRequest, systemGranted]);
 
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");

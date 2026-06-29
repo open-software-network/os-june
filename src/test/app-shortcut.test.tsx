@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
@@ -19,6 +20,7 @@ import type {
   AccountStatus,
   BootstrapResponse,
   NoteDto,
+  RecordingSessionDto,
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 
@@ -233,6 +235,38 @@ function recordingReadiness(systemReady: boolean): RecordingSourceReadinessDto {
         recoveryAction: "openSystemAudioSettings",
       },
     ],
+  };
+}
+
+function microphoneOnlyReadiness(): RecordingSourceReadinessDto {
+  return {
+    sourceMode: "microphoneOnly",
+    ready: true,
+    sources: [
+      {
+        source: "microphone",
+        required: true,
+        ready: true,
+        permissionState: "granted",
+        deviceAvailable: true,
+        captureAvailable: true,
+      },
+    ],
+  };
+}
+
+function recordingSession(
+  overrides: Partial<RecordingSessionDto> = {},
+): RecordingSessionDto {
+  return {
+    id: "rec-1",
+    noteId: "note-1",
+    sourceMode: "microphoneOnly",
+    state: "recording",
+    startedAt: now,
+    elapsedMs: 0,
+    level: { peak: 0, rms: 0, recentPeaks: [] },
+    ...overrides,
   };
 }
 
@@ -864,6 +898,103 @@ describe("App shortcuts", () => {
         expect(
           within(allowedRow as HTMLElement).getByLabelText("Allowed"),
         ).toBeInTheDocument();
+      });
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("pauses system audio readiness polling while recording is active", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    );
+    let resolveProbe: (value: RecordingSourceReadinessDto) => void = () => {};
+    const pendingProbe = new Promise<RecordingSourceReadinessDto>((resolve) => {
+      resolveProbe = resolve;
+    });
+    let systemReadinessCalls = 0;
+    mocks.checkRecordingSourceReadiness.mockImplementation(
+      async (mode: string) => {
+        if (mode === "microphoneOnly") return microphoneOnlyReadiness();
+        systemReadinessCalls += 1;
+        if (systemReadinessCalls === 1) return recordingReadiness(false);
+        return pendingProbe;
+      },
+    );
+    mocks.startRecording.mockImplementation(
+      async (noteId: string, sourceMode: string) =>
+        recordingSession({
+          noteId,
+          sourceMode: sourceMode as RecordingSessionDto["sourceMode"],
+        }),
+    );
+    mocks.getRecordingStatus.mockResolvedValue({
+      sessionId: "rec-1",
+      noteId: "note-1",
+      sourceMode: "microphoneOnly",
+      state: "recording",
+      elapsedMs: 0,
+      level: { peak: 0, rms: 0, recentPeaks: [] },
+      silenceWarning: false,
+      bytesWritten: 0,
+    });
+
+    try {
+      render(<App />);
+
+      await waitFor(() =>
+        expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
+      );
+      await waitFor(() =>
+        expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(
+          true,
+        ),
+      );
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+      act(() => {
+        mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+      });
+
+      expect(
+        await screen.findByRole("heading", { name: "Appearance" }),
+      ).toBeInTheDocument();
+      const blockedRow = screen
+        .getByText("System audio")
+        .closest(".settings-row");
+      expect(blockedRow).not.toBeNull();
+
+      fireEvent.click(
+        within(blockedRow as HTMLElement).getByRole("button", {
+          name: "Manage System audio permission",
+        }),
+      );
+
+      await waitFor(() => expect(systemReadinessCalls).toBe(2));
+
+      await waitFor(async () => {
+        if (mocks.startRecording.mock.calls.length === 0) {
+          await act(async () => {
+            await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+              payload: undefined,
+            });
+          });
+        }
+        expect(mocks.startRecording).toHaveBeenCalled();
+      });
+      expect(mocks.startRecording).toHaveBeenCalledWith(
+        expect.any(String),
+        "microphoneOnly",
+      );
+
+      await new Promise((resolve) => window.setTimeout(resolve, 1_200));
+
+      expect(systemReadinessCalls).toBe(2);
+
+      await act(async () => {
+        resolveProbe(recordingReadiness(false));
+        await pendingProbe;
       });
     } finally {
       restoreNavigator();
