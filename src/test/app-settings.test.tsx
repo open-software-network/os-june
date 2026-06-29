@@ -131,7 +131,7 @@ const signedInAccount = {
     email: "alex@example.com",
     displayName: "Alex",
   },
-  balance: { usdMillis: 1200 },
+  balance: { usdMillis: 1200, usageRemainingPercent: 100 },
 };
 
 function stubNavigatorPlatform(platform: string, userAgent: string) {
@@ -411,6 +411,41 @@ describe("AppSettings", () => {
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
   });
 
+  it("shows usage remaining as a percentage instead of dollars", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: {
+            credits: 1200,
+            usdMillis: 1200,
+            usageRemainingPercent: 64,
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Billing" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("64% remaining")).toBeInTheDocument();
+    expect(screen.getByText("Usage remaining on Free")).toBeInTheDocument();
+    expect(
+      screen.getByRole("progressbar", { name: "Usage remaining" }),
+    ).toHaveAttribute("aria-valuenow", "64");
+    expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
+  });
+
   it("runs sign-in, cancel, and sign-out actions from account settings", async () => {
     const user = userEvent.setup();
     const onAccountChanged = vi.fn();
@@ -506,7 +541,7 @@ describe("AppSettings", () => {
       await screen.findByText("Opened your account portal in the browser."),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Refresh balance" }));
+    await user.click(screen.getByRole("button", { name: "Refresh usage" }));
     await waitFor(() => expect(onAccountRefresh).toHaveBeenCalledOnce());
   });
 
@@ -516,7 +551,11 @@ describe("AppSettings", () => {
       <AppSettings
         account={{
           ...signedInAccount,
-          balance: { credits: 1200, usdMillis: 1200 },
+          balance: {
+            credits: 1200,
+            usdMillis: 1200,
+            usageRemainingPercent: 100,
+          },
           subscription: {
             subscribed: true,
             status: "past_due",

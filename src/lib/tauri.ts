@@ -1232,6 +1232,9 @@ export type AccountBalance = {
   /** Present whenever the backend snapshot succeeds; optional so older
    * payload shapes (and test fixtures) without it don't lock the app. */
   credits?: number;
+  /** Normalized usage remaining for the current plan or free allowance.
+   * Optional while the app can still receive older accounts API payloads. */
+  usageRemainingPercent?: number;
   usdMillis: number;
 };
 

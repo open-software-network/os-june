@@ -89,6 +89,8 @@ struct MeWire {
 struct BalanceWire {
     credits: i64,
     usd_millis: i64,
+    #[serde(default)]
+    usage_remaining_percent: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +153,8 @@ pub struct AccountUser {
 pub struct AccountBalance {
     pub credits: i64,
     pub usd_millis: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_remaining_percent: Option<i64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -223,6 +227,7 @@ impl From<BalanceWire> for AccountBalance {
         Self {
             credits: w.credits,
             usd_millis: w.usd_millis,
+            usage_remaining_percent: w.usage_remaining_percent,
         }
     }
 }
@@ -353,6 +358,7 @@ fn local_dev_account_status() -> AccountStatus {
         balance: Some(AccountBalance {
             credits: 0,
             usd_millis: 0,
+            usage_remaining_percent: Some(100),
         }),
         subscription: Some(AccountSubscription {
             subscribed: true,

@@ -6,14 +6,13 @@ const EMPTY_STATUS: AccountStatus = { signedIn: false, configured: false };
 const DEMO_ACCOUNT: AccountStatus = {
   signedIn: true,
   configured: true,
-  localDev: true,
   user: {
     id: "usr_browser_demo",
     handle: "browser-demo",
     displayName: "Browser demo",
   },
-  balance: { credits: 0, usdMillis: 0 },
-  subscription: { subscribed: true, status: "active" },
+  balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 100 },
+  subscription: { subscribed: false },
 };
 
 export type UseAccountStatusOptions = {
