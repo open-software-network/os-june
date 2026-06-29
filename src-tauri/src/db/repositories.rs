@@ -1743,14 +1743,16 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Vec<RetryableAudioArtifactPath>, sqlx::error::Error> {
         let sessions = query(
-            "SELECT recording_session_id
-             FROM audio_artifacts
-             WHERE note_id = ?
-               AND status IN ('valid', 'invalid')
-               AND path IS NOT NULL
-               AND path != ''
-             GROUP BY recording_session_id
-             ORDER BY MAX(created_at) DESC, MAX(rowid) DESC",
+            "SELECT aa.recording_session_id
+             FROM audio_artifacts aa
+             INNER JOIN recording_sessions rs ON rs.id = aa.recording_session_id
+             WHERE aa.note_id = ?
+               AND aa.status IN ('valid', 'invalid')
+               AND aa.path IS NOT NULL
+               AND aa.path != ''
+               AND rs.status != 'failed'
+             GROUP BY aa.recording_session_id
+             ORDER BY MAX(aa.created_at) DESC, MAX(aa.rowid) DESC",
         )
         .bind(note_id)
         .fetch_all(&self.pool)
@@ -1787,12 +1789,14 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Vec<AudioArtifactDto>, sqlx::error::Error> {
         let sessions = query(
-            "SELECT recording_session_id
-             FROM audio_artifacts
-             WHERE note_id = ?
-               AND status IN ('valid', 'invalid')
-             GROUP BY recording_session_id
-             ORDER BY MAX(created_at) DESC, MAX(rowid) DESC",
+            "SELECT aa.recording_session_id
+             FROM audio_artifacts aa
+             INNER JOIN recording_sessions rs ON rs.id = aa.recording_session_id
+             WHERE aa.note_id = ?
+               AND aa.status IN ('valid', 'invalid')
+               AND rs.status != 'failed'
+             GROUP BY aa.recording_session_id
+             ORDER BY MAX(aa.created_at) DESC, MAX(aa.rowid) DESC",
         )
         .bind(note_id)
         .fetch_all(&self.pool)

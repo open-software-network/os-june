@@ -2,6 +2,7 @@ use os_june_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{AudioValidationDto, ProcessingStatus, RecordingSourceMode},
 };
+use sqlx::query::query;
 use sqlx_sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -754,6 +755,58 @@ async fn get_note_hides_non_retryable_invalid_saved_audio() {
         )
         .await
         .expect("invalid artifact");
+
+    let loaded = repos.get_note(&note.id).await.expect("loaded note");
+
+    assert!(loaded.audio.is_none());
+    assert!(loaded.audio_sources.is_empty());
+}
+
+#[tokio::test]
+async fn get_note_hides_invalid_audio_from_failed_session() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let session_id = "session-1";
+    repos
+        .create_recording_session(
+            &note.id,
+            session_id,
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/session.partial.wav",
+            "/tmp/session.wav",
+            None,
+        )
+        .await
+        .expect("session");
+    let artifact = repos
+        .create_pending_source_artifact(
+            &note.id,
+            session_id,
+            "microphone",
+            "/tmp/session.partial.wav",
+            "/tmp/session.wav",
+        )
+        .await
+        .expect("artifact");
+    repos
+        .finalize_source_artifact(
+            &artifact.id,
+            "/tmp/session.wav",
+            "invalid",
+            2_515_414,
+            4096,
+            "checksum",
+            2_082_511,
+            Some(validation_summary(2_082_511, 2_515_414)),
+            Some("audio duration mismatch".to_string()),
+        )
+        .await
+        .expect("invalid artifact");
+    query("UPDATE recording_sessions SET status = 'failed', last_error = 'Discarded by user' WHERE id = ?")
+        .bind(session_id)
+        .execute(&repos.pool)
+        .await
+        .expect("failed session");
 
     let loaded = repos.get_note(&note.id).await.expect("loaded note");
 

@@ -242,6 +242,60 @@ async fn latest_retryable_audio_paths_fall_back_to_valid_session() {
 }
 
 #[tokio::test]
+async fn latest_retryable_audio_paths_ignore_failed_sessions() {
+    let repos = test_repositories().await;
+    let note = repos.create_note(None).await.expect("note should exist");
+
+    repos
+        .create_recording_session(
+            &note.id,
+            "session-1",
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/session.partial.wav",
+            "/tmp/session.wav",
+            None,
+        )
+        .await
+        .expect("session should be created");
+    let artifact = repos
+        .create_pending_source_artifact(
+            &note.id,
+            "session-1",
+            "microphone",
+            "/tmp/session.partial.wav",
+            "/tmp/session.wav",
+        )
+        .await
+        .expect("artifact should be created");
+    repos
+        .finalize_source_artifact(
+            &artifact.id,
+            "/tmp/session.wav",
+            "invalid",
+            2_515_414,
+            4096,
+            "checksum",
+            2_082_511,
+            Some(validation_summary(2_082_511, 2_515_414)),
+            Some("audio duration mismatch".to_string()),
+        )
+        .await
+        .expect("artifact should be finalized as invalid");
+    query("UPDATE recording_sessions SET status = 'failed', last_error = 'Discarded by user' WHERE id = ?")
+        .bind("session-1")
+        .execute(&repos.pool)
+        .await
+        .expect("session should be marked failed");
+
+    let retryable = repos
+        .latest_retryable_audio_artifact_paths(&note.id)
+        .await
+        .expect("retryable paths should load");
+
+    assert!(retryable.is_empty());
+}
+
+#[tokio::test]
 async fn upserts_source_turn_transcripts_for_retry() {
     let repos = test_repositories().await;
     let note = repos.create_note(None).await.expect("note should exist");
