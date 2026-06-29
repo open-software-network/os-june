@@ -309,6 +309,11 @@ pub enum DomainError {
     InsufficientCredits,
     #[error("upstream provider failed")]
     UpstreamProvider,
+    /// The metering/billing provider (OS Accounts) call failed or was rejected
+    /// — distinct from an LLM provider failure so the two can be told apart at
+    /// the API boundary and in logs.
+    #[error("metering provider failed")]
+    MeteringProvider,
     #[error("invalid input: {reason}")]
     InvalidInput { reason: String },
 }

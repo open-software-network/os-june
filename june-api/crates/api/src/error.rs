@@ -1,5 +1,5 @@
 use crate::envelope::{
-    ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
+    ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL, ERR_METERING,
     ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
     TRANSIENT_RETRY_AFTER_SECS, error_response, error_response_with_retry_after,
 };
@@ -24,6 +24,8 @@ pub enum ApiError {
     AuthorizationDenied,
     #[error("upstream_provider_failed")]
     Upstream,
+    #[error("metering_provider_failed")]
+    Metering,
     #[error("internal_error")]
     Internal,
 }
@@ -87,6 +89,14 @@ impl IntoResponse for ApiError {
                 ERR_UPSTREAM,
                 "upstream_provider_failed",
             ),
+            // The metering/billing provider (OS Accounts) failed — a service
+            // dependency outage, NOT the LLM gateway. Distinct status + code so
+            // the two can be told apart from the symptom alone.
+            Self::Metering => error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ERR_METERING,
+                "metering_provider_failed",
+            ),
             Self::Internal => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL,
@@ -104,6 +114,7 @@ impl From<ServiceError> for ApiError {
             ServiceError::InsufficientCredits => Self::InsufficientCredits,
             ServiceError::AuthorizationDenied => Self::AuthorizationDenied,
             ServiceError::UpstreamProvider => Self::Upstream,
+            ServiceError::MeteringProvider => Self::Metering,
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
         }
     }
@@ -166,5 +177,21 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["error_code"], 5001);
         assert_eq!(body["message"], "upstream_provider_failed");
+    }
+
+    #[tokio::test]
+    async fn metering_failure_is_distinct_from_upstream_provider_failure() {
+        // Regression: a billing/metering failure (e.g. a misconfigured
+        // app_api_key making OS Accounts /authorize return 401) used to collapse
+        // into the same 502 upstream_provider_failed as a genuine LLM provider
+        // failure — impossible to triage from the client symptom. It now carries
+        // its own status and code.
+        let response = ApiError::from(ServiceError::MeteringProvider).into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(response).await;
+        assert_eq!(body["error_code"], 5031);
+        assert_eq!(body["message"], "metering_provider_failed");
+        assert_eq!(body["success"], false);
     }
 }

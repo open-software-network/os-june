@@ -43,6 +43,8 @@ function friendlyFailureSegment(message: string) {
       "No speech detected. Try speaking louder or moving closer to the microphone.";
   } else if (isInvalidJuneResponseMessage(body)) {
     friendly = "The processing service returned an invalid response.";
+  } else if (normalized.includes("metering_provider_failed")) {
+    friendly = "Billing is temporarily unavailable. Please try again in a moment.";
   } else if (normalized.includes("upstream_provider_failed")) {
     friendly = "The transcription provider could not process this audio.";
   }

@@ -49,21 +49,21 @@ impl OsAccountsClient for OsAccountsHttpClient {
             .await
             .map_err(|error| {
                 tracing::error!(%error, %url, "os_accounts: authorize transport error");
-                DomainError::UpstreamProvider
+                DomainError::MeteringProvider
             })?;
         let status = response.status();
         if status.is_server_error() {
             let body = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, body_bytes = body.len(), "os_accounts: authorize server error");
-            return Err(DomainError::UpstreamProvider);
+            return Err(DomainError::MeteringProvider);
         }
         let raw = response.text().await.map_err(|error| {
             tracing::error!(%error, %url, "os_accounts: authorize body read failed");
-            DomainError::UpstreamProvider
+            DomainError::MeteringProvider
         })?;
         let envelope: Envelope<AuthorizationWire> = serde_json::from_str(&raw).map_err(|error| {
             tracing::error!(%error, %url, body_bytes = raw.len(), "os_accounts: authorize JSON parse failed");
-            DomainError::UpstreamProvider
+            DomainError::MeteringProvider
         })?;
         if envelope.success {
             let authorization = envelope
@@ -71,7 +71,7 @@ impl OsAccountsClient for OsAccountsHttpClient {
                 .map(Authorization::from)
                 .ok_or_else(|| {
                     tracing::error!(%url, body_bytes = raw.len(), "os_accounts: authorize success envelope missing data");
-                    DomainError::UpstreamProvider
+                    DomainError::MeteringProvider
                 })?;
             tracing::info!(
                 %url,
@@ -98,7 +98,7 @@ impl OsAccountsClient for OsAccountsHttpClient {
             error_code = ?envelope.error_code,
             "os_accounts: authorize denied"
         );
-        Err(DomainError::UpstreamProvider)
+        Err(DomainError::MeteringProvider)
     }
 
     async fn charge(&self, request: ChargeRequest) -> Result<Receipt, DomainError> {
@@ -110,11 +110,11 @@ impl OsAccountsClient for OsAccountsHttpClient {
                 Err(ChargeError::Retryable) if attempt + 1 < CHARGE_RETRY_ATTEMPTS => {
                     tokio::time::sleep(CHARGE_RETRY_BACKOFF).await;
                 }
-                Err(ChargeError::Retryable) => return Err(DomainError::UpstreamProvider),
+                Err(ChargeError::Retryable) => return Err(DomainError::MeteringProvider),
                 Err(ChargeError::Domain(error)) => return Err(error),
             }
         }
-        Err(DomainError::UpstreamProvider)
+        Err(DomainError::MeteringProvider)
     }
 }
 
@@ -147,7 +147,7 @@ impl OsAccountsHttpClient {
         })?;
         let envelope: Envelope<ReceiptWire> = serde_json::from_str(&raw).map_err(|error| {
             tracing::error!(%error, %url, body_bytes = raw.len(), "os_accounts: charge JSON parse failed");
-            ChargeError::Domain(DomainError::UpstreamProvider)
+            ChargeError::Domain(DomainError::MeteringProvider)
         })?;
         if envelope.success {
             return envelope
@@ -155,7 +155,7 @@ impl OsAccountsHttpClient {
                 .map(Receipt::from)
                 .ok_or_else(|| {
                     tracing::error!(%url, body_bytes = raw.len(), "os_accounts: charge success envelope missing data");
-                    ChargeError::Domain(DomainError::UpstreamProvider)
+                    ChargeError::Domain(DomainError::MeteringProvider)
                 });
         }
         if envelope.error_code == Some(ERR_INSUFFICIENT_CREDITS) {
@@ -191,7 +191,7 @@ impl OsAccountsHttpClient {
             error_code = ?envelope.error_code,
             "os_accounts: charge denied"
         );
-        Err(ChargeError::Domain(DomainError::UpstreamProvider))
+        Err(ChargeError::Domain(DomainError::MeteringProvider))
     }
 }
 
@@ -493,7 +493,7 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(receipt, Err(DomainError::UpstreamProvider)));
+        assert!(matches!(receipt, Err(DomainError::MeteringProvider)));
     }
 
     #[tokio::test]

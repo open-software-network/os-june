@@ -13,6 +13,7 @@ pub const ERR_PAYLOAD_TOO_LARGE: i32 = 4131;
 pub const ERR_AUTHORIZATION_DENIED: i32 = 4401;
 pub const ERR_INTERNAL: i32 = 5000;
 pub const ERR_UPSTREAM: i32 = 5001;
+pub const ERR_METERING: i32 = 5031;
 pub const ERR_TIMEOUT: i32 = 5041;
 pub(crate) const TRANSIENT_RETRY_AFTER_SECS: u64 = 2;
 

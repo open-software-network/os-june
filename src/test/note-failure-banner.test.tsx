@@ -130,6 +130,24 @@ describe("NoteFailureBanner", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows a billing message for metering provider failures", () => {
+    render(
+      <NoteFailureBanner
+        errorMessage="Microphone: metering_provider_failed"
+        audioPreserved
+        onRetry={() => undefined}
+        onTopUp={() => undefined}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Billing is temporarily unavailable/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/metering_provider_failed/i),
+    ).not.toBeInTheDocument();
+  });
+
   it("guards against double-click while a retry is in flight", async () => {
     let resolveRetry: () => void = () => {};
     const onRetry = vi.fn(
