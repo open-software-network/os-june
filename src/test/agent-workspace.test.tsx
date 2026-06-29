@@ -3945,6 +3945,68 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Done.")).toBeInTheDocument();
   });
 
+  it("does not force the transcript to the bottom while subagent progress streams", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "browse the web for recent launch details",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "browse the web for recent launch details",
+      }),
+    );
+    expect(
+      await screen.findByText("browse the web for recent launch details"),
+    ).toBeInTheDocument();
+
+    const scroller = document.querySelector(".agent-scroll") as HTMLElement;
+    const scrollTo = vi.fn();
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 320,
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 1600,
+    });
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      value: 240,
+      writable: true,
+    });
+    Object.defineProperty(scroller, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+    fireEvent.scroll(scroller);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "subagent.progress",
+          session_id: "runtime-session-2",
+          payload: {
+            subagent_id: "worker-1",
+            goal: "Browse source pages",
+            text: "Reading search results",
+          },
+        });
+      }
+    });
+
+    expect(
+      await screen.findByText("Subagent: Browse source pages"),
+    ).toBeInTheDocument();
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it("explains a pending approval before the user chooses", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(

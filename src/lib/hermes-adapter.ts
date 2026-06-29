@@ -48,8 +48,21 @@ export async function deleteHermesSession(sessionId: string) {
 export function normalizeHermesSessionsResponse(response: unknown) {
   return extractList(response, "sessions")
     .filter(isHermesSessionInfo)
+    .filter((session) => !isDelegatedSubagentSession(session))
     .map(withScheduledRunDisplay)
     .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
+}
+
+function isDelegatedSubagentSession(session: HermesSessionInfo) {
+  const parentSessionId = sessionParentSessionId(session);
+  return parentSessionId !== undefined && parentSessionId !== session.id;
+}
+
+function sessionParentSessionId(session: HermesSessionInfo) {
+  const parentSessionId = session.parent_session_id ?? session.parentSessionId;
+  return typeof parentSessionId === "string" && parentSessionId.trim()
+    ? parentSessionId.trim()
+    : undefined;
 }
 
 /** Hermes tags scheduled-routine runs with source "cron". */

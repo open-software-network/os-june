@@ -519,6 +519,7 @@ export type HermesSessionInfo = {
   message_count?: number;
   tool_call_count?: number;
   parent_session_id?: string | null;
+  parentSessionId?: string | null;
   last_active?: string;
   lastActive?: string;
   preview?: string;

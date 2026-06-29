@@ -5847,6 +5847,7 @@ export function AgentWorkspace({
   // history fetch that fills the new conversation in) must land at the bottom
   // instantly; only turns arriving while the user is already reading glide.
   const settledScrollSelectionRef = useRef<string>();
+  const transcriptShouldStickToBottomRef = useRef(true);
 
   // History for the selected conversation has landed: a session gets an entry
   // in hermesSessionMessages (even an empty one) once its fetch resolves;
@@ -5864,14 +5865,29 @@ export function AgentWorkspace({
     hermesSessionsLoading && !hermesSessionsHydrated;
 
   useEffect(() => {
+    if (heroMode) return;
+    const scroller = agentScrollRef.current;
+    if (!scroller) return;
+    const updateStickiness = () => {
+      transcriptShouldStickToBottomRef.current =
+        isAgentTranscriptNearBottom(scroller);
+    };
+    updateStickiness();
+    scroller.addEventListener("scroll", updateStickiness, { passive: true });
+    return () => scroller.removeEventListener("scroll", updateStickiness);
+  }, [heroMode, selectedHermesSessionId, selectedTaskId]);
+
+  useEffect(() => {
     // The conversation scrolls in .agent-scroll, which sits below the sticky
     // breadcrumb so the scrollbar can't ride up over the bar — drive that
     // scroller to the bottom as turns arrive.
     const scroller = listRef.current?.closest(".agent-scroll");
     if (!(scroller instanceof HTMLElement)) return;
-    if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
     const selectionKey = `${selectedHermesSessionId ?? ""}:${selectedTaskId ?? ""}`;
     const settled = settledScrollSelectionRef.current === selectionKey;
+    if (!settled) {
+      transcriptShouldStickToBottomRef.current = true;
+    }
     if (selectedHistoryLoaded || renderedTurnsSignature > 0) {
       // The settling run itself still scrolls with the pre-write snapshot, so
       // the history fill after a switch lands instantly; everything after it
@@ -5882,10 +5898,13 @@ export function AgentWorkspace({
       // before this one settles re-lands instantly instead of gliding.
       settledScrollSelectionRef.current = undefined;
     }
+    if (settled && !transcriptShouldStickToBottomRef.current) return;
+    if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
     scroller.scrollTo({
       top: scroller.scrollHeight,
       behavior: settled ? "smooth" : "auto",
     });
+    transcriptShouldStickToBottomRef.current = true;
   }, [
     renderedTurnsSignature,
     selectedHermesSessionId,
@@ -8685,6 +8704,15 @@ function chatTurnsSignature(turns: AgentChatTurn[]) {
         0,
       ),
     0,
+  );
+}
+
+const AGENT_TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
+
+function isAgentTranscriptNearBottom(scroller: HTMLElement) {
+  return (
+    scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <=
+    AGENT_TRANSCRIPT_BOTTOM_THRESHOLD_PX
   );
 }
 

@@ -149,6 +149,32 @@ describe("Hermes adapter", () => {
     );
   });
 
+  it("hides delegated subagent sessions from the top-level session list", () => {
+    const sessions = normalizeHermesSessionsResponse({
+      sessions: [
+        {
+          id: "parent-session",
+          title: "Research request",
+          last_active: "2026-06-11T12:00:00Z",
+        },
+        {
+          id: "child-worker",
+          title: "Browse source 1",
+          parent_session_id: "parent-session",
+          last_active: "2026-06-11T12:01:00Z",
+        },
+        {
+          id: "camel-child-worker",
+          title: "Browse source 2",
+          parentSessionId: "parent-session",
+          last_active: "2026-06-11T12:02:00Z",
+        },
+      ],
+    });
+
+    expect(sessions.map((session) => session.id)).toEqual(["parent-session"]);
+  });
+
   it("lists only cron-sourced sessions as scheduled runs", async () => {
     mocks.hermesBridgeSessions.mockResolvedValue({
       sessions: [
