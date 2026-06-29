@@ -27,13 +27,13 @@ const JUNE_POINTS = [
   {
     icon: IconCalendar1,
     title: "Effortlessly capture meetings",
-    detail: "June takes the notes without ever joining the meeting.",
+    detail: "June takes meeting notes without ever having to join the meeting.",
   },
   {
     icon: IconLock,
     title: "Private by default",
     detail:
-      "Prompts leave your device only for inference, on zero-retention private models.",
+      "Prompts leverage private, zero-retention Venice AI models by default.",
   },
 ];
 
