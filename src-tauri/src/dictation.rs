@@ -408,6 +408,16 @@ enum DictationCommand {
 }
 
 impl ShortcutActivationController {
+    fn will_start_recording(&self, edge: ShortcutKeyEdge, kind: DictationShortcutKind) -> bool {
+        match (kind, edge) {
+            (DictationShortcutKind::PushToTalk, ShortcutKeyEdge::Down) => {
+                self.active_mode.is_none() && !self.push_to_talk_is_down
+            }
+            (DictationShortcutKind::Toggle, ShortcutKeyEdge::Down) => self.active_mode.is_none(),
+            _ => false,
+        }
+    }
+
     fn handle_edge(
         &mut self,
         edge: ShortcutKeyEdge,
@@ -1593,15 +1603,7 @@ fn drive_shortcut_edge(app: &AppHandle, edge: ShortcutKeyEdge, kind: DictationSh
         .try_state::<ShortcutActivationState>()
         .and_then(|state| {
             state.controller.lock().ok().and_then(|mut state| {
-                let starts_recording = match (kind, edge) {
-                    (DictationShortcutKind::PushToTalk, ShortcutKeyEdge::Down) => {
-                        state.active_mode.is_none() && !state.push_to_talk_is_down
-                    }
-                    (DictationShortcutKind::Toggle, ShortcutKeyEdge::Down) => {
-                        state.active_mode.is_none()
-                    }
-                    _ => false,
-                };
+                let starts_recording = state.will_start_recording(edge, kind);
                 state
                     .handle_edge(edge, kind, Instant::now())
                     .map(|command| (command, starts_recording))
@@ -3830,9 +3832,15 @@ mod tests {
         let mut controller = ShortcutActivationController::default();
         let now = Instant::now();
 
+        assert!(
+            controller.will_start_recording(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle)
+        );
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
             Some(DictationCommand::ToggleListening)
+        );
+        assert!(
+            !controller.will_start_recording(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle)
         );
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::Toggle, now),
