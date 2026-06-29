@@ -1665,10 +1665,10 @@ export function App() {
     void dictationHelperCommand({
       type: "request_microphone_permission",
     }).catch(() => undefined);
-    // Check Accessibility on every app open. The helper grant is what lets
-    // dictation paste into other apps; without this poll a fresh install
-    // never learns the helper is untrusted (the focus refresh below doesn't
-    // fire at launch), so the paste-permission banner would stay hidden.
+    // Check Accessibility on every app open. June.app's own grant is what lets
+    // dictation paste into other apps; without this poll a fresh install never
+    // learns Accessibility is missing (the focus refresh below does not fire at
+    // launch), so the paste-permission banner would stay hidden.
     void dictationHelperCommand({ type: "get_permission_status" }).catch(
       () => undefined,
     );
@@ -1678,9 +1678,9 @@ export function App() {
   }, [appBlocked]);
 
   // Refresh permission state whenever the app regains focus — covers the
-  // common case where the user flipped a toggle in System Settings and
-  // returns to June. The helper poll is what surfaces fresh mic /
-  // accessibility state via the dictation-event listener above.
+  // common case where the user flipped a toggle in System Settings and returns
+  // to June. The permission poll surfaces fresh mic and accessibility state via
+  // the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
     const recordingState = state.recordingStatus?.state;
@@ -3623,11 +3623,12 @@ function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
 }
 
-// Accessibility is a plain bool from the helper (AXIsProcessTrusted),
-// surfaced as "granted" | "missing" — not the mic's denied/restricted
-// vocabulary. Treat any known non-granted value as blocked so the paste
-// permission banner actually shows when access is missing. Undefined stays
-// non-blocking so the banner doesn't flash before the helper's first report.
+// Accessibility is a plain bool from the native permission snapshot
+// (AXIsProcessTrusted), surfaced as "granted" | "missing", not the mic's
+// denied/restricted vocabulary. Treat any known non-granted value as blocked
+// so the paste permission banner actually shows when access is missing.
+// Undefined stays non-blocking so the banner doesn't flash before the first
+// report.
 export function isAccessibilityBlocked(state?: string) {
   return state !== undefined && state !== "granted";
 }

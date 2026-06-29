@@ -4,10 +4,15 @@ pub mod audio;
 pub mod commands;
 pub mod db;
 pub mod dictation;
+pub mod dictation_shortcuts;
 pub mod domain;
 pub mod hermes_bridge;
 pub mod june_api;
+pub mod macos_accessibility;
+pub mod macos_input;
 pub mod macos_menu_icons;
+#[cfg(target_os = "macos")]
+pub mod macos_shortcuts;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;

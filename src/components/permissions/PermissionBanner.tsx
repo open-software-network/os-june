@@ -16,7 +16,7 @@ export function PermissionBanner({
         </span>
         <span className="permission-banner-body">
           Dictation can't paste into other apps until you grant accessibility
-          access.
+          access to June in System Settings.
         </span>
       </p>
       <div className="permission-banner-actions">
@@ -25,7 +25,7 @@ export function PermissionBanner({
           className="btn btn-ghost"
           onClick={onEnableAccessibility}
         >
-          Grant access
+          Open settings
         </button>
       </div>
     </section>

@@ -51,18 +51,28 @@ uuid = { version = "1.11", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 keyring = { version = "3", features = ["apple-native"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "libc",
     "std",
+    "libc",
     "NSApplication",
+    "NSEvent",
     "NSImage",
     "NSMenu",
     "NSMenuItem",
+    "NSPasteboard",
+    "NSPasteboardItem",
     "NSResponder",
+    "NSRunningApplication",
+    "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
+    "NSArray",
+    "NSData",
     "NSString",
     "NSValue",
     "NSGeometry",

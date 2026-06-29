@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { isAccessibilityBlocked } from "../app/App";
 
-// Regression: the dictation helper reports Accessibility as "granted" |
-// "missing" (AXIsProcessTrusted), not the microphone's denied/restricted
-// vocabulary. A fresh install reports "missing", and that MUST count as
-// blocked so the paste-permission banner shows — otherwise dictation
-// silently fails to paste into other apps (Cmd+V needs the helper trusted).
+// Regression: the native permission snapshot reports Accessibility as
+// "granted" | "missing" (AXIsProcessTrusted), not the microphone's
+// denied/restricted vocabulary. A fresh install reports "missing", and that
+// MUST count as blocked so the paste-permission banner shows. Otherwise
+// dictation silently fails to paste into other apps because Cmd+V needs
+// June.app trusted.
 describe("isAccessibilityBlocked", () => {
   it("treats a fresh-install 'missing' grant as blocked", () => {
     expect(isAccessibilityBlocked("missing")).toBe(true);
@@ -15,7 +16,7 @@ describe("isAccessibilityBlocked", () => {
     expect(isAccessibilityBlocked("granted")).toBe(false);
   });
 
-  it("stays non-blocking before the helper's first report", () => {
+  it("stays non-blocking before the first report", () => {
     expect(isAccessibilityBlocked(undefined)).toBe(false);
   });
 

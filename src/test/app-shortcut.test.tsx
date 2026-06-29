@@ -697,11 +697,11 @@ describe("App shortcuts", () => {
 
     expect(
       await screen.findByText(
-        "Dictation can't paste into other apps until you grant accessibility access.",
+        "Dictation can't paste into other apps until you grant accessibility access to June in System Settings.",
       ),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Grant access" }));
+    await user.click(screen.getByRole("button", { name: "Open settings" }));
 
     expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
       type: "request_accessibility_permission",
