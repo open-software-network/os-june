@@ -3,7 +3,7 @@ use os_june_lib::{
     audio::validation::{
         source_audio_passes_validation, validate_audio_artifact, AudioValidationConfig,
     },
-    domain::types::RecordingSource,
+    domain::types::{AudioValidationDto, RecordingSource},
 };
 use std::path::Path;
 use tempfile::tempdir;
@@ -84,6 +84,21 @@ fn write_sparse_peak_wav(path: &Path, amplitude: i16, duration_ms: u32, every_n_
     writer.finalize().expect("wav finalize");
 }
 
+fn readable_validation(expected_duration_ms: i64, actual_duration_ms: i64) -> AudioValidationDto {
+    AudioValidationDto {
+        file_exists: true,
+        non_zero_size: true,
+        readable_audio: true,
+        expected_duration_ms,
+        actual_duration_ms,
+        duration_within_tolerance: false,
+        non_silent_signal: true,
+        peak_amplitude: 0.2,
+        rms_amplitude: 0.1,
+        warnings: vec!["audio duration mismatch".to_string()],
+    }
+}
+
 #[test]
 fn accepts_readable_non_silent_wav_with_expected_duration() {
     let dir = tempdir().expect("tempdir");
@@ -158,6 +173,34 @@ fn accepts_longer_audio_with_duration_mismatch_warning() {
     assert!(source_audio_passes_validation(
         RecordingSource::Microphone,
         &result
+    ));
+}
+
+#[test]
+fn accepts_reasonable_positive_drift_for_long_recordings() {
+    let validation = readable_validation(2_082_511, 2_515_414);
+
+    assert!(source_audio_passes_validation(
+        RecordingSource::Microphone,
+        &validation
+    ));
+    assert!(source_audio_passes_validation(
+        RecordingSource::System,
+        &validation
+    ));
+}
+
+#[test]
+fn rejects_excessively_long_audio_for_short_recordings() {
+    let validation = readable_validation(1_000, 121_000);
+
+    assert!(!source_audio_passes_validation(
+        RecordingSource::Microphone,
+        &validation
+    ));
+    assert!(!source_audio_passes_validation(
+        RecordingSource::System,
+        &validation
     ));
 }
 

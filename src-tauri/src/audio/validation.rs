@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, path::Path};
 
 pub const MIN_RECORDING_MS: i64 = 1_000;
+const MIN_POSITIVE_DURATION_DRIFT_MS: i64 = 60_000;
+const MAX_POSITIVE_DURATION_DRIFT_MS: i64 = 10 * 60_000;
+const POSITIVE_DURATION_DRIFT_RATIO_DENOMINATOR: i64 = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AudioValidationConfig {
@@ -111,14 +114,33 @@ pub fn source_audio_passes_validation(
 ) -> bool {
     let has_usable_audio = validation.non_zero_size && validation.readable_audio;
     let config = validation_config_for_source(source);
-    // A longer WAV can still be processed. A shorter WAV means local capture
-    // likely lost audio, which should block transcription.
-    let is_not_truncated = validation.actual_duration_ms + config.duration_tolerance_ms
-        >= validation.expected_duration_ms;
+    let expected_duration_ms = validation.expected_duration_ms.max(0);
+    let positive_tolerance_ms =
+        positive_duration_drift_tolerance_ms(expected_duration_ms, config.duration_tolerance_ms);
+    // A slightly longer WAV can still be processed because long recordings can
+    // drift from the app clock. Keep an upper bound so stale long files do not
+    // get transcribed for short sessions.
+    let is_not_truncated = validation
+        .actual_duration_ms
+        .saturating_add(config.duration_tolerance_ms)
+        >= expected_duration_ms;
+    let is_not_stale_long_audio =
+        validation.actual_duration_ms <= expected_duration_ms.saturating_add(positive_tolerance_ms);
     match source {
-        RecordingSource::Microphone => has_usable_audio && is_not_truncated,
-        RecordingSource::System => has_usable_audio && is_not_truncated,
+        RecordingSource::Microphone => {
+            has_usable_audio && is_not_truncated && is_not_stale_long_audio
+        }
+        RecordingSource::System => has_usable_audio && is_not_truncated && is_not_stale_long_audio,
     }
+}
+
+fn positive_duration_drift_tolerance_ms(expected_duration_ms: i64, base_tolerance_ms: i64) -> i64 {
+    let proportional_tolerance_ms =
+        expected_duration_ms / POSITIVE_DURATION_DRIFT_RATIO_DENOMINATOR;
+    proportional_tolerance_ms
+        .max(MIN_POSITIVE_DURATION_DRIFT_MS)
+        .min(MAX_POSITIVE_DURATION_DRIFT_MS)
+        .max(base_tolerance_ms)
 }
 
 pub fn checksum_file(path: &Path) -> Result<String, std::io::Error> {
