@@ -1742,85 +1742,84 @@ impl Repositories {
         &self,
         note_id: &str,
     ) -> Result<Vec<RetryableAudioArtifactPath>, sqlx::error::Error> {
-        let session = query(
+        let sessions = query(
             "SELECT recording_session_id
              FROM audio_artifacts
              WHERE note_id = ?
                AND status IN ('valid', 'invalid')
                AND path IS NOT NULL
                AND path != ''
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT 1",
+             GROUP BY recording_session_id
+             ORDER BY MAX(created_at) DESC, MAX(rowid) DESC",
         )
         .bind(note_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some(session) = session else {
-            return Ok(Vec::new());
-        };
-        let session_id: String = session.get("recording_session_id");
-        let rows = query(
-            "SELECT id, source, path, recording_session_id, status, expected_duration_ms
-             FROM audio_artifacts
-             WHERE note_id = ?
-               AND recording_session_id = ?
-               AND status IN ('valid', 'invalid')
-               AND path IS NOT NULL
-               AND path != ''
-             ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
-        )
-        .bind(note_id)
-        .bind(session_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| RetryableAudioArtifactPath {
-                id: row.get("id"),
-                source: row.get("source"),
-                path: row.get("path"),
-                recording_session_id: row.get("recording_session_id"),
-                status: row.get("status"),
-                expected_duration_ms: row.get("expected_duration_ms"),
-            })
-            .collect())
+        for session in sessions {
+            let session_id: String = session.get("recording_session_id");
+            let rows = query(
+                "SELECT id, source, path, recording_session_id, status, expected_duration_ms, validation_summary
+                 FROM audio_artifacts
+                 WHERE note_id = ?
+                   AND recording_session_id = ?
+                   AND status IN ('valid', 'invalid')
+                   AND path IS NOT NULL
+                   AND path != ''
+                 ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
+            )
+            .bind(note_id)
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?;
+            let artifacts: Vec<_> = rows
+                .into_iter()
+                .filter_map(retryable_audio_artifact_path_from_row)
+                .collect();
+            if !artifacts.is_empty() {
+                return Ok(artifacts);
+            }
+        }
+        Ok(Vec::new())
     }
 
     async fn latest_audio_sources(
         &self,
         note_id: &str,
     ) -> Result<Vec<AudioArtifactDto>, sqlx::error::Error> {
-        let session = query(
+        let sessions = query(
             "SELECT recording_session_id
              FROM audio_artifacts
              WHERE note_id = ?
                AND status IN ('valid', 'invalid')
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT 1",
+             GROUP BY recording_session_id
+             ORDER BY MAX(created_at) DESC, MAX(rowid) DESC",
         )
         .bind(note_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some(session) = session else {
-            return Ok(Vec::new());
-        };
-        let session_id: String = session.get("recording_session_id");
-        let rows = query(
-            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at, status, validation_summary
-             FROM audio_artifacts
-             WHERE note_id = ?
-               AND recording_session_id = ?
-               AND status IN ('valid', 'invalid')
-             ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
-        )
-        .bind(note_id)
-        .bind(session_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(audio_artifact_from_preserved_row)
-            .collect())
+        for session in sessions {
+            let session_id: String = session.get("recording_session_id");
+            let rows = query(
+                "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at, status, validation_summary
+                 FROM audio_artifacts
+                 WHERE note_id = ?
+                   AND recording_session_id = ?
+                   AND status IN ('valid', 'invalid')
+                 ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
+            )
+            .bind(note_id)
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?;
+            let artifacts: Vec<_> = rows
+                .into_iter()
+                .filter_map(audio_artifact_from_preserved_row)
+                .collect();
+            if !artifacts.is_empty() {
+                return Ok(artifacts);
+            }
+        }
+        Ok(Vec::new())
     }
 
     async fn latest_transcript(
@@ -2619,6 +2618,29 @@ fn audio_artifact_from_preserved_row(row: sqlx_sqlite::SqliteRow) -> Option<Audi
         size_bytes: row.get("size_bytes"),
         checksum: row.get("checksum"),
         created_at: row.get("created_at"),
+    })
+}
+
+fn retryable_audio_artifact_path_from_row(
+    row: sqlx_sqlite::SqliteRow,
+) -> Option<RetryableAudioArtifactPath> {
+    let status: String = row.get("status");
+    let source: String = row.get("source");
+    if status != "valid"
+        && !invalid_audio_artifact_is_retryable(
+            &source,
+            row.get::<Option<String>, _>("validation_summary"),
+        )
+    {
+        return None;
+    }
+    Some(RetryableAudioArtifactPath {
+        id: row.get("id"),
+        source,
+        path: row.get("path"),
+        recording_session_id: row.get("recording_session_id"),
+        status,
+        expected_duration_ms: row.get("expected_duration_ms"),
     })
 }
 

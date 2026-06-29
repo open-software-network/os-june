@@ -762,6 +762,70 @@ async fn get_note_hides_non_retryable_invalid_saved_audio() {
 }
 
 #[tokio::test]
+async fn get_note_falls_back_to_valid_audio_when_latest_invalid_is_not_retryable() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+
+    repos
+        .create_recording_session(
+            &note.id,
+            "session-1",
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/old.partial.wav",
+            "/tmp/old.wav",
+            None,
+        )
+        .await
+        .expect("old session");
+    let old_artifact = repos
+        .create_audio_artifact(&note.id, "session-1", "/tmp/old.wav", 1_000, 100, "old")
+        .await
+        .expect("old artifact");
+
+    repos
+        .create_recording_session(
+            &note.id,
+            "session-2",
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/new.partial.wav",
+            "/tmp/new.wav",
+            None,
+        )
+        .await
+        .expect("latest session");
+    let latest_artifact = repos
+        .create_pending_source_artifact(
+            &note.id,
+            "session-2",
+            "microphone",
+            "/tmp/new.partial.wav",
+            "/tmp/new.wav",
+        )
+        .await
+        .expect("latest artifact");
+    repos
+        .finalize_source_artifact(
+            &latest_artifact.id,
+            "/tmp/new.wav",
+            "invalid",
+            1_000,
+            4096,
+            "checksum",
+            10_000,
+            Some(validation_summary(10_000, 1_000)),
+            Some("audio duration mismatch".to_string()),
+        )
+        .await
+        .expect("invalid artifact");
+
+    let loaded = repos.get_note(&note.id).await.expect("loaded note");
+
+    assert_eq!(loaded.audio.expect("audio").id, old_artifact.id);
+    assert_eq!(loaded.audio_sources.len(), 1);
+    assert_eq!(loaded.audio_sources[0].id, old_artifact.id);
+}
+
+#[tokio::test]
 async fn get_note_returns_only_timed_source_transcript_rows() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");

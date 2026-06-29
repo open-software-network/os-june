@@ -1197,12 +1197,13 @@ async fn retry_audio_sources(
         }
 
         let source = RecordingSource::from(artifact.source.as_str());
-        let validation = validate_audio_artifact(
+        let Ok(validation) = validate_audio_artifact(
             &path,
             artifact.expected_duration_ms,
             validation_config_for_source(source),
-        )
-        .map_err(|error| AppError::new("audio_validation_failed", error.to_string()))?;
+        ) else {
+            continue;
+        };
         if !source_audio_passes_validation(source, &validation) {
             continue;
         }
