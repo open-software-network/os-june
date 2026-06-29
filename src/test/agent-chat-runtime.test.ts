@@ -3,6 +3,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
+  displayedComposerUserMessageText,
   repairContractionSpacing,
   toolEventKey,
 } from "../lib/agent-chat-runtime";
@@ -341,6 +342,62 @@ describe("Agent chat runtime", () => {
         status: "complete",
       },
     ]);
+  });
+
+  it("strips image-analysis failure scaffolding from persisted Hermes user messages", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: [
+          "[The user attached an image but analysis failed.]",
+          "[You can examine it with vision_analyze using image_url:",
+          "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/images/upload_20260629_144756_1.png]",
+          "",
+          "wdyt?",
+          "",
+          "Attached files copied into the June workspace:",
+          "- CleanShot.png (Workspace): uploads/CleanShot.png",
+          "",
+          "Use these file paths when inspecting or operating on the files.",
+        ].join("\n"),
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: [
+          "wdyt?",
+          "",
+          "Attached files copied into the June workspace:",
+          "- CleanShot.png (Workspace): uploads/CleanShot.png",
+          "",
+          "Use these file paths when inspecting or operating on the files.",
+        ].join("\n"),
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("hides attachment and image-analysis scaffolding from composer user display text", () => {
+    expect(
+      displayedComposerUserMessageText(
+        [
+          "[The user attached an image but analysis failed.]",
+          "[You can examine it with vision_analyze using image_url:",
+          "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/images/upload_20260629_144756_1.png]",
+          "",
+          "wdyt?",
+          "",
+          "Attached files copied into the June workspace:",
+          "- CleanShot.png (Workspace): uploads/CleanShot.png",
+          "",
+          "Use these file paths when inspecting or operating on the files.",
+        ].join("\n"),
+      ),
+    ).toBe("wdyt?");
   });
 
   it("extracts text from Hermes structured content payloads", () => {

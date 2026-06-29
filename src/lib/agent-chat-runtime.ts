@@ -1143,7 +1143,9 @@ function displayContentForHermesMessage(message: HermesSessionMessage) {
   // Scheduled runs lead with the cron delivery preamble; show the routine's
   // own instructions, not the machine scaffolding.
   return displayedUserPromptText(
-    stripScheduledRunPreamble(stripHermesContextMarkers(content)),
+    stripImageAnalysisFailureNotice(
+      stripScheduledRunPreamble(stripHermesContextMarkers(content)),
+    ),
   );
 }
 
@@ -1155,6 +1157,28 @@ function displayedUserPromptText(content: string) {
     text = next;
   }
   return text;
+}
+
+export function displayedComposerUserMessageText(content: string): string {
+  return stripAttachmentPromptBlock(
+    displayedUserPromptText(stripImageAnalysisFailureNotice(content)),
+  );
+}
+
+function stripImageAnalysisFailureNotice(content: string): string {
+  return content.replace(
+    /^\s*(?:\[[^\]]*(?:attached an image but analysis failed|vision_analyze)[^\]]*\]\s*)+/i,
+    "",
+  );
+}
+
+function stripAttachmentPromptBlock(content: string): string {
+  return content
+    .replace(
+      /\n+Attached files copied into the June workspace:\n[\s\S]*?\n+Use these file paths when inspecting or operating on the files\.\s*$/i,
+      "",
+    )
+    .trim();
 }
 
 function isScheduledRunMessage(message: HermesSessionMessage) {
