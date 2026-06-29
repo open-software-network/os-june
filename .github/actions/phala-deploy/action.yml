@@ -6,7 +6,7 @@ description: >
 
 inputs:
   cvm-name:
-    description: Phala CVM name. The action probes `phala cvms list --json` and branches between `phala deploy -n <name>` (create) and `phala deploy --cvm-id <name>` (update) since the CLI doesn't expose an upsert flag.
+    description: Phala CVM name. The action probes `/apps` for an existing `current_cvm.name` and branches between `phala deploy -n <name>` (create) and `phala deploy --cvm-id <name>` (update) since the CLI doesn't expose an upsert flag.
     required: true
   compose-file:
     description: Path to docker-compose.yml containing the literal placeholder ${JUNE_IMAGE}.
@@ -85,34 +85,24 @@ runs:
         RENDERED: ${{ steps.render.outputs.rendered }}
       run: |
         set -euo pipefail
-        # List-based existence probe (not `phala cvms get`). `get` returns
-        # nonzero for "not found" but ALSO for auth/network errors and for
-        # stopped CVMs that don't show in `get` — all three would falsely
-        # route to the create path and reproduce ERR-01-004 with the real
-        # cause hidden. `list` returns the full set including stopped CVMs,
-        # and a list failure (auth/network) propagates visibly instead of
-        # masquerading as "doesn't exist".
-        if ! cvms_json=$(phala cvms list --json 2>&1); then
-          echo "::error::Could not list Phala CVMs (auth, network, or API issue):"
-          printf '%s\n' "$cvms_json" >&2
+        # Probe via the raw /apps endpoint, not `phala cvms list`. The CLI's
+        # cvms/apps list commands call /apps and then POST /status/batch for
+        # uptime enrichment. Some admin/API tokens can read /apps but get 403 on
+        # /status/batch, which is enough to make the wrapper command fail even
+        # though the CVM names are already present in the /apps response.
+        if ! apps_json=$(phala api /apps --json -f page=1 -f page_size=100 -f "search=${CVM_NAME}" 2>&1); then
+          echo "::error::Could not list Phala apps (auth, network, or API issue):"
+          printf '%s\n' "$apps_json" >&2
           exit 1
         fi
-        # `phala cvms list --json` is NOT a top-level array. The CLI wraps every
-        # --json payload as `{success: true, ...data}` and nests the CVMs under
-        # `.items[]` keyed by `cvmName` (not `name`):
-        #   {"success": true, "items": [{"cvmName": "...", "appId": "..."}], ...}
-        # The old `.[] | select(.name==...)` iterated the wrapper's values, hit the
-        # `success` boolean and errored ("Cannot index boolean"); because that jq
-        # ran inside an `if` condition, set -e could not catch it and the step fell
-        # through to create on an existing CVM (ERR-01-004). `any(.. | objects; ...)`
-        # walks every nested object so it survives the wrapper and matches cvmName
-        # (current) or name (older CLIs). Read the -e exit code directly: 0 found,
-        # 1 absent, >=2 a real parse/auth failure that must hard-fail, not create.
-        exists=$(printf '%s' "$cvms_json" | jq -e --arg name "$CVM_NAME" \
-          'any(.. | objects; (.cvmName? == $name) or (.name? == $name))' 2>&1) \
+        # The /apps response nests the currently deployed CVM under
+        # `.dstack_apps[].current_cvm`. Read the jq exit code directly: 0 found,
+        # 1 absent, >=2 parse/API-shape failure.
+        exists=$(printf '%s' "$apps_json" | jq -e --arg name "$CVM_NAME" \
+          'any(.dstack_apps[]?; .current_cvm? and (.current_cvm.name? == $name))' 2>&1) \
           && jq_status=0 || jq_status=$?
         if [[ "$jq_status" -ge 2 ]]; then
-          echo "::error::Could not parse 'phala cvms list --json' output:"
+          echo "::error::Could not parse 'phala api /apps --json' output:"
           printf '%s\n' "$exists" >&2
           exit 1
         fi
