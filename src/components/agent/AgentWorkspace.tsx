@@ -5850,6 +5850,7 @@ export function AgentWorkspace({
   const transcriptShouldStickToBottomRef = useRef(true);
   const transcriptProgrammaticScrollRef = useRef(false);
   const transcriptProgrammaticScrollTimeoutRef = useRef<number | undefined>();
+  const transcriptLastScrollTopRef = useRef(0);
 
   // History for the selected conversation has landed: a session gets an entry
   // in hermesSessionMessages (even an empty one) once its fetch resolves;
@@ -5878,7 +5879,15 @@ export function AgentWorkspace({
       }
     };
     const updateStickiness = () => {
+      const previousScrollTop = transcriptLastScrollTopRef.current;
+      transcriptLastScrollTopRef.current = scroller.scrollTop;
       if (transcriptProgrammaticScrollRef.current) {
+        if (scroller.scrollTop < previousScrollTop) {
+          clearProgrammaticScroll();
+          transcriptShouldStickToBottomRef.current =
+            isAgentTranscriptNearBottom(scroller);
+          return;
+        }
         transcriptShouldStickToBottomRef.current = true;
         if (isAgentTranscriptNearBottom(scroller)) clearProgrammaticScroll();
         return;
@@ -5930,12 +5939,15 @@ export function AgentWorkspace({
     if (settled && !transcriptShouldStickToBottomRef.current) return;
     if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
     if (settled) {
+      transcriptLastScrollTopRef.current = scroller.scrollTop;
       transcriptProgrammaticScrollRef.current = true;
       if (transcriptProgrammaticScrollTimeoutRef.current !== undefined) {
         window.clearTimeout(transcriptProgrammaticScrollTimeoutRef.current);
       }
       transcriptProgrammaticScrollTimeoutRef.current = window.setTimeout(() => {
         transcriptProgrammaticScrollRef.current = false;
+        transcriptShouldStickToBottomRef.current =
+          isAgentTranscriptNearBottom(scroller);
         transcriptProgrammaticScrollTimeoutRef.current = undefined;
       }, 800);
     } else {

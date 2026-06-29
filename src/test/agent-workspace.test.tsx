@@ -4062,7 +4062,11 @@ describe("AgentWorkspace", () => {
     await screen.findByText("Reading first source");
     expect(scrollTo).toHaveBeenCalledTimes(1);
 
-    scroller.scrollTop = 600;
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 2000,
+    });
+    scroller.scrollTop = 1460;
     fireEvent.scroll(scroller);
 
     act(() => {
@@ -4081,6 +4085,82 @@ describe("AgentWorkspace", () => {
 
     await screen.findByText(/Reading another source/);
     expect(scrollTo).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not pull the transcript back down after scrollbar scrolling", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "browse the web for release notes",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "browse the web for release notes",
+      }),
+    );
+
+    const scroller = document.querySelector(".agent-scroll") as HTMLElement;
+    const scrollTo = vi.fn();
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 320,
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 1600,
+    });
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      value: 1280,
+      writable: true,
+    });
+    Object.defineProperty(scroller, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+    fireEvent.scroll(scroller);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "subagent.progress",
+          session_id: "runtime-session-2",
+          payload: {
+            subagent_id: "worker-1",
+            goal: "Browse release notes",
+            text: "Reading first source",
+          },
+        });
+      }
+    });
+    await screen.findByText("Reading first source");
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+
+    scroller.scrollTop = 900;
+    fireEvent.scroll(scroller);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "subagent.progress",
+          session_id: "runtime-session-2",
+          payload: {
+            subagent_id: "worker-1",
+            goal: "Browse release notes",
+            text: "Reading while the user reviews earlier output",
+          },
+        });
+      }
+    });
+
+    await screen.findByText(/Reading while the user reviews earlier output/);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 
   it("explains a pending approval before the user chooses", async () => {
