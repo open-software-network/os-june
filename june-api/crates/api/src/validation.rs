@@ -82,7 +82,7 @@ fn validate_json_shape(
     match value {
         Value::String(text) => {
             let chars = text.chars().count();
-            if chars > MAX_AGENT_STRING_CHARS {
+            if chars > MAX_AGENT_STRING_CHARS && !is_agent_image_data_url(text) {
                 return Err(ApiError::bad_request("string_too_long"));
             }
             *total_string_chars = total_string_chars.saturating_add(chars);
@@ -112,6 +112,17 @@ fn validate_json_shape(
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
     Ok(())
+}
+
+fn is_agent_image_data_url(text: &str) -> bool {
+    let Some((mime, data)) = text.split_once(";base64,") else {
+        return false;
+    };
+    mime.starts_with("data:image/")
+        && !data.is_empty()
+        && data.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'\r' | b'\n')
+        })
 }
 
 #[cfg(test)]
@@ -188,5 +199,43 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn agent_body_accepts_image_data_url_over_single_string_limit() {
+        let image = format!(
+            "data:image/png;base64,{}",
+            "a".repeat(MAX_AGENT_STRING_CHARS + 1)
+        );
+
+        assert!(
+            validate_agent_chat_body(&json!({
+                "model": "text-model",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": { "url": image },
+                    }],
+                }],
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn agent_body_rejects_non_image_data_url_over_single_string_limit() {
+        let text = format!(
+            "data:text/plain;base64,{}",
+            "a".repeat(MAX_AGENT_STRING_CHARS + 1)
+        );
+
+        assert!(matches!(
+            validate_agent_chat_body(&json!({
+                "model": "text-model",
+                "messages": [{ "role": "user", "content": text }],
+            })),
+            Err(ApiError::BadRequest { message, .. }) if message == "string_too_long"
+        ));
     }
 }

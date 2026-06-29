@@ -109,17 +109,19 @@ describe("createHermesMethods — typed command wrappers", () => {
     });
   });
 
-  it("attachImage forwards image data to image.attach", async () => {
+  it("attachImage forwards image data to image.attach_bytes", async () => {
     const { request, methods } = setup();
     await methods.attachImage({
       sessionId: "s1",
       mimeType: "image/png",
       dataBase64: "AAAA",
+      fileName: "diagram.png",
     });
-    expect(request).toHaveBeenCalledWith("image.attach", {
+    expect(request).toHaveBeenCalledWith("image.attach_bytes", {
       session_id: "s1",
       mime_type: "image/png",
-      data_base64: "AAAA",
+      content_base64: "AAAA",
+      filename: "diagram.png",
     });
   });
 

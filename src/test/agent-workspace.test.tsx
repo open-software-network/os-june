@@ -186,6 +186,34 @@ const existingSession = {
   last_active: "2026-06-04T12:00:00Z",
 };
 
+function mockGlmCapabilities(capabilities: string[]) {
+  mocks.listVeniceModels.mockResolvedValue({
+    mode: "generation",
+    modelType: "text",
+    selectedModel: "zai-org-glm-5-2",
+    models: [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities,
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: [],
+      },
+    ],
+  });
+}
+
 describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -264,7 +292,7 @@ describe("AgentWorkspace", () => {
     }));
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     // Mirrors the Rust image_preview_data_url: an image path yields a
-    // data url, anything else null. Feature 19's structured image.attach reads
+    // data url, anything else null. Feature 19's structured image attach reads
     // the bytes through this command at attach time.
     mocks.hermesBridgeFilePreview.mockImplementation(async (path: string) =>
       /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path)
@@ -5635,11 +5663,7 @@ describe("AgentWorkspace", () => {
     ).toBe(false);
   });
 
-  it("attaches a dropped image to the session via image.attach and marks it attached", async () => {
-    // Feature 19: on submit, an imported image is sent to the session through
-    // the structured image.attach RPC, the chip flips to "Attached", and the
-    // attachment lands in the artifact timeline — without the base64 ever
-    // reaching the sanitized trace export.
+  it("uses a text fallback when the selected model cannot read image attachments", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
@@ -5665,15 +5689,75 @@ describe("AgentWorkspace", () => {
     await user.click(sendButton);
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method]) => method === "prompt.submit",
+        ),
+      ).toBe(true),
+    );
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method]) => method === "image.attach_bytes",
+      ),
+    ).toBe(false);
+
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain(
+      "Attached files copied into the June workspace:",
+    );
+    expect(submitted.text).toContain("--- Attached Context ---");
+    expect(submitted.text).toContain(
+      "GLM 5.2 does not support image input in June.",
+    );
+    expect(submitted.text).toContain("Do not call vision_analyze");
+    expect(submitted.text).toContain(
+      "ask the user to describe the image or paste the relevant text",
+    );
+  });
+
+  it("attaches a dropped image to the session via image.attach_bytes and marks it attached", async () => {
+    // Feature 19: on submit, an imported image is sent to the session through
+    // the structured image.attach_bytes RPC, the chip flips to "Attached", and the
+    // attachment lands in the artifact timeline — without the base64 ever
+    // reaching the sanitized trace export.
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "what is in this image?");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
         session_id: "runtime-session-1",
         mime_type: "image/png",
-        data_base64: "cHJldmlldw==",
+        content_base64: "cHJldmlldw==",
+        filename: "screenshot.png",
       }),
     );
-    // image.attach precedes prompt.submit for the same turn.
+    // image.attach_bytes precedes prompt.submit for the same turn.
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach",
+      ([method]) => method === "image.attach_bytes",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -5695,15 +5779,16 @@ describe("AgentWorkspace", () => {
     const trace = JSON.stringify(
       hermesTraceBuffer.exportSanitizedTrace("session-1"),
     );
-    expect(trace).toContain("image.attach");
+    expect(trace).toContain("image.attach_bytes");
     expect(trace).not.toContain("cHJldmlldw==");
-    expect(trace).not.toContain("data_base64");
+    expect(trace).not.toContain("content_base64");
   });
 
   it("blocks the prompt and warns when an image attach fails", async () => {
-    // A failed image.attach must not silently send the prompt with a missing
+    // A failed image.attach_bytes must not silently send the prompt with a missing
     // image: the send is blocked, the chip surfaces the failure, and the
     // composer text is restored for a retry.
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
     const user = userEvent.setup();
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
@@ -5715,7 +5800,7 @@ describe("AgentWorkspace", () => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
-      if (method === "image.attach") {
+      if (method === "image.attach_bytes") {
         return Promise.reject(new Error("attach exploded"));
       }
       return Promise.resolve({});
@@ -5747,7 +5832,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(
         mocks.gatewayRequest.mock.calls.some(
-          ([method]) => method === "image.attach",
+          ([method]) => method === "image.attach_bytes",
         ),
       ).toBe(true),
     );

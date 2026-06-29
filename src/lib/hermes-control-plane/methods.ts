@@ -72,6 +72,7 @@ export type AttachImageParams = {
   sessionId: string;
   mimeType: string;
   dataBase64: string;
+  fileName?: string;
 };
 
 /** The typed command surface. Each call resolves to whatever the gateway
@@ -154,11 +155,12 @@ export function createHermesMethods(client: HermesRequestLike): HermesMethods {
         subagent_id: subagentId,
       });
     },
-    attachImage({ sessionId, mimeType, dataBase64 }) {
-      return request("image.attach", {
+    attachImage({ sessionId, mimeType, dataBase64, fileName }) {
+      return request("image.attach_bytes", {
         session_id: sessionId,
         mime_type: mimeType,
-        data_base64: dataBase64,
+        content_base64: dataBase64,
+        ...defined({ filename: fileName }),
       });
     },
   };

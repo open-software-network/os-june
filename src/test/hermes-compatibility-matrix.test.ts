@@ -55,6 +55,7 @@ describe("hermes compatibility matrix — required keys", () => {
       "command.dispatch",
       "subagent.interrupt",
       "image.attach",
+      "image.attach_bytes",
       "sudo.respond",
       "secret.respond",
       // Baseline methods June already calls today (grep-confirmed in
@@ -114,16 +115,18 @@ describe("isHermesFeatureSupported — honest support gate", () => {
     expect(isHermesFeatureSupported("automationBlueprints")).toBe(false);
   });
 
-  it("reports feature 19's image.attach + image editing once shipped", () => {
-    // Feature 19 wires the composer's imported images into image.attach
+  it("reports feature 19's image.attach_bytes + image editing once shipped", () => {
+    // Feature 19 wires the composer's imported images into image.attach_bytes
     // (attachImage) with imported/attached/failed status, a failed-attach submit
     // block, and the attachment fed into feature 14's artifact timeline, so its
     // owned method key flips planned → supported; the imageEditing feature is
     // partial (explicit source-image selection ships; the edited output is not
     // rendered inline yet). Covered by hermes-image-attach and agent-workspace
     // tests.
-    expect(getFeatureStatus("image.attach")).toBe("supported");
-    expect(isHermesFeatureSupported("image.attach")).toBe(true);
+    expect(getFeatureStatus("image.attach")).toBe("unsupported");
+    expect(isHermesFeatureSupported("image.attach")).toBe(false);
+    expect(getFeatureStatus("image.attach_bytes")).toBe("supported");
+    expect(isHermesFeatureSupported("image.attach_bytes")).toBe(true);
     expect(getFeatureStatus("imageEditing")).toBe("partial");
     expect(isHermesFeatureSupported("imageEditing")).toBe(false);
   });

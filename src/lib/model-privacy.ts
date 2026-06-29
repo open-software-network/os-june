@@ -62,6 +62,23 @@ export function modelSupportsTools(
   });
 }
 
+export function modelSupportsImageInput(
+  model: Partial<Pick<VeniceModelDto, "capabilities" | "traits">>,
+) {
+  return [...(model.capabilities ?? []), ...(model.traits ?? [])].some(
+    (capability) => {
+      const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
+      return (
+        normalized.includes("supportsvision") ||
+        normalized.includes("vision") ||
+        normalized.includes("imageinput") ||
+        normalized.includes("imageunderstanding") ||
+        normalized.includes("multimodal")
+      );
+    },
+  );
+}
+
 // Strongest claim wins: E2EE models are also private, but "encrypted into the
 // enclave" is the property worth surfacing.
 export function modelPrivacyBadge(

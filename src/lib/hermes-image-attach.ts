@@ -5,7 +5,7 @@
  * Hermes workspace (`<hermes_home>/workspace/uploads/…`, via the
  * `import_hermes_bridge_file*` bridge commands) and references its PATH in the
  * prompt text. That keeps working. This module adds the STRUCTURED path on top:
- * for image attachments it calls the typed `image.attach` control-plane method
+ * for image attachments it calls the typed image byte-attach control-plane method
  * (`createHermesMethods(...).attachImage`), so the model/tools receive the image
  * as a first-class input rather than only a path mentioned in prose. Explicit
  * source-image selection is what makes image EDITING reliable (the upstream
@@ -37,7 +37,7 @@ import { messageFromError } from "./errors";
  * - `pending`: created, import not finished (transient; the importer flips it).
  * - `imported`: copied into the workspace; for a file this is terminal, for an
  *   image it is the "ready to attach" state.
- * - `attached`: the structured `image.attach` RPC acked — visible to model/tools.
+ * - `attached`: the structured image attach RPC acked — visible to model/tools.
  * - `failed`: import or attach errored; `error` carries the user-facing copy.
  */
 export type HermesAttachmentStatus =
@@ -90,7 +90,7 @@ export type AttachImageResult = {
 /** Injected side effects. `attachImage` is `createHermesMethods(...).attachImage`;
  * `readImageData` reads the workspace file as a `data:…;base64,…` url (or null
  * if it can't be read as an image); `isSupported` is the feature gate
- * (`() => isHermesFeatureSupported("image.attach")`). */
+ * (`() => isHermesFeatureSupported("image.attach_bytes")`). */
 export type AttachImageDeps = {
   attachImage: (params: AttachImageParams) => Promise<unknown>;
   readImageData: (path: string) => Promise<string | null>;
@@ -116,7 +116,7 @@ const IMAGE_EXTENSION = /\.(png|jpe?g|gif|webp|tiff?)$/i;
 export const ATTACH_UNSUPPORTED_NOTICE =
   "This version of June can't attach images to the model directly. The image is in the workspace and its path is included in your message instead.";
 
-/** Whether a mime type is an image June can attach via image.attach. */
+/** Whether a mime type is an image June can attach. */
 export function isAttachableImageType(mimeType: string): boolean {
   return ATTACHABLE_IMAGE_MIME.has(mimeType.trim().toLowerCase());
 }
@@ -149,7 +149,7 @@ function isImageImport(file: ImportedHermesFile): boolean {
 let localIdSeq = 0;
 
 /** Build the initial chip state for a freshly imported file. Images become
- * `kind:"image"` (eligible for image.attach); everything else is `kind:"file"`.
+ * `kind:"image"` (eligible for structured attach); everything else is `kind:"file"`.
  * Status starts at `imported` (the import already completed). No bytes. */
 export function attachmentStateFrom(
   file: ImportedHermesFile,
@@ -167,7 +167,7 @@ export function attachmentStateFrom(
 }
 
 /** The imported images still awaiting a structured attach (eligible to send to
- * image.attach before the next prompt). Skips files and already-attached/failed
+ * structured attach before the next prompt). Skips files and already-attached/failed
  * images. */
 export function pendingImageAttachments(
   states: HermesAttachmentState[],
@@ -197,7 +197,7 @@ export function attachErrorNotice(displayName: string, err: unknown): string {
 }
 
 /**
- * Attach one imported image to a Hermes session through the typed `image.attach`
+ * Attach one imported image to a Hermes session through the typed image bytes
  * method. Pure w.r.t. injected {@link AttachImageDeps}. Resolves to the next
  * chip {@link HermesAttachmentState} plus, on success, an artifact seed and a
  * REDACTED outbound trace entry; on failure, `state.status` is `failed` and
@@ -263,6 +263,7 @@ export async function attachImageToSession(
       sessionId,
       mimeType: parsed.mimeType,
       dataBase64: parsed.dataBase64,
+      fileName: attachment.displayName,
     });
     return {
       state: {
@@ -280,11 +281,11 @@ export async function attachImageToSession(
       },
       // REDACTED on purpose: the trace records that an attach happened and how
       // big it was, never the base64 itself (the trace buffer would otherwise
-      // stringify it into its payload preview — `data_base64` is not a
+      // stringify it into its payload preview; the raw content base64 is not a
       // sanitizer-recognized secret key).
       trace: {
         sessionId,
-        method: "image.attach",
+        method: "image.attach_bytes",
         params: {
           session_id: sessionId,
           mime_type: parsed.mimeType,

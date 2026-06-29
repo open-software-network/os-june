@@ -202,6 +202,7 @@ import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
   dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
+  modelSupportsImageInput,
   modelSupportsTools,
   type ModelPrivacyBadge,
   type ProviderModelSettingsChangedDetail,
@@ -778,7 +779,7 @@ type AgentArtifact = {
 type AgentAttachment = ImportedHermesFile & {
   id: string;
   /** Structured attach status (feature 19). Tracks whether this import has been
-   * sent to the model via image.attach: imported (ready) → attached (acked) →
+   * sent to the model via image.attach_bytes: imported (ready) → attached (acked) →
    * or failed. Carries file refs only, never the image bytes. Files stay
    * `imported` (they only ride along as a path in the prompt). */
   attach: HermesAttachmentState;
@@ -3509,7 +3510,7 @@ export function AgentWorkspace({
           ...file,
           id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
           // Seed the structured attach status (feature 19). Images become
-          // `kind:"image"`, status `imported` — eligible for image.attach on
+          // `kind:"image"`, status `imported` — eligible for structured attach on
           // the next submit. No bytes are kept here.
           attach: attachmentStateFrom(file),
         })),
@@ -3689,7 +3690,7 @@ export function AgentWorkspace({
   }
 
   /**
-   * Attach this turn's pending images to the live session via image.attach
+   * Attach this turn's pending images to the live session via image.attach_bytes
    * (feature 19), updating each chip's status and feeding the artifact timeline.
    * The base64 is read on demand from the workspace file (hermesBridgeFilePreview
    * returns a data url), passed straight to the typed attachImage, and discarded;
@@ -3711,7 +3712,7 @@ export function AgentWorkspace({
     const deps = {
       attachImage: methods.attachImage,
       readImageData: (path: string) => hermesBridgeFilePreview(path),
-      isSupported: () => isHermesFeatureSupported("image.attach"),
+      isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
     };
     const mode = hermesModeFor(storedSessionId);
     const failures: string[] = [];
@@ -4144,7 +4145,7 @@ export function AgentWorkspace({
       displayContent?: string;
       titleContent?: string;
       /** Imported attachments for this turn. Image attachments are sent to the
-       * session via the structured image.attach flow (feature 19) once the
+       * session via the structured image attach flow (feature 19) once the
        * session id is known and before prompt.submit; a failed attach throws to
        * block the send so the user can retry. */
       attachments?: AgentAttachment[];
@@ -4164,6 +4165,27 @@ export function AgentWorkspace({
           ?.model?.trim() ||
         defaultGenerationModelId
       : defaultGenerationModelId;
+    const turnAttachments = options?.attachments ?? [];
+    const pendingImages = pendingImageAttachments(
+      turnAttachments.map((attachment) => attachment.attach),
+    );
+    const targetGenerationModel = targetSessionModelId
+      ? selectedModelOption(generationModelsRef.current, targetSessionModelId)
+      : undefined;
+    const imageInputFallbackContent =
+      pendingImages.length &&
+      (!targetGenerationModel ||
+        !modelSupportsImageInput(targetGenerationModel))
+        ? unsupportedImageInputPrompt({
+            displayContent,
+            imageNames: pendingImages.map(
+              (attachment) => attachment.displayName,
+            ),
+            modelName: targetGenerationModel?.name ?? targetSessionModelId,
+            runtimeContent: content,
+          })
+        : undefined;
+    const promptSubmitContent = imageInputFallbackContent ?? content;
     // Issue reports skip title suggestion: the content is the wrapped
     // investigation prompt, which would title the session after the wrapper.
     const titlePromise =
@@ -4317,22 +4339,24 @@ export function AgentWorkspace({
         new Error("Hermes did not resume the session."),
       );
     }
-    // Feature 19: send any imported images to the session through the
-    // structured image.attach flow before the prompt, so the model/tools see
-    // them as first-class inputs (not just a path mentioned in prose) and an
-    // image-edit prompt names a concrete source. A failed attach throws here,
-    // which the submit() catch turns into a restored composer the user can
-    // retry — the prompt is NOT sent with a silently-missing image.
-    try {
-      await attachPendingImages(
-        gateway,
-        runtimeSessionId,
-        storedSessionId,
-        options?.attachments ?? [],
-      );
-    } catch (err) {
-      clearQueuedIssueReport();
-      rollbackOptimisticBeforePrompt(err);
+    if (!imageInputFallbackContent) {
+      // Feature 19: send any imported images to the session through the
+      // structured image attach flow before the prompt, so the model/tools see
+      // them as first-class inputs (not just a path mentioned in prose) and an
+      // image-edit prompt names a concrete source. A failed attach throws here,
+      // which the submit() catch turns into a restored composer the user can
+      // retry — the prompt is NOT sent with a silently-missing image.
+      try {
+        await attachPendingImages(
+          gateway,
+          runtimeSessionId,
+          storedSessionId,
+          turnAttachments,
+        );
+      } catch (err) {
+        clearQueuedIssueReport();
+        rollbackOptimisticBeforePrompt(err);
+      }
     }
     const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
     setRuntimeSessionIds((current) => ({
@@ -4426,11 +4450,11 @@ export function AgentWorkspace({
       hermesTraceBuffer.recordOutbound({
         sessionId: storedSessionId,
         method: "prompt.submit",
-        params: { session_id: runtimeSessionId, text: content },
+        params: { session_id: runtimeSessionId, text: promptSubmitContent },
       });
       await gateway.request("prompt.submit", {
         session_id: runtimeSessionId,
-        text: content,
+        text: promptSubmitContent,
       });
       await loadHermesSessions({
         suppressStartupRequestError: !hermesSessionsHydratedRef.current,
@@ -11293,6 +11317,37 @@ function promptWithAttachments(
     "",
     "Use these file paths when inspecting or operating on the files.",
   ].join("\n");
+}
+
+function unsupportedImageInputPrompt({
+  displayContent,
+  imageNames,
+  modelName,
+  runtimeContent,
+}: {
+  displayContent: string;
+  imageNames: string[];
+  modelName?: string;
+  runtimeContent: string;
+}) {
+  const modelLabel = modelName?.trim() || "The selected model";
+  return [
+    displayContent,
+    "",
+    "--- Attached Context ---",
+    `${modelLabel} does not support image input in June.`,
+    "The user attached image file(s), but this model cannot read their visual contents.",
+    imageNames.length
+      ? `Attached image file(s): ${imageNames.join(", ")}.`
+      : undefined,
+    "Do not call vision_analyze, image tools, shell, filesystem tools, or any other tool to inspect the image files.",
+    "Reply directly and briefly. Say that you cannot view the attached image with the current model, then ask the user to describe the image or paste the relevant text. If they expected the image to be readable, suggest choosing a model with image support and sending the image again.",
+    runtimeContent !== displayContent
+      ? ["", "Original routed prompt:", runtimeContent].join("\n")
+      : undefined,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 function attachmentPromptPath(path: string) {

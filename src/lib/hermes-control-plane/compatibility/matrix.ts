@@ -80,7 +80,7 @@ const PIN = PINNED_HERMES_VERSION;
  * steer/branch/compress/usage/dispatch/sudo/secret/subagent/image surfaces; each
  * flips to `supported` as its owning feature ships UI + tests (see OWNERSHIP).
  * subagent.interrupt is `supported` (feature 13's drawer stop button) and
- * image.attach is `supported` (feature 19's composer image-attach flow). The
+ * image.attach_bytes is `supported` (feature 19's composer image-attach flow). The
  * four baseline methods June already calls live (grep-confirmed in
  * `AgentWorkspace.tsx`) are `supported`.
  */
@@ -149,9 +149,15 @@ const methods: HermesCompatibilitySection = {
     since: PIN,
   },
   "image.attach": {
+    status: "unsupported",
+    rationale:
+      "The pinned Hermes runtime exposes path-based image.attach, but June's desktop composer uploads client-side image bytes instead so it does not depend on gateway-local file paths.",
+    since: PIN,
+  },
+  "image.attach_bytes": {
     status: "supported",
     rationale:
-      "Feature 19 wires the composer's imported images into image.attach (attachImage): on submit each pending image is read from the workspace and attached, the chip shows imported/attached/failed, a failed attach blocks the send, and the attachment lands in feature 14's artifact timeline; covered by hermes-image-attach and agent-workspace tests. The base64 is read on demand and never stored in React state or the trace.",
+      "Feature 19 wires the composer's imported images into image.attach_bytes (attachImage): on submit each pending image is read from the workspace and attached, the chip shows imported/attached/failed, a failed attach blocks the send, and the attachment lands in feature 14's artifact timeline; covered by hermes-image-attach and agent-workspace tests. The base64 is read on demand and never stored in React state or the trace.",
     since: PIN,
   },
   "sudo.respond": {
@@ -257,7 +263,7 @@ const features: HermesCompatibilitySection = {
   imageEditing: {
     status: "partial",
     rationale:
-      "Feature 19 ships explicit source-image selection: imported images attach to the session via image.attach (so an edit prompt names a concrete image instead of relying on a path in prose), with imported/attached/failed status and the attachment in the artifact timeline. June does not yet render the edited image_generate OUTPUT back inline, so this stays partial rather than supported; covered by hermes-image-attach and agent-workspace tests.",
+      "Feature 19 ships explicit source-image selection: imported images attach to the session via image.attach_bytes (so an edit prompt names a concrete image instead of relying on a path in prose), with imported/attached/failed status and the attachment in the artifact timeline. June does not yet render the edited image_generate OUTPUT back inline, so this stays partial rather than supported; covered by hermes-image-attach and agent-workspace tests.",
     since: PIN,
   },
   automationBlueprints: {
@@ -308,5 +314,5 @@ export const OWNERSHIP: Readonly<Record<string, readonly string[]>> =
     "11": ["events.subagent"],
     "12": ["events.subagent", "features.backgroundSubagentWatch"],
     "13": ["methods.subagent.interrupt"],
-    "19": ["methods.image.attach", "features.imageEditing"],
+    "19": ["methods.image.attach_bytes", "features.imageEditing"],
   });
