@@ -1073,12 +1073,10 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
         let mut system = crate::audio::system_macos::system_audio_readiness();
         if should_probe_system_audio_permission(system.ready, is_capture_active()) {
-            if let Err(error) = crate::audio::system_macos::helper_permission_check() {
-                system.ready = false;
-                system.permission_state = "denied".to_string();
-                system.capture_available = false;
-                system.message = Some(error.message);
-            }
+            system = apply_system_audio_permission_probe_result(
+                system,
+                crate::audio::system_macos::helper_permission_check(),
+            );
         }
         sources.push(system);
     }
@@ -1095,6 +1093,24 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
 
 fn should_probe_system_audio_permission(system_ready: bool, capture_active: bool) -> bool {
     system_ready && !capture_active
+}
+
+fn apply_system_audio_permission_probe_result(
+    mut system: SourceReadinessDto,
+    result: Result<(), AppError>,
+) -> SourceReadinessDto {
+    match result {
+        Ok(()) => {
+            system.permission_state = "granted".to_string();
+        }
+        Err(error) => {
+            system.ready = false;
+            system.permission_state = "denied".to_string();
+            system.capture_available = false;
+            system.message = Some(error.message);
+        }
+    }
+    system
 }
 
 #[tauri::command]
@@ -1731,7 +1747,11 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{recovery_validation_expected_duration_ms, should_probe_system_audio_permission};
+    use super::{
+        apply_system_audio_permission_probe_result, recovery_validation_expected_duration_ms,
+        should_probe_system_audio_permission,
+    };
+    use crate::domain::types::{AppError, RecordingSource, SourceReadinessDto};
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {
@@ -1745,11 +1765,49 @@ mod tests {
     }
 
     #[test]
+    fn successful_system_audio_permission_probe_reports_granted() {
+        let readiness = apply_system_audio_permission_probe_result(system_readiness(), Ok(()));
+
+        assert!(readiness.ready);
+        assert_eq!(readiness.permission_state, "granted");
+        assert!(readiness.capture_available);
+    }
+
+    #[test]
+    fn failed_system_audio_permission_probe_blocks_capture() {
+        let readiness = apply_system_audio_permission_probe_result(
+            system_readiness(),
+            Err(AppError::new(
+                "system_audio_permission_denied",
+                "Grant access.",
+            )),
+        );
+
+        assert!(!readiness.ready);
+        assert_eq!(readiness.permission_state, "denied");
+        assert!(!readiness.capture_available);
+        assert_eq!(readiness.message.as_deref(), Some("Grant access."));
+    }
+
+    #[test]
     fn recovered_wav_duration_overrides_stale_stored_duration() {
         let (_dir, path) = write_one_second_wav();
 
         assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 1_000);
         assert_eq!(recovery_validation_expected_duration_ms(&path, 1), 1_000);
+    }
+
+    fn system_readiness() -> SourceReadinessDto {
+        SourceReadinessDto {
+            source: RecordingSource::System,
+            required: true,
+            ready: true,
+            permission_state: "unknown".to_string(),
+            device_available: true,
+            capture_available: true,
+            recovery_action: Some("openSystemAudioSettings".to_string()),
+            message: None,
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -712,6 +713,100 @@ describe("App shortcuts", () => {
       }),
     );
     expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("accessibility");
+  });
+
+  it("polls system audio readiness after opening the macOS permission pane", async () => {
+    const user = userEvent.setup();
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    );
+    const deniedReadiness = {
+      sourceMode: "microphonePlusSystem",
+      ready: false,
+      sources: [
+        {
+          source: "microphone",
+          required: true,
+          ready: true,
+          permissionState: "granted",
+          deviceAvailable: true,
+          captureAvailable: true,
+        },
+        {
+          source: "system",
+          required: true,
+          ready: false,
+          permissionState: "denied",
+          deviceAvailable: true,
+          captureAvailable: false,
+          recoveryAction: "openSystemAudioSettings",
+        },
+      ],
+    };
+    const grantedReadiness = {
+      ...deniedReadiness,
+      ready: true,
+      sources: deniedReadiness.sources.map((source) =>
+        source.source === "system"
+          ? {
+              ...source,
+              ready: true,
+              permissionState: "granted",
+              captureAvailable: true,
+            }
+          : source,
+      ),
+    };
+    mocks.checkRecordingSourceReadiness
+      .mockResolvedValueOnce(deniedReadiness)
+      .mockResolvedValue(grantedReadiness);
+
+    try {
+      render(<App />);
+
+      await waitFor(() =>
+        expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
+      );
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+      act(() => {
+        mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+      });
+
+      expect(
+        await screen.findByRole("heading", { name: "Appearance" }),
+      ).toBeInTheDocument();
+      const blockedRow = screen
+        .getByText("System audio")
+        .closest(".settings-row");
+      expect(blockedRow).not.toBeNull();
+      expect(
+        within(blockedRow as HTMLElement).getByLabelText("Blocked"),
+      ).toBeInTheDocument();
+
+      await user.click(
+        within(blockedRow as HTMLElement).getByRole("button", {
+          name: "Manage System audio permission",
+        }),
+      );
+
+      expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
+      await waitFor(() =>
+        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2),
+      );
+      await waitFor(() => {
+        const allowedRow = screen
+          .getByText("System audio")
+          .closest(".settings-row");
+        expect(allowedRow).not.toBeNull();
+        expect(
+          within(allowedRow as HTMLElement).getByLabelText("Allowed"),
+        ).toBeInTheDocument();
+      });
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("starts a session with Ctrl-N and creates a note with Ctrl-Shift-N on Windows", async () => {

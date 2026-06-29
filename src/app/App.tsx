@@ -197,6 +197,8 @@ const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [
 ];
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const ACCESSIBILITY_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
+const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
+const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -430,6 +432,7 @@ export function App() {
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
   const [accessibilityRefreshRequest, setAccessibilityRefreshRequest] =
     useState(0);
+  const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
     useState<UpdatePromptPayload<JuneUpdate> | null>(null);
@@ -1733,6 +1736,36 @@ export function App() {
     };
   }, [accessibilityBlocked, accessibilityRefreshRequest, appBlocked]);
 
+  // After the user opens System Settings for System Audio Recording, keep
+  // checking briefly while macOS is in front. This matches Accessibility's
+  // permission flow and avoids relying on a single webview focus event.
+  useEffect(() => {
+    if (appBlocked || systemGranted || systemAudioRefreshRequest === 0) {
+      return;
+    }
+    let cancelled = false;
+    function poll() {
+      void checkRecordingSourceReadiness("microphonePlusSystem")
+        .then((readiness) => {
+          if (!cancelled) setSourceReadiness(readiness);
+        })
+        .catch(() => undefined);
+    }
+    poll();
+    const interval = window.setInterval(
+      poll,
+      SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS,
+    );
+    const timeout = window.setTimeout(() => {
+      window.clearInterval(interval);
+    }, SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
+    };
+  }, [appBlocked, systemAudioRefreshRequest, systemGranted]);
+
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
   }
@@ -1742,6 +1775,7 @@ export function App() {
   // the user to the System Settings pane.
   function handleEnableSystemAudio() {
     setUserWantsSystemAudio(true);
+    setSystemAudioRefreshRequest((request) => request + 1);
     void openPrivacySettings("systemAudio");
   }
 

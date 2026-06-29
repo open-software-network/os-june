@@ -67,8 +67,8 @@ const signedOutAccount: AccountStatus = {
 type ListenHandler = (event: { payload: string }) => void;
 
 // What check_recording_source_readiness returns after the capture-helper
-// probe: a passing probe leaves the system permissionState at "unknown" and
-// signals the grant via ready; a denial flips both.
+// probe: a passing probe reports the system source as granted; a denial
+// flips both ready and permissionState.
 function systemAudioReadiness(granted: boolean): RecordingSourceReadinessDto {
   return {
     sourceMode: "microphonePlusSystem",
@@ -86,7 +86,7 @@ function systemAudioReadiness(granted: boolean): RecordingSourceReadinessDto {
         source: "system",
         required: true,
         ready: granted,
-        permissionState: granted ? "unknown" : "denied",
+        permissionState: granted ? "granted" : "denied",
         deviceAvailable: granted,
         captureAvailable: granted,
         recoveryAction: "openSystemAudioSettings",
