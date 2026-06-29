@@ -5717,6 +5717,95 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("warns and offers a one-tap switch when an image is attached to a non-vision model", async () => {
+    // Hero mode (no open session) so the switch writes the global text-model
+    // default through setVeniceModel rather than a per-chat gateway dispatch.
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "qwen-vl",
+          name: "Qwen VL",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling", "supportsVision"],
+        },
+      ],
+    });
+    mocks.setVeniceModel.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    expect(
+      await screen.findByText("GLM 5.2 can't read images."),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch to a vision model" }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+    );
+    // The switch picks the image-capable model and keeps the dropped image.
+    expect(screen.getByText("screenshot.png")).toBeInTheDocument();
+  });
+
+  it("shows no image-input warning when the selected model reads images", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Switch to a vision model" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("attaches a dropped image to the session via image.attach_bytes and marks it attached", async () => {
     // Feature 19: on submit, an imported image is sent to the session through
     // the structured image.attach_bytes RPC, the chip flips to "Attached", and the

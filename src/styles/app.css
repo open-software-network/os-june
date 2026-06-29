@@ -4588,6 +4588,37 @@ input:focus-visible,
   padding: var(--sp-1) var(--sp-1) 0;
 }
 
+/* Non-vision model + image attachment: a quiet inline row between the chips and
+ * the editor. The active model can't read the image, so warn before send and
+ * offer a one-tap switch to an image-capable model (the send-time fallback in
+ * unsupportedImageInputPrompt still degrades gracefully if the user sends
+ * anyway). */
+.agent-composer-image-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin: var(--sp-1) var(--sp-1) 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.agent-composer-image-warning-icon {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-composer-image-warning-text {
+  min-width: 0;
+}
+
+.agent-composer-image-warning-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 .agent-attachment-chip {
   display: inline-flex;
   align-items: center;

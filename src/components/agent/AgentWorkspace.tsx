@@ -11,6 +11,7 @@ import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconFolders } from "central-icons/IconFolders";
 import { IconConsole } from "central-icons/IconConsole";
@@ -2011,6 +2012,28 @@ export function AgentWorkspace({
   const generationPrivacyBadge = generationModel
     ? modelPrivacyBadge(generationModel)
     : undefined;
+  // The agent can only switch to a model that reads images AND runs tools —
+  // a vision model without function calling would brick the agent the same way
+  // modelSupportsTools guards the picker, so it can't be an escape hatch here.
+  const visionModelOptions = useMemo(
+    () =>
+      generationModels.filter(
+        (model) => modelSupportsImageInput(model) && modelSupportsTools(model),
+      ),
+    [generationModels],
+  );
+  // Mirror the send-time fallback trigger (pendingImageAttachments +
+  // !modelSupportsImageInput) so the banner appears exactly when a submit would
+  // strip the image and downgrade to the text-only prompt. While the model list
+  // is still loading generationModel is undefined; stay silent rather than warn
+  // on an unknown model.
+  const composerHasPendingImage =
+    pendingImageAttachments(attachments.map((attachment) => attachment.attach))
+      .length > 0;
+  const showImageInputWarning =
+    composerHasPendingImage &&
+    !!generationModel &&
+    !modelSupportsImageInput(generationModel);
   const selectedHermesMessages = useMemo(() => {
     if (!selectedHermesSessionId) return [];
     return [
@@ -6260,6 +6283,36 @@ export function AgentWorkspace({
                   </button>
                 </span>
               ))}
+            </div>
+          ) : null}
+          {showImageInputWarning ? (
+            <div className="agent-composer-image-warning" role="status">
+              <IconExclamationTriangle
+                size={14}
+                aria-hidden
+                className="agent-composer-image-warning-icon"
+              />
+              <span className="agent-composer-image-warning-text">
+                {generationModel?.name ?? "This model"} can't read images.
+              </span>
+              {visionModelOptions.length ? (
+                <button
+                  type="button"
+                  className="agent-composer-notice-button agent-composer-image-warning-action"
+                  onClick={() => {
+                    // One vision model: switch straight to it. Several: open the
+                    // picker so the user chooses (handleSelectGenerationModel
+                    // routes the global default vs per-chat override either way).
+                    if (visionModelOptions.length === 1) {
+                      void handleSelectGenerationModel(visionModelOptions[0].id);
+                      return;
+                    }
+                    openComposerModelPicker();
+                  }}
+                >
+                  Switch to a vision model
+                </button>
+              ) : null}
             </div>
           ) : null}
           <ComposerEditor
