@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { JuneMark } from "../account/AccountGate";
+import { JuneGradientMark } from "../account/AccountGate";
 import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
 
 /**
@@ -34,8 +34,8 @@ export function StepCard({
       }`}
     >
       {mark ? (
-        <span className="welcome-mark" aria-hidden>
-          <JuneMark />
+        <span className="welcome-mark welcome-mark-symbol" aria-hidden>
+          <JuneGradientMark />
         </span>
       ) : null}
       <h1 className="welcome-title">{title}</h1>
