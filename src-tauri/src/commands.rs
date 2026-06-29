@@ -1105,6 +1105,17 @@ pub async fn retry_processing(
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
     let sources = retry_audio_sources(&repos, &paths, &request.note_id).await?;
+    let retry_source_mode = if let Some(session_id) = sources
+        .first()
+        .map(|(_id, _source, _path, session_id)| session_id)
+    {
+        repos
+            .recording_session_source_mode(session_id)
+            .await?
+            .unwrap_or(RecordingSourceMode::MicrophoneOnly)
+    } else {
+        RecordingSourceMode::MicrophoneOnly
+    };
     let (ticket, depth) = processing_queue::enqueue(&request.note_id);
     if depth <= 1 {
         repos
@@ -1117,6 +1128,7 @@ pub async fn retry_processing(
 
     let task_repos = repos.clone();
     let task_note_id = request.note_id.clone();
+    let task_source_mode = retry_source_mode;
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
@@ -1130,7 +1142,7 @@ pub async fn retry_processing(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = if sources.len() == 1 {
+        let result = if retry_uses_single_source_processing(task_source_mode, sources.len()) {
             let (audio_artifact_id, _source, audio_path, session_id) = sources
                 .into_iter()
                 .next()
@@ -1155,7 +1167,7 @@ pub async fn retry_processing(
                 &task_repos,
                 &task_note_id,
                 &session_id,
-                RecordingSourceMode::MicrophonePlusSystem,
+                task_source_mode,
                 sources
                     .into_iter()
                     .map(|(id, source, path, _session_id)| (id, source, path))
@@ -1174,6 +1186,13 @@ pub async fn retry_processing(
         ticket.finish();
     });
     Ok(note)
+}
+
+fn retry_uses_single_source_processing(
+    source_mode: RecordingSourceMode,
+    source_count: usize,
+) -> bool {
+    source_mode == RecordingSourceMode::MicrophoneOnly && source_count == 1
 }
 
 async fn retry_audio_sources(
@@ -1772,7 +1791,11 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{recovery_validation_expected_duration_ms, should_probe_system_audio_permission};
+    use super::{
+        recovery_validation_expected_duration_ms, retry_uses_single_source_processing,
+        should_probe_system_audio_permission,
+    };
+    use crate::domain::types::RecordingSourceMode;
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {
@@ -1821,6 +1844,26 @@ mod tests {
             2_500
         );
         assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 1);
+    }
+
+    #[test]
+    fn retry_uses_single_source_processing_for_microphone_only_audio() {
+        assert!(retry_uses_single_source_processing(
+            RecordingSourceMode::MicrophoneOnly,
+            1
+        ));
+    }
+
+    #[test]
+    fn retry_keeps_dual_source_sessions_on_source_processing_path() {
+        assert!(!retry_uses_single_source_processing(
+            RecordingSourceMode::MicrophonePlusSystem,
+            1
+        ));
+        assert!(!retry_uses_single_source_processing(
+            RecordingSourceMode::MicrophonePlusSystem,
+            2
+        ));
     }
 
     fn write_one_second_wav() -> (tempfile::TempDir, std::path::PathBuf) {
