@@ -1503,7 +1503,11 @@ fn apply_shortcut_settings(app: &AppHandle, settings: &DictationSettings) -> Res
         DictationShortcutKind::PushToTalk,
         &settings.push_to_talk_shortcut,
     )?;
-    apply_shortcut_setting(app, DictationShortcutKind::Toggle, &settings.toggle_shortcut)
+    apply_shortcut_setting(
+        app,
+        DictationShortcutKind::Toggle,
+        &settings.toggle_shortcut,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1588,11 +1592,20 @@ fn drive_shortcut_edge(app: &AppHandle, edge: ShortcutKeyEdge, kind: DictationSh
     let command = app
         .try_state::<ShortcutActivationState>()
         .and_then(|state| {
-            state
-                .controller
-                .lock()
-                .ok()
-                .and_then(|mut state| state.handle_edge(edge, kind, Instant::now()))
+            state.controller.lock().ok().and_then(|mut state| {
+                let starts_recording = match (kind, edge) {
+                    (DictationShortcutKind::PushToTalk, ShortcutKeyEdge::Down) => {
+                        state.active_mode.is_none() && !state.push_to_talk_is_down
+                    }
+                    (DictationShortcutKind::Toggle, ShortcutKeyEdge::Down) => {
+                        state.active_mode.is_none()
+                    }
+                    _ => false,
+                };
+                state
+                    .handle_edge(edge, kind, Instant::now())
+                    .map(|command| (command, starts_recording))
+            })
         });
 
     let shortcut = match kind {
@@ -1600,8 +1613,8 @@ fn drive_shortcut_edge(app: &AppHandle, edge: ShortcutKeyEdge, kind: DictationSh
         DictationShortcutKind::Toggle => settings.toggle_shortcut,
     };
 
-    if let Some(command) = command {
-        send_dictation_command(app, command, &shortcut.label);
+    if let Some((command, starts_recording)) = command {
+        send_dictation_command(app, command, &shortcut.label, starts_recording);
     }
 }
 
@@ -1727,7 +1740,12 @@ fn reset_shortcut_activation(app: &AppHandle) {
     }
 }
 
-fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
+fn send_dictation_command(
+    app: &AppHandle,
+    command: DictationCommand,
+    shortcut_label: &str,
+    starts_recording: bool,
+) {
     // The start path needs a signed-in OS Accounts session for the
     // transcription that follows, but the token check must not sit between
     // the key press and the microphone: capture is local and the token is
@@ -1737,15 +1755,25 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
     // stop_and_paste reached the helper before start_listening. Start
     // immediately and check in parallel; a signed-out session discards the
     // moments-old local recording and lands on the same sign-in surface as
-    // before. ToggleListening can also start, but we can't tell
-    // start-from-stop without extra state; transcribe_recording_ready acts
-    // as the backstop there.
+    // before. Toggle starts use the same parallel check because the activation
+    // controller now reports whether this edge starts recording.
+    #[cfg(target_os = "macos")]
+    {
+        if starts_recording {
+            crate::macos_input::remember_frontmost_app();
+        } else if matches!(command, DictationCommand::DiscardListening) {
+            crate::macos_input::clear_remembered_frontmost_app();
+        }
+    }
+
     forward_dictation_command(app, command, shortcut_label);
-    if matches!(command, DictationCommand::StartListening) {
+    if starts_recording {
         let app = app.clone();
         let label = shortcut_label.to_string();
         tauri::async_runtime::spawn(async move {
             if crate::os_accounts::access_token().await.is_err() {
+                #[cfg(target_os = "macos")]
+                crate::macos_input::clear_remembered_frontmost_app();
                 forward_dictation_command(&app, DictationCommand::DiscardListening, &label);
                 notify_dictation_not_signed_in(&app);
                 reset_shortcut_activation(&app);

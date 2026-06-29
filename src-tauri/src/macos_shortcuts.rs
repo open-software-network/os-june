@@ -51,8 +51,7 @@ struct EventTypeSpec {
     event_kind: u32,
 }
 
-type EventHandlerUPP =
-    extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
+type EventHandlerUPP = extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
 
 const EVENT_CLASS_KEYBOARD: OSType = 0x6b65_7962; // 'keyb'
 const EVENT_HOTKEY_PRESSED: u32 = 5;
@@ -150,12 +149,17 @@ impl Driver {
             Action::Captured { shortcut } => (self.on_event)(DriverEvent::Captured(shortcut)),
             Action::CaptureStarted => (self.on_event)(DriverEvent::CaptureStarted),
             Action::CaptureCancelled => (self.on_event)(DriverEvent::CaptureCancelled),
-            Action::FnUnavailable { message } => (self.on_event)(DriverEvent::FnUnavailable(message)),
-            Action::ScheduleHoldTimer { delay_ms } => self.schedule_timer(TimerKind::Hold, delay_ms),
-            Action::CancelHoldTimer => self.hold_generation += 1,
-            Action::ScheduleCaptureTimer { modifiers, delay_ms } => {
-                self.schedule_capture_timer(modifiers, delay_ms)
+            Action::FnUnavailable { message } => {
+                (self.on_event)(DriverEvent::FnUnavailable(message))
             }
+            Action::ScheduleHoldTimer { token, delay_ms } => {
+                self.schedule_timer(TimerKind::Hold { token }, delay_ms)
+            }
+            Action::CancelHoldTimer => self.hold_generation += 1,
+            Action::ScheduleCaptureTimer {
+                modifiers,
+                delay_ms,
+            } => self.schedule_capture_timer(modifiers, delay_ms),
             Action::CancelCaptureTimer => self.capture_generation += 1,
             Action::RegisterHotKeys { chords } => self.register_hotkeys(chords),
             Action::UnregisterHotKeys => self.unregister_hotkeys(),
@@ -170,8 +174,9 @@ impl Driver {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             let _ = app.run_on_main_thread(move || {
                 with_driver(|driver| {
-                    if matches!(kind, TimerKind::Hold) && driver.hold_generation == generation {
-                        let actions = driver.monitor.handle(Input::HoldTimerFired);
+                    let TimerKind::Hold { token } = kind;
+                    if driver.hold_generation == generation {
+                        let actions = driver.monitor.handle(Input::HoldTimerFired { token });
                         driver.run(actions);
                     }
                 });
@@ -188,8 +193,9 @@ impl Driver {
             let _ = app.run_on_main_thread(move || {
                 with_driver(|driver| {
                     if driver.capture_generation == generation {
-                        let actions =
-                            driver.monitor.handle(Input::CaptureTimerFired { modifiers });
+                        let actions = driver
+                            .monitor
+                            .handle(Input::CaptureTimerFired { modifiers });
                         driver.run(actions);
                     }
                 });
@@ -292,7 +298,7 @@ impl Driver {
 }
 
 enum TimerKind {
-    Hold,
+    Hold { token: u64 },
 }
 
 fn with_driver<R>(f: impl FnOnce(&mut Driver) -> R) -> Option<R> {

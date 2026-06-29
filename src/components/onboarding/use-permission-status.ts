@@ -32,13 +32,12 @@ export function isAccessibilityGranted(statuses: PermissionStatuses) {
 /**
  * Live mic + accessibility permission state for the onboarding wizard.
  *
- * The dictation helper is the authoritative source for both (the Rust cpal
- * readiness probe doesn't reflect TCC denial), so this listens for its
- * `permission_status` events and, while `active`, polls
- * `get_permission_status` so a toggle flipped in System Settings shows up
- * within a beat of the user returning — onboarding stays on the permissions
- * screen the whole time, so the usual focus-refresh in App.tsx isn't
- * running yet.
+ * The dictation pipeline is the authoritative permission source: the helper
+ * reports microphone TCC, and the main process injects June.app's
+ * Accessibility trust. While `active`, poll `get_permission_status` so a
+ * toggle flipped in System Settings shows up within a beat of the user
+ * returning. Onboarding stays on the permissions screen the whole time, so the
+ * usual focus refresh in App.tsx is not running yet.
  */
 export type SystemAudioStatus =
   | "unknown"

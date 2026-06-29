@@ -9,11 +9,23 @@
 #[cfg(target_os = "macos")]
 mod imp {
     use objc2::rc::Retained;
-    use objc2_app_kit::{NSPasteboard, NSPasteboardType, NSPasteboardTypeString};
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{
+        NSApplicationActivationOptions, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString,
+        NSPasteboardWriting, NSRunningApplication, NSWorkspace,
+    };
     use objc2_foundation::{NSArray, NSData, NSString};
     use std::ffi::c_void;
+    use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
+
+    #[derive(Clone)]
+    struct PasteTarget {
+        pid: i32,
+    }
+
+    static PASTE_TARGET: Mutex<Option<PasteTarget>> = Mutex::new(None);
 
     // --- CoreGraphics synthetic keystroke (Cmd+V) -------------------------
     type CGEventSourceRef = *mut c_void;
@@ -67,37 +79,158 @@ mod imp {
         }
     }
 
-    /// Every (type, data) representation currently on the general pasteboard,
+    #[derive(Clone)]
+    struct PasteboardSnapshot {
+        items: Vec<PasteboardItemSnapshot>,
+    }
+
+    #[derive(Clone)]
+    struct PasteboardItemSnapshot {
+        entries: Vec<(String, Vec<u8>)>,
+    }
+
+    /// Every item and type representation currently on the general pasteboard,
     /// captured as plain bytes so dictation can restore the user's clipboard
-    /// without permanently clobbering it. Plain Rust data is `Send`, so the
-    /// delayed restore can run on a background thread (as the helper did).
-    fn capture(pasteboard: &NSPasteboard) -> Vec<(String, Vec<u8>)> {
-        let mut entries = Vec::new();
-        if let Some(types) = pasteboard.types() {
-            for ty in types.iter() {
-                if let Some(data) = pasteboard.dataForType(&ty) {
-                    entries.push((ty.to_string(), data.to_vec()));
+    /// without flattening multi-item clips such as copied files.
+    fn capture(pasteboard: &NSPasteboard) -> PasteboardSnapshot {
+        let mut snapshot_items = Vec::new();
+        if let Some(items) = pasteboard.pasteboardItems() {
+            for item in items.iter() {
+                let mut entries = Vec::new();
+                for ty in item.types().iter() {
+                    if let Some(data) = item.dataForType(&ty) {
+                        entries.push((ty.to_string(), data.to_vec()));
+                    }
+                }
+                if !entries.is_empty() {
+                    snapshot_items.push(PasteboardItemSnapshot { entries });
                 }
             }
         }
-        entries
+        PasteboardSnapshot {
+            items: snapshot_items,
+        }
     }
 
-    fn restore(pasteboard: &NSPasteboard, entries: &[(String, Vec<u8>)]) {
+    fn restore(pasteboard: &NSPasteboard, snapshot: &PasteboardSnapshot) {
         pasteboard.clearContents();
-        if entries.is_empty() {
+        if snapshot.items.is_empty() {
             return;
         }
-        let ns_types: Vec<Retained<NSPasteboardType>> =
-            entries.iter().map(|(ty, _)| NSString::from_str(ty)).collect();
-        let types_array = NSArray::from_retained_slice(&ns_types);
-        // SAFETY: re-declaring the captured types and writing back their data.
-        unsafe {
-            pasteboard.declareTypes_owner(&types_array, None);
-            for ((_, bytes), ty) in entries.iter().zip(ns_types.iter()) {
-                let data = NSData::with_bytes(bytes);
-                pasteboard.setData_forType(Some(&data), ty);
+
+        let restored_items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = snapshot
+            .items
+            .iter()
+            .filter_map(|item| {
+                let restored = NSPasteboardItem::new();
+                for (ty, bytes) in &item.entries {
+                    let ty = NSString::from_str(ty);
+                    let data = NSData::with_bytes(bytes);
+                    restored.setData_forType(&data, &ty);
+                }
+                (!item.entries.is_empty()).then(|| ProtocolObject::from_retained(restored))
+            })
+            .collect();
+
+        if restored_items.is_empty() {
+            return;
+        }
+
+        let objects = NSArray::from_retained_slice(&restored_items);
+        pasteboard.writeObjects(&objects);
+    }
+
+    fn current_frontmost_target() -> Option<PasteTarget> {
+        let workspace = NSWorkspace::sharedWorkspace();
+        let frontmost = workspace.frontmostApplication()?;
+        let pid = frontmost.processIdentifier();
+        (pid > 0).then_some(PasteTarget { pid })
+    }
+
+    fn activate_target(target: Option<PasteTarget>) {
+        let Some(target) = target else {
+            return;
+        };
+        let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(target.pid)
+        else {
+            return;
+        };
+        if app.isTerminated() {
+            return;
+        }
+        app.unhide();
+        app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+    }
+
+    pub fn remember_frontmost_app() {
+        if let Ok(mut target) = PASTE_TARGET.lock() {
+            *target = current_frontmost_target();
+        }
+    }
+
+    pub fn clear_target() {
+        if let Ok(mut target) = PASTE_TARGET.lock() {
+            *target = None;
+        }
+    }
+
+    fn take_target() -> Option<PasteTarget> {
+        PASTE_TARGET
+            .lock()
+            .ok()
+            .and_then(|mut target| target.take())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        struct PasteboardRestoreGuard {
+            snapshot: PasteboardSnapshot,
+        }
+
+        impl Drop for PasteboardRestoreGuard {
+            fn drop(&mut self) {
+                let pasteboard = NSPasteboard::generalPasteboard();
+                restore(&pasteboard, &self.snapshot);
             }
+        }
+
+        #[test]
+        fn restore_keeps_each_pasteboard_item_separate() {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            let _guard = PasteboardRestoreGuard {
+                snapshot: capture(&pasteboard),
+            };
+
+            pasteboard.clearContents();
+
+            let first_type = NSString::from_str("public.utf8-plain-text");
+            let second_type = NSString::from_str("public.html");
+            let first = NSPasteboardItem::new();
+            first.setData_forType(&NSData::with_bytes(b"one"), &first_type);
+            let second = NSPasteboardItem::new();
+            second.setData_forType(&NSData::with_bytes(b"two"), &second_type);
+            let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = vec![
+                ProtocolObject::from_retained(first),
+                ProtocolObject::from_retained(second),
+            ];
+            let objects = NSArray::from_retained_slice(&items);
+            assert!(pasteboard.writeObjects(&objects));
+
+            let snapshot = capture(&pasteboard);
+            restore(&pasteboard, &snapshot);
+
+            let restored = pasteboard
+                .pasteboardItems()
+                .expect("pasteboard items should restore");
+            assert_eq!(restored.count(), 2);
+            let first = restored.objectAtIndex(0);
+            let second = restored.objectAtIndex(1);
+            assert!(first.dataForType(&first_type).is_some());
+            assert!(second.dataForType(&second_type).is_some());
+            assert!(first.dataForType(&second_type).is_none());
+            assert!(second.dataForType(&first_type).is_none());
         }
     }
 
@@ -106,6 +239,7 @@ mod imp {
     /// (only if it hasn't changed since). Mirrors the helper's
     /// `PasteboardInserter.paste`.
     pub fn paste(text: &str) {
+        let target = take_target();
         let pasteboard = NSPasteboard::generalPasteboard();
         let snapshot = capture(&pasteboard);
 
@@ -120,6 +254,7 @@ mod imp {
             return;
         }
 
+        activate_target(target);
         post_paste_shortcut();
 
         // Restore the user's clipboard once the paste has had time to land,
@@ -138,6 +273,22 @@ mod imp {
                 restore(&pasteboard, &snapshot);
             }
         });
+    }
+}
+
+/// Remember the frontmost app so the next paste targets where dictation began.
+pub fn remember_frontmost_app() {
+    #[cfg(target_os = "macos")]
+    {
+        imp::remember_frontmost_app();
+    }
+}
+
+/// Drop any remembered paste target, for example after a discarded recording.
+pub fn clear_remembered_frontmost_app() {
+    #[cfg(target_os = "macos")]
+    {
+        imp::clear_target();
     }
 }
 

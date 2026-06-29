@@ -24,6 +24,7 @@ function PermissionRow({
   probing = false,
   title,
   detail,
+  actionLabel = "Allow",
   onAllow,
 }: {
   icon: ReactNode;
@@ -33,8 +34,8 @@ function PermissionRow({
   probing?: boolean;
   title: string;
   detail: string;
-  /** Grant affordance — fires the TCC prompt or opens System Settings;
-   * either way the user's decision is "allow". */
+  actionLabel?: string;
+  /** Grant affordance: fires the TCC prompt or opens System Settings. */
   onAllow?: () => void;
 }) {
   return (
@@ -55,9 +56,9 @@ function PermissionRow({
           type="button"
           className="onboarding-perm-btn"
           onClick={onAllow}
-          aria-label={`Allow ${title.toLowerCase()} access`}
+          aria-label={`${actionLabel} ${title.toLowerCase()} access`}
         >
-          Allow
+          {actionLabel}
         </button>
       ) : null}
     </li>
@@ -113,10 +114,10 @@ export function PermissionsStep({
   }, [statuses.checked]);
 
   function openAccessibilitySettings() {
-    // Fire the helper's prompting check first: it registers the dictation
-    // helper in the Accessibility list (so there's a toggle to flip) and
-    // shows the native dialog. Let macOS own the System Settings handoff so
-    // the native prompt is not left open behind a programmatic settings launch.
+    // Fire June.app's prompting check first: it registers the main app in the
+    // Accessibility list (so there is a toggle to flip) and shows the native
+    // dialog. Let macOS own the System Settings handoff so the native prompt is
+    // not left open behind a programmatic settings launch.
     void dictationHelperCommand({
       type: "request_accessibility_permission",
     }).catch(() => undefined);
@@ -163,7 +164,8 @@ export function PermissionsStep({
               icon={<IconTextIndicator size={15} />}
               granted={showPermissionRows && accessibilityGranted}
               title="Accessibility"
-              detail="Types your words at your cursor, in any app."
+              detail="Types your words at your cursor, in any app. Turn on June in System Settings."
+              actionLabel="Open settings"
               onAllow={
                 showPermissionRows ? openAccessibilitySettings : undefined
               }
