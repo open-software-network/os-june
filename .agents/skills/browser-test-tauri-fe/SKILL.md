@@ -61,9 +61,16 @@ Recipe — a dev-only HTML entry (e.g. `app-preview.html`) NOT listed in `vite.c
 
 **Chrome DevTools MCP** (interactive: `take_snapshot`, `take_screenshot`, `list_console_messages`, `evaluate_script`) — best for ad-hoc debugging and a11y/perf. User prefers the testing Chrome profile, not the personal Claude-in-Chrome extension.
 
-Install Playwright once per project: `pnpm add -D playwright && pnpm exec playwright install chromium`.
+**Tools (check first, prompt before installing).** Driving/screenshots need Playwright + a Chromium build. Check with `pnpm exec playwright --version`; if it's missing, ask the user, then `pnpm add -D playwright && pnpm exec playwright install chromium`. These are install-on-demand, not standing devDeps.
 
 ## Recording walkthroughs (video / GIF)
+
+**Recording needs more than screenshots do, so if the user asks for a recording, first prompt to install every tool it needs** — check each, and install only with the user's go-ahead (one of these failing midway wastes the slow recording pass):
+
+- **Playwright + Chromium** (drives the page, captures the `.webm`): check `pnpm exec playwright --version` → `pnpm add -D playwright && pnpm exec playwright install chromium`
+- **ffmpeg** (converts `.webm` → a PR-embeddable `.gif`, and extracts verify frames): check `ffmpeg -version` → `brew install ffmpeg` (macOS) / `apt-get install -y ffmpeg` (Debian/Ubuntu)
+
+Don't assume any are present. A missing ffmpeg only fails at the convert step, *after* the recording runs, so confirm all of them up front.
 
 To record a feature walkthrough, drive the page **slowly with deliberate pauses** and let Playwright capture video at the context level:
 
