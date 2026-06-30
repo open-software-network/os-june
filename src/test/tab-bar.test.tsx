@@ -86,6 +86,19 @@ describe("TabBar", () => {
     expect(appCss).not.toContain("var(--control-md) + var(--sp-2) -");
   });
 
+  it("keeps the tab strip full-width when the files panel is open", () => {
+    const panelRule = cssRuleFor(
+      '.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel',
+    );
+
+    expect(panelRule).toContain(
+      "margin-right: calc(var(--agent-files-w) + var(--sp-3));",
+    );
+    expect(appCss).not.toMatch(
+      /\.app-shell:has\(\.agent-workspace\[data-artifact-panel="open"\]\) \.main-column\s*\{[\s\S]*?padding-right:\s*calc\(var\(--agent-files-w\)/,
+    );
+  });
+
   it("starts a window drag from empty tab-strip space", () => {
     const { container, props } = renderTabBar();
     const strip = container.querySelector(".tab-strip");
