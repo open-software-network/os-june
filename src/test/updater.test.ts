@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DownloadEvent } from "../app/update-decision";
+import type { DownloadEvent } from "../lib/updater";
 import {
   checkJuneUpdate,
   getReleaseChannel,
@@ -18,6 +18,12 @@ vi.mock("@tauri-apps/api/core", () => {
 });
 
 const invokeMock = vi.mocked(invoke);
+
+// install_update receives a progress Channel under `onEvent`; invoke's args are
+// loosely typed, so name the shape we assert against rather than inline-casting.
+type InstallUpdateArgs = {
+  onEvent: { onmessage: ((message: DownloadEvent) => void) | null };
+};
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -47,9 +53,7 @@ describe("checkJuneUpdate", () => {
 
     const seen: DownloadEvent[] = [];
     invokeMock.mockImplementationOnce(async (_command, args) => {
-      const { onEvent } = args as unknown as {
-        onEvent: { onmessage: ((message: DownloadEvent) => void) | null };
-      };
+      const { onEvent } = args as unknown as InstallUpdateArgs;
       onEvent.onmessage?.({ event: "Started", data: { contentLength: 10 } });
       onEvent.onmessage?.({ event: "Finished" });
     });

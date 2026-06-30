@@ -1,9 +1,18 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { DownloadEvent } from "../app/update-decision";
 
 /** The two release streams. Wire form matches the Rust `ReleaseChannel`. */
 export type ReleaseChannel = "stable" | "rc";
+
+/**
+ * Download progress streamed from the `install_update` command, shaped to match
+ * the Rust `DownloadEvent` enum (`{ event, data }`). Defined here, at the IPC
+ * boundary that owns the `Channel`, and consumed downward by update-decision.ts.
+ */
+export type DownloadEvent =
+  | { event: "Started"; data: { contentLength?: number } }
+  | { event: "Progress"; data: { chunkLength: number } }
+  | { event: "Finished" };
 
 /** What `fetch_update` reports: enough to prompt, not the live update handle. */
 type UpdateMeta = {

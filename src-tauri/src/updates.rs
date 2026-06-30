@@ -3,7 +3,8 @@
 //! Tauri has no built-in update "channel": the channel is simply which updater
 //! manifest URL we point at. The JS `check()` cannot override endpoints (Tauri
 //! restricts runtime endpoints to Rust for security), so channel selection
-//! lives here and the update check/install run as Rust commands (see step 2).
+//! lives here and the update check/install run as the `fetch_update` /
+//! `install_update` commands below.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -23,7 +24,7 @@ const STABLE_ENDPOINT: &str = "https://github.com/open-software-network/os-june-
 const RC_ENDPOINT: &str =
     "https://github.com/open-software-network/os-june-releases/releases/download/rc/latest-rc.json";
 
-/// Which release stream the updater follows. The wire form is the lowercase
+/// Which release stream the updater follows. The wire form is the camelCase
 /// variant name (`"stable"` / `"rc"`) shared with the frontend setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,8 +87,8 @@ pub struct ReleaseChannelState {
 fn settings_path(app: &AppHandle) -> PathBuf {
     app.path()
         .app_config_dir()
-        .map(|directory| directory.join("update-settings.json"))
-        .unwrap_or_else(|_| PathBuf::from("update-settings.json"))
+        .map(|directory| directory.join("release-settings.json"))
+        .unwrap_or_else(|_| PathBuf::from("release-settings.json"))
 }
 
 /// Loads the persisted channel and registers it as managed state. Called from
@@ -327,7 +328,7 @@ mod tests {
     #[test]
     fn missing_settings_file_defaults_to_stable() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("update-settings.json");
+        let path = dir.path().join("release-settings.json");
         assert_eq!(load_release_settings(&path).channel, ReleaseChannel::Stable);
     }
 
@@ -335,7 +336,7 @@ mod tests {
     fn saved_channel_round_trips_through_disk() {
         let dir = tempdir().unwrap();
         // Nested path also proves save creates missing parent directories.
-        let path = dir.path().join("nested/update-settings.json");
+        let path = dir.path().join("nested/release-settings.json");
         save_release_settings(
             &path,
             &ReleaseSettings {
@@ -349,7 +350,7 @@ mod tests {
     #[test]
     fn corrupt_settings_file_defaults_to_stable() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("update-settings.json");
+        let path = dir.path().join("release-settings.json");
         std::fs::write(&path, "{ not valid json").unwrap();
         assert_eq!(load_release_settings(&path).channel, ReleaseChannel::Stable);
     }

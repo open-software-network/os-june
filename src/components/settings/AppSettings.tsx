@@ -374,10 +374,12 @@ export function AppSettings({
     capturingShortcutRef.current = capturingShortcut;
   }, [capturingShortcut]);
 
-  // Load the persisted update channel once the updater is available. Gated on
-  // onCheckForUpdates so non-updater builds don't invoke the command.
+  // Load the persisted release channel once the updater is available. Gated on
+  // a stable boolean (not the onCheckForUpdates prop itself, which is an inline
+  // arrow with a new identity each render) so this loads once, not per render.
+  const updaterAvailable = Boolean(onCheckForUpdates);
   useEffect(() => {
-    if (!onCheckForUpdates) return;
+    if (!updaterAvailable) return;
     let active = true;
     void getReleaseChannel()
       .then((channel) => {
@@ -387,14 +389,16 @@ export function AppSettings({
     return () => {
       active = false;
     };
-  }, [onCheckForUpdates]);
+  }, [updaterAvailable]);
 
   const handleReleaseChannelChange = (next: ReleaseChannel) => {
     setReleaseChannelValue(next);
     void setReleaseChannel(next).catch(() => {
       // Persist failed: re-read so the toggle reflects the real saved channel
       // rather than an optimistic value that never reached disk.
-      void getReleaseChannel().then(setReleaseChannelValue).catch(() => undefined);
+      void getReleaseChannel()
+        .then(setReleaseChannelValue)
+        .catch(() => undefined);
     });
   };
 
@@ -1405,7 +1409,7 @@ export function AppSettings({
 
                     <div className="settings-row">
                       <div className="settings-row-info">
-                        <h3 className="settings-row-title">Update channel</h3>
+                        <h3 className="settings-row-title">Release channel</h3>
                         <p className="settings-row-description">
                           Stable is recommended. Release candidate gets early
                           builds for testing.
@@ -1413,7 +1417,7 @@ export function AppSettings({
                       </div>
                       <div className="settings-row-control">
                         <SegmentedControl<ReleaseChannel>
-                          aria-label="Update channel"
+                          aria-label="Release channel"
                           value={releaseChannel}
                           options={RELEASE_CHANNEL_OPTIONS}
                           onValueChange={handleReleaseChannelChange}
