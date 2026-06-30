@@ -152,6 +152,7 @@ describe("OnboardingFlow", () => {
         microphone: {},
         style: "standard",
         language: undefined,
+        completionSoundEnabled: true,
       },
     });
   });
@@ -287,6 +288,7 @@ describe("OnboardingFlow", () => {
         microphone: {},
         style: "standard",
         language: undefined,
+        completionSoundEnabled: true,
       },
     });
     setOnboardingResumeStep("dictation-practice");
@@ -323,6 +325,7 @@ describe("OnboardingFlow", () => {
         microphone: {},
         style: "standard",
         language: undefined,
+        completionSoundEnabled: true,
       },
     });
     setOnboardingResumeStep("dictation-practice");

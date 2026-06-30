@@ -212,6 +212,7 @@ pub fn run() {
             dictation::set_dictation_microphone,
             dictation::set_dictation_style,
             dictation::set_dictation_language,
+            dictation::set_dictation_completion_sound,
             dictation::dictation_helper_command,
             dictation::dictation_hud_set_stop_bounds,
             dictation::dictation_hud_set_dismiss_bounds,

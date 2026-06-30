@@ -18,6 +18,7 @@ import {
   providerModelSettings,
   juneOpenVerifyPage,
   setDictationLanguage,
+  setDictationCompletionSound,
   setDictationMicrophone,
   setDictationShortcut,
   setVeniceModel,
@@ -149,6 +150,7 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   microphone: {},
   style: "standard",
   language: undefined,
+  completionSoundEnabled: true,
 };
 
 const DEFAULT_SHORTCUTS: Record<
@@ -681,6 +683,20 @@ export function AppSettings({
     }
   }
 
+  async function setCompletionSound(enabled: boolean) {
+    try {
+      const next = await setDictationCompletionSound(enabled);
+      setSettings(next);
+      setStatus(
+        enabled
+          ? "Completion sound turned on."
+          : "Completion sound turned off.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   const microphoneName = settings.microphone.name ?? "Auto-detect";
   const microphoneDescription = settings.microphone.id
     ? "Input device used for dictation."
@@ -1012,6 +1028,24 @@ export function AppSettings({
                           })}
                         </ul>
                       ) : null}
+                    </div>
+                  </div>
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Completion sound</h3>
+                      <p className="settings-row-description">
+                        Play a sound when dictation transcription is ready.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={settings.completionSoundEnabled}
+                        onCheckedChange={(enabled) =>
+                          void setCompletionSound(enabled)
+                        }
+                        aria-label="Completion sound"
+                      />
                     </div>
                   </div>
                 </div>

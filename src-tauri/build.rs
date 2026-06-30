@@ -334,7 +334,11 @@ fn build_dictation_helper() {
         .expect("src-tauri should have a repository parent")
         .join("public")
         .join("sounds");
-    for sound in ["record-start.mp3", "record-end.mp3"] {
+    for sound in [
+        "record-start.mp3",
+        "record-end.mp3",
+        "record-complete.wav",
+    ] {
         let source = public_sounds_dir.join(sound);
         println!("cargo:rerun-if-changed={}", source.display());
         let destination = resources_dir.join(sound);
