@@ -29,6 +29,9 @@ const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
 const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
 const DICTIONARY_CONTEXT_MAX_ENTRIES: usize = 80;
 const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 2;
+const DUPLICATE_TRANSCRIPT_GAP_MS: i64 = 1_500;
+const DUPLICATE_TRANSCRIPT_SIMILARITY: f32 = 0.74;
+const DUPLICATE_TRANSCRIPT_CONTAINMENT: f32 = 0.82;
 const TRANSIENT_TRANSCRIPTION_ATTEMPTS: usize = 3;
 #[cfg(not(test))]
 const TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS: u64 = 300;
@@ -53,10 +56,150 @@ pub struct SourceTranscriptInput {
 pub fn valid_sources_for_processing(
     sources: Vec<SourceTranscriptInput>,
 ) -> Vec<SourceTranscriptInput> {
-    sources
-        .into_iter()
-        .filter(|source| source.valid && !source.text.trim().is_empty())
-        .collect()
+    deduplicate_source_transcripts(
+        sources
+            .into_iter()
+            .filter(|source| source.valid && !source.text.trim().is_empty())
+            .collect(),
+    )
+}
+
+fn deduplicate_source_transcripts(
+    sources: Vec<SourceTranscriptInput>,
+) -> Vec<SourceTranscriptInput> {
+    let sources = ordered_source_transcripts(sources);
+    let mut kept: Vec<SourceTranscriptInput> = Vec::new();
+    for source in sources {
+        let duplicate_exists = kept
+            .iter()
+            .rev()
+            .take(4)
+            .any(|existing| are_duplicate_source_transcripts(existing, &source));
+        if !duplicate_exists {
+            kept.push(source);
+        }
+    }
+    kept
+}
+
+fn are_duplicate_source_transcripts(
+    left: &SourceTranscriptInput,
+    right: &SourceTranscriptInput,
+) -> bool {
+    if !source_transcripts_are_nearby(left, right) {
+        return false;
+    }
+    transcript_texts_are_similar(&left.text, &right.text)
+}
+
+fn source_transcripts_are_nearby(
+    left: &SourceTranscriptInput,
+    right: &SourceTranscriptInput,
+) -> bool {
+    match (left.start_ms, left.end_ms, right.start_ms, right.end_ms) {
+        (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) => {
+            if left_end < right_start {
+                return right_start - left_end <= DUPLICATE_TRANSCRIPT_GAP_MS;
+            }
+            if right_end < left_start {
+                return left_start - right_end <= DUPLICATE_TRANSCRIPT_GAP_MS;
+            }
+            true
+        }
+        _ => match (left.turn_index, right.turn_index) {
+            (Some(left_index), Some(right_index)) => (left_index - right_index).abs() <= 1,
+            _ => false,
+        },
+    }
+}
+
+fn transcript_texts_are_similar(left: &str, right: &str) -> bool {
+    let left_normalized = normalize_transcript_for_similarity(left);
+    let right_normalized = normalize_transcript_for_similarity(right);
+    if left_normalized.is_empty() || right_normalized.is_empty() {
+        return false;
+    }
+    if left_normalized == right_normalized {
+        return true;
+    }
+    normalized_levenshtein_similarity(&left_normalized, &right_normalized)
+        >= DUPLICATE_TRANSCRIPT_SIMILARITY
+        || token_containment(&left_normalized, &right_normalized)
+            >= DUPLICATE_TRANSCRIPT_CONTAINMENT
+}
+
+fn normalize_transcript_for_similarity(text: &str) -> String {
+    let mut normalized = String::new();
+    let mut pending_space = false;
+    for character in text.chars() {
+        if character.is_alphanumeric() {
+            if pending_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            for lowercase in character.to_lowercase() {
+                normalized.push(lowercase);
+            }
+            pending_space = false;
+        } else {
+            pending_space = true;
+        }
+    }
+    normalized
+}
+
+fn normalized_levenshtein_similarity(left: &str, right: &str) -> f32 {
+    let left_chars = left.chars().collect::<Vec<_>>();
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let max_len = left_chars.len().max(right_chars.len());
+    if max_len == 0 {
+        return 1.0;
+    }
+    let distance = levenshtein_distance(&left_chars, &right_chars);
+    1.0 - (distance as f32 / max_len as f32)
+}
+
+fn levenshtein_distance(left: &[char], right: &[char]) -> usize {
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_byte) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_byte) in right.iter().enumerate() {
+            let substitution_cost = usize::from(left_byte != right_byte);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution_cost);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+fn token_containment(left: &str, right: &str) -> f32 {
+    let left_tokens = left.split_whitespace().collect::<Vec<_>>();
+    let right_tokens = right.split_whitespace().collect::<Vec<_>>();
+    let smaller = left_tokens.len().min(right_tokens.len());
+    if smaller < 4 {
+        return 0.0;
+    }
+    let mut matched = vec![false; right_tokens.len()];
+    let mut shared = 0_usize;
+    for left_token in &left_tokens {
+        if let Some(index) = right_tokens
+            .iter()
+            .enumerate()
+            .find_map(|(index, right_token)| {
+                if !matched[index] && left_token == right_token {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+        {
+            matched[index] = true;
+            shared += 1;
+        }
+    }
+    shared as f32 / smaller as f32
 }
 
 fn source_transcript_input_from_row(row: &TranscriptDto) -> SourceTranscriptInput {
@@ -106,10 +249,13 @@ fn safe_temp_path_segment(value: &str) -> String {
 }
 
 pub fn labeled_transcript_from_sources(sources: &[SourceTranscriptInput]) -> String {
-    let mut sources = sources
-        .iter()
-        .filter(|source| source.valid && !source.text.trim().is_empty())
-        .collect::<Vec<_>>();
+    let mut sources = deduplicate_source_transcripts(
+        sources
+            .iter()
+            .filter(|source| source.valid && !source.text.trim().is_empty())
+            .cloned()
+            .collect(),
+    );
     sources.sort_by(|left, right| {
         left.turn_index
             .unwrap_or(i64::MAX)
@@ -121,7 +267,7 @@ pub fn labeled_transcript_from_sources(sources: &[SourceTranscriptInput]) -> Str
             })
     });
     sources
-        .into_iter()
+        .iter()
         .map(|source| {
             let label = match source.source.as_str() {
                 "system" => "System",
@@ -158,10 +304,7 @@ pub fn coalesce_source_transcripts(
 }
 
 pub fn build_transcription_context(previous: &[SourceTranscriptInput]) -> Option<String> {
-    let valid = ordered_source_transcripts(previous.to_vec())
-        .into_iter()
-        .filter(|source| source.valid && !source.text.trim().is_empty())
-        .collect::<Vec<_>>();
+    let valid = valid_sources_for_processing(previous.to_vec());
     if valid.is_empty() {
         return None;
     }

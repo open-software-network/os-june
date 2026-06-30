@@ -282,6 +282,7 @@ mod tests {
         let prompt = generator.last_system_prompt().unwrap_or_default();
         assert!(prompt.contains("markdown H1 headings"));
         assert!(prompt.contains("# Heading"));
+        assert!(prompt.contains("the first non-empty line must be a heading"));
         assert!(prompt.contains("Do not add wrapper headings"));
     }
 

@@ -108,6 +108,9 @@ const PROCESSING_STAGES: {
   { status: "generating", label: "Summary" },
 ];
 
+const DUPLICATE_TRANSCRIPT_GAP_MS = 1500;
+const DUPLICATE_TRANSCRIPT_SIMILARITY = 0.74;
+const DUPLICATE_TRANSCRIPT_CONTAINMENT = 0.82;
 const RECORD_CONSENT_REVEAL_DELAY_MS = 420;
 const RECORD_CONSENT_AUTO_HIDE_MS = 5000;
 
@@ -160,14 +163,13 @@ export function NoteEditor({
     () => liveTranscript.map(liveTranscriptEventToTurn),
     [liveTranscript],
   );
-  const transcriptTurns = useMemo(
-    () =>
-      [...sourceTranscripts, ...liveTranscriptTurns]
-        .map((turn, index) => ({ turn, index }))
-        .sort(compareSourceTranscriptOrder)
-        .map(({ turn }) => turn),
-    [sourceTranscripts, liveTranscriptTurns],
-  );
+  const transcriptTurns = useMemo(() => {
+    const ordered = [...sourceTranscripts, ...liveTranscriptTurns]
+      .map((turn, index) => ({ turn, index }))
+      .sort(compareSourceTranscriptOrder)
+      .map(({ turn }) => turn);
+    return dedupeTranscriptTurns(ordered);
+  }, [sourceTranscripts, liveTranscriptTurns]);
   const recordingForNote = recordingStatus;
   const recordingActive = Boolean(recordingForNote);
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -993,6 +995,122 @@ function compareOptionalNumber(left?: number, right?: number) {
   if (left === undefined) return 1;
   if (right === undefined) return -1;
   return left - right;
+}
+
+function dedupeTranscriptTurns(
+  turns: RenderedTranscriptTurn[],
+): RenderedTranscriptTurn[] {
+  const kept: RenderedTranscriptTurn[] = [];
+  for (const turn of turns) {
+    const duplicateExists = [...kept]
+      .reverse()
+      .slice(0, 4)
+      .some((existing) => areDuplicateTranscriptTurns(existing, turn));
+    if (!duplicateExists) {
+      kept.push(turn);
+    }
+  }
+  return kept;
+}
+
+function areDuplicateTranscriptTurns(
+  left: RenderedTranscriptTurn,
+  right: RenderedTranscriptTurn,
+) {
+  if (!left.text.trim() || !right.text.trim()) return false;
+  if (left.status === "failed" || right.status === "failed") return false;
+  if (!transcriptTurnsAreNearby(left, right)) return false;
+  return transcriptTextsAreSimilar(left.text, right.text);
+}
+
+function transcriptTurnsAreNearby(
+  left: RenderedTranscriptTurn,
+  right: RenderedTranscriptTurn,
+) {
+  if (
+    left.startMs !== undefined &&
+    left.endMs !== undefined &&
+    right.startMs !== undefined &&
+    right.endMs !== undefined
+  ) {
+    if (left.endMs < right.startMs) {
+      return right.startMs - left.endMs <= DUPLICATE_TRANSCRIPT_GAP_MS;
+    }
+    if (right.endMs < left.startMs) {
+      return left.startMs - right.endMs <= DUPLICATE_TRANSCRIPT_GAP_MS;
+    }
+    return true;
+  }
+  if (left.turnIndex !== undefined && right.turnIndex !== undefined) {
+    return Math.abs(left.turnIndex - right.turnIndex) <= 1;
+  }
+  return false;
+}
+
+function transcriptTextsAreSimilar(left: string, right: string) {
+  const leftNormalized = normalizeTranscriptForSimilarity(left);
+  const rightNormalized = normalizeTranscriptForSimilarity(right);
+  if (!leftNormalized || !rightNormalized) return false;
+  if (leftNormalized === rightNormalized) return true;
+  return (
+    normalizedLevenshteinSimilarity(leftNormalized, rightNormalized) >=
+      DUPLICATE_TRANSCRIPT_SIMILARITY ||
+    tokenContainment(leftNormalized, rightNormalized) >=
+      DUPLICATE_TRANSCRIPT_CONTAINMENT
+  );
+}
+
+function normalizeTranscriptForSimilarity(text: string) {
+  return text
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .map((token) => token.toLowerCase())
+    .join(" ");
+}
+
+function normalizedLevenshteinSimilarity(left: string, right: string) {
+  const leftCharacters = Array.from(left);
+  const rightCharacters = Array.from(right);
+  const maxLength = Math.max(leftCharacters.length, rightCharacters.length);
+  if (maxLength === 0) return 1;
+  return 1 - levenshteinDistance(leftCharacters, rightCharacters) / maxLength;
+}
+
+function levenshteinDistance(left: string[], right: string[]) {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  let current = new Array<number>(right.length + 1).fill(0);
+  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+    current[0] = leftIndex + 1;
+    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+      const substitutionCost = left[leftIndex] === right[rightIndex] ? 0 : 1;
+      current[rightIndex + 1] = Math.min(
+        previous[rightIndex + 1] + 1,
+        current[rightIndex] + 1,
+        previous[rightIndex] + substitutionCost,
+      );
+    }
+    [previous, current] = [current, previous];
+  }
+  return previous[right.length];
+}
+
+function tokenContainment(left: string, right: string) {
+  const leftTokens = left.split(/\s+/).filter(Boolean);
+  const rightTokens = right.split(/\s+/).filter(Boolean);
+  const smaller = Math.min(leftTokens.length, rightTokens.length);
+  if (smaller < 4) return 0;
+  const matched = new Array<boolean>(rightTokens.length).fill(false);
+  let shared = 0;
+  for (const leftToken of leftTokens) {
+    const index = rightTokens.findIndex(
+      (rightToken, index) => !matched[index] && leftToken === rightToken,
+    );
+    if (index >= 0) {
+      matched[index] = true;
+      shared += 1;
+    }
+  }
+  return shared / smaller;
 }
 
 /** A single conversation turn in the Transcription tab. Mirrors the dictation
