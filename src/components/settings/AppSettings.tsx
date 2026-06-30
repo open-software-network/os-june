@@ -1258,7 +1258,7 @@ export function AppSettings({
                   <div className="settings-row-info">
                     <h3 className="settings-row-title">Community</h3>
                     <p className="settings-row-description">
-                      Join the June community on Telegram at{" "}
+                      Join us in the June community on Telegram at{" "}
                       {JUNE_COMMUNITY_URL.replace("https://", "")}.
                     </p>
                   </div>

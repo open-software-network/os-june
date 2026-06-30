@@ -130,7 +130,7 @@ export function SignInStep({
         ))}
       </ul>
       <p className="onboarding-community">
-        Meet other builders in the{" "}
+        Join us in the{" "}
         <button
           type="button"
           className="onboarding-community-link"
