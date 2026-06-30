@@ -1,9 +1,10 @@
 # Releasing June for Windows
 
 June ships Windows builds as an NSIS installer. The production Windows release
-workflow builds from `main`, signs the app executable and installer with
-Authenticode, signs updater artifacts with the Tauri updater key, and attaches
-Windows assets to the existing `open-software-network/os-june-releases` release.
+workflow builds from `main`, signs updater artifacts with the Tauri updater key,
+signs the app executable and installer with Authenticode when certificate
+secrets are configured, and attaches Windows assets to the existing
+`open-software-network/os-june-releases` release.
 
 ## Windows support
 
@@ -25,9 +26,10 @@ Create or confirm these before cutting the first Windows release:
 - Release GitHub App installed on `os-june` and `os-june-releases` with
   `contents:write`, exposed as `RELEASE_APP_ID` and
   `RELEASE_APP_PRIVATE_KEY`.
-- Authenticode signing certificate exported as a password-protected PFX. Store
-  the base64-encoded PFX in `WINDOWS_CERTIFICATE` and its password in
-  `WINDOWS_CERTIFICATE_PASSWORD`.
+- Optional Authenticode signing certificate exported as a password-protected
+  PFX. Store the base64-encoded PFX in `WINDOWS_CERTIFICATE` and its password in
+  `WINDOWS_CERTIFICATE_PASSWORD`. If both are absent, the workflow publishes an
+  unsigned NSIS installer and records a warning in the run summary.
 - Optional `WINDOWS_SIGNING_TIMESTAMP_URL` if the default
   `http://timestamp.digicert.com` should be overridden.
 - Optional `WINDOWS_SIGNTOOL_PATH` if the runner cannot discover
@@ -39,8 +41,9 @@ Create or confirm these before cutting the first Windows release:
   `PRODUCTION_JUNE_API_URL`.
 
 Keep the Authenticode certificate separate from the Tauri updater key. The
-certificate establishes the Windows publisher signature. The updater key signs
-the update artifact that Tauri verifies before installation.
+certificate establishes the Windows publisher signature when configured. The
+updater key signs the update artifact that Tauri verifies before installation
+and is required for every Windows release.
 
 ## Cutting a production Windows release
 
@@ -68,8 +71,8 @@ The Windows workflow performs the release steps in order:
 
 1. Reads `stable-build.json` from the `vX.Y.Z` release to learn the promoted
    source commit, then checks that commit out (not `main`).
-2. Validates required Windows signing, updater, release, and production runtime
-   secrets.
+2. Validates required updater, release, and production runtime secrets, then
+   detects whether Authenticode signing is configured.
 3. Stamps the clean `X.Y.Z` version into the checked-out tree so the Windows
    build matches the promoted macOS version.
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
@@ -79,14 +82,15 @@ The Windows workflow performs the release steps in order:
    `scripts/bundle-hermes-runtime-windows.ps1`: the pinned hermes-agent
    checkout, a relocatable CPython, Python deps, prebuilt dashboard UI, and a
    relocatable `bin/hermes.exe` launcher.
-7. Authenticode-signs the bundled Hermes `.exe`, `.dll`, and `.pyd` binaries.
+7. Authenticode-signs the bundled Hermes `.exe`, `.dll`, and `.pyd` binaries
+   when certificate secrets are configured.
 8. Builds the Windows NSIS installer with production OS Accounts and June API
    configuration embedded as fallback runtime config.
 9. Signs the app executable and NSIS installer through
-   `scripts/windows-sign.ps1`.
-10. Verifies Authenticode status for the executable and installer, checks the
-    updater signature file exists, and inspects the NSIS payload, including the
-    bundled Hermes launcher and Python runtime.
+   `scripts/windows-sign.ps1` when certificate secrets are configured.
+10. Verifies Authenticode status for the executable and installer when signing
+    is configured, checks the updater signature file exists, and inspects the
+    NSIS payload, including the bundled Hermes launcher and Python runtime.
 11. Uploads the NSIS output as a workflow artifact.
 12. Uploads Windows release assets and merges `windows-x86_64` into
     `latest.json` without removing macOS updater entries or the generated
@@ -105,16 +109,18 @@ Start-Process -FilePath $installer -ArgumentList "/S" -Wait
 Start-Process "$env:LOCALAPPDATA\June\June.exe"
 ```
 
-Confirm the signature status is `Valid`, the publisher is Open Software Network,
-the app launches as June, the sign-in copy mentions recording and notes without
-dictation, and the bundled agent starts on a clean VM with no Python installed.
-Record from the microphone and generate a note against production June API
-before linking the installer publicly.
+If Authenticode signing was enabled, confirm the signature status is `Valid` and
+the publisher is Open Software Network. If signing was not enabled, expect
+Windows to report an unsigned installer and do not describe it as signed. In
+both cases, confirm the app launches as June, the sign-in copy mentions
+recording and notes without dictation, and the bundled agent starts on a clean VM
+with no Python installed. Record from the microphone and generate a note against
+production June API before linking the installer publicly.
 
 For updater validation after a second Windows release, install an older
 updater-capable Windows build, run **June -> Check for updates...**, confirm the
 prompt shows the new version, install, and verify the app exits for the Windows
 installer handoff and relaunches cleanly on the new version.
 
-If Authenticode validation, updater signature validation, sign-in, recording, or
-update installation fails, do not promote the Windows installer.
+If expected Authenticode validation, updater signature validation, sign-in,
+recording, or update installation fails, do not promote the Windows installer.
