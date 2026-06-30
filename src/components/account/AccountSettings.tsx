@@ -213,11 +213,12 @@ export function BillingSettingsSection({
   }
 
   // __billingDemo(...) parks the card in a fixture state (or "all" stacks every
-  // variant) for design work; demoPlan stays null in production. See
-  // lib/billing-demo.ts.
-  const galleryMode = demoPlan === "all";
+  // variant) for design work. Every fixture reference is gated on
+  // import.meta.env.DEV so the bundler drops BILLING_DEMO_FIXTURES (and the six
+  // fixture accounts) from production — demoPlan is always null there anyway,
+  // since the console command is never registered. See lib/billing-demo.ts.
   const demoAccount =
-    demoPlan && demoPlan !== "all"
+    import.meta.env.DEV && demoPlan && demoPlan !== "all"
       ? BILLING_DEMO_FIXTURES[demoPlan].account
       : undefined;
   const cardProps = {
@@ -239,7 +240,7 @@ export function BillingSettingsSection({
       {billingStatus ? (
         <p className="settings-status">{billingStatus}</p>
       ) : null}
-      {galleryMode ? (
+      {import.meta.env.DEV && demoPlan === "all" ? (
         <div className="billing-demo-gallery">
           {BILLING_DEMO_ORDER.map((key) => (
             <div className="billing-demo-variant" key={key}>

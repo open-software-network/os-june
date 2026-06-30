@@ -37,10 +37,12 @@ const DEMO_USER = {
   displayName: "Billing demo",
 };
 
-// Dates sit a few weeks out from the 2026-06-29 build date so describeEnd()
-// renders "Renews July 24" / "Billing starts July 6" without a year suffix.
-const RENEWS_AT = "2026-07-24T00:00:00Z";
-const TRIAL_ENDS_AT = "2026-07-06T00:00:00Z";
+// Future-dated relative to load (not absolute) so describeEnd() always renders
+// an upcoming "Renews ..." / "Billing starts ..." date, no matter when this
+// file was last touched.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const RENEWS_AT = new Date(Date.now() + 24 * DAY_MS).toISOString();
+const TRIAL_ENDS_AT = new Date(Date.now() + 7 * DAY_MS).toISOString();
 
 // Ordered so the gallery reads from the default state outward to the edges.
 export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
