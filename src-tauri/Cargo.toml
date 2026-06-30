@@ -65,6 +65,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSString",
     "NSValue",
+    "NSData",
     "NSGeometry",
     "objc2-core-foundation",
 ] }

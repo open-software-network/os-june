@@ -156,8 +156,10 @@ export function JuneGradientMark() {
           y2="14"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#E2A78B" />
-          <stop offset="1" stopColor="#C25A33" />
+          <stop
+            style={{ stopColor: "color-mix(in oklch, var(--brand) 55%, white)" }}
+          />
+          <stop offset="1" style={{ stopColor: "var(--brand)" }} />
         </linearGradient>
       </defs>
       <JuneMarkPaths fill={`url(#${gradientId})`} />

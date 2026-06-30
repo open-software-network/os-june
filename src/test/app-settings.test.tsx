@@ -449,6 +449,68 @@ describe("AppSettings", () => {
     expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
   });
 
+  it("shows an accent reset button after choosing a non-default accent", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.queryByRole("button", {
+          name: "Reset accent color to default",
+        }),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Accent color: Rose. Change" }),
+      );
+      fireEvent.click(screen.getByRole("radio", { name: "Clay" }));
+
+      act(() => {
+        vi.advanceTimersByTime(316);
+      });
+
+      expect(localStorage.getItem("os-june:brand")).toBe("clay");
+      expect(
+        screen.getByRole("button", { name: "Accent color: Clay. Change" }),
+      ).toBeInTheDocument();
+      const resetButton = screen.getByRole("button", {
+        name: "Reset accent color to default",
+      });
+      const accentButton = screen.getByRole("button", {
+        name: "Accent color: Clay. Change",
+      });
+      expect(
+        resetButton.compareDocumentPosition(accentButton) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      fireEvent.click(resetButton);
+
+      expect(localStorage.getItem("os-june:brand")).toBe("rose");
+      expect(
+        screen.getByRole("button", { name: "Accent color: Rose. Change" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: "Reset accent color to default",
+        }),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("falls back to subscription plan credits when balance has no usage percentage", async () => {
     const user = userEvent.setup();
     render(

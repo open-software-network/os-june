@@ -13,6 +13,7 @@ pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
+pub mod theme_icon;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -131,6 +132,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            theme_icon::set_dock_icon,
             commands::bootstrap_app,
             commands::create_note,
             commands::list_notes,

@@ -62,6 +62,13 @@ import {
   setStoredTheme,
   type ThemePreference,
 } from "../../lib/theme";
+import {
+  DEFAULT_BRAND,
+  getStoredBrand,
+  setStoredBrand,
+  type BrandId,
+} from "../../lib/brand";
+import { AccentWheel } from "./AccentWheel";
 import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -259,6 +266,7 @@ export function AppSettings({
   const [status, setStatus] = useState<string>();
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
+  const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
   const [internalTab, setInternalTab] = useState<SettingsTab>("general");
@@ -846,6 +854,37 @@ export function AppSettings({
                         onValueChange={(next) => {
                           setTheme(next);
                           setStoredTheme(next);
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Accent</h3>
+                      <p className="settings-row-description">
+                        The brand color used across buttons, highlights, and the
+                        recorder.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      {brand !== DEFAULT_BRAND ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          aria-label="Reset accent color to default"
+                          onClick={() => {
+                            setBrand(DEFAULT_BRAND);
+                            setStoredBrand(DEFAULT_BRAND);
+                          }}
+                        >
+                          Reset
+                        </button>
+                      ) : null}
+                      <AccentWheel
+                        value={brand}
+                        onChange={(id) => {
+                          setBrand(id);
+                          setStoredBrand(id);
                         }}
                       />
                     </div>

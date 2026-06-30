@@ -13,7 +13,11 @@ import {
 import { meterLevelForSources, visualPeakScale } from "./lib/recorder-levels";
 import type { RecordingStatusDto } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
+import { subscribeBrand } from "./lib/brand";
 import "./styles/meeting-hud.css";
+
+// Recolor this HUD window to the selected accent and keep it live-synced.
+subscribeBrand();
 
 const appWindow = getCurrentWindow();
 const pill = document.querySelector<HTMLDivElement>("#mhud");

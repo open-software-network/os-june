@@ -488,7 +488,7 @@ function sampleImageBytes(): Uint8Array {
   const context = canvas.getContext("2d");
   if (context) {
     const gradient = context.createLinearGradient(0, 0, 480, 320);
-    gradient.addColorStop(0, "#c25a33");
+    gradient.addColorStop(0, "#936862");
     gradient.addColorStop(1, "#f4e3d7");
     context.fillStyle = gradient;
     context.fillRect(0, 0, 480, 320);

@@ -29,7 +29,11 @@ import {
 } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
+import { subscribeBrand } from "./lib/brand";
 import "./styles/agent-hud.css";
+
+// Recolor this HUD window to the selected accent and keep it live-synced.
+subscribeBrand();
 
 type HudSessionStatus = AgentSessionStatusKind | "idle";
 

@@ -5361,8 +5361,10 @@ input:focus-visible,
 }
 
 .agent-hero-chip:hover:not(:disabled) {
-  background: var(--surface-subtle);
-  border-color: var(--border);
+  /* Soft dusty wash in the brand family (not neutral grey) so the backdrop
+     echoes the accent the chip's icon already carries. */
+  background: var(--brand-tint);
+  border-color: color-mix(in oklch, var(--brand) 25%, var(--border));
 }
 
 .agent-hero-chip:disabled {
@@ -5684,36 +5686,14 @@ input:focus-visible,
 }
 
 /* Two wordmarks ship side by side; CSS picks the right one per theme. */
-.sidebar-brand-img {
+/* Inline wordmark: lettering rides on currentColor (the foreground), the mark
+ * squircle derives from --brand, so one element covers light/dark AND every
+ * accent. Replaces the old light/dark <img> swap. */
+.sidebar-brand-mark {
   display: block;
   height: 14px;
   width: auto;
-}
-
-.sidebar-brand-img.dark {
-  display: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  .sidebar-brand-img.light {
-    display: none;
-  }
-  .sidebar-brand-img.dark {
-    display: block;
-  }
-}
-
-[data-theme="dark"] .sidebar-brand-img.light {
-  display: none;
-}
-[data-theme="dark"] .sidebar-brand-img.dark {
-  display: block;
-}
-[data-theme="light"] .sidebar-brand-img.light {
-  display: block;
-}
-[data-theme="light"] .sidebar-brand-img.dark {
-  display: none;
+  color: var(--foreground);
 }
 
 .sidebar[data-collapsed="true"] .sidebar-header {
@@ -9522,6 +9502,162 @@ input:focus-visible,
 
 .settings-row-mic-test {
   align-items: start;
+}
+
+/* Accent picker — the 20px trigger dot persists while a 5-wedge wheel blooms
+ * behind it. Closed, it's just the current accent as a dot. */
+.accent-wheel {
+  position: relative;
+  width: 20px;
+  height: 20px;
+}
+
+.accent-wheel-trigger {
+  position: relative;
+  z-index: 70;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-pill);
+  background-color: var(--swatch);
+  cursor: pointer;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 16%, transparent),
+    var(--shadow-sm);
+  transition:
+    background-color var(--t-med) var(--ease-out),
+    opacity var(--t-med) var(--ease-out),
+    transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.accent-wheel-trigger:active {
+  transform: scale(0.96);
+}
+
+.accent-wheel-trigger:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--card),
+    0 0 0 4px var(--ring-focus);
+}
+
+/* The wheel overlays right where the dot is, centered behind the trigger. */
+.accent-wheel-pop {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 60;
+  /* No CSS filter here on purpose — the wheel's shadow is an SVG feDropShadow
+     on the disc. A parent filter over a will-change'd animating child flashes
+     white on repaint in WebKit. */
+}
+
+.accent-wheel-pop[data-phase="closing"] {
+  pointer-events: none;
+}
+
+.accent-wheel-bloom {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.accent-wheel-pop[data-phase="open"] .accent-wheel-bloom {
+  animation: accent-bloom-in 300ms var(--ease-spring) both;
+}
+
+/* Use a distinct exit keyframe name instead of reversing the completed entry
+ * animation; WebKit can otherwise skip the restart and make the wheel vanish. */
+.accent-wheel-pop[data-phase="closing"] .accent-wheel-bloom {
+  animation: accent-bloom-out 300ms var(--ease-spring) both;
+}
+
+.accent-wheel-pop[data-phase="closing"] .accent-wheel-wedge {
+  transition: none;
+}
+
+@keyframes accent-bloom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes accent-bloom-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+
+.accent-wheel-svg {
+  display: block;
+  overflow: visible;
+}
+
+/* The white wheel the wedges sit on. */
+.accent-wheel-disc {
+  fill: var(--card);
+}
+
+.accent-wheel-wedge {
+  cursor: pointer;
+  /* Corners are rounded in the path geometry; this is just a crisp white edge
+     so each wedge separates cleanly from the disc and its neighbours. */
+  fill: color-mix(in oklch, var(--wedge) 58%, var(--card));
+  stroke: var(--card);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  transition: fill 160ms var(--ease-out);
+}
+
+.accent-wheel-wedge:hover,
+.accent-wheel-wedge:focus-visible {
+  outline: none;
+  fill: var(--wedge);
+}
+
+.accent-wheel-wedge[data-selected="true"] {
+  fill: var(--wedge);
+}
+
+/* Debounced name tooltip, positioned by inline style just outside the hovered
+ * wedge (see tipStyle in AccentWheel). The inline transform anchors it, so the
+ * fade-in animates opacity only to avoid clobbering that transform. */
+.accent-wheel-tip {
+  position: absolute;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--popover-border);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1;
+  animation: accent-tip-in 120ms var(--ease-out) both;
+}
+
+@keyframes accent-tip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .settings-mic-test-control {
@@ -14964,7 +15100,11 @@ input:focus-visible,
   justify-content: center;
   align-self: center;
   border-radius: var(--r-xl);
-  background: linear-gradient(135deg, #e2a78b 0%, #c25a33 100%);
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklch, var(--brand) 55%, white) 0%,
+    var(--brand) 100%
+  );
   /* Mark sits on the fixed terracotta gradient in both themes, so keep it
      white rather than inheriting --primary-foreground (which inverts in
      dark). */

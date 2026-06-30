@@ -18,6 +18,21 @@
                 ? "dark"
                 : "light";
           document.documentElement.setAttribute("data-theme", resolved);
+          // Pre-paint brand accent. Keep the id->hex map in sync with
+          // src/lib/brand.ts so a non-default accent doesn't flash rose first.
+          var brand = localStorage.getItem("os-june:brand");
+          var brands = {
+            rose: "#936862",
+            clay: "#9d5728",
+            amber: "#8b6e4d",
+            sage: "#607d65",
+            blue: "#597893",
+            plum: "#886885",
+          };
+          document.documentElement.style.setProperty(
+            "--brand",
+            brands[brand] || brands.rose,
+          );
         } catch (e) {}
       })();
     </script>
