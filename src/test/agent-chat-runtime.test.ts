@@ -565,6 +565,35 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("sanitizes live Hermes error text before rendering it in chat", () => {
+    const bearer = "abcdef0123456789abcdef0123456789";
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "error",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            message: `Gateway failed with Bearer ${bearer} token=abc123`,
+          },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "tool",
+        id: "error:2026-06-04T10:00:00.000Z",
+        name: "Error",
+        text: "Gateway failed with Bearer [redacted] token=[redacted]",
+        status: "failed",
+      },
+    ]);
+    expect(JSON.stringify(turns)).not.toContain(bearer);
+    expect(JSON.stringify(turns)).not.toContain("abc123");
+  });
+
   it("marks clarify requests resolved after responses or tool completion", () => {
     const turns = buildAgentChatTurns(
       [],

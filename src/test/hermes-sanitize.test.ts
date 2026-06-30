@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isSensitiveKey, sanitizePayload } from "../lib/hermes-control-plane";
+import {
+  isSensitiveKey,
+  sanitizePayload,
+  sanitizeText,
+} from "../lib/hermes-control-plane";
 
 describe("sanitizePayload — key-based redaction", () => {
   it("redacts a SHORT value under `value` (the literal key secret/sudo responses use)", () => {
@@ -53,6 +57,50 @@ describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
     expect(out.url).toBe(url);
   });
 
+  it("redacts sensitive query params in a URL under a benign key", () => {
+    const out = sanitizePayload({
+      url: "https://example.com/callback?key=plain-api-key-123&token=secret-token-123&view=1",
+    }) as Record<string, unknown>;
+
+    expect(out.url).toContain("view=1");
+    expect(out.url).toContain("key=");
+    expect(out.url).toContain("token=");
+    expect(out.url).not.toContain("plain-api-key-123");
+    expect(out.url).not.toContain("secret-token-123");
+  });
+
+  it("redacts URL credentials under a benign key", () => {
+    const out = sanitizePayload({
+      url: "https://user:supersecret@example.com/private",
+    }) as Record<string, unknown>;
+
+    expect(out.url).toContain("example.com/private");
+    expect(out.url).not.toContain("user");
+    expect(out.url).not.toContain("supersecret");
+  });
+
+  it("redacts token substrings inside a standalone URL", () => {
+    const jwt = "eyJaaaaaaaaaa.bbbbbbbbbbbb.cccccccccccc";
+    const artifactPath =
+      "/tmp/artifacts/1234567890abcdef1234567890abcdef12345678.png";
+    const out = sanitizePayload({
+      pathUrl: "https://api.example.com/sk-abcdefghijklmnopqrstuvwxyz123456",
+      callbackUrl: `https://host.example/callback?code=${jwt}&view=1`,
+      hashUrl: "https://host.example/callback#access_token=abc123&state=ok",
+      relativeUrl: "/callback?key=short-secret&view=1",
+      artifactPath,
+    }) as Record<string, unknown>;
+
+    expect(out.pathUrl).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+    expect(out.callbackUrl).toContain("view=1");
+    expect(out.callbackUrl).not.toContain(jwt);
+    expect(out.hashUrl).toContain("state=ok");
+    expect(out.hashUrl).not.toContain("abc123");
+    expect(out.relativeUrl).toContain("view=1");
+    expect(out.relativeUrl).not.toContain("short-secret");
+    expect(out.artifactPath).toBe(artifactPath);
+  });
+
   it("preserves a ~/ home path and a Windows drive path", () => {
     const out = sanitizePayload({
       home: "~/code/project/src/components/AgentWorkspace.tsx",
@@ -85,6 +133,437 @@ describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
       token: "/Users/x/code/secret/with/slashes/and/a/long/path.txt",
     }) as Record<string, unknown>;
     expect(out.token).toBe("[redacted]");
+  });
+});
+
+describe("sanitizeText", () => {
+  it("redacts embedded bearer tokens and secret-looking values", () => {
+    const text =
+      "Request failed with Bearer abcdef0123456789abcdef0123456789, sk-abcdefghijklmnopqrstuvwxyz123456, and opaque-token-value-987654321";
+
+    const out = sanitizeText(text);
+
+    expect(out).toContain("Request failed");
+    expect(out).toContain("Bearer [redacted]");
+    expect(out).not.toContain("abcdef0123456789abcdef0123456789");
+    expect(out).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+    expect(out).not.toContain("opaque-token-value-987654321");
+  });
+
+  it("redacts generic opaque tokens before sentence periods without breaking artifact paths", () => {
+    const token = "a".repeat(40);
+    const artifactId = "1234567890abcdef1234567890abcdef12345678";
+    const out = sanitizeText(
+      `Request failed with ${token}. Artifact at /tmp/artifacts/${artifactId}.png.`,
+    );
+
+    expect(out).toContain("[redacted].");
+    expect(out).not.toContain(token);
+    expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
+  });
+
+  it("redacts opaque tokens in sensitive absolute URL paths without breaking filesystem paths", () => {
+    const urlToken = "b".repeat(40);
+    const artifactId = "1234567890abcdef1234567890abcdef12345678";
+    const out = sanitizeText(
+      `Download https://files.example/download/${urlToken}?view=1 and inspect /tmp/artifacts/${artifactId}.png`,
+    );
+
+    expect(out).toContain("https://files.example/download/[redacted]?view=1");
+    expect(out).not.toContain(urlToken);
+    expect(out).toContain(`/tmp/artifacts/${artifactId}.png`);
+  });
+
+  it("redacts opaque tokens after compound sensitive URL path segments", () => {
+    const resetToken = "c".repeat(40);
+    const out = sanitizeText(
+      `Reset at https://app.example/reset-password/${resetToken}?view=1 or https://app.example/password_reset/${resetToken}.`,
+    );
+
+    expect(out).toContain("https://app.example/reset-password/[redacted]");
+    expect(out).toContain("https://app.example/password_reset/[redacted]");
+    expect(out).not.toContain(resetToken);
+  });
+
+  it("redacts 32-character opaque tokens in sensitive absolute URL paths", () => {
+    const resetToken = "d".repeat(32);
+    const out = sanitizeText(
+      `Reset at https://app.example/reset-password/${resetToken}?view=1`,
+    );
+
+    expect(out).toContain("https://app.example/reset-password/[redacted]");
+    expect(out).not.toContain(resetToken);
+  });
+
+  it("redacts opaque tokens in relative sensitive URL paths", () => {
+    const resetToken = "e".repeat(40);
+    const shareToken = "f".repeat(32);
+    const out = sanitizeText(
+      `Request failed: GET /reset-password/${resetToken}?view=1 and ./share/${shareToken}.`,
+    );
+
+    expect(out).toContain("GET /reset-password/[redacted]?view=1");
+    expect(out).toContain("./share/[redacted]");
+    expect(out).not.toContain(resetToken);
+    expect(out).not.toContain(shareToken);
+  });
+
+  it("redacts opaque tokens in SPA hash-route sensitive URL paths", () => {
+    const resetToken = "g".repeat(32);
+    const out = sanitizeText(
+      `Reset at https://app.example.com/#/reset-password/${resetToken}?view=1`,
+    );
+
+    expect(out).toContain(
+      "https://app.example.com/#/reset-password/[redacted]?view=1",
+    );
+    expect(out).not.toContain(resetToken);
+  });
+
+  it("redacts short route tokens after sensitive URL path segments", () => {
+    const out = sanitizeText(
+      "Reset at https://app.example.com/#/reset-password/abc123 and url=/share/def456",
+    );
+
+    expect(out).toContain("https://app.example.com/#/reset-password/[redacted]");
+    expect(out).toContain("url=/share/[redacted]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+  });
+
+  it("redacts short route tokens in standalone hash-route strings", () => {
+    const out = sanitizeText(
+      "Request failed: hash=#/reset-password/abc123 next=#/share/def456",
+    );
+
+    expect(out).toContain("hash=#/reset-password/[redacted]");
+    expect(out).toContain("next=#/share/[redacted]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+  });
+
+  it("redacts codes in nested SPA callback hash routes", () => {
+    const out = sanitizeText(
+      "Auth failed: hash=#/projects/123/oauth/callback?code=abc123&state=ok",
+    );
+
+    expect(out).toContain(
+      "hash=#/projects/123/oauth/callback?code=[redacted]&state=ok",
+    );
+    expect(out).not.toContain("abc123");
+  });
+
+  it("redacts codes in colon-prefixed relative sensitive routes", () => {
+    const out = sanitizeText(
+      "Auth failed: hash:#/projects/123/oauth/callback?code=abc123 url:/oauth/callback?code=def456&state=ok",
+    );
+
+    expect(out).toContain(
+      "hash:#/projects/123/oauth/callback?code=[redacted]",
+    );
+    expect(out).toContain("url:/oauth/callback?code=[redacted]&state=ok");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+  });
+
+  it("redacts codes in nested colon-prefixed relative callback routes", () => {
+    const out = sanitizeText(
+      "Auth failed: url:/projects/123/oauth/callback?code=abc123&state=ok",
+    );
+
+    expect(out).toContain(
+      "url:/projects/123/oauth/callback?code=[redacted]&state=ok",
+    );
+    expect(out).not.toContain("abc123");
+  });
+
+  it("redacts codes in bare nested relative callback routes", () => {
+    const out = sanitizeText(
+      "Auth failed at /projects/123/oauth/callback?code=abc123&state=ok",
+    );
+
+    expect(out).toContain(
+      "/projects/123/oauth/callback?code=[redacted]&state=ok",
+    );
+    expect(out).not.toContain("abc123");
+  });
+
+  it("redacts codes in relative sensitive route query strings", () => {
+    const out = sanitizeText(
+      "Request failed: url=/reset-password?code=abc123&state=ok path=/share?code=def456",
+    );
+
+    expect(out).toContain("url=/reset-password?code=[redacted]&state=ok");
+    expect(out).toContain("path=/share?code=[redacted]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+  });
+
+  it("redacts relative sensitive URL paths inside key-value assignments", () => {
+    const resetToken = "h".repeat(40);
+    const shareToken = "i".repeat(32);
+    const out = sanitizeText(
+      `Request failed: url=/reset-password/${resetToken}?view=1 path=/share/${shareToken}`,
+    );
+
+    expect(out).toContain("url=/reset-password/[redacted]?view=1");
+    expect(out).toContain("path=/share/[redacted]");
+    expect(out).not.toContain(resetToken);
+    expect(out).not.toContain(shareToken);
+  });
+
+  it("redacts relative route tokens before query assignment delimiters", () => {
+    const out = sanitizeText(
+      "Request failed: redirect=/reset-password/abc123&state=ok next=/share/def456&view=1",
+    );
+
+    expect(out).toContain("redirect=/reset-password/[redacted]&state=ok");
+    expect(out).toContain("next=/share/[redacted]&view=1");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+  });
+
+  it("redacts login and authorize route tokens", () => {
+    const out = sanitizeText(
+      "Auth failed at https://app.example.com/login/abc123 and redirect=/authorize/abcd1234",
+    );
+
+    expect(out).toContain("https://app.example.com/login/[redacted]");
+    expect(out).toContain("redirect=/authorize/[redacted]");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("abcd1234");
+  });
+
+  it("preserves benign path segments that contain token words", () => {
+    const out = sanitizeText(
+      "Read /tmp/tokenizer_config.json and /tmp/access_token_notes.md",
+    );
+
+    expect(out).toContain("/tmp/tokenizer_config.json");
+    expect(out).toContain("/tmp/access_token_notes.md");
+  });
+
+  it("preserves plain macOS private temp paths", () => {
+    const path =
+      "/private/var/folders/abcdef1234567890abcdef1234567890/T/report.txt";
+    const out = sanitizeText(`Read ${path}`);
+
+    expect(out).toContain(path);
+  });
+
+  it("preserves extensionless artifact paths under common directories", () => {
+    const path = `/tmp/download/${"j".repeat(40)}`;
+    const out = sanitizeText(`Read ${path}`);
+
+    expect(out).toContain(path);
+  });
+
+  it("preserves opaque-looking path segments in ordinary URLs", () => {
+    const docId = "abcdef0123456789abcdef0123456789abcdef01";
+    const out = sanitizeText(
+      `See https://docs.example.com/path/${docId}?view=compact#section`,
+    );
+
+    expect(out).toContain(
+      `https://docs.example.com/path/${docId}?view=compact#section`,
+    );
+  });
+
+  it("redacts sensitive URL params inside longer text", () => {
+    const out = sanitizeText(
+      "Fetch failed for https://example.com/callback?key=plain-api-key-123&token=secret-token-123&view=1.",
+    );
+
+    expect(out).toContain("view=1");
+    expect(out).not.toContain("plain-api-key-123");
+    expect(out).not.toContain("secret-token-123");
+  });
+
+  it("redacts short session and signature URL params", () => {
+    const out = sanitizeText(
+      "Fetch failed for https://app.example.com/callback?session=abc123&signature=sig123&view=1.",
+    );
+
+    expect(out).toContain("view=1");
+    expect(out).toContain("session=");
+    expect(out).toContain("signature=");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("sig123");
+  });
+
+  it("keeps redaction markers unencoded in sanitized URLs", () => {
+    const out = sanitizeText(
+      "Reset failed at https://app.example.com/reset-password/abc123?session=sid123&view=1",
+    );
+
+    expect(out).toContain("/reset-password/[redacted]");
+    expect(out).toContain("session=[redacted]");
+    expect(out).not.toContain("%5Bredacted%5D");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("sid123");
+  });
+
+  it("redacts encoded base64 route tokens", () => {
+    const out = sanitizeText(
+      "Download failed at https://host.example/download/YWJjZA%3D%3D?view=1",
+    );
+
+    expect(out).toContain("/download/[redacted]?view=1");
+    expect(out).not.toContain("YWJjZA%3D%3D");
+    expect(out).not.toContain("YWJjZA==");
+  });
+
+  it("preserves numeric artifact URL subdirectories while redacting query tokens", () => {
+    const out = sanitizeText(
+      "Download https://files.example.com/download/2024/report.pdf?token=signed-token-123&view=1",
+    );
+
+    expect(out).toContain("/download/2024/report.pdf");
+    expect(out).toContain("token=[redacted]");
+    expect(out).not.toContain("signed-token-123");
+  });
+
+  it("redacts short OAuth codes in sensitive callback URLs", () => {
+    const out = sanitizeText(
+      "Auth failed at https://auth.example.com/oauth/callback?code=abc123&state=ok",
+    );
+
+    expect(out).toContain("state=ok");
+    expect(out).toContain("code=");
+    expect(out).not.toContain("abc123");
+  });
+
+  it("redacts short OAuth codes in sensitive callback URL fragments", () => {
+    const out = sanitizeText(
+      "Auth failed at https://auth.example.com/oauth/callback#code=abc123&state=ok",
+    );
+
+    expect(out).toContain("state=ok");
+    expect(out).toContain("code=");
+    expect(out).not.toContain("abc123");
+  });
+
+  it("redacts sensitive params in SPA callback URL fragments", () => {
+    const out = sanitizeText(
+      "Auth failed at https://app.example.com/#/oauth/callback?code=abc123&id_token=short-id-token&state=ok",
+    );
+
+    expect(out).toContain("state=ok");
+    expect(out).toContain("code=");
+    expect(out).toContain("id_token=");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("short-id-token");
+  });
+
+  it("redacts short OAuth codes in relative callback URLs", () => {
+    const out = sanitizeText(
+      "Auth failed: GET /oauth/callback?code=abc123&state=ok",
+    );
+
+    expect(out).toContain("state=ok");
+    expect(out).toContain("code=[redacted]");
+    expect(out).not.toContain("abc123");
+  });
+
+  it("redacts short key-value token fragments inside longer text", () => {
+    const out = sanitizeText(
+      "Request failed: token=1234 access_token=abc123 value=4321 url=/callback?key=short-key&view=1 hash=#access_token=hash-token&state=ok monkey=banana",
+    );
+
+    expect(out).toContain("token=[redacted]");
+    expect(out).toContain("access_token=[redacted]");
+    expect(out).toContain("value=[redacted]");
+    expect(out).toContain("view=1");
+    expect(out).toContain("state=ok");
+    expect(out).toContain("monkey=banana");
+    expect(out).not.toContain("1234");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("4321");
+    expect(out).not.toContain("short-key");
+    expect(out).not.toContain("hash-token");
+  });
+
+  it("redacts suffixed sensitive assignment keys inside longer text", () => {
+    const out = sanitizeText(
+      "Request failed: client_secret=abc123 session_token=def456 id_token=ghi789 note=safe",
+    );
+
+    expect(out).toContain("client_secret=[redacted]");
+    expect(out).toContain("session_token=[redacted]");
+    expect(out).toContain("id_token=[redacted]");
+    expect(out).toContain("note=safe");
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+    expect(out).not.toContain("ghi789");
+  });
+
+  it("redacts quoted key-value token fragments inside longer text", () => {
+    const out = sanitizeText(
+      `Request failed: {"access_token":"abc123","client_secret":"def456"} token: "1234" password: 'abc def' value: 'secret value' password='abc,def' authorization: Basic dXNlcjpwYXNz note="safe"`,
+    );
+
+    expect(out).toContain(`"access_token":"[redacted]"`);
+    expect(out).toContain(`"client_secret":"[redacted]"`);
+    expect(out).toContain(`token: "[redacted]"`);
+    expect(out).toContain(`password: '[redacted]'`);
+    expect(out).toContain(`value: '[redacted]'`);
+    expect(out).toContain(`password='[redacted]'`);
+    expect(out).toContain(`authorization: [redacted]`);
+    expect(out).toContain(`note="safe"`);
+    expect(out).not.toContain("abc123");
+    expect(out).not.toContain("def456");
+    expect(out).not.toContain("1234");
+    expect(out).not.toContain("abc def");
+    expect(out).not.toContain("secret value");
+    expect(out).not.toContain("abc,def");
+    expect(out).not.toContain("dXNlcjpwYXNz");
+  });
+
+  it("redacts mixed text that starts with a credentialed URL", () => {
+    const out = sanitizePayload({
+      message: "https://user:pass@example.com/foo token=abc123",
+    }) as Record<string, unknown>;
+
+    expect(out.message).toContain(
+      "https://redacted:redacted@example.com/foo",
+    );
+    expect(out.message).toContain("token=[redacted]");
+    expect(out.message).not.toContain("user:pass");
+    expect(out.message).not.toContain("abc123");
+    expect(out.message).not.toContain("%20token");
+  });
+
+  it("redacts escaped quoted key-value token fragments inside longer text", () => {
+    const out = sanitizeText(
+      String.raw`Request failed: {"password":"abc\"def"} token='abc\'def' note="safe"`,
+    );
+
+    expect(out).toContain(`"password":"[redacted]"`);
+    expect(out).toContain(`token='[redacted]'`);
+    expect(out).toContain(`note="safe"`);
+    expect(out).not.toContain(String.raw`abc\"def`);
+    expect(out).not.toContain(String.raw`abc\'def`);
+    expect(out).not.toContain("abc");
+    expect(out).not.toContain("def");
+  });
+
+  it("redacts escaped JSON sensitive fields inside longer text", () => {
+    const out = sanitizeText(
+      String.raw`Request failed: {\"access_token\":\"abc123\",\"note\":\"safe\"}`,
+    );
+
+    expect(out).toContain(String.raw`\"access_token\":\"[redacted]\"`);
+    expect(out).toContain(String.raw`\"note\":\"safe\"`);
+    expect(out).not.toContain("abc123");
+  });
+
+  it("redacts websocket URL tokens inside longer text", () => {
+    const out = sanitizeText(
+      "Gateway failed at ws://127.0.0.1:51234/api/ws?token=secret-token-123&profile=default",
+    );
+
+    expect(out).toContain("profile=default");
+    expect(out).not.toContain("secret-token-123");
   });
 });
 

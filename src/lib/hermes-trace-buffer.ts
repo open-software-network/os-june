@@ -26,6 +26,7 @@ import {
   classifyHermesEvent,
   nonEmpty,
   sanitizePayload,
+  sanitizeText,
   type JuneHermesEvent,
   type JuneHermesEventKind,
 } from "./hermes-control-plane";
@@ -183,7 +184,7 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
       observedAt: new Date().toISOString(),
       sessionId,
       method: nonEmpty(error.method),
-      message: error.message,
+      message: sanitizeText(error.message),
       payloadKeys: [],
     });
   }

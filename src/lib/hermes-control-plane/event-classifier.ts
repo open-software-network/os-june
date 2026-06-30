@@ -7,7 +7,10 @@ import type {
 } from "./events";
 import { parseHermesMode } from "./events";
 import type { RawHermesPayload } from "./raw-types";
-import { sanitizePayload } from "./sanitize";
+import {
+  artifactNavigationLocationsFromPayload,
+} from "./artifact-locations";
+import { sanitizePayload, sanitizeText } from "./sanitize";
 
 /**
  * Turns one raw Hermes gateway frame into exactly one typed
@@ -118,7 +121,11 @@ function classifyTool(
       : type === "tool.progress"
         ? "progress"
         : "complete";
-  return {
+  const artifactLocations =
+    payload === undefined
+      ? []
+      : artifactNavigationLocationsFromPayload(payload);
+  const event: JuneHermesEvent = {
     kind: "tool",
     sessionId: sessionId ?? "",
     toolCallId:
@@ -135,6 +142,12 @@ function classifyTool(
     // case a tool's args happen to embed a secret.
     payload: payload === undefined ? undefined : sanitizePayload(payload),
   };
+  if (artifactLocations.length === 0) return event;
+  Object.defineProperty(event, "artifactLocations", {
+    value: artifactLocations,
+    enumerable: false,
+  });
+  return event;
 }
 
 function classifyPendingAction(
@@ -238,12 +251,11 @@ function classifyError(
   return {
     kind: "error",
     sessionId,
-    // The human-readable message is safe to surface; everything else stays out
-    // unless explicitly modeled, so a secret in some other field can't leak.
-    message:
+    message: sanitizeText(
       stringValue(payload?.message, true) ??
-      stringValue(payload?.text, true) ??
-      "The agent reported an error.",
+        stringValue(payload?.text, true) ??
+        "The agent reported an error.",
+    ),
     code: numberValue(payload?.code),
     recoverable:
       typeof payload?.recoverable === "boolean"

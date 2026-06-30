@@ -372,6 +372,21 @@ describe("classifyHermesEvent — error redaction", () => {
       expect(result.message).toBeTruthy();
     }
   });
+
+  it("redacts secret fragments inside the surfaced error message", () => {
+    const result = classifyHermesEvent(
+      event("error", {
+        message:
+          "Upstream auth failed with Bearer abcdef0123456789abcdef0123456789",
+      }),
+    );
+
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("Bearer [redacted]");
+      expect(result.message).not.toContain("abcdef0123456789abcdef0123456789");
+    }
+  });
 });
 
 describe("classifyHermesEvent — unsupported sanitization", () => {

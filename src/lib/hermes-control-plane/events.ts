@@ -127,6 +127,14 @@ export type JuneHermesEvent =
       phase: "start" | "progress" | "complete";
       name?: string;
       payload?: unknown;
+      /**
+       * Raw, allow-listed file/url fields captured before payload redaction so
+       * artifact navigation can open signed URLs and long paths verbatim. This
+       * is deliberately narrower than `payload` and attached as a non-enumerable
+       * classifier property; trace/debug surfaces must keep using the sanitized
+       * payload/preview fields.
+       */
+      artifactLocations?: string[];
     }
   | { kind: "pending_action"; sessionId: string; action: PendingHermesAction }
   | {
