@@ -83,7 +83,8 @@ The Windows workflow performs the release steps in order:
     bundled Hermes launcher and Python runtime.
 11. Uploads the NSIS output as a workflow artifact.
 12. Uploads Windows release assets and merges `windows-x86_64` into
-    `latest.json` without removing macOS updater entries.
+    `latest.json` without removing macOS updater entries or the generated
+    release changelog.
 
 ## Validation
 

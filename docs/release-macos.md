@@ -70,19 +70,23 @@ The workflow performs the release steps in order:
 4. Bumps `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and
    `package.json`, refreshes `src-tauri/Cargo.lock`, commits
    `release: vX.Y.Z`, and pushes to `main`.
-5. Runs `pnpm lint`, `pnpm test`, and `pnpm test:rust`.
-6. Builds the bundled Hermes runtime (`scripts/bundle-hermes-runtime.sh`):
+5. Generates a changelog from first-parent source commits since the previous
+   `release: v...` commit.
+6. Runs `pnpm lint`, `pnpm test`, and `pnpm test:rust`.
+7. Builds the bundled Hermes runtime (`scripts/bundle-hermes-runtime.sh`):
    the pinned hermes-agent checkout, a relocatable CPython, hash-verified
    Python deps, and the prebuilt dashboard UI, signed Mach-O by Mach-O and
    shipped under `Resources/native/hermes` so first launch needs no network
    install. Adds roughly 110 MB compressed to the DMG.
-7. Builds the `universal-apple-darwin` app and DMG with `tauri-action`.
-8. Signs with the Apple Developer ID cert, notarizes the app with Apple API key
+8. Builds the `universal-apple-darwin` app and DMG with `tauri-action`.
+9. Signs with the Apple Developer ID cert, notarizes the app with Apple API key
    credentials, and signs updater artifacts with the Ed25519 updater key.
-9. Submits the generated DMG itself to Apple notarization, staples the DMG
-   ticket, verifies Gatekeeper install assessment, then overwrites the
-   versioned DMG asset plus the stable download aliases in
-   `open-software-network/os-june-releases`.
+10. Submits the generated DMG itself to Apple notarization, staples the DMG
+    ticket, verifies Gatekeeper install assessment, then overwrites the
+    versioned DMG asset plus the stable download aliases in
+    `open-software-network/os-june-releases`.
+11. Publishes the generated changelog as the GitHub release notes and embeds it
+    in `latest.json` so the in-app updater prompt shows the same release notes.
 
 The app polls:
 
