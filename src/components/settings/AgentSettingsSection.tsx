@@ -2,26 +2,16 @@ import { useEffect, useState } from "react";
 import {
   FilesystemPanel,
   MessagingPanel,
-  SkillsToolsPanel,
 } from "../agent/AgentWorkspace";
 import {
   hermesAgentCliAccess,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
-  hermesBridgeSkills,
-  hermesBridgeToolsets,
-  getHermesBridgeSkill,
   agentHudHide,
   agentHudShow,
   setHermesAgentCliAccess,
-  toggleHermesBridgeSkill,
-  toggleHermesBridgeToolset,
-  updateHermesBridgeSkill,
   updateHermesBridgeMessagingPlatform,
   type HermesMessagingPlatformInfo,
-  type HermesSkillDocument,
-  type HermesSkillInfo,
-  type HermesToolsetInfo,
   type HermesFilesystemSnapshot,
 } from "../../lib/tauri";
 import {
@@ -37,16 +27,14 @@ import {
 } from "../../lib/hermes-messaging";
 import { Switch } from "../ui/Switch";
 
-type AgentSettingsPanel = "skills" | "messaging" | "files";
+type AgentSettingsPanel = "messaging" | "files";
 
 export function AgentSettingsSection() {
-  const [panel, setPanel] = useState<AgentSettingsPanel>("skills");
+  const [panel, setPanel] = useState<AgentSettingsPanel>("messaging");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
-  const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
   const [platforms, setPlatforms] = useState<
     HermesMessagingPlatformInfo[] | null
   >(null);
@@ -92,9 +80,6 @@ export function AgentSettingsSection() {
   }
 
   useEffect(() => {
-    if (panel === "skills" && (!skills || !toolsets)) {
-      void loadCapabilities();
-    }
     if (panel === "messaging" && !platforms) {
       void loadMessagingPlatforms();
     }
@@ -137,23 +122,6 @@ export function AgentSettingsSection() {
     }
   }
 
-  async function loadCapabilities() {
-    setLoading(true);
-    try {
-      const [nextSkills, nextToolsets] = await Promise.all([
-        hermesBridgeSkills(),
-        hermesBridgeToolsets(),
-      ]);
-      setSkills(nextSkills);
-      setToolsets(nextToolsets);
-      setError(null);
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function loadMessagingPlatforms() {
     setLoading(true);
     try {
@@ -192,59 +160,6 @@ export function AgentSettingsSection() {
       setError(messageFromError(err));
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function setSkillEnabled(skill: HermesSkillInfo, enabled: boolean) {
-    setSaving(`skill:${skill.name}`);
-    try {
-      await toggleHermesBridgeSkill({ name: skill.name, enabled });
-      setSkills(
-        (current) =>
-          current?.map((item) =>
-            item.name === skill.name ? { ...item, enabled } : item,
-          ) ?? current,
-      );
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setSaving(null);
-    }
-  }
-
-  async function openSkillDocument(skill: HermesSkillInfo) {
-    return getHermesBridgeSkill(skill.name);
-  }
-
-  async function saveSkillDocument(
-    skill: HermesSkillInfo,
-    content: string,
-  ): Promise<HermesSkillDocument> {
-    const document = await updateHermesBridgeSkill({
-      name: skill.name,
-      content,
-    });
-    await loadCapabilities();
-    return document;
-  }
-
-  async function setToolsetEnabled(
-    toolset: HermesToolsetInfo,
-    enabled: boolean,
-  ) {
-    setSaving(`toolset:${toolset.name}`);
-    try {
-      await toggleHermesBridgeToolset({ name: toolset.name, enabled });
-      setToolsets(
-        (current) =>
-          current?.map((item) =>
-            item.name === toolset.name ? { ...item, enabled } : item,
-          ) ?? current,
-      );
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setSaving(null);
     }
   }
 
@@ -357,16 +272,6 @@ export function AgentSettingsSection() {
         >
           <button
             type="button"
-            aria-selected={panel === "skills"}
-            onClick={() => {
-              setPanel("skills");
-              setQuery("");
-            }}
-          >
-            Skills
-          </button>
-          <button
-            type="button"
             aria-selected={panel === "messaging"}
             onClick={() => {
               setPanel("messaging");
@@ -387,25 +292,7 @@ export function AgentSettingsSection() {
           </button>
         </div>
         {error ? <p className="settings-row-error">{error}</p> : null}
-        {panel === "skills" ? (
-          <SkillsToolsPanel
-            loading={loading}
-            query={query}
-            saving={saving}
-            skills={skills}
-            toolsets={toolsets}
-            onQueryChange={setQuery}
-            onRefresh={() => void loadCapabilities()}
-            onToggleSkill={(skill, enabled) =>
-              void setSkillEnabled(skill, enabled)
-            }
-            onOpenSkill={openSkillDocument}
-            onSaveSkill={saveSkillDocument}
-            onToggleToolset={(toolset, enabled) =>
-              void setToolsetEnabled(toolset, enabled)
-            }
-          />
-        ) : panel === "messaging" ? (
+        {panel === "messaging" ? (
           <MessagingPanel
             loading={loading}
             platforms={platforms}

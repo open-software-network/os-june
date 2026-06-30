@@ -202,6 +202,10 @@
               return { sessions: [], items: [], total: 0, limit: 100, offset: 0 };
             case "hermes_agent_cli_access":
               return { enabled: false };
+            case "hermes_bridge_messaging_platforms":
+              return { platforms: [] };
+            case "hermes_bridge_filesystem_snapshot":
+              return { roots: [] };
 
             // --- Hermes bridge ---
             case "hermes_bridge_status":
