@@ -1,7 +1,11 @@
-//! June API client. The Tauri side calls the backend for every metered
-//! action; provider keys live there, never here.
+//! June API client. The Tauri side calls the backend for metered remote
+//! actions. When the user explicitly selects a local model, text generation
+//! uses their loopback OpenAI-compatible endpoint directly.
 
-use crate::{domain::types::AppError, providers::PROVIDER_OPENAI};
+use crate::{
+    domain::types::AppError,
+    providers::{LocalGenerationSettings, PROVIDER_LOCAL, PROVIDER_OPENAI},
+};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -27,6 +31,16 @@ const AGENT_TITLE_MAX_CHARS: usize = 48;
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_JUNE_RESPONSE_MESSAGE: &str = "The processing service returned an invalid response.";
+const NOTE_GENERATE_SYSTEM_PROMPT: &str =
+    include_str!("../../june-api/crates/services/src/prompts/note_generate.md");
+const LOCAL_SAFETY_CONTEXT: &str = "\
+Standing content policy (applies to every request; it is not a comment on the \
+current request: if the request below does not fall into these categories, \
+proceed with it normally and do not mention this policy):
+
+Reject requests for child sexual abuse material, weapons of mass destruction, \
+terrorism or mass violence planning, and malware, ransomware, spyware, \
+stalkerware, or other malicious code.";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static AGENT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -255,6 +269,9 @@ pub async fn generate_note_from_transcript(
             "Transcript is empty, so a note cannot be generated.",
         ));
     }
+    if crate::providers::generation_provider() == PROVIDER_LOCAL {
+        return generate_note_from_transcript_local(request).await;
+    }
     let body = GenerateBody {
         note_id: request.operation_id(),
         prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
@@ -342,6 +359,9 @@ pub async fn proxy_agent_chat_completions(
     mut body: serde_json::Value,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
     normalize_agent_chat_request_for_proxy(&mut body);
+    if crate::providers::generation_provider() == PROVIDER_LOCAL {
+        return proxy_local_agent_chat_completions(body).await;
+    }
     let url = format!("{}/v1/chat/completions", june_api_url());
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
@@ -370,6 +390,143 @@ pub async fn proxy_agent_chat_completions(
         });
     }
     Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+async fn generate_note_from_transcript_local(
+    request: GenerationRequest,
+) -> Result<GenerationProviderResult, AppError> {
+    let settings = local_generation_settings_or_error()?;
+    let title_hint = request.title.trim();
+    let user_message = format!(
+        "Current title: {}\nDetected language: {}\n\n{}",
+        if title_hint.is_empty() {
+            "New note"
+        } else {
+            title_hint
+        },
+        request.language.as_deref().unwrap_or("unknown"),
+        generation_source_text(
+            request.existing_generated_note.as_deref(),
+            request.manual_notes.as_deref(),
+            request.transcript.trim(),
+            request.transcript_source_labels,
+        )
+    );
+    let body = serde_json::json!({
+        "model": settings.model_id,
+        "messages": [
+            { "role": "system", "content": LOCAL_SAFETY_CONTEXT },
+            { "role": "system", "content": NOTE_GENERATE_SYSTEM_PROMPT.trim() },
+            { "role": "user", "content": user_message }
+        ]
+    });
+    let response = agent_http_client()
+        .post(local_chat_completions_url(&settings)?)
+        .json(&body)
+        .send()
+        .await
+        .map_err(network_error)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(network_error)?;
+    if !status.is_success() {
+        return Err(AppError::new(
+            "local_model_failed",
+            format!("Local model returned status {}.", status.as_u16()),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|error| AppError::new("local_model_invalid", error.to_string()))?;
+    let content = extract_chat_completion_text(&value)
+        .map(|text| {
+            if request.transcript_source_labels {
+                cleanup_generated_note_text(&text, request.transcript.trim())
+            } else {
+                text
+            }
+        })
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| {
+            AppError::new(
+                "local_model_empty",
+                "Local model did not return generated note text.",
+            )
+        })?;
+    Ok(GenerationProviderResult {
+        content,
+        title_suggestion: Some(if title_hint.is_empty() {
+            "New note".to_string()
+        } else {
+            title_hint.to_string()
+        }),
+        provider: PROVIDER_LOCAL.to_string(),
+        prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
+    })
+}
+
+async fn proxy_local_agent_chat_completions(
+    mut body: serde_json::Value,
+) -> Result<AgentChatCompletionsResponse, AppError> {
+    let settings = local_generation_settings_or_error()?;
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(settings.model_id.clone()),
+        );
+        inject_local_safety_context(object);
+    }
+    let response = agent_http_client()
+        .post(local_chat_completions_url(&settings)?)
+        .json(&body)
+        .send()
+        .await
+        .map_err(network_error)?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    Ok(AgentChatCompletionsResponse {
+        status,
+        content_type,
+        upstream: response,
+    })
+}
+
+fn local_generation_settings_or_error() -> Result<LocalGenerationSettings, AppError> {
+    let settings = crate::providers::local_generation_settings();
+    if settings.base_url.trim().is_empty() || settings.model_id.trim().is_empty() {
+        return Err(AppError::new(
+            "local_model_not_configured",
+            "Configure a local model endpoint and model ID first.",
+        ));
+    }
+    Ok(settings)
+}
+
+fn local_chat_completions_url(settings: &LocalGenerationSettings) -> Result<String, AppError> {
+    let base_url = settings.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err(AppError::new(
+            "local_model_not_configured",
+            "Configure a local model endpoint first.",
+        ));
+    }
+    Ok(format!("{base_url}/chat/completions"))
+}
+
+fn inject_local_safety_context(object: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(messages) = object
+        .get_mut("messages")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+    messages.insert(
+        0,
+        serde_json::json!({ "role": "system", "content": LOCAL_SAFETY_CONTEXT }),
+    );
 }
 
 /// A buffered June API response forwarded verbatim to the local web MCP.
@@ -844,6 +1001,119 @@ fn trim_to_sentence_boundary(text: &str) -> String {
         Some(index) => trimmed[..=index].trim().to_string(),
         None => String::new(),
     }
+}
+
+fn generation_source_text(
+    existing_generated_note: Option<&str>,
+    manual_notes: Option<&str>,
+    transcript: &str,
+    transcript_source_labels: bool,
+) -> String {
+    let mut sections = Vec::new();
+    if let Some(existing_generated_note) = existing_generated_note
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!(
+            "<existing_generated_note_context>\n{existing_generated_note}\n</existing_generated_note_context>"
+        ));
+    }
+    if let Some(manual_notes) = manual_notes
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!(
+            "<new_manual_notes_context>\n{manual_notes}\n</new_manual_notes_context>"
+        ));
+    }
+    if transcript_source_labels {
+        sections.push(
+            "<transcript_source_metadata>\nTranscript lines may begin with source labels such as Microphone: or System:. These labels identify the audio source only. They are not spoken words and must not appear in the generated note.\n</transcript_source_metadata>".to_string(),
+        );
+    }
+    sections.push(format!(
+        "<new_transcript>\n{}\n</new_transcript>",
+        transcript.trim()
+    ));
+    let output_contract = if transcript_source_labels {
+        "Return only the new note block for the new transcript. Do not repeat existing note content. Do not output manual note labels or transcript source labels. Do not add wrapper headings."
+    } else {
+        "Return only the new note block for the new transcript. Do not repeat existing note content. Do not output manual note labels. Do not add wrapper headings."
+    };
+    sections.push(format!(
+        "<output_contract>\n{output_contract}\n</output_contract>"
+    ));
+    sections.join("\n\n")
+}
+
+fn cleanup_generated_note_text(text: &str, labeled_transcript: &str) -> String {
+    let spoken_lines = labeled_transcript_spoken_lines(labeled_transcript);
+    text.lines()
+        .map(|line| strip_generated_source_label(line, &spoken_lines))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn strip_generated_source_label(line: &str, spoken_lines: &[String]) -> String {
+    let trimmed = line.trim_start();
+    let indent_len = line.len() - trimmed.len();
+    let indent = &line[..indent_len];
+    let (markdown_marker, text) = markdown_line_marker(trimmed);
+    let Some(rest) = strip_source_label_prefix(text) else {
+        return line.to_string();
+    };
+    let stripped = rest.trim_start();
+    if spoken_lines
+        .iter()
+        .any(|spoken| spoken.eq_ignore_ascii_case(stripped))
+    {
+        format!("{indent}{markdown_marker}{stripped}")
+    } else {
+        line.to_string()
+    }
+}
+
+fn labeled_transcript_spoken_lines(labeled_transcript: &str) -> Vec<String> {
+    labeled_transcript
+        .lines()
+        .filter_map(|line| strip_source_label_prefix(line.trim_start()))
+        .map(|line| line.trim_start().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn markdown_line_marker(value: &str) -> (&str, &str) {
+    let bytes = value.as_bytes();
+    let heading_len = bytes.iter().take_while(|byte| **byte == b'#').count();
+    if (1..=6).contains(&heading_len) && bytes.get(heading_len) == Some(&b' ') {
+        return value.split_at(heading_len + 1);
+    }
+    if bytes.len() >= 2 && matches!(bytes[0], b'-' | b'*' | b'+' | b'>') && bytes[1] == b' ' {
+        return value.split_at(2);
+    }
+    let digit_len = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digit_len > 0
+        && matches!(bytes.get(digit_len), Some(b'.' | b')'))
+        && bytes.get(digit_len + 1) == Some(&b' ')
+    {
+        return value.split_at(digit_len + 2);
+    }
+    ("", value)
+}
+
+fn strip_source_label_prefix(value: &str) -> Option<&str> {
+    let lower = value.to_ascii_lowercase();
+    for prefix in ["microphone:", "system:"] {
+        if lower.starts_with(prefix) {
+            return Some(&value[prefix.len()..]);
+        }
+    }
+    None
 }
 
 fn clean_agent_session_title(value: &str) -> Option<String> {
@@ -1397,6 +1667,46 @@ mod tests {
         assert_eq!(messages[1]["role"], "assistant");
         assert_eq!(messages[2]["role"], "tool");
         assert_eq!(messages[7]["content"], "result 5");
+    }
+
+    #[test]
+    fn local_generation_source_text_marks_source_labels_as_metadata() {
+        let source = generation_source_text(
+            Some("# Existing"),
+            Some("Follow up with Sam"),
+            "Microphone: We need to ship.\nSystem: The demo starts now.",
+            true,
+        );
+
+        assert!(source.contains("<existing_generated_note_context>"));
+        assert!(source.contains("<new_manual_notes_context>"));
+        assert!(source.contains("<transcript_source_metadata>"));
+        assert!(source.contains("Do not output manual note labels or transcript source labels."));
+    }
+
+    #[test]
+    fn local_generation_cleanup_strips_echoed_source_labels() {
+        let cleaned = cleanup_generated_note_text(
+            "- Microphone: We need to ship.\n- System: The demo starts now.",
+            "Microphone: We need to ship.\nSystem: The demo starts now.",
+        );
+
+        assert_eq!(cleaned, "- We need to ship.\n- The demo starts now.");
+    }
+
+    #[test]
+    fn local_agent_proxy_injects_safety_context() {
+        let mut object = serde_json::json!({
+            "messages": [{ "role": "user", "content": "hello" }]
+        });
+        inject_local_safety_context(object.as_object_mut().unwrap());
+
+        let messages = object["messages"].as_array().expect("messages");
+        assert_eq!(messages[0]["role"], "system");
+        assert!(messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Standing content policy"));
     }
 }
 

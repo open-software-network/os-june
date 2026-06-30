@@ -1,11 +1,12 @@
 //! Model-picker state. The Tauri side persists which transcription /
-//! generation models the user selected; provider keys and URLs live in
-//! June API, never here.
+//! generation models the user selected. Remote provider keys and URLs live in
+//! June API; the opt-in local model stores a loopback endpoint here.
 
 use crate::domain::types::AppError;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     fs,
+    net::IpAddr,
     path::PathBuf,
     sync::{Mutex, OnceLock},
 };
@@ -13,6 +14,7 @@ use tauri::{AppHandle, Manager, State};
 
 pub const PROVIDER_OPENAI: &str = "openai";
 pub const PROVIDER_VENICE: &str = "venice";
+pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 
@@ -33,8 +35,23 @@ pub struct ProviderSettingsState {
 pub struct ProviderModelSettings {
     #[serde(default = "default_transcription_provider")]
     pub transcription_provider: String,
+    #[serde(default = "default_generation_provider")]
+    pub generation_provider: String,
+    #[serde(default = "default_transcription_model")]
     pub transcription_model: String,
+    #[serde(default = "default_generation_model")]
     pub generation_model: String,
+    #[serde(default = "default_generation_model")]
+    pub remote_generation_model: String,
+    #[serde(default)]
+    pub local_generation: LocalGenerationSettings,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalGenerationSettings {
+    pub base_url: String,
+    pub model_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -47,6 +64,14 @@ pub struct ProviderModelSettingsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SetVeniceModelRequest {
     pub mode: ModelMode,
+    pub model_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLocalGenerationModelRequest {
+    pub enabled: bool,
+    pub base_url: String,
     pub model_id: String,
 }
 
@@ -131,7 +156,7 @@ fn pricing_with_display(pricing: Option<serde_json::Value>, display: &str) -> se
 }
 
 pub fn configured_provider() -> String {
-    PROVIDER_VENICE.to_string()
+    current_settings().generation_provider
 }
 
 pub fn configured_transcription_provider() -> String {
@@ -150,6 +175,19 @@ pub fn generation_model() -> String {
     current_settings().generation_model
 }
 
+pub fn generation_provider() -> String {
+    current_settings().generation_provider
+}
+
+pub fn local_generation_settings() -> LocalGenerationSettings {
+    current_settings().local_generation
+}
+
+pub fn local_generation_configured() -> bool {
+    let settings = current_settings();
+    settings.generation_provider == PROVIDER_LOCAL && local_settings_configured(&settings)
+}
+
 /// Context window (tokens) of the configured generation model, looked up in
 /// the backend's model catalog and cached per model id. The agent provider
 /// proxy advertises it on `/v1/models` so Hermes sizes its history to the
@@ -159,6 +197,9 @@ pub fn generation_model() -> String {
 /// window for the model — callers degrade by omitting the field, which puts
 /// Hermes back on its own probing, exactly the pre-advertisement behavior.
 pub async fn generation_model_context_tokens() -> Option<i64> {
+    if generation_provider() == PROVIDER_LOCAL {
+        return None;
+    }
     let model_id = generation_model();
     if let Ok(cache) = context_tokens_cache().lock() {
         if let Some((cached_id, tokens)) = cache.as_ref() {
@@ -231,7 +272,43 @@ pub fn set_venice_model(
                 transcription_provider_for_model(model_id).to_string();
             settings.transcription_model = model_id.to_string();
         }
-        ModelMode::Generation => settings.generation_model = model_id.to_string(),
+        ModelMode::Generation => {
+            settings.generation_provider = PROVIDER_VENICE.to_string();
+            settings.generation_model = model_id.to_string();
+            settings.remote_generation_model = model_id.to_string();
+        }
+    })
+}
+
+#[tauri::command]
+pub fn set_local_generation_model(
+    state: State<'_, ProviderSettingsState>,
+    request: SetLocalGenerationModelRequest,
+) -> Result<ProviderModelSettings, AppError> {
+    let base_url = normalize_local_base_url(&request.base_url, request.enabled)?;
+    let model_id = request.model_id.trim().to_string();
+    if request.enabled && model_id.is_empty() {
+        return Err(AppError::new(
+            "local_model_required",
+            "Enter a local model ID.",
+        ));
+    }
+
+    update_settings(&state, |settings| {
+        settings.local_generation = LocalGenerationSettings {
+            base_url,
+            model_id: model_id.clone(),
+        };
+        if request.enabled {
+            settings.generation_provider = PROVIDER_LOCAL.to_string();
+            settings.generation_model = model_id;
+        } else {
+            settings.generation_provider = PROVIDER_VENICE.to_string();
+            settings.generation_model = non_empty_or(
+                settings.remote_generation_model.clone(),
+                DEFAULT_GENERATION_MODEL,
+            );
+        }
     })
 }
 
@@ -296,13 +373,28 @@ fn replace_current_settings(settings: ProviderModelSettings) {
 fn default_settings() -> ProviderModelSettings {
     ProviderModelSettings {
         transcription_provider: PROVIDER_VENICE.to_string(),
+        generation_provider: PROVIDER_VENICE.to_string(),
         transcription_model: DEFAULT_TRANSCRIPTION_MODEL.to_string(),
         generation_model: DEFAULT_GENERATION_MODEL.to_string(),
+        remote_generation_model: DEFAULT_GENERATION_MODEL.to_string(),
+        local_generation: LocalGenerationSettings::default(),
     }
 }
 
 fn default_transcription_provider() -> String {
     PROVIDER_VENICE.to_string()
+}
+
+fn default_generation_provider() -> String {
+    PROVIDER_VENICE.to_string()
+}
+
+fn default_transcription_model() -> String {
+    DEFAULT_TRANSCRIPTION_MODEL.to_string()
+}
+
+fn default_generation_model() -> String {
+    DEFAULT_GENERATION_MODEL.to_string()
 }
 
 fn provider_settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -321,20 +413,45 @@ fn load_settings_from_disk(app: &AppHandle) -> ProviderModelSettings {
     fs::read_to_string(path)
         .ok()
         .and_then(|settings| serde_json::from_str::<ProviderModelSettings>(&settings).ok())
-        .map(|settings| {
-            let transcription_model =
-                non_empty_or(settings.transcription_model, &defaults.transcription_model);
-            ProviderModelSettings {
-                transcription_provider: transcription_provider_for_model(&transcription_model)
-                    .to_string(),
-                transcription_model,
-                generation_model: non_empty_or(
-                    settings.generation_model,
-                    &defaults.generation_model,
-                ),
-            }
-        })
+        .map(|settings| sanitize_settings(settings, &defaults))
         .unwrap_or(defaults)
+}
+
+fn sanitize_settings(
+    settings: ProviderModelSettings,
+    defaults: &ProviderModelSettings,
+) -> ProviderModelSettings {
+    let transcription_model =
+        non_empty_or(settings.transcription_model, &defaults.transcription_model);
+    let mut remote_generation_model = non_empty_or(
+        settings.remote_generation_model,
+        &defaults.remote_generation_model,
+    );
+    let configured_generation_model =
+        non_empty_or(settings.generation_model, &remote_generation_model);
+    let local_generation = sanitize_local_generation(settings.local_generation);
+    let local_active = settings.generation_provider == PROVIDER_LOCAL
+        && local_generation_settings_configured(&local_generation);
+
+    let generation_model = if local_active {
+        local_generation.model_id.clone()
+    } else {
+        remote_generation_model = configured_generation_model.clone();
+        configured_generation_model
+    };
+
+    ProviderModelSettings {
+        transcription_provider: transcription_provider_for_model(&transcription_model).to_string(),
+        generation_provider: if local_active {
+            PROVIDER_LOCAL.to_string()
+        } else {
+            PROVIDER_VENICE.to_string()
+        },
+        transcription_model,
+        generation_model,
+        remote_generation_model,
+        local_generation,
+    }
 }
 
 fn non_empty_or(value: String, fallback: &str) -> String {
@@ -372,6 +489,72 @@ fn save_settings(
         .map_err(|error| AppError::new("provider_settings_save_failed", error.to_string()))?;
     fs::write(&state.path, serialized)
         .map_err(|error| AppError::new("provider_settings_save_failed", error.to_string()))
+}
+
+fn sanitize_local_generation(settings: LocalGenerationSettings) -> LocalGenerationSettings {
+    let base_url = normalize_local_base_url(&settings.base_url, false).unwrap_or_default();
+    LocalGenerationSettings {
+        base_url,
+        model_id: settings.model_id.trim().to_string(),
+    }
+}
+
+fn local_settings_configured(settings: &ProviderModelSettings) -> bool {
+    local_generation_settings_configured(&settings.local_generation)
+}
+
+fn local_generation_settings_configured(settings: &LocalGenerationSettings) -> bool {
+    !settings.base_url.trim().is_empty() && !settings.model_id.trim().is_empty()
+}
+
+fn normalize_local_base_url(value: &str, required: bool) -> Result<String, AppError> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return if required {
+            Err(AppError::new(
+                "local_model_base_url_required",
+                "Enter a local model endpoint.",
+            ))
+        } else {
+            Ok(String::new())
+        };
+    }
+    let parsed = reqwest::Url::parse(trimmed).map_err(|_| {
+        AppError::new(
+            "local_model_base_url_invalid",
+            "Enter a valid local model endpoint.",
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(AppError::new(
+            "local_model_base_url_invalid",
+            "Use an http or https local model endpoint.",
+        ));
+    }
+    let Some(host) = parsed.host_str() else {
+        return Err(AppError::new(
+            "local_model_base_url_invalid",
+            "Enter a local model endpoint with a host.",
+        ));
+    };
+    if !is_loopback_host(host) {
+        return Err(AppError::new(
+            "local_model_base_url_not_local",
+            "Local model endpoints must use localhost or a loopback address.",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let normalized = host.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+    if normalized == "localhost" || normalized.ends_with(".localhost") {
+        return true;
+    }
+    normalized
+        .parse::<IpAddr>()
+        .map(|addr| addr.is_loopback())
+        .unwrap_or(false)
 }
 
 fn selected_model_for_mode(
@@ -468,5 +651,43 @@ mod tests {
             serde_json::to_value(response).unwrap()["mode"],
             serde_json::json!("transcription")
         );
+    }
+
+    #[test]
+    fn provider_settings_deserialize_legacy_shape() {
+        let settings = serde_json::from_value::<ProviderModelSettings>(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "custom-remote-model"
+        }))
+        .unwrap();
+        let sanitized = sanitize_settings(settings, &default_settings());
+
+        assert_eq!(sanitized.generation_provider, PROVIDER_VENICE);
+        assert_eq!(sanitized.generation_model, "custom-remote-model");
+        assert_eq!(sanitized.remote_generation_model, "custom-remote-model");
+    }
+
+    #[test]
+    fn local_base_url_must_be_loopback() {
+        assert!(normalize_local_base_url("http://localhost:11434/v1", true).is_ok());
+        assert!(normalize_local_base_url("http://127.0.0.1:1234/v1/", true).is_ok());
+        assert!(normalize_local_base_url("https://example.com/v1", true).is_err());
+    }
+
+    #[test]
+    fn invalid_saved_local_settings_do_not_activate() {
+        let settings = ProviderModelSettings {
+            generation_provider: PROVIDER_LOCAL.to_string(),
+            local_generation: LocalGenerationSettings {
+                base_url: "https://example.com/v1".to_string(),
+                model_id: "llama3".to_string(),
+            },
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+
+        assert_eq!(sanitized.generation_provider, PROVIDER_VENICE);
+        assert_eq!(sanitized.local_generation.base_url, "");
     }
 }

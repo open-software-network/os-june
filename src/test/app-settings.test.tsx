@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   providerModelSettings: vi.fn(),
   listVeniceModels: vi.fn(),
   setVeniceModel: vi.fn(),
+  setLocalGenerationModel: vi.fn(),
   openPrivacySettings: vi.fn(),
   setDictationShortcut: vi.fn(),
   setDictationMicrophone: vi.fn(),
@@ -58,6 +59,7 @@ vi.mock("../lib/tauri", () => ({
   providerModelSettings: mocks.providerModelSettings,
   listVeniceModels: mocks.listVeniceModels,
   setVeniceModel: mocks.setVeniceModel,
+  setLocalGenerationModel: mocks.setLocalGenerationModel,
   openPrivacySettings: mocks.openPrivacySettings,
   setDictationShortcut: mocks.setDictationShortcut,
   setDictationMicrophone: mocks.setDictationMicrophone,
@@ -175,8 +177,14 @@ describe("AppSettings", () => {
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
+        generationProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
         generationModel: "zai-org-glm-5-2",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "",
+          modelId: "",
+        },
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -314,10 +322,27 @@ describe("AppSettings", () => {
         mode === "transcription" && modelId.startsWith("gpt-")
           ? "openai"
           : "venice",
+      generationProvider: "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
+      remoteGenerationModel:
+        mode === "generation" ? modelId : "zai-org-glm-5-2",
+      localGeneration: {
+        baseUrl: "",
+        modelId: "",
+      },
     }));
+    mocks.setLocalGenerationModel.mockImplementation(
+      async ({ enabled, baseUrl, modelId }) => ({
+        transcriptionProvider: "venice",
+        generationProvider: enabled ? "local" : "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: enabled ? modelId : "zai-org-glm-5-2",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: { baseUrl, modelId },
+      }),
+    );
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsLogin.mockResolvedValue(signedInAccount);
@@ -1639,6 +1664,60 @@ describe("AppSettings", () => {
           },
         }),
       );
+    } finally {
+      window.removeEventListener(
+        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+        modelChanged,
+      );
+    }
+  });
+
+  it("saves and enables a local text model", async () => {
+    const user = userEvent.setup();
+    const modelChanged = vi.fn();
+    window.addEventListener(
+      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+      modelChanged,
+    );
+
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      await user.click(await screen.findByRole("tab", { name: "Models" }));
+      await user.type(
+        screen.getByLabelText("Base URL"),
+        "http://localhost:11434/v1",
+      );
+      await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
+      await user.click(
+        screen.getByRole("switch", { name: "Use local text model" }),
+      );
+
+      expect(mocks.setLocalGenerationModel).toHaveBeenCalledWith({
+        enabled: true,
+        baseUrl: "http://localhost:11434/v1",
+        modelId: "llama3.1:8b",
+      });
+      expect(modelChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: {
+            mode: "generation",
+            modelId: "llama3.1:8b",
+          },
+        }),
+      );
+      expect(await screen.findByText("Local: llama3.1:8b")).toBeInTheDocument();
     } finally {
       window.removeEventListener(
         PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,

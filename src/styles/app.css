@@ -9520,6 +9520,46 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
+.settings-row-stack {
+  align-items: start;
+}
+
+.settings-local-model-fields {
+  display: grid;
+  width: min(420px, 46vw);
+  gap: var(--sp-3);
+}
+
+.settings-field {
+  display: grid;
+  gap: var(--sp-1);
+  width: 100%;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.settings-field input {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  outline: 0;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.settings-field input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
 .settings-row-mic-test {
   align-items: start;
 }

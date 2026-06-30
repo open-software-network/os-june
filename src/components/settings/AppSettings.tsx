@@ -17,6 +17,7 @@ import {
   localAudioFileSrc,
   providerModelSettings,
   juneOpenVerifyPage,
+  setLocalGenerationModel,
   setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
@@ -32,6 +33,7 @@ import type {
   DictationSettingsDto,
   DictationShortcutModifiers,
   DictationShortcutSetting,
+  LocalGenerationSettingsDto,
   ProviderModelMode,
   ProviderModelSettingsDto,
   RecordingSourceMode,
@@ -161,10 +163,16 @@ const DEFAULT_SHORTCUTS: Record<
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionProvider: "venice",
+  generationProvider: "venice",
   transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
   generationModel: "zai-org-glm-5-2",
+  remoteGenerationModel: "zai-org-glm-5-2",
+  localGeneration: {
+    baseUrl: "",
+    modelId: "",
+  },
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -241,6 +249,10 @@ export function AppSettings({
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
   const [providerSettings, setProviderSettings] =
     useState<ProviderModelSettingsDto>(DEFAULT_PROVIDER_MODELS);
+  const [localGenerationDraft, setLocalGenerationDraft] =
+    useState<LocalGenerationSettingsDto>(
+      DEFAULT_PROVIDER_MODELS.localGeneration,
+    );
   const [veniceModels, setVeniceModels] = useState<
     Record<ProviderModelMode, VeniceModelDto[]>
   >({
@@ -303,6 +315,13 @@ export function AppSettings({
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
   }, [capturingShortcut]);
+
+  useEffect(() => {
+    setLocalGenerationDraft(providerSettings.localGeneration);
+  }, [
+    providerSettings.localGeneration.baseUrl,
+    providerSettings.localGeneration.modelId,
+  ]);
 
   useEffect(() => {
     setMicOpen(false);
@@ -666,6 +685,42 @@ export function AppSettings({
     }
   }
 
+  async function saveLocalGenerationModel(enabled = localModelEnabled) {
+    try {
+      const next = await setLocalGenerationModel({
+        enabled,
+        baseUrl: localGenerationDraft.baseUrl,
+        modelId: localGenerationDraft.modelId,
+      });
+      setProviderSettings(next);
+      setLocalGenerationDraft(next.localGeneration);
+      if (enabled) {
+        dispatchProviderModelSettingsChanged({
+          mode: "generation",
+          modelId: next.generationModel,
+        });
+      }
+      setStatus(
+        enabled ? "Local text model enabled." : "Local text model saved.",
+      );
+      await requestVeniceModels("generation");
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function setLocalGenerationEnabled(enabled: boolean) {
+    if (
+      enabled &&
+      (!localGenerationDraft.baseUrl.trim() ||
+        !localGenerationDraft.modelId.trim())
+    ) {
+      setStatus("Enter a local endpoint and model ID first.");
+      return;
+    }
+    await saveLocalGenerationModel(enabled);
+  }
+
   async function selectLanguage(language: string) {
     try {
       const next = await setDictationLanguage(language || undefined);
@@ -707,8 +762,21 @@ export function AppSettings({
     veniceModels.transcription,
     providerSettings.transcriptionModel,
   );
+  const localModelEnabled = providerSettings.generationProvider === "local";
+  const generationCatalog = useMemo(
+    () =>
+      withLocalGenerationOption(
+        veniceModels.generation,
+        providerSettings.localGeneration,
+      ),
+    [
+      veniceModels.generation,
+      providerSettings.localGeneration.baseUrl,
+      providerSettings.localGeneration.modelId,
+    ],
+  );
   const generationOptions = modelOptions(
-    veniceModels.generation,
+    generationCatalog,
     providerSettings.generationModel,
   );
   const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
@@ -1163,7 +1231,17 @@ export function AppSettings({
               onClose={() => setPickerMode(undefined)}
               onSelect={(modelId) => {
                 if (!pickerMode) return;
-                void selectVeniceModel(pickerMode, modelId);
+                const picked = pickerOptions.find(
+                  (model) => model.id === modelId,
+                );
+                if (
+                  pickerMode === "generation" &&
+                  picked?.provider === "local"
+                ) {
+                  void saveLocalGenerationModel(true);
+                } else {
+                  void selectVeniceModel(pickerMode, modelId);
+                }
                 setPickerMode(undefined);
               }}
             />
@@ -1191,6 +1269,94 @@ export function AppSettings({
                     options={generationOptions}
                     onOpen={() => openModelPicker("generation")}
                   />
+                </div>
+              </div>
+            </section>
+
+            <section
+              className="settings-group"
+              aria-labelledby="local-model-heading"
+            >
+              <h2 id="local-model-heading" className="settings-group-heading">
+                Local model
+              </h2>
+              <p className="settings-group-description">
+                Advanced text generation through an OpenAI-compatible endpoint
+                on localhost.
+              </p>
+              <div className="settings-card">
+                <div className="settings-rows">
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Use local model</h3>
+                      <p className="settings-row-description">
+                        Generated notes and agent responses use the local text
+                        model while transcription stays on the selected
+                        speech-to-text model.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={localModelEnabled}
+                        aria-label="Use local text model"
+                        onCheckedChange={(enabled) =>
+                          void setLocalGenerationEnabled(enabled)
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-row settings-row-stack">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Endpoint</h3>
+                      <p className="settings-row-description">
+                        Local OpenAI-compatible base URL.
+                      </p>
+                    </div>
+                    <div className="settings-row-control settings-local-model-fields">
+                      <label className="settings-field">
+                        <span>Base URL</span>
+                        <input
+                          value={localGenerationDraft.baseUrl}
+                          onChange={(event) => {
+                            const baseUrl = event.currentTarget.value;
+                            setLocalGenerationDraft((draft) => ({
+                              ...draft,
+                              baseUrl,
+                            }));
+                          }}
+                          placeholder="http://localhost:11434/v1"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>Model ID</span>
+                        <input
+                          value={localGenerationDraft.modelId}
+                          onChange={(event) => {
+                            const modelId = event.currentTarget.value;
+                            setLocalGenerationDraft((draft) => ({
+                              ...draft,
+                              modelId,
+                            }));
+                          }}
+                          placeholder="llama3.1:8b"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => void saveLocalGenerationModel()}
+                      >
+                        Save local model
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -1493,6 +1659,28 @@ function numericPayload(value: unknown) {
     if (Number.isFinite(parsed)) return Math.max(0, Math.min(1, parsed));
   }
   return 0;
+}
+
+function withLocalGenerationOption(
+  models: VeniceModelDto[],
+  localGeneration: LocalGenerationSettingsDto,
+) {
+  const modelId = localGeneration.modelId.trim();
+  if (!modelId) return models;
+  const localModel: VeniceModelDto = {
+    provider: "local",
+    id: modelId,
+    name: `Local: ${modelId}`,
+    modelType: "text",
+    description: "OpenAI-compatible local text model.",
+    privacy: "local",
+    pricing: { display: "Local" },
+    traits: ["local"],
+    capabilities: ["supportsFunctionCalling"],
+    priceUnit: "local",
+    priceDescription: "Local",
+  };
+  return [localModel, ...models.filter((model) => model.id !== modelId)];
 }
 
 function ModelRow({

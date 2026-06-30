@@ -170,8 +170,16 @@ export type ProviderModelMode = "transcription" | "generation";
 
 export type ProviderModelSettingsDto = {
   transcriptionProvider: string;
+  generationProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  remoteGenerationModel: string;
+  localGeneration: LocalGenerationSettingsDto;
+};
+
+export type LocalGenerationSettingsDto = {
+  baseUrl: string;
+  modelId: string;
 };
 
 export type ProviderModelSettingsResponse = {
@@ -1330,6 +1338,16 @@ export async function listVeniceModels(mode: ProviderModelMode) {
 export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
   return invoke<ProviderModelSettingsDto>("set_venice_model", {
     request: { mode, modelId },
+  });
+}
+
+export async function setLocalGenerationModel(input: {
+  enabled: boolean;
+  baseUrl: string;
+  modelId: string;
+}) {
+  return invoke<ProviderModelSettingsDto>("set_local_generation_model", {
+    request: input,
   });
 }
 
