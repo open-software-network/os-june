@@ -10,7 +10,7 @@ import {
 } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 
-const FREE_PLAN_NAME = "Free";
+const FREE_PLAN_NAME = "Free plan";
 const FREE_PLAN_CREDITS = 5000;
 
 type Props = {
