@@ -780,6 +780,54 @@ describe("App shortcuts", () => {
     expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("accessibility");
   });
 
+  it("keeps refreshing Accessibility while access is missing", async () => {
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listeners.has("dictation-event")).toBe(true),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    mocks.dictationHelperCommand.mockClear();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    expect(
+      await screen.findByText(
+        "Dictation can't paste into other apps until you grant accessibility access.",
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "get_permission_status",
+      }),
+    );
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "granted" },
+        }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Dictation can't paste into other apps until you grant accessibility access.",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it("polls system audio readiness after opening the macOS permission pane", async () => {
     const user = userEvent.setup();
     const restoreNavigator = stubNavigatorPlatform(
