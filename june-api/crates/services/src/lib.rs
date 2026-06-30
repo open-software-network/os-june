@@ -18,7 +18,8 @@ pub use dictate::{
 };
 pub use error::ServiceError;
 pub use note_generate::{
-    NoteGenerateOutput, NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps,
+    NOTE_GENERATE_PROMPT_VERSION, NoteGenerateOutput, NoteGenerateParams, NoteGenerateService,
+    NoteGenerateServiceDeps,
 };
 pub use note_transcribe::{
     NoteTranscribeOutput, NoteTranscribeParams, NoteTranscribeService, NoteTranscribeServiceDeps,
@@ -33,8 +34,9 @@ pub use web_augment::{
 mod tests {
     use super::{
         DictateCleanupParams, DictateService, DictateServiceDeps, DictateTranscribeParams,
-        NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeParams,
-        NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, ServiceError,
+        NOTE_GENERATE_PROMPT_VERSION, NoteGenerateParams, NoteGenerateService,
+        NoteGenerateServiceDeps, NoteTranscribeParams, NoteTranscribeService,
+        NoteTranscribeServiceDeps, PricingTable, ServiceError,
     };
     use async_trait::async_trait;
     use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
@@ -112,10 +114,13 @@ mod tests {
                 RecordedCall::Charge {
                     action_token: "agt_test".to_string(),
                     credits: 40,
-                    idempotency_key: "note_generate:usr_123:note_1:v7".to_string(),
+                    idempotency_key: format!(
+                        "note_generate:usr_123:note_1:{NOTE_GENERATE_PROMPT_VERSION}"
+                    ),
                 },
             ]
         );
+        assert_eq!(output.prompt_version, NOTE_GENERATE_PROMPT_VERSION);
     }
 
     #[tokio::test]

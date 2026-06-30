@@ -180,6 +180,7 @@ struct GenerateResponse {
     content: String,
     title_suggestion: Option<String>,
     provider: String,
+    prompt_version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -271,7 +272,9 @@ pub async fn generate_note_from_transcript(
         content: response.content,
         title_suggestion: response.title_suggestion,
         provider: response.provider,
-        prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
+        prompt_version: response
+            .prompt_version
+            .unwrap_or_else(|| crate::domain::processing::PROMPT_VERSION.to_string()),
     })
 }
 
