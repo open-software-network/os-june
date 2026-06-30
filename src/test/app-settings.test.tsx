@@ -663,6 +663,42 @@ describe("AppSettings", () => {
     ).toBeInTheDocument();
   });
 
+  it("treats subscribed accounts as paid when status is absent", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: {
+            credits: 1200,
+            usdMillis: 1200,
+            usageRemainingPercent: 100,
+          },
+          subscription: { subscribed: true },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Pro plan" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Manage billing" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Upgrade" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("hides billing and sign-out controls in local mode", () => {
     render(
       <AppSettings

@@ -289,20 +289,23 @@ function BillingCard({
     typeof subscription.status === "string" &&
     subscription.status.length > 0 &&
     !liveSubscription;
-  const onPaidPlan = liveSubscription || billingRecovery;
+  // A subscribed account is on the paid plan even when the payload omits a
+  // status (partial/older responses) — never relabel it as Free. billingRecovery
+  // is a subset of this, kept to drive the "update billing" detail line.
+  const onPaidPlan = subscription?.subscribed === true || liveSubscription;
   const canUpgrade = account.signedIn && !onPaidPlan;
   // Warm the meter toward "running low" so green never implies a near-empty
   // allowance. Only meaningful once we have a real signed-in reading.
   const lowUsage = account.signedIn && usageRemainingPercent <= 15;
 
   const planName = onPaidPlan ? PAID_PLAN_NAME : FREE_PLAN_NAME;
-  const planDetail = billingRecovery
-    ? "Update billing in your account portal."
-    : liveSubscription
-      ? subscription?.status === "trialing"
+  const planDetail = !onPaidPlan
+    ? "No credit card required."
+    : billingRecovery
+      ? "Update billing in your account portal."
+      : liveSubscription && subscription?.status === "trialing"
         ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Free trial")
-        : (describeEnd("Renews", subscription?.currentPeriodEnd) ?? "Active")
-      : "No credit card required.";
+        : (describeEnd("Renews", subscription?.currentPeriodEnd) ?? "Active");
   const primaryCta = onPaidPlan
     ? { label: "Manage billing", onClick: onManage }
     : canUpgrade
