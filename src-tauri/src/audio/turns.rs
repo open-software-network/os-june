@@ -14,14 +14,16 @@ const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 8 * 60 * 1000;
 /// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
 /// activity `min_rms`, so we only ever skip clearly-silent audio.
 const SILENCE_RMS_FLOOR: f32 = 0.012;
-/// Fraction of a microphone turn that a concurrent system turn must cover before
-/// the mic turn is even considered speaker bleed (echo) rather than real speech.
+/// Fraction of a microphone turn that concurrent system turns must collectively
+/// cover before the mic turn is even considered speaker bleed (echo) rather than
+/// real speech.
 const ECHO_MIN_OVERLAP_RATIO: f32 = 0.6;
-/// How much louder the system track must be than the microphone over the same
-/// interval to treat the microphone turn as echo of that system audio. Echo
-/// re-captured through the air is heavily attenuated, so a clearly louder system
-/// track means the microphone only heard the speaker, not the user. Kept
-/// conservative so genuine simultaneous mic speech (comparable energy) is kept.
+/// How much louder the system track must be than the microphone, both measured
+/// over the overlapping interval, to treat the microphone turn as echo of that
+/// system audio. Echo re-captured through the air is heavily attenuated, so a
+/// clearly louder system track means the microphone only heard the speaker, not
+/// the user. Kept conservative so genuine simultaneous mic speech (comparable
+/// energy over the overlap) is kept.
 const ECHO_DOMINANCE_RATIO: f32 = 3.0;
 
 #[derive(Debug, Clone)]
@@ -515,6 +517,8 @@ fn microphone_turn_is_system_echo(
         return false;
     }
     let mut overlap_ms = 0_i64;
+    // Sentinels; only read after the overlap gate below confirms at least one
+    // system turn overlapped and set them to real bounds.
     let mut overlap_start = i64::MAX;
     let mut overlap_end = i64::MIN;
     for system_turn in system_turns {
@@ -529,7 +533,9 @@ fn microphone_turn_is_system_echo(
     if (overlap_ms as f32) < mic_duration as f32 * ECHO_MIN_OVERLAP_RATIO {
         return false;
     }
-    let mic_energy = mean_rms(mic_windows, mic_turn.start_ms, mic_turn.end_ms);
+    // Compare both tracks over the same overlapping interval: the question is
+    // whether, where they coincide, the microphone only heard the speaker.
+    let mic_energy = mean_rms(mic_windows, overlap_start, overlap_end);
     let system_energy = mean_rms(system_windows, overlap_start, overlap_end);
     system_energy >= mic_energy * ECHO_DOMINANCE_RATIO
 }
@@ -755,10 +761,10 @@ mod tests {
         for window in 120..170 {
             mic_windows[window] = 0.5; // genuine mic speech, no system
         }
-        let system_turns = vec![mic_turn("system", 0, 1_500)];
+        let system_turns = vec![make_turn("system", 0, 1_500)];
 
-        let echo = mic_turn("microphone", 0, 1_500);
-        let genuine = mic_turn("microphone", 3_600, 5_100);
+        let echo = make_turn("microphone", 0, 1_500);
+        let genuine = make_turn("microphone", 3_600, 5_100);
 
         // Quiet mic fully covered by louder system audio is treated as echo.
         assert!(microphone_turn_is_system_echo(
@@ -787,7 +793,7 @@ mod tests {
         ));
     }
 
-    fn mic_turn(source: &str, start_ms: i64, end_ms: i64) -> AudioTurn {
+    fn make_turn(source: &str, start_ms: i64, end_ms: i64) -> AudioTurn {
         AudioTurn {
             artifact_id: "artifact".to_string(),
             source: source.to_string(),
