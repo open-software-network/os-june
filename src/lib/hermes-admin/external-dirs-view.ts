@@ -18,12 +18,19 @@
 
 import type { ExternalDirStatus } from "../tauri";
 import type { HermesSkillInfo } from "./schemas";
+import type { HermesAdminMode } from "./target";
 
-/** The exact UX warning copy from the spec, surfaced once above the list. June
- * does not paraphrase it: shared writable dirs are the core risk this surface
- * exists to communicate. */
-export const SHARED_DIR_WARNING =
-  "External directories are shared skill sources. If Hermes can write to them, agent-managed skill updates may modify those files. Mark shared/team directories read-only unless you intentionally want June to edit them.";
+/** The advisory above the list, accurate to the runtime being viewed. In the
+ * sandboxed runtime the Seatbelt write-jail blocks the agent from editing any
+ * external dir (they are never in the write grant), so the message is
+ * reassuring; only Full (unrestricted) sessions run without the jail and can
+ * edit a folder that is writable on disk. */
+export function sharedDirWarning(mode: HermesAdminMode): string {
+  if (mode === "unrestricted") {
+    return "External directories are shared skill sources loaded alongside your installed skills. Full mode runs without the sandbox, so the agent can edit any folder that is writable on disk. Make shared or team folders read-only in your OS to prevent agent edits.";
+  }
+  return "External directories are shared skill sources loaded alongside your installed skills. The sandboxed runtime blocks writes, so the agent never edits these files. They are editable only in Full (unrestricted) sessions.";
+}
 
 /** A presence label for a directory, derived from its filesystem status. The UI
  * maps each to an icon + tone; missing is explicitly non-fatal. */
@@ -168,9 +175,10 @@ export function presenceMeta(presence: ExternalDirPresence): PresenceMeta {
   }
 }
 
-/** A human label + tone for a writability state. The `writable` case is a
- * WARNING: a shared directory Hermes can write into is the exact risk the spec
- * copy warns about. */
+/** A human label + tone for a writability state, relative to the runtime being
+ * viewed. `writable` reports a filesystem probe by June's own process; it is an
+ * active WARNING only in Full mode (no sandbox), because under the sandbox the
+ * write-jail blocks the agent regardless, so there it is merely informational. */
 export type WritabilityMeta = {
   label: string;
   tone: "ok" | "warning" | "muted";
@@ -178,10 +186,13 @@ export type WritabilityMeta = {
 
 export function writabilityMeta(
   writability: ExternalDirWritability,
+  mode: HermesAdminMode,
 ): WritabilityMeta {
   switch (writability) {
     case "writable":
-      return { label: "Writable by Hermes", tone: "warning" };
+      return mode === "unrestricted"
+        ? { label: "Editable by the agent", tone: "warning" }
+        : { label: "Writable on disk", tone: "muted" };
     case "read-only":
       return { label: "Read only on disk", tone: "ok" };
     case "unknown":

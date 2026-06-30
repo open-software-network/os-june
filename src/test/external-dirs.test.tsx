@@ -158,7 +158,10 @@ describe("external dirs — status labels", () => {
       [],
     );
     expect(rows[0].writability).toBe("writable");
-    expect(writabilityMeta(rows[0].writability).tone).toBe("warning");
+    // Disk-writable is an active warning only in Full mode; under the sandbox
+    // the write-jail blocks the agent, so it is informational there.
+    expect(writabilityMeta("writable", "unrestricted").tone).toBe("warning");
+    expect(writabilityMeta("writable", "sandboxed").tone).toBe("muted");
     expect(rows[1].writability).toBe("read-only");
     expect(rows[2].writability).toBe("unknown");
   });
@@ -363,13 +366,13 @@ function viewState(
 }
 
 describe("external dirs — view", () => {
-  it("always shows the exact shared-directory warning copy", () => {
+  it("shows the sandbox-accurate shared-directory warning copy", () => {
     render(<ExternalDirsView state={viewState()} />);
     expect(
-      screen.getByText(/External directories are shared skill sources\./),
+      screen.getByText(/External directories are shared skill sources/),
     ).toBeTruthy();
     expect(
-      screen.getByText(/Mark shared\/team directories read-only/),
+      screen.getByText(/sandboxed runtime blocks writes/),
     ).toBeTruthy();
   });
 
@@ -394,7 +397,7 @@ describe("external dirs — view", () => {
     expect(
       within(list).getByText(/Resolves to \/Users\/me\/team/),
     ).toBeTruthy();
-    expect(within(list).getByText("Writable by Hermes")).toBeTruthy();
+    expect(within(list).getByText("Writable on disk")).toBeTruthy();
     expect(within(list).getByText("Read only in June")).toBeTruthy();
     expect(within(list).getByText("2 skills found")).toBeTruthy();
   });

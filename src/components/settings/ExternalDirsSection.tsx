@@ -11,7 +11,7 @@ import {
   shadowingExplanation,
   useExternalDirs,
   writabilityMeta,
-  SHARED_DIR_WARNING,
+  sharedDirWarning,
   type ExternalDirRow,
   type ExternalDirsState,
   type HermesAdminMode,
@@ -95,7 +95,7 @@ export function ExternalDirsView({
 
       <div className="external-dirs-warning" role="note">
         <IconWarningSign size={15} ariaHidden />
-        <span>{SHARED_DIR_WARNING}</span>
+        <span>{sharedDirWarning(state.mode ?? mode)}</span>
       </div>
 
       <AdminNotifications
@@ -188,6 +188,7 @@ export function ExternalDirsView({
                 <DirRow
                   key={row.rawPath}
                   row={row}
+                  mode={state.mode ?? mode}
                   busy={state.busy}
                   onRemove={() => state.remove(row.rawPath)}
                 />
@@ -254,15 +255,17 @@ function LifecycleBanner({ state }: { state: ExternalDirsState }) {
  * action. */
 function DirRow({
   row,
+  mode,
   busy,
   onRemove,
 }: {
   row: ExternalDirRow;
+  mode: HermesAdminMode;
   busy: boolean;
   onRemove: () => void;
 }) {
   const presence = presenceMeta(row.presence);
-  const writability = writabilityMeta(row.writability);
+  const writability = writabilityMeta(row.writability, mode);
   const shadowing = shadowingExplanation(row);
 
   return (
