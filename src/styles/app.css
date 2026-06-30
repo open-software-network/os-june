@@ -2344,11 +2344,10 @@ input:focus-visible,
   --agent-files-w: clamp(320px, 36vw, 460px);
 }
 
-/* The files panel slides over from the window edge; the main column hands it
- * room by growing its right inset (the tab strip lives in this column too, so
- * it shrinks in step with the card). Transition is declared on .main-column. */
-.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-column {
-  padding-right: calc(var(--agent-files-w) + 2 * var(--sp-3));
+/* The files panel slides over from the window edge; only the card hands it
+ * room so the titlebar tab strip still spans the full window top. */
+.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel {
+  margin-right: calc(var(--agent-files-w) + var(--sp-3));
 }
 
 .agent-artifact-panel {
@@ -2392,7 +2391,7 @@ input:focus-visible,
     animation: none;
   }
 
-  .main-column {
+  .main-panel {
     transition: none;
   }
 }
@@ -2409,7 +2408,7 @@ input:focus-visible,
  * would lag the pointer (and let the panel ride over the composer). Equal
  * specificity to the composer rule above, so it must stay after it in the
  * cascade. */
-.app-shell[data-files-resizing="true"] .main-column,
+.app-shell[data-files-resizing="true"] .main-panel,
 .app-shell[data-files-resizing="true"] .agent-composer,
 .app-shell[data-files-resizing="true"] .agent-artifact-panel {
   transition: none;
@@ -6770,7 +6769,6 @@ input:focus-visible,
   min-width: 0;
   min-height: 0;
   padding: 0 var(--sp-3) 0 0;
-  transition: padding-right var(--t-slow) var(--ease-spring);
 }
 
 .main-panel {
@@ -6791,6 +6789,7 @@ input:focus-visible,
   color: var(--card-foreground);
   box-shadow: var(--shadow-sm), var(--shadow-inset);
   overflow: hidden;
+  transition: margin-right var(--t-slow) var(--ease-spring);
 }
 
 /* Tab strip ---------------------------------------------------------- */
