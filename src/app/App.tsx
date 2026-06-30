@@ -196,7 +196,6 @@ const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [
   250, 500, 1000, 2000, 4000, 8000,
 ];
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
-const ACCESSIBILITY_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
 // Floor for the note card so the sidebar can't be dragged wide enough to
@@ -430,8 +429,6 @@ export function App() {
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
-  const [accessibilityRefreshRequest, setAccessibilityRefreshRequest] =
-    useState(0);
   const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
@@ -1615,6 +1612,12 @@ export function App() {
   // entry.
   const microphoneBlocked = isDeniedPermission(microphoneStatus);
 
+  const refreshPermissionStatuses = useCallback(() => {
+    void dictationHelperCommand({ type: "get_permission_status" }).catch(
+      () => undefined,
+    );
+  }, []);
+
   useEffect(() => {
     if (appBlocked) return;
     bootstrapApp()
@@ -1678,13 +1681,11 @@ export function App() {
     // dictation paste into other apps; without this poll a fresh install
     // never learns the helper is untrusted (the focus refresh below doesn't
     // fire at launch), so the paste-permission banner would stay hidden.
-    void dictationHelperCommand({ type: "get_permission_status" }).catch(
-      () => undefined,
-    );
+    refreshPermissionStatuses();
     return () => {
       cancelled = true;
     };
-  }, [appBlocked]);
+  }, [appBlocked, refreshPermissionStatuses]);
 
   // Refresh permission state whenever the app regains focus — covers the
   // common case where the user flipped a toggle in System Settings and
@@ -1693,9 +1694,7 @@ export function App() {
   useEffect(() => {
     if (appBlocked) return;
     function refresh() {
-      void dictationHelperCommand({ type: "get_permission_status" }).catch(
-        () => undefined,
-      );
+      refreshPermissionStatuses();
       if (captureActive) return;
       void checkRecordingSourceReadiness("microphonePlusSystem")
         .then(setSourceReadiness)
@@ -1703,38 +1702,27 @@ export function App() {
     }
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [appBlocked, captureActive]);
+  }, [appBlocked, captureActive, refreshPermissionStatuses]);
 
-  // After the user asks to grant Accessibility, keep checking briefly while
-  // macOS System Settings is in front. This avoids relying on a single webview
-  // focus event, which can be missed after the native TCC prompt hands off to
-  // System Settings.
+  // While Accessibility is missing, keep checking. macOS can leave stale
+  // "June" rows from older builds in System Settings; after the current helper
+  // is toggled, this notices the live TCC change without requiring a restart.
   useEffect(() => {
-    if (
-      appBlocked ||
-      !accessibilityBlocked ||
-      accessibilityRefreshRequest === 0
-    ) {
-      return;
-    }
-    function poll() {
-      void dictationHelperCommand({ type: "get_permission_status" }).catch(
-        () => undefined,
-      );
-    }
-    poll();
+    if (appBlocked || !accessibilityBlocked) return;
+    refreshPermissionStatuses();
     const interval = window.setInterval(
-      poll,
+      refreshPermissionStatuses,
       ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS,
     );
-    const timeout = window.setTimeout(() => {
-      window.clearInterval(interval);
-    }, ACCESSIBILITY_PERMISSION_REFRESH_TIMEOUT_MS);
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") refreshPermissionStatuses();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(interval);
-      window.clearTimeout(timeout);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [accessibilityBlocked, accessibilityRefreshRequest, appBlocked]);
+  }, [accessibilityBlocked, appBlocked, refreshPermissionStatuses]);
 
   // After the user opens System Settings for System Audio Recording, keep
   // checking briefly while macOS is in front. This matches Accessibility's
@@ -1795,7 +1783,6 @@ export function App() {
   }
 
   function handleEnableAccessibility() {
-    setAccessibilityRefreshRequest((request) => request + 1);
     void dictationHelperCommand({
       type: "request_accessibility_permission",
     }).catch(() => undefined);
