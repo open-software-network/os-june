@@ -118,7 +118,9 @@ impl OsPlatformIssueReportSink {
                     continue;
                 }
             };
-            let form = reqwest::multipart::Form::new().part("file", part);
+            let form = reqwest::multipart::Form::new()
+                .text("is_public", "true")
+                .part("file", part);
             let uploaded: Result<FellowEnvelope<FellowFile>, _> = async {
                 self.http
                     .post(format!("{}/v1/files", self.api_url))
@@ -1152,7 +1154,7 @@ mod issue_title_tests {
 mod os_platform_tests {
     use super::*;
     use june_domain::UserId;
-    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn report() -> IssueReport {
@@ -1349,6 +1351,8 @@ mod os_platform_tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/files"))
+            .and(body_string_contains(r#"name="is_public""#))
+            .and(body_string_contains("true"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": { "id": "fil_1" },
                 "success": true,
