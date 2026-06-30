@@ -47,29 +47,29 @@ describe("native context menu guard", () => {
     button.remove();
   });
 
-  it("allows editable-field native context menus", () => {
+  it("suppresses editable-field native context menus by default", () => {
     const cleanup = installNativeContextMenuGuard({ isDev: false });
     const input = document.createElement("input");
     document.body.append(input);
 
     const event = dispatchContextMenu(input);
 
-    expect(event.defaultPrevented).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
     cleanup();
     input.remove();
   });
 
-  it("suppresses editable-field native context menus when editable fields are not allowed", () => {
+  it("allows editable-field native context menus when explicitly enabled", () => {
     const cleanup = installNativeContextMenuGuard({
       isDev: false,
-      allowEditableFields: false,
+      allowEditableFields: true,
     });
     const input = document.createElement("input");
     document.body.append(input);
 
     const event = dispatchContextMenu(input);
 
-    expect(event.defaultPrevented).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
     cleanup();
     input.remove();
   });

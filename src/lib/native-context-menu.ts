@@ -8,7 +8,7 @@ type NativeContextMenuGuardOptions = {
 
 export function installNativeContextMenuGuard({
   isDev = import.meta.env.DEV,
-  allowEditableFields = true,
+  allowEditableFields = false,
 }: NativeContextMenuGuardOptions = {}) {
   if (isDev) {
     return () => {};
