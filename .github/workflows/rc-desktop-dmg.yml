@@ -148,6 +148,9 @@ jobs:
             exit 1
           fi
           echo "VERSION=${BASE_VERSION_INPUT}-rc.${RC_NUMBER_INPUT}" >> "$GITHUB_ENV"
+          # Record the exact source commit so promote-desktop.yml can rebuild the
+          # clean X.Y.Z from this same tree (only the version string differs).
+          echo "BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Stamp rc build version
         run: |
@@ -164,15 +167,13 @@ jobs:
           pnpm test
           pnpm test:rust
 
-      - name: Write rc release notes
+      - name: Generate rc release notes
         run: |
           set -euo pipefail
           notes_path="$RUNNER_TEMP/rc-notes.md"
-          {
-            echo "Release candidate \`$VERSION\` for the rc update channel."
-            echo
-            echo "Built on demand from \`main\`. Promote to stable with promote-desktop.yml."
-          } > "$notes_path"
+          # Same automated changelog as the production release: commits since the
+          # last `release: vX.Y.Z` on main. The rc version only sets the title.
+          node scripts/generate-release-changelog.mjs "$VERSION" "$notes_path"
           echo "RC_NOTES_PATH=$notes_path" >> "$GITHUB_ENV"
 
       - name: Write Apple API key
@@ -298,20 +299,28 @@ jobs:
           cp "${app_archives[0]}" "$app_archive"
           cp "${app_signatures[0]}" "$app_signature"
 
+          # rc-build.json records the source commit so promote-desktop.yml can
+          # rebuild the clean X.Y.Z from this exact tree.
+          rc_build_json="$release_dir/rc-build.json"
+          printf '{\n  "version": "%s",\n  "commit": "%s"\n}\n' \
+            "$VERSION" "$BUILD_COMMIT" > "$rc_build_json"
+
           # Stable filenames + the fixed `rc` tag keep the manifest and asset URLs
           # constant across rc builds, so the app's RC_ENDPOINT never moves.
           SIGNATURE_PATH="$app_signature" \
           LATEST_JSON_PATH="$latest_rc_json" \
+          NOTES_PATH="$RC_NOTES_PATH" \
           node <<'NODE'
           const fs = require("node:fs");
           const version = process.env.VERSION;
           const signature = fs.readFileSync(process.env.SIGNATURE_PATH, "utf8");
+          const notes = fs.readFileSync(process.env.NOTES_PATH, "utf8").trim();
           const url =
             "https://github.com/open-software-network/os-june-releases/releases/download/rc/June_universal.app.tar.gz";
           const platform = { signature, url };
           const latest = {
             version,
-            notes: `Release candidate ${version}.`,
+            notes,
             pub_date: new Date().toISOString(),
             platforms: {
               "darwin-aarch64": platform,
@@ -347,6 +356,7 @@ jobs:
             "$app_archive" \
             "$app_signature" \
             "$latest_rc_json" \
+            "$rc_build_json" \
             --repo open-software-network/os-june-releases \
             --clobber
 
