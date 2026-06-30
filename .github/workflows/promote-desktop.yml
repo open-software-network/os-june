@@ -1,0 +1,180 @@
+name: promote-desktop-release
+
+# Promotes the current rc macOS build to the stable update channel WITHOUT a
+# rebuild (flavor A): it republishes the identical notarized .app.tar.gz + its
+# minisign .sig from the `rc` release to a stable v$VERSION release, and rebuilds
+# latest.json with stable URLs. The signature stays valid because the bytes are
+# byte-for-byte identical — so stable ships exactly the tested rc binary. The
+# stable version string therefore carries the -rc.N suffix (a known, cosmetic
+# cost of not rebuilding). No Apple/notarization/minisign secrets are needed.
+on:
+  workflow_dispatch:
+    inputs:
+      rc-version:
+        description: "RC version to promote (e.g. 0.0.25-rc.1). Blank = whatever the rc release currently holds."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-desktop-release
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  promote:
+    name: Promote rc macOS app to stable
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-june-releases
+
+      - name: Download rc release assets
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/rc-assets"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          gh release download rc \
+            --repo open-software-network/os-june-releases \
+            --pattern "June_universal.dmg" \
+            --pattern "June_universal.app.tar.gz" \
+            --pattern "June_universal.app.tar.gz.sig" \
+            --pattern "latest-rc.json" \
+            --dir "$dir"
+          echo "RC_ASSET_DIR=$dir" >> "$GITHUB_ENV"
+
+      - name: Resolve and validate promote version
+        env:
+          # Read the dispatch input through env (never inline) so it can't reach
+          # a shell unsanitised; it is then anchored-regex validated below.
+          RC_VERSION_INPUT: ${{ inputs.rc-version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${RC_VERSION_INPUT:-}" ]; then
+            version="$RC_VERSION_INPUT"
+          else
+            # Fall back to the version baked into the rc manifest we just pulled.
+            version="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).version)' "$RC_ASSET_DIR/latest-rc.json")"
+          fi
+          re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
+          if [[ ! "$version" =~ $re ]]; then
+            echo "::error::Resolved version is not X.Y.Z[-rc.N]: $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build stable manifest from rc signature
+        run: |
+          set -euo pipefail
+          out_dir="$RUNNER_TEMP/stable-assets"
+          rm -rf "$out_dir"
+          mkdir -p "$out_dir"
+          cp "$RC_ASSET_DIR/June_universal.dmg" "$out_dir/June_universal.dmg"
+          cp "$RC_ASSET_DIR/June_universal.dmg" "$out_dir/June_aarch64.dmg"
+          cp "$RC_ASSET_DIR/June_universal.app.tar.gz" "$out_dir/June_universal.app.tar.gz"
+          cp "$RC_ASSET_DIR/June_universal.app.tar.gz.sig" "$out_dir/June_universal.app.tar.gz.sig"
+
+          # Reuse the rc minisign signature verbatim: the .tar.gz bytes are
+          # identical, so the signature stays valid. Only the manifest URLs change
+          # to point at the stable v$VERSION release.
+          SIGNATURE_PATH="$out_dir/June_universal.app.tar.gz.sig" \
+          LATEST_JSON_PATH="$out_dir/latest.json" \
+          node <<'NODE'
+          const fs = require("node:fs");
+          const version = process.env.VERSION;
+          const signature = fs.readFileSync(process.env.SIGNATURE_PATH, "utf8");
+          const url = `https://github.com/open-software-network/os-june-releases/releases/download/v${version}/June_universal.app.tar.gz`;
+          const platform = { signature, url };
+          const latest = {
+            version,
+            notes: `June ${version}.`,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "darwin-aarch64": platform,
+              "darwin-x86_64": platform,
+              "darwin-aarch64-app": platform,
+              "darwin-x86_64-app": platform,
+            },
+          };
+          fs.writeFileSync(
+            process.env.LATEST_JSON_PATH,
+            `${JSON.stringify(latest, null, 2)}\n`,
+          );
+          NODE
+          echo "STABLE_ASSET_DIR=$out_dir" >> "$GITHUB_ENV"
+
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # --latest marks this the repo's latest release so the stable channel
+          # URL (releases/latest/download/latest.json) resolves here. Not a
+          # prerelease, unlike the rc release.
+          if gh release view "v$VERSION" --repo open-software-network/os-june-releases >/dev/null 2>&1; then
+            gh release edit "v$VERSION" \
+              --repo open-software-network/os-june-releases \
+              --title "June v$VERSION" \
+              --prerelease=false \
+              --latest
+          else
+            gh release create "v$VERSION" \
+              --repo open-software-network/os-june-releases \
+              --title "June v$VERSION" \
+              --latest \
+              --target main \
+              --notes "June $VERSION (promoted from rc)."
+          fi
+
+          gh release upload "v$VERSION" \
+            "$STABLE_ASSET_DIR/June_universal.dmg" \
+            "$STABLE_ASSET_DIR/June_aarch64.dmg" \
+            "$STABLE_ASSET_DIR/June_universal.app.tar.gz" \
+            "$STABLE_ASSET_DIR/June_universal.app.tar.gz.sig" \
+            "$STABLE_ASSET_DIR/latest.json" \
+            --repo open-software-network/os-june-releases \
+            --clobber
+
+      - name: Notify Slack on promote
+        if: ${{ success() }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is not configured; skipping Slack notification."
+            exit 0
+          fi
+          payload=$(cat <<EOF
+          {
+            "text": ":ship: *June ${VERSION} promoted to stable*"
+          }
+          EOF
+          )
+          curl -sS -f -X POST -H "Content-Type: application/json" \
+            --data "$payload" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || {
+            echo "::warning::Slack notification failed."
+            exit 0
+          }
+
+      - name: Summary
+        run: |
+          {
+            echo "### Promoted rc to stable"
+            echo "- Version: \`$VERSION\` (no rebuild; rc bytes republished)"
+            echo "- Stable manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
