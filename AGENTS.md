@@ -15,3 +15,11 @@ parentheses), design tokens from
 `src/styles/tokens.css`, and **icons from `central-icons` /
 `central-icons-filled` only (never lucide-react or any other icon set;
 lucide was deliberately removed from the dependencies)**.
+
+## PR and description conventions
+
+When drafting PR titles, PR descriptions, issue summaries, release notes, or
+other project descriptions, avoid naming or comparing against other products
+unless the user explicitly asks for that context or the reference is required
+for a concrete integration, compatibility note, migration, or legal
+attribution. Prefer describing the behavior, workflow, or category generically.
