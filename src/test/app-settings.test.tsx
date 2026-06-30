@@ -1787,6 +1787,55 @@ describe("AppSettings", () => {
     }
   });
 
+  it("keeps remote text options selectable when local model IDs collide", async () => {
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "venice-uncensored",
+        remoteGenerationModel: "venice-uncensored",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "venice-uncensored",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    expect(await screen.findByText("Venice Uncensored")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Local: venice-uncensored"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Change text model" }));
+    await user.click(screen.getByRole("tab", { name: "All" }));
+    expect(
+      await screen.findByRole("option", { name: /Local: venice-uncensored/ }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
+
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "venice-uncensored",
+    );
+    expect(mocks.setLocalGenerationModel).not.toHaveBeenCalled();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(

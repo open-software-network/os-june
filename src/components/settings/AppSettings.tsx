@@ -175,6 +175,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   },
 };
 
+const LOCAL_GENERATION_OPTION_ID_PREFIX = "__june_local_generation__:";
 const MIC_TEST_DURATION_SECONDS = 5;
 
 export type SettingsTab =
@@ -821,9 +822,13 @@ export function AppSettings({
   }
 
   function modelValueForMode(mode: ProviderModelMode) {
-    return mode === "transcription"
-      ? providerSettings.transcriptionModel
-      : providerSettings.generationModel;
+    if (mode === "transcription") {
+      return providerSettings.transcriptionModel;
+    }
+    if (localModelEnabled && providerSettings.localGeneration.modelId.trim()) {
+      return localGenerationOptionId(providerSettings.localGeneration.modelId);
+    }
+    return providerSettings.generationModel;
   }
 
   function openModelPicker(mode: ProviderModelMode) {
@@ -1263,7 +1268,7 @@ export function AppSettings({
                   <ModelRow
                     title="Text"
                     description="Used for generated notes and agent responses."
-                    value={providerSettings.generationModel}
+                    value={modelValueForMode("generation")}
                     options={generationOptions}
                     onOpen={() => openModelPicker("generation")}
                   />
@@ -1667,7 +1672,7 @@ function withLocalGenerationOption(
   if (!modelId) return models;
   const localModel: VeniceModelDto = {
     provider: "local",
-    id: modelId,
+    id: localGenerationOptionId(modelId),
     name: `Local: ${modelId}`,
     modelType: "text",
     description: "OpenAI-compatible local text model.",
@@ -1678,7 +1683,11 @@ function withLocalGenerationOption(
     priceUnit: "local",
     priceDescription: "Local",
   };
-  return [localModel, ...models.filter((model) => model.id !== modelId)];
+  return [localModel, ...models];
+}
+
+function localGenerationOptionId(modelId: string) {
+  return `${LOCAL_GENERATION_OPTION_ID_PREFIX}${encodeURIComponent(modelId.trim())}`;
 }
 
 function ModelRow({
