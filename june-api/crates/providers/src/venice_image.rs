@@ -106,9 +106,11 @@ impl ImageGenerator for VeniceImageGenerator {
             height: request.height,
         };
         let url = format!("{}/image/generate", self.base_url);
-        // Bounded retry on transient failures — same rationale as the chat and
-        // augment paths. Image generation is unmetered, so a replay can never
-        // double-charge.
+        // Bounded retry on transient failures (connection reset, 429, 5xx),
+        // same as the chat and augment paths. Image generation does not meter
+        // the user's credits, so a replay never double-charges them; each retry
+        // costs at most one extra upstream generation if a completed response
+        // was lost, bounded by UPSTREAM_ATTEMPTS.
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
             let error = match self.generate_once(&url, &body).await {
                 Ok(parsed) => return image_from_response(parsed, &request.model.0),

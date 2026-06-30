@@ -280,6 +280,18 @@ pub async fn list_venice_models(
 ) -> Result<VeniceModelsResponse, AppError> {
     let model_type = request.mode.api_type();
     let selected_model = selected_model_for_mode(&state, request.mode)?;
+    // Image models aren't part of the priced catalog the backend serves (image
+    // billing is deferred); the picker uses a curated frontend list instead.
+    // Short-circuit so a direct caller never gets unrelated text/asr models
+    // back, and we skip a pointless catalog round-trip.
+    if request.mode == ModelMode::Image {
+        return Ok(VeniceModelsResponse {
+            mode: request.mode,
+            model_type: model_type.to_string(),
+            selected_model,
+            models: Vec::new(),
+        });
+    }
     let mut models = crate::june_api::list_models(model_type)
         .await?
         .into_iter()
