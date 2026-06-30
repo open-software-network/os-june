@@ -8985,6 +8985,27 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+.permission-banner-dismiss {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-xs);
+  height: var(--control-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.permission-banner-dismiss:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
 .error-banner {
   margin: 0 0 var(--sp-5);
   padding: var(--sp-3) var(--sp-4);
