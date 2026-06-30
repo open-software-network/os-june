@@ -9,7 +9,7 @@ import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Switch } from "../ui/Switch";
 import type {
@@ -98,15 +98,6 @@ const SOURCE_FILTERS = [
   { value: "microphone", label: "Microphone" },
   { value: "system", label: "System" },
 ] as const;
-
-const PROCESSING_STAGES: {
-  status: ProcessingStageStatus;
-  label: string;
-}[] = [
-  { status: "validating", label: "Audio" },
-  { status: "transcribing", label: "Transcript" },
-  { status: "generating", label: "Summary" },
-];
 
 const RECORD_CONSENT_REVEAL_DELAY_MS = 420;
 const RECORD_CONSENT_AUTO_HIDE_MS = 5000;
@@ -262,9 +253,33 @@ export function NoteEditor({
   const processingLock = processingStatus !== null;
   const recordButtonDisabled = recordingDisabled;
   const recordOptionsDisabled = processingLock || recordingDisabled;
-  const showProcessingSkeleton =
-    note.processingStatus === "transcribing" ||
-    note.processingStatus === "generating";
+  // When generation finishes for the note you're looking at, reveal the fresh
+  // notes with a top-down wipe instead of letting the text snap in. Only fires
+  // on the live processing -> ready edge for this same note — never when
+  // opening an already-finished one. `justFinished` is derived during render
+  // against the last commit, so the clip lands on the very first ready frame
+  // (no chance of painting the notes un-clipped before the wipe starts);
+  // `notesRevealing` then holds the class for the rest of the animation.
+  const [notesRevealing, setNotesRevealing] = useState(false);
+  const revealEdgeRef = useRef({ noteId: note.id, processing: processingLock });
+  const justFinished =
+    revealEdgeRef.current.noteId === note.id &&
+    revealEdgeRef.current.processing &&
+    !processingLock &&
+    note.processingStatus === "ready";
+  useEffect(() => {
+    revealEdgeRef.current = { noteId: note.id, processing: processingLock };
+    if (justFinished) setNotesRevealing(true);
+  }, [note.id, processingLock, note.processingStatus, justFinished]);
+  // Hold the class just past the staggered block cascade, then drop it. (The
+  // blocks finish at different times, so a timer is cleaner than chasing the
+  // last animationend.)
+  useEffect(() => {
+    if (!notesRevealing) return;
+    const timer = window.setTimeout(() => setNotesRevealing(false), 1200);
+    return () => window.clearTimeout(timer);
+  }, [notesRevealing]);
+  const revealingNotes = justFinished || notesRevealing;
   // Shell snaps straight back to idle after stop — the body shimmer
   // covers the "still processing" affordance, and the record button
   // stays disabled via processingLock so nothing can re-trigger.
@@ -399,34 +414,27 @@ export function NoteEditor({
           </div>
         ) : (
           <div className="note-body-stack">
-            <NotePreview
-              noteId={note.id}
-              markdown={content}
-              onChange={onContentChange}
-              emptyPlaceholder={
-                processingLock
-                  ? ""
-                  : "Hit record to capture a conversation, or just start typing your thoughts here"
-              }
-            />
+            <div className={revealingNotes ? "note-reveal-active" : undefined}>
+              <NotePreview
+                noteId={note.id}
+                markdown={content}
+                onChange={onContentChange}
+                emptyPlaceholder={
+                  processingLock
+                    ? ""
+                    : "Hit record to capture a conversation, or just start typing your thoughts here"
+                }
+              />
+            </div>
+            {/* The badge is the whole wait state now — no skeleton, since the
+                generated note's shape isn't ours to predict. It clears as the
+                notes wipe in above it. */}
             {processingStatus ? (
               <ProcessingProgressIndicator
                 status={processingStatus}
                 queuedRecordings={queuedRecordings}
                 queuedTooltipId={queuedTooltipId}
               />
-            ) : null}
-            {showProcessingSkeleton ? (
-              <div className="note-skeleton" aria-hidden="true">
-                <span className="note-skeleton-heading" />
-                <span className="note-skeleton-body">
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                </span>
-              </div>
             ) : null}
           </div>
         )}
@@ -800,11 +808,7 @@ function ProcessingProgressIndicator({
   queuedTooltipId?: string;
   className?: string;
 }) {
-  const activeIndex = PROCESSING_STAGES.findIndex(
-    (stage) => stage.status === status,
-  );
-  const label = processingMessage(status) ?? "Processing audio...";
-  const progressValueText = `${processingStageLabel(status)} stage in progress`;
+  const reduceMotion = useReducedMotion();
   const classes = ["note-processing-progress", className]
     .filter(Boolean)
     .join(" ");
@@ -816,55 +820,59 @@ function ProcessingProgressIndicator({
       role="status"
       aria-live="polite"
     >
-      <div className="note-processing-progress-head">
-        <DotSpinner className="note-processing-progress-spinner" />
-        <span className="note-processing-progress-label">{label}</span>
-        {queuedRecordings > 0 && queuedTooltipId ? (
-          <span
-            className="note-generating-count"
-            tabIndex={0}
-            aria-describedby={queuedTooltipId}
+      <DotSpinner className="note-processing-progress-spinner" />
+      {/* A departure-board roll: each stage label rises into the one-line
+          window as the previous one lifts out, blurring through the hand-off so
+          the change feels organic rather than a hard cut. popLayout keeps the
+          entering label in flow (so the chip stays sized) while the leaving one
+          is popped out to slide away. Reduced motion drops to a plain
+          crossfade. */}
+      <div className="note-processing-roll">
+        <AnimatePresence initial={false} mode="popLayout">
+          <motion.span
+            key={status}
+            className="note-processing-roll-item"
+            initial={
+              reduceMotion
+                ? { opacity: 0 }
+                : { y: "65%", opacity: 0, filter: "blur(5px)" }
+            }
+            animate={
+              reduceMotion
+                ? { opacity: 1 }
+                : { y: "0%", opacity: 1, filter: "blur(0px)" }
+            }
+            exit={
+              reduceMotion
+                ? { opacity: 0 }
+                : { y: "-65%", opacity: 0, filter: "blur(5px)" }
+            }
+            transition={{
+              duration: reduceMotion ? 0.15 : 0.5,
+              ease: [0.22, 1, 0.36, 1],
+            }}
           >
-            +{queuedRecordings}
-            <span
-              className="note-generating-tip"
-              id={queuedTooltipId}
-              role="tooltip"
-            >
-              {queuedRecordings} more recording
-              {queuedRecordings > 1 ? "s" : ""} queued
-            </span>
-          </span>
-        ) : null}
+            {processingStageMessage(status)}
+          </motion.span>
+        </AnimatePresence>
       </div>
-      <div
-        className="note-processing-progress-track"
-        role="progressbar"
-        aria-label="Note processing progress"
-        aria-valuetext={progressValueText}
-      />
-      <ol className="note-processing-progress-steps" aria-hidden="true">
-        {PROCESSING_STAGES.map((stage, index) => {
-          const state =
-            index < activeIndex
-              ? "done"
-              : index === activeIndex
-                ? "active"
-                : "pending";
-          return (
-            <li
-              key={stage.status}
-              className="note-processing-progress-step"
-              data-state={state}
-            >
-              <span className="note-processing-progress-dot" />
-              <span className="note-processing-progress-step-label">
-                {stage.label}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
+      {queuedRecordings > 0 && queuedTooltipId ? (
+        <span
+          className="note-generating-count"
+          tabIndex={0}
+          aria-describedby={queuedTooltipId}
+        >
+          +{queuedRecordings}
+          <span
+            className="note-generating-tip"
+            id={queuedTooltipId}
+            role="tooltip"
+          >
+            {queuedRecordings} more recording
+            {queuedRecordings > 1 ? "s" : ""} queued
+          </span>
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -882,14 +890,17 @@ function processingStageStatus(
   }
 }
 
-function processingStageLabel(status: ProcessingStageStatus): string {
+// The stage name as it reads in the rolling label and the spoken status. Kept
+// ellipsis-free: the roll and track motion already carry the "in progress"
+// sense, so the words can stay calm.
+function processingStageMessage(status: ProcessingStageStatus): string {
   switch (status) {
     case "validating":
-      return "Audio";
+      return "Preparing audio";
     case "transcribing":
-      return "Transcript";
+      return "Transcribing audio";
     case "generating":
-      return "Summary";
+      return "Generating notes";
   }
 }
 

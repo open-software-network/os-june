@@ -257,12 +257,11 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Transcribing audio...",
+    expect(screen.getByRole("status")).toHaveTextContent("Transcribing audio");
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "data-status",
+      "transcribing",
     );
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
     expect(screen.getByText("Previous system transcript")).toBeInTheDocument();
   });
 
@@ -277,12 +276,11 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Transcribing audio...",
+    expect(screen.getByRole("status")).toHaveTextContent("Transcribing audio");
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "data-status",
+      "transcribing",
     );
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
     expect(screen.queryByText("No transcript is available yet.")).toBeNull();
   });
 
@@ -559,7 +557,7 @@ describe("NoteEditor", () => {
     // Processing is queued per note, so a recording still in flight no longer
     // blocks starting another take.
     expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
-    expect(screen.getByText("Transcribing audio...")).toBeInTheDocument();
+    expect(screen.getByText("Transcribing audio")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Retry" }),
     ).not.toBeInTheDocument();
@@ -576,10 +574,11 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("Preparing audio...");
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Audio stage in progress");
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing audio");
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "data-status",
+      "validating",
+    );
   });
 
   it("shows a queued count when a follow-up recording is stacked", () => {
@@ -598,9 +597,7 @@ describe("NoteEditor", () => {
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent("Generating notes");
     expect(status).toHaveTextContent("+1");
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Summary stage in progress");
+    expect(status).toHaveAttribute("data-status", "generating");
   });
 
   it("starts recording immediately without a consent gate", async () => {
@@ -863,30 +860,7 @@ describe("NoteEditor", () => {
   });
 
   it.each(["transcribing", "generating"] as const)(
-    "shows a note-shaped skeleton while %s",
-    (processingStatus) => {
-      const { container } = render(
-        <NoteEditor
-          {...props}
-          note={note({ processingStatus, activeTab: "notes" })}
-        />,
-      );
-
-      const skeleton = container.querySelector(".note-skeleton");
-      expect(skeleton).toBeInTheDocument();
-      expect(skeleton).toHaveAttribute("aria-hidden", "true");
-      expect(
-        skeleton?.querySelector(".note-skeleton-heading"),
-      ).toBeInTheDocument();
-      expect(
-        skeleton?.querySelector(".note-skeleton-body"),
-      ).toBeInTheDocument();
-      expect(skeleton?.querySelectorAll(".note-skeleton-line")).toHaveLength(5);
-    },
-  );
-
-  it.each(["ready", "validating"] as const)(
-    "hides the note-shaped skeleton while %s",
+    "shows the processing badge and no skeleton while %s",
     (processingStatus) => {
       const { container } = render(
         <NoteEditor
@@ -896,6 +870,50 @@ describe("NoteEditor", () => {
       );
 
       expect(container.querySelector(".note-skeleton")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toBeInTheDocument();
     },
   );
+
+  it("wipes the notes in when generation finishes for the open note", () => {
+    const { container, rerender } = render(
+      <NoteEditor
+        {...props}
+        note={note({ processingStatus: "generating", activeTab: "notes" })}
+      />,
+    );
+
+    expect(
+      container.querySelector(".note-reveal-active"),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "ready",
+          generatedContent: "Final notes",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(container.querySelector(".note-reveal-active")).toBeInTheDocument();
+  });
+
+  it("does not wipe when opening an already-finished note", () => {
+    const { container } = render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "ready",
+          generatedContent: "Final notes",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(
+      container.querySelector(".note-reveal-active"),
+    ).not.toBeInTheDocument();
+  });
 });

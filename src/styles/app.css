@@ -7901,16 +7901,17 @@ input:focus-visible,
 }
 
 .note-processing-progress {
-  display: grid;
+  display: inline-flex;
+  align-items: center;
   gap: var(--sp-2);
-  width: min(100%, 380px);
+  max-width: 100%;
   margin: var(--sp-4) 0 0;
-  padding: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--muted) 68%, var(--card));
   font-size: var(--fs-md);
   font-weight: 500;
-  line-height: 1.1;
+  line-height: 1;
   pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
@@ -7922,21 +7923,51 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.note-processing-progress-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
-}
-
-/* The rolling dot spinner (drawn, colored via currentColor) is the same working
+/* The rolling dot spinner (drawn, colored via currentColor) — the same working
  * indicator as the agent chat, sidebar, and composer notice. */
 .note-processing-progress-spinner {
   flex: none;
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
-.note-processing-progress-label,
+/* The rolling stage label: a one-line window the stage names roll through.
+ * framer-motion slides each label up into place as the previous one lifts out,
+ * blurring through the hand-off (a departure-board roll). position: relative
+ * contains the leaving label once popLayout pops it out of flow; overflow clips
+ * the vertical travel. Each name keeps the same left-to-right shimmer the
+ * processing label has always had. */
+.note-processing-roll {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 1.4em;
+  overflow: hidden;
+}
+
+.note-processing-roll-item {
+  display: block;
+  height: 1.4em;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.4em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: note-text-shimmer 2s linear infinite;
+}
+
 .text-shimmer {
   min-width: 0;
   overflow: hidden;
@@ -7964,84 +7995,6 @@ input:focus-visible,
   animation-duration: 1.2s;
 }
 
-.note-processing-progress-track {
-  position: relative;
-  height: 4px;
-  overflow: hidden;
-  border-radius: var(--r-pill);
-  background: color-mix(in oklch, var(--muted-foreground) 13%, transparent);
-}
-
-.note-processing-progress-track::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: -42%;
-  width: 42%;
-  border-radius: inherit;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in oklch, var(--warm-strong) 78%, transparent) 45%,
-    color-mix(in oklch, var(--warm-strong) 94%, var(--foreground)) 50%,
-    color-mix(in oklch, var(--warm-strong) 78%, transparent) 55%,
-    transparent 100%
-  );
-  animation: note-processing-track-sweep 1.6s var(--ease-in-out) infinite;
-}
-
-.note-processing-progress-steps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--sp-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.note-processing-progress-step {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-width: 0;
-  color: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
-  font-size: var(--fs-xs);
-  line-height: 1;
-}
-
-.note-processing-progress-step[data-state="done"],
-.note-processing-progress-step[data-state="active"] {
-  color: var(--warm-strong);
-}
-
-.note-processing-progress-dot {
-  flex: none;
-  width: 5px;
-  height: 5px;
-  border-radius: var(--r-pill);
-  background: currentColor;
-  opacity: 0.45;
-}
-
-.note-processing-progress-step[data-state="done"]
-  .note-processing-progress-dot {
-  opacity: 0.72;
-}
-
-.note-processing-progress-step[data-state="active"]
-  .note-processing-progress-dot {
-  opacity: 1;
-  box-shadow: 0 0 0 3px color-mix(in oklch, currentColor 16%, transparent);
-}
-
-.note-processing-progress-step-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 @keyframes note-text-shimmer {
   0% {
     background-position: 150% 0;
@@ -8051,19 +8004,10 @@ input:focus-visible,
   }
 }
 
-@keyframes note-processing-track-sweep {
-  0% {
-    transform: translateX(0);
-  }
-  100% {
-    transform: translateX(340%);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .note-processing-progress-track::before {
-    left: 0;
-    width: 100%;
+  /* framer-motion already drops the slide and blur for the stage swap (it reads
+     prefers-reduced-motion); this just rests the label's shimmer. */
+  .note-processing-roll-item {
     animation: none;
   }
 }
@@ -8120,74 +8064,58 @@ input:focus-visible,
   transform: translate(-50%, 0);
 }
 
-/* Skeleton — placeholder note lines shown while transcription or generation is
- * in flight, so a fresh note isn't blank space until the text pops in. The
- * shimmer reuses the label sweep keyframe; lines are staggered so the motion
- * reads as alive. */
-.note-skeleton {
-  display: grid;
-  gap: var(--sp-4);
-  width: min(100%, 680px);
-  margin-top: var(--sp-6);
-  opacity: 0.78;
+/* Generated-notes reveal — when generation finishes, the note's blocks cascade
+ * in: each one fades and rises a beat after the block above it, so it reads as
+ * the note settling onto the page rather than a hard wipe. transform + opacity
+ * only, so it stays on the compositor (smooth, no per-frame paint) and never
+ * shifts layout. One-shot — the class is dropped on a timer in NoteEditor. */
+.note-reveal-active .note-preview > * {
+  animation: note-reveal-block 540ms var(--ease-out) both;
 }
 
-.note-skeleton-heading,
-.note-skeleton-line {
-  display: block;
-  border-radius: var(--r-xs);
-  background: linear-gradient(
-    90deg,
-    color-mix(in oklch, var(--muted-foreground) 9%, transparent) 0%,
-    color-mix(in oklch, var(--muted-foreground) 20%, transparent) 45%,
-    color-mix(in oklch, var(--muted-foreground) 9%, transparent) 90%
-  );
-  background-size: 220% 100%;
-  animation: note-text-shimmer 1.9s linear infinite;
+.note-reveal-active .note-preview > *:nth-child(2) {
+  animation-delay: 55ms;
 }
 
-.note-skeleton-heading {
-  width: min(42%, 240px);
-  height: 18px;
+.note-reveal-active .note-preview > *:nth-child(3) {
+  animation-delay: 110ms;
 }
 
-.note-skeleton-body {
-  display: grid;
-  gap: var(--sp-2);
+.note-reveal-active .note-preview > *:nth-child(4) {
+  animation-delay: 165ms;
 }
 
-.note-skeleton-line {
-  height: 10px;
+.note-reveal-active .note-preview > *:nth-child(5) {
+  animation-delay: 220ms;
 }
 
-.note-skeleton-line:nth-child(1) {
-  width: 96%;
+.note-reveal-active .note-preview > *:nth-child(6) {
+  animation-delay: 275ms;
 }
 
-.note-skeleton-line:nth-child(2) {
-  width: 72%;
-  animation-delay: 0.15s;
+.note-reveal-active .note-preview > *:nth-child(7) {
+  animation-delay: 330ms;
 }
 
-.note-skeleton-line:nth-child(3) {
-  width: 84%;
-  margin-bottom: var(--sp-3);
-  animation-delay: 0.3s;
+/* Long notes stop staggering past here so the tail doesn't drag. */
+.note-reveal-active .note-preview > *:nth-child(n + 8) {
+  animation-delay: 385ms;
 }
 
-.note-skeleton-line:nth-child(4) {
-  width: 68%;
-  animation-delay: 0.45s;
-}
-
-.note-skeleton-line:nth-child(5) {
-  width: 90%;
-  animation-delay: 0.6s;
+@keyframes note-reveal-block {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .note-skeleton-heading,
-  .note-skeleton-line {
+  /* No cascade — the notes just appear. */
+  .note-reveal-active .note-preview > * {
     animation: none;
   }
 }
