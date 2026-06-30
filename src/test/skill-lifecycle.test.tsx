@@ -235,6 +235,18 @@ describe("skill lifecycle — controller actions", () => {
     controller.dispose();
   });
 
+  it("checkForUpdates asks the host to refresh the inventory", async () => {
+    // The lifecycle controller's AdminStateCache is a separate instance from the
+    // installed-skills controller's, so invalidating it never reaches the
+    // inventory subscriber. A check must call onMutated (the host's inventory
+    // refresh) to actually re-read GET /api/skills (Codex P2).
+    const onMutated = vi.fn();
+    const { controller } = controllerFor({}, { onMutated });
+    await controller.checkForUpdates();
+    expect(onMutated).toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it("uninstalls a hub skill by its identifier", async () => {
     const { harness, controller } = controllerFor();
     const s = skill(COMMUNITY);

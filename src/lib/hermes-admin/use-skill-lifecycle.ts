@@ -255,10 +255,14 @@ export class SkillLifecycleController {
     this.sweepError = undefined;
     this.recompute();
     try {
-      // A check is a re-read: refresh the inventory and the hub search so any
-      // newly-available updates are reflected. Invalidating is enough — the
-      // installed-skills controller reloads off the same bus.
+      // A check is a re-read. Mark this controller's resources stale, then ask
+      // the host to refresh the inventory. The installed-skills controller has
+      // its OWN AdminStateCache instance, so invalidating ours never reaches its
+      // subscribers; `onMutated` (the host's inventory refresh, the same one
+      // runHubAction fires) is what actually re-reads GET /api/skills so the
+      // update_available flags refresh.
       this.engine.cache.invalidate(["skills", "hubSearch"]);
+      this.onMutated?.();
       if (this.disposed) return;
       this.sweeping = false;
       this.recompute();

@@ -237,6 +237,10 @@ export type FakeHermesScenario = {
   profileCreateError?: { status: number; code?: string; error?: string };
   /** When set, PUT /api/profiles/{name}/soul fails with this status. */
   profileSoulError?: { status: number; code?: string; error?: string };
+  /** When true, POST /api/profiles/active returns a 2xx with a body-level
+   * `{ ok: false }` (a switch that the transport accepts but the server reports
+   * as failed) so the discarded-result path can be exercised. */
+  profileActivateNotOk?: boolean;
   /** Initial env keys (values never returned). */
   env?: Record<string, string>;
   /** Initial config tree, served by GET /api/config and mutated by PUT/DELETE
@@ -304,6 +308,7 @@ export class FakeHermesServer {
     code?: string;
     error?: string;
   };
+  private readonly profileActivateNotOk: boolean;
   private profileSessionSeq = 0;
   private env: Record<string, string>;
   private config: Record<string, unknown>;
@@ -338,6 +343,7 @@ export class FakeHermesServer {
       "default";
     this.profileCreateError = scenario.profileCreateError;
     this.profileSoulError = scenario.profileSoulError;
+    this.profileActivateNotOk = scenario.profileActivateNotOk ?? false;
     this.env = clone(scenario.env ?? {});
     this.config = clone(scenario.config ?? {});
     this.backgroundActions = scenario.backgroundActions ?? false;
@@ -577,6 +583,10 @@ export class FakeHermesServer {
           code: "validation_error",
           error: "field required: name",
         });
+      }
+      if (this.profileActivateNotOk) {
+        // A switch the transport accepts (2xx) but the server reports failed.
+        return json(200, { ok: false, error: "could not switch profile" });
       }
       this.activeProfile = name;
       return json(200, { ok: true, active: name });

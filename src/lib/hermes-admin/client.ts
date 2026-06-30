@@ -631,7 +631,7 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
     async startTestSession(name) {
       // Make the new profile active, then open a terminal session under it. Both
       // are global profile operations, so neither is profile-query-scoped.
-      await send(
+      const activated = await send(
         {
           method: "POST",
           path: "/api/profiles/active",
@@ -640,6 +640,12 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
         },
         (raw) => ({ ok: okFrom(raw) }),
       );
+      // Stop if the switch failed (a body-level { ok: false } on a 2xx):
+      // opening a terminal would run under the wrong profile and falsely report
+      // success. Surface the failure through the same outcome, matching create.
+      if (!activated.ok) {
+        return outcome("profile.create", activated);
+      }
       const result = await send(
         {
           method: "POST",
@@ -763,7 +769,8 @@ function deleteConfigAtPath(tree: Record<string, unknown>, path: string): void {
   let node = tree;
   for (let i = 0; i < keys.length - 1; i += 1) {
     const next = node[keys[i]!];
-    if (typeof next !== "object" || next === null || Array.isArray(next)) return;
+    if (typeof next !== "object" || next === null || Array.isArray(next))
+      return;
     node = next as Record<string, unknown>;
   }
   delete node[keys[keys.length - 1]!];

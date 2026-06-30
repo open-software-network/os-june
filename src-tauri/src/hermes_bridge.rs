@@ -372,8 +372,10 @@ pub struct HermesMcpOauthLoginRequest {
 }
 
 /// The redacted result of an MCP OAuth sign-in. It NEVER carries a token: only
-/// whether the CLI reported success, an already-redacted status message, and a
-/// token-free authorization URL so June can offer a manual browser fallback.
+/// whether the CLI reported success, an already-redacted status message, and an
+/// authorization URL whose secret-shaped query values are redacted (see
+/// `redact_url_query_secrets`) so June can offer a manual browser fallback
+/// without a credential crossing into the webview.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HermesMcpOauthLoginResult {
@@ -2746,6 +2748,58 @@ fn extract_authorization_url(output: &str) -> Option<String> {
     None
 }
 
+/// Redacts secret-shaped query VALUES from a URL before it crosses into the
+/// webview, preserving scheme/host/path and non-sensitive params so the link
+/// still opens. An OAuth authorization *request* URL carries none of these by
+/// contract (tokens live in the callback, not the request), so this is a no-op
+/// for a legitimate URL and only bites an anomalous one the CLI may have echoed.
+/// `redact_cli_word` only inspects the first `=`, so a multi-param URL needs
+/// this dedicated pass.
+fn redact_url_query_secrets(url: &str) -> String {
+    let Some((base, rest)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    // Keep any trailing #fragment intact.
+    let (query, fragment) = match rest.split_once('#') {
+        Some((q, f)) => (q, Some(f)),
+        None => (rest, None),
+    };
+    let redacted = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if query_key_is_sensitive(key) => format!("{key}=[redacted]"),
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    let mut out = format!("{base}?{redacted}");
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
+/// True for a query-parameter name whose value must never reach the webview.
+/// Mirrors the `redact_cli_word` sensitive set, plus the token variants an OAuth
+/// flow can carry.
+fn query_key_is_sensitive(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "token"
+            | "access_token"
+            | "id_token"
+            | "refresh_token"
+            | "api_key"
+            | "apikey"
+            | "secret"
+            | "password"
+            | "bearer"
+            | "key"
+            | "code"
+    )
+}
+
 /// Redacts a free-text CLI line for return to June. The CLI may echo a
 /// `Bearer <token>`, a `?token=<value>`, or a long credential-shaped run; this
 /// masks all three so the message that reaches the webview never carries a
@@ -2889,7 +2943,10 @@ pub async fn hermes_mcp_oauth_login(
     Ok(HermesMcpOauthLoginResult {
         ok: mcp_login_succeeded(join.exit_success, &combined),
         message: redact_cli_message(&combined),
-        auth_url,
+        // The browser was opened above with the real URL; the copy returned to
+        // the webview has any secret-shaped query values redacted so a token can
+        // never cross into the renderer through this result.
+        auth_url: auth_url.as_deref().map(redact_url_query_secrets),
         timed_out: join.timed_out,
     })
 }
@@ -4161,8 +4218,16 @@ fn expand_env_vars(input: &str) -> Result<String, String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] != b'$' {
-            out.push(bytes[i] as char);
-            i += 1;
+            // Copy the whole non-`$` run verbatim. `$` is ASCII (0x24) and can
+            // never appear inside a multibyte UTF-8 sequence, so the next `$`
+            // (or the end) is always a char boundary; slicing here preserves
+            // UTF-8 instead of mangling each byte into its own `char` (which
+            // would corrupt a path like `~/技能`).
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'$' {
+                i += 1;
+            }
+            out.push_str(&input[start..i]);
             continue;
         }
         // `${VAR}` form.
@@ -8061,6 +8126,45 @@ mod tests {
             ExpandedPath::UnresolvedVar(_) => panic!("set var should resolve"),
         }
         std::env::remove_var("JUNE_TEST_EXT_DIR");
+    }
+
+    #[test]
+    fn expand_env_vars_preserves_non_ascii() {
+        // A non-ASCII run with no env reference passes through as UTF-8, not
+        // mangled into one `char` per byte (Codex P2).
+        assert_eq!(
+            expand_env_vars("/home/u/技能/skills").expect("no var"),
+            "/home/u/技能/skills"
+        );
+        // ...and a ${VAR} still expands when surrounded by non-ASCII text.
+        std::env::set_var("JUNE_TEST_UNICODE_DIR", "/srv/技");
+        assert_eq!(
+            expand_env_vars("${JUNE_TEST_UNICODE_DIR}/données").expect("var resolves"),
+            "/srv/技/données"
+        );
+        std::env::remove_var("JUNE_TEST_UNICODE_DIR");
+    }
+
+    #[test]
+    fn redact_url_query_secrets_masks_token_params_only() {
+        // No query string: returned unchanged.
+        assert_eq!(
+            redact_url_query_secrets("https://auth.example.com/authorize"),
+            "https://auth.example.com/authorize"
+        );
+        // A normal authorization request (no secret params) is preserved verbatim
+        // so the manual-open fallback still works.
+        let authz = "https://auth.example.com/authorize?client_id=abc&redirect_uri=app%3A%2F%2Fcb&scope=read&state=xyz&code_challenge=h";
+        assert_eq!(redact_url_query_secrets(authz), authz);
+        // An anomalous URL carrying a token: only the secret value is masked;
+        // other params and the fragment survive.
+        let leaky = "https://x/cb?client_id=abc&access_token=sk-secret&state=xyz#frag";
+        let out = redact_url_query_secrets(leaky);
+        assert!(out.contains("client_id=abc"));
+        assert!(out.contains("state=xyz"));
+        assert!(out.contains("access_token=[redacted]"));
+        assert!(!out.contains("sk-secret"));
+        assert!(out.ends_with("#frag"));
     }
 
     #[test]
