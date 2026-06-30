@@ -380,11 +380,12 @@ export class SkillsHubController {
       );
       // A poll timeout on an install almost always means the source is slow or
       // rate-limited (commonly GitHub's 60/hr unauthenticated cap), not that
-      // Hermes is down. Surface that with the actionable fix instead of the
-      // generic "timed out waiting for Hermes" copy.
+      // Hermes is down. The sandboxed runtime can't read your gh-keyring login
+      // (keychain reads are blocked) and the spawn env is scrubbed, so the fix
+      // is an explicit GITHUB_TOKEN configured in June — not `gh auth login`.
       const message =
         adminError.kind === "timeout"
-          ? "Install timed out. The skill source may be slow or rate-limited. For GitHub skills, set GITHUB_TOKEN or run gh auth login to lift the 60/hr limit, then try again."
+          ? "Install timed out. The skill source may be slow or rate-limited. GitHub-hosted skills need a GITHUB_TOKEN configured in June's settings (Team skill taps) to lift the 60/hr limit, then try again."
           : adminError.safeMessage;
       this.setInstall(identifier, {
         phase: "failed",
