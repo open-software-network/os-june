@@ -14,15 +14,11 @@ const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 8 * 60 * 1000;
 /// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
 /// activity `min_rms`, so we only ever skip clearly-silent audio.
 const SILENCE_RMS_FLOOR: f32 = 0.012;
-/// Fraction of a microphone turn that concurrent system turns must collectively
-/// cover before the mic turn is even considered speaker bleed (echo) rather than
-/// real speech.
-const ECHO_MIN_OVERLAP_RATIO: f32 = 0.6;
 /// How much louder the system track must be than the microphone, both measured
-/// over the overlapping interval, to treat the microphone turn as echo of that
-/// system audio. Echo re-captured through the air is heavily attenuated, so a
-/// clearly louder system track means the microphone only heard the speaker, not
-/// the user. Kept conservative so genuine simultaneous mic speech (comparable
+/// over the same overlapping span, to treat that span of the microphone turn as
+/// echo of system audio. Echo re-captured through the air is heavily attenuated,
+/// so a clearly louder system track means the microphone only heard the speaker,
+/// not the user. Kept conservative so genuine simultaneous mic speech (comparable
 /// energy over the overlap) is kept.
 const ECHO_DOMINANCE_RATIO: f32 = 3.0;
 
@@ -473,8 +469,10 @@ fn merge_close_turns(turns: Vec<AudioTurn>, merge_gap_ms: i64) -> Vec<AudioTurn>
 /// happily emits a turn whenever it crosses its threshold — including when the
 /// only thing it heard was a remote participant's voice played through the
 /// speakers and bled back into the mic. That misattributes system audio to the
-/// microphone. Drop microphone turns that a concurrent, clearly louder system
-/// turn already accounts for; the speech stays attributed to the system source.
+/// microphone. Trim the speaker-bleed spans (where a concurrent system turn is
+/// clearly louder) out of each microphone turn, keeping the genuine, system-free
+/// remainder; the bled-over speech stays attributed to the system source. A mic
+/// turn entirely covered by louder system audio is trimmed away to nothing.
 fn reject_speaker_echo_turns(detected: Vec<DetectedSource>) -> Vec<AudioTurn> {
     let system_sources: Vec<&DetectedSource> = detected
         .iter()
@@ -483,18 +481,15 @@ fn reject_speaker_echo_turns(detected: Vec<DetectedSource>) -> Vec<AudioTurn> {
     let mut turns = Vec::new();
     for source in &detected {
         if source.source == "microphone" && !system_sources.is_empty() {
+            let min_turn_ms = config_for_source(&source.source).min_turn_ms;
             for turn in &source.turns {
-                let is_echo = system_sources.iter().any(|system| {
-                    microphone_turn_is_system_echo(
-                        turn,
-                        &source.windows,
-                        &system.turns,
-                        &system.windows,
-                    )
-                });
-                if !is_echo {
-                    turns.push(turn.clone());
-                }
+                let echo_spans: Vec<(i64, i64)> = system_sources
+                    .iter()
+                    .flat_map(|system| {
+                        system_echo_spans(turn, &source.windows, &system.turns, &system.windows)
+                    })
+                    .collect();
+                turns.extend(trim_echo_from_microphone_turn(turn, &echo_spans, min_turn_ms));
             }
         } else {
             turns.extend(source.turns.iter().cloned());
@@ -503,41 +498,82 @@ fn reject_speaker_echo_turns(detected: Vec<DetectedSource>) -> Vec<AudioTurn> {
     turns
 }
 
-/// Whether a microphone turn is most likely speaker bleed (echo) of system
-/// audio rather than genuine microphone speech: a system turn covers most of
-/// the microphone turn and is clearly louder over the overlapping interval.
-fn microphone_turn_is_system_echo(
+/// Sub-intervals of `mic_turn` that are speaker bleed (echo): each is covered by
+/// a system turn that is clearly louder than the microphone over that overlap.
+/// Subtracting these from the mic turn leaves the genuine microphone speech.
+fn system_echo_spans(
     mic_turn: &AudioTurn,
     mic_windows: &[f32],
     system_turns: &[AudioTurn],
     system_windows: &[f32],
-) -> bool {
-    let mic_duration = mic_turn.end_ms - mic_turn.start_ms;
-    if mic_duration <= 0 {
-        return false;
-    }
-    let mut overlap_ms = 0_i64;
-    // Sentinels; only read after the overlap gate below confirms at least one
-    // system turn overlapped and set them to real bounds.
-    let mut overlap_start = i64::MAX;
-    let mut overlap_end = i64::MIN;
+) -> Vec<(i64, i64)> {
+    let mut spans = Vec::new();
     for system_turn in system_turns {
         let start = mic_turn.start_ms.max(system_turn.start_ms);
         let end = mic_turn.end_ms.min(system_turn.end_ms);
-        if end > start {
-            overlap_ms += end - start;
-            overlap_start = overlap_start.min(start);
-            overlap_end = overlap_end.max(end);
+        if end <= start {
+            continue;
+        }
+        // Compare both tracks over the same overlapping span: the question is
+        // whether, where they coincide, the microphone only heard the speaker.
+        let mic_energy = mean_rms(mic_windows, start, end);
+        let system_energy = mean_rms(system_windows, start, end);
+        if system_energy >= mic_energy * ECHO_DOMINANCE_RATIO {
+            spans.push((start, end));
         }
     }
-    if (overlap_ms as f32) < mic_duration as f32 * ECHO_MIN_OVERLAP_RATIO {
-        return false;
+    spans
+}
+
+/// Cut the echo spans out of `mic_turn` and return the remaining genuine
+/// stretches that are still long enough to stand as their own turns. An empty
+/// span list returns the turn unchanged; spans covering the whole turn return
+/// nothing (pure echo, fully dropped).
+fn trim_echo_from_microphone_turn(
+    mic_turn: &AudioTurn,
+    echo_spans: &[(i64, i64)],
+    min_turn_ms: i64,
+) -> Vec<AudioTurn> {
+    if echo_spans.is_empty() {
+        return vec![mic_turn.clone()];
     }
-    // Compare both tracks over the same overlapping interval: the question is
-    // whether, where they coincide, the microphone only heard the speaker.
-    let mic_energy = mean_rms(mic_windows, overlap_start, overlap_end);
-    let system_energy = mean_rms(system_windows, overlap_start, overlap_end);
-    system_energy >= mic_energy * ECHO_DOMINANCE_RATIO
+    let mut spans = echo_spans.to_vec();
+    spans.sort_by_key(|(start, _)| *start);
+    let mut kept = Vec::new();
+    let mut cursor = mic_turn.start_ms;
+    for (start, end) in spans {
+        if start > cursor {
+            push_microphone_segment(&mut kept, mic_turn, cursor, start, min_turn_ms);
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < mic_turn.end_ms {
+        push_microphone_segment(&mut kept, mic_turn, cursor, mic_turn.end_ms, min_turn_ms);
+    }
+    kept
+}
+
+/// Push `[start_ms, end_ms)` of `mic_turn` as a microphone turn when it is at
+/// least `min_turn_ms` long, matching the detector's own minimum turn length so
+/// trimming never emits slivers the detector would not have produced.
+fn push_microphone_segment(
+    turns: &mut Vec<AudioTurn>,
+    mic_turn: &AudioTurn,
+    start_ms: i64,
+    end_ms: i64,
+    min_turn_ms: i64,
+) {
+    if end_ms - start_ms < min_turn_ms {
+        return;
+    }
+    turns.push(AudioTurn {
+        artifact_id: mic_turn.artifact_id.clone(),
+        source: mic_turn.source.clone(),
+        source_path: mic_turn.source_path.clone(),
+        start_ms,
+        end_ms,
+        turn_index: 0,
+    });
 }
 
 /// Mean RMS of the windows spanning `[start_ms, end_ms)`. Returns 0 when the
@@ -750,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn echo_decision_drops_quiet_overlap_but_keeps_loud_or_isolated_mic() {
+    fn echo_decision_trims_quiet_overlap_but_keeps_loud_or_isolated_mic() {
         // 30ms windows: window index == ms / 30. 200 windows == 6s.
         let mut mic_windows = vec![0.0_f32; 200];
         let mut system_windows = vec![0.0_f32; 200];
@@ -762,35 +798,63 @@ mod tests {
             mic_windows[window] = 0.5; // genuine mic speech, no system
         }
         let system_turns = vec![make_turn("system", 0, 1_500)];
+        let min_turn_ms = config_for_source("microphone").min_turn_ms;
 
+        // Quiet mic fully covered by louder system audio is all echo, trimmed away.
         let echo = make_turn("microphone", 0, 1_500);
-        let genuine = make_turn("microphone", 3_600, 5_100);
+        let echo_spans = system_echo_spans(&echo, &mic_windows, &system_turns, &system_windows);
+        assert_eq!(echo_spans, vec![(0, 1_500)]);
+        assert!(trim_echo_from_microphone_turn(&echo, &echo_spans, min_turn_ms).is_empty());
 
-        // Quiet mic fully covered by louder system audio is treated as echo.
-        assert!(microphone_turn_is_system_echo(
-            &echo,
-            &mic_windows,
-            &system_turns,
-            &system_windows
-        ));
-        // A mic turn with no overlapping system audio is genuine speech.
-        assert!(!microphone_turn_is_system_echo(
-            &genuine,
-            &mic_windows,
-            &system_turns,
-            &system_windows
-        ));
-        // Simultaneous speech with comparable mic energy is genuine, not echo.
+        // A mic turn with no overlapping system audio is genuine speech, kept whole.
+        let genuine = make_turn("microphone", 3_600, 5_100);
+        let genuine_spans =
+            system_echo_spans(&genuine, &mic_windows, &system_turns, &system_windows);
+        assert!(genuine_spans.is_empty());
+        assert_eq!(
+            trim_echo_from_microphone_turn(&genuine, &genuine_spans, min_turn_ms),
+            vec![genuine]
+        );
+
+        // Simultaneous speech with comparable mic energy is not echo, kept whole.
         let mut loud_mic = vec![0.0_f32; 200];
         for window in 0..50 {
             loud_mic[window] = 0.45;
         }
-        assert!(!microphone_turn_is_system_echo(
-            &echo,
-            &loud_mic,
-            &system_turns,
-            &system_windows
-        ));
+        assert!(system_echo_spans(&echo, &loud_mic, &system_turns, &system_windows).is_empty());
+    }
+
+    #[test]
+    fn echo_trim_preserves_user_reply_merged_into_one_microphone_turn() {
+        // A remote participant speaks, then the user replies shortly after. The
+        // echo of the remote speech and the user's reply land in ONE mic turn
+        // (the gap is shorter than the detector's silence/merge windows). The
+        // echo must be trimmed off while the user's reply survives, instead of
+        // dropping the whole turn.
+        let min_turn_ms = config_for_source("microphone").min_turn_ms;
+        let mic_turn = make_turn("microphone", 0, 3_300);
+        let system_turns = vec![make_turn("system", 0, 2_000)];
+
+        // 30ms windows: 0..2000ms quiet echo, 2000..3300ms loud genuine reply.
+        let mut mic_windows = vec![0.0_f32; 110];
+        let mut system_windows = vec![0.0_f32; 110];
+        for window in 0..67 {
+            mic_windows[window] = 0.05; // echo of the remote participant
+            system_windows[window] = 0.5; // remote participant, loud and clean
+        }
+        for window in 67..110 {
+            mic_windows[window] = 0.5; // the user's own reply, no system audio
+        }
+
+        let echo_spans =
+            system_echo_spans(&mic_turn, &mic_windows, &system_turns, &system_windows);
+        let kept = trim_echo_from_microphone_turn(&mic_turn, &echo_spans, min_turn_ms);
+
+        // The echoed front is removed; the user's reply remains a mic turn.
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].source, "microphone");
+        assert!(kept[0].start_ms >= 2_000);
+        assert_eq!(kept[0].end_ms, 3_300);
     }
 
     fn make_turn(source: &str, start_ms: i64, end_ms: i64) -> AudioTurn {
