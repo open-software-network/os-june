@@ -14529,56 +14529,51 @@ input:focus-visible,
 
 .update-relaunch-card {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 18px;
-  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr) 16px;
+  align-items: start;
   gap: var(--sp-3);
   width: 100%;
-  min-height: 64px;
   padding: var(--sp-2);
-  border: 1px solid var(--popover-border);
+  /* Same transparent-over-foreground hairline as --popover-border, just a
+   * touch stronger (10% washes out on a pure-white card over the sidebar). */
+  border: 1px solid color-mix(in oklch, var(--foreground) 15%, transparent);
   border-radius: var(--r-md);
-  background: var(--popover);
-  color: var(--popover-foreground);
-  box-shadow: var(--shadow-lg);
+  background: var(--card);
+  color: var(--foreground);
   text-align: left;
   cursor: pointer;
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-out);
+  transition: box-shadow var(--t-slow) var(--ease-spring);
 }
 
 .update-relaunch-card:hover:not(:disabled) {
-  border-color: var(--ring);
-  background: color-mix(in oklch, var(--popover) 90%, var(--muted));
-  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .update-relaunch-card:focus-visible {
   outline: none;
-  border-color: var(--ring-focus);
-  box-shadow:
-    var(--shadow-lg),
-    0 0 0 3px var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .update-relaunch-card:disabled {
   cursor: default;
 }
 
+/* Bare June mark, no tile: faint at rest, warms to brand on hover. */
 .update-relaunch-mark {
   display: inline-grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--brand) 12%, transparent);
-  color: var(--brand);
+  margin-top: 2px;
+  color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  transition: color var(--t-slow) var(--ease-spring);
 }
 
 .update-relaunch-mark svg {
-  width: 17px;
+  width: 10px;
   height: auto;
+}
+
+.update-relaunch-card:hover:not(:disabled) .update-relaunch-mark {
+  color: var(--brand);
 }
 
 .update-relaunch-copy {
@@ -14597,6 +14592,14 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* While relaunching, the label reuses the shared .text-shimmer sweep. That
+ * utility lives earlier in this flat stylesheet, so the title's solid color
+ * above would win and hide the gradient. Re-assert the transparent fill here
+ * (after the title rule) so the shimmer shows through. */
+.update-relaunch-title.text-shimmer {
+  color: transparent;
+}
+
 .update-relaunch-copy > span:last-child {
   overflow: hidden;
   color: var(--muted-foreground);
@@ -14611,8 +14614,14 @@ input:focus-visible,
 }
 
 .update-relaunch-arrow {
+  align-self: center;
   justify-self: end;
   color: var(--muted-foreground);
+  transition: transform var(--t-slow) var(--ease-spring);
+}
+
+.update-relaunch-card:hover:not(:disabled) .update-relaunch-arrow {
+  transform: translateX(3px);
 }
 
 .update-status-card {
@@ -14721,8 +14730,16 @@ input:focus-visible,
     transition: none;
   }
 
-  .update-relaunch-card:hover:not(:disabled) {
+  .update-relaunch-arrow {
+    transition: none;
+  }
+
+  .update-relaunch-card:hover:not(:disabled) .update-relaunch-arrow {
     transform: none;
+  }
+
+  .update-relaunch-title.text-shimmer {
+    animation: none;
   }
 }
 
