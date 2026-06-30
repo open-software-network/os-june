@@ -314,6 +314,31 @@ const SETTINGS_SIDEBAR_GROUPS: {
   },
 ];
 
+/**
+ * Settings tabs introduced by the admin-surfaces PR, hidden from the nav until
+ * they're stabilized. The pre-PR tabs (General, Billing, Shortcuts, Dictation,
+ * Audio, Models, Agent, Installed skills, About) stay visible, plus External
+ * skill directories (PR-new but verified working). These are hidden, not
+ * removed: tabs, panels, and logic are all intact. Re-enable one by deleting its
+ * id here; restore the full nav by deleting this set and the `.filter` in
+ * SettingsSidebar that uses it. See docs/settings-focus-runbook.md.
+ */
+export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> =
+  new Set<SettingsTab>([
+    "skill-review",
+    "mcp",
+    "mcp-catalog",
+    "mcp-diagnostics",
+    "mcp-security",
+    "skills-hub",
+    "taps",
+    "toolsets",
+    "bundles",
+    "profile-builder",
+    "integrations-health",
+    "import-export",
+  ]);
+
 export function Sidebar({
   notes,
   activeView,
@@ -1537,12 +1562,17 @@ function SettingsSidebarNav({
   onSelectTab: (tab: SettingsTab) => void;
   onBack: () => void;
 }) {
-  const groups = localDev
-    ? SETTINGS_SIDEBAR_GROUPS.map((group) => ({
-        ...group,
-        items: group.items.filter((item) => item.id !== "billing"),
-      })).filter((group) => group.items.length > 0)
-    : SETTINGS_SIDEBAR_GROUPS;
+  // Hide the admin-surfaces-PR tabs until stabilized, keeping the pre-PR billing
+  // rule (billing is hidden in local dev). Empty groups drop out so their
+  // headers don't render.
+  const groups = SETTINGS_SIDEBAR_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter(
+      (item) =>
+        !HIDDEN_SETTINGS_TABS.has(item.id) &&
+        !(localDev && item.id === "billing"),
+    ),
+  })).filter((group) => group.items.length > 0);
 
   return (
     <section
