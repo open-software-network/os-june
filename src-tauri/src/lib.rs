@@ -197,6 +197,7 @@ pub fn run() {
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
             commands::june_open_verify_page,
+            commands::june_open_community_page,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,

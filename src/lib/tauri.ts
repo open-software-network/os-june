@@ -649,11 +649,19 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
+export const JUNE_COMMUNITY_URL = "https://t.me/osjune";
+
 /** Opens the june-api /verify page (attestation, routing, retention) in
  * the default browser. Routed through Rust because the webview drops
  * target="_blank" anchors. */
 export async function juneOpenVerifyPage() {
   return invoke<void>("june_open_verify_page");
+}
+
+/** Opens the June community in the default browser. Routed through Rust for
+ * the same target="_blank" reliability reason as the verify page. */
+export async function juneOpenCommunityPage() {
+  return invoke<void>("june_open_community_page");
 }
 
 export async function createNote(folderId?: string) {

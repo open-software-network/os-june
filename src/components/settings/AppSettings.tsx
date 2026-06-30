@@ -11,11 +11,13 @@ import { IconTelevision } from "central-icons/IconTelevision";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
+  JUNE_COMMUNITY_URL,
   dictationHelperCommand,
   dictationSettings,
   listVeniceModels,
   localAudioFileSrc,
   providerModelSettings,
+  juneOpenCommunityPage,
   juneOpenVerifyPage,
   setDictationLanguage,
   setDictationMicrophone,
@@ -1251,6 +1253,27 @@ export function AppSettings({
                     </div>
                   </div>
                 ) : null}
+
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Community</h3>
+                    <p className="settings-row-description">
+                      Join the June community on Telegram at{" "}
+                      {JUNE_COMMUNITY_URL.replace("https://", "")}.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() =>
+                        void juneOpenCommunityPage().catch(() => undefined)
+                      }
+                    >
+                      Join community
+                    </button>
+                  </div>
+                </div>
 
                 <div className="settings-row">
                   <div className="settings-row-info">
