@@ -91,4 +91,16 @@ See `walkthrough-recorder.template.mjs` in this skill dir for a full recorder (r
 Use the **Read** tool on a PNG — it renders the image so you can confirm the surface looks right (not just "a file exists"). For a GIF, Read shows only the **first frame**, so verify a recording by extracting mid-points with `ffmpeg -ss <t> -i out.gif -frames:v 1 frame.png` and reading those. This is how you catch blank/broken renders, error toasts, and blank poster frames.
 
 ## Worked example
-`open-software-network/os-june` (June, a Tauri 2 + React app): `admin-preview.html` fakes the bridge and routes the single `hermes_admin_request` command to the repo's `FakeHermesServer`; `scripts/admin-preview-screenshots.mjs` drives MCP servers / Skills hub / Toolsets / Installed skills and screenshots each. 269 unit tests exercise the same fake; the preview proves the rendered wiring.
+`open-software-network/os-june` (June, a Tauri 2 + React app): instantiate the
+two templates in this skill dir as a dev-only `*-preview.html` that fakes the
+bridge and routes the single `hermes_admin_request` command to the repo's
+`FakeHermesServer` (`src/test/fixtures/`), plus a Playwright driver that visits
+MCP servers / Skills hub / Toolsets / Installed skills and screenshots each. The
+repo's unit tests exercise the same fake, so the preview proves the rendered
+wiring.
+
+These preview + recorder files are **dev-only and not committed**: generate them
+per feature from the templates here, attach the screenshots/GIF to the PR, then
+leave them out of the repo. Playwright is installed on demand
+(`pnpm add -D playwright && pnpm exec playwright install chromium`), not kept as
+a standing dependency.
