@@ -164,6 +164,7 @@ vi.mock("../lib/tauri", () => ({
   pauseRecording: mocks.pauseRecording,
   resumeRecording: mocks.resumeRecording,
   getRecordingStatus: mocks.getRecordingStatus,
+  prepareRecordingTrim: vi.fn(),
   finishRecording: mocks.finishRecording,
   retryProcessing: mocks.retryProcessing,
   recoverRecording: mocks.recoverRecording,

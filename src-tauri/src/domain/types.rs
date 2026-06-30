@@ -256,6 +256,36 @@ pub struct SessionRequest {
     pub session_id: String,
 }
 
+/// A start/end window (in milliseconds from the recording start) selected in the
+/// stop-and-trim modal. Applied to every source before transcription.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrimRange {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishRecordingRequest {
+    pub session_id: String,
+    /// Present when the user trimmed the recording in the stop modal. Absent
+    /// keeps the full recording (the legacy one-click stop behavior).
+    #[serde(default)]
+    pub trim: Option<TrimRange>,
+}
+
+/// Downsampled waveform returned when the user stops a recording, so the trim
+/// modal can draw the clip and place its handles before transcription runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingTrimPreviewDto {
+    pub session_id: String,
+    pub duration_ms: i64,
+    pub peaks: Vec<f32>,
+    pub source_mode: RecordingSourceMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinishRecordingResponse {

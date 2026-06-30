@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   resumeRecording: vi.fn(),
   getRecordingStatus: vi.fn(),
   setRecordingPresenceBounds: vi.fn(),
+  prepareRecordingTrim: vi.fn(),
   finishRecording: vi.fn(),
   retryProcessing: vi.fn(),
   recoverRecording: vi.fn(),
@@ -94,6 +95,7 @@ vi.mock("../lib/tauri", () => ({
   resumeRecording: mocks.resumeRecording,
   getRecordingStatus: mocks.getRecordingStatus,
   setRecordingPresenceBounds: mocks.setRecordingPresenceBounds,
+  prepareRecordingTrim: mocks.prepareRecordingTrim,
   finishRecording: mocks.finishRecording,
   retryProcessing: mocks.retryProcessing,
   recoverRecording: mocks.recoverRecording,
@@ -213,6 +215,14 @@ describe("notes recording reliability", () => {
       startDragging: vi.fn().mockResolvedValue(undefined),
     });
     mocks.bootstrapApp.mockResolvedValue(payload);
+    // Stopping a recording opens the trim modal, which needs a waveform preview
+    // before its confirm buttons render.
+    mocks.prepareRecordingTrim.mockResolvedValue({
+      sessionId: "rec-1",
+      durationMs: 1000,
+      peaks: [0.2, 0.8, 0.4],
+      sourceMode: "microphoneOnly",
+    });
     // The meeting-detected start path creates a fresh note to record into; this
     // suite asserts recording lands on note-1, so the fresh note IS note-1.
     mocks.createNote.mockResolvedValue(first);
@@ -331,7 +341,13 @@ describe("notes recording reliability", () => {
     await userEvent.click(indicator);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await userEvent.click(await screen.findByRole("button", { name: "Done" }));
-    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+    // Done opens the trim modal; finalize the full clip to transcribe.
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Use full recording" }),
+    );
+    await waitFor(() =>
+      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1", undefined),
+    );
 
     // note-2 must not pick up note-1's optimistic "transcribing" lock.
     mocks.getNote.mockClear();
@@ -668,7 +684,13 @@ describe("notes recording reliability", () => {
     // note-1 is "ready" (terminal); stacking another take must still flip it
     // back to transcribing so the shimmer shows and polling resumes.
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+    // Done opens the trim modal; finalize the full clip to transcribe.
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Use full recording" }),
+    );
+    await waitFor(() =>
+      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1", undefined),
+    );
 
     await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
   });

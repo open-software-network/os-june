@@ -261,6 +261,19 @@ export type RecordingStatusDto = {
   warnings?: SourceWarningDto[];
 };
 
+export type TrimRangeDto = {
+  startMs: number;
+  endMs: number;
+};
+
+export type RecordingTrimPreviewDto = {
+  sessionId: string;
+  durationMs: number;
+  /** Normalized 0..1 amplitude maxima, one per equal-width time bucket. */
+  peaks: number[];
+  sourceMode?: RecordingSourceMode;
+};
+
 export type RecordingPresenceBoundsDto = {
   x: number;
   y: number;
@@ -1399,9 +1412,15 @@ export async function setRecordingPresenceBounds(
   });
 }
 
-export async function finishRecording(sessionId: string) {
-  return invoke<FinishRecordingResponse>("finish_recording", {
+export async function prepareRecordingTrim(sessionId: string) {
+  return invoke<RecordingTrimPreviewDto>("prepare_recording_trim", {
     request: { sessionId },
+  });
+}
+
+export async function finishRecording(sessionId: string, trim?: TrimRangeDto) {
+  return invoke<FinishRecordingResponse>("finish_recording", {
+    request: trim ? { sessionId, trim } : { sessionId },
   });
 }
 

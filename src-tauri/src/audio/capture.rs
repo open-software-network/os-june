@@ -15,7 +15,7 @@ use crate::{
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     fs::File,
     io::BufWriter,
     path::PathBuf,
@@ -33,6 +33,14 @@ const RECOVERY_SNAPSHOT_INTERVAL_MS: i64 = 500;
 static ACTIVE_RECORDING: LazyLock<Mutex<Option<ActiveRecording>>> =
     LazyLock::new(|| Mutex::new(None));
 
+// Recordings whose capture has been finalized (WAVs written to disk) but whose
+// transcription has been deferred while the user reviews/trims them in the stop
+// modal. Keyed by session id; consumed by `finish_recording` once the user
+// confirms. Capture is single-instance, so this holds at most one entry in
+// practice, but a map keeps `take` cheap and unambiguous.
+static PENDING_RECORDINGS: LazyLock<Mutex<HashMap<String, FinishedRecording>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 pub struct StartedRecording {
     pub session_id: String,
     pub note_id: String,
@@ -44,6 +52,7 @@ pub struct StartedRecording {
     pub status: RecordingStatusDto,
 }
 
+#[derive(Clone)]
 pub struct FinishedRecording {
     pub session_id: String,
     pub note_id: String,
@@ -60,6 +69,7 @@ pub struct StartedSource {
     pub final_path: PathBuf,
 }
 
+#[derive(Clone)]
 pub struct FinishedSource {
     pub source: RecordingSource,
     pub final_path: PathBuf,
@@ -445,6 +455,23 @@ pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
         ));
     }
     finalize_recording(recording)
+}
+
+/// Stop and finalize capture like [`finish_capture`], but stash the result so
+/// the user can review and optionally trim it before transcription begins. The
+/// returned recording is cloned into the pending store; [`finish_recording`]
+/// later consumes it via [`take_pending_recording`].
+pub fn stage_finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
+    let finished = finish_capture(session_id)?;
+    if let Ok(mut pending) = PENDING_RECORDINGS.lock() {
+        pending.insert(finished.session_id.clone(), finished.clone());
+    }
+    Ok(finished)
+}
+
+/// Remove a staged recording awaiting trim review, if one exists for the session.
+pub fn take_pending_recording(session_id: &str) -> Option<FinishedRecording> {
+    PENDING_RECORDINGS.lock().ok()?.remove(session_id)
 }
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {

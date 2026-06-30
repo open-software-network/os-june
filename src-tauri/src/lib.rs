@@ -218,6 +218,7 @@ pub fn run() {
             commands::resume_recording,
             commands::get_recording_status,
             set_recording_presence_bounds,
+            commands::prepare_recording_trim,
             commands::finish_recording,
             commands::retry_processing,
             commands::recover_recording,
