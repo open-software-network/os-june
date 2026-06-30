@@ -19,6 +19,10 @@
   <img alt="Built with Tauri" src="https://img.shields.io/badge/desktop-Tauri-orange">
 </p>
 
+<p align="center">
+  <a href="https://opensoftware.co/june">opensoftware.co/june</a>
+</p>
+
 June is an open source desktop app for turning spoken work into useful work. It
 records reliable local audio, generates editable meeting notes, pastes cleaned
 dictation into any app, and runs a local agent that can help with files,
