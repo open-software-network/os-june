@@ -129,23 +129,36 @@ fn transcript_texts_are_similar(left: &str, right: &str) -> bool {
 }
 
 fn normalize_transcript_for_similarity(text: &str) -> String {
-    text.split(|character: char| !character.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut normalized = String::new();
+    let mut pending_space = false;
+    for character in text.chars() {
+        if character.is_alphanumeric() {
+            if pending_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            for lowercase in character.to_lowercase() {
+                normalized.push(lowercase);
+            }
+            pending_space = false;
+        } else {
+            pending_space = true;
+        }
+    }
+    normalized
 }
 
 fn normalized_levenshtein_similarity(left: &str, right: &str) -> f32 {
-    let max_len = left.len().max(right.len());
+    let left_chars = left.chars().collect::<Vec<_>>();
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let max_len = left_chars.len().max(right_chars.len());
     if max_len == 0 {
         return 1.0;
     }
-    let distance = levenshtein_distance(left.as_bytes(), right.as_bytes());
+    let distance = levenshtein_distance(&left_chars, &right_chars);
     1.0 - (distance as f32 / max_len as f32)
 }
 
-fn levenshtein_distance(left: &[u8], right: &[u8]) -> usize {
+fn levenshtein_distance(left: &[char], right: &[char]) -> usize {
     let mut previous = (0..=right.len()).collect::<Vec<_>>();
     let mut current = vec![0; right.len() + 1];
     for (left_index, left_byte) in left.iter().enumerate() {

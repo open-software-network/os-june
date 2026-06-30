@@ -1062,19 +1062,21 @@ function transcriptTextsAreSimilar(left: string, right: string) {
 
 function normalizeTranscriptForSimilarity(text: string) {
   return text
-    .split(/[^a-zA-Z0-9]+/)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
     .map((token) => token.toLowerCase())
     .join(" ");
 }
 
 function normalizedLevenshteinSimilarity(left: string, right: string) {
-  const maxLength = Math.max(left.length, right.length);
+  const leftCharacters = Array.from(left);
+  const rightCharacters = Array.from(right);
+  const maxLength = Math.max(leftCharacters.length, rightCharacters.length);
   if (maxLength === 0) return 1;
-  return 1 - levenshteinDistance(left, right) / maxLength;
+  return 1 - levenshteinDistance(leftCharacters, rightCharacters) / maxLength;
 }
 
-function levenshteinDistance(left: string, right: string) {
+function levenshteinDistance(left: string[], right: string[]) {
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
   let current = new Array<number>(right.length + 1).fill(0);
   for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {

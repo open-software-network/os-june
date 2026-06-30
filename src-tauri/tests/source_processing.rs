@@ -89,6 +89,33 @@ fn processing_drops_overlapping_duplicate_source_transcripts() {
 }
 
 #[test]
+fn processing_drops_overlapping_non_ascii_duplicate_source_transcripts() {
+    let sources = valid_sources_for_processing(vec![
+        SourceTranscriptInput {
+            source: "microphone".to_string(),
+            text: "リリースビルドを出します。".to_string(),
+            valid: true,
+            warning: None,
+            start_ms: Some(1_000),
+            end_ms: Some(3_000),
+            turn_index: Some(0),
+        },
+        SourceTranscriptInput {
+            source: "system".to_string(),
+            text: "リリースビルドを出します".to_string(),
+            valid: true,
+            warning: None,
+            start_ms: Some(1_100),
+            end_ms: Some(3_100),
+            turn_index: Some(1),
+        },
+    ]);
+
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].text, "リリースビルドを出します。");
+}
+
+#[test]
 fn processing_keeps_repeated_phrases_when_turns_are_separate() {
     let sources = valid_sources_for_processing(vec![
         SourceTranscriptInput {

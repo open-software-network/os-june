@@ -200,6 +200,42 @@ describe("NoteEditor", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides overlapping non-English duplicate transcript turns", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "リリースビルドを出します。",
+              source: "microphone",
+              startMs: 1000,
+              endMs: 3000,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+            {
+              id: "turn-2",
+              text: "リリースビルドを出します",
+              source: "system",
+              startMs: 1100,
+              endMs: 3100,
+              turnIndex: 1,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("リリースビルドを出します。")).toBeInTheDocument();
+    expect(
+      screen.queryByText("リリースビルドを出します"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows live transcript preview turns while recording", () => {
     render(
       <NoteEditor
