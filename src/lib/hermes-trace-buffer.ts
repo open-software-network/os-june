@@ -97,7 +97,7 @@ export type ErrorTraceInput = {
 
 export type HermesTraceBuffer = {
   /** Record one inbound raw frame, classifying it for the normalized column. */
-  recordInbound(frame: InboundTraceInput): void;
+  recordInbound(frame: InboundTraceInput, sessionIdOverride?: string): void;
   /** Record one outbound method call (params sanitized). */
   recordOutbound(call: OutboundTraceInput): void;
   /** Record one error/rejection. */
@@ -106,6 +106,8 @@ export type HermesTraceBuffer = {
   entriesFor(sessionId: string | undefined): HermesTraceEntry[];
   /** Session ids that currently have entries (real ids only, oldest-first). */
   sessionIds(): string[];
+  /** Drop one session's trace entirely. */
+  clearSession(sessionId: string | undefined): void;
   /** A secrets-free export bundle for one session. */
   exportSanitizedTrace(sessionId: string | undefined): SanitizedTraceBundle;
   /** Subscribe to changes (for `useSyncExternalStore`). Returns an unsubscribe. */
@@ -142,10 +144,15 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     emit();
   }
 
-  function recordInbound(frame: InboundTraceInput): void {
+  function recordInbound(
+    frame: InboundTraceInput,
+    sessionIdOverride?: string,
+  ): void {
     const classified: JuneHermesEvent = classifyHermesEvent(frame);
     const sessionId =
-      nonEmpty(frame?.session_id) ?? nonEmpty(eventSession(classified));
+      nonEmpty(sessionIdOverride) ??
+      nonEmpty(frame?.session_id) ??
+      nonEmpty(eventSession(classified));
     const { payloadKeys, payloadPreview } = describePayload(frame?.payload);
     push(sessionId, {
       id: nextId++,
@@ -197,6 +204,11 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     return [...bySession.keys()].filter((key) => key !== NO_SESSION_KEY);
   }
 
+  function clearSession(sessionId: string | undefined): void {
+    const key = sessionId ?? NO_SESSION_KEY;
+    if (bySession.delete(key)) emit();
+  }
+
   function exportSanitizedTrace(
     sessionId: string | undefined,
   ): SanitizedTraceBundle {
@@ -226,6 +238,7 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     recordError,
     entriesFor,
     sessionIds,
+    clearSession,
     exportSanitizedTrace,
     subscribe,
     getVersion,
