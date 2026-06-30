@@ -10,6 +10,13 @@ pub(crate) struct AuthorizationOutcome {
     pub cap_credits: Option<Credits>,
 }
 
+struct AuthorizationLogContext {
+    user_id: UserId,
+    action: ActionSlug,
+    estimate: Credits,
+    hold_ttl_seconds: u64,
+}
+
 pub(crate) struct AuthorizeParams<'a> {
     pub os_accounts: &'a dyn OsAccountsClient,
     pub user_id: UserId,
@@ -21,6 +28,12 @@ pub(crate) struct AuthorizeParams<'a> {
 pub(crate) async fn authorize_or_deny(
     params: AuthorizeParams<'_>,
 ) -> Result<AuthorizationOutcome, ServiceError> {
+    let log_context = AuthorizationLogContext {
+        user_id: params.user_id.clone(),
+        action: params.action,
+        estimate: params.estimate,
+        hold_ttl_seconds: params.hold_ttl_seconds,
+    };
     let authorization = params
         .os_accounts
         .authorize(AuthorizeRequest {
@@ -30,11 +43,12 @@ pub(crate) async fn authorize_or_deny(
             hold_ttl_seconds: params.hold_ttl_seconds,
         })
         .await?;
-    action_token_or_error(authorization)
+    action_token_or_error(authorization, &log_context)
 }
 
 fn action_token_or_error(
     authorization: Authorization,
+    context: &AuthorizationLogContext,
 ) -> Result<AuthorizationOutcome, ServiceError> {
     if !authorization.allowed {
         // Only a genuine balance shortfall should tell the user to add funds.
@@ -43,12 +57,20 @@ fn action_token_or_error(
         // healthy balance ends up staring at an "Add funds" banner.
         if is_insufficient_balance(authorization.reason.as_deref()) {
             tracing::warn!(
+                customer_id = %context.user_id.0,
+                action = context.action.as_str(),
+                estimate_credits = context.estimate.0,
+                hold_ttl_seconds = context.hold_ttl_seconds,
                 reason = ?authorization.reason,
                 "authorization denied — insufficient balance"
             );
             return Err(ServiceError::InsufficientCredits);
         }
         tracing::warn!(
+            customer_id = %context.user_id.0,
+            action = context.action.as_str(),
+            estimate_credits = context.estimate.0,
+            hold_ttl_seconds = context.hold_ttl_seconds,
             reason = ?authorization.reason,
             "authorization denied — transient/non-balance reason"
         );
@@ -59,6 +81,10 @@ fn action_token_or_error(
         .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| {
             tracing::error!(
+                customer_id = %context.user_id.0,
+                action = context.action.as_str(),
+                estimate_credits = context.estimate.0,
+                hold_ttl_seconds = context.hold_ttl_seconds,
                 cap_credits = ?authorization.cap_credits,
                 reason = ?authorization.reason,
                 "authorization allowed but action_token is missing or empty"
@@ -170,9 +196,9 @@ pub(crate) fn log_settled(action: ActionSlug, user_id: &UserId, model_id: &str, 
 
 #[cfg(test)]
 mod tests {
-    use super::{action_token_or_error, is_insufficient_balance};
+    use super::{AuthorizationLogContext, action_token_or_error, is_insufficient_balance};
     use crate::error::ServiceError;
-    use june_domain::Authorization;
+    use june_domain::{ActionSlug, Authorization, Credits, UserId};
 
     fn denied(reason: Option<&str>) -> Authorization {
         Authorization {
@@ -183,9 +209,21 @@ mod tests {
         }
     }
 
+    fn log_context() -> AuthorizationLogContext {
+        AuthorizationLogContext {
+            user_id: UserId("usr_test_customer".to_string()),
+            action: ActionSlug::DictateTranscribe,
+            estimate: Credits(42),
+            hold_ttl_seconds: 600,
+        }
+    }
+
     #[test]
     fn insufficient_balance_denial_maps_to_insufficient_credits() {
-        let result = action_token_or_error(denied(Some("insufficient_available_balance")));
+        let result = action_token_or_error(
+            denied(Some("insufficient_available_balance")),
+            &log_context(),
+        );
         assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
     }
 
@@ -193,13 +231,14 @@ mod tests {
     fn concurrency_cap_denial_is_not_a_balance_problem() {
         // Regression: a user with funds hit concurrency_cap_exceeded and was
         // shown an "Add funds" banner. Transient denials must stay transient.
-        let result = action_token_or_error(denied(Some("concurrency_cap_exceeded")));
+        let result =
+            action_token_or_error(denied(Some("concurrency_cap_exceeded")), &log_context());
         assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
     }
 
     #[test]
     fn unknown_denial_reason_is_treated_as_transient() {
-        let result = action_token_or_error(denied(None));
+        let result = action_token_or_error(denied(None), &log_context());
         assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
     }
 
