@@ -127,6 +127,70 @@ export function richInstallScenario(): FakeHermesScenario {
   };
 }
 
+/** A rich Skills Hub browse fixture: results across multiple sources and trust
+ * levels, with tags/urls/version, plus a backgrounded install that progresses
+ * over polls. Drives the hub browser's search states, source filter, inspect
+ * drawer, and install-progress path. */
+export function hubBrowseScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-hub",
+    skills: [],
+    hubResults: [
+      {
+        identifier: "official/pdf",
+        name: "PDF",
+        description: "Read and write PDFs",
+        source: "official",
+        trust: "official",
+        category: "Documents",
+        tags: ["documents", "office"],
+        version: "1.2.0",
+        installed: false,
+      },
+      {
+        identifier: "skills.sh/data-science",
+        name: "Data science",
+        description: "Notebooks, pandas, plotting",
+        source: "skills.sh",
+        trust: "verified",
+        tags: ["python", "data"],
+        urls: ["https://skills.sh/data-science"],
+        author: "skills.sh",
+        installed: false,
+      },
+      {
+        identifier: "github:acme/internal-skills/deploy",
+        name: "Deploy",
+        description: "Deploy helpers",
+        source: "github",
+        trust: "community",
+        urls: ["https://github.com/acme/internal-skills"],
+        installed: true,
+        update_available: true,
+      },
+      {
+        identifier: "https://example.test/raw/SKILL.md",
+        name: "Quick note formatter",
+        description: "Single-file skill from a URL",
+        source: "url",
+        trust: "unknown",
+        installed: false,
+      },
+    ],
+    backgroundActions: true,
+    actionScripts: {
+      install: {
+        states: [
+          { state: "queued" },
+          { state: "running", progress: 40, message: "Fetching" },
+          { state: "running", progress: 80, message: "Indexing" },
+          { state: "succeeded", progress: 100 },
+        ],
+      },
+    },
+  };
+}
+
 /** A Skills Hub search result that should trigger a security review (a direct
  * URL single-file install from an untrusted source). The install endpoint still
  * works; the dangerous-block decision is a UI-layer concern, but the data that
@@ -161,6 +225,96 @@ export function skillSecurityWarningScenario(): FakeHermesScenario {
   };
 }
 
+/** The full security-review matrix (spec 07): one hub result per scan verdict —
+ * trusted (official, no review), caution (community with findings + scripts),
+ * dangerous (blocked, no override), and unknown (unscanned direct URL). Drives
+ * the review screen's verdict mapping, findings/affected-files/capabilities
+ * surfacing, force-override gating, and the dangerous-no-override rule. */
+export function skillScanStatesScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-scan",
+    skills: [],
+    hubResults: [
+      {
+        identifier: "official/pdf",
+        name: "PDF",
+        description: "Read and write PDFs",
+        source: "official",
+        trust: "official",
+        scan: { verdict: "trusted", summary: "No issues found." },
+      },
+      {
+        identifier: "skills.sh/scraper",
+        name: "Web scraper",
+        description: "Scrapes pages and posts results",
+        source: "skills.sh",
+        trust: "community",
+        urls: ["https://skills.sh/scraper"],
+        scan: {
+          verdict: "caution",
+          overridable: true,
+          summary: "This skill makes network requests and runs helper scripts.",
+          findings: [
+            {
+              category: "Network access",
+              severity: "warn",
+              detail: "Posts scraped content to an external endpoint.",
+            },
+            {
+              category: "Helper scripts",
+              severity: "info",
+              detail: "Bundles a Python script the agent can run.",
+            },
+          ],
+          affected_files: ["scraper/SKILL.md", "scraper/scripts/run.py"],
+          capabilities: ["network", "shell"],
+          bundle: { has_scripts: true, scripts: 1, references: 2 },
+        },
+      },
+      {
+        identifier: "github:evil/exfil",
+        name: "Data exfiltrator",
+        description: "Looks helpful, is not",
+        source: "github",
+        trust: "community",
+        urls: ["https://github.com/evil/exfil"],
+        scan: {
+          verdict: "dangerous",
+          // Even if upstream said overridable, June must never offer it.
+          overridable: true,
+          summary: "Blocked: attempts to read credentials and exfiltrate them.",
+          findings: [
+            {
+              category: "Data exfiltration",
+              severity: "danger",
+              detail: "Reads ~/.aws/credentials and POSTs it to a remote host.",
+            },
+          ],
+          affected_files: ["exfil/scripts/steal.sh"],
+          capabilities: ["shell", "network", "filesystem"],
+          bundle: { has_scripts: true, scripts: 1 },
+        },
+      },
+      {
+        identifier: "https://example.test/raw/SKILL.md",
+        name: "Unscanned single-file skill",
+        description: "Direct URL, no scan reported",
+        source: "url",
+        trust: "unknown",
+      },
+    ],
+    backgroundActions: true,
+    actionScripts: {
+      install: {
+        states: [
+          { state: "running", progress: 50 },
+          { state: "succeeded", progress: 100 },
+        ],
+      },
+    },
+  };
+}
+
 /** Pending skill writes: an agent-managed skill awaiting review (modeled as a
  * disabled hub skill plus a pending hub action). Exercises the "background
  * action in flight" cache path. */
@@ -185,6 +339,77 @@ export function pendingSkillWritesScenario(): FakeHermesScenario {
         ],
       },
     },
+  };
+}
+
+/** Skill setup matrix (spec 09): a skill that declares a required secret (not
+ * yet set), a skill with a required config value (already set) plus an optional
+ * one (unset), and a skill that declares no setup at all. Drives the setup
+ * panel's required-vs-optional, configured-vs-missing, and badge logic. The
+ * env/config state is seeded so badges read realistically: `OPENAI_API_KEY` is
+ * missing (badge: missing API key); `output_dir` is set, `model` is unset and
+ * optional (badge: optional setup skipped). */
+export function skillSetupScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-skill-setup",
+    skills: [
+      {
+        name: "research",
+        description: "Multi-source research",
+        enabled: true,
+        source: "hub",
+        required_environment_variables: [
+          {
+            name: "OPENAI_API_KEY",
+            prompt: "OpenAI API key",
+            help: "Used to call the research model.",
+            required_for: "model calls",
+            required: true,
+          },
+          {
+            name: "SERP_API_KEY",
+            prompt: "Search API key",
+            required: false,
+          },
+        ],
+      },
+      {
+        name: "exporter",
+        description: "Exports notes to disk",
+        enabled: true,
+        source: "hub",
+        metadata: {
+          hermes: {
+            config: [
+              {
+                key: "output_dir",
+                prompt: "Output directory",
+                description: "Where exports are written.",
+                default: "~/exports",
+                required: true,
+              },
+              {
+                key: "format",
+                prompt: "Export format",
+                default: "md",
+                required: false,
+              },
+            ],
+          },
+        },
+      },
+      {
+        name: "no-setup",
+        description: "Needs nothing",
+        enabled: true,
+        source: "bundled",
+      },
+    ],
+    // OPENAI_API_KEY is intentionally NOT set (missing required secret).
+    env: { SERP_API_KEY: FAKE_SECRET },
+    // output_dir is already configured; format is left at its default.
+    config: { skills: { config: { exporter: { output_dir: "~/notes" } } } },
+    gateway: { gateway_running: true },
   };
 }
 
@@ -297,6 +522,154 @@ export function mcpToolFilteringScenario(): FakeHermesScenario {
   };
 }
 
+/** A mixed MCP install for the diagnostics surface (spec 18): a healthy stdio
+ * server, a disabled server, an OAuth server that is not signed in, a stdio
+ * server whose test fails (bad command), and a server whose include/exclude
+ * filters hide every tool. Drives the global summary counts and the per-server
+ * reason chains. */
+export function mcpDiagnosticsScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-mcp-diagnostics",
+    mcpServers: [
+      {
+        name: "sqlite",
+        enabled: true,
+        transport: "stdio",
+        command: "mcp-server-sqlite",
+        status: "connected",
+        auth_status: "not-required",
+        tools: [
+          { name: "query", enabled: true },
+          { name: "execute", enabled: true },
+        ],
+      },
+      {
+        name: "github",
+        enabled: false,
+        transport: "http",
+        url: "https://api.githubcopilot.com/mcp",
+        status: "connected",
+        auth_status: "authenticated",
+        tools: [{ name: "list_issues", enabled: true }],
+      },
+      {
+        name: "linear",
+        enabled: true,
+        transport: "http-oauth",
+        url: "https://mcp.linear.app/sse",
+        auth_status: "unauthenticated",
+        status: "error",
+        status_message: "Not authenticated. Sign in to expose tools.",
+        headers: { Authorization: FAKE_BEARER },
+      },
+      {
+        name: "broken",
+        enabled: true,
+        transport: "stdio",
+        command: "this-binary-does-not-exist",
+        status: "error",
+        auth_status: "not-required",
+        status_message: "Could not start the server (command not found).",
+        testOutcome: {
+          ok: false,
+          message: "Could not start the server (command not found).",
+        },
+      },
+      {
+        name: "filtered",
+        enabled: true,
+        transport: "http",
+        url: "https://api.example.com/mcp",
+        status: "connected",
+        auth_status: "authenticated",
+        tools: [
+          { name: "read", enabled: true },
+          { name: "write", enabled: true },
+        ],
+        exclude_tools: ["read", "write"],
+      },
+    ],
+    mcpCatalog: [],
+  };
+}
+
+/** A rich MCP catalog (spec 15): a Nous-approved catalog covering the four auth
+ * shapes the install prompt must handle — no auth, API key (required env), OAuth,
+ * and third-party auth — plus one already-installed-but-disabled entry. Catalog
+ * install is a backgrounded action that progresses over polls and adds the server
+ * to the MCP inventory, so the "installed entries appear in MCP servers" path is
+ * exercised end to end. */
+export function mcpCatalogBrowseScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-catalog",
+    mcpServers: [],
+    mcpCatalog: [
+      {
+        name: "fetch",
+        title: "Fetch",
+        description: "Fetch and read web pages",
+        transport: "stdio",
+        auth: "none",
+        installed: false,
+        default_tools: ["fetch"],
+        source: "nous",
+        command: "mcp-server-fetch",
+      },
+      {
+        name: "github",
+        title: "GitHub",
+        description: "Issues, pull requests, and repository tools",
+        transport: "http",
+        auth: "api-key",
+        required_env: [
+          { key: "GITHUB_TOKEN", label: "GitHub personal access token" },
+        ],
+        installed: false,
+        url: "https://api.githubcopilot.com/mcp",
+      },
+      {
+        name: "linear",
+        title: "Linear",
+        description: "Linear issues over an OAuth-authenticated server",
+        transport: "http-oauth",
+        auth: "oauth",
+        requires_oauth: true,
+        installed: false,
+        url: "https://mcp.linear.app/sse",
+      },
+      {
+        name: "stripe",
+        title: "Stripe",
+        description: "Stripe data behind third-party authorization",
+        transport: "http",
+        auth: "third-party",
+        installed: false,
+        url: "https://mcp.stripe.com",
+      },
+      {
+        name: "filesystem",
+        title: "Filesystem",
+        description: "Local filesystem access",
+        transport: "stdio",
+        auth: "none",
+        installed: true,
+        enabled: false,
+        command: "mcp-server-filesystem",
+      },
+    ],
+    backgroundActions: true,
+    actionScripts: {
+      "catalog-install": {
+        states: [
+          { state: "queued" },
+          { state: "running", progress: 50, message: "Installing" },
+          { state: "succeeded", progress: 100 },
+        ],
+      },
+    },
+  };
+}
+
 /** Gateway restart pending: backgrounded restart that progresses over polls.
  * Drives the restart banner/flow and post-restart invalidation. */
 export function gatewayRestartPendingScenario(): FakeHermesScenario {
@@ -376,5 +749,89 @@ export function profileIsolationScenarios(): {
         },
       ],
     },
+  };
+}
+
+/** Toolsets inventory matrix (spec 04): an active toolset with met requirements,
+ * an inactive one (off but otherwise fine), an MCP-backed toolset that is
+ * missing setup (an unmet env var), a Full-mode-only toolset, and a toolset with
+ * no reported mode allowance (so the page marks it unknown). Skills declare
+ * requires/fallback metadata so the activation explanations can be exercised:
+ * `research` requires the available `web` toolset (visible); `legacy-search`
+ * falls back for `web` (hidden, since web is available); `deploy` requires the
+ * unavailable `github` toolset (missing setup); `notes` declares nothing
+ * (unknown, dropped from the explanations). */
+export function toolsetsInventoryScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-toolsets",
+    toolsets: [
+      {
+        name: "web",
+        description: "Web search and fetch",
+        enabled: true,
+        tools: ["web_search", "web_fetch"],
+        modes: { sandboxed: true, unrestricted: true },
+      },
+      {
+        name: "calendar",
+        description: "Calendar read and write",
+        enabled: false,
+        tools: ["calendar_list", "calendar_create"],
+        modes: { sandboxed: true, unrestricted: true },
+      },
+      {
+        name: "github",
+        description: "GitHub operations (MCP-backed)",
+        enabled: false,
+        tools: ["gh_issue", "gh_pr"],
+        requirements: [{ label: "GITHUB_TOKEN", satisfied: false }],
+        modes: { sandboxed: false, unrestricted: true },
+      },
+      {
+        name: "terminal",
+        description: "Run shell commands",
+        enabled: true,
+        tools: ["bash"],
+        // Full mode only — the sandboxed runtime blocks subprocesses.
+        modes: { sandboxed: false, unrestricted: true },
+      },
+      {
+        name: "memory",
+        description: "Long-term memory store",
+        enabled: true,
+        tools: ["memory_read", "memory_write"],
+        // No `modes` reported — the page must mark this unknown, not guess.
+      },
+    ],
+    skills: [
+      {
+        name: "research",
+        description: "Multi-source research",
+        enabled: true,
+        source: "hub",
+        requires_toolsets: ["web"],
+      },
+      {
+        name: "legacy-search",
+        description: "Fallback search when web is unavailable",
+        enabled: false,
+        source: "bundled",
+        fallback_for_toolsets: ["web"],
+      },
+      {
+        name: "deploy",
+        description: "Deploy helpers",
+        enabled: false,
+        source: "hub",
+        requires_toolsets: ["github"],
+      },
+      {
+        name: "notes",
+        description: "Take notes (no declared requirements)",
+        enabled: true,
+        source: "bundled",
+      },
+    ],
+    gateway: { gateway_running: true },
   };
 }

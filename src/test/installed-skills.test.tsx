@@ -547,28 +547,34 @@ describe("InstalledSkillsView — component", () => {
     expect(refresh).toHaveBeenCalled();
   });
 
-  it("renders the lifecycle banner only when there is something to say", () => {
+  it("always shows the standing next-session lifecycle banner, even on a clean page", () => {
     const { rerender } = render(
       <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />,
     );
-    // Clean: no banner.
-    expect(screen.queryByText("Applies next session")).not.toBeInTheDocument();
+    // Clean page: the standing next-session banner is shown up front, so the
+    // timing is clear before any toggle (not the raw clean snapshot copy).
+    expect(screen.getByText("Applies next session")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your changes take effect in new sessions. Current sessions are unaffected.",
+      ),
+    ).toBeInTheDocument();
 
+    // A non-clean lifecycle (a pending restart) overrides with its own copy.
     rerender(
       <InstalledSkillsView
         state={stubState({
           skills: VIEW_SKILLS,
           lifecycle: {
-            state: "changes-apply-next-session",
-            label: "Applies next session",
-            detail:
-              "Your changes take effect in new sessions. Current sessions are unaffected.",
-            canRestart: false,
+            state: "gateway-restart-required",
+            label: "Restart required",
+            detail: "Restart the Hermes gateway to apply these changes.",
+            canRestart: true,
           },
         })}
       />,
     );
-    expect(screen.getByText("Applies next session")).toBeInTheDocument();
+    expect(screen.getByText("Restart required")).toBeInTheDocument();
   });
 
   it("renders dismissible durable notifications", () => {
@@ -595,6 +601,46 @@ describe("InstalledSkillsView — component", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
     expect(dismissNotification).toHaveBeenCalledWith("n1");
+  });
+
+  it("auto-dismisses a success notice like a toast but keeps an error", () => {
+    vi.useFakeTimers();
+    try {
+      const dismissNotification = vi.fn();
+      render(
+        <InstalledSkillsView
+          state={stubState({
+            skills: VIEW_SKILLS,
+            dismissNotification,
+            notifications: [
+              {
+                id: "ok1",
+                message: "Skill updated. New sessions can use it.",
+                timing: "next-session",
+                mutation: "skill.toggle",
+                at: 0,
+              },
+              {
+                id: "err1",
+                message: "Could not update the skill.",
+                timing: "next-session",
+                mutation: "skill.toggle",
+                at: 0,
+                isError: true,
+              },
+            ],
+          })}
+        />,
+      );
+      // Nothing auto-dismisses before the toast timeout.
+      expect(dismissNotification).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(5000);
+      // The success notice cleared itself; the error was left for the user.
+      expect(dismissNotification).toHaveBeenCalledWith("ok1");
+      expect(dismissNotification).not.toHaveBeenCalledWith("err1");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders an empty install scenario end to end through the controller hook", async () => {

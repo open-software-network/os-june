@@ -183,6 +183,22 @@ const AGENT_CLI_STATE_DIRS: &[&str] = &[
 /// through randomly suffixed temp names (`.claude.json.<hash>` + rename).
 const AGENT_CLI_STATE_FILE_PREFIXES: &[&str] = &[".claude.json"];
 
+/// The single Hermes config file the sandboxed runtime owns, relative to
+/// `$HERMES_HOME`. June's native admin surfaces (skill toggle, MCP add,
+/// catalog install, skill config) all persist through Hermes' `save_config`,
+/// which lives inside the jailed runtime process, so the jail must let the
+/// runtime rewrite its own config or every admin mutation fails with a 500.
+const HERMES_CONFIG_FILE: &str = "config.yaml";
+
+/// `save_config` writes `config.yaml` atomically: it streams a temp file then
+/// `os.replace()`s it onto the real path. The replace needs write+unlink on the
+/// target and the temp, and the temp is named with a random suffix
+/// (`.config_<random>.tmp`), so it must be granted via a prefix regex rather
+/// than a literal — exactly like `AGENT_CLI_STATE_FILE_PREFIXES` does for
+/// Claude Code's `.claude.json.<hash>` atomic writes. The prefix is relative to
+/// `$HERMES_HOME`; the trailing wildcard covers the random suffix.
+const HERMES_CONFIG_ATOMIC_TEMP_PREFIX: &str = ".config_";
+
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
     "HERMES_CONFIG",
@@ -342,11 +358,145 @@ pub struct HermesSkillRequest {
     pub name: String,
 }
 
+/// Request for an MCP OAuth sign-in. `mode` names the runtime explicitly
+/// ("sandboxed" / "unrestricted"); `server` is the MCP server name (validated
+/// argument-safe on the TS side and passed as a discrete CLI argument, never
+/// shell-interpolated); `profile` targets a specific Hermes profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesMcpOauthLoginRequest {
+    pub mode: String,
+    pub server: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+/// The redacted result of an MCP OAuth sign-in. It NEVER carries a token: only
+/// whether the CLI reported success, an already-redacted status message, and an
+/// authorization URL whose secret-shaped query values are redacted (see
+/// `redact_url_query_secrets`) so June can offer a manual browser fallback
+/// without a credential crossing into the webview.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesMcpOauthLoginResult {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub auth_url: Option<String>,
+    pub timed_out: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateHermesSkillRequest {
     pub name: String,
     pub content: String,
+}
+
+/// Request to reset (or restore) a bundled skill to its shipped baseline. The
+/// dashboard REST surface (v2026.6.19) exposes no endpoint for this, so June
+/// runs the pinned Hermes CLI with a SAFE argument array — the skill name is
+/// validated argument-safe on both sides and passed as a discrete CLI argument,
+/// never shell-interpolated. `mode` names the runtime explicitly (`sandboxed` /
+/// `unrestricted`), like `hermes_admin_request`; `profile` targets a profile.
+/// `restore` selects `--restore` (pull the shipped version from upstream) over a
+/// plain on-disk reset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetHermesSkillRequest {
+    pub mode: String,
+    pub name: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub restore: bool,
+}
+
+/// The redacted result of a bundled-skill reset. It never carries skill content
+/// or any secret-shaped CLI output: only whether the CLI reported success and an
+/// already-redacted status message.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetHermesSkillResult {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub timed_out: bool,
+}
+
+/// Request to list, add, or remove a custom GitHub skill tap (admin surfaces
+/// spec 13). The dashboard REST surface (v2026.6.19) exposes no tap endpoints, so
+/// June runs the pinned Hermes CLI with a SAFE argument array — the `owner/repo`
+/// and optional `path` are validated argument-safe on both sides and passed as
+/// discrete CLI arguments, never shell-interpolated. `mode` names the runtime
+/// explicitly (`sandboxed` / `unrestricted`), like `hermes_admin_request`;
+/// `profile` targets a Hermes profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillTapRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+/// Request to add a tap: a validated `owner/repo` and an optional path override
+/// (default `skills/`), both held to argument-safe rules on both sides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillTapAddRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// The tap repository as `owner/repo`. Validated `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`.
+    pub repo: String,
+    /// Optional path override inside the repo (default `skills/`). No `..`, no
+    /// shell metacharacters.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Request to remove a tap by its validated `owner/repo`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillTapRemoveRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    pub repo: String,
+}
+
+/// One configured tap as June parses it from `hermes skills tap list`. Carries
+/// only a repo identifier, optional path, and an optional trust marker — never
+/// any token. `trusted` is set only when the CLI explicitly marks the tap
+/// trusted; everything else is treated as community by the UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillTap {
+    pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub trusted: bool,
+}
+
+/// The result of listing taps. `taps` is the parsed list; `message` is an
+/// already-redacted status line when the CLI failed (so the UI can show why).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillTapListResult {
+    pub ok: bool,
+    pub taps: Vec<HermesSkillTap>,
+    pub message: Option<String>,
+    pub timed_out: bool,
+}
+
+/// The redacted result of a tap add/remove. It never carries a token: only
+/// whether the CLI reported success, an already-redacted status message, and
+/// whether the bounded wait elapsed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillTapWriteResult {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -918,6 +1068,514 @@ pub fn update_hermes_bridge_skill(
         content,
         read_only: false,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Agent-managed skill write review queue (admin surfaces spec 12).
+//
+// With `skills.write_approval: true`, Hermes stages agent-authored skill writes
+// (create / edit / delete) under `<hermes_home>/pending/skills/` instead of
+// applying them, and waits for a human to approve or reject the diff. The
+// dashboard REST surface (v2026.6.19) exposes NO endpoint for this queue, so
+// June reads the staged manifests directly. This is the documented file-parsing
+// FALLBACK the spec sanctions; it is version-gated below by requiring a
+// recognized manifest `version`/shape and only ever touching the managed skills
+// root, so an unexpected on-disk layout fails closed rather than mutating
+// procedural memory blindly.
+// ---------------------------------------------------------------------------
+
+/// Manifest schema versions June knows how to read. A staged manifest carrying
+/// an unrecognized version is surfaced as a parse problem, NOT applied, so a
+/// future Hermes format cannot be approved through a stale reader.
+const PENDING_SKILL_WRITE_SUPPORTED_VERSIONS: &[u32] = &[1];
+
+/// Cap on a single staged write's content so a runaway manifest cannot exhaust
+/// memory; matches the skill-edit ceiling.
+const PENDING_SKILL_WRITE_MAX_BYTES: usize = HERMES_SKILL_MAX_BYTES;
+
+/// What a staged write does to the target file.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PendingSkillWriteOp {
+    Create,
+    Edit,
+    Delete,
+    /// The manifest did not name a recognizable op; June shows it but refuses to
+    /// apply it (approve fails closed).
+    Unknown,
+}
+
+/// Where the agent proposed this write came from, for provenance framing.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PendingSkillWriteSource {
+    /// A foreground task the user was actively driving.
+    Foreground,
+    /// Hermes's background self-improvement review.
+    Background,
+    /// Source not reported by the manifest.
+    Unknown,
+}
+
+/// One affected file inside a staged write, with the proposed unified diff.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSkillWriteFile {
+    /// Path relative to the managed skills root, for display.
+    pub relative_path: String,
+    /// Unified diff of the proposed change, when the manifest supplies one.
+    pub diff: Option<String>,
+    /// The proposed full content (create/edit), redacted of secret-shaped lines
+    /// before it leaves Rust. Absent for deletes.
+    pub content: Option<String>,
+    /// True when `content` was redacted because it contained secret-shaped text.
+    #[serde(default)]
+    pub redacted: bool,
+}
+
+/// One staged, agent-authored skill write awaiting review.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSkillWrite {
+    /// Stable id: the manifest's file stem. Arg-safe (single path segment, no
+    /// separators) so it round-trips into approve/reject without traversal.
+    pub id: String,
+    /// The skill the write targets.
+    pub skill: String,
+    pub op: PendingSkillWriteOp,
+    pub source: PendingSkillWriteSource,
+    /// One-line human gist of what the change does, when the manifest supplies
+    /// one.
+    pub gist: Option<String>,
+    /// Epoch ms the write was staged, when the manifest supplies one.
+    pub staged_at: Option<i64>,
+    pub files: Vec<PendingSkillWriteFile>,
+    /// True when the manifest version/shape was recognized. A false here means
+    /// June can display the row but `approve` will refuse it.
+    pub readable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePendingSkillWriteRequest {
+    /// The {@link PendingSkillWrite.id} to act on.
+    pub id: String,
+    /// True to apply the staged write; false to discard it.
+    pub approve: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePendingSkillWriteResult {
+    pub id: String,
+    pub approved: bool,
+    pub ok: bool,
+}
+
+/// `<hermes_home>/pending/skills` — the staged-write directory. Not created
+/// here: its absence simply means "no pending writes".
+fn pending_skill_writes_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(resolve_june_hermes_home(app)?
+        .join("pending")
+        .join("skills"))
+}
+
+/// Lists the agent-managed skill writes staged for review. Returns an empty list
+/// when the queue directory does not exist. Each manifest is parsed defensively;
+/// an unreadable or unrecognized manifest still yields a row (so a stuck write is
+/// visible) but is flagged `readable: false` so the UI can warn and approve
+/// refuses it.
+#[tauri::command]
+pub fn hermes_pending_skill_writes(app: AppHandle) -> Result<Vec<PendingSkillWrite>, AppError> {
+    let dir = pending_skill_writes_dir(&app)?;
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+    let read_dir = fs::read_dir(&dir)
+        .map_err(|error| AppError::new("hermes_pending_skill_read_failed", error.to_string()))?;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        // The stem is the id and must round-trip into approve/reject as a single
+        // safe segment; skip anything that could escape the queue dir.
+        if !is_safe_pending_id(stem) {
+            continue;
+        }
+        entries.push((stem.to_string(), path));
+    }
+    // Stable order: oldest manifest first (by id), so the list does not reshuffle
+    // between polls.
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    Ok(entries
+        .into_iter()
+        .map(|(id, path)| parse_pending_skill_write(&id, &path))
+        .collect())
+}
+
+/// Approves (applies) or rejects (discards) one staged skill write.
+///
+/// Approve applies the manifest's op against the managed skills root ONLY:
+/// create/edit write the staged content through the same guarded writer the
+/// skill editor uses; delete removes the resolved skill file. Reject simply
+/// discards the manifest. Either way the manifest is removed so the queue drains.
+/// An unreadable/unrecognized manifest can only be rejected — approve fails
+/// closed so June never applies a write it could not fully parse.
+#[tauri::command]
+pub fn hermes_resolve_pending_skill_write(
+    app: AppHandle,
+    request: ResolvePendingSkillWriteRequest,
+) -> Result<ResolvePendingSkillWriteResult, AppError> {
+    if !is_safe_pending_id(&request.id) {
+        return Err(AppError::new(
+            "hermes_pending_skill_id_invalid",
+            "Pending change id must be a single safe identifier.",
+        ));
+    }
+    let dir = pending_skill_writes_dir(&app)?;
+    let manifest_path = dir.join(format!("{}.json", request.id));
+    // Confine to the queue dir: the joined path's parent must be the queue dir.
+    if manifest_path.parent() != Some(dir.as_path()) {
+        return Err(AppError::new(
+            "hermes_pending_skill_id_invalid",
+            "Pending change id must be a single safe identifier.",
+        ));
+    }
+    if !manifest_path.is_file() {
+        return Err(AppError::new(
+            "hermes_pending_skill_not_found",
+            "That pending change is no longer staged.",
+        ));
+    }
+
+    if request.approve {
+        let parsed = parse_pending_skill_write(&request.id, &manifest_path);
+        if let Some(error) = approval_block_reason(&parsed) {
+            return Err(error);
+        }
+        let skills_root = resolve_june_hermes_home(&app)?.join("skills");
+        apply_pending_skill_write(&skills_root, &parsed)?;
+    }
+
+    // Drain the manifest whether approved or rejected.
+    fs::remove_file(&manifest_path)
+        .map_err(|error| AppError::new("hermes_pending_skill_remove_failed", error.to_string()))?;
+
+    Ok(ResolvePendingSkillWriteResult {
+        id: request.id,
+        approved: request.approve,
+        ok: true,
+    })
+}
+
+/// A pending-write id is the manifest file stem; it must be a single safe path
+/// segment so it can never traverse out of the queue dir.
+fn is_safe_pending_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains(std::path::is_separator as fn(char) -> bool)
+}
+
+/// Parses one staged manifest into a {@link PendingSkillWrite}. Never throws: an
+/// unreadable file or unrecognized shape yields a `readable: false` row carrying
+/// only the id, so a stuck write stays visible and approve can refuse it.
+fn parse_pending_skill_write(id: &str, path: &Path) -> PendingSkillWrite {
+    let fallback = |skill: String| PendingSkillWrite {
+        id: id.to_string(),
+        skill,
+        op: PendingSkillWriteOp::Unknown,
+        source: PendingSkillWriteSource::Unknown,
+        gist: None,
+        staged_at: None,
+        files: Vec::new(),
+        readable: false,
+    };
+
+    let Ok(text) = fs::read_to_string(path) else {
+        return fallback(id.to_string());
+    };
+    if text.len() > PENDING_SKILL_WRITE_MAX_BYTES * 4 {
+        return fallback(id.to_string());
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return fallback(id.to_string());
+    };
+
+    let skill = json_str(&value, &["skill", "skillName", "name"]).unwrap_or_else(|| id.to_string());
+
+    // Version gate: a manifest must declare a version we support, OR carry the
+    // recognized field shape (skill + op + files), to be treated as readable.
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v as u32);
+    let version_ok = match version {
+        Some(v) => PENDING_SKILL_WRITE_SUPPORTED_VERSIONS.contains(&v),
+        // No explicit version: accept only if the shape is unambiguous.
+        None => value.get("op").is_some() || value.get("operation").is_some(),
+    };
+
+    let op = match json_str(&value, &["op", "operation", "action", "kind"])
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("create" | "add" | "new") => PendingSkillWriteOp::Create,
+        Some("edit" | "update" | "modify") => PendingSkillWriteOp::Edit,
+        Some("delete" | "remove" | "rm") => PendingSkillWriteOp::Delete,
+        _ => PendingSkillWriteOp::Unknown,
+    };
+
+    let source = match json_str(&value, &["source", "origin", "reviewSource"])
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("foreground" | "task" | "session") => PendingSkillWriteSource::Foreground,
+        Some("background" | "self-improvement" | "self_improvement" | "review") => {
+            PendingSkillWriteSource::Background
+        }
+        _ => PendingSkillWriteSource::Unknown,
+    };
+
+    let gist = json_str(&value, &["gist", "summary", "title", "description", "message"]);
+    let staged_at = value
+        .get("stagedAt")
+        .or_else(|| value.get("staged_at"))
+        .or_else(|| value.get("createdAt"))
+        .or_else(|| value.get("created_at"))
+        .and_then(serde_json::Value::as_i64);
+
+    let files = parse_pending_files(&value);
+    // A readable write needs a recognized version/shape, a known op, and at least
+    // one file (or a delete, which may legitimately carry no content).
+    let readable = version_ok && op != PendingSkillWriteOp::Unknown && !files.is_empty();
+
+    PendingSkillWrite {
+        id: id.to_string(),
+        skill,
+        op,
+        source,
+        gist,
+        staged_at,
+        files,
+        readable,
+    }
+}
+
+/// Extracts the affected files from a manifest, tolerating either a top-level
+/// `files` array or a single inline `path`/`content`/`diff`.
+fn parse_pending_files(value: &serde_json::Value) -> Vec<PendingSkillWriteFile> {
+    let mut out = Vec::new();
+    if let Some(array) = value.get("files").and_then(serde_json::Value::as_array) {
+        for entry in array {
+            if let Some(file) = parse_pending_file(entry) {
+                out.push(file);
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some(file) = parse_pending_file(value) {
+            out.push(file);
+        }
+    }
+    out
+}
+
+fn parse_pending_file(value: &serde_json::Value) -> Option<PendingSkillWriteFile> {
+    let relative_path = json_str(
+        value,
+        &["relativePath", "relative_path", "path", "file", "target"],
+    )?;
+    let diff = json_str(value, &["diff", "patch", "unifiedDiff", "unified_diff"]);
+    let raw_content = json_str(value, &["content", "newContent", "new_content", "body"]);
+    let (content, redacted) = match raw_content {
+        Some(text) => {
+            let safe = redact_pending_content(&text);
+            let redacted = safe != text;
+            (Some(safe), redacted)
+        }
+        None => (None, false),
+    };
+    Some(PendingSkillWriteFile {
+        relative_path,
+        diff: diff.map(|d| redact_pending_content(&d)),
+        content,
+        redacted,
+    })
+}
+
+/// Masks secret-shaped lines in staged content/diffs before they leave Rust, so
+/// a proposed skill that embeds an API key never surfaces (or is logged) in
+/// June. Conservative: it only masks the VALUE portion of `key: value` /
+/// `KEY=value` lines whose key looks sensitive, or a standalone long
+/// credential-shaped token, leaving prose and code structure intact for review.
+fn redact_pending_content(text: &str) -> String {
+    text.lines()
+        .map(redact_pending_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn redact_pending_line(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    let sensitive = [
+        "api_key", "apikey", "secret", "password", "passphrase", "token",
+        "private_key", "credential", "authorization", "bearer",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !sensitive {
+        return line.to_string();
+    }
+    // Mask after the first `:` or `=` (keep diff markers / indentation / key).
+    if let Some(idx) = line.find([':', '=']) {
+        let (head, tail) = line.split_at(idx + 1);
+        if tail.trim().is_empty() {
+            return line.to_string();
+        }
+        return format!("{head} [redacted]");
+    }
+    line.to_string()
+}
+
+/// Why June must refuse to apply a staged write from this surface, if at all.
+/// Two fail-closed cases, both of which the user must resolve in Hermes directly
+/// against the original content:
+/// - an unreadable manifest June could not recognize; and
+/// - a write whose content June redacted for display. `file.content` then holds
+///   the masked copy (secret looking lines replaced with `[redacted]`), so
+///   applying it would persist that masked text and silently corrupt the skill.
+fn approval_block_reason(write: &PendingSkillWrite) -> Option<AppError> {
+    if !write.readable {
+        return Some(AppError::new(
+            "hermes_pending_skill_unreadable",
+            "June could not fully read this change, so it cannot be approved. Reject it and review it in Hermes.",
+        ));
+    }
+    if write.files.iter().any(|file| file.redacted) {
+        return Some(AppError::new(
+            "hermes_pending_skill_redacted",
+            "This change had secret looking lines that June hid for display, so approving it here would save the hidden copy. Reject it and approve it in Hermes directly.",
+        ));
+    }
+    None
+}
+
+/// Applies a readable staged write against the managed skills root only.
+fn apply_pending_skill_write(
+    skills_root: &Path,
+    write: &PendingSkillWrite,
+) -> Result<(), AppError> {
+    fs::create_dir_all(skills_root)
+        .map_err(|error| AppError::new("hermes_pending_skill_apply_failed", error.to_string()))?;
+    let root = skills_root
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_pending_skill_apply_failed", error.to_string()))?;
+
+    for file in &write.files {
+        let target = resolve_pending_target(&root, &file.relative_path)?;
+        match write.op {
+            PendingSkillWriteOp::Create | PendingSkillWriteOp::Edit => {
+                let content = file.content.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        "hermes_pending_skill_apply_failed",
+                        "This change has no content to apply.",
+                    )
+                })?;
+                if content.len() > PENDING_SKILL_WRITE_MAX_BYTES {
+                    return Err(AppError::new(
+                        "hermes_pending_skill_too_large",
+                        "This change is too large to apply from June.",
+                    ));
+                }
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).map_err(|error| {
+                        AppError::new("hermes_pending_skill_apply_failed", error.to_string())
+                    })?;
+                }
+                write_managed_skill_file(&root, &target, content)?;
+            }
+            PendingSkillWriteOp::Delete => {
+                if target.exists() {
+                    fs::remove_file(&target).map_err(|error| {
+                        AppError::new("hermes_pending_skill_apply_failed", error.to_string())
+                    })?;
+                }
+            }
+            PendingSkillWriteOp::Unknown => {
+                return Err(AppError::new(
+                    "hermes_pending_skill_unreadable",
+                    "This change has no recognized operation and cannot be applied.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolves a manifest's relative target path against the managed skills root,
+/// rejecting any path that escapes it (absolute, `..`, or symlink-style escape).
+/// The parent need not exist yet (a create); confinement is checked on the
+/// normalized join.
+fn resolve_pending_target(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
+    let rel = Path::new(relative);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::Prefix(_)))
+    {
+        return Err(AppError::new(
+            "hermes_pending_skill_path_invalid",
+            "This change targets a file outside the managed skills directory.",
+        ));
+    }
+    let joined = root.join(rel);
+    // Normalize without requiring existence, then re-check the prefix.
+    let mut normalized = root.to_path_buf();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(AppError::new(
+                    "hermes_pending_skill_path_invalid",
+                    "This change targets a file outside the managed skills directory.",
+                ));
+            }
+        }
+    }
+    if !normalized.starts_with(root) {
+        return Err(AppError::new(
+            "hermes_pending_skill_path_invalid",
+            "This change targets a file outside the managed skills directory.",
+        ));
+    }
+    let _ = joined;
+    Ok(normalized)
+}
+
+/// Reads the first present string field (trimmed, non-empty) out of a JSON
+/// object, trying the given keys in order.
+fn json_str(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(found) = value.get(key).and_then(serde_json::Value::as_str) {
+            let trimmed = found.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Ordered skill roots June searches when opening a skill: the managed
@@ -1975,6 +2633,1715 @@ async fn hermes_api_json(
     hermes_connection_json(connection, method, path, body).await
 }
 
+/// The generic admin proxy the foundation admin client (`src/lib/hermes-admin`)
+/// routes EVERY dashboard call through, instead of fetching cross-origin from
+/// the webview. The Tauri webview (origin `http://localhost:1421`) is
+/// cross-origin to the dashboard (`http://127.0.0.1:<port>`), which sends no
+/// CORS headers and 401s the preflight, so a webview `fetch` can never reach it
+/// — only this server-side reqwest path can. Every admin surface (skills, MCP,
+/// env, toolsets) goes through here.
+///
+/// `mode` is EXPLICIT: the caller names the runtime it manages
+/// (`sandboxed` vs `unrestricted`), mirroring `adminTargetForMode` on the TS
+/// side. Unlike `hermes_api_json`, this never silently falls back to the first
+/// connection — a profile/mode-sensitive admin write must hit the chosen
+/// runtime or fail. The dashboard token is resolved here from the selected
+/// connection, so the webview never has to handle it.
+#[tauri::command]
+pub async fn hermes_admin_request(
+    bridge: State<'_, HermesBridge>,
+    mode: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, AppError> {
+    let full_mode = match mode.as_str() {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    let method = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|_| AppError::new("hermes_admin_invalid_method", "Unsupported HTTP method."))?;
+
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+    else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running in the requested mode.",
+        ));
+    };
+    hermes_connection_json(connection, method, &path, body).await
+}
+
+/// How long June waits for the `hermes mcp login` CLI to finish before
+/// returning. The browser sign-in is the USER's to complete; June never blocks
+/// indefinitely on it. A generous window covers the common "click approve"
+/// round-trip, after which June reports `timed_out` and the UI keeps showing the
+/// waiting state, refreshing status on its own.
+const MCP_OAUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// A name a CLI argument is allowed to be: the same slug the TS validator
+/// enforces (`/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/`). This is defense in depth —
+/// the value is already passed as a discrete `Command` argument (no shell), but
+/// rejecting anything outside the slug keeps a malformed name from ever reaching
+/// the CLI as, say, a stray `--flag`.
+fn is_safe_mcp_server_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 64 {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// Builds the `hermes mcp login <server> [--profile <p>]` command, isolated to
+/// the connection's home/token, non-interactive, in the connection's mode. Pure
+/// (no spawn) so a test can assert the exact argument vector and that the server
+/// name is a discrete argument rather than shell-interpolated.
+fn build_hermes_mcp_login_command(
+    connection: &HermesBridgeConnection,
+    server: &str,
+    profile: Option<&str>,
+) -> Command {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = Command::new(&connection.command);
+    cmd.args(["mcp", "login", server]);
+    if let Some(profile) = profile {
+        cmd.args(["--profile", profile]);
+    }
+    apply_isolated_hermes_env(&mut cmd, &hermes_home, &connection.token, None);
+    // Non-interactive: the CLI must print the authorization URL and not block on
+    // a terminal prompt June cannot answer. June opens the URL in the browser.
+    cmd.env("HERMES_NONINTERACTIVE", "1");
+    cmd.current_dir(&hermes_home);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd
+}
+
+/// Extracts the first http(s) authorization URL from CLI output. Returns the URL
+/// verbatim (token-free trimming happens on the TS side via `redactUrl`); pure
+/// so a test can pin it. Stops at whitespace so a trailing log word is not glued
+/// onto the URL.
+fn extract_authorization_url(output: &str) -> Option<String> {
+    for token in output.split_whitespace() {
+        let trimmed = token.trim_matches(|c: char| {
+            matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | ',' | '.' | ';')
+        });
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+/// Redacts secret-shaped VALUES from a URL before it crosses into the webview,
+/// preserving scheme/host/path and non-sensitive params so the link still opens.
+/// Both the query AND the `#fragment` are scrubbed: an OAuth authorization
+/// *request* carries no token by contract, but a callback-style URL the CLI may
+/// echo can carry `#access_token=`/`#id_token=` in the fragment (implicit flow),
+/// so a fragment-only URL must be redacted too. `redact_cli_word` only inspects
+/// the first `=`, so a multi-param URL needs this dedicated pass.
+fn redact_url_query_secrets(url: &str) -> String {
+    // Peel the fragment first (it can carry tokens), then the query; a URL may
+    // have either, both, or neither.
+    let (without_fragment, fragment) = match url.split_once('#') {
+        Some((head, frag)) => (head, Some(frag)),
+        None => (url, None),
+    };
+    let (base, query) = match without_fragment.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (without_fragment, None),
+    };
+    let mut out = base.to_string();
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(&redact_query_pairs(query));
+    }
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(&redact_query_pairs(fragment));
+    }
+    out
+}
+
+/// Redacts secret-shaped `k=v` pairs in an `&`-separated query or fragment
+/// string, leaving non-sensitive pairs and bare (`=`-less) segments untouched.
+fn redact_query_pairs(pairs: &str) -> String {
+    pairs
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if query_key_is_sensitive(key) => format!("{key}=[redacted]"),
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// True for a query-parameter name whose value must never reach the webview.
+/// Mirrors the `redact_cli_word` sensitive set, plus the token variants an OAuth
+/// flow can carry.
+fn query_key_is_sensitive(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "token"
+            | "access_token"
+            | "id_token"
+            | "refresh_token"
+            | "api_key"
+            | "apikey"
+            | "secret"
+            | "password"
+            | "bearer"
+            | "key"
+            | "code"
+    )
+}
+
+/// Redacts a free-text CLI line for return to June. The CLI may echo a
+/// `Bearer <token>`, a `?token=<value>`, or a long credential-shaped run; this
+/// masks all three so the message that reaches the webview never carries a
+/// secret. Mirrors the TS `redactBodyPreview` string scrub on the Rust side so a
+/// secret can't leak through the bridge result. Returns `None` for an
+/// empty/whitespace result.
+fn redact_cli_message(message: &str) -> Option<String> {
+    let mut out = String::with_capacity(message.len());
+    for word in message.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&redact_cli_word(word));
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Redacts one whitespace-delimited token from CLI output.
+fn redact_cli_word(word: &str) -> String {
+    let lower = word.to_ascii_lowercase();
+    // `key=value` query/env fragments carrying a secret.
+    if let Some(eq) = word.find('=') {
+        let key = lower[..eq].trim_end_matches(['?', '&']);
+        let key = key.rsplit(['?', '&']).next().unwrap_or(key);
+        if matches!(
+            key,
+            "token" | "access_token" | "api_key" | "apikey" | "secret" | "key" | "code"
+        ) {
+            return format!("{}=[redacted]", &word[..eq]);
+        }
+    }
+    // A bare credential-shaped run (long, separator-free, alphanumeric) that is
+    // not a path/URL — mirrors `isCredentialShapedValue` on the TS side.
+    if word.len() >= 32
+        && !word.contains('/')
+        && !word.contains('\\')
+        && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && word.chars().any(|c| c.is_ascii_alphanumeric())
+    {
+        return "[redacted]".to_string();
+    }
+    word.to_string()
+}
+
+/// Classifies success from CLI exit + output without ever inspecting a token.
+/// A zero exit, or output that states authorization completed, counts as
+/// success; otherwise it is a non-success (the caller may have timed out waiting
+/// for the browser step). Pure so a test pins the signal parsing.
+fn mcp_login_succeeded(exit_success: bool, output: &str) -> bool {
+    if exit_success {
+        return true;
+    }
+    let lower = output.to_ascii_lowercase();
+    (lower.contains("authorized") || lower.contains("logged in") || lower.contains("success"))
+        && !lower.contains("fail")
+        && !lower.contains("error")
+}
+
+/// Runs the MCP OAuth sign-in for one server: `hermes mcp login <server>` in the
+/// chosen runtime, opening the authorization URL in the OS browser, and waiting
+/// (bounded) for the CLI to finish. The browser flow is the user's to complete;
+/// June never blocks indefinitely. The result is REDACTED here — it carries no
+/// token, only success, a safe message, and the token-free authorization URL so
+/// June can offer a manual "open in browser" fallback.
+///
+/// `mode` is EXPLICIT (sandboxed / unrestricted): like `hermes_admin_request`,
+/// this never falls back to the first connection. The server name is validated
+/// argument-safe and passed as a discrete CLI argument (no shell).
+#[tauri::command]
+pub async fn hermes_mcp_oauth_login(
+    bridge: State<'_, HermesBridge>,
+    request: HermesMcpOauthLoginRequest,
+) -> Result<HermesMcpOauthLoginResult, AppError> {
+    let full_mode = match request.mode.as_str() {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    if !is_safe_mcp_server_name(&request.server) {
+        return Err(AppError::new(
+            "hermes_mcp_oauth_invalid_server",
+            "Invalid MCP server name.",
+        ));
+    }
+
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+        .cloned()
+    else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running in the requested mode.",
+        ));
+    };
+
+    let server = request.server.clone();
+    let profile = request.profile.clone();
+    let mut cmd = build_hermes_mcp_login_command(&connection, &server, profile.as_deref());
+
+    // Run the short-lived CLI off the async runtime with a bounded wait. We read
+    // its piped output to find the authorization URL; we never persist it.
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let child = cmd.spawn().map_err(|error| {
+            AppError::new(
+                "hermes_mcp_oauth_login_failed",
+                format!("Could not run `hermes mcp login`. {error}"),
+            )
+        })?;
+        wait_with_timeout(child, MCP_OAUTH_LOGIN_TIMEOUT)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_mcp_oauth_login_failed",
+            format!("Could not run the sign-in. {error}"),
+        )
+    })??;
+
+    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    let auth_url = extract_authorization_url(&combined);
+    // Open the authorization URL in the OS browser so the user can complete the
+    // sign-in. macOS only; on other platforms June surfaces the URL for a manual
+    // open. The URL is a navigation target, not a credential, but it is still
+    // redacted before display on the TS side.
+    if let Some(url) = auth_url.as_deref() {
+        open_url_in_browser(url);
+    }
+
+    Ok(HermesMcpOauthLoginResult {
+        ok: mcp_login_succeeded(join.exit_success, &combined),
+        message: redact_cli_message(&combined),
+        // The browser was opened above with the real URL; the copy returned to
+        // the webview has any secret-shaped query values redacted so a token can
+        // never cross into the renderer through this result.
+        auth_url: auth_url.as_deref().map(redact_url_query_secrets),
+        timed_out: join.timed_out,
+    })
+}
+
+/// How long June waits for `hermes skills reset` to finish. A reset rewrites a
+/// manifest on disk (fast); `--restore` may fetch from upstream, so the window
+/// is generous but still bounded so June never blocks indefinitely.
+const SKILL_RESET_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A skill name a CLI argument is allowed to be. Same slug rule the MCP server
+/// validator enforces (and the TS `isSafeSkillName` mirror): a leading
+/// alphanumeric then `[A-Za-z0-9._-]`, max 64. Defense in depth — the value is
+/// already a discrete `Command` argument (no shell), but rejecting anything
+/// outside the slug stops a malformed name from ever reaching the CLI as a stray
+/// `--flag` or a traversal.
+fn is_safe_skill_name(name: &str) -> bool {
+    is_safe_mcp_server_name(name)
+}
+
+/// Builds `hermes skills reset <name> [--restore] [--profile <p>]`, isolated to
+/// the connection's home/token, non-interactive, in the connection's mode. Pure
+/// (no spawn) so a test can assert the exact argument vector and that the skill
+/// name is a discrete argument rather than shell-interpolated.
+fn build_hermes_skill_reset_command(
+    connection: &HermesBridgeConnection,
+    name: &str,
+    restore: bool,
+    profile: Option<&str>,
+) -> Command {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = Command::new(&connection.command);
+    cmd.args(["skills", "reset", name]);
+    if restore {
+        cmd.arg("--restore");
+    }
+    if let Some(profile) = profile {
+        cmd.args(["--profile", profile]);
+    }
+    apply_isolated_hermes_env(&mut cmd, &hermes_home, &connection.token, None);
+    cmd.env("HERMES_NONINTERACTIVE", "1");
+    cmd.current_dir(&hermes_home);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd
+}
+
+/// Resets (or restores) a bundled skill to its shipped baseline through the
+/// pinned Hermes CLI, in the explicitly-named runtime/profile. The dashboard
+/// REST surface exposes no reset endpoint, so this is the narrowest sanctioned
+/// CLI fallback: the skill name is validated argument-safe and passed as a
+/// discrete argument (no shell), and the runtime is selected by `mode` with no
+/// first-connection fallback. The result is REDACTED here — it carries no skill
+/// content and no secret-shaped CLI output, only success and a safe message.
+#[tauri::command]
+pub async fn hermes_reset_bundled_skill(
+    bridge: State<'_, HermesBridge>,
+    request: ResetHermesSkillRequest,
+) -> Result<ResetHermesSkillResult, AppError> {
+    let full_mode = match request.mode.as_str() {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    if !is_safe_skill_name(&request.name) {
+        return Err(AppError::new(
+            "hermes_skill_reset_invalid_name",
+            "Invalid skill name.",
+        ));
+    }
+    if let Some(profile) = request.profile.as_deref() {
+        // A profile id rides the CLI too; hold it to the same slug so it can
+        // never arrive as a stray flag.
+        if !is_safe_skill_name(profile) {
+            return Err(AppError::new(
+                "hermes_skill_reset_invalid_profile",
+                "Invalid Hermes profile.",
+            ));
+        }
+    }
+
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+        .cloned()
+    else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running in the requested mode.",
+        ));
+    };
+
+    let name = request.name.clone();
+    let profile = request.profile.clone();
+    let restore = request.restore;
+    let mut cmd =
+        build_hermes_skill_reset_command(&connection, &name, restore, profile.as_deref());
+
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let child = cmd.spawn().map_err(|error| {
+            AppError::new(
+                "hermes_skill_reset_failed",
+                format!("Could not run `hermes skills reset`. {error}"),
+            )
+        })?;
+        wait_with_timeout(child, SKILL_RESET_TIMEOUT)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_skill_reset_failed",
+            format!("Could not run the reset. {error}"),
+        )
+    })??;
+
+    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    Ok(ResetHermesSkillResult {
+        ok: join.exit_success,
+        message: redact_cli_message(&combined),
+        timed_out: join.timed_out,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Team skill taps manager (admin surfaces spec 13).
+//
+// A Hermes skill tap is a GitHub repository of reusable SKILL.md directories
+// (default under `skills/`). The dashboard REST surface (v2026.6.19) exposes NO
+// tap endpoints, so June drives the pinned Hermes CLI:
+//
+//     hermes skills tap list
+//     hermes skills tap add <owner/repo> [--path <path>]
+//     hermes skills tap remove <owner/repo>
+//
+// The `owner/repo` and optional path are validated argument-safe on BOTH the TS
+// and Rust sides and passed as DISCRETE Command arguments (no shell), so a
+// malformed value can never inject a flag, a traversal, or a shell metacharacter.
+// Once a tap is configured its skills surface through the existing Skills Hub
+// search/install flow (`/api/skills/hub/search` + `/api/skills/hub/install`),
+// so June adds no separate install path here. Private/rate-limited taps are
+// served by the GITHUB_TOKEN secret the secret-setup UI configures.
+// ---------------------------------------------------------------------------
+
+/// How long June waits for a `hermes skills tap` CLI call to finish. Listing is a
+/// quick local read; add/remove may touch the network (resolving the repo), so
+/// the window is generous but still bounded so June never blocks indefinitely.
+const SKILL_TAP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// True when a tap identifier is a safe `owner/repo`: exactly one `/`, each side a
+/// non-empty run of `[A-Za-z0-9._-]`, neither side a bare `.`/`..`, total length
+/// bounded. Mirrors the TS `isSafeTapRepo` validator. Defense in depth — the value
+/// is already a discrete `Command` argument (no shell), but rejecting anything
+/// outside this shape stops a malformed value from ever reaching the CLI as a
+/// stray `--flag`, a traversal, or a shell metacharacter.
+fn is_safe_tap_repo(repo: &str) -> bool {
+    if repo.is_empty() || repo.len() > 140 {
+        return false;
+    }
+    let mut parts = repo.split('/');
+    let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    is_safe_tap_segment(owner) && is_safe_tap_segment(name)
+}
+
+/// True when one `owner` or `repo` segment starts with an alphanumeric (so a
+/// leading `-` can never reach the CLI as a stray flag) and is otherwise a run of
+/// `[A-Za-z0-9._-]`, and is not a bare `.` or `..` (a traversal).
+fn is_safe_tap_segment(segment: &str) -> bool {
+    if segment.is_empty() || segment == "." || segment == ".." {
+        return false;
+    }
+    let mut chars = segment.chars();
+    if !chars.next().unwrap().is_ascii_alphanumeric() {
+        return false;
+    }
+    segment
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// True when an optional tap path override is safe: a relative path of
+/// `[A-Za-z0-9._/-]` segments with no traversal (`..`), no leading slash, and no
+/// shell metacharacter. Mirrors the TS `isSafeTapPath` validator. An empty path
+/// is rejected here (the caller passes `None` for "use the default").
+fn is_safe_tap_path(path: &str) -> bool {
+    if path.is_empty() || path.len() > 200 {
+        return false;
+    }
+    if path.starts_with('/') || path.starts_with('\\') {
+        return false;
+    }
+    for segment in path.split('/') {
+        // An empty segment comes from `//` or a leading/trailing slash; reject so
+        // the path stays a clean relative tree. `..` is a traversal. A leading `.`
+        // (e.g. `.github`) is allowed; only a bare `..` is barred.
+        if segment.is_empty() || segment == ".." {
+            return false;
+        }
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Builds `hermes skills tap <subcommand> [args...] [--profile <p>]`, isolated to
+/// the connection's home/token, non-interactive, in the connection's mode. Pure
+/// (no spawn) so a test can assert the exact argument vector and that every value
+/// is a discrete argument rather than shell-interpolated.
+fn build_hermes_skill_tap_command(
+    connection: &HermesBridgeConnection,
+    subcommand: &str,
+    repo: Option<&str>,
+    path: Option<&str>,
+    profile: Option<&str>,
+) -> Command {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = Command::new(&connection.command);
+    cmd.args(["skills", "tap", subcommand]);
+    if let Some(repo) = repo {
+        cmd.arg(repo);
+    }
+    if let Some(path) = path {
+        cmd.args(["--path", path]);
+    }
+    if let Some(profile) = profile {
+        cmd.args(["--profile", profile]);
+    }
+    apply_isolated_hermes_env(&mut cmd, &hermes_home, &connection.token, None);
+    cmd.env("HERMES_NONINTERACTIVE", "1");
+    cmd.current_dir(&hermes_home);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd
+}
+
+/// Parses `hermes skills tap list` output into a tap list. The exact CLI format
+/// is not pinned in the v2026.6.19 contract, so this is intentionally lenient: it
+/// accepts one tap per line, ignores blank lines and obvious headers, extracts the
+/// first `owner/repo` token on the line, and reads an optional `path=<p>` or
+/// `(path: <p>)` hint and a `trusted`/`verified` marker. A tap whose repo token is
+/// not argument-safe is dropped (it could not have been added through June, and we
+/// never surface an unvalidated identifier). Pure so a test pins the parsing.
+fn parse_skill_tap_list(output: &str) -> Vec<HermesSkillTap> {
+    let mut taps: Vec<HermesSkillTap> = Vec::new();
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        // Skip obvious header/footer chrome the CLI may print.
+        if lower.starts_with("configured tap")
+            || lower.starts_with("no tap")
+            || lower.starts_with("tap")
+                && (lower.contains("repo") && lower.contains("path") && !line.contains('/'))
+        {
+            continue;
+        }
+        let Some(repo) = line
+            .split_whitespace()
+            .map(|token| token.trim_matches(|c: char| matches!(c, '-' | '*' | '•' | ',' | ';')))
+            .find(|token| token.contains('/') && is_safe_tap_repo(token))
+        else {
+            continue;
+        };
+        if taps.iter().any(|tap| tap.repo == repo) {
+            continue;
+        }
+        let path = extract_tap_path_hint(line);
+        let trusted = lower.contains("trusted") || lower.contains("verified");
+        taps.push(HermesSkillTap {
+            repo: repo.to_string(),
+            path,
+            trusted,
+        });
+    }
+    taps
+}
+
+/// Extracts a path hint from a tap list line if present (`path=skills/`,
+/// `path: skills/`, or `(path skills/)`). Returns a safe path or `None`.
+fn extract_tap_path_hint(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let marker = lower.find("path")?;
+    let after = &line[marker + "path".len()..];
+    let candidate = after
+        .trim_start_matches(|c: char| matches!(c, '=' | ':' | ' ' | '(' | '\t'))
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c: char| matches!(c, ')' | ',' | ';'));
+    let candidate = candidate.trim_end_matches('/');
+    if !candidate.is_empty() && is_safe_tap_path(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+/// Resolves the connection for an explicit admin mode (sandboxed / unrestricted)
+/// with NO first-connection fallback, mirroring `hermes_admin_request`. Shared by
+/// the tap commands so the mode parsing + "not running" handling is identical.
+fn tap_connection_for_mode(
+    bridge: &State<'_, HermesBridge>,
+    mode: &str,
+) -> Result<HermesBridgeConnection, AppError> {
+    let full_mode = match mode {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    let connections = live_connections(bridge)?;
+    connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_bridge_not_running",
+                "Hermes bridge is not running in the requested mode.",
+            )
+        })
+}
+
+/// Validates an optional Hermes profile id that rides the tap CLI. Held to the
+/// same slug rule the other CLI fallbacks use so it can never arrive as a stray
+/// flag or traversal.
+fn validate_tap_profile(profile: Option<&str>) -> Result<(), AppError> {
+    if let Some(profile) = profile {
+        if !is_safe_skill_name(profile) {
+            return Err(AppError::new(
+                "hermes_skill_tap_invalid_profile",
+                "Invalid Hermes profile.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Lists the configured skill taps for the explicitly-named runtime/profile via
+/// the pinned Hermes CLI. The output is parsed leniently (see
+/// `parse_skill_tap_list`) and REDACTED on the failure path — it carries only
+/// validated `owner/repo` identifiers, optional safe paths, and a trust marker,
+/// never a token.
+#[tauri::command]
+pub async fn hermes_skill_tap_list(
+    bridge: State<'_, HermesBridge>,
+    request: HermesSkillTapRequest,
+) -> Result<HermesSkillTapListResult, AppError> {
+    let connection = tap_connection_for_mode(&bridge, &request.mode)?;
+    validate_tap_profile(request.profile.as_deref())?;
+
+    let profile = request.profile.clone();
+    let mut cmd =
+        build_hermes_skill_tap_command(&connection, "list", None, None, profile.as_deref());
+
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let child = cmd.spawn().map_err(|error| {
+            AppError::new(
+                "hermes_skill_tap_failed",
+                format!("Could not run `hermes skills tap list`. {error}"),
+            )
+        })?;
+        wait_with_timeout(child, SKILL_TAP_TIMEOUT)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_skill_tap_failed",
+            format!("Could not run the tap list. {error}"),
+        )
+    })??;
+
+    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    Ok(HermesSkillTapListResult {
+        ok: join.exit_success,
+        taps: if join.exit_success {
+            parse_skill_tap_list(&combined)
+        } else {
+            Vec::new()
+        },
+        message: redact_cli_message(&combined),
+        timed_out: join.timed_out,
+    })
+}
+
+/// Adds a custom GitHub skill tap (`owner/repo`, optional `--path`) for the
+/// explicitly-named runtime/profile via the pinned Hermes CLI. The repo and path
+/// are validated argument-safe and passed as discrete arguments (no shell). The
+/// result is REDACTED — it carries no token, only success and a safe message.
+#[tauri::command]
+pub async fn hermes_skill_tap_add(
+    bridge: State<'_, HermesBridge>,
+    request: HermesSkillTapAddRequest,
+) -> Result<HermesSkillTapWriteResult, AppError> {
+    let connection = tap_connection_for_mode(&bridge, &request.mode)?;
+    validate_tap_profile(request.profile.as_deref())?;
+    if !is_safe_tap_repo(&request.repo) {
+        return Err(AppError::new(
+            "hermes_skill_tap_invalid_repo",
+            "Invalid tap repository. Use owner/repo.",
+        ));
+    }
+    if let Some(path) = request.path.as_deref() {
+        if !is_safe_tap_path(path) {
+            return Err(AppError::new(
+                "hermes_skill_tap_invalid_path",
+                "Invalid tap path.",
+            ));
+        }
+    }
+
+    let repo = request.repo.clone();
+    let path = request.path.clone();
+    let profile = request.profile.clone();
+    let mut cmd = build_hermes_skill_tap_command(
+        &connection,
+        "add",
+        Some(&repo),
+        path.as_deref(),
+        profile.as_deref(),
+    );
+
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let child = cmd.spawn().map_err(|error| {
+            AppError::new(
+                "hermes_skill_tap_failed",
+                format!("Could not run `hermes skills tap add`. {error}"),
+            )
+        })?;
+        wait_with_timeout(child, SKILL_TAP_TIMEOUT)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_skill_tap_failed",
+            format!("Could not run the tap add. {error}"),
+        )
+    })??;
+
+    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    Ok(HermesSkillTapWriteResult {
+        ok: join.exit_success,
+        message: redact_cli_message(&combined),
+        timed_out: join.timed_out,
+    })
+}
+
+/// Removes a custom GitHub skill tap (`owner/repo`) for the explicitly-named
+/// runtime/profile via the pinned Hermes CLI. The repo is validated argument-safe
+/// and passed as a discrete argument (no shell). The result is REDACTED.
+#[tauri::command]
+pub async fn hermes_skill_tap_remove(
+    bridge: State<'_, HermesBridge>,
+    request: HermesSkillTapRemoveRequest,
+) -> Result<HermesSkillTapWriteResult, AppError> {
+    let connection = tap_connection_for_mode(&bridge, &request.mode)?;
+    validate_tap_profile(request.profile.as_deref())?;
+    if !is_safe_tap_repo(&request.repo) {
+        return Err(AppError::new(
+            "hermes_skill_tap_invalid_repo",
+            "Invalid tap repository. Use owner/repo.",
+        ));
+    }
+
+    let repo = request.repo.clone();
+    let profile = request.profile.clone();
+    let mut cmd = build_hermes_skill_tap_command(
+        &connection,
+        "remove",
+        Some(&repo),
+        None,
+        profile.as_deref(),
+    );
+
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let child = cmd.spawn().map_err(|error| {
+            AppError::new(
+                "hermes_skill_tap_failed",
+                format!("Could not run `hermes skills tap remove`. {error}"),
+            )
+        })?;
+        wait_with_timeout(child, SKILL_TAP_TIMEOUT)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_skill_tap_failed",
+            format!("Could not run the tap remove. {error}"),
+        )
+    })??;
+
+    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    Ok(HermesSkillTapWriteResult {
+        ok: join.exit_success,
+        message: redact_cli_message(&combined),
+        timed_out: join.timed_out,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Skill bundles manager (admin surfaces spec 11).
+//
+// A Hermes skill bundle is a YAML alias under
+// `<hermes_home>/skill-bundles/<slug>.yaml` (per profile) that loads several
+// skills under one slash command. The dashboard REST surface (v2026.6.19)
+// exposes NO bundle endpoints, so June reads/writes these files directly. This
+// is the narrow, sanctioned file fallback the spec calls for. These writes run
+// in June's own (un-jailed) Rust process, so the real risk is NOT permissions
+// but PATH TRAVERSAL: the slug is validated to a safe slash-command slug and the
+// resolved file is verified to stay inside the bundles directory before any read
+// or write. The serializer emits a fixed, predictable subset of YAML (the only
+// fields June manages); the parser reads that same subset back, tolerating extra
+// keys it does not understand so a hand-edited file is not destroyed.
+// ---------------------------------------------------------------------------
+
+/// Cap on a single bundle file so a runaway instruction blob cannot exhaust
+/// memory. Bundles are small alias files; this is generous.
+const HERMES_BUNDLE_MAX_BYTES: u64 = 256 * 1024;
+
+/// A skill bundle as June reads/writes it. `slug` is the file stem (and the
+/// slash command); `skills` is the ordered member list; `instructions` is the
+/// optional prompt text Hermes prepends at invocation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillBundle {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListHermesSkillBundlesRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveHermesSkillBundleRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    pub bundle: HermesSkillBundle,
+    /// When renaming, the previous slug whose file should be removed after the
+    /// new file is written. Validated to the same slug rule.
+    #[serde(default)]
+    pub previous_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteHermesSkillBundleRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    pub slug: String,
+}
+
+/// True when a slug is a safe slash-command slug AND file stem: a leading
+/// alphanumeric, then `[A-Za-z0-9._-]`, max 64. Mirrors the TS `isSafeBundleSlug`
+/// validator. A `..`, `/`, or `\` can never satisfy this, so it doubles as the
+/// traversal guard before the path is built.
+fn is_safe_bundle_slug(slug: &str) -> bool {
+    if slug.is_empty() || slug.len() > 64 {
+        return false;
+    }
+    let mut chars = slug.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    slug.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// Resolves the bundles directory for a runtime/profile, creating it if needed.
+/// The default profile uses `<hermes_home>/skill-bundles`; a named profile uses
+/// `<hermes_home>/profiles/<profile>/skill-bundles`. The profile id is held to
+/// the slug rule so it can never inject a traversal segment.
+fn resolve_bundles_dir(hermes_home: &Path, profile: Option<&str>) -> Result<PathBuf, AppError> {
+    let dir = match profile {
+        Some(profile) if profile != "default" => {
+            if !is_safe_bundle_slug(profile) {
+                return Err(AppError::new(
+                    "hermes_bundle_invalid_profile",
+                    "Invalid Hermes profile.",
+                ));
+            }
+            hermes_home
+                .join("profiles")
+                .join(profile)
+                .join("skill-bundles")
+        }
+        _ => hermes_home.join("skill-bundles"),
+    };
+    fs::create_dir_all(&dir)
+        .map_err(|error| AppError::new("hermes_bundle_dir_failed", error.to_string()))?;
+    Ok(dir)
+}
+
+/// Resolves the file path for a bundle slug inside the bundles directory and
+/// verifies it stays inside the directory. The slug is validated first (so it
+/// is a single safe segment), then the canonicalized parent is re-checked to be
+/// the bundles dir. Defense in depth against traversal.
+fn resolve_bundle_file(bundles_dir: &Path, slug: &str) -> Result<PathBuf, AppError> {
+    if !is_safe_bundle_slug(slug) {
+        return Err(AppError::new(
+            "hermes_bundle_invalid_slug",
+            "Invalid bundle name.",
+        ));
+    }
+    let file = bundles_dir.join(format!("{slug}.yaml"));
+    // The slug is already a single safe segment, but verify the joined path's
+    // parent canonicalizes back to the bundles dir so a symlinked or unexpected
+    // layout still cannot escape.
+    let root = bundles_dir
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_dir_failed", error.to_string()))?;
+    let parent = file.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        )
+    })?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_dir_failed", error.to_string()))?;
+    if parent != root {
+        return Err(AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        ));
+    }
+    Ok(file)
+}
+
+/// Escapes a scalar string for the `key: value` YAML the serializer emits.
+/// Always double-quotes and escapes backslashes, quotes, and newlines so any
+/// value round-trips through the parser unambiguously.
+fn yaml_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Serializes a bundle to the fixed YAML subset June manages. Deterministic key
+/// order so a save produces a stable diff. The skills list is a YAML block
+/// sequence; scalars are double-quoted via `yaml_quote`.
+fn serialize_bundle_yaml(bundle: &HermesSkillBundle) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("slug: {}\n", yaml_quote(&bundle.slug)));
+    if let Some(name) = bundle.name.as_deref().filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("name: {}\n", yaml_quote(name)));
+    }
+    if let Some(description) = bundle
+        .description
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push_str(&format!("description: {}\n", yaml_quote(description)));
+    }
+    out.push_str("skills:\n");
+    for skill in &bundle.skills {
+        out.push_str(&format!("  - {}\n", yaml_quote(skill)));
+    }
+    if let Some(instructions) = bundle
+        .instructions
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push_str(&format!("instructions: {}\n", yaml_quote(instructions)));
+    }
+    out
+}
+
+/// Unquotes a YAML scalar the serializer could have produced. Handles the
+/// double-quoted escapes it emits and passes a bare scalar through trimmed, so a
+/// hand-edited unquoted value still parses.
+fn yaml_unquote(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('r') => out.push('\r'),
+                    Some('t') => out.push('\t'),
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some(other) => out.push(other),
+                    None => {}
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        return out;
+    }
+    if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        return trimmed[1..trimmed.len() - 1].replace("''", "'");
+    }
+    trimmed.to_string()
+}
+
+/// Parses the bundle YAML subset back into a bundle. Reads `slug`, `name`,
+/// `description`, `instructions` scalars and a `skills:` block sequence; ignores
+/// keys it does not recognize. `fallback_slug` (the file stem) is used when the
+/// file omits `slug`, so a bundle always has one. Lossy by design: June only
+/// manages this subset.
+fn parse_bundle_yaml(content: &str, fallback_slug: &str) -> HermesSkillBundle {
+    let mut slug: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut instructions: Option<String> = None;
+    let mut skills: Vec<String> = Vec::new();
+    let mut in_skills = false;
+
+    for raw_line in content.lines() {
+        let line = raw_line;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // A list item under `skills:`.
+        if in_skills {
+            let indented = line.starts_with(' ') || line.starts_with('\t');
+            if indented {
+                if let Some(item) = trimmed.strip_prefix('-') {
+                    let value = yaml_unquote(item.trim());
+                    if !value.is_empty() {
+                        skills.push(value);
+                    }
+                    continue;
+                }
+            }
+            // A non-indented, non-list line ends the sequence.
+            in_skills = false;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "slug" => slug = Some(yaml_unquote(value)),
+                "name" => name = Some(yaml_unquote(value)),
+                "description" => description = Some(yaml_unquote(value)),
+                "instructions" => instructions = Some(yaml_unquote(value)),
+                "skills" => {
+                    in_skills = true;
+                    // Tolerate an inline flow list: `skills: ["a", "b"]`.
+                    if value.starts_with('[') && value.ends_with(']') && value.len() >= 2 {
+                        for part in value[1..value.len() - 1].split(',') {
+                            let item = yaml_unquote(part.trim());
+                            if !item.is_empty() {
+                                skills.push(item);
+                            }
+                        }
+                        in_skills = false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let slug = slug
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fallback_slug.to_string());
+    HermesSkillBundle {
+        slug,
+        name: name.filter(|s| !s.trim().is_empty()),
+        description: description.filter(|s| !s.trim().is_empty()),
+        skills,
+        instructions: instructions.filter(|s| !s.trim().is_empty()),
+    }
+}
+
+/// Reads every bundle file in a directory, sorted by slug for a stable list.
+/// A file that fails to read or parse is skipped rather than failing the whole
+/// listing, so one bad file does not hide the rest.
+fn read_bundles_in_dir(bundles_dir: &Path) -> Result<Vec<HermesSkillBundle>, AppError> {
+    let mut bundles = Vec::new();
+    let entries = match fs::read_dir(bundles_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(bundles),
+        Err(error) => {
+            return Err(AppError::new("hermes_bundle_read_failed", error.to_string()));
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_yaml = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+            .unwrap_or(false);
+        if !is_yaml || !path.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !is_safe_bundle_slug(stem) {
+            continue;
+        }
+        if let Ok(metadata) = fs::metadata(&path) {
+            if metadata.len() > HERMES_BUNDLE_MAX_BYTES {
+                continue;
+            }
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        bundles.push(parse_bundle_yaml(&content, stem));
+    }
+    bundles.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(bundles)
+}
+
+/// The connection for a mode, or a "not running" error. Shared by the bundle
+/// commands so each targets the explicitly-chosen runtime, never the first.
+fn bundle_connection(
+    bridge: &State<'_, HermesBridge>,
+    mode: &str,
+) -> Result<HermesBridgeConnection, AppError> {
+    let full_mode = match mode {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    let connections = live_connections(bridge)?;
+    connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_bridge_not_running",
+                "Hermes bridge is not running in the requested mode.",
+            )
+        })
+}
+
+/// Lists the skill bundles for the selected runtime/profile by reading the
+/// per-profile `skill-bundles` directory. Returns an empty list when the
+/// directory does not yet exist. The runtime is chosen by `mode` explicitly.
+#[tauri::command]
+pub async fn hermes_list_skill_bundles(
+    bridge: State<'_, HermesBridge>,
+    request: ListHermesSkillBundlesRequest,
+) -> Result<Vec<HermesSkillBundle>, AppError> {
+    let connection = bundle_connection(&bridge, &request.mode)?;
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let bundles_dir = resolve_bundles_dir(&hermes_home, request.profile.as_deref())?;
+    read_bundles_in_dir(&bundles_dir)
+}
+
+/// Creates or updates a bundle by writing its YAML file atomically. When
+/// `previousSlug` differs from the saved slug (a rename), the old file is
+/// removed after the new one is written. The slug is validated argument/path
+/// safe; the write is confined to the bundles directory.
+#[tauri::command]
+pub async fn hermes_save_skill_bundle(
+    bridge: State<'_, HermesBridge>,
+    request: SaveHermesSkillBundleRequest,
+) -> Result<HermesSkillBundle, AppError> {
+    let connection = bundle_connection(&bridge, &request.mode)?;
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let bundles_dir = resolve_bundles_dir(&hermes_home, request.profile.as_deref())?;
+
+    let mut bundle = request.bundle;
+    bundle.slug = bundle.slug.trim().to_string();
+    if !is_safe_bundle_slug(&bundle.slug) {
+        return Err(AppError::new(
+            "hermes_bundle_invalid_slug",
+            "Invalid bundle name.",
+        ));
+    }
+    bundle.skills.retain(|skill| !skill.trim().is_empty());
+    if bundle.skills.is_empty() {
+        return Err(AppError::new(
+            "hermes_bundle_no_skills",
+            "Add at least one skill to the bundle.",
+        ));
+    }
+
+    let file = resolve_bundle_file(&bundles_dir, &bundle.slug)?;
+    let yaml = serialize_bundle_yaml(&bundle);
+    if yaml.len() as u64 > HERMES_BUNDLE_MAX_BYTES {
+        return Err(AppError::new(
+            "hermes_bundle_too_large",
+            "This bundle is too large to save.",
+        ));
+    }
+    write_bundle_file(&bundles_dir, &file, &yaml)?;
+
+    // On a rename, drop the previous file once the new one is in place.
+    if let Some(previous) = request.previous_slug.as_deref() {
+        let previous = previous.trim();
+        if !previous.is_empty() && previous != bundle.slug && is_safe_bundle_slug(previous) {
+            if let Ok(old_file) = resolve_bundle_file(&bundles_dir, previous) {
+                let _ = fs::remove_file(old_file);
+            }
+        }
+    }
+
+    Ok(bundle)
+}
+
+/// Deletes a bundle's YAML file. The slug is validated; the path is confined to
+/// the bundles directory. A missing file is treated as success (idempotent).
+#[tauri::command]
+pub async fn hermes_delete_skill_bundle(
+    bridge: State<'_, HermesBridge>,
+    request: DeleteHermesSkillBundleRequest,
+) -> Result<(), AppError> {
+    let connection = bundle_connection(&bridge, &request.mode)?;
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let bundles_dir = resolve_bundles_dir(&hermes_home, request.profile.as_deref())?;
+    let file = resolve_bundle_file(&bundles_dir, request.slug.trim())?;
+    match fs::remove_file(&file) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::new("hermes_bundle_delete_failed", error.to_string())),
+    }
+}
+
+/// Writes a bundle YAML file atomically inside the bundles directory: write to a
+/// temp file in the same dir, verify it stayed inside, then rename over the
+/// target. The parent is re-checked to be the bundles root before the write.
+fn write_bundle_file(bundles_dir: &Path, path: &Path, content: &str) -> Result<(), AppError> {
+    let root = bundles_dir
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_write_failed", error.to_string()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_bundle_path_invalid",
+                "Bundle file is outside the bundles directory.",
+            )
+        })?
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_write_failed", error.to_string()))?;
+    if parent != root {
+        return Err(AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        ));
+    }
+    let file_name = path.file_name().ok_or_else(|| {
+        AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        )
+    })?;
+    let temp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        let temp_canonical = temp_path.canonicalize()?;
+        if !temp_canonical.starts_with(&root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "temporary bundle file escaped the bundles directory",
+            ));
+        }
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temp_path, path)
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(AppError::new("hermes_bundle_write_failed", error.to_string()));
+    }
+    Ok(())
+}
+
+/// The captured outcome of a bounded CLI wait.
+struct BoundedOutput {
+    stdout: String,
+    stderr: String,
+    exit_success: bool,
+    timed_out: bool,
+}
+
+/// Waits up to `timeout` for a child with piped stdout/stderr, then captures
+/// whatever it produced. On timeout the child is killed and `timed_out` is set;
+/// the partial output (which usually already contains the authorization URL the
+/// CLI prints first) is still returned so June can open the browser.
+fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<BoundedOutput, AppError> {
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let exit_success;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exit_success = status.success();
+                break;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    exit_success = false;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => {
+                return Err(AppError::new(
+                    "hermes_mcp_oauth_login_failed",
+                    format!("Could not wait for the sign-in. {error}"),
+                ));
+            }
+        }
+    }
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    use std::io::Read as _;
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    Ok(BoundedOutput {
+        stdout,
+        stderr,
+        exit_success,
+        timed_out,
+    })
+}
+
+// ----------------------------------------------------------------------------
+// External skill directories (read-only filesystem status).
+//
+// `skills.external_dirs` lists shared skill folders Hermes scans alongside the
+// per-profile `~/.hermes/skills/` root. June writes that list through the
+// dashboard's `PUT /api/config` (the jailed dashboard owns the config.yaml
+// write). But the dashboard reports nothing about whether each directory exists
+// or is writable, and June's profile/sandbox UX needs that to warn about shared
+// writable dirs. So June's OWN process — which is NOT under the Hermes Seatbelt
+// jail — inspects them read-only here: expand `~`/`${VAR}`, stat the path, probe
+// readability/writability, and count discovered skills. Nothing is mutated, no
+// path content is read, and no env values are returned to the webview.
+// ----------------------------------------------------------------------------
+
+/// Request for `hermes_inspect_external_dirs`: the raw configured paths (as
+/// written in `skills.external_dirs`, possibly containing `~`/`${VAR}`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectExternalDirsRequest {
+    #[serde(default)]
+    pub dirs: Vec<String>,
+}
+
+/// The read-only status of one external skill directory. Carries BOTH the raw
+/// configured path and the resolved path so the UI can show what was typed and
+/// what it expanded to. `missing` is non-fatal. Skill names are returned so the
+/// UI can explain shadowing against local skills.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalDirStatus {
+    /// The path exactly as configured (with `~`/`${VAR}` unexpanded).
+    pub raw_path: String,
+    /// The expanded, absolute path, or null when expansion could not resolve a
+    /// variable (the variable is reported in `unresolved_var` instead).
+    pub resolved_path: Option<String>,
+    /// The name of an environment variable referenced in the path that could
+    /// not be resolved, when expansion failed. Never the variable's VALUE.
+    pub unresolved_var: Option<String>,
+    /// True when the resolved path exists on disk.
+    pub exists: bool,
+    /// True when the resolved path exists and is a directory.
+    pub is_dir: bool,
+    /// True when June could list the directory's entries.
+    pub readable: bool,
+    /// True when the Hermes process could write into the directory (probed by a
+    /// temporary file create+remove). None when not safely detectable.
+    pub writable: Option<bool>,
+    /// Count of discovered skills (immediate sub-directories holding a
+    /// `SKILL.md`). None when the directory is missing/unreadable.
+    pub skill_count: Option<u32>,
+    /// The discovered skill names, so the UI can explain shadowing by local
+    /// skills of the same name. Empty when none/unreadable.
+    pub skill_names: Vec<String>,
+}
+
+/// Inspects the configured external skill directories read-only. Pure
+/// filesystem status: no mutation, no file-content reads, no secrets. Runs in
+/// June's own (non-jailed) process so it can honestly report writability the
+/// jailed dashboard can't.
+#[tauri::command]
+pub async fn hermes_inspect_external_dirs(
+    request: InspectExternalDirsRequest,
+) -> Result<Vec<ExternalDirStatus>, AppError> {
+    let dirs = request.dirs.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        dirs.iter()
+            .map(|raw| inspect_external_dir(raw))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_external_dirs_failed",
+            format!("Could not inspect external directories. {error}"),
+        )
+    })
+}
+
+/// Inspects one configured external skill directory. Never throws: any failure
+/// degrades to a "missing/unreadable" status so one bad entry can't blank the
+/// whole list.
+fn inspect_external_dir(raw: &str) -> ExternalDirStatus {
+    let raw_path = raw.trim().to_string();
+    let expansion = expand_external_dir_path(&raw_path);
+    let resolved = match &expansion {
+        ExpandedPath::Resolved(path) => path.clone(),
+        ExpandedPath::UnresolvedVar(name) => {
+            return ExternalDirStatus {
+                raw_path,
+                resolved_path: None,
+                unresolved_var: Some(name.clone()),
+                exists: false,
+                is_dir: false,
+                readable: false,
+                writable: None,
+                skill_count: None,
+                skill_names: Vec::new(),
+            };
+        }
+    };
+
+    let resolved_display = resolved.to_string_lossy().into_owned();
+    let metadata = fs::metadata(&resolved).ok();
+    let exists = metadata.is_some();
+    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+
+    if !is_dir {
+        return ExternalDirStatus {
+            raw_path,
+            resolved_path: Some(resolved_display),
+            unresolved_var: None,
+            exists,
+            is_dir,
+            readable: false,
+            writable: None,
+            skill_count: None,
+            skill_names: Vec::new(),
+        };
+    }
+
+    let readable = fs::read_dir(&resolved).is_ok();
+    let mut skill_names = discover_external_skill_names(&resolved);
+    skill_names.sort();
+    skill_names.dedup();
+
+    ExternalDirStatus {
+        raw_path,
+        resolved_path: Some(resolved_display),
+        unresolved_var: None,
+        exists,
+        is_dir,
+        readable,
+        writable: probe_external_dir_writable(&resolved),
+        skill_count: if readable {
+            Some(skill_names.len() as u32)
+        } else {
+            None
+        },
+        skill_names,
+    }
+}
+
+/// The outcome of expanding `~`/`${VAR}`/`$VAR` in a configured path.
+enum ExpandedPath {
+    Resolved(PathBuf),
+    /// A `${VAR}`/`$VAR` reference had no value in the environment. The name is
+    /// reported so the UI can say which variable to set — never its value.
+    UnresolvedVar(String),
+}
+
+/// Expands a leading `~` (home), `~/...`, and `${VAR}`/`$VAR` references using
+/// the current environment, mirroring how Hermes resolves external dir paths.
+/// A reference with no value is surfaced as `ExpandedPath::UnresolvedVar`
+/// rather than silently dropped, so the UI can explain the missing variable.
+fn expand_external_dir_path(raw: &str) -> ExpandedPath {
+    let mut working = raw.to_string();
+
+    // `~` / `~/...` → home directory (only when home is known).
+    if working == "~" || working.starts_with("~/") {
+        if let Some(home) = home_dir_candidates().into_iter().next() {
+            let rest = working.strip_prefix('~').unwrap_or("");
+            let rest = rest.strip_prefix('/').unwrap_or(rest);
+            working = if rest.is_empty() {
+                home.to_string_lossy().into_owned()
+            } else {
+                home.join(rest).to_string_lossy().into_owned()
+            };
+        }
+    }
+
+    match expand_env_vars(&working) {
+        Ok(expanded) => ExpandedPath::Resolved(PathBuf::from(expanded)),
+        Err(missing) => ExpandedPath::UnresolvedVar(missing),
+    }
+}
+
+/// Replaces `${VAR}` and `$VAR` tokens with their environment values. Returns
+/// `Err(name)` for the first reference with no value. A literal `$` not followed
+/// by a name passes through unchanged.
+fn expand_env_vars(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            // Copy the whole non-`$` run verbatim. `$` is ASCII (0x24) and can
+            // never appear inside a multibyte UTF-8 sequence, so the next `$`
+            // (or the end) is always a char boundary; slicing here preserves
+            // UTF-8 instead of mangling each byte into its own `char` (which
+            // would corrupt a path like `~/技能`).
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'$' {
+                i += 1;
+            }
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        // `${VAR}` form.
+        if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            if let Some(end) = input[i + 2..].find('}') {
+                let name = &input[i + 2..i + 2 + end];
+                let value = std::env::var(name).map_err(|_| name.to_string())?;
+                out.push_str(&value);
+                i = i + 2 + end + 1;
+                continue;
+            }
+            // Unterminated `${` — pass the literal through.
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        // `$VAR` form: a run of [A-Za-z0-9_].
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        if end > start {
+            let name = &input[start..end];
+            let value = std::env::var(name).map_err(|_| name.to_string())?;
+            out.push_str(&value);
+            i = end;
+        } else {
+            out.push('$');
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// Lists the discovered skill names in an external dir: immediate sub-directories
+/// that contain a `SKILL.md`. Mirrors Hermes' "a skill is a folder with a
+/// SKILL.md" convention. Read-only; never recurses deep (external dirs are flat
+/// skill collections) and never reads file contents.
+fn discover_external_skill_names(dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.join("SKILL.md").is_file() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    names
+}
+
+/// Probes whether the Hermes process can write into a directory by creating and
+/// immediately removing a uniquely-named temp file. Returns `Some(true)` on a
+/// successful create, `Some(false)` on a permission error, and `None` when the
+/// outcome is ambiguous. The probe file is `.june-write-probe-<rand>` and is
+/// always cleaned up.
+fn probe_external_dir_writable(dir: &Path) -> Option<bool> {
+    let suffix: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(12)
+        .map(char::from)
+        .collect();
+    let probe = dir.join(format!(".june-write-probe-{suffix}"));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            Some(true)
+        }
+        Err(error) => match error.kind() {
+            io::ErrorKind::PermissionDenied => Some(false),
+            // An already-exists collision (astronomically unlikely) or any other
+            // ambiguous error: do not claim a definite writability either way.
+            _ => None,
+        },
+    }
+}
+
+/// Opens a URL in the OS browser. macOS uses `/usr/bin/open`; other platforms
+/// are a no-op (June still surfaces the URL for a manual open). Best-effort: a
+/// failure to launch is non-fatal — the manual fallback covers it.
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/open").arg(url).spawn();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+    }
+}
+
 async fn start_hermes_gateway_if_needed(
     connection: &HermesBridgeConnection,
 ) -> Result<(), AppError> {
@@ -2362,7 +4729,11 @@ async fn hermes_connection_json(
     let url = format!("{}{}", connection.base_url, path);
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(30))
+        // Exceed Hermes' own 30s budgets (e.g. the skill hub's parallel
+        // source-search timeout) so a slow but successful response — partial
+        // results included — wins over a proxy-level timeout that would
+        // otherwise surface as a misleading "could not reach Hermes" error.
+        .timeout(Duration::from_secs(45))
         .build()
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))?;
     let mut request = client
@@ -3068,11 +5439,13 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
     let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
-    let protected_write_paths = sandbox_protected_write_paths(hermes_home);
+    let config_write_path = sandbox_config_write_path(hermes_home);
+    let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     let profile = build_sandbox_profile(
         &home,
         &write_roots,
-        &protected_write_paths,
+        &config_write_path,
+        &config_temp_prefix,
         agent_cli_access,
     );
     let app_data_dir = crate::app_paths::app_data_dir(app).ok()?;
@@ -3179,9 +5552,20 @@ fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
     canonical
 }
 
+/// The Hermes config file the jailed runtime persists through `save_config`,
+/// as an absolute path under `$HERMES_HOME`. Returned separately from the broad
+/// write roots so the grant is auditable and scoped to exactly this one file.
 #[cfg(target_os = "macos")]
-fn sandbox_protected_write_paths(hermes_home: &Path) -> Vec<PathBuf> {
-    vec![hermes_home.join("config.yaml")]
+fn sandbox_config_write_path(hermes_home: &Path) -> PathBuf {
+    hermes_home.join(HERMES_CONFIG_FILE)
+}
+
+/// Absolute atomic-temp prefix for `config.yaml` writes under `$HERMES_HOME`
+/// (e.g. `…/hermes/.config_`). Granted as a regex prefix so the random suffix
+/// in `.config_<random>.tmp` is covered.
+#[cfg(target_os = "macos")]
+fn sandbox_config_temp_prefix(hermes_home: &Path) -> PathBuf {
+    hermes_home.join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
 }
 
 /// Renders the Seatbelt (SBPL) profile text. Strategy: allow broadly, because
@@ -3193,7 +5577,8 @@ fn sandbox_protected_write_paths(hermes_home: &Path) -> Vec<PathBuf> {
 fn build_sandbox_profile(
     home: &Path,
     write_roots: &[PathBuf],
-    protected_write_paths: &[PathBuf],
+    config_write_path: &Path,
+    config_temp_prefix: &Path,
     agent_cli_access: bool,
 ) -> String {
     let mut out = String::new();
@@ -3215,19 +5600,28 @@ fn build_sandbox_profile(
     }
     out.push_str(")\n\n");
 
-    if !protected_write_paths.is_empty() {
-        out.push_str(
-            ";; June-owned runtime control files: readable by Hermes, never agent-writable.\n",
-        );
-        out.push_str("(deny file-write*\n");
-        for path in protected_write_paths {
-            out.push_str(&format!(
-                "  (literal {})\n",
-                sbpl_quote(&path.to_string_lossy())
-            ));
-        }
-        out.push_str(")\n\n");
-    }
+    // June's own config sync (the Rust host, unsandboxed) rewrites config.yaml
+    // at every spawn, but the *sandboxed runtime* also persists it in-session
+    // through Hermes' `save_config` whenever an admin surface mutates skills,
+    // toolsets, or MCP servers. That write is atomic: a `.config_<random>.tmp`
+    // is streamed then `os.replace`d onto config.yaml, which needs write+unlink
+    // on the target and the temp. The temp already lives under a write root
+    // ($HERMES_HOME), but spell out both the config file and its random-suffixed
+    // temp prefix explicitly so the grant is auditable and survives any future
+    // tightening of the broad roots. Nothing outside $HERMES_HOME is widened.
+    out.push_str(";; Hermes' own config.yaml: the jailed runtime persists admin changes\n");
+    out.push_str(";; through save_config (atomic temp + os.replace). Grant the file and its\n");
+    out.push_str(";; random-suffixed atomic temp; everything else stays under the write jail.\n");
+    out.push_str("(allow file-write*\n");
+    out.push_str(&format!(
+        "  (literal {})\n",
+        sbpl_quote(&config_write_path.to_string_lossy())
+    ));
+    out.push_str(&format!(
+        "  (regex #\"^{}.*$\")\n",
+        sbpl_regex_escape(&config_temp_prefix.to_string_lossy())
+    ));
+    out.push_str(")\n\n");
 
     if agent_cli_access {
         out.push_str(";; Agent CLI state (explicit user opt-in from Settings > Agent):\n");
@@ -4241,6 +6635,220 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    fn oauth_test_connection() -> HermesBridgeConnection {
+        HermesBridgeConnection {
+            base_url: "http://127.0.0.1:8787".to_string(),
+            ws_url: "ws://127.0.0.1:8787/api/ws".to_string(),
+            token: "secret-session-token".to_string(),
+            port: 8787,
+            command: "/usr/local/bin/hermes".to_string(),
+            hermes_home: "/tmp/hermes-home".to_string(),
+            cwd: None,
+            provider_proxy_port: 9000,
+            pid: 4242,
+            sandboxed: true,
+            full_mode: false,
+        }
+    }
+
+    #[test]
+    fn mcp_login_command_passes_server_as_discrete_argument() {
+        let connection = oauth_test_connection();
+        let cmd =
+            build_hermes_mcp_login_command(&connection, "linear", Some("work"));
+        let program = cmd.get_program().to_string_lossy().to_string();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(program, "/usr/local/bin/hermes");
+        assert_eq!(args, vec!["mcp", "login", "linear", "--profile", "work"]);
+    }
+
+    #[test]
+    fn mcp_login_command_omits_profile_when_none() {
+        let connection = oauth_test_connection();
+        let cmd = build_hermes_mcp_login_command(&connection, "linear", None);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["mcp", "login", "linear"]);
+    }
+
+    #[test]
+    fn rejects_unsafe_mcp_server_names() {
+        assert!(is_safe_mcp_server_name("linear"));
+        assert!(is_safe_mcp_server_name("my-server_1.2"));
+        assert!(!is_safe_mcp_server_name(""));
+        assert!(!is_safe_mcp_server_name("--flag"));
+        assert!(!is_safe_mcp_server_name("a b"));
+        assert!(!is_safe_mcp_server_name("rm -rf / ; curl evil"));
+        assert!(!is_safe_mcp_server_name("server;name"));
+    }
+
+    #[test]
+    fn skill_reset_command_passes_name_as_discrete_argument() {
+        let connection = oauth_test_connection();
+        let cmd =
+            build_hermes_skill_reset_command(&connection, "pdf", false, Some("work"));
+        let program = cmd.get_program().to_string_lossy().to_string();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(program, "/usr/local/bin/hermes");
+        assert_eq!(args, vec!["skills", "reset", "pdf", "--profile", "work"]);
+    }
+
+    #[test]
+    fn skill_reset_command_adds_restore_flag_and_omits_profile() {
+        let connection = oauth_test_connection();
+        let cmd = build_hermes_skill_reset_command(&connection, "pdf", true, None);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["skills", "reset", "pdf", "--restore"]);
+    }
+
+    #[test]
+    fn rejects_unsafe_skill_names() {
+        assert!(is_safe_skill_name("pdf"));
+        assert!(is_safe_skill_name("my-skill_1.2"));
+        assert!(!is_safe_skill_name(""));
+        assert!(!is_safe_skill_name("--force"));
+        assert!(!is_safe_skill_name("../etc/passwd"));
+        assert!(!is_safe_skill_name("rm -rf / ; curl evil"));
+        assert!(!is_safe_skill_name("skill;name"));
+    }
+
+    #[test]
+    fn skill_tap_list_command_passes_profile_as_discrete_argument() {
+        let connection = oauth_test_connection();
+        let cmd =
+            build_hermes_skill_tap_command(&connection, "list", None, None, Some("work"));
+        let program = cmd.get_program().to_string_lossy().to_string();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(program, "/usr/local/bin/hermes");
+        assert_eq!(args, vec!["skills", "tap", "list", "--profile", "work"]);
+    }
+
+    #[test]
+    fn skill_tap_add_command_passes_repo_and_path_as_discrete_arguments() {
+        let connection = oauth_test_connection();
+        let cmd = build_hermes_skill_tap_command(
+            &connection,
+            "add",
+            Some("acme/runbooks"),
+            Some("skills/ops"),
+            None,
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            args,
+            vec!["skills", "tap", "add", "acme/runbooks", "--path", "skills/ops"]
+        );
+    }
+
+    #[test]
+    fn skill_tap_remove_command_omits_path_and_profile() {
+        let connection = oauth_test_connection();
+        let cmd = build_hermes_skill_tap_command(
+            &connection,
+            "remove",
+            Some("acme/runbooks"),
+            None,
+            None,
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["skills", "tap", "remove", "acme/runbooks"]);
+    }
+
+    #[test]
+    fn rejects_unsafe_tap_repos() {
+        assert!(is_safe_tap_repo("acme/runbooks"));
+        assert!(is_safe_tap_repo("acme-org/team.skills_1"));
+        assert!(!is_safe_tap_repo(""));
+        assert!(!is_safe_tap_repo("acme"));
+        assert!(!is_safe_tap_repo("acme/runbooks/extra"));
+        assert!(!is_safe_tap_repo("../acme/runbooks"));
+        assert!(!is_safe_tap_repo("acme/.."));
+        assert!(!is_safe_tap_repo("--flag/repo"));
+        assert!(!is_safe_tap_repo("acme/runbooks; rm -rf /"));
+        assert!(!is_safe_tap_repo("acme/run books"));
+        assert!(!is_safe_tap_repo("acme repo/runbooks"));
+    }
+
+    #[test]
+    fn rejects_unsafe_tap_paths() {
+        assert!(is_safe_tap_path("skills"));
+        assert!(is_safe_tap_path("skills/ops"));
+        assert!(is_safe_tap_path(".github/skills"));
+        assert!(!is_safe_tap_path(""));
+        assert!(!is_safe_tap_path("/etc/passwd"));
+        assert!(!is_safe_tap_path("../escape"));
+        assert!(!is_safe_tap_path("skills/../../etc"));
+        assert!(!is_safe_tap_path("skills/ops;rm -rf"));
+        assert!(!is_safe_tap_path("skills//ops"));
+    }
+
+    #[test]
+    fn parses_tap_list_and_drops_unsafe_identifiers() {
+        let output = "Configured taps:\n  acme/runbooks  path=skills/ops  trusted\n- team/workflows (path: skills)\n  ../evil/repo\nNo more taps\n";
+        let taps = parse_skill_tap_list(output);
+        assert_eq!(taps.len(), 2);
+        assert_eq!(taps[0].repo, "acme/runbooks");
+        assert_eq!(taps[0].path.as_deref(), Some("skills/ops"));
+        assert!(taps[0].trusted);
+        assert_eq!(taps[1].repo, "team/workflows");
+        assert_eq!(taps[1].path.as_deref(), Some("skills"));
+        assert!(!taps[1].trusted);
+    }
+
+    #[test]
+    fn extracts_first_http_authorization_url() {
+        let output = "Open this URL to authorize:\n  https://auth.linear.app/authorize?client_id=abc \nWaiting...";
+        assert_eq!(
+            extract_authorization_url(output),
+            Some("https://auth.linear.app/authorize?client_id=abc".to_string())
+        );
+        assert_eq!(extract_authorization_url("nothing to see here"), None);
+    }
+
+    #[test]
+    fn redacts_tokens_and_bearer_from_cli_output() {
+        let message = redact_cli_message(
+            "Authorized. token=sk-super-secret-token-value access granted",
+        )
+        .unwrap();
+        assert!(!message.contains("sk-super-secret-token-value"));
+        assert!(message.contains("[redacted]"));
+
+        // A long credential-shaped bare run is masked regardless of surrounding.
+        let masked =
+            redact_cli_message("saved AKIAIOSFODNN7EXAMPLEKEY1234567890abcd done")
+                .unwrap();
+        assert!(!masked.contains("AKIAIOSFODNN7EXAMPLEKEY1234567890abcd"));
+    }
+
+    #[test]
+    fn classifies_login_success_from_exit_and_output() {
+        assert!(mcp_login_succeeded(true, ""));
+        assert!(mcp_login_succeeded(false, "Successfully authorized linear"));
+        assert!(!mcp_login_succeeded(false, "error: authorization failed"));
+        assert!(!mcp_login_succeeded(false, "waiting for browser"));
+    }
+
     fn request_with_authorization(value: &str) -> HttpRequest {
         HttpRequest {
             method: "GET".to_string(),
@@ -5058,10 +7666,15 @@ mod tests {
     fn sandbox_profile_jails_writes_to_allowed_roots() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
-        let config_path = workspace.join("config.yaml");
-        let protected = vec![config_path.clone()];
-        let profile =
-            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &protected, false);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            false,
+        );
 
         // Allow-everything base, then a hard write-jail re-granting the root.
         assert!(profile.contains("(allow default)"));
@@ -5069,8 +7682,15 @@ mod tests {
         assert!(
             profile.contains("(subpath \"/Users/test/Library/Application Support/june/hermes\")")
         );
+        // The sandboxed runtime owns config.yaml: it must be able to persist
+        // admin mutations through save_config's atomic temp + os.replace.
         assert!(profile.contains(
             "(literal \"/Users/test/Library/Application Support/june/hermes/config.yaml\")"
+        ));
+        // The atomic temp is granted via a prefix regex (random suffix), with
+        // the path's dots escaped so the grant can't widen.
+        assert!(profile.contains(
+            "(regex #\"^/Users/test/Library/Application Support/june/hermes/\\.config_.*$\")"
         ));
         // The re-grant must come after the blanket write deny, or it's a no-op.
         let deny_at = profile.find("(deny file-write*)").expect("deny present");
@@ -5078,10 +7698,10 @@ mod tests {
             .find("(allow file-write*\n  (subpath")
             .expect("grant present");
         assert!(deny_at < grant_at);
-        let protected_deny_at = profile
-            .find(";; June-owned runtime control files: readable by Hermes, never agent-writable.")
-            .expect("protected deny present");
-        assert!(grant_at < protected_deny_at);
+        let config_grant_at = profile
+            .find(";; Hermes' own config.yaml: the jailed runtime persists admin changes")
+            .expect("config grant present");
+        assert!(deny_at < config_grant_at);
 
         // Credential stores stay unreadable even though reads are otherwise open.
         assert!(profile.contains("(deny file-read*"));
@@ -5100,7 +7720,15 @@ mod tests {
     fn sandbox_profile_opt_in_grants_agent_cli_state_only() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
-        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace), &[], true);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            true,
+        );
 
         // The CLI state dirs become writable...
         assert!(profile.contains("(subpath \"/Users/test/.claude\")"));
@@ -5158,9 +7786,15 @@ mod tests {
         std::fs::create_dir_all(home.join(".ssh")).expect("create .ssh");
         std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
 
-        let protected = vec![workspace.join("config.yaml")];
-        let profile_text =
-            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &protected, false);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile_text = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            false,
+        );
         let profile_path = home.join("test.sb");
         std::fs::write(&profile_path, &profile_text).expect("write profile");
 
@@ -5184,26 +7818,31 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        // Denied: June's generated config stays readable but not writable by
-        // the sandboxed agent, even though it sits under the writable root.
-        let protected_config = workspace.join("config.yaml");
-        run(&format!(
-            "echo bad > {}",
-            sbpl_shell_quote(&protected_config)
-        ));
+        // Allowed: the sandboxed runtime persists its own config.yaml through
+        // save_config — a directly written file must succeed.
+        let config = workspace.join("config.yaml");
+        let out = run(&format!("echo cfg > {}", sbpl_shell_quote(&config)));
         assert!(
-            !protected_config.exists(),
-            "generated config must stay protected from sandboxed writes"
+            out.status.success() && config.exists(),
+            "direct config write should be allowed: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
-        let protected_tmp = workspace.join("config.yaml.tmp");
-        run(&format!(
-            "echo bad > {tmp} && mv {tmp} {config}",
-            tmp = sbpl_shell_quote(&protected_tmp),
-            config = sbpl_shell_quote(&protected_config),
+        std::fs::remove_file(&config).expect("reset config");
+
+        // Allowed: the real save_config path — stream a random-suffixed
+        // `.config_<random>.tmp` then os.replace (mv) it onto config.yaml. This
+        // is the exact operation the jail denied before, breaking every admin
+        // mutation with an HTTP 500.
+        let config_tmp = workspace.join(".config_vsc99h39.tmp");
+        let out = run(&format!(
+            "echo cfg > {tmp} && mv {tmp} {config}",
+            tmp = sbpl_shell_quote(&config_tmp),
+            config = sbpl_shell_quote(&config),
         ));
         assert!(
-            !protected_config.exists(),
-            "generated config must also reject atomic replacement"
+            out.status.success() && config.exists(),
+            "atomic config replacement should be allowed: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
 
         // Denied: write outside the workspace (home root is not a write root here).
@@ -5236,8 +7875,15 @@ mod tests {
         let workspace = home.join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
 
-        let profile_text =
-            build_sandbox_profile(&home, std::slice::from_ref(&workspace), &[], true);
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile_text = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            true,
+        );
         let profile_path = home.join("test.sb");
         std::fs::write(&profile_path, &profile_text).expect("write profile");
 
@@ -5291,5 +7937,391 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn sbpl_shell_quote(path: &Path) -> String {
         format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    }
+
+    #[test]
+    fn pending_skill_write_parses_a_recognized_edit_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("change-1.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "skill": "research",
+                "op": "edit",
+                "source": "background",
+                "gist": "Tighten the research checklist",
+                "stagedAt": 1_700_000_000_000_i64,
+                "files": [
+                    { "path": "research/SKILL.md", "diff": "@@\n-old\n+new\n", "content": "new body" }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+
+        let parsed = parse_pending_skill_write("change-1", &path);
+        assert!(parsed.readable);
+        assert_eq!(parsed.skill, "research");
+        assert_eq!(parsed.op, PendingSkillWriteOp::Edit);
+        assert_eq!(parsed.source, PendingSkillWriteSource::Background);
+        assert_eq!(parsed.gist.as_deref(), Some("Tighten the research checklist"));
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].relative_path, "research/SKILL.md");
+        assert_eq!(parsed.files[0].content.as_deref(), Some("new body"));
+    }
+
+    #[test]
+    fn pending_skill_write_flags_unrecognized_version_as_unreadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("future.json");
+        fs::write(
+            &path,
+            serde_json::json!({ "version": 999, "skill": "x", "op": "edit",
+                "files": [{ "path": "x/SKILL.md", "content": "c" }] })
+            .to_string(),
+        )
+        .expect("write manifest");
+
+        let parsed = parse_pending_skill_write("future", &path);
+        assert!(!parsed.readable, "an unknown version must not be approvable");
+    }
+
+    #[test]
+    fn pending_skill_write_redacts_secret_shaped_content() {
+        let masked = redact_pending_content("intro line\napi_key: sk-supersecretvalue\nbody");
+        assert!(masked.contains("intro line"));
+        assert!(masked.contains("body"));
+        assert!(!masked.contains("sk-supersecretvalue"));
+        assert!(masked.contains("[redacted]"));
+    }
+
+    #[test]
+    fn pending_write_redacted_content_blocks_approval() {
+        // A readable write whose displayed content June had to redact must NOT be
+        // approvable here: `file.content` is the masked copy, so applying it would
+        // persist `[redacted]` and silently corrupt the skill (Greptile P1).
+        let redacted = PendingSkillWrite {
+            id: "change-1".to_string(),
+            skill: "research".to_string(),
+            op: PendingSkillWriteOp::Edit,
+            source: PendingSkillWriteSource::Background,
+            gist: None,
+            staged_at: None,
+            files: vec![PendingSkillWriteFile {
+                relative_path: "research/SKILL.md".to_string(),
+                diff: None,
+                content: Some("authorization: [redacted]".to_string()),
+                redacted: true,
+            }],
+            readable: true,
+        };
+        let blocked =
+            approval_block_reason(&redacted).expect("a redacted write must block approval");
+        assert_eq!(blocked.code, "hermes_pending_skill_redacted");
+
+        // A clean, readable write carries no block reason.
+        let clean = PendingSkillWrite {
+            files: vec![PendingSkillWriteFile {
+                relative_path: "research/SKILL.md".to_string(),
+                diff: None,
+                content: Some("plain body".to_string()),
+                redacted: false,
+            }],
+            ..redacted.clone()
+        };
+        assert!(approval_block_reason(&clean).is_none());
+
+        // An unreadable write is still blocked (behavior preserved by the helper).
+        let unreadable = PendingSkillWrite {
+            readable: false,
+            ..clean.clone()
+        };
+        assert_eq!(
+            approval_block_reason(&unreadable)
+                .expect("an unreadable write must block approval")
+                .code,
+            "hermes_pending_skill_unreadable",
+        );
+    }
+
+    #[test]
+    fn pending_target_rejects_traversal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        assert!(resolve_pending_target(root, "../escape.md").is_err());
+        assert!(resolve_pending_target(root, "/etc/passwd").is_err());
+        let ok = resolve_pending_target(root, "research/SKILL.md").expect("safe path");
+        assert!(ok.starts_with(root));
+    }
+
+    #[test]
+    fn safe_pending_id_rejects_separators_and_dots() {
+        assert!(is_safe_pending_id("change-1"));
+        assert!(!is_safe_pending_id(""));
+        assert!(!is_safe_pending_id(".."));
+        assert!(!is_safe_pending_id("a/b"));
+        assert!(!is_safe_pending_id("a\\b"));
+    }
+
+    #[test]
+    fn external_dir_inspect_reports_skills_and_writable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Two skills (folders with SKILL.md) plus a non-skill folder and a file.
+        for name in ["caveman", "research"] {
+            let skill = dir.path().join(name);
+            std::fs::create_dir_all(&skill).expect("skill dir");
+            std::fs::write(skill.join("SKILL.md"), "# Skill\n").expect("skill md");
+        }
+        std::fs::create_dir_all(dir.path().join("not-a-skill")).expect("plain dir");
+        std::fs::write(dir.path().join("loose.txt"), "x").expect("loose file");
+
+        let status = inspect_external_dir(&dir.path().to_string_lossy());
+        assert!(status.exists);
+        assert!(status.is_dir);
+        assert!(status.readable);
+        assert_eq!(status.skill_count, Some(2));
+        assert_eq!(status.skill_names, vec!["caveman", "research"]);
+        // A fresh tempdir is writable by the running process.
+        assert_eq!(status.writable, Some(true));
+        // The probe file is always cleaned up.
+        let leftover = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".june-write-probe-")
+            });
+        assert!(!leftover, "write probe file should be removed");
+    }
+
+    #[test]
+    fn external_dir_inspect_missing_is_non_fatal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        let status = inspect_external_dir(&missing.to_string_lossy());
+        assert!(!status.exists);
+        assert!(!status.is_dir);
+        assert!(!status.readable);
+        assert_eq!(status.writable, None);
+        assert_eq!(status.skill_count, None);
+        assert!(status.skill_names.is_empty());
+        assert!(status.unresolved_var.is_none());
+    }
+
+    #[test]
+    fn external_dir_expands_home_and_env_vars() {
+        // `~` expands to the home directory.
+        match expand_external_dir_path("~/skills") {
+            ExpandedPath::Resolved(path) => {
+                let home = home_dir_candidates().into_iter().next().expect("home");
+                assert_eq!(path, home.join("skills"));
+            }
+            ExpandedPath::UnresolvedVar(_) => panic!("~ should resolve when HOME is set"),
+        }
+
+        // `${VAR}` and `$VAR` expand from the environment.
+        std::env::set_var("JUNE_TEST_EXT_DIR", "/tmp/june-ext");
+        match expand_external_dir_path("${JUNE_TEST_EXT_DIR}/skills") {
+            ExpandedPath::Resolved(path) => {
+                assert_eq!(path, PathBuf::from("/tmp/june-ext/skills"));
+            }
+            ExpandedPath::UnresolvedVar(_) => panic!("set var should resolve"),
+        }
+        match expand_external_dir_path("$JUNE_TEST_EXT_DIR") {
+            ExpandedPath::Resolved(path) => {
+                assert_eq!(path, PathBuf::from("/tmp/june-ext"));
+            }
+            ExpandedPath::UnresolvedVar(_) => panic!("set var should resolve"),
+        }
+        std::env::remove_var("JUNE_TEST_EXT_DIR");
+    }
+
+    #[test]
+    fn expand_env_vars_preserves_non_ascii() {
+        // A non-ASCII run with no env reference passes through as UTF-8, not
+        // mangled into one `char` per byte (Codex P2).
+        assert_eq!(
+            expand_env_vars("/home/u/技能/skills").expect("no var"),
+            "/home/u/技能/skills"
+        );
+        // ...and a ${VAR} still expands when surrounded by non-ASCII text.
+        std::env::set_var("JUNE_TEST_UNICODE_DIR", "/srv/技");
+        assert_eq!(
+            expand_env_vars("${JUNE_TEST_UNICODE_DIR}/données").expect("var resolves"),
+            "/srv/技/données"
+        );
+        std::env::remove_var("JUNE_TEST_UNICODE_DIR");
+    }
+
+    #[test]
+    fn redact_url_query_secrets_masks_token_params_only() {
+        // No query string: returned unchanged.
+        assert_eq!(
+            redact_url_query_secrets("https://auth.example.com/authorize"),
+            "https://auth.example.com/authorize"
+        );
+        // A normal authorization request (no secret params) is preserved verbatim
+        // so the manual-open fallback still works.
+        let authz = "https://auth.example.com/authorize?client_id=abc&redirect_uri=app%3A%2F%2Fcb&scope=read&state=xyz&code_challenge=h";
+        assert_eq!(redact_url_query_secrets(authz), authz);
+        // An anomalous URL carrying a token in the query: only the secret value
+        // is masked; other params and a plain fragment survive.
+        let leaky = "https://x/cb?client_id=abc&access_token=sk-secret&state=xyz#frag";
+        let out = redact_url_query_secrets(leaky);
+        assert!(out.contains("client_id=abc"));
+        assert!(out.contains("state=xyz"));
+        assert!(out.contains("access_token=[redacted]"));
+        assert!(!out.contains("sk-secret"));
+        assert!(out.ends_with("#frag"));
+
+        // OAuth implicit flow puts tokens in the FRAGMENT, often with no query at
+        // all; the fragment must be redacted too.
+        let implicit = "https://x/cb#access_token=sk-frag-secret&id_token=jwt&state=ok";
+        let out = redact_url_query_secrets(implicit);
+        assert!(!out.contains("sk-frag-secret"));
+        assert!(!out.contains("jwt"));
+        assert!(out.contains("access_token=[redacted]"));
+        assert!(out.contains("id_token=[redacted]"));
+        assert!(out.contains("state=ok"));
+    }
+
+    #[test]
+    fn external_dir_reports_unresolved_var() {
+        std::env::remove_var("JUNE_DEFINITELY_UNSET_VAR_XYZ");
+        let status = inspect_external_dir("${JUNE_DEFINITELY_UNSET_VAR_XYZ}/skills");
+        assert_eq!(
+            status.unresolved_var.as_deref(),
+            Some("JUNE_DEFINITELY_UNSET_VAR_XYZ")
+        );
+        assert!(status.resolved_path.is_none());
+        assert!(!status.exists);
+    }
+
+    #[test]
+    fn bundle_slug_accepts_safe_and_rejects_unsafe() {
+        assert!(is_safe_bundle_slug("backend-dev"));
+        assert!(is_safe_bundle_slug("a.b_c-d"));
+        assert!(is_safe_bundle_slug("9lives"));
+        assert!(!is_safe_bundle_slug(""));
+        assert!(!is_safe_bundle_slug(".."));
+        assert!(!is_safe_bundle_slug("a/b"));
+        assert!(!is_safe_bundle_slug("a\\b"));
+        assert!(!is_safe_bundle_slug("-leading"));
+        assert!(!is_safe_bundle_slug("has space"));
+        assert!(!is_safe_bundle_slug(&"x".repeat(65)));
+    }
+
+    #[test]
+    fn resolve_bundle_file_rejects_traversal_and_confines_to_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundles = dir.path().join("skill-bundles");
+        fs::create_dir_all(&bundles).expect("mkdir");
+
+        // A traversal-shaped slug never satisfies the slug rule, so it is
+        // rejected before a path is even built.
+        assert!(resolve_bundle_file(&bundles, "../escape").is_err());
+        assert!(resolve_bundle_file(&bundles, "..").is_err());
+        assert!(resolve_bundle_file(&bundles, "a/b").is_err());
+        assert!(resolve_bundle_file(&bundles, "/etc/passwd").is_err());
+
+        let ok = resolve_bundle_file(&bundles, "backend-dev").expect("safe slug");
+        // The returned path lives directly inside the bundles dir (compared
+        // canonically so the macOS /var -> /private/var symlink does not trip it).
+        let canon_root = bundles.canonicalize().expect("canon");
+        assert_eq!(
+            ok.parent().expect("parent").canonicalize().expect("parent canon"),
+            canon_root
+        );
+        assert_eq!(
+            ok.file_name().and_then(|n| n.to_str()),
+            Some("backend-dev.yaml")
+        );
+    }
+
+    #[test]
+    fn resolve_bundles_dir_rejects_unsafe_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(resolve_bundles_dir(dir.path(), Some("../escape")).is_err());
+        // The default profile uses the top-level bundles dir.
+        let default_dir = resolve_bundles_dir(dir.path(), None).expect("default");
+        assert_eq!(default_dir, dir.path().join("skill-bundles"));
+        // A named, safe profile nests under profiles/<name>/skill-bundles.
+        let named = resolve_bundles_dir(dir.path(), Some("team")).expect("named");
+        assert_eq!(
+            named,
+            dir.path().join("profiles").join("team").join("skill-bundles")
+        );
+    }
+
+    #[test]
+    fn bundle_yaml_roundtrips_through_serialize_and_parse() {
+        let bundle = HermesSkillBundle {
+            slug: "backend-dev".to_string(),
+            name: Some("Backend dev".to_string()),
+            description: Some("Skills for backend work".to_string()),
+            skills: vec!["backend-dev".to_string(), "database".to_string()],
+            instructions: Some("Line one\nLine \"two\"".to_string()),
+        };
+        let yaml = serialize_bundle_yaml(&bundle);
+        let parsed = parse_bundle_yaml(&yaml, "fallback");
+        assert_eq!(parsed, bundle);
+    }
+
+    #[test]
+    fn bundle_parse_falls_back_to_file_stem_and_ignores_unknown_keys() {
+        let yaml = "name: \"Only a name\"\nunknown: \"ignored\"\nskills:\n  - \"a\"\n  - \"b\"\n";
+        let parsed = parse_bundle_yaml(yaml, "from-stem");
+        assert_eq!(parsed.slug, "from-stem");
+        assert_eq!(parsed.name.as_deref(), Some("Only a name"));
+        assert_eq!(parsed.skills, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(parsed.description, None);
+    }
+
+    #[test]
+    fn bundle_parse_reads_inline_flow_skills_list() {
+        let yaml = "slug: \"x\"\nskills: [\"a\", \"b\", \"c\"]\n";
+        let parsed = parse_bundle_yaml(yaml, "x");
+        assert_eq!(
+            parsed.skills,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn read_bundles_in_dir_skips_unsafe_and_non_yaml_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundles = dir.path().join("skill-bundles");
+        fs::create_dir_all(&bundles).expect("mkdir");
+        fs::write(
+            bundles.join("backend-dev.yaml"),
+            serialize_bundle_yaml(&HermesSkillBundle {
+                slug: "backend-dev".to_string(),
+                name: None,
+                description: None,
+                skills: vec!["backend-dev".to_string()],
+                instructions: None,
+            }),
+        )
+        .expect("write yaml");
+        // A non-yaml file and a README are ignored.
+        fs::write(bundles.join("notes.txt"), "ignore me").expect("write txt");
+
+        let read = read_bundles_in_dir(&bundles).expect("read");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].slug, "backend-dev");
+    }
+
+    #[test]
+    fn write_bundle_file_confines_to_bundles_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundles = dir.path().join("skill-bundles");
+        fs::create_dir_all(&bundles).expect("mkdir");
+        let file = resolve_bundle_file(&bundles, "backend-dev").expect("path");
+        write_bundle_file(&bundles, &file, "slug: \"backend-dev\"\n").expect("write");
+        let written = fs::read_to_string(&file).expect("read back");
+        assert!(written.contains("backend-dev"));
     }
 }

@@ -1,5 +1,5 @@
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
-import { IconArrowRight } from "central-icons/IconArrowRight";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -40,6 +40,7 @@ import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToP
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
+import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import {
   NotesList,
   type NotesListHandle,
@@ -432,6 +433,8 @@ export function App() {
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
+  const [accessibilityBannerDismissed, setAccessibilityBannerDismissed] =
+    useState(false);
   const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
@@ -537,6 +540,29 @@ export function App() {
     return () => {
       cancelled = true;
       dispose?.();
+    };
+  }, []);
+  // Dev console driver for the sidebar "Relaunch to update" card
+  // (window.__updateCard). Pushes synthetic values into the real update state
+  // so the card's styling can be parked and inspected without a live update.
+  const updateCardDemoRef = useRef<UpdateCardDemoApi | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    void import("../lib/update-card-demo").then(
+      ({ registerUpdateCardDemo }) => {
+        if (cancelled) return;
+        updateCardDemoRef.current = registerUpdateCardDemo({
+          setReadyUpdate,
+          setStatus: setUpdateStatus,
+          setRelaunching: setRelaunchingUpdate,
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+      updateCardDemoRef.current?.dispose();
+      updateCardDemoRef.current = null;
     };
   }, []);
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
@@ -1632,6 +1658,10 @@ export function App() {
   }, []);
 
   const accessibilityBlocked = isAccessibilityBlocked(accessibilityStatus);
+  useEffect(() => {
+    if (!accessibilityBlocked) setAccessibilityBannerDismissed(false);
+  }, [accessibilityBlocked]);
+
   // The Rust readiness check probes mic via cpal, which doesn't reflect
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
   // instead — that's the authoritative macOS API for the mic privacy
@@ -2155,6 +2185,26 @@ export function App() {
       window.dispatchEvent(
         new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
           detail: { category },
+        }),
+      );
+    }, 0);
+  }
+
+  // "Start chat with this bundle" from the Bundles settings tab: the same
+  // fresh-chat handshake the dictation prompt path uses, auto-submitting the
+  // bundle's slash command so Hermes resolves the bundle and loads its skills.
+  function handleStartBundleChat(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending(trimmed);
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: trimmed },
         }),
       );
     }, 0);
@@ -2914,8 +2964,9 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
-          {accessibilityBlocked ? (
+          {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
+              onDismiss={() => setAccessibilityBannerDismissed(true)}
               onEnableAccessibility={handleEnableAccessibility}
             />
           ) : null}
@@ -2949,6 +3000,7 @@ export function App() {
                   onTabChange={setSettingsTab}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
                   onReportIssue={handleReportIssue}
+                  onStartBundleChat={handleStartBundleChat}
                 />
               ) : activeView === "dictation" ? (
                 <DictationHistoryView
@@ -3549,18 +3601,26 @@ function UpdateRelaunchCard({
           <JuneMark />
         </span>
         <span className="update-relaunch-copy">
-          <span className="update-relaunch-title">
+          <span
+            className={
+              relaunching
+                ? "update-relaunch-title text-shimmer"
+                : "update-relaunch-title"
+            }
+          >
             {relaunching ? "Relaunching..." : "Relaunch to update"}
           </span>
           <span className={status ? "update-relaunch-status" : undefined}>
             {meta}
           </span>
         </span>
-        <IconArrowRight
-          className="update-relaunch-arrow"
-          size={18}
-          aria-hidden
-        />
+        {!relaunching && (
+          <IconChevronRightSmall
+            className="update-relaunch-arrow"
+            size={16}
+            aria-hidden
+          />
+        )}
       </button>
     </aside>
   );

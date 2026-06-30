@@ -951,8 +951,7 @@ function orderedVisibleSourceTranscripts(
   return (note.sourceTranscripts ?? [])
     .filter((turn) => {
       if (turn.text.trim()) return true;
-      if (note.processingStatus === "failed" || !turn.lastError) return false;
-      return true;
+      return Boolean(turn.lastError);
     })
     .map((turn, index) => ({ turn, index }))
     .sort(compareSourceTranscriptOrder)

@@ -94,8 +94,13 @@ export function adminTargetForMode(
   profile: string = DEFAULT_HERMES_PROFILE,
 ): HermesAdminTarget | undefined {
   const wantFull = mode === "unrestricted";
+  // A connection is only targetable once it carries a base URL. Production
+  // connections always do, but a partially-populated status (e.g. a runtime
+  // still coming up) must yield "no target" rather than crash a render-path
+  // caller like the skill-review hook on `undefined.replace`.
   const connection = (status.connections ?? []).find(
-    (candidate) => candidate.fullMode === wantFull,
+    (candidate) =>
+      candidate.fullMode === wantFull && Boolean(candidate.baseUrl),
   );
   return connection
     ? adminTargetFromConnection(connection, profile)

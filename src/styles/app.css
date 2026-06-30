@@ -2344,11 +2344,10 @@ input:focus-visible,
   --agent-files-w: clamp(320px, 36vw, 460px);
 }
 
-/* The files panel slides over from the window edge; the main column hands it
- * room by growing its right inset (the tab strip lives in this column too, so
- * it shrinks in step with the card). Transition is declared on .main-column. */
-.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-column {
-  padding-right: calc(var(--agent-files-w) + 2 * var(--sp-3));
+/* The files panel slides over from the window edge; only the card hands it
+ * room so the titlebar tab strip still spans the full window top. */
+.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel {
+  margin-right: calc(var(--agent-files-w) + var(--sp-3));
 }
 
 .agent-artifact-panel {
@@ -2392,7 +2391,7 @@ input:focus-visible,
     animation: none;
   }
 
-  .main-column {
+  .main-panel {
     transition: none;
   }
 }
@@ -2409,7 +2408,7 @@ input:focus-visible,
  * would lag the pointer (and let the panel ride over the composer). Equal
  * specificity to the composer rule above, so it must stay after it in the
  * cascade. */
-.app-shell[data-files-resizing="true"] .main-column,
+.app-shell[data-files-resizing="true"] .main-panel,
 .app-shell[data-files-resizing="true"] .agent-composer,
 .app-shell[data-files-resizing="true"] .agent-artifact-panel {
   transition: none;
@@ -6770,7 +6769,6 @@ input:focus-visible,
   min-width: 0;
   min-height: 0;
   padding: 0 var(--sp-3) 0 0;
-  transition: padding-right var(--t-slow) var(--ease-spring);
 }
 
 .main-panel {
@@ -6791,6 +6789,7 @@ input:focus-visible,
   color: var(--card-foreground);
   box-shadow: var(--shadow-sm), var(--shadow-inset);
   overflow: hidden;
+  transition: margin-right var(--t-slow) var(--ease-spring);
 }
 
 /* Tab strip ---------------------------------------------------------- */
@@ -8913,6 +8912,27 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+.permission-banner-dismiss {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-xs);
+  height: var(--control-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.permission-banner-dismiss:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
 .error-banner {
   margin: 0 0 var(--sp-5);
   padding: var(--sp-3) var(--sp-4);
@@ -9793,6 +9813,175 @@ input:focus-visible,
   cursor: default;
 }
 
+.installed-skills-check,
+.installed-skills-update-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.installed-skills-update-all {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.installed-skills-check:disabled,
+.installed-skills-update-all:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Skill lifecycle actions (spec 08): update / audit / uninstall / reset. */
+.skill-lifecycle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.skill-lifecycle-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-lifecycle-action {
+  position: relative;
+  display: inline-flex;
+}
+
+.skill-lifecycle-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm, var(--control-md));
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-lifecycle-action-button[data-destructive="true"] {
+  border-color: var(--destructive, var(--border-subtle));
+  color: var(--destructive, var(--secondary-foreground));
+}
+
+.skill-lifecycle-action-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.skill-lifecycle-action-done,
+.skill-lifecycle-action-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.skill-lifecycle-action-failed {
+  color: var(--destructive, var(--secondary-foreground));
+}
+
+.skill-lifecycle-retry,
+.skill-lifecycle-clear {
+  border: none;
+  background: none;
+  color: var(--primary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.skill-lifecycle-unavailable {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.skill-lifecycle-unavailable-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs, var(--fs-sm));
+  color: var(--muted-foreground, var(--secondary-foreground));
+}
+
+.skill-lifecycle-confirm {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + var(--sp-1));
+  left: 0;
+  min-width: 16rem;
+  max-width: 24rem;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--popover, var(--background));
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.18));
+}
+
+.skill-lifecycle-confirm-message {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.skill-lifecycle-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.skill-lifecycle-confirm-cancel,
+.skill-lifecycle-confirm-go {
+  min-height: var(--control-sm, var(--control-md));
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-lifecycle-confirm-go[data-destructive="true"] {
+  border-color: var(--destructive, var(--border-subtle));
+  background: var(--destructive, var(--secondary));
+  color: var(--destructive-foreground, var(--secondary-foreground));
+}
+
+.skill-detail-lifecycle-card .skill-detail-lifecycle-blurb {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground, var(--secondary-foreground));
+}
+
+.skill-detail-lifecycle-modified {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
 .installed-skills-filters {
   display: flex;
   flex-wrap: wrap;
@@ -10042,7 +10231,352 @@ input:focus-visible,
   line-height: 1.45;
 }
 
-.installed-skills-notifications {
+/* Skill bundles manager (admin surfaces spec 11). Reuses the settings-card
+ * chrome and the same tokens as the installed-skills surface. */
+.skill-bundles-mode-note {
+  color: var(--muted-foreground);
+}
+
+.skill-bundles-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.skill-bundles-toolbar {
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-bundles-new,
+.skill-bundles-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundles-new {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+.skill-bundles-new:disabled,
+.skill-bundles-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skill-bundles-body {
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.skill-bundles-list {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-bundle-row {
+  display: flex;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--background);
+}
+
+.skill-bundle-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.skill-bundle-name {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.skill-bundle-slash {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  background: var(--secondary);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+}
+
+.skill-bundle-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-members {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-bundle-member {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+
+.skill-bundle-member[data-missing="true"] {
+  border-style: dashed;
+  color: var(--muted-foreground);
+}
+
+.skill-bundle-member-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--warning, var(--muted-foreground));
+}
+
+.skill-bundle-note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-note-warning {
+  color: var(--warning, var(--muted-foreground));
+}
+
+.skill-bundle-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundle-start {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+.skill-bundle-delete {
+  color: var(--destructive, var(--secondary-foreground));
+}
+
+.skill-bundle-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skill-bundles-empty,
+.skill-bundles-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  text-align: center;
+  padding: var(--sp-6) var(--sp-4);
+}
+
+.skill-bundles-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.skill-bundles-empty-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.skill-bundles-empty-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundles-loading {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundles-retry {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+/* The bundle create/edit form. */
+.skill-bundle-editor-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-3);
+  border: none;
+  background: none;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundle-editor-card {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.skill-bundle-field {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-field-label {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-field input,
+.skill-bundle-field textarea {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  outline: none;
+}
+
+.skill-bundle-field input:focus,
+.skill-bundle-field textarea:focus {
+  border-color: var(--ring-focus);
+}
+
+.skill-bundle-slug-input {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.skill-bundle-slug-prefix {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, monospace);
+}
+
+.skill-bundle-field-hint {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-issue {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-issue[data-severity="error"] {
+  color: var(--destructive, var(--foreground));
+}
+
+.skill-bundle-issue[data-severity="warning"] {
+  color: var(--warning, var(--muted-foreground));
+}
+
+.skill-bundle-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  min-height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundle-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+}
+
+.skill-bundle-editor-cancel,
+.skill-bundle-editor-save {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+.skill-bundle-editor-save {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+.skill-bundle-editor-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The one shared admin change-notice surface (AdminNotifications). Every admin
+ * section renders its change notices through these classes, so the look is
+ * identical across surfaces. */
+.admin-notifications {
   list-style: none;
   display: grid;
   gap: var(--sp-2);
@@ -10050,7 +10584,7 @@ input:focus-visible,
   padding: 0;
 }
 
-.installed-skills-notification {
+.admin-notification {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10061,17 +10595,17 @@ input:focus-visible,
   background: var(--surface-subtle);
 }
 
-.installed-skills-notification[data-tone="destructive"] {
+.admin-notification[data-tone="destructive"] {
   border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
   background: var(--destructive-soft);
 }
 
-.installed-skills-notification-text {
+.admin-notification-text {
   color: var(--foreground);
   font-size: var(--fs-sm);
 }
 
-.installed-skills-notification-dismiss {
+.admin-notification-dismiss {
   display: inline-grid;
   place-items: center;
   width: 22px;
@@ -10083,7 +10617,7 @@ input:focus-visible,
   cursor: pointer;
 }
 
-.installed-skills-notification-dismiss:hover {
+.admin-notification-dismiss:hover {
   color: var(--foreground);
   background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
@@ -10149,6 +10683,2643 @@ input:focus-visible,
 
 .installed-skill-skeleton-line + .installed-skill-skeleton-line {
   width: 70%;
+}
+
+/* External skill directories manager (Hermes admin surface, spec 10). Lists the
+ * configured skills.external_dirs with filesystem status, shadowing, and the
+ * shared-directory warning. Reuses the installed-skills chrome vocabulary;
+ * tokens only. */
+.external-dirs-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.external-dirs-mode-note {
+  color: var(--muted-foreground);
+}
+
+.external-dirs-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.external-dirs-warning > :first-child {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warm-strong);
+}
+
+.external-dirs-lifecycle {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.external-dirs-lifecycle[data-tone="warning"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.external-dirs-lifecycle[data-tone="destructive"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.external-dirs-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.external-dirs-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.external-dirs-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.external-dirs-add {
+  display: flex;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.external-dirs-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.external-dirs-add input:focus {
+  border-color: var(--ring-focus);
+}
+
+.external-dirs-add-button,
+.external-dirs-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.external-dirs-add-button:disabled,
+.external-dirs-refresh:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.external-dirs-hint {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5) 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.external-dirs-inline-error {
+  padding: var(--sp-2) var(--sp-5) 0;
+}
+
+.external-dirs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.external-dir-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.external-dir-main {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.external-dir-headline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.external-dir-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.external-dir-path {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-dir-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.external-dir-status[data-tone="ok"] {
+  background: color-mix(
+    in oklch,
+    var(--success, var(--primary)) 14%,
+    var(--card)
+  );
+  color: var(--success, var(--primary));
+}
+
+.external-dir-status[data-tone="info"] {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.external-dir-status[data-tone="warning"] {
+  background: color-mix(in oklch, var(--warm-strong) 14%, var(--card));
+  color: var(--warm-strong);
+}
+
+.external-dir-status[data-tone="muted"] {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.external-dir-resolved {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-dir-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.external-dir-meta-item {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.external-dir-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.external-dir-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.external-dir-note-warning {
+  color: var(--warm-strong);
+}
+
+.external-dir-actions {
+  flex: none;
+}
+
+.external-dir-remove {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+.external-dir-remove:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.external-dirs-empty,
+.external-dirs-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-7) var(--sp-5);
+  text-align: center;
+}
+
+.external-dirs-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.external-dirs-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-md);
+}
+
+.external-dirs-empty-description {
+  margin: 0;
+  max-width: 42ch;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.external-dirs-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.external-dir-skeleton {
+  display: block;
+}
+
+.external-dir-skeleton-line {
+  display: block;
+  height: 12px;
+  margin-bottom: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.external-dir-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
+/* Agent-managed skill write review queue (Hermes admin surface, spec 12). The
+ * human-in-the-loop gate: a write-approval toggle card, the lifecycle banner,
+ * and a list of pending writes with expandable diffs and approve/reject. Reuses
+ * the settings chrome; tokens only. */
+.skill-review-gate {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  margin-bottom: var(--sp-4);
+}
+
+.skill-review-gate-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.skill-review-gate-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+  margin-top: 1px;
+}
+
+.skill-review-gate-title {
+  margin: 0 0 var(--sp-1);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.skill-review-gate-copy {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-gate-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+.skill-review-gate-timing {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-mode-note {
+  color: var(--muted-foreground);
+}
+
+.skill-review-lifecycle {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-4);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 8%, transparent);
+}
+
+.skill-review-lifecycle[data-tone="warning"] {
+  background: color-mix(in oklch, var(--warm-strong) 12%, transparent);
+}
+
+.skill-review-lifecycle[data-tone="destructive"] {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+.skill-review-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.skill-review-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.skill-review-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-review-toolbar-label {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.skill-review-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-review-bulk,
+.skill-review-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-bulk-approve {
+  border-color: color-mix(in oklch, var(--success) 40%, var(--border-subtle));
+  color: var(--success);
+}
+
+.skill-review-bulk:disabled,
+.skill-review-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.skill-review-inline-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.skill-review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.skill-review-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-review-row:last-child {
+  border-bottom: none;
+}
+
+.skill-review-row-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-review-row-headline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-review-row-gist {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.skill-review-op {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-op[data-op="create"] {
+  background: color-mix(in oklch, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.skill-review-op[data-op="delete"] {
+  background: color-mix(in oklch, var(--destructive) 16%, transparent);
+  color: var(--destructive);
+}
+
+.skill-review-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-source[data-source="background"] {
+  background: color-mix(in oklch, var(--accent) 18%, transparent);
+}
+
+.skill-review-row-effect {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-skill-name {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.skill-review-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-review-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+.skill-review-unreadable,
+.skill-review-redacted {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.skill-review-diff-toggle {
+  justify-self: start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-diff {
+  display: grid;
+  gap: var(--sp-3);
+  margin-top: var(--sp-1);
+}
+
+.skill-review-file-diff-path {
+  margin-bottom: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+.skill-review-diff-pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.skill-review-diff-line[data-line="add"] {
+  display: block;
+  background: color-mix(in oklch, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.skill-review-diff-line[data-line="remove"] {
+  display: block;
+  background: color-mix(in oklch, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+}
+
+.skill-review-diff-line[data-line="meta"] {
+  display: block;
+  color: var(--muted-foreground);
+}
+
+.skill-review-diff-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-review-row-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.skill-review-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-approve {
+  border-color: color-mix(in oklch, var(--success) 40%, var(--border-subtle));
+  color: var(--success);
+}
+
+.skill-review-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.skill-review-action-timing {
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-empty,
+.skill-review-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+}
+
+.skill-review-empty-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.skill-review-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.skill-review-empty-description {
+  margin: 0;
+  max-width: 360px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-skeleton {
+  grid-template-columns: 1fr;
+}
+
+.skill-review-skeleton-line {
+  display: block;
+  height: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.skill-review-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
+/* Skill config + required-secret setup (Hermes admin surface, spec 09). The
+ * setup status badge sits inline in a skill row; the per-skill setup panel
+ * expands inline below the row and spans both grid columns. Tokens only. */
+.skill-setup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-setup-badge[data-tone="ready"] {
+  background: color-mix(in oklch, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.skill-setup-badge[data-tone="attention"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.installed-skill-setup-toggle {
+  align-self: center;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.installed-skill-setup-toggle:hover {
+  background: var(--surface-subtle);
+}
+
+.installed-skill-setup-panel {
+  grid-column: 1 / -1;
+  margin-top: var(--sp-3);
+}
+
+.skill-setup {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.skill-setup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.skill-setup-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-setup-skill {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+
+.skill-setup-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.skill-setup-close:hover {
+  color: var(--foreground);
+}
+
+.skill-setup-block {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-setup-block-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.skill-setup-block-note,
+.skill-setup-none,
+.skill-setup-loading {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.skill-setup-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.skill-setup-row {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+}
+
+.skill-setup-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-setup-row-name {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+}
+
+.skill-setup-tag {
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-tag-required {
+  background: color-mix(in oklch, var(--warm-strong) 14%, transparent);
+  color: var(--warm-strong);
+}
+
+.skill-setup-row-state {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-row-state[data-configured="true"],
+.skill-setup-row-state[data-configured] {
+  color: var(--success);
+}
+
+.skill-setup-row-prompt {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-setup-row-help,
+.skill-setup-row-preview,
+.skill-setup-row-revealed {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.skill-setup-row-preview {
+  font-family: var(--font-mono);
+}
+
+.skill-setup-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-setup-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+}
+
+.skill-setup-input:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 1px;
+}
+
+.skill-setup-field-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.skill-setup-field-toggle:hover {
+  color: var(--foreground);
+}
+
+.skill-setup-field-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-setup-save,
+.skill-setup-reveal,
+.skill-setup-clear,
+.skill-setup-retry {
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.skill-setup-save {
+  border-color: transparent;
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.skill-setup-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.skill-setup-clear {
+  color: var(--destructive);
+  border-color: color-mix(in oklch, var(--destructive) 36%, transparent);
+}
+
+.skill-setup-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+/* Skill detail viewer + safe editor (Hermes admin surface, spec 05). A sub-view
+ * off the installed-skills list: metadata + supporting files + setup + a
+ * SKILL.md read view or validated editor with a diff-before-save confirm.
+ * Tokens only; sentence case; no dashes in copy. */
+.skill-detail {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.skill-detail-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.skill-detail-back,
+.skill-detail-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.skill-detail-back:hover,
+.skill-detail-refresh:hover:not(:disabled) {
+  color: var(--foreground);
+}
+
+.skill-detail-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.skill-detail-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-detail-source {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-detail-source[data-source="bundled"] {
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+  color: var(--foreground);
+}
+
+.skill-detail-source[data-source="hub"] {
+  background: color-mix(in oklch, var(--ring-focus) 22%, transparent);
+  color: var(--foreground);
+}
+
+.skill-detail-source[data-source="external"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.skill-detail-version {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-detail-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-detail-mode-note {
+  color: var(--muted-foreground);
+}
+
+.skill-detail-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-retry {
+  border: 0;
+  background: transparent;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.skill-detail-loading {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-detail-meta-card,
+.skill-detail-files-card,
+.skill-detail-setup-card,
+.skill-detail-doc-card {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+}
+
+.skill-detail-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.skill-detail-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-3);
+  margin: 0;
+}
+
+.skill-detail-meta-item {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill-detail-meta-label {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-meta-value {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+}
+
+.skill-detail-meta-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  word-break: break-all;
+}
+
+.skill-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-detail-tag {
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-files-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-file-group {
+  display: grid;
+  gap: 4px;
+}
+
+.skill-detail-file-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.skill-detail-file-group[data-danger="true"] .skill-detail-file-group-heading {
+  color: var(--warm-strong);
+}
+
+.skill-detail-file-count {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.skill-detail-file-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.skill-detail-file {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  word-break: break-all;
+}
+
+.skill-detail-doc-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.skill-detail-doc-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-doc-timing {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-doc-subheading {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.skill-detail-doc-frontmatter,
+.skill-detail-doc-body,
+.skill-detail-diff {
+  overflow: auto;
+  max-height: 360px;
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.skill-detail-doc-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--warm-strong) 12%, transparent);
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.skill-detail-editor-label {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-detail-editor {
+  width: 100%;
+  min-height: 260px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.skill-detail-editor[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+
+.skill-detail-issues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.skill-detail-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.skill-detail-issue[data-severity="error"] {
+  color: var(--destructive);
+}
+
+.skill-detail-issue[data-severity="warning"] {
+  color: var(--warm-strong);
+}
+
+.skill-detail-editor-actions,
+.skill-detail-confirm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.skill-detail-revert,
+.skill-detail-confirm-cancel {
+  padding: 5px var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-detail-revert:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.skill-detail-save,
+.skill-detail-confirm-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--foreground);
+  color: var(--background);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.skill-detail-save:disabled,
+.skill-detail-confirm-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.skill-detail-confirm {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.skill-detail-confirm-summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.skill-detail-confirm-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 0;
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.skill-detail-diff-line[data-kind="added"] {
+  color: var(--success);
+}
+
+.skill-detail-diff-line[data-kind="removed"] {
+  color: var(--destructive);
+}
+
+.skill-detail-diff-line[data-kind="unchanged"] {
+  color: var(--muted-foreground);
+}
+
+/* MCP servers (Hermes admin surface). Mirrors the installed-skills chrome:
+ * settings-group / settings-card, a toolbar, a lifecycle banner, durable
+ * notifications, and server rows with transport / risk / status pills. Tokens
+ * only. */
+.mcp-servers-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.mcp-servers-mode-note {
+  color: var(--muted-foreground);
+}
+
+.mcp-servers-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mcp-servers-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.mcp-servers-search-icon {
+  position: absolute;
+  left: var(--sp-3);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.mcp-servers-search input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.mcp-servers-search input:focus {
+  border-color: var(--ring-focus);
+}
+
+.mcp-servers-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-servers-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mcp-servers-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+}
+
+.mcp-servers-inline-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.mcp-servers-body {
+  padding: 0 var(--sp-5);
+}
+
+.mcp-servers-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mcp-server-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-4);
+  align-items: start;
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mcp-server-row:last-child {
+  border-bottom: 0;
+}
+
+.mcp-server-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-server-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.mcp-server-name {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+
+.mcp-server-transport,
+.mcp-server-auth {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-server-transport[data-risk="local-subprocess"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.mcp-server-transport[data-risk="remote-http"] {
+  background: color-mix(in oklch, var(--ring-focus) 22%, transparent);
+  color: var(--foreground);
+}
+
+.mcp-server-risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-server-risk[data-risk="local-subprocess"] {
+  color: var(--warm-strong);
+}
+
+.mcp-server-auth[data-tone="attention"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.mcp-server-auth[data-tone="ok"] {
+  color: var(--foreground);
+}
+
+.mcp-server-target {
+  margin: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-blurb {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+/* Security / sandbox-boundary labels (spec 19). */
+.mcp-server-security-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcp-server-security-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-server-security-label[data-tone="caution"] {
+  background: color-mix(in oklch, var(--warm-strong) 14%, transparent);
+  color: var(--warm-strong);
+}
+
+.mcp-server-risk-note,
+.mcp-server-allowlist-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-server-risk-note[data-tier="high"] {
+  color: var(--warm-strong);
+}
+
+.mcp-confirm-body {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-confirm-lead {
+  color: var(--foreground);
+}
+
+.mcp-confirm-reason {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* MCP security page (spec 19): exposure policy + label legend. */
+.mcp-security-card {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.mcp-security-policy-head {
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-security-policy {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.mcp-security-policy-option {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcp-security-policy-option[data-selected="true"] {
+  border-color: var(--ring-focus);
+  background: color-mix(in oklch, var(--ring-focus) 8%, transparent);
+}
+
+.mcp-security-policy-option:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.mcp-security-policy-option-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.mcp-security-policy-option-label {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.mcp-security-policy-recommended {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-2);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--ring-focus) 18%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-security-policy-option-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-security-legend {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcp-security-legend-item {
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-security-legend-blurb {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-security-note,
+.mcp-security-write-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-security-write-error {
+  color: var(--destructive);
+}
+
+.mcp-server-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.mcp-server-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-server-status[data-tone="ok"] {
+  color: var(--foreground);
+}
+
+.mcp-server-status[data-tone="error"] {
+  color: var(--destructive);
+}
+
+.mcp-server-status-detail {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.mcp-server-secrets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.mcp-server-secret {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.mcp-server-test-ok,
+.mcp-server-test-error {
+  margin: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-server-test-ok-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+}
+
+.mcp-server-test-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+.mcp-server-test-tools {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.mcp-server-test-tools li {
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+/* OAuth sign-in panel (spec 17): token status + sign-in action per server. */
+.mcp-server-oauth {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.mcp-server-oauth[data-state="connected"] {
+  border-color: color-mix(
+    in oklch,
+    var(--ring-focus) 30%,
+    var(--border-subtle)
+  );
+}
+
+.mcp-server-oauth[data-state="needs-sign-in"],
+.mcp-server-oauth[data-state="expired"],
+.mcp-server-oauth[data-state="needs-client-credentials"] {
+  border-color: color-mix(
+    in oklch,
+    var(--warm-strong) 30%,
+    var(--border-subtle)
+  );
+}
+
+.mcp-server-oauth-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.mcp-server-oauth-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-server-oauth-status[data-tone="ok"] {
+  color: var(--foreground);
+}
+
+.mcp-server-oauth-status[data-tone="attention"] {
+  color: var(--warm-strong);
+}
+
+.mcp-server-oauth-action {
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-server-oauth-action:hover {
+  background: var(--secondary-hover, var(--secondary));
+}
+
+.mcp-server-oauth-blurb {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-server-oauth-progress,
+.mcp-server-oauth-done,
+.mcp-server-oauth-error {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs);
+}
+
+.mcp-server-oauth-progress {
+  color: var(--muted-foreground);
+}
+
+.mcp-server-oauth-done {
+  color: var(--foreground);
+}
+
+.mcp-server-oauth-error {
+  color: var(--destructive);
+}
+
+.mcp-server-oauth-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+}
+
+.mcp-server-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-top: 1px;
+}
+
+.mcp-server-test {
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-server-test:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mcp-server-delete {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.mcp-server-delete:hover {
+  color: var(--destructive);
+  background: var(--surface-subtle);
+}
+
+.mcp-server-delete:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mcp-server-toggle {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.mcp-server-timing {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* Lifecycle banner + durable notifications (same tones as installed skills). */
+.mcp-servers-lifecycle {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.mcp-servers-lifecycle[data-tone="warning"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.mcp-servers-lifecycle[data-tone="destructive"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.mcp-servers-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.mcp-servers-lifecycle[data-tone="warning"] .mcp-servers-lifecycle-eyebrow {
+  color: var(--warm-strong);
+}
+
+.mcp-servers-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Empty / error / loading states. */
+.mcp-servers-empty,
+.mcp-servers-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+}
+
+.mcp-servers-empty-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.mcp-servers-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.mcp-servers-empty-description {
+  margin: 0;
+  max-width: 380px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.mcp-servers-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-server-skeleton {
+  grid-template-columns: 1fr;
+}
+
+.mcp-server-skeleton-line {
+  display: block;
+  height: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.mcp-server-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
+.mcp-server-skeleton-line + .mcp-server-skeleton-line {
+  width: 70%;
+}
+
+/* Add-server dialog form. */
+.mcp-add-form {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.mcp-add-field {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mcp-add-label {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.mcp-add-input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.mcp-add-input:focus {
+  border-color: var(--ring-focus);
+}
+
+.mcp-add-input[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+
+.mcp-add-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+.mcp-add-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-add-transport {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-2);
+}
+
+.mcp-add-transport-option {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-3);
+  text-align: left;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.mcp-add-transport-option[data-active="true"] {
+  border-color: var(--ring-focus);
+  background: var(--surface-subtle);
+}
+
+.mcp-add-transport-label {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.mcp-add-transport-hint {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.mcp-add-row,
+.mcp-add-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.mcp-add-pair {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.mcp-add-row .mcp-add-error,
+.mcp-add-pair .mcp-add-error {
+  grid-column: 1 / -1;
+}
+
+.mcp-add-row-remove {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.mcp-add-row-remove:hover {
+  color: var(--destructive);
+  background: var(--surface-subtle);
+}
+
+.mcp-add-row-add {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-add-row-add:hover {
+  color: var(--foreground);
+  border-color: var(--border);
+}
+
+/* MCP tool selection + filtering (spec 16). The per-server "Tools" panel: the
+ * compare counts, the mode selector, the discovered-tool list, the utility
+ * toggles, and the saved/restart notice. */
+.mcp-server-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-server-tools:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.mcp-tools-form {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.mcp-tools-legend {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.mcp-tools-compare {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-3);
+  margin: 0;
+}
+
+.mcp-tools-compare-item {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.mcp-tools-compare-item dt {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-compare-item dd {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.mcp-tools-compare-item[data-tone="ok"] dd {
+  color: var(--success);
+}
+
+.mcp-tools-compare-item[data-tone="attention"] dd {
+  color: var(--destructive);
+}
+
+.mcp-tools-discovery-note,
+.mcp-tools-precedence,
+.mcp-tools-allowlist-rec,
+.mcp-tools-inert-note,
+.mcp-tools-saved,
+.mcp-tools-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-precedence {
+  color: var(--foreground);
+}
+
+.mcp-tools-allowlist-rec,
+.mcp-tools-error {
+  color: var(--destructive);
+}
+
+.mcp-tools-saved {
+  color: var(--success);
+}
+
+.mcp-tools-mode,
+.mcp-tools-utilities,
+.mcp-tools-advanced,
+.mcp-tools-namelist {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.mcp-tools-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-2);
+}
+
+.mcp-tools-mode-option {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcp-tools-mode-option[data-active="true"] {
+  border-color: var(--foreground);
+}
+
+.mcp-tools-mode-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.mcp-tools-mode-hint {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.mcp-tools-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--card);
+}
+
+.mcp-tools-row[data-allowed="false"] {
+  opacity: 0.7;
+}
+
+.mcp-tools-row[data-destructive="true"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+}
+
+.mcp-tools-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  background: none;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcp-tools-row-state {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-row[data-allowed="true"] .mcp-tools-row-state {
+  color: var(--success);
+}
+
+.mcp-tools-row-name {
+  flex: 1;
+}
+
+.mcp-tools-row-destructive {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs);
+  color: var(--destructive);
+}
+
+.mcp-tools-row-desc {
+  margin: 0;
+  padding: 0 var(--sp-3) var(--sp-2) calc(var(--sp-3) + var(--sp-4));
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-namelist[data-inert="true"] {
+  opacity: 0.6;
+}
+
+.mcp-tools-textarea,
+.mcp-tools-select,
+.mcp-tools-number {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2);
+}
+
+.mcp-tools-utility-row,
+.mcp-tools-seconds-row {
+  display: grid;
+  gap: 3px;
+}
+
+.mcp-tools-utility-head,
+.mcp-tools-seconds-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.mcp-tools-utility-label {
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+}
+
+.mcp-tools-utility-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+}
+
+.mcp-tools-preview {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-preview-path {
+  margin: var(--sp-2) 0 4px;
+  font-family: var(--font-mono, monospace);
+  color: var(--foreground);
+}
+
+.mcp-tools-preview-block {
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  overflow-x: auto;
+  font-size: var(--fs-xs);
+}
+
+/* MCP catalog — reuses the MCP servers + skills-hub structure, with a few
+ * catalog-specific bits: a clickable entry name, the install-status pill, the
+ * Nous-approved trust line, and the install requirement / default-tool lists. */
+.mcp-catalog-name {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mcp-catalog-name:hover {
+  text-decoration: underline;
+}
+
+.mcp-catalog-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-catalog-status[data-tone="ok"] {
+  background: color-mix(
+    in oklch,
+    var(--positive, var(--ring-focus)) 18%,
+    transparent
+  );
+  color: var(--foreground);
+}
+
+.mcp-catalog-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.mcp-catalog-requirements,
+.mcp-catalog-tools {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.mcp-catalog-requirements-title,
+.mcp-catalog-tools-title {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.mcp-catalog-requirements-list {
+  margin: 0;
+  padding-left: var(--sp-4);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
 }
 
 /* Dictionary toolbar — small search left (reuses .folders-search), primary
@@ -14457,56 +17628,51 @@ input:focus-visible,
 
 .update-relaunch-card {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 18px;
-  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr) 16px;
+  align-items: start;
   gap: var(--sp-3);
   width: 100%;
-  min-height: 64px;
   padding: var(--sp-2);
-  border: 1px solid var(--popover-border);
+  /* Same transparent-over-foreground hairline as --popover-border, just a
+   * touch stronger (10% washes out on a pure-white card over the sidebar). */
+  border: 1px solid color-mix(in oklch, var(--foreground) 15%, transparent);
   border-radius: var(--r-md);
-  background: var(--popover);
-  color: var(--popover-foreground);
-  box-shadow: var(--shadow-lg);
+  background: var(--card);
+  color: var(--foreground);
   text-align: left;
   cursor: pointer;
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-out);
+  transition: box-shadow var(--t-slow) var(--ease-spring);
 }
 
 .update-relaunch-card:hover:not(:disabled) {
-  border-color: var(--ring);
-  background: color-mix(in oklch, var(--popover) 90%, var(--muted));
-  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .update-relaunch-card:focus-visible {
   outline: none;
-  border-color: var(--ring-focus);
-  box-shadow:
-    var(--shadow-lg),
-    0 0 0 3px var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .update-relaunch-card:disabled {
   cursor: default;
 }
 
+/* Bare June mark, no tile: faint at rest, warms to brand on hover. */
 .update-relaunch-mark {
   display: inline-grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--brand) 12%, transparent);
-  color: var(--brand);
+  margin-top: 2px;
+  color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  transition: color var(--t-slow) var(--ease-spring);
 }
 
 .update-relaunch-mark svg {
-  width: 17px;
+  width: 10px;
   height: auto;
+}
+
+.update-relaunch-card:hover:not(:disabled) .update-relaunch-mark {
+  color: var(--brand);
 }
 
 .update-relaunch-copy {
@@ -14525,6 +17691,14 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* While relaunching, the label reuses the shared .text-shimmer sweep. That
+ * utility lives earlier in this flat stylesheet, so the title's solid color
+ * above would win and hide the gradient. Re-assert the transparent fill here
+ * (after the title rule) so the shimmer shows through. */
+.update-relaunch-title.text-shimmer {
+  color: transparent;
+}
+
 .update-relaunch-copy > span:last-child {
   overflow: hidden;
   color: var(--muted-foreground);
@@ -14539,8 +17713,14 @@ input:focus-visible,
 }
 
 .update-relaunch-arrow {
+  align-self: center;
   justify-self: end;
   color: var(--muted-foreground);
+  transition: transform var(--t-slow) var(--ease-spring);
+}
+
+.update-relaunch-card:hover:not(:disabled) .update-relaunch-arrow {
+  transform: translateX(3px);
 }
 
 .update-status-card {
@@ -14649,8 +17829,16 @@ input:focus-visible,
     transition: none;
   }
 
-  .update-relaunch-card:hover:not(:disabled) {
+  .update-relaunch-arrow {
+    transition: none;
+  }
+
+  .update-relaunch-card:hover:not(:disabled) .update-relaunch-arrow {
     transform: none;
+  }
+
+  .update-relaunch-title.text-shimmer {
+    animation: none;
   }
 }
 
@@ -15737,4 +18925,2404 @@ input:focus-visible,
   background: color-mix(in oklch, var(--success) 12%, transparent);
   color: var(--success);
   animation: onboarding-rise var(--t-med) var(--ease-out);
+}
+
+/* Skills Hub browser (Hermes admin surface, spec 06). Reuses the settings-group
+ * / settings-card chrome with a search toolbar, source filter chips, result
+ * cards with source + trust badges, an install action with live progress, and a
+ * detail drawer. Tokens only; sentence case; matches the Installed Skills page. */
+.skills-hub-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.skills-hub-mode-note {
+  color: var(--muted-foreground);
+}
+
+.skills-hub-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skills-hub-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+}
+
+.skills-hub-search-icon {
+  position: absolute;
+  left: var(--sp-3);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.skills-hub-search input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.skills-hub-search input:focus {
+  border-color: var(--ring-focus);
+}
+
+.skills-hub-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skills-hub-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.skills-hub-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skills-hub-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-px) var(--sp-3);
+  min-height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skills-hub-chip[aria-pressed="true"] {
+  background: var(--secondary);
+  color: var(--foreground);
+  border-color: transparent;
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+.skills-hub-chip-count {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.skills-hub-chip[aria-pressed="true"] .skills-hub-chip-count {
+  color: var(--foreground);
+}
+
+.skills-hub-body {
+  padding: 0 var(--sp-5);
+}
+
+.skills-hub-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.skills-hub-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-4);
+  align-items: start;
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skills-hub-row:last-child {
+  border-bottom: 0;
+}
+
+.skills-hub-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skills-hub-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.skills-hub-name {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.skills-hub-name:hover {
+  text-decoration: underline;
+}
+
+.skills-hub-source {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skills-hub-source[data-source="official"] {
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+  color: var(--foreground);
+}
+
+.skills-hub-source[data-source="skills-sh"],
+.skills-hub-source[data-source="github"],
+.skills-hub-source[data-source="well-known"] {
+  background: color-mix(in oklch, var(--ring-focus) 22%, transparent);
+  color: var(--foreground);
+}
+
+.skills-hub-source[data-source="url"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.skills-hub-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skills-hub-trust[data-tone="trusted"] {
+  background: color-mix(
+    in oklch,
+    var(--success, var(--ring-focus)) 16%,
+    transparent
+  );
+  color: var(--foreground);
+}
+
+.skills-hub-trust[data-tone="neutral"] {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.skills-hub-trust[data-tone="caution"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.skills-hub-version {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.skills-hub-installed-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skills-hub-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skills-hub-description-muted {
+  font-style: italic;
+}
+
+.skills-hub-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skills-hub-tag {
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skills-hub-actions {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  padding-top: 1px;
+}
+
+.skills-hub-inspect {
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skills-hub-inspect:hover {
+  background: var(--surface-subtle);
+}
+
+.skills-hub-install {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.skills-hub-install:hover {
+  opacity: 0.92;
+}
+
+.skills-hub-install-progress {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  min-width: 120px;
+}
+
+.skills-hub-install-bar {
+  width: 120px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  overflow: hidden;
+}
+
+.skills-hub-install-bar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+
+.skills-hub-install-bar-fill[data-indeterminate] {
+  width: 40%;
+  animation: skills-hub-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes skills-hub-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.skills-hub-install-label {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.skills-hub-install-done {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skills-hub-install-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 280px;
+}
+
+.skills-hub-install-failed-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+.skills-hub-install-retry {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-xs);
+  padding: var(--sp-px) var(--sp-2);
+  cursor: pointer;
+}
+
+.skills-hub-install-dismiss {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+/* Lifecycle banner + notifications — same tones as the Installed Skills page. */
+.skills-hub-lifecycle {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.skills-hub-lifecycle[data-tone="warning"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.skills-hub-lifecycle[data-tone="destructive"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.skills-hub-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.skills-hub-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Empty / error / loading states. */
+.skills-hub-empty,
+.skills-hub-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+}
+
+.skills-hub-empty-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.skills-hub-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.skills-hub-empty-description {
+  margin: 0;
+  max-width: 360px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skills-hub-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skills-hub-skeleton {
+  grid-template-columns: 1fr;
+}
+
+.skills-hub-skeleton-line {
+  display: block;
+  height: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.skills-hub-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
+.skills-hub-skeleton-line + .skills-hub-skeleton-line {
+  width: 70%;
+}
+
+.skills-hub-loading-note {
+  margin: var(--sp-3) 0 0;
+  padding: 0 var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+/* Inspect drawer — a right-anchored sheet over a dimmed backdrop. */
+.skills-hub-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
+}
+
+.skills-hub-drawer {
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 92vw);
+  height: 100%;
+  background: var(--background);
+  border-left: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-lg, 0 8px 40px rgba(0, 0, 0, 0.24));
+}
+
+.skills-hub-drawer-header {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skills-hub-drawer-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.skills-hub-drawer-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.skills-hub-drawer-close {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.skills-hub-drawer-close:hover {
+  color: var(--foreground);
+  background: var(--surface-subtle);
+}
+
+.skills-hub-drawer-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skills-hub-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  gap: var(--sp-4);
+  align-content: start;
+  padding: var(--sp-5);
+}
+
+.skills-hub-drawer-description {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+}
+
+.skills-hub-drawer-trust {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.skills-hub-drawer-trust[data-tone="caution"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.skills-hub-drawer-trust-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.skills-hub-drawer-trust[data-tone="caution"] .skills-hub-drawer-trust-eyebrow {
+  color: var(--warm-strong);
+}
+
+.skills-hub-drawer-trust-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skills-hub-drawer-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skills-hub-drawer-meta {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skills-hub-drawer-links {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.skills-hub-drawer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--ring-focus);
+  font-size: var(--fs-sm);
+  word-break: break-all;
+}
+
+.skills-hub-drawer-advanced summary {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skills-hub-drawer-advanced-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-3) 0 0;
+}
+
+.skills-hub-drawer-advanced-list dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skills-hub-drawer-advanced-list dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.skills-hub-drawer-mono {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.skills-hub-drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--sp-4) var(--sp-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Team skill taps manager (Hermes admin surface, spec 13). Lists configured
+ * GitHub skill taps, adds/removes them, and searches/installs a tap's skills by
+ * reusing the Skills Hub install flow. Reuses the same token palette as the hub
+ * surface so the two read as one family. */
+.team-taps-card,
+.team-taps-search-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.team-taps-mode-note {
+  color: var(--muted-foreground);
+}
+
+.team-taps-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.team-taps-add-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  align-items: end;
+}
+
+.team-taps-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.team-taps-field-label {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.team-taps-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.team-taps-input-icon {
+  position: absolute;
+  left: var(--sp-3);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.team-taps-field input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.team-taps-input-wrap input {
+  padding-left: calc(var(--sp-3) * 2 + 15px);
+}
+
+.team-taps-field input:focus {
+  border-color: var(--ring-focus);
+}
+
+.team-taps-field input[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+
+.team-taps-add-button,
+.team-taps-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.team-taps-add-button:disabled,
+.team-taps-refresh:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.team-taps-field-error,
+.team-taps-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-error {
+  padding: var(--sp-3) var(--sp-5) 0;
+}
+
+.team-taps-add-hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.team-taps-body {
+  padding: var(--sp-2) 0;
+}
+
+.team-taps-list,
+.team-taps-skill-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.team-taps-row,
+.team-taps-skill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.team-taps-row:last-child,
+.team-taps-skill-row:last-child {
+  border-bottom: none;
+}
+
+.team-taps-row[data-selected="true"] {
+  background: var(--secondary);
+}
+
+.team-taps-row-main,
+.team-taps-skill-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.team-taps-row-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.team-taps-row-icon {
+  color: var(--muted-foreground);
+}
+
+.team-taps-row-repo,
+.team-taps-skill-name {
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.team-taps-row-path,
+.team-taps-skill-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+
+.team-taps-trust[data-tone="trusted"] {
+  background: color-mix(
+    in oklch,
+    var(--success, var(--ring-focus)) 16%,
+    transparent
+  );
+  color: var(--foreground);
+}
+
+.team-taps-trust[data-tone="caution"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.team-taps-row-actions,
+.team-taps-skill-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.team-taps-row-search,
+.team-taps-row-remove,
+.team-taps-skill-install,
+.team-taps-token-button,
+.team-taps-search-retry,
+.team-taps-skill-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.team-taps-row-remove:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.team-taps-token-callout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.team-taps-token-callout[data-tone="warning"] {
+  border-color: color-mix(
+    in oklch,
+    var(--warm-strong) 40%,
+    var(--border-subtle)
+  );
+}
+
+.team-taps-token-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.team-taps-token-body {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-token-button {
+  align-self: flex-start;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+
+.team-taps-lifecycle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+
+.team-taps-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: 500;
+}
+
+.team-taps-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-search-card {
+  margin-top: var(--sp-4);
+}
+
+.team-taps-search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.team-taps-search-title {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.team-taps-search-repo {
+  font-family: var(--font-mono, monospace);
+}
+
+.team-taps-search-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.team-taps-search-form {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.team-taps-search-icon {
+  position: absolute;
+  left: calc(var(--sp-5) + var(--sp-3));
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.team-taps-search-form input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.team-taps-search-form input:focus {
+  border-color: var(--ring-focus);
+}
+
+.team-taps-search-body {
+  padding: var(--sp-2) 0;
+}
+
+.team-taps-search-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-skill-install {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+.team-taps-skill-installing,
+.team-taps-skill-done {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-skill-done {
+  color: var(--success);
+}
+
+.team-taps-skill-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.team-taps-skill-failed-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-skill-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.team-taps-loading,
+.team-taps-search-empty {
+  margin: 0;
+  padding: var(--sp-4) var(--sp-5);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.team-taps-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6) var(--sp-5);
+  text-align: center;
+}
+
+.team-taps-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.team-taps-empty-title {
+  margin: 0;
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.team-taps-empty-description {
+  margin: 0;
+  max-width: 42ch;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+/* Skill install security review (Hermes admin surface, spec 07). A native
+ * dialog (the shared .dialog-card) shown before a non-trusted Skills Hub
+ * install: it surfaces source/trust, the scan's findings + affected files, what
+ * the skill bundles, the capabilities it may use, and the sandbox/full-mode
+ * implications, then requires an explicit confirmation (or a force-override
+ * acknowledgement). A dangerous verdict offers no install path. Tokens only. */
+.skill-review-dialog .dialog-leading {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.skill-review-body {
+  display: grid;
+  gap: var(--sp-4);
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+}
+
+.skill-review-model {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skill-review-facts {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.skill-review-fact {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: baseline;
+}
+
+.skill-review-fact dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-fact dd {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-review-verdict-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-px) var(--sp-2);
+  border-radius: var(--r-pill, 999px);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-verdict-pill[data-tone="trusted"] {
+  border-color: color-mix(
+    in oklch,
+    var(--success, var(--ring-focus)) 40%,
+    var(--border)
+  );
+  color: var(--success, var(--ring-focus));
+}
+
+.skill-review-verdict-pill[data-tone="caution"],
+.skill-review-verdict-pill[data-tone="neutral"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  color: var(--warm-strong);
+}
+
+.skill-review-verdict-pill[data-tone="danger"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  color: var(--destructive);
+}
+
+.skill-review-summary {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-section {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-review-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.skill-review-findings,
+.skill-review-bundle,
+.skill-review-files,
+.skill-review-links {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-review-finding {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-radius: var(--r-sm);
+  background: var(--card);
+}
+
+.skill-review-finding[data-tone="caution"] {
+  border-left-color: var(--warm-strong);
+}
+
+.skill-review-finding[data-tone="danger"] {
+  border-left-color: var(--destructive);
+}
+
+.skill-review-finding-category {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-finding-detail {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skill-review-bundle li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.skill-review-bundle-label {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.skill-review-bundle-detail {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-review-chips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-review-chip {
+  padding: var(--sp-px) var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-file {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.skill-review-links a {
+  color: var(--ring-focus);
+  font-size: var(--fs-sm);
+  word-break: break-all;
+}
+
+.skill-review-runtime {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skill-review-advanced summary {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-advanced-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-3) 0 0;
+}
+
+.skill-review-advanced-list dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-advanced-list dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.skill-review-mono {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.skill-review-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 6%, var(--card));
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.skill-review-ack input {
+  margin-top: 0.15em;
+}
+
+.skill-review-blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--destructive) 45%, var(--border));
+  border-radius: var(--r-md);
+  background: var(--destructive-soft);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Toolsets inventory (Hermes admin surface, spec 04). A read-only settings
+ * section: reuses the settings-group / settings-card chrome, with a search
+ * toolbar, a last-refreshed line, toolset rows (status / mode / tools /
+ * requirements), and a companion skill-availability card. Tokens only. */
+.toolsets-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.toolsets-mode-note {
+  color: var(--muted-foreground);
+}
+
+.toolsets-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.toolsets-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.toolsets-search-icon {
+  position: absolute;
+  left: var(--sp-3);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.toolsets-search input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.toolsets-search input:focus {
+  border-color: var(--ring-focus);
+}
+
+.toolsets-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.toolsets-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.toolsets-refreshed {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-5);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.toolsets-inline-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.toolsets-body {
+  padding: 0 var(--sp-5);
+}
+
+.toolsets-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.toolset-row {
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.toolset-row:last-child {
+  border-bottom: 0;
+}
+
+.toolset-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.toolset-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.toolset-name {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+
+.toolset-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.toolset-status[data-tone="positive"] {
+  background: color-mix(in oklch, var(--ring-focus) 20%, transparent);
+  color: var(--foreground);
+}
+
+.toolset-status[data-tone="attention"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.toolset-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.toolset-mode[data-unknown="true"] {
+  font-style: italic;
+}
+
+.toolset-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.toolset-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.toolset-tool {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+.toolset-tools-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
+
+.toolset-requirements {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.toolset-requirements-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.toolset-requirements-list {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.toolset-requirement {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+/* Toolsets lifecycle banner + notifications (same tones as installed skills). */
+.toolsets-lifecycle {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.toolsets-lifecycle[data-tone="warning"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.toolsets-lifecycle[data-tone="destructive"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.toolsets-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.toolsets-lifecycle[data-tone="warning"] .toolsets-lifecycle-eyebrow {
+  color: var(--warm-strong);
+}
+
+.toolsets-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Skill availability card — explains why skills are visible / hidden / waiting
+ * on setup against the toolset inventory. */
+.toolsets-skills-card {
+  margin-top: var(--sp-4);
+}
+
+.toolsets-skills-header {
+  display: grid;
+  gap: var(--sp-px);
+  margin-bottom: var(--sp-3);
+}
+
+.toolsets-skills-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.toolsets-skills-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.toolsets-skills-list {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.toolsets-skill-row {
+  display: grid;
+  gap: 3px;
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.toolsets-skill-row:last-child {
+  border-bottom: 0;
+}
+
+.toolsets-skill-name {
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.toolsets-skill-row[data-status="hidden"] .toolsets-skill-name,
+.toolsets-skill-row[data-status="missing-setup"] .toolsets-skill-name {
+  color: var(--muted-foreground);
+}
+
+.toolsets-skill-explanation {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.toolsets-skill-row[data-status="missing-setup"] .toolsets-skill-explanation {
+  color: var(--warm-strong);
+}
+
+/* Empty / error / loading states. */
+.toolsets-empty,
+.toolsets-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+}
+
+.toolsets-empty-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.toolsets-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.toolsets-empty-description {
+  margin: 0;
+  max-width: 360px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.toolsets-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.toolset-skeleton-line {
+  display: block;
+  height: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.toolset-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
+.toolset-skeleton-line + .toolset-skeleton-line {
+  width: 70%;
+}
+
+/* ------------------------------------------------------------------ */
+/* Profile builder (spec 20)                                          */
+/* ------------------------------------------------------------------ */
+
+.profile-builder-mode-note {
+  color: var(--muted-foreground);
+}
+
+.profile-builder-card {
+  display: grid;
+  gap: var(--sp-5);
+  padding: var(--sp-6);
+}
+
+.profile-builder-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  padding: 0;
+  list-style: none;
+}
+
+.profile-builder-stepper-item {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.profile-builder-stepper-button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.profile-builder-stepper-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.profile-builder-stepper-item[data-active] .profile-builder-stepper-button {
+  border-color: var(--ring);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.profile-builder-stepper-item[data-done] .profile-builder-stepper-button {
+  color: var(--foreground);
+}
+
+.profile-builder-stepper-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.profile-builder-stepper-item[data-active] .profile-builder-stepper-index,
+.profile-builder-stepper-item[data-done] .profile-builder-stepper-index {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.profile-builder-step-header {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.profile-builder-step-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.profile-builder-step-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.profile-builder-fields {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.profile-builder-field {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.profile-builder-field-label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.profile-builder-field input[type="text"],
+.profile-builder-field textarea {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--input);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+
+.profile-builder-field input:focus,
+.profile-builder-field textarea:focus {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 1px;
+}
+
+.profile-builder-field-meta {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.profile-builder-fieldset {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.profile-builder-radio,
+.profile-builder-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  font-size: var(--fs-md);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.profile-builder-radio input,
+.profile-builder-checkbox input {
+  margin-top: 2px;
+}
+
+.profile-builder-radio-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-weight: 600;
+}
+
+.profile-builder-radio-detail,
+.profile-builder-checkbox .profile-builder-field-meta {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.profile-builder-model-list,
+.profile-builder-skill-list,
+.profile-builder-mcp-list {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile-builder-model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.profile-builder-model-row[data-selected] {
+  border-color: var(--ring);
+  background: var(--surface-subtle);
+}
+
+.profile-builder-model-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.profile-builder-model-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.profile-builder-model-tag[data-tone="destructive"] {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+.profile-builder-review {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.profile-builder-plan {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile-builder-plan-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.profile-builder-plan-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.profile-builder-plan-target {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.profile-builder-plan-detail {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.profile-builder-risk {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.profile-builder-risk[data-tone="warning"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.profile-builder-risk[data-tone="destructive"] {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+.profile-builder-warning,
+.profile-builder-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.profile-builder-warning {
+  color: var(--warm-strong);
+}
+
+.profile-builder-error {
+  color: var(--destructive);
+}
+
+.profile-builder-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+
+.profile-builder-create-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.profile-builder-back,
+.profile-builder-next,
+.profile-builder-create {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.profile-builder-next,
+.profile-builder-create {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.profile-builder-create-secondary {
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.profile-builder-back:disabled,
+.profile-builder-next:disabled,
+.profile-builder-create:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.profile-builder-created,
+.profile-builder-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-8);
+  text-align: center;
+}
+
+.profile-builder-created-icon,
+.profile-builder-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.profile-builder-created-title,
+.profile-builder-empty-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.profile-builder-created-detail,
+.profile-builder-empty-description {
+  margin: 0;
+  max-width: 42ch;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+/* ---------------------------------------------------------------------------
+ * Integrations health dashboard (admin surfaces spec 22). A read-only overview
+ * that aggregates readiness across the model, gateway, skills, toolsets, MCP,
+ * and external directories. Tone-aware via [data-tone]. Tokens only.
+ * ------------------------------------------------------------------------- */
+
+.integrations-health-card {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.integrations-health-overview {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.integrations-health-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  align-self: start;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.integrations-health-status[data-tone="ready"] {
+  background: color-mix(
+    in oklch,
+    var(--success, var(--primary)) 14%,
+    var(--card)
+  );
+  color: var(--success, var(--primary));
+}
+
+.integrations-health-status[data-tone="attention"] {
+  background: color-mix(in oklch, var(--warm-strong) 14%, var(--card));
+  color: var(--warm-strong);
+}
+
+.integrations-health-status[data-tone="error"] {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+.integrations-health-status[data-tone="neutral"] {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.integrations-health-count {
+  display: grid;
+  gap: 2px;
+  min-width: 6rem;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.integrations-health-count-value {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.integrations-health-count-label {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-count[data-tone="attention"]
+  .integrations-health-count-value {
+  color: var(--warm-strong);
+}
+
+.integrations-health-count[data-tone="error"] .integrations-health-count-value {
+  color: var(--destructive);
+}
+
+.integrations-health-count[data-tone="ok"] .integrations-health-count-value {
+  color: var(--success, var(--primary));
+}
+
+.integrations-health-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.integrations-health-export {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.integrations-health-export:hover {
+  background: var(--surface-subtle);
+}
+
+.integrations-health-issues {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.integrations-health-issue {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.integrations-health-issue[data-tone="error"] {
+  border-color: color-mix(
+    in oklch,
+    var(--destructive) 35%,
+    var(--border-subtle)
+  );
+}
+
+.integrations-health-issue[data-tone="attention"] {
+  border-color: color-mix(
+    in oklch,
+    var(--warm-strong) 35%,
+    var(--border-subtle)
+  );
+}
+
+.integrations-health-issue-body {
+  display: grid;
+  gap: 2px;
+}
+
+.integrations-health-issue-message {
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+}
+
+.integrations-health-issue-action {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-issue-link {
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.integrations-health-issue-link:hover {
+  background: var(--surface-subtle);
+}
+
+.integrations-health-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--success, var(--primary));
+  font-size: var(--fs-sm);
+}
+
+.integrations-health-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  text-align: center;
+}
+
+.integrations-health-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.integrations-health-empty-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.integrations-health-empty-description {
+  margin: 0;
+  max-width: 42ch;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-mode-note {
+  color: var(--muted-foreground);
 }

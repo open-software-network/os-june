@@ -1,5 +1,10 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
+// Re-exported so modules that build their own command calls (e.g. the Hermes
+// admin Rust transport) route through the same `invoke` the rest of the app's
+// bindings use, rather than reaching into `@tauri-apps/api/core` directly.
+export { invoke };
+
 export type ProcessingStatus =
   | "draft"
   | "recording"
@@ -1111,6 +1116,251 @@ export async function stopHermesBridge() {
   return invoke<HermesBridgeStatus>("stop_hermes_bridge");
 }
 
+/** The redacted result of an MCP OAuth login attempt. The Rust bridge runs
+ * `hermes mcp login <server>`, opens the authorization URL in the OS browser,
+ * and waits for the CLI to finish. It NEVER returns a token: only whether the
+ * login succeeded, an already-redacted status message, and the (token-free)
+ * authorization URL so June can offer a manual "open in browser" fallback.
+ * `timedOut` is true when the wait elapsed before the CLI completed (the browser
+ * sign-in is still the user's to finish; June never blocks on it). */
+export type HermesMcpOauthLoginResult = {
+  ok: boolean;
+  /** A safe, already-redacted status message, or null when the CLI said nothing
+   * quotable. Never carries a token, bearer value, or auth code. */
+  message: string | null;
+  /** The authorization URL the CLI emitted (token-free), or null. */
+  authUrl: string | null;
+  /** True when the wait elapsed before the CLI reported a terminal state. */
+  timedOut: boolean;
+};
+
+/**
+ * Runs the MCP OAuth sign-in for one server through the Rust bridge:
+ * `hermes mcp login <server>` against the chosen runtime's profile, opening the
+ * authorization URL in the OS browser. `mode` selects the runtime explicitly
+ * (sandboxed vs unrestricted) — Rust never falls back to the first connection.
+ * The result is redacted in Rust and re-checked in the view layer; no token is
+ * ever returned to the webview.
+ */
+export async function hermesMcpOauthLogin(input: {
+  mode: "sandboxed" | "unrestricted";
+  server: string;
+  profile?: string;
+}) {
+  return invoke<HermesMcpOauthLoginResult>("hermes_mcp_oauth_login", {
+    request: input,
+  });
+}
+
+/** The redacted result of a bundled-skill reset. Carries no skill content and no
+ * secret-shaped CLI output: only whether the CLI reported success, an already
+ * redacted status message, and whether the bounded wait elapsed. */
+export type HermesResetSkillResult = {
+  ok: boolean;
+  /** A safe, already-redacted status message, or null when the CLI said nothing
+   * quotable. */
+  message: string | null;
+  /** True when the wait elapsed before the CLI reported a terminal state. */
+  timedOut: boolean;
+};
+
+/**
+ * Resets (or restores) a bundled skill to its shipped baseline through the Rust
+ * bridge: `hermes skills reset <name> [--restore]` against the chosen runtime's
+ * profile. The dashboard exposes no reset endpoint, so this is the narrow CLI
+ * fallback. `mode` selects the runtime explicitly (sandboxed vs unrestricted) —
+ * Rust never falls back to the first connection. The skill name is validated
+ * argument-safe on both sides and passed as a discrete CLI argument (no shell).
+ * The result is redacted in Rust; no skill content is returned to the webview.
+ */
+export async function hermesResetBundledSkill(input: {
+  mode: "sandboxed" | "unrestricted";
+  name: string;
+  profile?: string;
+  restore?: boolean;
+}) {
+  return invoke<HermesResetSkillResult>("hermes_reset_bundled_skill", {
+    request: input,
+  });
+}
+
+/** One configured custom GitHub skill tap, as parsed from `hermes skills tap
+ * list` by the Rust bridge. Carries only a validated `owner/repo`, an optional
+ * safe path, and a trust marker. Never a token. Mirrors the Rust `HermesSkillTap`
+ * (camelCase). */
+export type HermesSkillTapDto = {
+  /** The tap repository as `owner/repo` (validated argument-safe). */
+  repo: string;
+  /** The path override inside the repo, when the tap declares one. */
+  path?: string;
+  /** True only when Hermes explicitly marks the tap trusted/verified. The UI
+   * treats every other tap as community. */
+  trusted: boolean;
+};
+
+/** The result of listing taps. `taps` is the parsed list; `message` is an
+ * already-redacted status line when the CLI failed. */
+export type HermesSkillTapListResult = {
+  ok: boolean;
+  taps: HermesSkillTapDto[];
+  /** A safe, already-redacted status message, or null. Never carries a token. */
+  message: string | null;
+  /** True when the bounded wait elapsed before the CLI reported a result. */
+  timedOut: boolean;
+};
+
+/** The redacted result of a tap add/remove. Carries no token: only whether the
+ * CLI reported success, an already-redacted status message, and whether the
+ * bounded wait elapsed. */
+export type HermesSkillTapWriteResult = {
+  ok: boolean;
+  message: string | null;
+  timedOut: boolean;
+};
+
+/**
+ * Lists the configured custom GitHub skill taps for the chosen runtime/profile.
+ * The dashboard (v2026.6.19) exposes no tap endpoints, so this runs the pinned
+ * `hermes skills tap list` CLI through the Rust bridge. `mode` selects the
+ * runtime explicitly (sandboxed vs unrestricted) with no first-connection
+ * fallback. The output is parsed and redacted in Rust; no token is returned.
+ */
+export async function hermesSkillTapList(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+}) {
+  return invoke<HermesSkillTapListResult>("hermes_skill_tap_list", {
+    request: input,
+  });
+}
+
+/**
+ * Adds a custom GitHub skill tap (`owner/repo`, optional path override) through
+ * the Rust bridge: `hermes skills tap add <owner/repo> [--path <path>]`. The repo
+ * and path are validated argument-safe on both sides and passed as discrete CLI
+ * arguments (no shell). `mode` selects the runtime explicitly. The result is
+ * redacted in Rust; no token is returned.
+ */
+export async function hermesSkillTapAdd(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  repo: string;
+  path?: string;
+}) {
+  return invoke<HermesSkillTapWriteResult>("hermes_skill_tap_add", {
+    request: input,
+  });
+}
+
+/**
+ * Removes a custom GitHub skill tap by `owner/repo` through the Rust bridge:
+ * `hermes skills tap remove <owner/repo>`. The repo is validated argument-safe on
+ * both sides and passed as a discrete CLI argument (no shell).
+ */
+export async function hermesSkillTapRemove(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  repo: string;
+}) {
+  return invoke<HermesSkillTapWriteResult>("hermes_skill_tap_remove", {
+    request: input,
+  });
+}
+
+/** The read-only filesystem status of one configured external skill directory,
+ * as reported by the June-side `hermes_inspect_external_dirs` command. Carries
+ * both the raw configured path and the resolved one. Mirrors the Rust
+ * `ExternalDirStatus` (camelCase). */
+export type ExternalDirStatus = {
+  /** The path exactly as configured (with `~`/`${VAR}` unexpanded). */
+  rawPath: string;
+  /** The expanded absolute path, or null when a variable could not be resolved. */
+  resolvedPath: string | null;
+  /** The name of an unresolved environment variable referenced in the path, or
+   * null. Never the variable's value. */
+  unresolvedVar: string | null;
+  /** True when the resolved path exists. */
+  exists: boolean;
+  /** True when the resolved path exists and is a directory. */
+  isDir: boolean;
+  /** True when June could list the directory. */
+  readable: boolean;
+  /** True/false when writability was safely detected, null when ambiguous. */
+  writable: boolean | null;
+  /** Count of discovered skills, or null when missing/unreadable. */
+  skillCount: number | null;
+  /** Discovered skill names (for shadowing explanation). */
+  skillNames: string[];
+};
+
+/**
+ * Inspects the configured external skill directories read-only through June's
+ * own (non-jailed) Rust process: expands `~`/`${VAR}`, stats each path, probes
+ * readability/writability, and counts discovered skills. No mutation, no
+ * file-content reads, no secrets returned. The CONFIG itself is written through
+ * Hermes' `PUT /api/config` (so the jailed dashboard owns the config.yaml
+ * write); this command only reports filesystem status the dashboard can't.
+ */
+export async function hermesInspectExternalDirs(dirs: string[]) {
+  return invoke<ExternalDirStatus[]>("hermes_inspect_external_dirs", {
+    request: { dirs },
+  });
+}
+
+/** A Hermes skill bundle as June reads/writes it. `slug` is the file stem and
+ * the slash command; `skills` is the ordered member list; `instructions` is the
+ * optional prompt text Hermes prepends at invocation. Mirrors the Rust
+ * `HermesSkillBundle`. */
+export type HermesSkillBundleDto = {
+  slug: string;
+  name?: string;
+  description?: string;
+  skills: string[];
+  instructions?: string;
+};
+
+/**
+ * Lists the skill bundles for the chosen runtime/profile. The dashboard exposes
+ * no bundle endpoints, so this reads the per-profile `skill-bundles` directory
+ * through the Rust bridge. `mode` selects the runtime explicitly (sandboxed vs
+ * unrestricted) with no first-connection fallback. Returns an empty list when no
+ * bundles exist yet.
+ */
+export async function hermesListSkillBundles(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+}) {
+  return invoke<HermesSkillBundleDto[]>("hermes_list_skill_bundles", {
+    request: input,
+  });
+}
+
+/**
+ * Creates or updates a bundle by writing its YAML file. `previousSlug`, when it
+ * differs from `bundle.slug`, removes the old file after the new one is written
+ * (a rename). The slug is validated argument/path safe on both sides; the write
+ * is confined to the bundles directory. Returns the saved bundle.
+ */
+export async function hermesSaveSkillBundle(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  bundle: HermesSkillBundleDto;
+  previousSlug?: string;
+}) {
+  return invoke<HermesSkillBundleDto>("hermes_save_skill_bundle", {
+    request: input,
+  });
+}
+
+/** Deletes a bundle's YAML file. The slug is validated and the path confined to
+ * the bundles directory; a missing file is treated as success. */
+export async function hermesDeleteSkillBundle(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  slug: string;
+}) {
+  return invoke<void>("hermes_delete_skill_bundle", { request: input });
+}
 /** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
  * window. `unrestricted` mirrors the session's mode so the debug session runs
  * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */

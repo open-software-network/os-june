@@ -94,6 +94,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  // The pending skill-writes tray loads through the Rust bridge via this named
+  // `invoke`. A quiet stub keeps these workspace tests off that path.
+  invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
@@ -228,6 +231,12 @@ describe("AgentWorkspace", () => {
     // the next.
     for (const id of ["session-1", "session-2", "runtime-session-2"]) {
       hermesArtifactStore.clearSession(id);
+    }
+    // Feature 04: the pending-action store is the same kind of process-wide
+    // singleton. Clear these tests' session ids so a prior test's "Needs you"
+    // rows (now keyed by the durable stored id) don't leak into the next.
+    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+      pendingActionStore.resolveSession(id);
     }
     window.sessionStorage.clear();
     window.localStorage.clear();

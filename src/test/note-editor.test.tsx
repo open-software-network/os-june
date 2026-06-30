@@ -405,7 +405,7 @@ describe("NoteEditor", () => {
     expect(screen.getByText("0:15-0:18")).toBeInTheDocument();
   });
 
-  it("does not render whole-note failures as transcript turns", () => {
+  it("renders whole-note source failures as transcript evidence", () => {
     render(
       <NoteEditor
         {...props}
@@ -436,7 +436,12 @@ describe("NoteEditor", () => {
         "Microphone: No speech detected. Try speaking louder or moving closer to the microphone.",
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByText("0:15-0:18")).not.toBeInTheDocument();
+    expect(screen.getByText("0:15-0:18")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "No speech detected. Try speaking louder or moving closer to the microphone.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("requests tab change when Transcription is selected", async () => {
