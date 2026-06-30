@@ -694,12 +694,10 @@ export function AppSettings({
       });
       setProviderSettings(next);
       setLocalGenerationDraft(next.localGeneration);
-      if (enabled) {
-        dispatchProviderModelSettingsChanged({
-          mode: "generation",
-          modelId: next.generationModel,
-        });
-      }
+      dispatchProviderModelSettingsChanged({
+        mode: "generation",
+        modelId: next.generationModel,
+      });
       setStatus(
         enabled ? "Local text model enabled." : "Local text model saved.",
       );

@@ -1726,6 +1726,67 @@ describe("AppSettings", () => {
     }
   });
 
+  it("notifies listeners when disabling a local text model", async () => {
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "local",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "llama3.1:8b",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const modelChanged = vi.fn();
+    window.addEventListener(
+      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+      modelChanged,
+    );
+
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      await user.click(await screen.findByRole("tab", { name: "Models" }));
+      await user.click(
+        await screen.findByRole("switch", { name: "Use local text model" }),
+      );
+
+      expect(mocks.setLocalGenerationModel).toHaveBeenCalledWith({
+        enabled: false,
+        baseUrl: "http://localhost:11434/v1",
+        modelId: "llama3.1:8b",
+      });
+      expect(modelChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: {
+            mode: "generation",
+            modelId: "zai-org-glm-5-2",
+          },
+        }),
+      );
+    } finally {
+      window.removeEventListener(
+        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+        modelChanged,
+      );
+    }
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(

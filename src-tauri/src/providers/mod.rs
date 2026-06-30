@@ -285,7 +285,8 @@ pub fn set_local_generation_model(
     state: State<'_, ProviderSettingsState>,
     request: SetLocalGenerationModelRequest,
 ) -> Result<ProviderModelSettings, AppError> {
-    let base_url = normalize_local_base_url(&request.base_url, request.enabled)?;
+    let base_url =
+        normalize_local_base_url_for_local_generation_request(&request.base_url, request.enabled)?;
     let model_id = request.model_id.trim().to_string();
     if request.enabled && model_id.is_empty() {
         return Err(AppError::new(
@@ -546,6 +547,16 @@ fn normalize_local_base_url(value: &str, required: bool) -> Result<String, AppEr
     Ok(trimmed.to_string())
 }
 
+fn normalize_local_base_url_for_local_generation_request(
+    value: &str,
+    enabled: bool,
+) -> Result<String, AppError> {
+    if enabled {
+        return normalize_local_base_url(value, true);
+    }
+    Ok(normalize_local_base_url(value, false).unwrap_or_default())
+}
+
 fn is_loopback_host(host: &str) -> bool {
     let normalized = host.trim().trim_matches(['[', ']']).to_ascii_lowercase();
     if normalized == "localhost" || normalized.ends_with(".localhost") {
@@ -673,6 +684,28 @@ mod tests {
         assert!(normalize_local_base_url("http://localhost:11434/v1", true).is_ok());
         assert!(normalize_local_base_url("http://127.0.0.1:1234/v1/", true).is_ok());
         assert!(normalize_local_base_url("https://example.com/v1", true).is_err());
+    }
+
+    #[test]
+    fn disabled_local_base_url_allows_invalid_drafts() {
+        assert_eq!(
+            normalize_local_base_url_for_local_generation_request(
+                "http://localhost:11434/v1/",
+                false
+            )
+            .unwrap(),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            normalize_local_base_url_for_local_generation_request("https://example.com/v1", false)
+                .unwrap(),
+            ""
+        );
+        assert!(normalize_local_base_url_for_local_generation_request(
+            "https://example.com/v1",
+            true
+        )
+        .is_err());
     }
 
     #[test]
