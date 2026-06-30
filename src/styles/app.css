@@ -9534,7 +9534,7 @@ input:focus-visible,
   width: 150px;
   height: 8px;
   overflow: hidden;
-  border-radius: var(--r-full);
+  border-radius: var(--r-pill);
   background: color-mix(in oklch, var(--muted) 70%, transparent);
 }
 
@@ -9586,20 +9586,84 @@ input:focus-visible,
   font-family: var(--font-mono);
 }
 
-.usage-remaining-amount {
+/* Billing card — plan identity stacked over a labeled usage meter,
+ * Cursor-style: quiet plan header, prominent percentage, full-width track. */
+.billing-card {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.billing-plan {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.billing-plan-info {
+  display: grid;
+  gap: var(--sp-px);
+  min-width: 0;
+}
+
+.billing-plan-name {
   margin: 0;
   color: var(--foreground);
-  font-size: var(--fs-2xl);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.billing-plan-detail {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.billing-plan-control {
+  flex: none;
+}
+
+.billing-usage {
+  display: grid;
+  gap: var(--sp-2);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.billing-usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.billing-usage-label {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.billing-usage-right {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.billing-usage-value {
+  color: var(--foreground);
+  font-size: var(--fs-xl);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
 
 .usage-remaining-progress {
-  width: min(360px, 100%);
+  width: 100%;
   height: 8px;
-  margin: var(--sp-2) 0 var(--sp-1);
+  margin: 0;
   overflow: hidden;
-  border-radius: var(--r-full);
+  border-radius: var(--r-pill);
   background: color-mix(in oklch, var(--muted) 72%, transparent);
 }
 
@@ -9610,6 +9674,31 @@ input:focus-visible,
   background: color-mix(in oklch, var(--success) 76%, var(--foreground));
   transform-origin: left center;
   transition: transform 160ms ease-out;
+}
+
+/* Near-empty allowance: warm the fill so green never reads as "plenty left". */
+.usage-remaining-progress.is-low .usage-remaining-progress-fill {
+  background: color-mix(in oklch, var(--destructive) 80%, var(--foreground));
+}
+
+/* Dev-only __billingDemo("all") gallery: each plan variant stacked under a
+ * monospace caption so states are easy to compare side by side. */
+.billing-demo-gallery {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.billing-demo-variant {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.billing-demo-label {
+  margin: 0;
+  padding-left: var(--sp-1);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
 }
 
 .balance-refresh-icon {

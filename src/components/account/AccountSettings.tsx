@@ -2,6 +2,11 @@ import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise
 import { useState } from "react";
 import { hasLiveSubscription } from "../../lib/account-gate";
 import {
+  BILLING_DEMO_FIXTURES,
+  BILLING_DEMO_ORDER,
+  useForcedBillingPlan,
+} from "../../lib/billing-demo";
+import {
   osAccountsCancelLogin,
   osAccountsLogin,
   osAccountsLogout,
@@ -11,6 +16,8 @@ import {
 import type { AccountStatus } from "../../lib/tauri";
 
 const FREE_PLAN_NAME = "Free plan";
+// Single paid tier today; rename here when the plan catalog grows.
+const PAID_PLAN_NAME = "Pro plan";
 const FREE_PLAN_CREDITS = 5000;
 
 type Props = {
@@ -172,6 +179,7 @@ export function BillingSettingsSection({
   const [refreshing, setRefreshing] = useState(false);
   const [billingStatus, setBillingStatus] = useState<string>();
   const [spins, setSpins] = useState(0);
+  const demoPlan = useForcedBillingPlan();
 
   async function handleUpgrade() {
     try {
@@ -191,38 +199,6 @@ export function BillingSettingsSection({
     }
   }
 
-  const subscription = account.subscription;
-  const liveSubscription = hasLiveSubscription(account);
-  const usagePlanName =
-    subscription?.subscribed === true ? "your subscription" : FREE_PLAN_NAME;
-  const usageRemainingPercent = usagePercentFromBalance(
-    account.balance,
-    subscription,
-  );
-  const billingRecovery =
-    subscription?.subscribed === true &&
-    typeof subscription.status === "string" &&
-    subscription.status.length > 0 &&
-    !liveSubscription;
-  const subscriptionRow = liveSubscription
-    ? {
-        title: "Subscription",
-        detail:
-          subscription?.status === "trialing"
-            ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Active")
-            : (describeEnd("Renews", subscription?.currentPeriodEnd) ??
-              "Active"),
-        cta: "Manage billing",
-      }
-    : billingRecovery
-      ? {
-          title: "Billing needs attention",
-          detail: "Open your account portal to update billing.",
-          cta: "Manage billing",
-        }
-      : undefined;
-  const canUpgrade = account.signedIn && !liveSubscription && !billingRecovery;
-
   async function handleRefresh() {
     setRefreshing(true);
     setSpins((turns) => turns + 1);
@@ -236,6 +212,22 @@ export function BillingSettingsSection({
     }
   }
 
+  // __billingDemo(...) parks the card in a fixture state (or "all" stacks every
+  // variant) for design work; demoPlan stays null in production. See
+  // lib/billing-demo.ts.
+  const galleryMode = demoPlan === "all";
+  const demoAccount =
+    demoPlan && demoPlan !== "all"
+      ? BILLING_DEMO_FIXTURES[demoPlan].account
+      : undefined;
+  const cardProps = {
+    refreshing,
+    spins,
+    onRefresh: () => void handleRefresh(),
+    onUpgrade: () => void handleUpgrade(),
+    onManage: () => void handleManageSubscription(),
+  };
+
   return (
     <section className="settings-group" aria-labelledby="billing-heading">
       <h2 id="billing-heading" className="settings-group-heading">
@@ -247,82 +239,135 @@ export function BillingSettingsSection({
       {billingStatus ? (
         <p className="settings-status">{billingStatus}</p>
       ) : null}
-      <div className="settings-card">
-        <div className="settings-rows">
-          {subscriptionRow ? (
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">{subscriptionRow.title}</h3>
-                <p className="settings-row-description">
-                  {subscriptionRow.detail}
-                </p>
-              </div>
-              <div className="settings-row-control">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => void handleManageSubscription()}
-                >
-                  {subscriptionRow.cta}
-                </button>
-              </div>
-            </div>
-          ) : null}
-          <div className="settings-row billing-usage-row">
-            <div className="settings-row-info">
-              <p className="usage-remaining-amount">
-                {formatPercent(usageRemainingPercent)} remaining
+      {galleryMode ? (
+        <div className="billing-demo-gallery">
+          {BILLING_DEMO_ORDER.map((key) => (
+            <div className="billing-demo-variant" key={key}>
+              <p className="billing-demo-label">
+                {BILLING_DEMO_FIXTURES[key].label}
               </p>
-              <div
-                className="usage-remaining-progress"
-                role="progressbar"
-                aria-label="Usage remaining"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={usageRemainingPercent}
-              >
-                <div
-                  className="usage-remaining-progress-fill"
-                  style={{
-                    transform: `scaleX(${usageRemainingPercent / 100})`,
-                  }}
-                />
-              </div>
-              <div>
-                <p className="settings-row-description">
-                  Usage remaining on {usagePlanName}
-                </p>
-              </div>
+              <BillingCard
+                account={BILLING_DEMO_FIXTURES[key].account}
+                {...cardProps}
+              />
             </div>
-            <div className="settings-row-control">
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Refresh usage"
-                title="Refresh usage"
-                disabled={refreshing || !account.signedIn}
-                onClick={() => void handleRefresh()}
-              >
-                <IconArrowRotateClockwise
-                  size={14}
-                  className="balance-refresh-icon"
-                  style={{ transform: `rotate(${spins * 360}deg)` }}
-                />
-              </button>
-              {canUpgrade ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => void handleUpgrade()}
-                >
-                  Upgrade
-                </button>
-              ) : null}
-            </div>
+          ))}
+        </div>
+      ) : (
+        <BillingCard account={demoAccount ?? account} {...cardProps} />
+      )}
+    </section>
+  );
+}
+
+type BillingCardProps = {
+  account: AccountStatus;
+  refreshing: boolean;
+  spins: number;
+  onRefresh: () => void;
+  onUpgrade: () => void;
+  onManage: () => void;
+};
+
+function BillingCard({
+  account,
+  refreshing,
+  spins,
+  onRefresh,
+  onUpgrade,
+  onManage,
+}: BillingCardProps) {
+  const subscription = account.subscription;
+  const liveSubscription = hasLiveSubscription(account);
+  const usageRemainingPercent = usagePercentFromBalance(
+    account.balance,
+    subscription,
+  );
+  const billingRecovery =
+    subscription?.subscribed === true &&
+    typeof subscription.status === "string" &&
+    subscription.status.length > 0 &&
+    !liveSubscription;
+  const onPaidPlan = liveSubscription || billingRecovery;
+  const canUpgrade = account.signedIn && !onPaidPlan;
+  // Warm the meter toward "running low" so green never implies a near-empty
+  // allowance. Only meaningful once we have a real signed-in reading.
+  const lowUsage = account.signedIn && usageRemainingPercent <= 15;
+
+  const planName = onPaidPlan ? PAID_PLAN_NAME : FREE_PLAN_NAME;
+  const planDetail = billingRecovery
+    ? "Update billing in your account portal."
+    : liveSubscription
+      ? subscription?.status === "trialing"
+        ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Free trial")
+        : (describeEnd("Renews", subscription?.currentPeriodEnd) ?? "Active")
+      : "No credit card required.";
+  const primaryCta = onPaidPlan
+    ? { label: "Manage billing", onClick: onManage }
+    : canUpgrade
+      ? { label: "Upgrade", onClick: onUpgrade }
+      : undefined;
+
+  return (
+    <div className="settings-card billing-card">
+      <div className="billing-plan">
+        <div className="billing-plan-info">
+          <h3 className="billing-plan-name">{planName}</h3>
+          <p className="billing-plan-detail">{planDetail}</p>
+        </div>
+        {primaryCta ? (
+          <div className="billing-plan-control">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={primaryCta.onClick}
+            >
+              {primaryCta.label}
+            </button>
           </div>
+        ) : null}
+      </div>
+
+      <div className="billing-usage">
+        <div className="billing-usage-head">
+          <span className="billing-usage-label">Usage remaining</span>
+          <span className="billing-usage-right">
+            <span className="billing-usage-value">
+              {formatPercent(usageRemainingPercent)}
+            </span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Refresh usage"
+              title="Refresh usage"
+              disabled={refreshing || !account.signedIn}
+              onClick={onRefresh}
+            >
+              <IconArrowRotateClockwise
+                size={14}
+                className="balance-refresh-icon"
+                style={{ transform: `rotate(${spins * 360}deg)` }}
+              />
+            </button>
+          </span>
+        </div>
+        <div
+          className={`usage-remaining-progress${lowUsage ? " is-low" : ""}`}
+          role="progressbar"
+          aria-label="Usage remaining"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={usageRemainingPercent}
+        >
+          <div
+            className="usage-remaining-progress-fill"
+            style={{
+              transform: `scaleX(${usageRemainingPercent / 100})`,
+            }}
+          />
         </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -358,10 +403,7 @@ function usagePercentFromBalance(
       ((balance?.credits ?? 0) / (subscription?.planCredits ?? 1)) * 100,
     );
   }
-  if (
-    subscription?.subscribed === false &&
-    Number.isFinite(balance?.credits)
-  ) {
+  if (subscription?.subscribed === false && Number.isFinite(balance?.credits)) {
     return clampPercent(((balance?.credits ?? 0) / FREE_PLAN_CREDITS) * 100);
   }
   if (Number.isFinite(balance?.usdMillis)) {
