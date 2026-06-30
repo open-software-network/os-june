@@ -71,6 +71,11 @@ import {
   type BrandId,
 } from "../../lib/brand";
 import { AccentWheel } from "./AccentWheel";
+import {
+  getReleaseChannel,
+  setReleaseChannel,
+  type ReleaseChannel,
+} from "../../lib/updater";
 import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -138,6 +143,14 @@ const THEME_OPTIONS: readonly {
     ),
     ariaLabel: "Use dark theme",
   },
+];
+
+const RELEASE_CHANNEL_OPTIONS: readonly {
+  value: ReleaseChannel;
+  label: ReactNode;
+}[] = [
+  { value: "stable", label: "Stable" },
+  { value: "rc", label: "Release candidate" },
 ];
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
@@ -314,6 +327,8 @@ export function AppSettings({
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
+  const [releaseChannel, setReleaseChannelValue] =
+    useState<ReleaseChannel>("stable");
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
   const [internalTab, setInternalTab] = useState<SettingsTab>("general");
@@ -358,6 +373,30 @@ export function AppSettings({
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
   }, [capturingShortcut]);
+
+  // Load the persisted update channel once the updater is available. Gated on
+  // onCheckForUpdates so non-updater builds don't invoke the command.
+  useEffect(() => {
+    if (!onCheckForUpdates) return;
+    let active = true;
+    void getReleaseChannel()
+      .then((channel) => {
+        if (active) setReleaseChannelValue(channel);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [onCheckForUpdates]);
+
+  const handleReleaseChannelChange = (next: ReleaseChannel) => {
+    setReleaseChannelValue(next);
+    void setReleaseChannel(next).catch(() => {
+      // Persist failed: re-read so the toggle reflects the real saved channel
+      // rather than an optimistic value that never reached disk.
+      void getReleaseChannel().then(setReleaseChannelValue).catch(() => undefined);
+    });
+  };
 
   useEffect(() => {
     setMicOpen(false);
@@ -1345,23 +1384,43 @@ export function AppSettings({
                 </div>
 
                 {onCheckForUpdates ? (
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Updates</h3>
-                      <p className="settings-row-description">
-                        Check whether a newer version of June is available.
-                      </p>
+                  <>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Updates</h3>
+                        <p className="settings-row-description">
+                          Check whether a newer version of June is available.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={onCheckForUpdates}
+                        >
+                          Check for updates
+                        </button>
+                      </div>
                     </div>
-                    <div className="settings-row-control">
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={onCheckForUpdates}
-                      >
-                        Check for updates
-                      </button>
+
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Update channel</h3>
+                        <p className="settings-row-description">
+                          Stable is recommended. Release candidate gets early
+                          builds for testing.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <SegmentedControl<ReleaseChannel>
+                          aria-label="Update channel"
+                          value={releaseChannel}
+                          options={RELEASE_CHANNEL_OPTIONS}
+                          onValueChange={handleReleaseChannelChange}
+                        />
+                      </div>
                     </div>
-                  </div>
+                  </>
                 ) : null}
 
                 <div className="settings-row">

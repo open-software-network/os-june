@@ -1,15 +1,60 @@
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import type { DownloadEvent } from "../app/update-decision";
 
-export type JuneUpdate = Update;
+/** The two release streams. Wire form matches the Rust `ReleaseChannel`. */
+export type ReleaseChannel = "stable" | "rc";
 
-export function checkJuneUpdate() {
-  // No explicit target: let the runtime report its own platform and match it
-  // against the manifest. We only publish darwin-aarch64 today (ADR-0001:
-  // Intel is intentionally unsupported), but that scope lives in the published
-  // manifest's `platforms` keys, not pinned here — so a future arch "just works"
-  // once its build is added, instead of silently requesting the aarch64 key.
-  return check();
+/** What `fetch_update` reports: enough to prompt, not the live update handle. */
+type UpdateMeta = {
+  version: string;
+  body?: string;
+};
+
+/**
+ * A frontend-facing update. The real `Update` stays in Rust (it can't be
+ * serialized across IPC and only Rust can drive a channel-specific endpoint),
+ * so `downloadAndInstall` is a thin bridge to the `install_update` command —
+ * shaped to satisfy update-decision.ts's `UpdaterUpdate` so the surrounding
+ * prompt/throttle/relaunch flow is unchanged.
+ */
+export type JuneUpdate = {
+  version: string;
+  body?: string;
+  downloadAndInstall: (
+    onEvent?: (event: DownloadEvent) => void,
+  ) => Promise<void>;
+};
+
+export function getReleaseChannel(): Promise<ReleaseChannel> {
+  return invoke<ReleaseChannel>("get_release_channel");
+}
+
+export function setReleaseChannel(channel: ReleaseChannel): Promise<void> {
+  return invoke("set_release_channel", { channel });
+}
+
+/**
+ * Checks for an update on the user's selected channel. The channel itself is
+ * resolved Rust-side (from persisted state), so no channel argument is needed
+ * and the check can never disagree with the saved setting.
+ */
+export async function checkJuneUpdate(): Promise<JuneUpdate | null> {
+  const meta = await invoke<UpdateMeta | null>("fetch_update");
+  if (!meta) return null;
+  return {
+    version: meta.version,
+    body: meta.body,
+    downloadAndInstall: (onEvent) => installStagedUpdate(onEvent),
+  };
+}
+
+function installStagedUpdate(
+  onEvent?: (event: DownloadEvent) => void,
+): Promise<void> {
+  const channel = new Channel<DownloadEvent>();
+  if (onEvent) channel.onmessage = onEvent;
+  return invoke("install_update", { onEvent: channel });
 }
 
 export function relaunchJune() {

@@ -1,0 +1,87 @@
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { DownloadEvent } from "../app/update-decision";
+import {
+  checkJuneUpdate,
+  getReleaseChannel,
+  setReleaseChannel,
+} from "../lib/updater";
+
+// A minimal stand-in for @tauri-apps/api/core's Channel: the install command
+// drives progress by calling the channel's onmessage, exactly as Rust's
+// `Channel::send` does at runtime.
+vi.mock("@tauri-apps/api/core", () => {
+  class Channel<T> {
+    onmessage: ((message: T) => void) | null = null;
+  }
+  return { Channel, invoke: vi.fn() };
+});
+
+const invokeMock = vi.mocked(invoke);
+
+beforeEach(() => {
+  invokeMock.mockReset();
+});
+
+describe("checkJuneUpdate", () => {
+  it("returns null when fetch_update reports nothing", async () => {
+    invokeMock.mockResolvedValueOnce(null);
+
+    expect(await checkJuneUpdate()).toBeNull();
+    // No channel argument: fetch_update reads the persisted channel in Rust.
+    expect(invokeMock).toHaveBeenCalledWith("fetch_update");
+  });
+
+  it("returns a synthetic update carrying version and notes", async () => {
+    invokeMock.mockResolvedValueOnce({ version: "1.2.3-rc.4", body: "notes" });
+
+    const update = await checkJuneUpdate();
+
+    expect(update?.version).toBe("1.2.3-rc.4");
+    expect(update?.body).toBe("notes");
+  });
+
+  it("installs through install_update, forwarding progress events", async () => {
+    invokeMock.mockResolvedValueOnce({ version: "1.2.3" });
+    const update = await checkJuneUpdate();
+
+    const seen: DownloadEvent[] = [];
+    invokeMock.mockImplementationOnce(async (_command, args) => {
+      const { onEvent } = args as unknown as {
+        onEvent: { onmessage: ((message: DownloadEvent) => void) | null };
+      };
+      onEvent.onmessage?.({ event: "Started", data: { contentLength: 10 } });
+      onEvent.onmessage?.({ event: "Finished" });
+    });
+
+    await update?.downloadAndInstall((event) => seen.push(event));
+
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      "install_update",
+      expect.objectContaining({ onEvent: expect.anything() }),
+    );
+    expect(seen).toEqual([
+      { event: "Started", data: { contentLength: 10 } },
+      { event: "Finished" },
+    ]);
+  });
+});
+
+describe("release channel setting", () => {
+  it("reads the channel through get_release_channel", async () => {
+    invokeMock.mockResolvedValueOnce("rc");
+
+    expect(await getReleaseChannel()).toBe("rc");
+    expect(invokeMock).toHaveBeenCalledWith("get_release_channel");
+  });
+
+  it("persists the channel through set_release_channel", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await setReleaseChannel("rc");
+
+    expect(invokeMock).toHaveBeenCalledWith("set_release_channel", {
+      channel: "rc",
+    });
+  });
+});

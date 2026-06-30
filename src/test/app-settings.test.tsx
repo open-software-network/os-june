@@ -48,8 +48,15 @@ const mocks = vi.hoisted(() => ({
   deleteDictionaryEntry: vi.fn(),
   juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
+  getReleaseChannel: vi.fn(),
+  setReleaseChannel: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
+}));
+
+vi.mock("../lib/updater", () => ({
+  getReleaseChannel: mocks.getReleaseChannel,
+  setReleaseChannel: mocks.setReleaseChannel,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -176,6 +183,8 @@ describe("AppSettings", () => {
     mocks.listDictionaryEntries.mockResolvedValue([]);
     mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
     mocks.juneOpenVerifyPage.mockResolvedValue(undefined);
+    mocks.getReleaseChannel.mockResolvedValue("stable");
+    mocks.setReleaseChannel.mockResolvedValue(undefined);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
@@ -1858,6 +1867,33 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("button", { name: "Check for updates" }));
 
     expect(onCheckForUpdates).toHaveBeenCalledOnce();
+  });
+
+  it("switches the release channel from About", async () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    // The control loads the persisted channel before becoming interactive.
+    const rcOption = await screen.findByRole("button", {
+      name: "Release candidate",
+    });
+    await user.click(rcOption);
+
+    expect(mocks.setReleaseChannel).toHaveBeenCalledWith("rc");
   });
 
   it("opens the server attestation page from About through Rust", async () => {
