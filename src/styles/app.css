@@ -9786,6 +9786,38 @@ input:focus-visible,
   color: color-mix(in oklch, var(--success) 70%, var(--foreground));
 }
 
+/* Quiet "More options" disclosure row: looks like a settings row but acts as
+ * a toggle, keeping advanced controls out of the default view. */
+.settings-more-options-trigger {
+  width: 100%;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.settings-more-options-trigger:hover .settings-row-title {
+  color: var(--foreground);
+}
+
+.settings-more-options-chevron {
+  color: var(--muted-foreground);
+  transition: transform var(--t-fast) var(--ease-out);
+}
+
+.settings-more-options-trigger:hover .settings-more-options-chevron {
+  color: var(--foreground);
+}
+
+.settings-more-options-trigger[aria-expanded="true"]
+  .settings-more-options-chevron {
+  transform: rotate(180deg);
+}
+
 @media (max-width: 720px) {
   .settings-row {
     grid-template-columns: minmax(0, 1fr);

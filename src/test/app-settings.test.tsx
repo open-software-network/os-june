@@ -1681,6 +1681,12 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    // The Venice API key lives behind "More options" so the average user never
+    // has to reason about it. It should be hidden until the row is expanded.
+    expect(screen.queryByLabelText("Venice API key")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /More options/ }));
+
     const input = await screen.findByLabelText("Venice API key");
     await user.type(input, "  vc_test_key  ");
     await user.click(screen.getByRole("button", { name: "Save" }));

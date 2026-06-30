@@ -265,6 +265,7 @@ export function AppSettings({
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
+  const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
   const [internalTab, setInternalTab] = useState<SettingsTab>("general");
   const [micPopoverPlacement, setMicPopoverPlacement] =
     useState<SelectPopoverPlacement>("align-selected");
@@ -1222,13 +1223,35 @@ export function AppSettings({
                     options={generationOptions}
                     onOpen={() => openModelPicker("generation")}
                   />
-                  <VeniceApiKeyRow
-                    configured={providerSettings.veniceApiKeyConfigured}
-                    value={veniceApiKeyDraft}
-                    onValueChange={setVeniceApiKeyDraft}
-                    onSave={() => void saveVeniceApiKey()}
-                    onRemove={() => void removeVeniceApiKey()}
-                  />
+                  <button
+                    type="button"
+                    className="settings-row settings-more-options-trigger"
+                    aria-expanded={showMoreModelOptions}
+                    aria-controls="models-more-options"
+                    onClick={() => setShowMoreModelOptions((open) => !open)}
+                  >
+                    <span className="settings-row-info">
+                      <span className="settings-row-title">More options</span>
+                      <span className="settings-row-description">
+                        Advanced model settings.
+                      </span>
+                    </span>
+                    <IconChevronDownSmall
+                      className="settings-more-options-chevron"
+                      size={14}
+                      aria-hidden
+                    />
+                  </button>
+                  {showMoreModelOptions ? (
+                    <VeniceApiKeyRow
+                      id="models-more-options"
+                      configured={providerSettings.veniceApiKeyConfigured}
+                      value={veniceApiKeyDraft}
+                      onValueChange={setVeniceApiKeyDraft}
+                      onSave={() => void saveVeniceApiKey()}
+                      onRemove={() => void removeVeniceApiKey()}
+                    />
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -1579,12 +1602,14 @@ function ModelRow({
 }
 
 function VeniceApiKeyRow({
+  id,
   configured,
   value,
   onValueChange,
   onSave,
   onRemove,
 }: {
+  id?: string;
   configured: boolean;
   value: string;
   onValueChange: (value: string) => void;
@@ -1593,7 +1618,7 @@ function VeniceApiKeyRow({
 }) {
   const canSave = value.trim().length > 0;
   return (
-    <div className="settings-row settings-row-venice-key">
+    <div id={id} className="settings-row settings-row-venice-key">
       <div className="settings-row-info">
         <h3 className="settings-row-title">Venice API key</h3>
         <p className="settings-row-description">
