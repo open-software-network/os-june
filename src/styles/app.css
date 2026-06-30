@@ -2958,6 +2958,27 @@ input:focus-visible,
   box-shadow: var(--shadow-lg);
 }
 
+@media (max-width: 560px) {
+  .agent-activity-toggle {
+    position: fixed;
+    top: calc(var(--card-top) + var(--detail-bar-h) + var(--sp-2));
+    right: var(--sp-3);
+    z-index: 102;
+  }
+
+  .agent-activity-drawer {
+    position: fixed;
+    top: calc(var(--card-top) + var(--detail-bar-h) + var(--sp-2));
+    left: var(--sp-3);
+    right: var(--sp-3);
+    z-index: 102;
+    width: auto;
+    max-height: calc(
+      100vh - var(--card-top) - var(--detail-bar-h) - var(--sp-5)
+    );
+  }
+}
+
 .agent-activity-drawer-header {
   display: flex;
   align-items: center;
@@ -3317,6 +3338,162 @@ input:focus-visible,
  * event reconciles the row. */
 .agent-activity-subagent-status[data-stopping="true"] {
   color: var(--muted-foreground);
+}
+
+/* ---- Feature 20: Evidence log ----
+ * A user-facing audit trail for the selected session. It reads from sanitized
+ * trace entries and existing chat/tool rows, not raw gateway payloads. */
+.agent-evidence-section {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-evidence-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) var(--sp-1);
+}
+
+.agent-evidence-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.agent-evidence-title {
+  flex: 1;
+}
+
+.agent-evidence-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-pill);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-evidence-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-evidence-copy:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.agent-evidence-copy:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.agent-evidence-empty {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.agent-evidence-list {
+  margin: 0;
+  padding: var(--sp-2);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  overflow-y: auto;
+  max-height: 220px;
+}
+
+.agent-evidence-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+}
+
+.agent-evidence-row:hover {
+  background: var(--accent);
+  border-color: var(--border-subtle);
+}
+
+.agent-evidence-icon {
+  display: inline-flex;
+  margin-top: var(--sp-px);
+  color: var(--muted-foreground);
+}
+
+.agent-evidence-icon[data-kind="computer"] {
+  color: var(--primary);
+}
+
+.agent-evidence-icon[data-kind="file"] {
+  color: var(--success);
+}
+
+.agent-evidence-icon[data-kind="pending"] {
+  color: var(--warm-strong);
+}
+
+.agent-evidence-icon[data-kind="error"] {
+  color: var(--destructive);
+}
+
+.agent-evidence-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-px);
+}
+
+.agent-evidence-row-title {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-evidence-row-detail {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-evidence-time {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* ---- Feature 14: Artifacts (files touched) timeline ----

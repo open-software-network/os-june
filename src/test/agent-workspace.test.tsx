@@ -26,6 +26,7 @@ import {
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
+import { hermesActivityStore } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
@@ -229,8 +230,15 @@ describe("AgentWorkspace", () => {
     // Feature 14: the artifact store is a process-wide singleton; drop the
     // session rows these tests touch so one test's artifacts don't leak into
     // the next.
-    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+    for (const id of [
+      "session-1",
+      "session-2",
+      "runtime-session-1",
+      "runtime-session-2",
+    ]) {
+      hermesActivityStore.clearSession(id);
       hermesArtifactStore.clearSession(id);
+      hermesTraceBuffer.clearSession(id);
     }
     // Feature 04: the pending-action store is the same kind of process-wide
     // singleton. Clear these tests' session ids so a prior test's "Needs you"
@@ -3459,6 +3467,14 @@ describe("AgentWorkspace", () => {
         "session-1",
       ),
     );
+    hermesTraceBuffer.recordOutbound({
+      sessionId: "session-1",
+      method: "prompt.submit",
+      params: { session_id: "runtime-session-1", text: "old prompt" },
+    });
+    expect(
+      hermesTraceBuffer.exportSanitizedTrace("session-1").entries,
+    ).toHaveLength(1);
 
     act(() => {
       window.dispatchEvent(
@@ -3476,6 +3492,9 @@ describe("AgentWorkspace", () => {
     expect(
       window.localStorage.getItem("june.agent.unrestrictedSessions"),
     ).toBeNull();
+    expect(
+      hermesTraceBuffer.exportSanitizedTrace("session-1").entries,
+    ).toHaveLength(0);
   });
 
   it("keeps the blank composer after a New Session event during refresh", async () => {
@@ -5205,12 +5224,7 @@ describe("AgentWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  // SKIPPED while the Agent activity drawer's entry point is hidden
-  // (ACTIVITY_DRAWER_ENABLED=false in AgentWorkspace, parking the open-wrong-
-  // session bug). These two reach feature 14's artifacts timeline THROUGH the
-  // drawer toggle, which no longer renders. The artifacts section itself stays
-  // covered by agent-artifacts-section.test.tsx; un-skip when the flag flips back.
-  it.skip("shows a tool-touched file in the activity drawer's artifacts timeline and opens it in the preview flow", async () => {
+  it("shows a tool-touched file in the activity drawer's artifacts timeline and opens it in the preview flow", async () => {
     const user = userEvent.setup();
     const reportPath =
       "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/timeline.md";
@@ -5250,9 +5264,7 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  // SKIPPED: see the note above. Reaches the artifacts timeline through the
-  // hidden activity drawer toggle; un-skip when ACTIVITY_DRAWER_ENABLED is true.
-  it.skip("marks a failed file access as failed in the artifacts timeline", async () => {
+  it("marks a failed file access as failed in the artifacts timeline", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
     await screen.findByRole("button", { name: "Show agent activity" });
@@ -5279,6 +5291,129 @@ describe("AgentWorkspace", () => {
     expect(within(row).getByText(/failed/i)).toBeInTheDocument();
     // An unrestricted session's real path is labeled as such.
     expect(within(row).getByText(/unrestricted/i)).toBeInTheDocument();
+  });
+
+  it("shows live agent actions in the selected session evidence log", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    render(<AgentWorkspace />);
+    await user.type(await screen.findByRole("textbox"), "check the screen");
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "check the screen",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.gatewayEventHandlers.size).toBeGreaterThan(0),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: {
+            name: "computer_use",
+            description: "Captured the current screen",
+          },
+        });
+        handler({
+          type: "tool.complete",
+          session_id: "runtime-session-2",
+          payload: {
+            name: "computer_use",
+            description: "Screen capture failed",
+            status: "error",
+            error: "permission denied",
+          },
+        });
+      }
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Show agent activity" }),
+    );
+    const drawer = await screen.findByRole("region", {
+      name: "Agent activity",
+    });
+    expect(within(drawer).queryByText("runtime-session-2")).toBeNull();
+
+    const evidence = await within(drawer).findByRole("region", {
+      name: "Evidence log",
+    });
+    expect(
+      within(evidence).getByText("Started computer use"),
+    ).toBeInTheDocument();
+    expect(
+      within(evidence).getByText("Captured the current screen"),
+    ).toBeInTheDocument();
+    expect(
+      within(evidence).getByText("Failed computer use"),
+    ).toBeInTheDocument();
+    expect(
+      within(evidence).getByText("Screen capture failed"),
+    ).toBeInTheDocument();
+    expect(
+      hermesTraceBuffer
+        .exportSanitizedTrace("session-2")
+        .entries.some((entry) => entry.rawType === "tool.start"),
+    ).toBe(true);
+    expect(
+      hermesTraceBuffer.exportSanitizedTrace("runtime-session-2").entries,
+    ).toHaveLength(0);
+  });
+
+  it("merges persisted tool rows with partial trace rows in the evidence log", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "tool-msg-1",
+        role: "tool",
+        tool_call_id: "tc-screen",
+        tool_name: "computer_use",
+        content: "Captured browser window",
+        timestamp: "2026-06-04T12:01:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"),
+    );
+    act(() => {
+      hermesTraceBuffer.recordOutbound({
+        sessionId: "session-1",
+        method: "prompt.submit",
+        params: {
+          session_id: "runtime-session-1",
+          text: "check the browser",
+        },
+      });
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Show agent activity" }),
+    );
+    const drawer = await screen.findByRole("region", {
+      name: "Agent activity",
+    });
+    const evidence = await within(drawer).findByRole("region", {
+      name: "Evidence log",
+    });
+    expect(
+      within(evidence).getByText("Completed computer use"),
+    ).toBeInTheDocument();
+    expect(
+      within(evidence).getByText("Captured browser window"),
+    ).toBeInTheDocument();
+    expect(within(evidence).getByText("Prompt sent")).toBeInTheDocument();
+    expect(within(evidence).getByText("check the browser")).toBeInTheDocument();
   });
 
   it("lists every surfaced file behind the session bar files button", async () => {
@@ -5784,7 +5919,10 @@ describe("AgentWorkspace", () => {
     );
 
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "qwen-vl",
+      ),
     );
     // The switch picks the image-capable model and keeps the dropped image.
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
@@ -5852,7 +5990,10 @@ describe("AgentWorkspace", () => {
     );
     // Lands on the first eligible vision model (Qwen VL), no picker dialog.
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "qwen-vl",
+      ),
     );
     expect(
       screen.queryByRole("dialog", { name: "Choose text model" }),

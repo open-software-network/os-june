@@ -158,6 +158,7 @@ import {
   isHermesFeatureSupported,
   isSensitiveKey,
   type HermesMode,
+  type JuneHermesEvent,
 } from "../../lib/hermes-control-plane";
 import {
   attachImageToSession,
@@ -196,6 +197,7 @@ import {
   AgentActivityDrawer,
   AgentArtifactsSection,
 } from "./AgentActivityDrawer";
+import { AgentEvidenceLogSection } from "./AgentEvidenceLogSection";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
@@ -325,6 +327,32 @@ const SESSION_GONE_MESSAGE =
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
+}
+
+function eventForStoredSession(
+  event: JuneHermesEvent,
+  sessionId: string,
+): JuneHermesEvent {
+  switch (event.kind) {
+    case "transcript":
+    case "reasoning":
+    case "tool":
+    case "pending_action":
+      return { ...event, sessionId };
+    case "background_activity":
+      return {
+        ...event,
+        sessionId,
+        activity: {
+          ...event.activity,
+          parentSessionId: sessionId,
+        },
+      };
+    case "lifecycle":
+    case "error":
+    case "unsupported":
+      return { ...event, sessionId };
+  }
 }
 
 // Dev-tools response gallery handle. Registered at module scope so
@@ -1971,6 +1999,9 @@ export function AgentWorkspace({
       hermesActivityStore.clearSession(sessionId);
       // Feature 14: likewise drop its artifact timeline.
       hermesArtifactStore.clearSession(sessionId);
+      // Feature 20: evidence rows are trace-backed, so deleted sessions must
+      // not leave stale audit rows in memory either.
+      hermesTraceBuffer.clearSession(sessionId);
       sessionGatewayUnlistenRef.current.get(sessionId)?.();
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
       setLiveEvents(liveEventsRef.current);
@@ -2174,13 +2205,9 @@ export function AgentWorkspace({
   // version re-derives the rows whenever any session's activity changes; the
   // drawer is one toggled, top-level surface that shows every session at once.
   //
-  // TEMPORARILY HIDDEN: the drawer's "open session" routes by the row's id,
-  // which is the ephemeral runtime session id, not the durable stored id, so it
-  // opens the wrong session (or none). Until that runtime->stored resolution is
-  // fixed, the entry-point toggle is gated off below. The whole feature (drawer,
-  // subagent watch, stop, artifacts timeline) stays mounted and tested; flip
-  // this flag back to true to restore it.
-  const ACTIVITY_DRAWER_ENABLED = false;
+  // The live event ingestion path stores drawer rows under durable June session
+  // ids, not ephemeral runtime ids, so opening a row targets a real session.
+  const ACTIVITY_DRAWER_ENABLED = true;
   const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
   const activityStoreVersion = useSyncExternalStore(
     hermesActivityStore.subscribe,
@@ -2196,7 +2223,7 @@ export function AgentWorkspace({
   // never-touched store as "loading" so the very first paint shows a spinner
   // copy rather than the empty state flashing before any event lands.
   const activityStatus: "loading" | "ready" =
-    activityStoreVersion === 0 ? "loading" : "ready";
+    activityStoreVersion === 0 && !hermesSessionsHydrated ? "loading" : "ready";
   // Open a session from a drawer row: clear new-session mode, switch panel +
   // selection.
   const openSessionFromDrawer = useCallback((sessionId: string) => {
@@ -2258,6 +2285,18 @@ export function AgentWorkspace({
         : [],
     // `artifactStoreVersion` is the change signal; the read returns live rows.
     [selectedHermesSessionId, artifactStoreVersion],
+  );
+  const traceStoreVersion = useSyncExternalStore(
+    hermesTraceBuffer.subscribe,
+    hermesTraceBuffer.getVersion,
+    hermesTraceBuffer.getVersion,
+  );
+  const evidenceTraceEntries = useMemo(
+    () =>
+      selectedHermesSessionId
+        ? hermesTraceBuffer.entriesFor(selectedHermesSessionId)
+        : [],
+    [selectedHermesSessionId, traceStoreVersion],
   );
 
   // Feature 15: the dev/debug raw-trace panel. Holds the session it was opened
@@ -4001,27 +4040,34 @@ export function AgentWorkspace({
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
       // sanitizes internally; nothing raw is retained.
-      hermesTraceBuffer.recordInbound(liveEvent);
-      if (classified.kind === "unsupported") {
+      hermesTraceBuffer.recordInbound(liveEvent, storedSessionId);
+      const storedSessionEvent = eventForStoredSession(
+        classified,
+        storedSessionId,
+      );
+      if (storedSessionEvent.kind === "unsupported") {
         // Feed the bounded per-session store so the user gets a recoverable
         // notice (when this is the active session) and developers get a
         // sanitized, issue-report-safe export. The payload is already sanitized
         // by the classifier; nothing raw is retained or logged.
-        unsupportedEventStore.record(classified);
+        unsupportedEventStore.record(storedSessionEvent);
         if (import.meta.env.DEV) {
           console.debug(
             "[hermes] unsupported event",
-            classified.rawType,
-            classified.sanitizedPayload,
+            storedSessionEvent.rawType,
+            storedSessionEvent.sanitizedPayload,
           );
         }
-      } else if (classified.kind === "pending_action") {
+      } else if (storedSessionEvent.kind === "pending_action") {
         // Feature 04: aggregate this blocker into the pending-action store
         // keyed by mode + session + request. The session's mode comes from its
         // recorded opt-in (sudo carries its own; the rest derive it here). A
         // fresh event for a known request also re-confirms a row that went
         // stale across a reconnect (see the store's reconcile logic).
-        pendingActionStore.record(classified, hermesModeFor(storedSessionId));
+        pendingActionStore.record(
+          storedSessionEvent,
+          hermesModeFor(storedSessionId),
+        );
       }
       // Feature 11: roll EVERY classified event into the global activity store
       // that backs the Agent activity drawer. The store is total and ignores
@@ -4029,14 +4075,20 @@ export function AgentWorkspace({
       // derives the session's phase (running/waiting/background/error/complete),
       // current tool, and subagent count from the normalized event — never from
       // the raw frame (raw JSON belongs to feature 15's trace panel).
-      hermesActivityStore.record(classified, hermesModeFor(storedSessionId));
+      hermesActivityStore.record(
+        storedSessionEvent,
+        hermesModeFor(storedSessionId),
+      );
       // Feature 14: extract any file/artifact reference this event carries into
       // the per-session artifact timeline behind the drawer's "Artifacts"
       // section. The store is total and only acts on `tool` completions that
       // name a known file/url field (conservative — never parses prose), so one
       // unconditional call is safe for every kind. Mode rides along so each
       // artifact can show its blast radius (sandboxed copy vs unrestricted path).
-      hermesArtifactStore.record(classified, hermesModeFor(storedSessionId));
+      hermesArtifactStore.record(
+        storedSessionEvent,
+        hermesModeFor(storedSessionId),
+      );
       const nextSessionEvents = [
         ...(liveEventsRef.current[storedSessionId] ?? []),
         liveEvent,
@@ -4890,6 +4942,29 @@ export function AgentWorkspace({
     }
   }
 
+  function resolvePendingRequestForKnownSessionIds(
+    requestId: string,
+    ...sessionIds: Array<string | undefined>
+  ) {
+    const ids = new Set<string>();
+    for (const sessionId of sessionIds) {
+      const trimmed = sessionId?.trim();
+      if (!trimmed) continue;
+      ids.add(trimmed);
+      for (const [storedId, runtimeId] of Object.entries(
+        runtimeSessionIdsRef.current,
+      )) {
+        if (storedId === trimmed || runtimeId === trimmed) {
+          ids.add(storedId);
+          ids.add(runtimeId);
+        }
+      }
+    }
+    for (const sessionId of ids) {
+      pendingActionStore.resolveRequest(sessionId, requestId);
+    }
+  }
+
   async function respondToApproval(
     liveEventKey: string,
     sessionId: string,
@@ -4913,7 +4988,11 @@ export function AgentWorkspace({
       });
       // Feature 04: the user just answered this approval — clear its global
       // "Needs you" row immediately (the response itself is the resolution).
-      pendingActionStore.resolveRequest(sessionId, requestId);
+      resolvePendingRequestForKnownSessionIds(
+        requestId,
+        liveEventKey,
+        sessionId,
+      );
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -4939,7 +5018,11 @@ export function AgentWorkspace({
         setLiveEvents(liveEventsRef.current);
         // The request can never be answered now — retire its card so neither the
         // sidebar count nor the inline prompt offers a dead-end "Respond".
-        pendingActionStore.resolveRequest(sessionId, requestId);
+        resolvePendingRequestForKnownSessionIds(
+          requestId,
+          liveEventKey,
+          sessionId,
+        );
         void loadHermesSessions();
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
@@ -4972,14 +5055,14 @@ export function AgentWorkspace({
         payload: { request_id: requestId, answer },
       });
       // Feature 04: the user answered the clarification — clear its pending record.
-      pendingActionStore.resolveRequest(liveEventKey, requestId);
+      resolvePendingRequestForKnownSessionIds(requestId, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
       if (isSessionGoneError(message)) {
         // The runtime is gone, so this clarification can never be answered —
         // retire its card and say so plainly instead of leaking the raw 404.
-        pendingActionStore.resolveRequest(liveEventKey, requestId);
+        resolvePendingRequestForKnownSessionIds(requestId, liveEventKey);
         setError(SESSION_GONE_MESSAGE);
       } else {
         setError(message);
@@ -5023,14 +5106,22 @@ export function AgentWorkspace({
         payload: { request_id: requestId, granted: approved, mode },
       });
       // Feature 04: the user resolved the sudo prompt — clear its pending record.
-      pendingActionStore.resolveRequest(sessionId, requestId);
+      resolvePendingRequestForKnownSessionIds(
+        requestId,
+        liveEventKey,
+        sessionId,
+      );
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
       if (isSessionGoneError(message)) {
         // The runtime is gone, so this prompt can never be answered — retire
         // its card and say so plainly instead of leaking the raw 404.
-        pendingActionStore.resolveRequest(sessionId, requestId);
+        resolvePendingRequestForKnownSessionIds(
+          requestId,
+          liveEventKey,
+          sessionId,
+        );
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
         setError(message, { sessionId });
@@ -5068,14 +5159,22 @@ export function AgentWorkspace({
         payload: { request_id: requestId, provided: true },
       });
       // Feature 04: the user provided the secret — clear its pending record.
-      pendingActionStore.resolveRequest(sessionId, requestId);
+      resolvePendingRequestForKnownSessionIds(
+        requestId,
+        liveEventKey,
+        sessionId,
+      );
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
       if (isSessionGoneError(message)) {
         // The runtime is gone, so this secret prompt can never be answered —
         // retire its card and say so plainly instead of leaking the raw 404.
-        pendingActionStore.resolveRequest(sessionId, requestId);
+        resolvePendingRequestForKnownSessionIds(
+          requestId,
+          liveEventKey,
+          sessionId,
+        );
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
         setError(message, { sessionId });
@@ -6849,10 +6948,7 @@ export function AgentWorkspace({
           surface so it shows every session's live activity, not
           just the selected one. The toggle is hidden while the drawer is open
           (the drawer carries its own close control) and surfaces the count of
-          sessions currently doing work.
-          Gated by ACTIVITY_DRAWER_ENABLED (currently false): with no toggle the
-          drawer is unreachable, since nothing else flips activityDrawerOpen to
-          true. See the flag's note for the open-wrong-session bug it parks. */}
+          sessions currently doing work. */}
       {ACTIVITY_DRAWER_ENABLED && !activityDrawerOpen ? (
         <button
           type="button"
@@ -6883,10 +6979,18 @@ export function AgentWorkspace({
         onStopSubagent={stopHermesSubagent}
         onClose={() => setActivityDrawerOpen(false)}
         footer={
-          <AgentArtifactsSection
-            artifacts={timelineArtifacts}
-            onOpenArtifact={openTimelineArtifact}
-          />
+          <>
+            <AgentEvidenceLogSection
+              sessionId={selectedHermesSessionId}
+              traceEntries={evidenceTraceEntries}
+              turns={hermesTurns}
+              artifacts={timelineArtifacts}
+            />
+            <AgentArtifactsSection
+              artifacts={timelineArtifacts}
+              onOpenArtifact={openTimelineArtifact}
+            />
+          </>
         }
       />
       {!heroMode &&
