@@ -3,6 +3,7 @@ import {
   AGENT_PRIVACY_GUARD_MODE_CHANGED_EVENT,
   AGENT_PRIVACY_GUARD_MODE_KEY,
   agentPrivacyGuardNoticeMessage,
+  createAgentPrivacyGuardSession,
   getAgentPrivacyGuardMode,
   protectAgentPromptText,
   setAgentPrivacyGuardMode,
@@ -80,6 +81,54 @@ describe("agent privacy guard", () => {
       placeholders: ["[EMAIL_1]"],
       redacted: true,
     });
+  });
+
+  it("keeps placeholder state scoped to a guard session", async () => {
+    const loadGuard = vi.fn<AgentPrivacyGuardLoader>(async (mode) => {
+      const placeholdersByEmail = new Map<string, string>();
+      return {
+        mode,
+        guard: {
+          protect: async (text: string) => {
+            const placeholders: string[] = [];
+            const protectedText = text.replace(
+              /[\w.-]+@[\w.-]+\.[a-z]+/gi,
+              (email) => {
+                let placeholder = placeholdersByEmail.get(email);
+                if (!placeholder) {
+                  placeholder = `[EMAIL_${placeholdersByEmail.size + 1}]`;
+                  placeholdersByEmail.set(email, placeholder);
+                }
+                placeholders.push(placeholder);
+                return placeholder;
+              },
+            );
+            return { text: protectedText, placeholders };
+          },
+        },
+      };
+    });
+
+    const firstSession = createAgentPrivacyGuardSession({ loadGuard });
+    const secondSession = createAgentPrivacyGuardSession({ loadGuard });
+
+    await expect(
+      firstSession.protectText("Email ada@example.com", {
+        mode: "structured",
+      }),
+    ).resolves.toMatchObject({ text: "Email [EMAIL_1]" });
+    await expect(
+      firstSession.protectText("Email grace@example.com", {
+        mode: "structured",
+      }),
+    ).resolves.toMatchObject({ text: "Email [EMAIL_2]" });
+    await expect(
+      secondSession.protectText("Email ada@example.com", {
+        mode: "structured",
+      }),
+    ).resolves.toMatchObject({ text: "Email [EMAIL_1]" });
+
+    expect(loadGuard).toHaveBeenCalledTimes(2);
   });
 
   it("formats the redaction notice with singular and plural counts", () => {

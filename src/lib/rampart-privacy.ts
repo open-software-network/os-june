@@ -22,6 +22,13 @@ export type AgentPrivacyGuardLoader = (
   mode: AgentPrivacyGuardActiveMode,
 ) => Promise<LoadedAgentPrivacyGuard>;
 
+export type AgentPrivacyGuardSession = {
+  protectText: (
+    text: string,
+    options?: { mode?: AgentPrivacyGuardMode },
+  ) => Promise<AgentPrivacyProtection>;
+};
+
 export type AgentPrivacyProtection = {
   requestedMode: AgentPrivacyGuardMode;
   mode: AgentPrivacyGuardMode;
@@ -35,11 +42,6 @@ const VALID_PRIVACY_GUARD_MODES: AgentPrivacyGuardMode[] = [
   "structured",
   "full",
 ];
-
-const guardPromises = new Map<
-  AgentPrivacyGuardActiveMode,
-  Promise<LoadedAgentPrivacyGuard>
->();
 
 export function getAgentPrivacyGuardMode(): AgentPrivacyGuardMode {
   try {
@@ -86,7 +88,7 @@ export async function protectAgentPromptText(
     };
   }
 
-  const loadGuard = options.loadGuard ?? loadRampartGuard;
+  const loadGuard = options.loadGuard ?? createRampartGuard;
   try {
     const loaded = await loadGuard(requestedMode);
     const result = await loaded.guard.protect(text);
@@ -100,6 +102,40 @@ export async function protectAgentPromptText(
   } catch (cause) {
     throw new AgentPrivacyGuardUnavailableError(cause);
   }
+}
+
+export function createAgentPrivacyGuardSession(
+  options: { loadGuard?: AgentPrivacyGuardLoader } = {},
+): AgentPrivacyGuardSession {
+  const guardPromises = new Map<
+    AgentPrivacyGuardActiveMode,
+    Promise<LoadedAgentPrivacyGuard>
+  >();
+  const loadGuard = options.loadGuard ?? createRampartGuard;
+
+  async function loadSessionGuard(
+    mode: AgentPrivacyGuardActiveMode,
+  ): Promise<LoadedAgentPrivacyGuard> {
+    const cached = guardPromises.get(mode);
+    if (cached) return cached;
+    const promise = loadGuard(mode);
+    guardPromises.set(mode, promise);
+    try {
+      return await promise;
+    } catch (error) {
+      guardPromises.delete(mode);
+      throw error;
+    }
+  }
+
+  return {
+    protectText(text, protectOptions = {}) {
+      return protectAgentPromptText(text, {
+        ...protectOptions,
+        loadGuard: loadSessionGuard,
+      });
+    },
+  };
 }
 
 export function agentPrivacyGuardNoticeMessage(redactedDetails: number) {
@@ -123,21 +159,6 @@ export class AgentPrivacyGuardUnavailableError extends Error {
     );
     this.name = "AgentPrivacyGuardUnavailableError";
     this.cause = cause;
-  }
-}
-
-async function loadRampartGuard(
-  mode: AgentPrivacyGuardActiveMode,
-): Promise<LoadedAgentPrivacyGuard> {
-  const cached = guardPromises.get(mode);
-  if (cached) return cached;
-  const promise = createRampartGuard(mode);
-  guardPromises.set(mode, promise);
-  try {
-    return await promise;
-  } catch (error) {
-    guardPromises.delete(mode);
-    throw error;
   }
 }
 

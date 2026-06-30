@@ -271,8 +271,9 @@ import {
 } from "../../lib/agent-cli-access";
 import {
   agentPrivacyGuardNoticeMessage,
+  createAgentPrivacyGuardSession,
   getAgentPrivacyGuardMode,
-  protectAgentPromptText,
+  type AgentPrivacyGuardSession,
   type AgentPrivacyGuardMode,
 } from "../../lib/rampart-privacy";
 import {
@@ -1457,6 +1458,9 @@ export function AgentWorkspace({
   // consumed it (cleared on a tool.complete or a clean terminal).
   const pendingSteerBySessionIdRef = useRef<
     Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
+  >({});
+  const privacyGuardSessionsRef = useRef<
+    Record<string, AgentPrivacyGuardSession>
   >({});
   const activeToolCallsBySessionRef = useRef<Map<string, Map<string, number>>>(
     activeToolCallsMap(continuity?.activeToolCallsBySession),
@@ -3210,6 +3214,7 @@ export function AgentWorkspace({
     promptDisplayContent: string,
     runtimeContent: string,
     titleContent: string,
+    privacyGuardSession: AgentPrivacyGuardSession,
   ): Promise<PreparedAgentPrivacyContent> {
     const mode = getAgentPrivacyGuardMode();
     if (mode === "off") {
@@ -3222,15 +3227,19 @@ export function AgentWorkspace({
       };
     }
 
-    const runtime = await protectAgentPromptText(runtimeContent, { mode });
+    const runtime = await privacyGuardSession.protectText(runtimeContent, {
+      mode,
+    });
     const display =
       promptDisplayContent === runtimeContent
         ? runtime
-        : await protectAgentPromptText(promptDisplayContent, { mode });
+        : await privacyGuardSession.protectText(promptDisplayContent, {
+            mode,
+          });
     const title =
       titleContent === runtimeContent
         ? runtime
-        : await protectAgentPromptText(titleContent, { mode });
+        : await privacyGuardSession.protectText(titleContent, { mode });
     const placeholders = new Set([
       ...runtime.placeholders,
       ...display.placeholders,
@@ -3252,12 +3261,15 @@ export function AgentWorkspace({
   async function prepareAgentPrivacyFallbackContent(
     text: string,
     mode: AgentPrivacyGuardMode,
+    privacyGuardSession: AgentPrivacyGuardSession,
   ): Promise<{
     text: string;
     notice: { redactedDetails: number } | null;
   }> {
     if (mode === "off") return { text, notice: null };
-    const protectedText = await protectAgentPromptText(text, { mode });
+    const protectedText = await privacyGuardSession.protectText(text, {
+      mode,
+    });
     return {
       text: protectedText.text,
       notice: protectedText.redacted
@@ -3276,19 +3288,35 @@ export function AgentWorkspace({
     return redactedDetails > 0 ? { redactedDetails } : null;
   }
 
-  async function prepareAgentPrivacySteer(text: string): Promise<{
+  async function prepareAgentPrivacySteer(
+    text: string,
+    privacyGuardSession: AgentPrivacyGuardSession,
+  ): Promise<{
     text: string;
     notice: { redactedDetails: number } | null;
   }> {
     const mode = getAgentPrivacyGuardMode();
     if (mode === "off") return { text, notice: null };
-    const protectedText = await protectAgentPromptText(text, { mode });
+    const protectedText = await privacyGuardSession.protectText(text, {
+      mode,
+    });
     return {
       text: protectedText.text,
       notice: protectedText.redacted
         ? { redactedDetails: protectedText.placeholders.length }
         : null,
     };
+  }
+
+  function privacyGuardSessionForSession(sessionId: string) {
+    const existing = privacyGuardSessionsRef.current[sessionId];
+    if (existing) return existing;
+    const next = createAgentPrivacyGuardSession();
+    privacyGuardSessionsRef.current = {
+      ...privacyGuardSessionsRef.current,
+      [sessionId]: next,
+    };
+    return next;
   }
 
   async function handleBuiltinComposerSlashCommand(commandText: string) {
@@ -3400,7 +3428,10 @@ export function AgentWorkspace({
       const steerSessionId = selectedHermesSessionId;
       let protectedSteer: Awaited<ReturnType<typeof prepareAgentPrivacySteer>>;
       try {
-        protectedSteer = await prepareAgentPrivacySteer(message);
+        protectedSteer = await prepareAgentPrivacySteer(
+          message,
+          privacyGuardSessionForSession(steerSessionId),
+        );
       } catch (err) {
         setError(messageFromError(err));
         return;
@@ -4304,19 +4335,23 @@ export function AgentWorkspace({
   ) {
     const displayContent = options?.displayContent ?? content;
     const rawTitleContent = options?.titleContent ?? displayContent;
-    setPrivacyGuardNotice(null);
-    const privacyContent = await prepareAgentPrivacyContent(
-      displayContent,
-      content,
-      rawTitleContent,
-    );
-    const runtimeContent = privacyContent.runtimeContent;
-    const titleContent = privacyContent.titleContent;
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
         ? undefined
         : selectedHermesSessionId;
+    const privacyGuardSession = targetSessionId
+      ? privacyGuardSessionForSession(targetSessionId)
+      : createAgentPrivacyGuardSession();
+    setPrivacyGuardNotice(null);
+    const privacyContent = await prepareAgentPrivacyContent(
+      displayContent,
+      content,
+      rawTitleContent,
+      privacyGuardSession,
+    );
+    const runtimeContent = privacyContent.runtimeContent;
+    const titleContent = privacyContent.titleContent;
     const targetSessionModelId = targetSessionId
       ? explicitSession?.model?.trim() ||
         hermesSessionItemsRef.current
@@ -4359,6 +4394,7 @@ export function AgentWorkspace({
       ? await prepareAgentPrivacyFallbackContent(
           imageInputFallbackRawContent,
           privacyContent.mode,
+          privacyGuardSession,
         )
       : undefined;
     const imageInputFallbackContent = imageInputFallbackPrivacy?.text;
@@ -4438,6 +4474,12 @@ export function AgentWorkspace({
       })().catch(rollbackOptimisticBeforePrompt);
     storedSessionIdForRollback = storedSessionId;
     const queuedIssueReport = options?.issueReport;
+    if (!targetSessionId) {
+      privacyGuardSessionsRef.current = {
+        ...privacyGuardSessionsRef.current,
+        [storedSessionId]: privacyGuardSession,
+      };
+    }
     if (queuedIssueReport && targetSessionId) {
       queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
     }
@@ -5813,6 +5855,7 @@ export function AgentWorkspace({
     });
     scrubHermesSessionState(sessionId);
     pendingIssueReportsRef.current.delete(sessionId);
+    delete privacyGuardSessionsRef.current[sessionId];
     setReviewableIssueReport(sessionId, null);
     forgetComposerDraft(sessionComposerDraftKey(sessionId));
     // Every deletion funnels through here (the in-workspace delete and the
