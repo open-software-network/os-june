@@ -1,6 +1,6 @@
 use crate::{
     audio::validate_audio,
-    auth::authenticated_user,
+    auth::{authenticated_user, provider_credentials},
     envelope::ApiResponse,
     error::ApiError,
     handlers::notes::{require_priced_model, required},
@@ -25,6 +25,7 @@ pub(crate) async fn transcribe(
     multipart: Multipart,
 ) -> Result<Json<ApiResponse<DictateTranscribeResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     let limits = state.limits();
     let mut form = MultipartFields::collect(multipart, limits.max_audio_bytes).await?;
     let audio = form.required_audio()?;
@@ -62,6 +63,7 @@ pub(crate) async fn transcribe(
             context,
             language,
             model_id: ModelId(model_id),
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(DictateTranscribeResponse::from(
@@ -75,6 +77,7 @@ pub(crate) async fn cleanup(
     Json(request): Json<DictateCleanupRequest>,
 ) -> Result<Json<ApiResponse<DictateCleanupResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
@@ -89,6 +92,7 @@ pub(crate) async fn cleanup(
             dictionary_context: request.dictionary_context,
             style: request.style,
             model_id: ModelId(model_id),
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(DictateCleanupResponse::from(output))))

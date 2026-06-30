@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, CleanedText, Cleaner,
-    CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator, TokenUsage,
-    Transcriber, Transcript, TranscriptionRequest,
+    CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator, ProviderCredentials,
+    TokenUsage, Transcriber, Transcript, TranscriptionRequest,
 };
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
@@ -168,7 +168,10 @@ impl VeniceTranscriber {
         let response = self
             .http
             .post(url)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(venice_api_key(
+                &self.api_key,
+                &request.provider_credentials,
+            ))
             .multipart(form)
             .send()
             .await
@@ -254,13 +257,16 @@ impl Generator for VeniceGenerator {
         );
         let parsed = self
             .chat
-            .complete(ChatCompletionRequest {
-                model: request.model.0,
-                messages: vec![
-                    ChatMessage::system(request.system_prompt),
-                    ChatMessage::user(user_message),
-                ],
-            })
+            .complete(
+                ChatCompletionRequest {
+                    model: request.model.0,
+                    messages: vec![
+                        ChatMessage::system(request.system_prompt),
+                        ChatMessage::user(user_message),
+                    ],
+                },
+                &request.provider_credentials,
+            )
             .await?;
         let content = parsed
             .first_choice_text()
@@ -308,7 +314,9 @@ impl AgentChatCompleter for VeniceAgentChat {
         &self,
         request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
-        self.chat.complete_raw(request.body, request.model).await
+        self.chat
+            .complete_raw(request.body, request.model, &request.provider_credentials)
+            .await
     }
 }
 
@@ -333,13 +341,16 @@ impl Cleaner for VeniceCleaner {
             cleanup_source_text(text, request.dictionary_context.as_deref(), &request.style);
         let parsed = self
             .chat
-            .complete(ChatCompletionRequest {
-                model: request.model.0,
-                messages: vec![
-                    ChatMessage::system(request.system_prompt),
-                    ChatMessage::user(user_message),
-                ],
-            })
+            .complete(
+                ChatCompletionRequest {
+                    model: request.model.0,
+                    messages: vec![
+                        ChatMessage::system(request.system_prompt),
+                        ChatMessage::user(user_message),
+                    ],
+                },
+                &request.provider_credentials,
+            )
             .await?;
         let cleaned = parsed
             .first_choice_text()
@@ -372,14 +383,16 @@ impl VeniceChat {
     async fn complete(
         &self,
         mut body: ChatCompletionRequest,
+        provider_credentials: &ProviderCredentials,
     ) -> Result<ChatCompletionResponse, DomainError> {
         body.messages.insert(0, ChatMessage::safety_context());
         let url = format!("{}/chat/completions", self.base_url);
+        let api_key = venice_api_key(&self.api_key, provider_credentials);
         // Bounded retry on transient failures — same rationale as the
         // transcribers: metering settles only after success, so a replay
         // can never double-charge.
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-            let error = match self.complete_once(&url, &body).await {
+            let error = match self.complete_once(&url, &body, api_key).await {
                 Ok(parsed) => return Ok(parsed),
                 Err(error) => error,
             };
@@ -402,11 +415,12 @@ impl VeniceChat {
         &self,
         url: &str,
         body: &ChatCompletionRequest,
+        api_key: &str,
     ) -> Result<ChatCompletionResponse, UpstreamAttemptError> {
         let response = self
             .http
             .post(url)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(api_key)
             .json(body)
             .send()
             .await
@@ -441,6 +455,7 @@ impl VeniceChat {
         &self,
         mut body: serde_json::Value,
         model: june_domain::ModelId,
+        provider_credentials: &ProviderCredentials,
     ) -> Result<AgentChatCompletion, DomainError> {
         let Some(object) = body.as_object_mut() else {
             return Err(DomainError::InvalidInput {
@@ -470,7 +485,7 @@ impl VeniceChat {
         let response = self
             .http
             .post(&url)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(venice_api_key(&self.api_key, provider_credentials))
             .json(&body)
             .send()
             .await
@@ -507,6 +522,15 @@ impl VeniceChat {
             usage,
         })
     }
+}
+
+fn venice_api_key<'a>(configured: &'a str, credentials: &'a ProviderCredentials) -> &'a str {
+    credentials
+        .venice_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(configured)
 }
 
 #[derive(Debug, Serialize)]
@@ -980,6 +1004,7 @@ mod tests {
     use june_config::UpstreamConfig;
     use june_domain::{
         AgentChatCompleter, AgentChatRequest, GenerationRequest, Generator, ModelId,
+        ProviderCredentials,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1023,6 +1048,7 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -1039,6 +1065,54 @@ mod tests {
                 10,
                 5
             ))
+        );
+    }
+
+    #[tokio::test]
+    async fn generator_prefers_request_venice_api_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer user_venice_key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [
+                    { "message": { "content": "Generated note block" } }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "shared_venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let generated = generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
+                manual_notes: None,
+                language: Some("en".to_string()),
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "system".to_string(),
+                provider_credentials: ProviderCredentials {
+                    venice_api_key: Some("user_venice_key".to_string()),
+                },
+            })
+            .await;
+
+        assert_eq!(
+            generated.map(|value| value.content),
+            Ok("Generated note block".to_string())
         );
     }
 
@@ -1076,6 +1150,7 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("generation should succeed");
@@ -1120,6 +1195,7 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("generation should succeed");
@@ -1191,6 +1267,7 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -1227,6 +1304,7 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -1263,6 +1341,7 @@ mod tests {
                 context: None,
                 language: None,
                 model: ModelId("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             },
         )
         .await;
@@ -1312,6 +1391,7 @@ mod tests {
                     "messages": [{ "role": "user", "content": "hi" }],
                 }),
                 model: ModelId("text-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("completion succeeds");
@@ -1349,6 +1429,7 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "caller system prompt".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("generation succeeds");
@@ -1392,6 +1473,7 @@ mod tests {
                     ],
                 }),
                 model: ModelId("text-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("completion succeeds");

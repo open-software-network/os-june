@@ -40,7 +40,7 @@ mod tests {
     use super::RoutingTranscriber;
     use crate::http;
     use june_config::{UpstreamConfig, UpstreamsConfig};
-    use june_domain::{ModelId, Transcriber, TranscriptionRequest};
+    use june_domain::{ModelId, ProviderCredentials, Transcriber, TranscriptionRequest};
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use wiremock::{
@@ -83,6 +83,7 @@ mod tests {
                 context: Some("Prompt context".to_string()),
                 language: Some("es".to_string()),
                 model: ModelId("gpt-4o-mini-transcribe".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 

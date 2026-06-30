@@ -6,8 +6,8 @@ use crate::{
     util::sha256_hex,
 };
 use june_domain::{
-    ActionSlug, Credits, OsAccountsClient, Receipt, UserId, WebFetchRequest, WebFetchResult,
-    WebFetcher, WebSearchProvider, WebSearchRequest, WebSearchResults, WebSearcher,
+    ActionSlug, Credits, OsAccountsClient, ProviderCredentials, Receipt, UserId, WebFetchRequest,
+    WebFetchResult, WebFetcher, WebSearchProvider, WebSearchRequest, WebSearchResults, WebSearcher,
 };
 use std::sync::Arc;
 
@@ -63,6 +63,7 @@ impl WebAugmentService {
                 query: params.query.clone(),
                 limit: params.limit,
                 provider: params.provider,
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
@@ -102,6 +103,7 @@ impl WebAugmentService {
             .fetcher
             .fetch(WebFetchRequest {
                 url: params.url.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
@@ -130,6 +132,7 @@ pub struct WebSearchParams {
     pub query: String,
     pub limit: Option<u32>,
     pub provider: WebSearchProvider,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -160,6 +163,7 @@ pub struct WebFetchParams {
     /// Stable per-call id scoping the metering idempotency key.
     pub request_id: String,
     pub url: String,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -173,9 +177,9 @@ mod tests {
     use super::{WebAugmentService, WebAugmentServiceDeps, WebFetchParams, WebSearchParams};
     use async_trait::async_trait;
     use june_domain::{
-        Authorization, AuthorizeRequest, ChargeRequest, DomainError, OsAccountsClient, Receipt,
-        UserId, WebFetchRequest, WebFetchResult, WebFetcher, WebSearchProvider, WebSearchRequest,
-        WebSearchResults, WebSearcher,
+        Authorization, AuthorizeRequest, ChargeRequest, DomainError, OsAccountsClient,
+        ProviderCredentials, Receipt, UserId, WebFetchRequest, WebFetchResult, WebFetcher,
+        WebSearchProvider, WebSearchRequest, WebSearchResults, WebSearcher,
     };
     use pretty_assertions::assert_eq;
     use std::sync::{Arc, Mutex};
@@ -306,6 +310,7 @@ mod tests {
                 query: "rust async".to_string(),
                 limit: Some(5),
                 provider: WebSearchProvider::Brave,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("search succeeds");
@@ -353,6 +358,7 @@ mod tests {
                     query: "rust async".to_string(),
                     limit: Some(5),
                     provider,
+                    provider_credentials: ProviderCredentials::default(),
                 })
                 .await
                 .expect("search succeeds");
@@ -387,6 +393,7 @@ mod tests {
                     query: "rust async".to_string(),
                     limit: Some(5),
                     provider: WebSearchProvider::Brave,
+                    provider_credentials: ProviderCredentials::default(),
                 })
                 .await
                 .expect("search succeeds");
@@ -414,6 +421,7 @@ mod tests {
                 user_id: UserId("usr_1".to_string()),
                 request_id: "req_1".to_string(),
                 url: "https://x.com/post".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 

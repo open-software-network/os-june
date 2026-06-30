@@ -7,8 +7,8 @@ use crate::{
     util::{ceil_seconds, sha256_hex},
 };
 use june_domain::{
-    ActionSlug, AudioDurationProbe, AudioFormat, Credits, ModelId, OsAccountsClient, Receipt,
-    Transcriber, Transcript, TranscriptionRequest, UserId,
+    ActionSlug, AudioDurationProbe, AudioFormat, Credits, ModelId, OsAccountsClient,
+    ProviderCredentials, Receipt, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use std::sync::Arc;
 
@@ -137,6 +137,7 @@ impl NoteTranscribeService {
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
@@ -200,6 +201,7 @@ impl NoteTranscribeService {
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         tracing::info!(
@@ -242,6 +244,7 @@ pub struct NoteTranscribeParams {
     pub language: Option<String>,
     pub model_id: ModelId,
     pub preview: bool,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]

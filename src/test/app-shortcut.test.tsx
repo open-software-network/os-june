@@ -191,6 +191,14 @@ vi.mock("../lib/tauri", () => ({
   juneVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: mocks.providerModelSettings,
   listVeniceModels: mocks.listVeniceModels,
+  setVeniceApiKey: vi.fn(async () => ({
+    generationModel: "",
+    veniceApiKeyConfigured: true,
+  })),
+  clearVeniceApiKey: vi.fn(async () => ({
+    generationModel: "",
+    veniceApiKeyConfigured: false,
+  })),
   startHermesBridge: mocks.startHermesBridge,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
 }));

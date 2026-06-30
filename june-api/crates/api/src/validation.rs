@@ -19,6 +19,7 @@ pub(crate) const MAX_AGENT_STRING_CHARS: usize = 100_000;
 pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 240_000;
 pub(crate) const MAX_AGENT_JSON_DEPTH: usize = 16;
 pub(crate) const MAX_AGENT_OUTPUT_TOKENS: u64 = 32_768;
+pub(crate) const MAX_PROVIDER_API_KEY_CHARS: usize = 4_096;
 /// Venice caps a search query at 400 characters.
 pub(crate) const MAX_WEB_QUERY_CHARS: usize = 400;
 pub(crate) const MAX_WEB_URL_CHARS: usize = 4_096;

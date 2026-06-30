@@ -9755,6 +9755,60 @@ input:focus-visible,
   justify-content: flex-end;
 }
 
+.settings-secret-control {
+  width: min(520px, 50vw);
+  justify-content: flex-end;
+}
+
+.settings-secret-input {
+  width: min(260px, 100%);
+  min-height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.settings-secret-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.settings-secret-input:focus {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.settings-row-substatus {
+  color: color-mix(in oklch, var(--success) 70%, var(--foreground));
+}
+
+@media (max-width: 720px) {
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .settings-row-control,
+  .settings-model-control,
+  .settings-secret-control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settings-secret-control {
+    flex-wrap: wrap;
+  }
+
+  .settings-secret-input {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+}
+
 .settings-group-action {
   height: 26px;
   padding: 0 var(--sp-2);

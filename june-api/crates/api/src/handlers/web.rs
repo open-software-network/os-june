@@ -1,5 +1,9 @@
 use crate::{
-    auth::authenticated_user, envelope::ApiResponse, error::ApiError, state::ApiState, validation,
+    auth::{authenticated_user, provider_credentials},
+    envelope::ApiResponse,
+    error::ApiError,
+    state::ApiState,
+    validation,
 };
 use axum::{Json, extract::State, http::HeaderMap};
 use june_domain::{WebFetchResult, WebSearchProvider, WebSearchResults};
@@ -45,6 +49,7 @@ pub(crate) async fn search(
     Json(request): Json<WebSearchRequest>,
 ) -> Result<Json<ApiResponse<WebSearchResults>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     let request_id = require_request_id(&request.request_id)?;
     let query = request.query.trim().to_string();
     if query.is_empty() {
@@ -62,6 +67,7 @@ pub(crate) async fn search(
             query,
             limit,
             provider: request.provider.unwrap_or_default(),
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(output.results)))
@@ -73,6 +79,7 @@ pub(crate) async fn fetch(
     Json(request): Json<WebFetchRequest>,
 ) -> Result<Json<ApiResponse<WebFetchResult>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     let request_id = require_request_id(&request.request_id)?;
     let url = request.url.trim().to_string();
     if url.is_empty() {
@@ -104,6 +111,7 @@ pub(crate) async fn fetch(
             user_id,
             request_id,
             url,
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(output.result)))

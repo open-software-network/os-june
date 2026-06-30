@@ -41,8 +41,8 @@ mod tests {
     use june_domain::{
         AudioDurationProbe, Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner,
         CleanupRequest, Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
-        OsAccountsClient, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest,
-        UserId,
+        OsAccountsClient, ProviderCredentials, Receipt, TokenUsage, Transcriber, Transcript,
+        TranscriptionRequest, UserId,
     };
     use pretty_assertions::assert_eq;
     use std::{
@@ -94,6 +94,7 @@ mod tests {
                 language: None,
                 existing_generated_note: None,
                 model_id: ModelId("text-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("generate succeeds with happy path");
@@ -146,6 +147,7 @@ mod tests {
                 dictionary_context: Some("Jakub".to_string()),
                 style: "plain".to_string(),
                 model_id: ModelId("text-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("cleanup succeeds with happy path");
@@ -187,6 +189,7 @@ mod tests {
                 context: Some("Writing style: formal.".to_string()),
                 language: Some("es".to_string()),
                 model_id: ModelId("audio-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("transcribe succeeds with happy path");
@@ -241,6 +244,7 @@ mod tests {
                 context: None,
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -340,6 +344,7 @@ mod tests {
                 dictionary_context: None,
                 style: "plain".to_string(),
                 model_id: ModelId("audio-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -374,6 +379,7 @@ mod tests {
             language: None,
             existing_generated_note: None,
             model_id: ModelId("text-model".to_string()),
+            provider_credentials: ProviderCredentials::default(),
         }
     }
 
@@ -409,6 +415,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: false,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -445,6 +452,7 @@ mod tests {
                 language: Some("en".to_string()),
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("preview transcription succeeds");
@@ -506,6 +514,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -561,6 +570,7 @@ mod tests {
                     language: None,
                     model_id: ModelId("audio-model".to_string()),
                     preview: true,
+                    provider_credentials: ProviderCredentials::default(),
                 })
                 .await
                 .expect("preview transcription succeeds");
@@ -627,6 +637,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -672,6 +683,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
@@ -709,6 +721,7 @@ mod tests {
                 context: None,
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await;
 

@@ -8,7 +8,7 @@ use crate::{
 };
 use june_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, Credits, ModelId,
-    ModelKind, OsAccountsClient, Receipt, UserId,
+    ModelKind, OsAccountsClient, ProviderCredentials, Receipt, UserId,
 };
 use std::sync::Arc;
 
@@ -57,6 +57,7 @@ impl AgentChatService {
             .complete(AgentChatRequest {
                 body: params.body,
                 model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let actual = self
@@ -91,6 +92,7 @@ pub struct AgentChatParams {
     pub user_id: UserId,
     pub model_id: ModelId,
     pub body: serde_json::Value,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]

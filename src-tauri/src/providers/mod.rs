@@ -1,6 +1,6 @@
 //! Model-picker state. The Tauri side persists which transcription /
-//! generation models the user selected; provider keys and URLs live in
-//! June API, never here.
+//! generation models the user selected. Advanced users may also store their
+//! own Venice API key locally; responses only expose whether one is present.
 
 use crate::domain::types::AppError;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -15,6 +15,7 @@ pub const PROVIDER_OPENAI: &str = "openai";
 pub const PROVIDER_VENICE: &str = "venice";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
+const MAX_VENICE_API_KEY_CHARS: usize = 4_096;
 
 // Kept exported under the legacy names so existing callers compile until they
 // migrate to the names above.
@@ -35,12 +36,37 @@ pub struct ProviderModelSettings {
     pub transcription_provider: String,
     pub transcription_model: String,
     pub generation_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venice_api_key: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelSettingsDto {
+    pub transcription_provider: String,
+    pub transcription_model: String,
+    pub generation_model: String,
+    pub venice_api_key_configured: bool,
+}
+
+impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
+    fn from(settings: &ProviderModelSettings) -> Self {
+        Self {
+            transcription_provider: settings.transcription_provider.clone(),
+            transcription_model: settings.transcription_model.clone(),
+            generation_model: settings.generation_model.clone(),
+            venice_api_key_configured: settings
+                .venice_api_key
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelSettingsResponse {
-    pub settings: ProviderModelSettings,
+    pub settings: ProviderModelSettingsDto,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -54,6 +80,12 @@ pub struct SetVeniceModelRequest {
 #[serde(rename_all = "camelCase")]
 pub struct VeniceModelsRequest {
     pub mode: ModelMode,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetVeniceApiKeyRequest {
+    pub api_key: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -150,6 +182,10 @@ pub fn generation_model() -> String {
     current_settings().generation_model
 }
 
+pub fn venice_api_key() -> Option<String> {
+    current_settings().venice_api_key
+}
+
 /// Context window (tokens) of the configured generation model, looked up in
 /// the backend's model catalog and cached per model id. The agent provider
 /// proxy advertises it on `/v1/models` so Hermes sizes its history to the
@@ -212,7 +248,7 @@ pub fn provider_model_settings(
         .lock()
         .map_err(|_| AppError::new("provider_settings_unavailable", "Settings lock failed."))?;
     Ok(ProviderModelSettingsResponse {
-        settings: settings.clone(),
+        settings: ProviderModelSettingsDto::from(&*settings),
     })
 }
 
@@ -220,7 +256,7 @@ pub fn provider_model_settings(
 pub fn set_venice_model(
     state: State<'_, ProviderSettingsState>,
     request: SetVeniceModelRequest,
-) -> Result<ProviderModelSettings, AppError> {
+) -> Result<ProviderModelSettingsDto, AppError> {
     let model_id = request.model_id.trim();
     if model_id.is_empty() {
         return Err(AppError::new("provider_model_required", "Select a model."));
@@ -232,6 +268,31 @@ pub fn set_venice_model(
             settings.transcription_model = model_id.to_string();
         }
         ModelMode::Generation => settings.generation_model = model_id.to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn set_venice_api_key(
+    state: State<'_, ProviderSettingsState>,
+    request: SetVeniceApiKeyRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    let api_key = normalize_api_key_for_save(&request.api_key).ok_or_else(|| {
+        AppError::new(
+            "venice_api_key_required",
+            "Enter a Venice API key before saving.",
+        )
+    })?;
+    update_settings(&state, |settings| {
+        settings.venice_api_key = Some(api_key);
+    })
+}
+
+#[tauri::command]
+pub fn clear_venice_api_key(
+    state: State<'_, ProviderSettingsState>,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    update_settings(&state, |settings| {
+        settings.venice_api_key = None;
     })
 }
 
@@ -298,6 +359,7 @@ fn default_settings() -> ProviderModelSettings {
         transcription_provider: PROVIDER_VENICE.to_string(),
         transcription_model: DEFAULT_TRANSCRIPTION_MODEL.to_string(),
         generation_model: DEFAULT_GENERATION_MODEL.to_string(),
+        venice_api_key: None,
     }
 }
 
@@ -332,9 +394,34 @@ fn load_settings_from_disk(app: &AppHandle) -> ProviderModelSettings {
                     settings.generation_model,
                     &defaults.generation_model,
                 ),
+                venice_api_key: normalize_api_key_option(settings.venice_api_key),
             }
         })
         .unwrap_or(defaults)
+}
+
+fn normalize_api_key_option(value: Option<String>) -> Option<String> {
+    value.and_then(|value| normalize_api_key_for_save(&value))
+}
+
+fn normalize_api_key_for_save(value: &str) -> Option<String> {
+    let value = normalize_api_key(value)?;
+    if value.chars().count() > MAX_VENICE_API_KEY_CHARS
+        || value.chars().any(|character| character.is_control())
+    {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn normalize_api_key(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn non_empty_or(value: String, fallback: &str) -> String {
@@ -349,7 +436,7 @@ fn non_empty_or(value: String, fallback: &str) -> String {
 fn update_settings(
     state: &ProviderSettingsState,
     update: impl FnOnce(&mut ProviderModelSettings),
-) -> Result<ProviderModelSettings, AppError> {
+) -> Result<ProviderModelSettingsDto, AppError> {
     let mut settings = state
         .settings
         .lock()
@@ -357,7 +444,7 @@ fn update_settings(
     update(&mut settings);
     save_settings(state, &settings)?;
     replace_current_settings(settings.clone());
-    Ok(settings.clone())
+    Ok(ProviderModelSettingsDto::from(&*settings))
 }
 
 fn save_settings(

@@ -8,7 +8,7 @@ use crate::{
 };
 use june_domain::{
     ActionSlug, Credits, GeneratedNote, GenerationRequest, Generator, ModelId, ModelKind,
-    OsAccountsClient, Receipt, UserId,
+    OsAccountsClient, ProviderCredentials, Receipt, UserId,
 };
 use std::sync::Arc;
 
@@ -67,6 +67,7 @@ impl NoteGenerateService {
                 existing_generated_note: params.existing_generated_note,
                 model: params.model_id.clone(),
                 system_prompt: prompts::NOTE_GENERATE.to_string(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let actual = self
@@ -106,6 +107,7 @@ pub struct NoteGenerateParams {
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
     pub model_id: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]

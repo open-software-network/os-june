@@ -172,6 +172,7 @@ export type ProviderModelSettingsDto = {
   transcriptionProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  veniceApiKeyConfigured: boolean;
 };
 
 export type ProviderModelSettingsResponse = {
@@ -1331,6 +1332,16 @@ export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
   return invoke<ProviderModelSettingsDto>("set_venice_model", {
     request: { mode, modelId },
   });
+}
+
+export async function setVeniceApiKey(apiKey: string) {
+  return invoke<ProviderModelSettingsDto>("set_venice_api_key", {
+    request: { apiKey },
+  });
+}
+
+export async function clearVeniceApiKey() {
+  return invoke<ProviderModelSettingsDto>("clear_venice_api_key");
 }
 
 export async function setDictationShortcut(

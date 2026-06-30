@@ -78,6 +78,32 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn integration_note_generate_forwards_venice_api_key_header() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "model": "text-model"
+        }),
+        "vc_user_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(
+        body["data"]["content"],
+        "Generated note body with user Venice key"
+    );
+    assert!(!body.to_string().contains("vc_user_key"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_generate_rejects_wrong_model_kind() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/notes/generate",
@@ -632,6 +658,20 @@ fn json_request(
     builder.body(Body::from(value.to_string()))
 }
 
+fn json_request_with_venice_api_key(
+    uri: &str,
+    value: &serde_json::Value,
+    venice_api_key: &str,
+) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .header("x-venice-api-key", venice_api_key)
+        .body(Body::from(value.to_string()))
+}
+
 fn get_request(uri: &str) -> Result<Request<Body>, axum::http::Error> {
     Request::builder()
         .method(Method::GET)
@@ -821,9 +861,15 @@ struct FakeGenerator;
 
 #[async_trait]
 impl Generator for FakeGenerator {
-    async fn generate(&self, _request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+    async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+        let content =
+            if request.provider_credentials.venice_api_key.as_deref() == Some("vc_user_key") {
+                "Generated note body with user Venice key"
+            } else {
+                "Generated note body"
+            };
         Ok(GeneratedNote {
-            content: "Generated note body".to_string(),
+            content: content.to_string(),
             title_suggestion: Some("Generated title".to_string()),
             provider: "fake-generator".to_string(),
             usage: TokenUsage {

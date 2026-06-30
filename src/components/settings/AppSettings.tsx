@@ -17,9 +17,11 @@ import {
   localAudioFileSrc,
   providerModelSettings,
   juneOpenVerifyPage,
+  clearVeniceApiKey,
   setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
+  setVeniceApiKey,
   setVeniceModel,
 } from "../../lib/tauri";
 import { LANGUAGE_OPTIONS, languageLabel } from "../../lib/dictation-languages";
@@ -165,6 +167,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
   generationModel: "zai-org-glm-5-2",
+  veniceApiKeyConfigured: false,
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -261,6 +264,7 @@ export function AppSettings({
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
+  const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
   const [internalTab, setInternalTab] = useState<SettingsTab>("general");
   const [micPopoverPlacement, setMicPopoverPlacement] =
     useState<SelectPopoverPlacement>("align-selected");
@@ -661,6 +665,33 @@ export function AppSettings({
           ? "Transcription model updated."
           : "Text model updated.",
       );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function saveVeniceApiKey() {
+    const apiKey = veniceApiKeyDraft.trim();
+    if (!apiKey) {
+      setStatus("Enter a Venice API key before saving.");
+      return;
+    }
+    try {
+      const next = await setVeniceApiKey(apiKey);
+      setProviderSettings(next);
+      setVeniceApiKeyDraft("");
+      setStatus("Venice API key saved.");
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function removeVeniceApiKey() {
+    try {
+      const next = await clearVeniceApiKey();
+      setProviderSettings(next);
+      setVeniceApiKeyDraft("");
+      setStatus("Venice API key removed.");
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -1191,6 +1222,13 @@ export function AppSettings({
                     options={generationOptions}
                     onOpen={() => openModelPicker("generation")}
                   />
+                  <VeniceApiKeyRow
+                    configured={providerSettings.veniceApiKeyConfigured}
+                    value={veniceApiKeyDraft}
+                    onValueChange={setVeniceApiKeyDraft}
+                    onSave={() => void saveVeniceApiKey()}
+                    onRemove={() => void removeVeniceApiKey()}
+                  />
                 </div>
               </div>
             </section>
@@ -1535,6 +1573,70 @@ function ModelRow({
             <ModelMeta model={model} />
           </span>
         </button>
+      </div>
+    </div>
+  );
+}
+
+function VeniceApiKeyRow({
+  configured,
+  value,
+  onValueChange,
+  onSave,
+  onRemove,
+}: {
+  configured: boolean;
+  value: string;
+  onValueChange: (value: string) => void;
+  onSave: () => void;
+  onRemove: () => void;
+}) {
+  const canSave = value.trim().length > 0;
+  return (
+    <div className="settings-row settings-row-venice-key">
+      <div className="settings-row-info">
+        <h3 className="settings-row-title">Venice API key</h3>
+        <p className="settings-row-description">
+          Use your own key for Venice models. Stored locally and sent only for
+          Venice requests.
+        </p>
+        {configured ? (
+          <p className="settings-row-description settings-row-substatus">
+            Key saved.
+          </p>
+        ) : null}
+      </div>
+      <div className="settings-row-control settings-secret-control">
+        <input
+          className="settings-secret-input"
+          type="password"
+          value={value}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={configured ? "Saved key hidden" : "Venice API key"}
+          aria-label="Venice API key"
+          onChange={(event) => onValueChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && canSave) onSave();
+          }}
+        />
+        <button
+          type="button"
+          className="btn btn-secondary"
+          disabled={!canSave}
+          onClick={onSave}
+        >
+          Save
+        </button>
+        {configured ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onRemove}
+          >
+            Remove
+          </button>
+        ) : null}
       </div>
     </div>
   );

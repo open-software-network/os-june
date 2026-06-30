@@ -9,8 +9,8 @@ use crate::{
 };
 use june_domain::{
     ActionSlug, AudioDurationProbe, AudioFormat, CleanedText, Cleaner, CleanupRequest, Credits,
-    ModelId, ModelKind, OsAccountsClient, Receipt, Transcriber, Transcript, TranscriptionRequest,
-    UserId,
+    ModelId, ModelKind, OsAccountsClient, ProviderCredentials, Receipt, Transcriber, Transcript,
+    TranscriptionRequest, UserId,
 };
 use std::sync::Arc;
 
@@ -79,6 +79,7 @@ impl DictateService {
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await
             .map_err(ServiceError::from)?;
@@ -125,6 +126,7 @@ impl DictateService {
                 style: params.style,
                 model: params.model_id.clone(),
                 system_prompt: prompts::DICTATE_CLEANUP.to_string(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let actual = self
@@ -164,6 +166,7 @@ pub struct DictateTranscribeParams {
     pub context: Option<String>,
     pub language: Option<String>,
     pub model_id: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +178,7 @@ pub struct DictateCleanupParams {
     pub dictionary_context: Option<String>,
     pub style: String,
     pub model_id: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
