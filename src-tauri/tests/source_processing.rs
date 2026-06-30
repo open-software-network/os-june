@@ -62,6 +62,59 @@ fn processing_uses_only_valid_source_transcripts() {
 }
 
 #[test]
+fn processing_drops_overlapping_duplicate_source_transcripts() {
+    let sources = valid_sources_for_processing(vec![
+        SourceTranscriptInput {
+            source: "microphone".to_string(),
+            text: "I'm cutting a new bill right now.".to_string(),
+            valid: true,
+            warning: None,
+            start_ms: Some(1_000),
+            end_ms: Some(3_000),
+            turn_index: Some(0),
+        },
+        SourceTranscriptInput {
+            source: "system".to_string(),
+            text: "I'm cutting a new pillow throat now.".to_string(),
+            valid: true,
+            warning: None,
+            start_ms: Some(1_050),
+            end_ms: Some(3_100),
+            turn_index: Some(1),
+        },
+    ]);
+
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].text, "I'm cutting a new bill right now.");
+}
+
+#[test]
+fn processing_keeps_repeated_phrases_when_turns_are_separate() {
+    let sources = valid_sources_for_processing(vec![
+        SourceTranscriptInput {
+            source: "microphone".to_string(),
+            text: "Hello folks.".to_string(),
+            valid: true,
+            warning: None,
+            start_ms: Some(1_000),
+            end_ms: Some(2_000),
+            turn_index: Some(0),
+        },
+        SourceTranscriptInput {
+            source: "system".to_string(),
+            text: "Hello, folks.".to_string(),
+            valid: true,
+            warning: None,
+            start_ms: Some(10_000),
+            end_ms: Some(11_000),
+            turn_index: Some(1),
+        },
+    ]);
+
+    assert_eq!(sources.len(), 2);
+}
+
+#[test]
 fn coalesces_consecutive_same_source_transcripts_for_display() {
     let sources = coalesce_source_transcripts(vec![
         SourceTranscriptInput {

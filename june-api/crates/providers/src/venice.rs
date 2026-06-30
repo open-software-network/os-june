@@ -700,12 +700,14 @@ fn generation_source_text(
 
 fn cleanup_generated_note_text(text: &str, labeled_transcript: &str) -> String {
     let spoken_lines = labeled_transcript_spoken_lines(labeled_transcript);
-    text.lines()
+    let without_source_labels = text
+        .lines()
         .map(|line| strip_generated_source_label(line, &spoken_lines))
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
-        .to_string()
+        .to_string();
+    strip_leading_raw_fragments_before_heading(&without_source_labels).to_string()
 }
 
 fn strip_generated_source_label(line: &str, spoken_lines: &[String]) -> String {
@@ -766,6 +768,60 @@ fn strip_source_label_prefix(value: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn strip_leading_raw_fragments_before_heading(value: &str) -> &str {
+    let mut heading_start = None;
+    let mut offset = 0_usize;
+    for line in value.split_inclusive('\n') {
+        if markdown_heading_text(line).is_some() {
+            heading_start = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+    let Some(heading_start) = heading_start else {
+        return value;
+    };
+    let prelude = value[..heading_start].trim();
+    if prelude.is_empty() {
+        return value[heading_start..].trim_start();
+    }
+    if looks_like_raw_leading_fragments(prelude) {
+        value[heading_start..].trim_start()
+    } else {
+        value
+    }
+}
+
+fn markdown_heading_text(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let heading_len = trimmed
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b'#')
+        .count();
+    if (1..=6).contains(&heading_len) && trimmed.as_bytes().get(heading_len) == Some(&b' ') {
+        return Some(trimmed[heading_len + 1..].trim());
+    }
+    None
+}
+
+fn looks_like_raw_leading_fragments(value: &str) -> bool {
+    let lines = value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    !lines.is_empty() && lines.iter().all(|line| looks_like_raw_fragment_line(line))
+}
+
+fn looks_like_raw_fragment_line(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    if bytes.len() > 1 && bytes[0] == b'-' && bytes[1].is_ascii_alphanumeric() {
+        return true;
+    }
+    line.split_whitespace().count() >= 6 && line.matches(" -").count() >= 2
 }
 
 fn cleanup_source_text(text: &str, dictionary_context: Option<&str>, style: &str) -> String {
@@ -1458,6 +1514,19 @@ mod tests {
         assert_eq!(
             cleanup_generated_note_text("Testing microphone placement.", transcript),
             "Testing microphone placement."
+        );
+    }
+
+    #[test]
+    fn generated_note_cleanup_strips_raw_fragments_before_first_heading() {
+        let transcript = "Microphone: different release candidates\nMicrophone: we merge a lot to main\nMicrophone: that might kill our github action minutes";
+
+        assert_eq!(
+            cleanup_generated_note_text(
+                "-different release candidates -we merge a lot to main -that might kill our github action minutes in like 2 days\n# Release build and deployment\n\n- Cut a new build.",
+                transcript,
+            ),
+            "# Release build and deployment\n\n- Cut a new build."
         );
     }
 

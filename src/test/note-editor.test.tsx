@@ -162,6 +162,44 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Microphone response")).toBeInTheDocument();
   });
 
+  it("hides overlapping duplicate transcript turns", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "I'm cutting a new bill right now.",
+              source: "microphone",
+              startMs: 1000,
+              endMs: 3000,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+            {
+              id: "turn-2",
+              text: "I'm cutting a new pillow throat now.",
+              source: "system",
+              startMs: 1050,
+              endMs: 3100,
+              turnIndex: 1,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("I'm cutting a new bill right now."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("I'm cutting a new pillow throat now."),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows live transcript preview turns while recording", () => {
     render(
       <NoteEditor
