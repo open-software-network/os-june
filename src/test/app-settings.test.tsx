@@ -12,6 +12,7 @@ import { AppSettings } from "../components/settings/AppSettings";
 import type { DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
+import { AGENT_PRIVACY_GUARD_MODE_KEY } from "../lib/rampart-privacy";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
@@ -1951,6 +1952,45 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("changes the agent privacy guard mode from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const privacyRow = screen
+      .getByText("Privacy guard")
+      .closest(".settings-row");
+    expect(privacyRow).not.toBeNull();
+    const controls = within(privacyRow as HTMLElement);
+
+    expect(controls.getByRole("button", { name: "Off" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(controls.getByRole("button", { name: "Structured" }));
+    expect(localStorage.getItem(AGENT_PRIVACY_GUARD_MODE_KEY)).toBe(
+      "structured",
+    );
+    expect(
+      controls.getByRole("button", { name: "Structured" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(controls.getByRole("button", { name: "Full" }));
+    expect(localStorage.getItem(AGENT_PRIVACY_GUARD_MODE_KEY)).toBe("full");
   });
 
   it("opts into agent CLI access from Agent settings", async () => {

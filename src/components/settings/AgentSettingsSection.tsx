@@ -30,14 +30,30 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "../../lib/agent-hud-settings";
+import {
+  agentPrivacyGuardModeLabel,
+  getAgentPrivacyGuardMode,
+  setAgentPrivacyGuardMode,
+  type AgentPrivacyGuardMode,
+} from "../../lib/rampart-privacy";
 import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
 import { Switch } from "../ui/Switch";
+import { SegmentedControl } from "../ui/SegmentedControl";
 
 type AgentSettingsPanel = "skills" | "messaging" | "files";
+
+const PRIVACY_GUARD_MODE_OPTIONS: {
+  value: AgentPrivacyGuardMode;
+  label: string;
+}[] = [
+  { value: "off", label: agentPrivacyGuardModeLabel("off") },
+  { value: "structured", label: agentPrivacyGuardModeLabel("structured") },
+  { value: "full", label: agentPrivacyGuardModeLabel("full") },
+];
 
 export function AgentSettingsSection() {
   const [panel, setPanel] = useState<AgentSettingsPanel>("skills");
@@ -56,6 +72,9 @@ export function AgentSettingsSection() {
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
   const [agentHudEnabled, setAgentHudEnabledState] = useState(() =>
     getAgentHudEnabled(),
+  );
+  const [privacyGuardMode, setPrivacyGuardModeState] = useState(() =>
+    getAgentPrivacyGuardMode(),
   );
   // null until the stored value loads, so the switch never flashes a wrong
   // default for a setting with security weight.
@@ -135,6 +154,11 @@ export function AgentSettingsSection() {
     } catch (err) {
       setError(messageFromError(err));
     }
+  }
+
+  function handlePrivacyGuardModeChange(mode: AgentPrivacyGuardMode) {
+    setPrivacyGuardModeState(mode);
+    setAgentPrivacyGuardMode(mode);
   }
 
   async function loadCapabilities() {
@@ -344,6 +368,24 @@ export function AgentSettingsSection() {
                   void handleCliAccessChange(enabled)
                 }
                 aria-label="Allow agent CLI access"
+              />
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">Privacy guard</h3>
+              <p className="settings-row-description">
+                Redacts text in agent prompts before sending. Attached files are
+                unchanged. Full mode uses Rampart by National Design Studio on
+                this device.
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <SegmentedControl<AgentPrivacyGuardMode>
+                value={privacyGuardMode}
+                onValueChange={handlePrivacyGuardModeChange}
+                options={PRIVACY_GUARD_MODE_OPTIONS}
+                aria-label="Agent privacy guard"
               />
             </div>
           </div>

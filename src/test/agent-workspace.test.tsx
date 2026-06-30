@@ -24,6 +24,7 @@ import {
   E2EE_MODEL_DESCRIPTION,
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
 } from "../lib/model-privacy";
+import { AGENT_PRIVACY_GUARD_MODE_KEY } from "../lib/rampart-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
@@ -620,6 +621,87 @@ describe("AgentWorkspace", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("redacts agent prompts before sending when the privacy guard is enabled", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    render(<AgentWorkspace />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: {
+            prompt: "Email ada@example.com and note SSN 472-81-0094",
+          },
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "Email [EMAIL_1] and note SSN [SSN_1]",
+      }),
+    );
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledWith(
+      "Email [EMAIL_1] and note SSN [SSN_1]",
+    );
+    expect(
+      await screen.findByText(
+        "Privacy guard redacted 2 details before sending.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("redacts mid-run steering and its fallback follow-up when the privacy guard is enabled", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start this run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start this run",
+      }),
+    );
+    await screen.findByRole("button", { name: "Stop June" });
+
+    await user.type(composer, "Email ada@example.com next");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "Email [EMAIL_1] next",
+      }),
+    );
+    expect(
+      await screen.findByText(
+        "Privacy guard redacted 1 detail before sending.",
+      ),
+    ).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-1" });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Email [EMAIL_1] next",
+      }),
+    );
+    expect(JSON.stringify(mocks.gatewayRequest.mock.calls)).not.toContain(
+      "ada@example.com",
+    );
   });
 
   it("never announces the restored session as selected while a New Session is pending", async () => {
@@ -5717,6 +5799,50 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("redacts privacy guard details in text fallback image filenames", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/receipt-ada@example.com.png",
+        ],
+      },
+    });
+
+    expect(
+      await screen.findByText("receipt-ada@example.com.png"),
+    ).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "what is in this image?");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method]) => method === "prompt.submit",
+        ),
+      ).toBe(true),
+    );
+
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain("--- Attached Context ---");
+    expect(submitted.text).toMatch(/\[EMAIL_\d+\]/);
+    expect(submitted.text).not.toContain("ada@example.com");
+  });
+
   it("warns and offers a one-tap switch when an image is attached to a non-vision model", async () => {
     // Hero mode (no open session) so the switch writes the global text-model
     // default through setVeniceModel rather than a per-chat gateway dispatch.
@@ -5775,7 +5901,10 @@ describe("AgentWorkspace", () => {
     );
 
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "qwen-vl",
+      ),
     );
     // The switch picks the image-capable model and keeps the dropped image.
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
@@ -5843,7 +5972,10 @@ describe("AgentWorkspace", () => {
     );
     // Lands on the first eligible vision model (Qwen VL), no picker dialog.
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "qwen-vl",
+      ),
     );
     expect(
       screen.queryByRole("dialog", { name: "Choose text model" }),
