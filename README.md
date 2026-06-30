@@ -280,8 +280,9 @@ Architecture and product notes:
 ## Release notes
 
 Production desktop releases are cut from GitHub Actions. macOS produces signed
-and notarized DMGs with Tauri updater artifacts. Windows produces signed NSIS
-installers and merges Windows updater metadata into the shared release.
+and notarized DMGs with Tauri updater artifacts. Windows produces NSIS
+installers, Authenticode-signs them when certificate secrets are configured, and
+merges Windows updater metadata into the shared release.
 
 Start with:
 
