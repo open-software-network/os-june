@@ -59,6 +59,10 @@ import {
   type TabNav,
 } from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
+import {
+  ErrorBanner,
+  ErrorFeedbackNudge,
+} from "../components/ui/ErrorFeedbackNudge";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconProjects } from "central-icons/IconProjects";
@@ -116,6 +120,10 @@ import {
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
 import { messageFromError } from "../lib/errors";
+import {
+  ERROR_FEEDBACK_REQUESTED_EVENT,
+  errorFeedbackCategoryFromDetail,
+} from "../lib/error-feedback";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
@@ -2128,6 +2136,27 @@ export function App() {
     }, 0);
   }
 
+  useEffect(() => {
+    function handleErrorFeedbackRequested(event: Event) {
+      const category =
+        event instanceof CustomEvent
+          ? errorFeedbackCategoryFromDetail(event.detail)
+          : "bug";
+      handleReportIssue(category);
+    }
+
+    window.addEventListener(
+      ERROR_FEEDBACK_REQUESTED_EVENT,
+      handleErrorFeedbackRequested,
+    );
+    return () => {
+      window.removeEventListener(
+        ERROR_FEEDBACK_REQUESTED_EVENT,
+        handleErrorFeedbackRequested,
+      );
+    };
+  });
+
   // "New session" from inside a project: same fresh-chat handshake, but the
   // session gets filed into the project once Hermes hands back its id.
   function handleNewAgentSessionInProject(folderId: string) {
@@ -2896,7 +2925,7 @@ export function App() {
               noteDetailScrollerActive ? "true" : undefined
             }
           >
-            {error ? <p className="error-banner">{error}</p> : null}
+            {error ? <ErrorBanner>{error}</ErrorBanner> : null}
             <div className="workspace">
               {activeView === "settings" ? (
                 <AppSettings
@@ -3587,6 +3616,7 @@ function UpdateStatusCard({
           ) : null}
         </div>
       ) : null}
+      {failed ? <ErrorFeedbackNudge className="update-error-feedback" /> : null}
     </aside>
   );
 }

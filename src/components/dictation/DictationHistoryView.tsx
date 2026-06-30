@@ -22,6 +22,7 @@ import {
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
+import { ErrorBanner } from "../ui/ErrorFeedbackNudge";
 import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import {
   deleteDictationHistoryItem,
@@ -244,7 +245,7 @@ export function DictationHistoryView({
         </div>
       ) : null}
 
-      {error ? <p className="error-banner">{error}</p> : null}
+      {error ? <ErrorBanner>{error}</ErrorBanner> : null}
 
       {loading ? (
         <div className="folders-empty">

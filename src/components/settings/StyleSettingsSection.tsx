@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { dictationSettings, setDictationStyle } from "../../lib/tauri";
 import type { DictationStyle } from "../../lib/tauri";
+import { SettingsRowError } from "../ui/ErrorFeedbackNudge";
 import { SegmentedControl } from "../ui/SegmentedControl";
 
 const STYLE_OPTIONS = [
@@ -71,7 +72,7 @@ export function StyleSettingsSection() {
             <div className="settings-row-info">
               <h3 className="settings-row-title">Output style</h3>
               <p className="settings-row-description">{current.description}</p>
-              {error ? <p className="settings-row-error">{error}</p> : null}
+              {error ? <SettingsRowError>{error}</SettingsRowError> : null}
             </div>
             <div className="settings-row-control">
               <SegmentedControl

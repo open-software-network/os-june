@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { SettingsRowError } from "../ui/ErrorFeedbackNudge";
 
 export type MicTestState = "idle" | "recording" | "ready" | "error";
 
@@ -34,7 +35,7 @@ export function MicTestControl({
       <div className="settings-row-info">
         <h3 className="settings-row-title">Mic test</h3>
         <p className="settings-row-description">{micTestDescription(state)}</p>
-        {error ? <p className="settings-row-error">{error}</p> : null}
+        {error ? <SettingsRowError>{error}</SettingsRowError> : null}
       </div>
       <div className="settings-row-control settings-mic-test-control">
         {state === "recording" ? (

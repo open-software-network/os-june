@@ -39,6 +39,7 @@ import {
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import type { HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { ErrorBanner } from "../ui/ErrorFeedbackNudge";
 import { HoverTip } from "../ui/HoverTip";
 import { RoutineCreate, type RoutineCreateInput } from "./RoutineCreate";
 import { RoutineDetail } from "./RoutineDetail";
@@ -441,7 +442,7 @@ export function RoutinesView({
         </div>
       ) : null}
 
-      {error ? <p className="error-banner">{error}</p> : null}
+      {error ? <ErrorBanner>{error}</ErrorBanner> : null}
 
       {loading ? (
         <div className="folders-empty">

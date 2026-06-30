@@ -1193,6 +1193,8 @@ input:focus-visible,
 }
 
 .agent-platform-error {
+  display: grid;
+  gap: var(--sp-2);
   margin-top: var(--sp-4);
   border: 1px solid color-mix(in srgb, var(--destructive) 45%, transparent);
   border-radius: var(--r-sm);
@@ -1200,6 +1202,10 @@ input:focus-visible,
   background: color-mix(in srgb, var(--destructive) 10%, transparent);
   color: var(--destructive);
   font-size: var(--fs-sm);
+}
+
+.agent-platform-error-feedback {
+  margin-top: 0;
 }
 
 .agent-platform-docs {
@@ -8995,6 +9001,41 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+.error-banner-message {
+  margin: 0;
+}
+
+.error-feedback-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  margin-top: var(--sp-2);
+  color: color-mix(in oklch, currentColor 76%, var(--muted-foreground));
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.error-feedback-nudge button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 var(--sp-1);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.error-feedback-nudge button:hover {
+  background: color-mix(in oklch, currentColor 10%, transparent);
+}
+
 /* Agent variant: actions on the right, and breathing room below the sticky
  * session bar instead of sitting on its bottom edge. */
 .agent-main > .agent-error-banner {
@@ -9057,9 +9098,19 @@ input:focus-visible,
   gap: var(--sp-4);
 }
 
-.agent-error-banner p {
+.agent-error-banner-copy {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.agent-error-banner-copy p {
   margin: 0;
   min-width: 0;
+}
+
+.agent-inline-error-feedback {
+  margin-top: 0;
 }
 
 .agent-error-banner-actions {
@@ -9160,6 +9211,11 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.agent-compact-error .inline-notice-body {
+  display: grid;
+  gap: var(--sp-2);
+}
+
 .inline-notice-actions {
   display: inline-flex;
   align-items: center;
@@ -9184,12 +9240,23 @@ input:focus-visible,
   border-radius: var(--r-md);
 }
 
+.note-failure-copy {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
 .note-failure-message {
   margin: 0;
   min-width: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
   line-height: 1.45;
+}
+
+.note-failure-feedback {
+  margin-top: 0;
+  color: var(--muted-foreground);
 }
 
 .note-failure-actions {
@@ -9325,7 +9392,21 @@ input:focus-visible,
 }
 
 .settings-row-error {
+  display: grid;
+  gap: var(--sp-1);
   color: var(--destructive);
+}
+
+.settings-row-error-message {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.settings-error-feedback {
+  margin-top: 0;
+  color: var(--muted-foreground);
 }
 
 .settings-row-action {
@@ -9904,8 +9985,7 @@ input:focus-visible,
 }
 
 .installed-skills-inline-error {
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: var(--sp-2);
   margin: 0;
   padding: var(--sp-3) var(--sp-5);
@@ -10189,6 +10269,12 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.5;
+}
+
+.installed-skills-error-feedback {
+  justify-content: center;
+  max-width: 420px;
+  color: var(--muted-foreground);
 }
 
 .installed-skills-retry {
@@ -14699,6 +14785,11 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   line-height: 1;
+}
+
+.update-error-feedback {
+  margin-top: calc(var(--sp-1) * -1);
+  color: var(--muted-foreground);
 }
 
 @keyframes update-popover-in {

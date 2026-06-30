@@ -5,6 +5,7 @@ import {
   type ScheduleDraft,
 } from "../../lib/routine-schedule";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
+import { ErrorBanner } from "../ui/ErrorFeedbackNudge";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { RoutineModePicker } from "./RoutineModePicker";
 import { SchedulePicker } from "./SchedulePicker";
@@ -89,7 +90,7 @@ export function RoutineCreate({
           onChange={(event) => setName(event.currentTarget.value)}
         />
 
-        {error ? <p className="error-banner">{error}</p> : null}
+        {error ? <ErrorBanner>{error}</ErrorBanner> : null}
 
         <div className="routine-detail-body">
           <section

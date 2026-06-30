@@ -35,6 +35,7 @@ import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
+import { SettingsRowError } from "../ui/ErrorFeedbackNudge";
 import { Switch } from "../ui/Switch";
 
 type AgentSettingsPanel = "skills" | "messaging" | "files";
@@ -386,7 +387,7 @@ export function AgentSettingsSection() {
             Files
           </button>
         </div>
-        {error ? <p className="settings-row-error">{error}</p> : null}
+        {error ? <SettingsRowError>{error}</SettingsRowError> : null}
         {panel === "skills" ? (
           <SkillsToolsPanel
             loading={loading}

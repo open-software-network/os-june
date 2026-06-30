@@ -21,6 +21,7 @@ import {
   type HermesSkillInfo,
   type InstalledSkillsState,
 } from "../../lib/hermes-admin";
+import { ErrorFeedbackNudge, SettingsRowError } from "../ui/ErrorFeedbackNudge";
 import { Switch } from "../ui/Switch";
 
 /** Sentinel for the "all categories" filter chip. */
@@ -174,10 +175,10 @@ export function InstalledSkillsView({
         ) : null}
 
         {state.error && hasSkills ? (
-          <p className="settings-row-error installed-skills-inline-error">
+          <SettingsRowError className="installed-skills-inline-error">
             <IconExclamationCircle size={14} ariaHidden />
             {state.error}
-          </p>
+          </SettingsRowError>
         ) : null}
 
         <div className="installed-skills-body">
@@ -498,6 +499,7 @@ function ErrorState({
       </span>
       <p className="installed-skills-empty-title">Couldn't load skills</p>
       <p className="installed-skills-empty-description">{message}</p>
+      <ErrorFeedbackNudge className="installed-skills-error-feedback" />
       {retryable ? (
         <button
           type="button"

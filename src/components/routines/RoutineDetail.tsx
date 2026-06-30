@@ -24,6 +24,7 @@ import {
 } from "../../lib/routine-schedule";
 import type { HermesSessionInfo } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
+import { ErrorBanner } from "../ui/ErrorFeedbackNudge";
 import { HoverTip } from "../ui/HoverTip";
 import { Switch } from "../ui/Switch";
 import { userFacingFailureMessage } from "../note-editor/NoteFailureBanner";
@@ -284,7 +285,7 @@ export function RoutineDetail({
           ) : null}
         </div>
 
-        {error ? <p className="error-banner">{error}</p> : null}
+        {error ? <ErrorBanner>{error}</ErrorBanner> : null}
         {failure ? (
           <div className="routine-detail-failure" role="status">
             <strong>Last run failed.</strong> {failure}

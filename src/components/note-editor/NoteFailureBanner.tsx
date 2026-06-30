@@ -1,6 +1,7 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
 import { isInsufficientCreditsMessage } from "../../lib/errors";
+import { ErrorFeedbackNudge } from "../ui/ErrorFeedbackNudge";
 
 export type FailureKind = "balance_low" | "generic";
 
@@ -44,7 +45,8 @@ function friendlyFailureSegment(message: string) {
   } else if (isInvalidJuneResponseMessage(body)) {
     friendly = "The processing service returned an invalid response.";
   } else if (normalized.includes("metering_provider_failed")) {
-    friendly = "Billing is temporarily unavailable. Please try again in a moment.";
+    friendly =
+      "Billing is temporarily unavailable. Please try again in a moment.";
   } else if (normalized.includes("upstream_provider_failed")) {
     friendly = "The transcription provider could not process this audio.";
   }
@@ -95,16 +97,19 @@ export function NoteFailureBanner({
 
   return (
     <aside className="note-failure-banner" role="alert" data-kind={kind}>
-      <p className="note-failure-message">
-        {isBalanceIssue
-          ? audioPreserved
-            ? `Your balance ran out. Your recording is saved locally, so ${topUpAction} and retry.`
-            : `Your balance is too low. ${topUpLabel} to continue.`
-          : (displayMessage ?? "June couldn't finish processing this note.")}
-        {!isBalanceIssue && audioPreserved
-          ? " Your recording is saved locally, so you can retry."
-          : null}
-      </p>
+      <div className="note-failure-copy">
+        <p className="note-failure-message">
+          {isBalanceIssue
+            ? audioPreserved
+              ? `Your balance ran out. Your recording is saved locally, so ${topUpAction} and retry.`
+              : `Your balance is too low. ${topUpLabel} to continue.`
+            : (displayMessage ?? "June couldn't finish processing this note.")}
+          {!isBalanceIssue && audioPreserved
+            ? " Your recording is saved locally, so you can retry."
+            : null}
+        </p>
+        <ErrorFeedbackNudge className="note-failure-feedback" />
+      </div>
       <div className="note-failure-actions">
         {isBalanceIssue ? (
           <button

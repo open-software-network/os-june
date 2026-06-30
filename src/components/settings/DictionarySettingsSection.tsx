@@ -12,6 +12,7 @@ import {
 } from "../../lib/tauri";
 import type { DictionaryEntryDto } from "../../lib/tauri";
 import { Dialog, DialogField } from "../ui/Dialog";
+import { SettingsRowError } from "../ui/ErrorFeedbackNudge";
 
 type Draft = {
   phrase: string;
@@ -165,7 +166,7 @@ export function DictionarySettingsSection() {
           </div>
         )}
       </div>
-      {error ? <p className="settings-row-error">{error}</p> : null}
+      {error ? <SettingsRowError>{error}</SettingsRowError> : null}
 
       <DictionaryEntryDialog
         open={dialogOpen}

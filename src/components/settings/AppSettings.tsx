@@ -24,6 +24,7 @@ import {
 } from "../../lib/tauri";
 import { LANGUAGE_OPTIONS, languageLabel } from "../../lib/dictation-languages";
 import { replayOnboarding } from "../../lib/onboarding";
+import { SettingsRowError } from "../ui/ErrorFeedbackNudge";
 import type {
   AccountStatus,
   DictationHelperEvent,
@@ -1571,7 +1572,7 @@ function ShortcutRow({
       <div className="settings-row-info">
         <h3 className="settings-row-title">{title}</h3>
         <p className="settings-row-description">{description}</p>
-        {error ? <p className="settings-row-error">{error}</p> : null}
+        {error ? <SettingsRowError>{error}</SettingsRowError> : null}
       </div>
       <div className="settings-row-control">
         <KeycapShortcut label={shortcut.label} capturing={capturing} />

@@ -73,6 +73,7 @@ import { BackButton } from "../ui/BackButton";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
+import { ErrorFeedbackNudge, SettingsRowError } from "../ui/ErrorFeedbackNudge";
 import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
@@ -8295,7 +8296,7 @@ function SkillEditorPanel({
             </div>
           </div>
         </header>
-        {error ? <p className="settings-row-error">{error}</p> : null}
+        {error ? <SettingsRowError>{error}</SettingsRowError> : null}
         {loading ? (
           <div className="agent-loading">
             <Spinner />
@@ -8626,7 +8627,8 @@ function MessagingPlatformDetail({
         </header>
         {platform.errorMessage || platform.error_message ? (
           <div className="agent-platform-error">
-            {platform.errorMessage ?? platform.error_message}
+            <span>{platform.errorMessage ?? platform.error_message}</span>
+            <ErrorFeedbackNudge className="agent-platform-error-feedback" />
           </div>
         ) : null}
         {docsUrl ? (
@@ -9530,7 +9532,15 @@ export function SessionCompactDialog({
             className="agent-compact-error"
             tone="destructive"
             role="alert"
-            body={errorMessage ?? "Couldn't compact context. Please try again."}
+            body={
+              <>
+                <span>
+                  {errorMessage ??
+                    "Couldn't compact context. Please try again."}
+                </span>
+                <ErrorFeedbackNudge className="agent-inline-error-feedback" />
+              </>
+            }
           />
         ) : (
           <>
@@ -9593,7 +9603,10 @@ function AgentErrorBanner({
 }) {
   return (
     <div className="error-banner agent-error-banner" role="alert">
-      <p>{message}</p>
+      <div className="agent-error-banner-copy">
+        <p>{message}</p>
+        <ErrorFeedbackNudge className="agent-inline-error-feedback" />
+      </div>
       <div className="agent-error-banner-actions">
         {onRetry ? (
           <button type="button" onClick={onRetry}>
