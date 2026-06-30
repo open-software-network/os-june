@@ -14,6 +14,15 @@ const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 8 * 60 * 1000;
 /// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
 /// activity `min_rms`, so we only ever skip clearly-silent audio.
 const SILENCE_RMS_FLOOR: f32 = 0.012;
+/// Fraction of a microphone turn that a concurrent system turn must cover before
+/// the mic turn is even considered speaker bleed (echo) rather than real speech.
+const ECHO_MIN_OVERLAP_RATIO: f32 = 0.6;
+/// How much louder the system track must be than the microphone over the same
+/// interval to treat the microphone turn as echo of that system audio. Echo
+/// re-captured through the air is heavily attenuated, so a clearly louder system
+/// track means the microphone only heard the speaker, not the user. Kept
+/// conservative so genuine simultaneous mic speech (comparable energy) is kept.
+const ECHO_DOMINANCE_RATIO: f32 = 3.0;
 
 #[derive(Debug, Clone)]
 pub struct DetectionSource {
@@ -42,13 +51,27 @@ struct SourceDetectionConfig {
     noise_multiplier: f32,
 }
 
+/// A source's detected turns paired with the per-window RMS energy they came
+/// from, so cross-source attribution (echo rejection) can compare loudness
+/// between the microphone and system tracks over the same wall-clock interval.
+struct DetectedSource {
+    source: String,
+    windows: Vec<f32>,
+    turns: Vec<AudioTurn>,
+}
+
 pub fn detect_turns(sources: &[DetectionSource]) -> Result<Vec<AudioTurn>, AppError> {
-    let mut turns = Vec::new();
+    let mut detected = Vec::with_capacity(sources.len());
     for source in sources {
         let config = config_for_source(&source.source);
-        let mut source_turns = detect_source_turns(source, config)?;
-        turns.append(&mut source_turns);
+        let (windows, source_turns) = detect_source_turns(source, config)?;
+        detected.push(DetectedSource {
+            source: source.source.clone(),
+            windows,
+            turns: source_turns,
+        });
     }
+    let mut turns = reject_speaker_echo_turns(detected);
     turns.sort_by(|left, right| {
         left.start_ms
             .cmp(&right.start_ms)
@@ -310,10 +333,10 @@ fn resample_linear(samples: &[i16], input_rate: u32, output_rate: u32) -> Vec<i1
 fn detect_source_turns(
     source: &DetectionSource,
     config: SourceDetectionConfig,
-) -> Result<Vec<AudioTurn>, AppError> {
+) -> Result<(Vec<f32>, Vec<AudioTurn>), AppError> {
     let windows = read_rms_windows(&source.path)?;
     if windows.is_empty() {
-        return Ok(Vec::new());
+        return Ok((windows, Vec::new()));
     }
     let threshold = activity_threshold(&windows, config);
     let start_windows = windows_for_ms(config.start_active_ms);
@@ -359,7 +382,8 @@ fn detect_source_turns(
             config,
         );
     }
-    Ok(merge_close_turns(turns, config.merge_gap_ms))
+    let turns = merge_close_turns(turns, config.merge_gap_ms);
+    Ok((windows, turns))
 }
 
 fn read_rms_windows(path: &Path) -> Result<Vec<f32>, AppError> {
@@ -441,6 +465,88 @@ fn merge_close_turns(turns: Vec<AudioTurn>, merge_gap_ms: i64) -> Vec<AudioTurn>
         merged.push(turn);
     }
     merged
+}
+
+/// Each source is detected independently, so the microphone track's detector
+/// happily emits a turn whenever it crosses its threshold — including when the
+/// only thing it heard was a remote participant's voice played through the
+/// speakers and bled back into the mic. That misattributes system audio to the
+/// microphone. Drop microphone turns that a concurrent, clearly louder system
+/// turn already accounts for; the speech stays attributed to the system source.
+fn reject_speaker_echo_turns(detected: Vec<DetectedSource>) -> Vec<AudioTurn> {
+    let system_sources: Vec<&DetectedSource> = detected
+        .iter()
+        .filter(|candidate| candidate.source == "system")
+        .collect();
+    let mut turns = Vec::new();
+    for source in &detected {
+        if source.source == "microphone" && !system_sources.is_empty() {
+            for turn in &source.turns {
+                let is_echo = system_sources.iter().any(|system| {
+                    microphone_turn_is_system_echo(
+                        turn,
+                        &source.windows,
+                        &system.turns,
+                        &system.windows,
+                    )
+                });
+                if !is_echo {
+                    turns.push(turn.clone());
+                }
+            }
+        } else {
+            turns.extend(source.turns.iter().cloned());
+        }
+    }
+    turns
+}
+
+/// Whether a microphone turn is most likely speaker bleed (echo) of system
+/// audio rather than genuine microphone speech: a system turn covers most of
+/// the microphone turn and is clearly louder over the overlapping interval.
+fn microphone_turn_is_system_echo(
+    mic_turn: &AudioTurn,
+    mic_windows: &[f32],
+    system_turns: &[AudioTurn],
+    system_windows: &[f32],
+) -> bool {
+    let mic_duration = mic_turn.end_ms - mic_turn.start_ms;
+    if mic_duration <= 0 {
+        return false;
+    }
+    let mut overlap_ms = 0_i64;
+    let mut overlap_start = i64::MAX;
+    let mut overlap_end = i64::MIN;
+    for system_turn in system_turns {
+        let start = mic_turn.start_ms.max(system_turn.start_ms);
+        let end = mic_turn.end_ms.min(system_turn.end_ms);
+        if end > start {
+            overlap_ms += end - start;
+            overlap_start = overlap_start.min(start);
+            overlap_end = overlap_end.max(end);
+        }
+    }
+    if (overlap_ms as f32) < mic_duration as f32 * ECHO_MIN_OVERLAP_RATIO {
+        return false;
+    }
+    let mic_energy = mean_rms(mic_windows, mic_turn.start_ms, mic_turn.end_ms);
+    let system_energy = mean_rms(system_windows, overlap_start, overlap_end);
+    system_energy >= mic_energy * ECHO_DOMINANCE_RATIO
+}
+
+/// Mean RMS of the windows spanning `[start_ms, end_ms)`. Returns 0 when the
+/// range is empty or falls outside the captured windows.
+fn mean_rms(windows: &[f32], start_ms: i64, end_ms: i64) -> f32 {
+    if windows.is_empty() || end_ms <= start_ms {
+        return 0.0;
+    }
+    let start = (start_ms.max(0) / WINDOW_MS) as usize;
+    let end = (windows_for_ms(end_ms.max(0)) as usize).min(windows.len());
+    if end <= start || start >= windows.len() {
+        return 0.0;
+    }
+    let slice = &windows[start..end];
+    slice.iter().copied().sum::<f32>() / slice.len() as f32
 }
 
 fn windows_for_ms(duration_ms: i64) -> i64 {
@@ -581,6 +687,122 @@ mod tests {
         assert!(!source_is_effectively_silent(&audible));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn microphone_echo_of_system_audio_is_not_attributed_to_microphone() {
+        // Hands-free meeting: a remote participant speaks, captured loud and
+        // clean on the system track and bled quietly into the microphone.
+        // Without echo rejection the mic detector emits a "microphone" turn for
+        // that bleed, misattributing system audio to the user. A later,
+        // system-free mic turn (the user actually speaking) must still survive.
+        let dir = std::env::temp_dir().join(format!("os-june-echo-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        // Mic: 1.5s quiet echo, 2.1s silence, 1.5s genuine loud speech.
+        let mut mic = square_wave_ms(1_600, 1_500);
+        mic.extend(square_wave_ms(0, 2_100));
+        mic.extend(square_wave_ms(16_000, 1_500));
+        write_samples(&mic_path, &mic);
+
+        // System: 1.5s loud speech overlapping the mic echo, then silence.
+        let mut system = square_wave_ms(16_000, 1_500);
+        system.extend(square_wave_ms(0, 2_100));
+        write_samples(&system_path, &system);
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        // The remote participant's speech is retained on the system source...
+        assert!(turns
+            .iter()
+            .any(|turn| turn.source == "system" && turn.start_ms < 1_000));
+        // ...the genuine, system-free microphone speech survives...
+        assert!(turns
+            .iter()
+            .any(|turn| turn.source == "microphone" && turn.start_ms > 2_500));
+        // ...and no microphone turn is attributed to the echoed system speech.
+        assert!(turns
+            .iter()
+            .filter(|turn| turn.source == "microphone")
+            .all(|turn| turn.start_ms > 2_500));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn echo_decision_drops_quiet_overlap_but_keeps_loud_or_isolated_mic() {
+        // 30ms windows: window index == ms / 30. 200 windows == 6s.
+        let mut mic_windows = vec![0.0_f32; 200];
+        let mut system_windows = vec![0.0_f32; 200];
+        for window in 0..50 {
+            mic_windows[window] = 0.05; // quiet echo
+            system_windows[window] = 0.5; // loud system speech
+        }
+        for window in 120..170 {
+            mic_windows[window] = 0.5; // genuine mic speech, no system
+        }
+        let system_turns = vec![mic_turn("system", 0, 1_500)];
+
+        let echo = mic_turn("microphone", 0, 1_500);
+        let genuine = mic_turn("microphone", 3_600, 5_100);
+
+        // Quiet mic fully covered by louder system audio is treated as echo.
+        assert!(microphone_turn_is_system_echo(
+            &echo,
+            &mic_windows,
+            &system_turns,
+            &system_windows
+        ));
+        // A mic turn with no overlapping system audio is genuine speech.
+        assert!(!microphone_turn_is_system_echo(
+            &genuine,
+            &mic_windows,
+            &system_turns,
+            &system_windows
+        ));
+        // Simultaneous speech with comparable mic energy is genuine, not echo.
+        let mut loud_mic = vec![0.0_f32; 200];
+        for window in 0..50 {
+            loud_mic[window] = 0.45;
+        }
+        assert!(!microphone_turn_is_system_echo(
+            &echo,
+            &loud_mic,
+            &system_turns,
+            &system_windows
+        ));
+    }
+
+    fn mic_turn(source: &str, start_ms: i64, end_ms: i64) -> AudioTurn {
+        AudioTurn {
+            artifact_id: "artifact".to_string(),
+            source: source.to_string(),
+            source_path: PathBuf::new(),
+            start_ms,
+            end_ms,
+            turn_index: 0,
+        }
+    }
+
+    fn square_wave_ms(magnitude: i16, duration_ms: i64) -> Vec<i16> {
+        let frames = (16_000 * duration_ms / 1_000) as usize;
+        (0..frames)
+            .map(|index| if index % 2 == 0 { magnitude } else { -magnitude })
+            .collect()
     }
 
     fn write_samples(path: &Path, samples: &[i16]) {
