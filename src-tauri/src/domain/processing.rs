@@ -1518,13 +1518,16 @@ fn partition_silent_system_sources(
     let mut kept = Vec::new();
     let mut dropped = Vec::new();
     for (artifact_id, source, path) in sources {
-        let silent = source.as_str() == "system"
-            && crate::audio::turns::source_is_effectively_silent_with_floor(
-                &path,
-                crate::audio::turns::SYSTEM_DETECTION_MIN_RMS,
-            );
+        // Decode once: `source_max_rms` is `None` when the file can't be read,
+        // which must mean "keep" (matching the old read-failure semantics).
+        let max_rms = if source.as_str() == "system" {
+            crate::audio::turns::source_max_rms(&path)
+        } else {
+            None
+        };
+        let silent = max_rms.is_some_and(|rms| rms < crate::audio::turns::SYSTEM_DETECTION_MIN_RMS);
         if silent {
-            let max_rms = crate::audio::turns::source_max_rms(&path).unwrap_or(0.0);
+            let max_rms = max_rms.unwrap_or(0.0);
             tracing::info!(
                 %source,
                 path = %path.display(),
