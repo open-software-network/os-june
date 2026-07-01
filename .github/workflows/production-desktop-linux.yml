@@ -24,7 +24,10 @@ env:
 jobs:
   build:
     name: Build production Linux app
-    runs-on: ubuntu-latest
+    # 22.04 on purpose: the packaged binaries inherit the build image's glibc
+    # floor, and building on the oldest supported base keeps the AppImage and
+    # deb launchable on Debian 12 and Ubuntu 22.04 LTS desktops.
+    runs-on: ubuntu-22.04
     environment: production
     steps:
       - name: Mint release token (GitHub App)
@@ -126,7 +129,7 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libdbus-1-dev \
-            libfuse2t64
+            libfuse2
 
       - name: Install uv
         run: pipx install uv==0.11.15

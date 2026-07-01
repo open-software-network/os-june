@@ -370,7 +370,10 @@ jobs:
     name: Tauri Linux build
     needs: changes
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.desktop_bundle == 'true'
-    runs-on: ubuntu-latest
+    # 22.04 on purpose, matching the production Linux release: binaries built
+    # on a newer image require a newer glibc than LTS-distro users have, and
+    # this job exists to prove the packaged build in that same environment.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -409,7 +412,7 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libdbus-1-dev \
-            libfuse2t64
+            libfuse2
 
       - name: Install uv
         run: pipx install uv==0.11.15
