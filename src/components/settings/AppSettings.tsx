@@ -72,6 +72,7 @@ import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import { ProviderLogo } from "./ProviderLogo";
 import { ModelMeta, ModelPickerDialog, modelOptions, selectedModel } from "./ModelPickerDialog";
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
+import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
@@ -803,7 +804,9 @@ export function AppSettings({
     providerSettings.transcriptionModel,
   );
   const generationOptions = modelOptions(veniceModels.generation, providerSettings.generationModel);
-  const imageOptions = modelOptions(IMAGE_MODELS, providerSettings.imageModel);
+  const imageOptions = IMAGE_GENERATION_ENABLED
+    ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
+    : [];
   const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
   const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
 
@@ -841,7 +844,7 @@ export function AppSettings({
 
   function modelOptionsForMode(mode: ProviderModelMode) {
     if (mode === "transcription") return transcriptionOptions;
-    if (mode === "image") return imageOptions;
+    if (mode === "image") return IMAGE_GENERATION_ENABLED ? imageOptions : [];
     return generationOptions;
   }
 
@@ -852,6 +855,7 @@ export function AppSettings({
   }
 
   function openModelPicker(mode: ProviderModelMode) {
+    if (mode === "image" && !IMAGE_GENERATION_ENABLED) return;
     setPickerMode(mode);
     setModelSearch("");
     // Image models are a curated local list, not a fetched catalog.
@@ -1261,25 +1265,27 @@ export function AppSettings({
               </div>
             </section>
 
-            <section className="settings-group" aria-labelledby="image-generation-heading">
-              <h2 id="image-generation-heading" className="settings-group-heading">
-                Image generation
-              </h2>
-              <p className="settings-group-description">
-                Choose the model June uses when you ask it to generate an image.
-              </p>
-              <div className="settings-card">
-                <div className="settings-rows">
-                  <ModelRow
-                    title="Image"
-                    description="Used when you generate an image from chat."
-                    value={providerSettings.imageModel}
-                    options={imageOptions}
-                    onOpen={() => openModelPicker("image")}
-                  />
+            {IMAGE_GENERATION_ENABLED ? (
+              <section className="settings-group" aria-labelledby="image-generation-heading">
+                <h2 id="image-generation-heading" className="settings-group-heading">
+                  Image generation
+                </h2>
+                <p className="settings-group-description">
+                  Choose the model June uses when you ask it to generate an image.
+                </p>
+                <div className="settings-card">
+                  <div className="settings-rows">
+                    <ModelRow
+                      title="Image"
+                      description="Used when you generate an image from chat."
+                      value={providerSettings.imageModel}
+                      options={imageOptions}
+                      onOpen={() => openModelPicker("image")}
+                    />
+                  </div>
                 </div>
-              </div>
-            </section>
+              </section>
+            ) : null}
           </>
         ) : null}
 

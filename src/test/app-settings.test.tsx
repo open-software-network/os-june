@@ -1655,7 +1655,7 @@ describe("AppSettings", () => {
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-1");
   });
 
-  it("shows the image generation section and saves the default image model", async () => {
+  it("hides the image generation model settings while image generation is disabled", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -1672,23 +1672,10 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
 
-    // The section renders and the saved default is shown.
-    expect(screen.getByRole("heading", { name: "Image generation" })).toBeInTheDocument();
-    expect(screen.getByText("Venice SD3.5")).toBeInTheDocument();
-
-    // The picker opens with the curated image options (no backend fetch).
-    await user.click(screen.getByRole("button", { name: "Change image model" }));
-    expect(await screen.findByRole("option", { name: /Venice SD3\.5/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /FLUX 2 Pro/ })).toBeInTheDocument();
-    // Image models are not fetched from the catalog.
+    expect(screen.queryByRole("heading", { name: "Image generation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change image model" })).not.toBeInTheDocument();
     expect(mocks.listVeniceModels).not.toHaveBeenCalledWith("image");
-
-    await user.click(screen.getByRole("option", { name: /FLUX 2 Pro/ }));
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith("image", "flux-2-pro");
-    // The picker closes after a selection.
-    await waitFor(() =>
-      expect(screen.queryByRole("option", { name: /FLUX 2 Pro/ })).not.toBeInTheDocument(),
-    );
+    expect(mocks.setVeniceModel).not.toHaveBeenCalledWith("image", expect.any(String));
   });
 
   it("blocks selecting a text model that cannot use tools", async () => {
