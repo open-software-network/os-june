@@ -129,7 +129,7 @@ mod tests {
             unit: PriceUnit::Seconds,
             // gpt-4o-mini-transcribe's packaged price; also pins the display
             // string default_pricing() carries for the same model.
-            credits_per_million_seconds: Some(62_500),
+            credits_per_million_seconds: Some(60_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -143,6 +143,6 @@ mod tests {
             capabilities: Vec::new(),
         };
 
-        assert_eq!(price_description(&model), "$0.000063 per second audio");
+        assert_eq!(price_description(&model), "$0.00006 per second audio");
     }
 }

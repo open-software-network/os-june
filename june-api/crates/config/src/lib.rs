@@ -410,7 +410,7 @@ struct TextModelFallback {
 /// authoritative numbers and extends over this on every boot. Split out of
 /// `AppConfig::default` to keep that constructor under the line limit.
 ///
-/// Usage credit prices include June's 1.25x retail multiplier over upstream
+/// Usage credit prices include June's 1.2x retail multiplier over upstream
 /// cost. `$1 = 1000 credits`.
 fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     let mut pricing = BTreeMap::new();
@@ -419,8 +419,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
             // OpenAI lists ASR prices per MINUTE ($0.003/min for mini);
-            // converted per second with the 1.25x retail multiplier.
-            credits_per_million_seconds: Some(62_500),
+            // converted per second with the 1.2x retail multiplier.
+            credits_per_million_seconds: Some(60_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -430,7 +430,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             privacy: Some("anonymized".to_string()),
             // Matches what `models.rs::price_description` derives from the
             // credit price above (raw metadata only — the API recomputes it).
-            pricing: Some(serde_json::json!({ "display": "$0.000063 per second audio" })),
+            pricing: Some(serde_json::json!({ "display": "$0.00006 per second audio" })),
             context_tokens: Some(16_000),
             traits: vec!["prompt".to_string()],
             capabilities: Vec::new(),
@@ -440,7 +440,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         "nvidia/parakeet-tdt-0.6b-v3".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(125_000),
+            credits_per_million_seconds: Some(120_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Venice,
@@ -463,8 +463,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-2",
             display_name: "GLM 5.2",
-            input_credits_per_million_tokens: 2_188,
-            output_credits_per_million_tokens: 6_875,
+            input_credits_per_million_tokens: 2_100,
+            output_credits_per_million_tokens: 6_600,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -477,8 +477,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "kimi-k2-6",
             display_name: "Kimi K2.6",
-            input_credits_per_million_tokens: 1_063,
-            output_credits_per_million_tokens: 5_825,
+            input_credits_per_million_tokens: 1_020,
+            output_credits_per_million_tokens: 5_592,
             context_tokens: 256_000,
             // Kimi K2.6 is natively multimodal (Venice `supportsVision`), so it
             // is the image-input fallback the frontend switches to when an image
@@ -494,8 +494,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-1",
             display_name: "GLM 5.1",
-            input_credits_per_million_tokens: 2_188,
-            output_credits_per_million_tokens: 6_875,
+            input_credits_per_million_tokens: 2_100,
+            output_credits_per_million_tokens: 6_600,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -508,8 +508,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5",
             display_name: "GLM 5",
-            input_credits_per_million_tokens: 1_250,
-            output_credits_per_million_tokens: 4_000,
+            input_credits_per_million_tokens: 1_200,
+            output_credits_per_million_tokens: 3_840,
             context_tokens: 198_000,
             capabilities: &["supportsFunctionCalling"],
         },
@@ -935,41 +935,41 @@ mod tests {
         let config = packaged_config_toml();
 
         // Per-second conversions of OpenAI's per-MINUTE ASR list prices
-        // ($0.003/min mini, $0.006/min 4o) with the 1.25x retail multiplier.
+        // ($0.003/min mini, $0.006/min 4o) with the 1.2x retail multiplier.
         assert_eq!(
             config
                 .pricing
                 .get("gpt-4o-mini-transcribe")
                 .and_then(|model| model.credits_per_million_seconds),
-            Some(62_500)
+            Some(60_000)
         );
         assert_eq!(
             config
                 .pricing
                 .get("gpt-4o-transcribe")
                 .and_then(|model| model.credits_per_million_seconds),
-            Some(125_000)
+            Some(120_000)
         );
         assert_eq!(
             config
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.input_credits_per_million_tokens),
-            Some(2_188)
+            Some(2_100)
         );
         assert_eq!(
             config
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.output_credits_per_million_tokens),
-            Some(6_875)
+            Some(6_600)
         );
         assert_eq!(
             config
                 .pricing
                 .get("nvidia-nemotron-3-nano-30b-a3b")
                 .and_then(|model| model.input_credits_per_million_tokens),
-            Some(88)
+            Some(84)
         );
     }
 

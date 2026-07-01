@@ -656,8 +656,8 @@ mod tests {
             traits: Vec::new(),
             capabilities: Vec::new(),
             price_unit: "seconds".to_string(),
-            price_description: "$0.000063 per second audio".to_string(),
-            credits_per_million_seconds: Some(62_500),
+            price_description: "$0.00006 per second audio".to_string(),
+            credits_per_million_seconds: Some(60_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
         });
@@ -667,7 +667,7 @@ mod tests {
                 .get("display")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)),
-            Some("$0.000063 per second audio".to_string())
+            Some("$0.00006 per second audio".to_string())
         );
     }
 }

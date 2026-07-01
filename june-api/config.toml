@@ -58,12 +58,12 @@ base_url = "https://api.openai.com/v1"
 [upstreams.venice]
 base_url = "https://api.venice.ai/api/v1"
 
-# Usage credit prices include June's 1.25x retail multiplier over upstream cost.
+# Usage credit prices include June's 1.2x retail multiplier over upstream cost.
 # OpenAI lists ASR prices per MINUTE of audio ($0.003/min mini, $0.006/min 4o);
-# these are the per-second conversions: $/min ÷ 60 × 1.25 × 1000 credits/$ × 1e6.
+# these are the per-second conversions: $/min ÷ 60 × 1.2 × 1000 credits/$ × 1e6.
 [pricing."gpt-4o-mini-transcribe"]
 unit = "seconds"
-credits_per_million_seconds = 62500
+credits_per_million_seconds = 60000
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o mini transcribe"
@@ -75,7 +75,7 @@ capabilities = []
 
 [pricing."gpt-4o-transcribe"]
 unit = "seconds"
-credits_per_million_seconds = 125000
+credits_per_million_seconds = 120000
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o transcribe"
@@ -87,7 +87,7 @@ capabilities = []
 
 [pricing."nvidia/parakeet-tdt-0.6b-v3"]
 unit = "seconds"
-credits_per_million_seconds = 125000
+credits_per_million_seconds = 120000
 provider = "venice"
 model_type = "asr"
 display_name = "Parakeet TDT 0.6B v3"
@@ -98,8 +98,8 @@ privacy = "private"
 # DEFAULT_GENERATION_MODEL in the Tauri providers module.
 [pricing."zai-org-glm-5-2"]
 unit = "tokens"
-input_credits_per_million_tokens = 2188
-output_credits_per_million_tokens = 6875
+input_credits_per_million_tokens = 2100
+output_credits_per_million_tokens = 6600
 provider = "venice"
 model_type = "text"
 display_name = "GLM 5.2"
@@ -115,8 +115,8 @@ capabilities = [
 
 [pricing."kimi-k2-6"]
 unit = "tokens"
-input_credits_per_million_tokens = 1063
-output_credits_per_million_tokens = 5825
+input_credits_per_million_tokens = 1020
+output_credits_per_million_tokens = 5592
 provider = "venice"
 model_type = "text"
 display_name = "Kimi K2.6"
@@ -135,8 +135,8 @@ capabilities = [
 
 [pricing."zai-org-glm-5-1"]
 unit = "tokens"
-input_credits_per_million_tokens = 2188
-output_credits_per_million_tokens = 6875
+input_credits_per_million_tokens = 2100
+output_credits_per_million_tokens = 6600
 provider = "venice"
 model_type = "text"
 display_name = "GLM 5.1"
@@ -152,8 +152,8 @@ capabilities = [
 
 [pricing."zai-org-glm-5"]
 unit = "tokens"
-input_credits_per_million_tokens = 1250
-output_credits_per_million_tokens = 4000
+input_credits_per_million_tokens = 1200
+output_credits_per_million_tokens = 3840
 provider = "venice"
 model_type = "text"
 display_name = "GLM 5"
@@ -163,8 +163,8 @@ capabilities = ["supportsFunctionCalling"]
 
 [pricing."nvidia-nemotron-3-nano-30b-a3b"]
 unit = "tokens"
-input_credits_per_million_tokens = 88
-output_credits_per_million_tokens = 375
+input_credits_per_million_tokens = 84
+output_credits_per_million_tokens = 360
 provider = "venice"
 model_type = "text"
 display_name = "Nemotron Nano 30B (dictation cleanup)"

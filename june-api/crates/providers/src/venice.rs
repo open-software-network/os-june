@@ -15,8 +15,8 @@ pub const PROVIDER_NAME: &str = "venice";
 
 const CREDITS_PER_USD: f64 = 1_000.0;
 const RATE_SCALE: f64 = 1_000_000.0;
-/// A 20% margin is a 1.25x retail price over upstream cost.
-const RETAIL_PRICE_MULTIPLIER: f64 = 1.25;
+/// A 20% markup over upstream cost is a 1.2x retail price.
+const RETAIL_PRICE_MULTIPLIER: f64 = 1.2;
 
 /// Standing safety policy injected as the leading system message on every
 /// Venice chat completion — note generation, dictation cleanup, and agent
@@ -1645,8 +1645,8 @@ mod tests {
             model.capabilities,
             vec!["nested.enabled", "supportsFunctionCalling"]
         );
-        assert_eq!(model.input_credits_per_million_tokens, Some(88));
-        assert_eq!(model.output_credits_per_million_tokens, Some(375));
+        assert_eq!(model.input_credits_per_million_tokens, Some(84));
+        assert_eq!(model.output_credits_per_million_tokens, Some(360));
         assert!(model.pricing.is_some());
     }
 
@@ -1672,6 +1672,6 @@ mod tests {
         let models = venice_priced_model_items(response, ModelType::Asr);
         let model = models.get("asr-model").expect("asr model");
 
-        assert_eq!(model.credits_per_million_seconds, Some(125_000));
+        assert_eq!(model.credits_per_million_seconds, Some(120_000));
     }
 }
