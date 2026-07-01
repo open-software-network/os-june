@@ -2088,6 +2088,16 @@ export function App() {
     }
   }
 
+  function handleEmptyNotesAfterDelete() {
+    const currentView = activeViewRef.current;
+    if (currentView === "meetings" || currentView === "notes" || currentView === "all-notes") {
+      setActiveView("notes");
+    }
+    setOriginFolderId(undefined);
+    setOriginAllNotes(false);
+    setFolderReturnTarget(undefined);
+  }
+
   async function handleDeleteNote(noteId: string) {
     if (state.recordingStatus) {
       setError("Stop the current recording before deleting a note.");
@@ -2103,9 +2113,7 @@ export function App() {
         const note = await getNote(nextNoteId);
         dispatch({ type: "noteLoaded", note });
       } else {
-        setActiveView("settings");
-        setOriginFolderId(undefined);
-        setFolderReturnTarget(undefined);
+        handleEmptyNotesAfterDelete();
       }
     } catch (err) {
       setError(messageFromError(err));
@@ -2127,9 +2135,7 @@ export function App() {
         const note = await getNote(nextNoteId);
         dispatch({ type: "noteLoaded", note });
       } else {
-        setActiveView("settings");
-        setOriginFolderId(undefined);
-        setFolderReturnTarget(undefined);
+        handleEmptyNotesAfterDelete();
       }
     } catch (err) {
       setError(messageFromError(err));
@@ -2273,7 +2279,7 @@ export function App() {
         const restored = await getNote(restoreNoteId);
         dispatch({ type: "noteLoaded", note: restored });
       } else {
-        setActiveView("settings");
+        handleEmptyNotesAfterDelete();
       }
     } catch (err) {
       setError(messageFromError(err));
