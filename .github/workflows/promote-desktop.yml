@@ -15,7 +15,8 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: promote-desktop-release
@@ -346,6 +347,56 @@ jobs:
             "$latest_json" \
             --repo open-software-network/os-june-releases \
             --clobber
+
+      # Record the released version on main so its version files advance and the
+      # next changelog can find this release. Runs only after the stable release
+      # is published, so a build/notarize failure never leaves an orphan
+      # `release:` PR. The branch push authenticates as the release App (persisted
+      # at checkout); the PR uses GITHUB_TOKEN because the App may lack
+      # pull-request write. This is the version-bump duty inherited from the
+      # retired production-desktop-dmg.yml.
+      - name: Open release version PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          # promote's tree is the rc's pinned commit with the build version stamped
+          # in; discard that and branch from current main to record the bump there.
+          git fetch origin main
+          git reset --hard
+          git checkout -B "release/v$VERSION" origin/main
+          # version:bump (not set-build-version) so main's monotonic X.Y.Z gate applies.
+          pnpm version:bump "$VERSION"
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          if git diff --cached --quiet; then
+            echo "main is already at v$VERSION; skipping version commit."
+            exit 0
+          fi
+          bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git commit -m "release: v$VERSION"
+          git push --force-with-lease origin "HEAD:refs/heads/release/v$VERSION"
+
+          body_file="$RUNNER_TEMP/release-pr-body.md"
+          cat > "$body_file" <<EOF
+          Bumps desktop release version files to v$VERSION.
+
+          The stable release was already published by promote-desktop. Merge to record the version on main.
+          EOF
+          pr_number="$(
+            gh pr list --repo open-software-network/os-june --base main \
+              --head "release/v$VERSION" --state open --json number --jq '.[0].number // empty'
+          )"
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" --repo open-software-network/os-june \
+              --title "release: v$VERSION" --body-file "$body_file"
+          else
+            gh pr create --repo open-software-network/os-june --base main \
+              --head "release/v$VERSION" --title "release: v$VERSION" --body-file "$body_file"
+          fi
 
       - name: Notify Slack on promote
         if: ${{ success() }}

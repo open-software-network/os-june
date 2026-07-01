@@ -44,14 +44,17 @@ the update artifact that Tauri verifies before installation.
 
 ## Cutting a production Windows release
 
-Run the macOS production release first:
+Cut the macOS release first (build an RC, then promote it) and merge the version
+PR:
 
 ```text
-GitHub Actions -> production-desktop-release -> Run workflow -> version X.Y.Z
+GitHub Actions -> rc-desktop-release -> Run workflow (base-version X.Y.Z, rc-number N)
+GitHub Actions -> promote-desktop-release -> Run workflow
 ```
 
-That workflow owns the semver bump, `main` push, release creation, macOS assets,
-and initial `latest.json`.
+Promote owns the clean semver `X.Y.Z`, the `release: vX.Y.Z` bump PR to `main`,
+the stable release creation, macOS assets, and initial `latest.json`. Merge that
+PR (so `main` is at `X.Y.Z`) before running the Windows workflow below.
 
 After it succeeds, run:
 
