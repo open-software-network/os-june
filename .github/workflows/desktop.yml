@@ -239,7 +239,8 @@ jobs:
             wget \
             file \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            libdbus-1-dev
 
       - name: Cache cargo registry
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -407,6 +408,7 @@ jobs:
             file \
             libxdo-dev \
             libssl-dev \
+            libdbus-1-dev \
             libfuse2t64
 
       - name: Install uv
