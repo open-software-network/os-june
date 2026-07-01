@@ -108,6 +108,22 @@ describe("FundingGate", () => {
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
+  it("does not show top-up copy for subscribed users with positive credits", async () => {
+    const user = userEvent.setup();
+    renderFundingGate({
+      ...baseAccount,
+      balance: { credits: 1200, usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
+    });
+
+    expect(screen.getByRole("heading", { name: "Upgrade to continue" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Top up credits" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
   it("lets a waiting account update be checked or reopened", async () => {
     const user = userEvent.setup();
     const onRefresh = vi.fn(async () => baseAccount);

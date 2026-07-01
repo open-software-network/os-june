@@ -20,9 +20,11 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const handle = account.user?.handle;
   const status = account.subscription?.status;
   const subscribed = account.subscription?.subscribed === true;
+  const credits = account.balance?.credits;
+  const negativeBalance = typeof credits === "number" && credits < 0;
   const billingRecovery =
     subscribed && typeof status === "string" && status.length > 0 && !hasLiveSubscription(account);
-  const topUpRequired = subscribed && !billingRecovery;
+  const topUpRequired = subscribed && !billingRecovery && negativeBalance;
 
   const copy = billingRecovery
     ? {
