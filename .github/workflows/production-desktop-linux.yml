@@ -270,9 +270,12 @@ jobs:
           expected_paths="native/hermes/bin/hermes native/hermes/python/current native/hermes/hermes-agent/pyproject.toml"
 
           # deb payload: dpkg-deb lists the archive contents without unpacking.
-          deb_listing="$(dpkg-deb -c "$deb")"
+          # grep a listing file instead of piping: grep -q exits at first match
+          # and the resulting EPIPE would fail the pipeline under pipefail.
+          deb_listing="$RUNNER_TEMP/deb-listing.txt"
+          dpkg-deb -c "$deb" > "$deb_listing"
           for expected in $expected_paths; do
-            if ! printf '%s\n' "$deb_listing" | grep -q "$expected"; then
+            if ! grep -qF "$expected" "$deb_listing"; then
               echo "::error::deb payload does not include bundled Hermes path $expected."
               exit 1
             fi
@@ -287,7 +290,7 @@ jobs:
           chmod +x "$appimage_abs"
           ( cd "$extract_dir" && "$appimage_abs" --appimage-extract >/dev/null )
           for expected in $expected_paths; do
-            if ! find "$extract_dir/squashfs-root" -path "*$expected" | grep -q .; then
+            if [ -z "$(find "$extract_dir/squashfs-root" -path "*$expected" -print -quit)" ]; then
               echo "::error::AppImage payload does not include bundled Hermes path $expected."
               exit 1
             fi
