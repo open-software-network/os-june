@@ -3,16 +3,17 @@
 //! Mirrors the chat/augment providers — same Venice base URL and bearer
 //! credential, same bounded retry on transient upstream failures. The wire
 //! shapes are confined to this file: Venice returns the generated image(s) as
-//! base64 strings in an `images` array, and we surface the first one. Image
-//! generation is NOT metered yet (subscription metering is a follow-up), so
-//! there is no authorize/charge flow here — the API handler enforces auth and
-//! calls this directly.
+//! base64 strings in an `images` array, and we surface the first one. Billing
+//! lives in `ImageService`; this provider only chooses the configured key or a
+//! user-supplied Venice key for the upstream call.
 
 use crate::retry::{self, UpstreamAttemptError};
 use crate::venice::PROVIDER_NAME;
 use async_trait::async_trait;
 use june_config::UpstreamConfig;
-use june_domain::{DomainError, GeneratedImage, ImageGenerationRequest, ImageGenerator};
+use june_domain::{
+    DomainError, GeneratedImage, ImageGenerationRequest, ImageGenerator, ProviderCredentials,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
@@ -41,11 +42,12 @@ impl VeniceImageGenerator {
         &self,
         url: &str,
         body: &VeniceImageRequest<'_>,
+        api_key: &str,
     ) -> Result<VeniceImageResponse, UpstreamAttemptError> {
         let response = self
             .http
             .post(url)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(api_key)
             .json(body)
             .send()
             .await
@@ -106,13 +108,13 @@ impl ImageGenerator for VeniceImageGenerator {
             height: request.height,
         };
         let url = format!("{}/image/generate", self.base_url);
+        let api_key = venice_api_key(&self.api_key, &request.provider_credentials);
         // Bounded retry on transient failures (connection reset, 429, 5xx),
-        // same as the chat and augment paths. Image generation does not meter
-        // the user's credits, so a replay never double-charges them; each retry
-        // costs at most one extra upstream generation if a completed response
-        // was lost, bounded by UPSTREAM_ATTEMPTS.
+        // same as the chat and augment paths. The service settles at most one
+        // June charge after this call returns; a retry can cost at most one
+        // extra upstream generation if a completed response was lost.
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-            let error = match self.generate_once(&url, &body).await {
+            let error = match self.generate_once(&url, &body, api_key).await {
                 Ok(parsed) => return image_from_response(parsed, &request.model.0),
                 Err(error) => error,
             };
@@ -125,6 +127,15 @@ impl ImageGenerator for VeniceImageGenerator {
         }
         Err(DomainError::UpstreamProvider)
     }
+}
+
+fn venice_api_key<'a>(configured: &'a str, credentials: &'a ProviderCredentials) -> &'a str {
+    credentials
+        .venice_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(configured)
 }
 
 /// Maps a Venice image response to the domain type: the first non-empty base64
@@ -170,7 +181,9 @@ mod tests {
     use super::VeniceImageGenerator;
     use crate::http;
     use june_config::UpstreamConfig;
-    use june_domain::{DomainError, ImageGenerationRequest, ImageGenerator, ModelId};
+    use june_domain::{
+        DomainError, ImageGenerationRequest, ImageGenerator, ModelId, ProviderCredentials,
+    };
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use wiremock::{
@@ -194,6 +207,7 @@ mod tests {
             model: ModelId("venice-sd35".to_string()),
             width: Some(1024),
             height: Some(1024),
+            provider_credentials: ProviderCredentials::default(),
         }
     }
 
@@ -223,6 +237,30 @@ mod tests {
         assert_eq!(generated.mime_type, "image/png");
         assert_eq!(generated.model, "venice-sd35");
         assert_eq!(generated.provider, "venice");
+    }
+
+    #[tokio::test]
+    async fn image_generation_prefers_request_venice_api_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/image/generate"))
+            .and(header("authorization", "Bearer user_venice_key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "images": ["aGVsbG8="],
+            })))
+            .mount(&server)
+            .await;
+
+        let mut request = request("a red bicycle");
+        request.provider_credentials = ProviderCredentials {
+            venice_api_key: Some("user_venice_key".to_string()),
+        };
+        let generated = generator(&server)
+            .generate(request)
+            .await
+            .expect("generation should succeed");
+
+        assert_eq!(generated.image_base64, "aGVsbG8=");
     }
 
     #[tokio::test]

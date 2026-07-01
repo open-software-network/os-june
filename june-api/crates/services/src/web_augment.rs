@@ -1,8 +1,10 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        zero_receipt,
     },
     error::ServiceError,
+    metering::{log_skipped_user_venice_key, uses_user_venice_key},
     util::sha256_hex,
 };
 use june_domain::{
@@ -49,6 +51,22 @@ impl WebAugmentService {
 
     pub async fn search(&self, params: WebSearchParams) -> Result<WebSearchOutput, ServiceError> {
         let estimate = Credits(self.search_credits);
+        if uses_user_venice_key(&params.provider_credentials) {
+            let results = self
+                .searcher
+                .search(WebSearchRequest {
+                    query: params.query.clone(),
+                    limit: params.limit,
+                    provider: params.provider,
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await?;
+            log_skipped_user_venice_key(ActionSlug::WebSearch, &params.user_id, "web");
+            return Ok(WebSearchOutput {
+                results,
+                receipt: zero_receipt(),
+            });
+        }
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
@@ -91,6 +109,20 @@ impl WebAugmentService {
 
     pub async fn fetch(&self, params: WebFetchParams) -> Result<WebFetchOutput, ServiceError> {
         let estimate = Credits(self.fetch_credits);
+        if uses_user_venice_key(&params.provider_credentials) {
+            let result = self
+                .fetcher
+                .fetch(WebFetchRequest {
+                    url: params.url.clone(),
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await?;
+            log_skipped_user_venice_key(ActionSlug::WebFetch, &params.user_id, "web");
+            return Ok(WebFetchOutput {
+                result,
+                receipt: zero_receipt(),
+            });
+        }
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
@@ -344,6 +376,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_user_venice_key_skips_wallet_metering() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let output = service(os_accounts.clone(), Arc::new(FixedFetcher))
+            .search(WebSearchParams {
+                user_id: UserId("usr_1".to_string()),
+                request_id: "req_1".to_string(),
+                query: "rust async".to_string(),
+                limit: Some(5),
+                provider: WebSearchProvider::Brave,
+                provider_credentials: ProviderCredentials {
+                    venice_api_key: Some("vc_user_key".to_string()),
+                },
+            })
+            .await
+            .expect("search succeeds with user Venice key");
+
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert_eq!(os_accounts.events(), Vec::new());
+    }
+
+    #[tokio::test]
     async fn search_same_request_id_different_shape_uses_distinct_keys() {
         // Regression: the key must fold in limit/provider, not just query, so
         // reusing a request_id with a different search shape still settles as a
@@ -437,5 +490,24 @@ mod tests {
                 estimate: 25,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_user_venice_key_skips_wallet_metering() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let output = service(os_accounts.clone(), Arc::new(FixedFetcher))
+            .fetch(WebFetchParams {
+                user_id: UserId("usr_1".to_string()),
+                request_id: "req_1".to_string(),
+                url: "https://example.com".to_string(),
+                provider_credentials: ProviderCredentials {
+                    venice_api_key: Some("vc_user_key".to_string()),
+                },
+            })
+            .await
+            .expect("fetch succeeds with user Venice key");
+
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert_eq!(os_accounts.events(), Vec::new());
     }
 }

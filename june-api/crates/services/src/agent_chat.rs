@@ -1,8 +1,10 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        zero_receipt,
     },
     error::ServiceError,
+    metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
     pricing::PricingTable,
     util::sha256_hex,
 };
@@ -42,6 +44,25 @@ impl AgentChatService {
     pub async fn complete(&self, params: AgentChatParams) -> Result<AgentChatOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        if uses_user_venice_key_for_model(
+            &self.pricing,
+            &params.model_id.0,
+            &params.provider_credentials,
+        ) {
+            let completion = self
+                .chat_completer
+                .complete(AgentChatRequest {
+                    body: params.body,
+                    model: params.model_id.clone(),
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await?;
+            log_skipped_user_venice_key(ActionSlug::AgentChat, &params.user_id, &params.model_id.0);
+            return Ok(AgentChatOutput {
+                completion,
+                receipt: zero_receipt(),
+            });
+        }
         let estimate = Credits(self.flat_estimate_credits);
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),

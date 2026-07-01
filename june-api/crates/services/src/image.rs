@@ -1,13 +1,16 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        zero_receipt,
     },
     error::ServiceError,
+    metering::{log_skipped_user_venice_key, uses_user_venice_key},
     util::sha256_hex,
 };
+use june_config::ModelProvider;
 use june_domain::{
     ActionSlug, Credits, GeneratedImage, ImageGenerationRequest, ImageGenerator, ModelId,
-    OsAccountsClient, Receipt, UserId,
+    OsAccountsClient, ProviderCredentials, Receipt, UserId,
 };
 use std::{
     collections::BTreeMap,
@@ -26,16 +29,31 @@ use std::{
 pub struct ImageServiceDeps {
     pub os_accounts: Arc<dyn OsAccountsClient>,
     pub generator: Arc<dyn ImageGenerator>,
-    /// Flat credits per image, keyed by model id. A model absent here is
-    /// rejected as `model_not_priced`.
-    pub pricing: BTreeMap<String, u64>,
+    /// Flat price and upstream provider per image model. A model absent here
+    /// is rejected as `model_not_priced`.
+    pub pricing: BTreeMap<String, ImageModelPrice>,
     pub hold_ttl_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImageModelPrice {
+    pub credits: u64,
+    pub provider: ModelProvider,
+}
+
+impl ImageModelPrice {
+    pub fn venice(credits: u64) -> Self {
+        Self {
+            credits,
+            provider: ModelProvider::Venice,
+        }
+    }
 }
 
 pub struct ImageService {
     os_accounts: Arc<dyn OsAccountsClient>,
     generator: Arc<dyn ImageGenerator>,
-    pricing: BTreeMap<String, u64>,
+    pricing: BTreeMap<String, ImageModelPrice>,
     hold_ttl_seconds: u64,
     /// Per-process sequence that makes every generation settle under a UNIQUE
     /// charge key. Image generation is not idempotent — a repeat produces a new
@@ -57,7 +75,7 @@ impl ImageService {
 
     /// Look up a model's flat per-image price. `None` for an unpriced model.
     pub fn price(&self, model: &str) -> Option<u64> {
-        self.pricing.get(model).copied()
+        self.pricing.get(model).map(|price| price.credits)
     }
 
     pub async fn generate(
@@ -65,12 +83,31 @@ impl ImageService {
         params: ImageGenerateParams,
     ) -> Result<ImageGenerateOutput, ServiceError> {
         // Reject an unpriced model before touching the wallet or Venice.
-        let credits = self
+        let price = self
             .pricing
             .get(&params.model)
             .copied()
             .ok_or(ServiceError::ModelNotPriced)?;
-        let estimate = Credits(credits);
+        let estimate = Credits(price.credits);
+        if price.provider == ModelProvider::Venice
+            && uses_user_venice_key(&params.provider_credentials)
+        {
+            let image = self
+                .generator
+                .generate(ImageGenerationRequest {
+                    prompt: params.prompt.clone(),
+                    model: ModelId(params.model.clone()),
+                    width: params.width,
+                    height: params.height,
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await?;
+            log_skipped_user_venice_key(ActionSlug::ImageGenerate, &params.user_id, &params.model);
+            return Ok(ImageGenerateOutput {
+                image,
+                receipt: zero_receipt(),
+            });
+        }
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
@@ -88,6 +125,7 @@ impl ImageService {
                 model: ModelId(params.model.clone()),
                 width: params.width,
                 height: params.height,
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
@@ -142,6 +180,7 @@ pub struct ImageGenerateParams {
     pub model: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -152,11 +191,13 @@ pub struct ImageGenerateOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageGenerateParams, ImageService, ImageServiceDeps};
+    use super::{ImageGenerateParams, ImageModelPrice, ImageService, ImageServiceDeps};
     use async_trait::async_trait;
+    use june_config::ModelProvider;
     use june_domain::{
         Authorization, AuthorizeRequest, ChargeRequest, DomainError, GeneratedImage,
-        ImageGenerationRequest, ImageGenerator, OsAccountsClient, Receipt, UserId,
+        ImageGenerationRequest, ImageGenerator, OsAccountsClient, ProviderCredentials, Receipt,
+        UserId,
     };
     use pretty_assertions::assert_eq;
     use std::{
@@ -261,7 +302,7 @@ mod tests {
         ImageService::new(ImageServiceDeps {
             os_accounts,
             generator,
-            pricing: BTreeMap::from([("venice-sd35".to_string(), 20_u64)]),
+            pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
             hold_ttl_seconds: 60,
         })
     }
@@ -273,6 +314,7 @@ mod tests {
             model: model.to_string(),
             width: None,
             height: None,
+            provider_credentials: ProviderCredentials::default(),
         }
     }
 
@@ -359,6 +401,53 @@ mod tests {
                 action: "image_generate".to_string(),
                 estimate: 20,
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn user_venice_key_generates_without_wallet_authorize_or_charge() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let mut params = params("venice-sd35");
+        params.provider_credentials = ProviderCredentials {
+            venice_api_key: Some("vc_user_key".to_string()),
+        };
+        let output = service(os_accounts.clone(), Arc::new(FixedGenerator))
+            .generate(params)
+            .await
+            .expect("generation succeeds");
+
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert!(os_accounts.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_venice_key_does_not_skip_non_venice_image_model_metering() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let service = ImageService::new(ImageServiceDeps {
+            os_accounts: os_accounts.clone(),
+            generator: Arc::new(FixedGenerator),
+            pricing: BTreeMap::from([(
+                "openai-image".to_string(),
+                ImageModelPrice {
+                    credits: 20,
+                    provider: ModelProvider::Openai,
+                },
+            )]),
+            hold_ttl_seconds: 60,
+        });
+        let mut params = params("openai-image");
+        params.provider_credentials = ProviderCredentials {
+            venice_api_key: Some("vc_user_key".to_string()),
+        };
+        let output = service.generate(params).await.expect("generation succeeds");
+
+        assert_eq!(output.receipt.credits_charged.0, 20);
+        assert_eq!(
+            os_accounts.events()[0],
+            Call::Authorize {
+                action: "image_generate".to_string(),
+                estimate: 20,
+            }
         );
     }
 

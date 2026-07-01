@@ -102,6 +102,13 @@ pub(crate) fn clamp_to_cap(actual: Credits, cap: Credits) -> Credits {
     Credits(min(actual.0, cap.0))
 }
 
+pub(crate) fn zero_receipt() -> Receipt {
+    Receipt {
+        credits_charged: Credits(0),
+        idempotent_replay: false,
+    }
+}
+
 pub(crate) struct ChargeParams<'a> {
     pub os_accounts: &'a dyn OsAccountsClient,
     pub action_token: String,

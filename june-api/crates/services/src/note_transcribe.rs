@@ -1,8 +1,10 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        zero_receipt,
     },
     error::ServiceError,
+    metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
     pricing::PricingTable,
     util::{ceil_seconds, sha256_hex},
 };
@@ -88,10 +90,58 @@ impl NoteTranscribeService {
             actual,
             estimate,
         };
+        if uses_user_venice_key_for_model(
+            &self.pricing,
+            &prepared.params.model_id.0,
+            &prepared.params.provider_credentials,
+        ) {
+            return self.transcribe_with_user_venice_key(prepared).await;
+        }
         if prepared.params.preview {
             return self.transcribe_preview(prepared).await;
         }
         self.transcribe_charged(prepared).await
+    }
+
+    async fn transcribe_with_user_venice_key(
+        &self,
+        prepared: PreparedNoteTranscription,
+    ) -> Result<NoteTranscribeOutput, ServiceError> {
+        let PreparedNoteTranscription {
+            params,
+            format,
+            seconds,
+            actual: _,
+            estimate: _,
+        } = prepared;
+        if params.preview && seconds > self.preview_max_audio_seconds {
+            return Err(ServiceError::InvalidInput {
+                reason: format!(
+                    "live transcript preview chunks must be {} seconds or shorter",
+                    self.preview_max_audio_seconds
+                ),
+            });
+        }
+        let transcript = self
+            .transcriber
+            .transcribe(TranscriptionRequest {
+                audio: params.audio,
+                format,
+                context: params.context,
+                language: params.language,
+                model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
+            })
+            .await?;
+        log_skipped_user_venice_key(
+            ActionSlug::NoteTranscribe,
+            &params.user_id,
+            &params.model_id.0,
+        );
+        Ok(NoteTranscribeOutput {
+            transcript,
+            receipt: zero_receipt(),
+        })
     }
 
     async fn transcribe_preview(

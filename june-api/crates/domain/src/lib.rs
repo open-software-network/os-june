@@ -105,6 +105,15 @@ pub struct ProviderCredentials {
     pub venice_api_key: Option<String>,
 }
 
+impl ProviderCredentials {
+    pub fn has_venice_api_key(&self) -> bool {
+        self.venice_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Authorization {
@@ -203,16 +212,16 @@ pub struct AgentChatRequest {
     pub provider_credentials: ProviderCredentials,
 }
 
-/// What an image generator needs: a prompt, the model, and optional pixel
-/// dimensions. Deliberately carries no user id — image generation is not
-/// metered yet (subscription metering is a follow-up), so the provider sees
-/// only the inference inputs.
+/// What an image generator needs: a prompt, the model, optional pixel
+/// dimensions, and provider credentials. Deliberately carries no user id,
+/// so the provider sees only the inference inputs and the upstream key.
 #[derive(Clone, Debug)]
 pub struct ImageGenerationRequest {
     pub prompt: String,
     pub model: ModelId,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
