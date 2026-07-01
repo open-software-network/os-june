@@ -953,7 +953,7 @@ export function App() {
   // shouldBlockOnSignIn back on, so the app falls through to the AccountGate.
   async function handleSignOut() {
     try {
-      await osAccountsLogout();
+      await osAccountsLogout({ clearBrowserSession: true });
       handleAccountChanged({ signedIn: false, configured: account.configured });
     } catch (err) {
       setError(messageFromError(err));

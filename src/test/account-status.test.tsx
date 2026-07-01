@@ -33,6 +33,7 @@ describe("useAccountStatus", () => {
     render(<StatusProbe forceLogoutOnMount />);
 
     await screen.findByText("Signed out");
+    expect(mocks.osAccountsLogout).toHaveBeenCalledWith();
     await waitFor(() => expect(calls).toEqual(["logout", "status"]));
   });
 });

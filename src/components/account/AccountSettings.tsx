@@ -81,7 +81,7 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
   async function handleSignOut() {
     setBusy(true);
     try {
-      await osAccountsLogout();
+      await osAccountsLogout({ clearBrowserSession: true });
       onAccountChanged({ signedIn: false, configured: account.configured });
       setAccountStatus("Signed out.");
     } catch (error) {

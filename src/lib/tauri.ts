@@ -1484,8 +1484,14 @@ export async function osAccountsCancelLogin() {
   return invoke<void>("os_accounts_cancel_login");
 }
 
-export async function osAccountsLogout() {
-  return invoke<void>("os_accounts_logout");
+export type AccountsLogoutOptions = {
+  clearBrowserSession?: boolean;
+};
+
+export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
+  return invoke<void>("os_accounts_logout", {
+    request: { clearBrowserSession: options.clearBrowserSession ?? false },
+  });
 }
 
 export async function osAccountsUpgrade() {
