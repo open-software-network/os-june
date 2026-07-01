@@ -2,18 +2,35 @@
 
 ## Status
 
-proposed - grill-with-docs design for JUN-129 follow-on; implementation phased
-(Phase A first).
+accepted - all three phases (A, B, C) implemented under JUN-171.
 
-Landed ahead of the phases: **image generation is now metered** (this PR). It
-runs through a `june_services::ImageService` (authorize hold -> generate ->
-charge, mirroring the web tools), priced per model by a dedicated `image_pricing`
-map in `june-config` kept separate from the text/ASR catalog so image models
-never leak into the served pickers. An unpriced model is rejected
-`model_not_priced` (422); an out-of-credits user gets 402 before Venice is
-called. Prices (Venice per-image cost x ~2, `$1 = 1000 credits`):
-`venice-sd35` 20, `flux-dev` 20, `qwen-image` 60, `hidream` 40. **Editing**
-metering ships with the `/image/edit` endpoint in Phase C.
+Landed: **image generation is metered** through a `june_services::ImageService`
+(authorize hold -> generate -> charge, mirroring the web tools), priced per model
+by a dedicated `image_pricing` map in `june-config` kept separate from the
+text/ASR catalog so image models never leak into the served pickers. An unpriced
+model is rejected `model_not_priced` (422); an out-of-credits user gets 402
+before Venice is called. Prices (Venice per-image cost x ~2, `$1 = 1000
+credits`): `venice-sd35` 20, `flux-2-pro` 60, `qwen-image` 60, `chroma` 20.
+
+Implemented since (JUN-171):
+
+- **Phase A** — the `/image` fast-path image is held per session and lazily
+  attached to the user's next message via the existing `image.attach_bytes`
+  path, so a follow-up reaches the model with the image in context.
+- **Phase B** — a `june_image` MCP server (`generate_image`) POSTs through the
+  loopback proxy to `/v1/image/generate` (the proxy injects the selected image
+  model + safe-mode setting); tool-result image content renders inline by
+  reusing `AgentChatImagePart`.
+- **Phase C** — `edit_image` (img2img) is backed by a new `POST /v1/image/edit`
+  endpoint + `VeniceImageEditor` provider (base64 in, **raw-binary** response
+  re-encoded to base64) + `ImageEditRequest` domain type, metered on
+  `ActionSlug::ImageEdit` with its own `image_edit_pricing` map
+  (`firered-image-edit` 80) and default edit model. The MCP writes generated /
+  edited images to a dedicated images dir so a returned `filename` can be
+  threaded back into `edit_image`.
+- **safe_mode** — Venice safe mode is a Settings toggle, **default off**
+  (privacy-first). It flows end to end as `Option<bool>` (absent = Venice
+  default), so older app builds calling the endpoints are unaffected.
 
 ## Context
 
