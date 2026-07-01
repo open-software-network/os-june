@@ -159,8 +159,10 @@ fn pricing_with_display(pricing: Option<serde_json::Value>, display: &str) -> se
     match pricing {
         Some(serde_json::Value::Object(mut map)) => {
             if !display.is_empty() {
-                map.entry("display".to_string())
-                    .or_insert_with(|| serde_json::Value::String(display.to_string()));
+                map.insert(
+                    "display".to_string(),
+                    serde_json::Value::String(display.to_string()),
+                );
             }
             serde_json::Value::Object(map)
         }
@@ -637,6 +639,35 @@ mod tests {
         assert_eq!(
             serde_json::to_value(response).unwrap()["mode"],
             serde_json::json!("transcription")
+        );
+    }
+
+    #[test]
+    fn api_model_conversion_prefers_retail_price_description_display() {
+        let model = VeniceModelDto::from(crate::june_api::ModelDto {
+            provider: "openai".to_string(),
+            id: "asr-model".to_string(),
+            name: "ASR model".to_string(),
+            model_type: "asr".to_string(),
+            description: None,
+            privacy: None,
+            pricing: Some(serde_json::json!({ "display": "$0.001/sec audio" })),
+            context_tokens: None,
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+            price_unit: "seconds".to_string(),
+            price_description: "$0.00125 per second audio".to_string(),
+            credits_per_million_seconds: Some(1_250_000),
+            input_credits_per_million_tokens: None,
+            output_credits_per_million_tokens: None,
+        });
+
+        assert_eq!(
+            model.pricing.and_then(|pricing| pricing
+                .get("display")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)),
+            Some("$0.00125 per second audio".to_string())
         );
     }
 }

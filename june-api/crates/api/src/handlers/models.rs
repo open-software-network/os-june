@@ -80,16 +80,8 @@ fn to_dto(id: &str, model: &ModelPriceConfig) -> ModelDto {
 }
 
 fn price_description(model: &ModelPriceConfig) -> String {
-    if let Some(display) = model
-        .pricing
-        .as_ref()
-        .and_then(|pricing| pricing.get("display"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return display.to_string();
-    }
+    // `pricing` may contain raw upstream metadata. The user-facing description
+    // must come from June's configured credit price, including margin.
     match model.unit {
         june_config::PriceUnit::Seconds => format!(
             "{} per second audio",
@@ -122,5 +114,33 @@ fn format_credits_as_usd_per_unit(credits: u64, units: u64) -> String {
     } else {
         let decimals = format!("{micro_usd:06}");
         format!("$0.{}", decimals.trim_end_matches('0'))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::price_description;
+    use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn price_description_uses_june_credit_price_over_provider_display() {
+        let model = ModelPriceConfig {
+            unit: PriceUnit::Seconds,
+            credits_per_million_seconds: Some(1_250_000),
+            input_credits_per_million_tokens: None,
+            output_credits_per_million_tokens: None,
+            provider: ModelProvider::Openai,
+            model_type: ModelType::Asr,
+            display_name: "ASR".to_string(),
+            description: None,
+            privacy: None,
+            pricing: Some(serde_json::json!({ "display": "$0.001/sec audio" })),
+            context_tokens: None,
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+        };
+
+        assert_eq!(price_description(&model), "$0.00125 per second audio");
     }
 }

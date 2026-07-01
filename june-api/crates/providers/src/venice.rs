@@ -15,6 +15,8 @@ pub const PROVIDER_NAME: &str = "venice";
 
 const CREDITS_PER_USD: f64 = 1_000.0;
 const RATE_SCALE: f64 = 1_000_000.0;
+/// A 20% margin is a 1.25x retail price over upstream cost.
+const RETAIL_PRICE_MULTIPLIER: f64 = 1.25;
 
 /// Standing safety policy injected as the leading system message on every
 /// Venice chat completion — note generation, dictation cleanup, and agent
@@ -919,11 +921,11 @@ fn usd_at_path(value: &serde_json::Value, path: &[&str]) -> Option<f64> {
 }
 
 fn credits_per_million_units(usd_per_million_units: f64) -> Option<u64> {
-    ceil_positive_u64(usd_per_million_units * CREDITS_PER_USD)
+    ceil_positive_u64(usd_per_million_units * CREDITS_PER_USD * RETAIL_PRICE_MULTIPLIER)
 }
 
 fn credits_per_million_seconds(usd_per_second: f64) -> Option<u64> {
-    ceil_positive_u64(usd_per_second * CREDITS_PER_USD * RATE_SCALE)
+    ceil_positive_u64(usd_per_second * CREDITS_PER_USD * RATE_SCALE * RETAIL_PRICE_MULTIPLIER)
 }
 
 fn ceil_positive_u64(value: f64) -> Option<u64> {
@@ -1643,8 +1645,8 @@ mod tests {
             model.capabilities,
             vec!["nested.enabled", "supportsFunctionCalling"]
         );
-        assert_eq!(model.input_credits_per_million_tokens, Some(70));
-        assert_eq!(model.output_credits_per_million_tokens, Some(300));
+        assert_eq!(model.input_credits_per_million_tokens, Some(88));
+        assert_eq!(model.output_credits_per_million_tokens, Some(375));
         assert!(model.pricing.is_some());
     }
 
@@ -1670,6 +1672,6 @@ mod tests {
         let models = venice_priced_model_items(response, ModelType::Asr);
         let model = models.get("asr-model").expect("asr model");
 
-        assert_eq!(model.credits_per_million_seconds, Some(100_000));
+        assert_eq!(model.credits_per_million_seconds, Some(125_000));
     }
 }
