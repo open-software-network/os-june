@@ -9,10 +9,6 @@ import { markOnboardingComplete } from "../lib/onboarding";
 // stuck in the DOM and exit-dependent assertions flaky.
 MotionGlobalConfig.skipAnimations = true;
 
-vi.mock("@tauri-apps/plugin-updater", () => ({
-  check: vi.fn(async () => null),
-}));
-
 vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: vi.fn(async () => undefined),
 }));

@@ -1,10 +1,16 @@
-name: production-desktop-release
+name: promote-desktop-release
 
+# Promotes the current rc build to the stable update channel by REBUILDING at a
+# clean X.Y.Z version (flavor B). It checks out the exact source commit the rc
+# was built from (recorded in the rc release's rc-build.json), stamps the clean
+# version, and runs the same sign + notarize + publish path as a production
+# release. Stable therefore ships the same source you tested as the rc, with a
+# clean version string. The rebuild needs the Apple + minisign secrets.
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Semver version to release (for example 0.2.0)"
+      rc-version:
+        description: "RC version to promote (e.g. 0.0.25-rc.1). Must match the version the rc release currently holds."
         required: true
         type: string
 
@@ -13,27 +19,18 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: production-desktop-release
+  group: promote-desktop-release
   cancel-in-progress: false
 
-# Opt the bundled JS actions (checkout, cache, setup-node, create-github-app-token,
-# pnpm/action-setup) into the Node 24 runtime — Node 20 is deprecated and will be
-# forced off the runners. Independent of node-version below (the Node our own build
-# scripts run on).
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  release:
-    name: Release production macOS app
+  promote:
+    name: Promote rc macOS app to stable
     runs-on: macos-latest
     environment: production
     steps:
-      # Mint a short-lived token from the release GitHub App, scoped to BOTH the
-      # private source repo (to push the version-bump branch) and the public
-      # releases repo (tauri-action publishes there). The release App remains
-      # the sole artifact publishing identity - org-owned, no personal PAT
-      # (docs/adr/0001 + infra runbook).
       - name: Mint release token (GitHub App)
         id: app-token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
@@ -41,16 +38,57 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          # Release artifacts use the June repository names; the token request rejects old names even
-          # though the App installation follows renames.
           repositories: os-june,os-june-releases
+
+      # Read the rc build manifest first (no checkout needed) to learn which
+      # version + source commit to promote, then check that commit out below.
+      - name: Resolve rc version and source commit
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RC_VERSION_INPUT: ${{ inputs.rc-version }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/rc-meta"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          gh release download rc \
+            --repo open-software-network/os-june-releases \
+            --pattern "rc-build.json" \
+            --dir "$dir"
+
+          rc_version="$(node -e 'const d=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(d.version||""))' "$dir/rc-build.json")"
+          commit="$(node -e 'const d=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(d.commit||""))' "$dir/rc-build.json")"
+
+          rc_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[1-9][0-9]*$'
+          sha_re='^[0-9a-f]{40}$'
+          if [[ ! "$rc_version" =~ $rc_re ]]; then
+            echo "::error::rc-build.json version is not X.Y.Z-rc.N: $rc_version"
+            exit 1
+          fi
+          if [[ ! "$commit" =~ $sha_re ]]; then
+            echo "::error::rc-build.json commit is not a 40-char sha: $commit"
+            exit 1
+          fi
+          # Q10: rc-version is required and must name the exact rc the release
+          # currently holds, so a promote can never silently ship a different rc
+          # than the operator intended.
+          if [ "$RC_VERSION_INPUT" != "$rc_version" ]; then
+            echo "::error::Requested $RC_VERSION_INPUT but the rc release holds $rc_version."
+            exit 1
+          fi
+
+          # VERSION strips the -rc.N suffix for the clean stable version.
+          {
+            echo "RC_VERSION=$rc_version"
+            echo "BUILD_COMMIT=$commit"
+            echo "VERSION=${rc_version%-rc.*}"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: main
+          # The exact commit the rc was built from, so stable rebuilds that tree.
+          ref: ${{ env.BUILD_COMMIT }}
           fetch-depth: 0
-          # Persist the App token so the later release branch push is
-          # authenticated as the App, not GITHUB_TOKEN.
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
@@ -82,14 +120,8 @@ jobs:
           restore-keys: |
             cargo-registry-${{ runner.os }}-
 
-      # NOTE: intentionally no `src-tauri/target` cache. A restored target lets
-      # Cargo treat build.rs as fresh and skip it during the signed build — so
-      # the nested Swift helper apps keep whatever signature they got the first
-      # time they were built (ad-hoc, from `pnpm test:rust` which runs without a
-      # signing identity) and notarization rejects them ("not signed with a valid
-      # Developer ID / no secure timestamp / no hardened runtime"). A clean
-      # compile forces build.rs to run under tauri-action's keychain + identity
-      # and re-sign the helpers (`codesign --force --deep …` in build.rs).
+      # No src-tauri/target cache, same notarization rationale as the rc and
+      # production workflows.
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -104,8 +136,6 @@ jobs:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
@@ -121,51 +151,25 @@ jobs:
             APPLE_API_KEY \
             APPLE_API_KEY_P8 \
             TAURI_SIGNING_PRIVATE_KEY \
-            RELEASE_APP_ID \
-            RELEASE_APP_PRIVATE_KEY \
             PRODUCTION_OS_ACCOUNTS_URL \
             PRODUCTION_OS_ACCOUNTS_API_URL \
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
             PRODUCTION_JUNE_API_URL
           do
             if [ -z "${!name:-}" ]; then
-              echo "::error::${name} is required for a production auto-update release."
+              echo "::error::${name} is required to promote a stable release."
               missing=1
             fi
           done
           exit "$missing"
 
-      - name: Validate release version input
-        env:
-          VERSION_INPUT: ${{ inputs.version }}
+      - name: Stamp clean stable version
         run: |
           set -euo pipefail
-          # Reject leading zeros so this gate matches bump-version.mjs's VERSION_RE
-          # exactly — invalid inputs fail here, not later with a murkier error.
-          re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          if [[ ! "$VERSION_INPUT" =~ $re ]]; then
-            echo "::error::Version must be semver X.Y.Z (no leading zeros), got: $VERSION_INPUT"
-            exit 1
-          fi
-          # Stash the validated value. Every downstream step uses $VERSION (run:)
-          # or env.VERSION (with:), never the raw ${{ inputs.version }} — so the
-          # workflow_dispatch input can't reach a shell or action arg unsanitised
-          # (command/arg injection). The bash =~ match is anchored against the
-          # whole string, so an embedded newline fails the gate too.
-          echo "VERSION=$VERSION_INPUT" >> "$GITHUB_ENV"
-
-      - name: Bump release version
-        run: |
-          set -euo pipefail
-          pnpm version:bump "$VERSION"
-          # Record ONLY the app's new version in Cargo.lock. The previous
-          # `cargo generate-lockfile` rebuilt the lockfile from scratch,
-          # silently mass-upgrading every dependency to the latest compatible
-          # release at build time - so a same-day upstream release could (and
-          # did: time 0.3.48 vs tauri-utils 2.9.2, 2026-06-12) break the
-          # release build with dependency versions no CI run ever tested.
-          # `--workspace` re-locks workspace members only and leaves every
-          # dependency exactly as committed.
+          # The rc already ran lint/test/test:rust at this exact commit, so the
+          # only change here is the version string (rc -> clean); no need to
+          # re-run the suite. set-build-version accepts the plain X.Y.Z too.
+          node scripts/set-build-version.mjs "$VERSION"
           cargo update --workspace --manifest-path src-tauri/Cargo.toml
 
       - name: Generate release changelog
@@ -174,13 +178,6 @@ jobs:
           changelog_path="$RUNNER_TEMP/release-changelog.md"
           node scripts/generate-release-changelog.mjs "$VERSION" "$changelog_path"
           echo "RELEASE_CHANGELOG_PATH=$changelog_path" >> "$GITHUB_ENV"
-
-      - name: Run release checks
-        run: |
-          set -euo pipefail
-          pnpm lint
-          pnpm test
-          pnpm test:rust
 
       - name: Write Apple API key
         id: apple-api-key
@@ -194,16 +191,6 @@ jobs:
           chmod 600 "$key_path"
           echo "path=$key_path" >> "$GITHUB_OUTPUT"
 
-      # Import the Developer ID cert into a keychain BEFORE the build. build.rs
-      # signs the nested Swift helper apps during `cargo build` (compile phase),
-      # but tauri-action only sets up its signing keychain just before its own
-      # bundler-signing phase, AFTER compilation. Without this, build.rs's
-      # codesign fails ("helper app could not be signed") and the helpers reach
-      # notarization ad-hoc (no Developer ID / secure timestamp / hardened
-      # runtime). This mirrors scripts/build-signed-dmg.sh, which succeeds for
-      # exactly this reason. tauri-action then reuses this keychain via
-      # APPLE_SIGNING_IDENTITY, so we no longer hand it APPLE_CERTIFICATE (which
-      # would set up a second, competing keychain).
       - name: Import signing certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -221,24 +208,17 @@ jobs:
             -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$keychain_password" "$keychain" >/dev/null
-          # Prepend our keychain to the existing user search list. The command
-          # substitution must word-split into one arg per keychain, so it stays
-          # unquoted intentionally.
           # shellcheck disable=SC2046
           security list-keychains -d user -s "$keychain" \
             $(security list-keychains -d user | tr -d '"')
           rm -f "$cert"
 
-      # Ship the Hermes runtime inside the app so first launch needs no
-      # multi-minute GitHub download. Must run after the certificate import:
-      # the script signs every Mach-O in the bundle (python, extension .so)
-      # with the Developer ID + hardened runtime, which notarization requires.
       - name: Bundle Hermes runtime into app resources
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: ./scripts/bundle-hermes-runtime.sh
 
-      - name: Build and sign production app artifacts
+      - name: Build and sign stable app artifacts
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -253,12 +233,9 @@ jobs:
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         with:
           args: --bundles app,dmg --target universal-apple-darwin
-          # Do not pass tagName or releaseId here. tauri-action uploads release
-          # assets as soon as it sees either input, but the DMG is created after
-          # app notarization and needs its own notarization gate first.
           includeUpdaterJson: false
 
-      - name: Notarize, verify, and publish production release assets
+      - name: Notarize, verify, and publish stable release assets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -272,13 +249,7 @@ jobs:
             src-tauri/target/release/bundle/dmg/*.dmg
           )
           if [ "${#dmgs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one production DMG, found ${#dmgs[@]}"
-            printf 'DMG candidates:\n'
-            if [ "${#dmgs[@]}" -eq 0 ]; then
-              printf ' - <none>\n'
-            else
-              printf ' - %s\n' "${dmgs[@]}"
-            fi
+            echo "::error::Expected exactly one stable DMG, found ${#dmgs[@]}"
             exit 1
           fi
 
@@ -302,26 +273,14 @@ jobs:
           )
           if [ "${#app_archives[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one app updater archive, found ${#app_archives[@]}"
-            printf 'App archive candidates:\n'
-            if [ "${#app_archives[@]}" -eq 0 ]; then
-              printf ' - <none>\n'
-            else
-              printf ' - %s\n' "${app_archives[@]}"
-            fi
             exit 1
           fi
           if [ "${#app_signatures[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one app updater signature, found ${#app_signatures[@]}"
-            printf 'App signature candidates:\n'
-            if [ "${#app_signatures[@]}" -eq 0 ]; then
-              printf ' - <none>\n'
-            else
-              printf ' - %s\n' "${app_signatures[@]}"
-            fi
             exit 1
           fi
 
-          release_dir="$RUNNER_TEMP/production-release-assets"
+          release_dir="$RUNNER_TEMP/stable-release-assets"
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
           stable_dmg="$release_dir/June_universal.dmg"
@@ -334,12 +293,18 @@ jobs:
           cp "${app_archives[0]}" "$app_archive"
           cp "${app_signatures[0]}" "$app_signature"
 
+          # Record the source commit on the stable release so the Windows build
+          # can rebuild the exact tree this macOS release shipped, independent of
+          # how far main has advanced (mirrors the rc's rc-build.json).
+          stable_build_json="$release_dir/stable-build.json"
+          printf '{\n  "version": "%s",\n  "commit": "%s"\n}\n' \
+            "$VERSION" "$BUILD_COMMIT" > "$stable_build_json"
+
           SIGNATURE_PATH="$app_signature" \
           LATEST_JSON_PATH="$latest_json" \
           RELEASE_CHANGELOG_PATH="$RELEASE_CHANGELOG_PATH" \
           node <<'NODE'
           const fs = require("node:fs");
-
           const version = process.env.VERSION;
           const signature = fs.readFileSync(process.env.SIGNATURE_PATH, "utf8");
           const notes = fs
@@ -365,154 +330,110 @@ jobs:
           NODE
 
           release_notes_file="${RELEASE_CHANGELOG_PATH:?}"
+          # --latest marks this the repo's latest release so the stable channel
+          # URL (releases/latest/download/latest.json) resolves here.
           if gh release view "v$VERSION" --repo open-software-network/os-june-releases >/dev/null 2>&1; then
             gh release edit "v$VERSION" \
               --repo open-software-network/os-june-releases \
               --title "June v$VERSION" \
-              --notes-file "$release_notes_file"
+              --notes-file "$release_notes_file" \
+              --prerelease=false \
+              --latest
           else
             gh release create "v$VERSION" \
               --repo open-software-network/os-june-releases \
               --title "June v$VERSION" \
               --notes-file "$release_notes_file" \
+              --latest \
               --target main
           fi
 
           gh release upload "v$VERSION" \
-            "$dmg" \
             "$stable_dmg" \
             "$legacy_dmg" \
             "$app_archive" \
             "$app_signature" \
             "$latest_json" \
+            "$stable_build_json" \
             --repo open-software-network/os-june-releases \
             --clobber
 
-      # Open the version-bump PR only AFTER the release is published, so a
-      # build/notarize failure never leaves an orphan `release:` PR with no
-      # matching release. The branch push uses the release App credentials from
-      # checkout; PR create/edit uses GITHUB_TOKEN because the release App
-      # installation may not have pull-request write permission.
+      # Record the released version on main so its version files advance and the
+      # next changelog can find this release. Runs only after the stable release
+      # is published, so a build/notarize failure never leaves an orphan
+      # `release:` PR. The branch push authenticates as the release App (persisted
+      # at checkout); the PR uses GITHUB_TOKEN because the App may lack
+      # pull-request write. This is the version-bump duty inherited from the
+      # retired production-desktop-dmg.yml.
       - name: Open release version PR
         env:
           GH_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # promote's tree is the rc's pinned commit with the build version stamped
+          # in; discard that and branch from current main to record the bump there.
+          git fetch origin main
+          git reset --hard
+          git checkout -B "release/v$VERSION" origin/main
+          # version:bump (not set-build-version) so main's monotonic X.Y.Z gate applies.
+          pnpm version:bump "$VERSION"
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
           git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
           if git diff --cached --quiet; then
-            echo "Release version files are already at v$VERSION; skipping version commit."
+            echo "main is already at v$VERSION; skipping version commit."
             exit 0
           fi
+          bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
           git commit -m "release: v$VERSION"
-          # Rebase onto anything that landed on main during the (~15 min) build so
-          # the release PR branch starts from the current main after the release is live.
-          git fetch origin main
-          git rebase origin/main
-
-          release_branch="release/v$VERSION"
-          git push --force-with-lease origin HEAD:"refs/heads/$release_branch"
+          git push --force-with-lease origin "HEAD:refs/heads/release/v$VERSION"
 
           body_file="$RUNNER_TEMP/release-pr-body.md"
           cat > "$body_file" <<EOF
           Bumps desktop release version files to v$VERSION.
 
-          The release artifacts were already published by this workflow. Merge this PR to record the version bump on main.
+          The stable release was already published by promote-desktop. Merge to record the version on main.
           EOF
-
           pr_number="$(
-            gh pr list \
-              --repo open-software-network/os-june \
-              --base main \
-              --head "$release_branch" \
-              --state open \
-              --json number \
-              --jq '.[0].number // empty'
+            gh pr list --repo open-software-network/os-june --base main \
+              --head "release/v$VERSION" --state open --json number --jq '.[0].number // empty'
           )"
-
           if [ -n "$pr_number" ]; then
-            gh pr edit "$pr_number" \
-              --repo open-software-network/os-june \
-              --title "release: v$VERSION" \
-              --body-file "$body_file"
-            echo "Updated release version PR #$pr_number."
+            gh pr edit "$pr_number" --repo open-software-network/os-june \
+              --title "release: v$VERSION" --body-file "$body_file"
           else
-            gh pr create \
-              --repo open-software-network/os-june \
-              --base main \
-              --head "$release_branch" \
-              --title "release: v$VERSION" \
-              --body-file "$body_file"
+            gh pr create --repo open-software-network/os-june --base main \
+              --head "release/v$VERSION" --title "release: v$VERSION" --body-file "$body_file"
           fi
 
-      - name: Notify Slack on release
+      - name: Notify Slack on promote
         if: ${{ success() }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-            echo "::warning::SLACK_WEBHOOK_URL secret is not configured; skipping Slack notification."
+            echo "::warning::SLACK_WEBHOOK_URL is not configured; skipping Slack notification."
             exit 0
           fi
           payload=$(cat <<EOF
           {
-            "text": ":rocket: *June v${VERSION} released*",
-            "blocks": [
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": ":rocket: *June v${VERSION} released*"
-                }
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Version:*\nv${VERSION}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Download:*\n<https://github.com/open-software-network/os-june-releases/releases/latest/download/June_universal.dmg|macOS DMG (Apple Silicon and Intel)>"
-                  }
-                ]
-              },
-              {
-                "type": "actions",
-                "elements": [
-                  {
-                    "type": "button",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "View release"
-                    },
-                    "url": "https://github.com/open-software-network/os-june-releases/releases/tag/v${VERSION}"
-                  }
-                ]
-              }
-            ]
+            "text": ":ship: *June v${VERSION} promoted to stable* (from ${RC_VERSION})"
           }
           EOF
           )
-          response=$(curl -sS -f -X POST \
-            -H "Content-Type: application/json" \
-            --data "$payload" \
-            "$SLACK_WEBHOOK_URL" 2>&1) || {
-            echo "::warning::Slack notification failed: $response"
+          curl -sS -f -X POST -H "Content-Type: application/json" \
+            --data "$payload" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || {
+            echo "::warning::Slack notification failed."
             exit 0
           }
-          echo "Slack notification sent successfully."
 
       - name: Summary
         run: |
           {
-            echo "### Production macOS release"
-            echo "- Version: \`$VERSION\`"
-            echo "- Release repo: \`open-software-network/os-june-releases\`"
-            echo "- Update manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
-            echo "- Marketing download: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_universal.dmg\`"
-            echo "- Legacy Apple Silicon alias: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_aarch64.dmg\`"
+            echo "### Promoted rc to stable"
+            echo "- Promoted: \`$RC_VERSION\` -> \`v$VERSION\` (rebuilt from \`$BUILD_COMMIT\`)"
+            echo "- Stable manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
           } >> "$GITHUB_STEP_SUMMARY"

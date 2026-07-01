@@ -1,3 +1,8 @@
+// DownloadEvent is owned by the IPC boundary (lib/updater.ts); re-exported here
+// so existing importers keep working without app/ reaching back up into lib/.
+import type { DownloadEvent } from "../lib/updater";
+export type { DownloadEvent };
+
 export type UpdatePromptPayload<TUpdate> = {
   update: TUpdate;
   version: string;
@@ -7,11 +12,6 @@ export type UpdatePromptPayload<TUpdate> = {
 export type UpdateCheckMode = "launch" | "manual" | "periodic";
 
 export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-
-export type DownloadEvent =
-  | { event: "Started"; data: { contentLength?: number } }
-  | { event: "Progress"; data: { chunkLength: number } }
-  | { event: "Finished" };
 
 export type UpdaterUpdate = {
   version: string;

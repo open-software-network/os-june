@@ -172,7 +172,12 @@ import {
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import { checkJuneUpdate, relaunchJune, type JuneUpdate } from "../lib/updater";
+import {
+  checkJuneUpdate,
+  reconcileToStable,
+  relaunchJune,
+  type JuneUpdate,
+} from "../lib/updater";
 import {
   PROCESSING_DEMO_NOTE_ID,
   shouldPollProcessingStatus,
@@ -1146,7 +1151,12 @@ export function App() {
   );
 
   const runUpdateCheck = useCallback(
-    (mode: UpdateCheckMode) => {
+    // `check` defaults to the routine, forward-only check; the leave-rc reconcile
+    // passes reconcileToStable so it can pull an older stable (see below).
+    (
+      mode: UpdateCheckMode,
+      check: () => Promise<JuneUpdate | null> = checkJuneUpdate,
+    ) => {
       if (readyUpdateRef.current || relaunchingUpdateRef.current) return;
       if (checkingUpdateRef.current) return;
       if (preparingUpdateRef.current) {
@@ -1161,7 +1171,7 @@ export function App() {
       else if (mode === "launch") setUpdateStatus(null);
       void checkForJuneUpdate(
         {
-          check: checkJuneUpdate,
+          check,
           prompt: (payload) => {
             prepareUpdate(payload, mode);
           },
@@ -1179,6 +1189,14 @@ export function App() {
     },
     [prepareUpdate],
   );
+
+  // Confirmed in Settings after switching off the rc channel: re-check with
+  // reconcile=true (which re-stashes the Rust-side pending update, so a periodic
+  // check between the Settings confirm and this call can't leave a stale handle)
+  // then run the same download -> ready -> relaunch flow as any update.
+  const handleReconcileToStable = useCallback(() => {
+    runUpdateCheck("manual", reconcileToStable);
+  }, [runUpdateCheck]);
 
   const handleRelaunchUpdate = useCallback(() => {
     if (!readyUpdateRef.current || relaunchingUpdateRef.current) return;
@@ -2999,6 +3017,7 @@ export function App() {
                   activeTab={settingsTab}
                   onTabChange={setSettingsTab}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
+                  onReconcileToStable={handleReconcileToStable}
                   onReportIssue={handleReportIssue}
                   onStartBundleChat={handleStartBundleChat}
                 />

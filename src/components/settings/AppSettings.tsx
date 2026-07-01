@@ -56,6 +56,7 @@ import {
   type SelectPopoverPlacement,
 } from "../ui/Select";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { InlineNotice } from "../ui/InlineNotice";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
 import type { ReportCategory } from "../agent/composer/reportCategory";
@@ -71,6 +72,12 @@ import {
   type BrandId,
 } from "../../lib/brand";
 import { AccentWheel } from "./AccentWheel";
+import {
+  getReleaseChannel,
+  reconcileToStable,
+  setReleaseChannel,
+  type ReleaseChannel,
+} from "../../lib/updater";
 import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -138,6 +145,14 @@ const THEME_OPTIONS: readonly {
     ),
     ariaLabel: "Use dark theme",
   },
+];
+
+const RELEASE_CHANNEL_OPTIONS: readonly {
+  value: ReleaseChannel;
+  label: ReactNode;
+}[] = [
+  { value: "stable", label: "Stable" },
+  { value: "rc", label: "Release candidate" },
 ];
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
@@ -265,6 +280,9 @@ type AppSettingsProps = {
   onTabChange?: (tab: SettingsTab) => void;
   // Runs the app updater's manual check flow.
   onCheckForUpdates?: () => void;
+  // Confirmed leave-rc reconcile: downloads and installs the current stable,
+  // even if it is older than the running prerelease build (Q4-Q8).
+  onReconcileToStable?: () => void;
   // Opens a new agent session seeded with a report category chip.
   onReportIssue?: (category: ReportCategory) => void;
   // Opens a new agent session that runs a skill bundle's slash command.
@@ -288,6 +306,7 @@ export function AppSettings({
   activeTab: controlledTab,
   onTabChange,
   onCheckForUpdates,
+  onReconcileToStable,
   onReportIssue,
   onStartBundleChat,
 }: AppSettingsProps) {
@@ -314,6 +333,11 @@ export function AppSettings({
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
+  const [releaseChannel, setReleaseChannelValue] =
+    useState<ReleaseChannel>("stable");
+  // Set only when a leave-rc switch turns up an installable stable, so the
+  // bespoke in-context confirm below the toggle can name the exact version.
+  const [reconcileVersion, setReconcileVersion] = useState<string>();
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
   const [internalTab, setInternalTab] = useState<SettingsTab>("general");
@@ -358,6 +382,63 @@ export function AppSettings({
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
   }, [capturingShortcut]);
+
+  // Load the persisted release channel once the updater is available. Gated on
+  // a stable boolean (not the onCheckForUpdates prop itself, which is an inline
+  // arrow with a new identity each render) so this loads once, not per render.
+  const updaterAvailable = Boolean(onCheckForUpdates);
+  useEffect(() => {
+    if (!updaterAvailable) return;
+    let active = true;
+    void getReleaseChannel()
+      .then((channel) => {
+        if (active) setReleaseChannelValue(channel);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [updaterAvailable]);
+
+  const handleReleaseChannelChange = (next: ReleaseChannel) => {
+    setReleaseChannelValue(next);
+    // Any channel change dismisses a stale reconcile offer (e.g. toggling back
+    // to rc, or stable -> rc -> stable) before we decide whether to re-offer.
+    setReconcileVersion(undefined);
+    void setReleaseChannel(next)
+      .then(() => {
+        // Leaving rc for stable while running a prerelease build: stable is
+        // normally older than the rc you are on, so a routine check would never
+        // pull it. Offer a one-time reconcile down onto the current stable (Q4-Q8).
+        if (next === "stable" && isPrereleaseBuild()) {
+          void offerReconcileToStable();
+        }
+      })
+      .catch(() => {
+        // Persist failed: re-read so the toggle reflects the real saved channel
+        // rather than an optimistic value that never reached disk.
+        void getReleaseChannel()
+          .then(setReleaseChannelValue)
+          .catch(() => undefined);
+      });
+  };
+
+  async function offerReconcileToStable() {
+    try {
+      const update = await reconcileToStable();
+      // Only prompt when a stable is actually installable. If stable has already
+      // caught up or passed the rc, the routine updater handles it (no reconcile).
+      if (update) setReconcileVersion(update.version);
+    } catch {
+      // A failed reconcile check is silent: the channel is already saved and the
+      // routine update flow will retry on its next check.
+    }
+  }
+
+  function confirmReconcileToStable() {
+    setReconcileVersion(undefined);
+    onReconcileToStable?.();
+  }
 
   useEffect(() => {
     setMicOpen(false);
@@ -1345,23 +1426,71 @@ export function AppSettings({
                 </div>
 
                 {onCheckForUpdates ? (
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Updates</h3>
-                      <p className="settings-row-description">
-                        Check whether a newer version of June is available.
-                      </p>
+                  <>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Updates</h3>
+                        <p className="settings-row-description">
+                          Check whether a newer version of June is available.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={onCheckForUpdates}
+                        >
+                          Check for updates
+                        </button>
+                      </div>
                     </div>
-                    <div className="settings-row-control">
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={onCheckForUpdates}
-                      >
-                        Check for updates
-                      </button>
+
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Release channel</h3>
+                        <p className="settings-row-description">
+                          Stable is recommended. Release candidate gets early
+                          builds for testing.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <SegmentedControl<ReleaseChannel>
+                          aria-label="Release channel"
+                          value={releaseChannel}
+                          options={RELEASE_CHANNEL_OPTIONS}
+                          onValueChange={handleReleaseChannelChange}
+                        />
+                      </div>
                     </div>
-                  </div>
+
+                    {reconcileVersion ? (
+                      <div className="settings-row">
+                        <InlineNotice
+                          aria-label="Switch to stable now"
+                          eyebrow="Switch to stable now?"
+                          body={`Installs ${reconcileVersion}, replacing your release candidate build. You'll get ${baseVersion()} when it reaches stable.`}
+                          actions={
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                onClick={() => setReconcileVersion(undefined)}
+                              >
+                                Not now
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={confirmReconcileToStable}
+                              >
+                                Switch to stable
+                              </button>
+                            </>
+                          }
+                        />
+                      </div>
+                    ) : null}
+                  </>
                 ) : null}
 
                 <div className="settings-row">
@@ -1775,4 +1904,16 @@ function messageFromError(error: unknown) {
     return String((error as { message: unknown }).message);
   }
   return String(error);
+}
+
+// The running build is a release candidate (X.Y.Z-rc.N). Only these get the
+// leave-rc reconcile offer; a clean stable build has nothing to reconcile.
+function isPrereleaseBuild() {
+  return APP_VERSION.includes("-rc");
+}
+
+// The base version an rc will become once promoted (0.0.25-rc.2 -> 0.0.25), used
+// to reassure the user which stable they will land on when it ships.
+function baseVersion() {
+  return APP_VERSION.split("-")[0];
 }
