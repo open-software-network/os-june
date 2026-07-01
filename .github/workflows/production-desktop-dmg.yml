@@ -421,29 +421,55 @@ jobs:
           The release artifacts were already published by this workflow. Merge this PR to record the version bump on main.
           EOF
 
-          pr_number="$(
-            gh pr list \
-              --repo open-software-network/os-june \
-              --base main \
-              --head "$release_branch" \
-              --state open \
-              --json number \
-              --jq '.[0].number // empty'
-          )"
+          # Opening/updating the PR requires the release GitHub App to hold
+          # "Pull requests: write". The workflow `permissions:` block only governs
+          # GITHUB_TOKEN, which this repo blocks from creating PRs anyway
+          # (org "Allow GitHub Actions to create and approve pull requests" is off),
+          # so the App token is the only viable identity here.
+          #
+          # The release artifacts are already published by this point, so a missing
+          # App permission must NOT fail the job: surface a manual-PR link and a job
+          # summary note instead of going red and skipping the Slack notify.
+          manual_pr_url="https://github.com/open-software-network/os-june/compare/main...${release_branch}?expand=1"
 
-          if [ -n "$pr_number" ]; then
-            gh pr edit "$pr_number" \
-              --repo open-software-network/os-june \
-              --title "release: v$VERSION" \
-              --body-file "$body_file"
-            echo "Updated release version PR #$pr_number."
+          open_or_update_pr() {
+            local pr_number
+            pr_number="$(
+              gh pr list \
+                --repo open-software-network/os-june \
+                --base main \
+                --head "$release_branch" \
+                --state open \
+                --json number \
+                --jq '.[0].number // empty'
+            )" || return 1
+
+            if [ -n "$pr_number" ]; then
+              gh pr edit "$pr_number" \
+                --repo open-software-network/os-june \
+                --title "release: v$VERSION" \
+                --body-file "$body_file" || return 1
+              echo "Updated release version PR #$pr_number."
+            else
+              gh pr create \
+                --repo open-software-network/os-june \
+                --base main \
+                --head "$release_branch" \
+                --title "release: v$VERSION" \
+                --body-file "$body_file" || return 1
+            fi
+          }
+
+          if open_or_update_pr; then
+            echo "Release version PR is up to date."
           else
-            gh pr create \
-              --repo open-software-network/os-june \
-              --base main \
-              --head "$release_branch" \
-              --title "release: v$VERSION" \
-              --body-file "$body_file"
+            echo "::warning::Could not open the release version PR automatically (the release GitHub App likely lacks 'Pull requests: write'). The release shipped; open the version-bump PR manually: $manual_pr_url"
+            {
+              echo "### Manual action required: open the release version PR"
+              echo "- The release artifacts for \`v$VERSION\` were published successfully."
+              echo "- Automated PR creation failed, most likely because the release GitHub App is missing the **Pull requests: write** permission."
+              echo "- Branch \`$release_branch\` is pushed. Open the PR manually: $manual_pr_url"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Notify Slack on release
