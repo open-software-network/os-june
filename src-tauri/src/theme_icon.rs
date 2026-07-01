@@ -7,13 +7,14 @@
 #[cfg(target_os = "macos")]
 fn icon_bytes(brand: &str) -> &'static [u8] {
     match brand {
-        "clay" => include_bytes!("../icons/themed/icon-clay.png"),
-        "amber" => include_bytes!("../icons/themed/icon-amber.png"),
+        "rose" => include_bytes!("../icons/themed/icon-rose.png"),
         "sage" => include_bytes!("../icons/themed/icon-sage.png"),
-        "blue" => include_bytes!("../icons/themed/icon-blue.png"),
+        // "blue" was renamed to "ocean"; keep it as a legacy alias.
+        "ocean" | "blue" => include_bytes!("../icons/themed/icon-ocean.png"),
         "plum" => include_bytes!("../icons/themed/icon-plum.png"),
-        // "rose" and anything unrecognized fall back to the default.
-        _ => include_bytes!("../icons/themed/icon-rose.png"),
+        // Clay is the default. "amber" was dropped and folded into clay, so it
+        // (and anything unrecognized) falls back to the clay icon.
+        "clay" | "amber" | _ => include_bytes!("../icons/themed/icon-clay.png"),
     }
 }
 

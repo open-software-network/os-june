@@ -36,7 +36,7 @@
    * is a separate window and locally redefines the tokens it needs.
    * subscribeBrand() (src/lib/brand.ts) overrides --brand from the stored
    * preference and live-syncs it. */
-  --brand: #936862;
+  --brand: #b5551f;
   /* The accent lifted for legibility on the dark glass, derived from --brand. */
   --attention: color-mix(in oklch, var(--brand) 62%, white);
   /* The shimmer highlight — a brighter lift of the same accent so the sweep

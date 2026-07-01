@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
@@ -51,6 +51,7 @@ import {
   shortcutFromCapturePayload,
 } from "../shortcuts/use-shortcut-capture";
 import {
+  Select,
   selectPopoverPlacement,
   selectPopoverStyle,
   type SelectPopoverPlacement,
@@ -65,12 +66,11 @@ import {
   type ThemePreference,
 } from "../../lib/theme";
 import {
-  DEFAULT_BRAND,
+  BRAND_PRESETS,
   getStoredBrand,
   setStoredBrand,
   type BrandId,
 } from "../../lib/brand";
-import { AccentWheel } from "./AccentWheel";
 import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -914,24 +914,19 @@ export function AppSettings({
                       </p>
                     </div>
                     <div className="settings-row-control">
-                      {brand !== DEFAULT_BRAND ? (
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          aria-label="Reset accent color to default"
-                          onClick={() => {
-                            setBrand(DEFAULT_BRAND);
-                            setStoredBrand(DEFAULT_BRAND);
-                          }}
-                        >
-                          Reset
-                        </button>
-                      ) : null}
-                      <AccentWheel
+                      <Select
+                        className="accent-select"
                         value={brand}
+                        options={BRAND_PRESETS.map((preset) => ({
+                          value: preset.id,
+                          label: preset.label,
+                          color: preset.value,
+                        }))}
+                        placeholder="Rose"
+                        ariaLabel="Accent color"
                         onChange={(id) => {
-                          setBrand(id);
-                          setStoredBrand(id);
+                          setBrand(id as BrandId);
+                          setStoredBrand(id as BrandId);
                         }}
                       />
                     </div>
@@ -1089,7 +1084,7 @@ export function AppSettings({
                                   <span>{option.label}</span>
                                   <span className="select-check" aria-hidden>
                                     {selected ? (
-                                      <IconCheckmark1Small size={14} />
+                                      <IconCheckmark2Small size={14} />
                                     ) : null}
                                   </span>
                                 </button>
@@ -1139,8 +1134,9 @@ export function AppSettings({
                       <IconChevronDownSmall size={14} />
                     </button>
                     {micOpen ? (
-                      // 2px = (trigger 32 - item 28) / 2, so the selected item
-                      // overlays the trigger label exactly with no visual jump.
+                      // selectPopoverStyle offsets for the popover chrome and
+                      // the trigger/row height difference, so the selected
+                      // item overlays the trigger exactly with no visual jump.
                       <ul
                         className="select-popover"
                         role="listbox"
@@ -1168,7 +1164,7 @@ export function AppSettings({
                                 <span>{option.name}</span>
                                 <span className="select-check" aria-hidden>
                                   {selected ? (
-                                    <IconCheckmark1Small size={14} />
+                                    <IconCheckmark2Small size={14} />
                                   ) : null}
                                 </span>
                               </button>

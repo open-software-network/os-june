@@ -33,7 +33,17 @@
 @property --brand {
   syntax: "<color>";
   inherits: true;
-  initial-value: #936862;
+  initial-value: #b5551f;
+}
+
+/* Surface-tinting companion to --brand: the accent with its oklch chroma capped
+ * at 0.07 (same lightness/hue). Surface neutrals mix from this so a high-chroma
+ * accent (clay) doesn't over-cream the greys. Registered as a color for the
+ * same interpolate-don't-snap reason as --brand. */
+@property --brand-wash {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #976851;
 }
 
 :root {
@@ -159,46 +169,62 @@
    * --foreground; dark theme inherits the same recipe. */
   --ring-focus: color-mix(in oklch, var(--foreground) 30%, transparent);
 
-  /* Surface neutrals carry a sliver of --brand so the whole backdrop tints
-   * to whatever accent is selected (rose = warm greys, blue = cool greys,
-   * etc.). Text/foreground tokens stay pure neutral for legibility; only
-   * fills, cards, borders, and the sidebar pick up the wash. */
+  /* Surface neutrals carry a sliver of --brand-wash so the whole backdrop tints
+   * to whatever accent is selected (rose = warm greys, ocean = cool greys,
+   * etc.). The wash is the accent with its chroma capped, so a high-chroma
+   * accent (clay) tints the greys the same amount a dusty one (rose) does
+   * instead of over-creaming them. Text/foreground tokens stay pure neutral for
+   * legibility; only these fills, cards, borders, and the sidebar pick up the
+   * wash. Everything else (buttons, --brand-tint, the recorder accent) stays on
+   * full-strength --brand. */
   --background: color-mix(
     in oklch,
     oklch(95.13% 0.0015 84.59),
-    var(--brand) 3%
+    var(--brand-wash) 3%
   );
   --foreground: oklch(27.24% 0.0015 84.59);
-  --card: color-mix(in oklch, oklch(100% 0 none), var(--brand) 2%);
+  --card: color-mix(in oklch, oklch(100% 0 none), var(--brand-wash) 2%);
   --card-foreground: oklch(27.24% 0.0015 84.59);
-  --popover: color-mix(in oklch, oklch(100% 0 none), var(--brand) 2%);
+  --popover: color-mix(in oklch, oklch(100% 0 none), var(--brand-wash) 2%);
   --popover-foreground: oklch(27.24% 0.0015 84.59);
   --primary: oklch(34% 0.008 84.59);
   --primary-foreground: oklch(100% 0 none);
-  --secondary: color-mix(in oklch, oklch(97.03% 0 none), var(--brand) 3%);
+  --secondary: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --secondary-foreground: oklch(20.44% 0 none);
-  --muted: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand) 4%);
+  --muted: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand-wash) 4%);
   --muted-foreground: oklch(55.8% 0.0015 84.59);
-  --accent: color-mix(in oklch, oklch(97.03% 0 none), var(--brand) 3%);
+  --accent: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --accent-foreground: oklch(20.44% 0 none);
   --destructive: oklch(57% 0.22 27);
   --destructive-soft: oklch(95% 0.025 27);
   --success: oklch(48% 0.12 150);
-  --border: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand) 5%);
-  --input: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand) 5%);
+  --border: color-mix(
+    in oklch,
+    oklch(86.91% 0.0015 84.59),
+    var(--brand-wash) 5%
+  );
+  --input: color-mix(
+    in oklch,
+    oklch(86.91% 0.0015 84.59),
+    var(--brand-wash) 5%
+  );
   --ring: oklch(75% 0.0015 84.59);
 
-  --sidebar: color-mix(in oklch, oklch(95.13% 0.0015 84.59), var(--brand) 4%);
+  --sidebar: color-mix(
+    in oklch,
+    oklch(95.13% 0.0015 84.59),
+    var(--brand-wash) 4%
+  );
   --sidebar-foreground: oklch(27.24% 0.0015 84.59);
   --sidebar-accent: color-mix(
     in oklch,
     oklch(92.87% 0.0015 84.59),
-    var(--brand) 5%
+    var(--brand-wash) 5%
   );
   --sidebar-border: color-mix(
     in oklch,
     oklch(86.91% 0.0015 84.59),
-    var(--brand) 5%
+    var(--brand-wash) 5%
   );
 
   /* Subtle surface + border — the canonical "quiet chip/track/secondary
@@ -214,11 +240,16 @@
   );
   --popover-border: color-mix(in oklch, var(--foreground) 10%, transparent);
 
-  /* OS June brand mark — a dusty rose clay, the fill behind the logo glyph
-   * and the default accent. Themeable: the Appearance picker overrides this
-   * one value at runtime and everything below derives from it, so the whole
-   * UI recolors. The logo art (mark + app icon) stays this fixed rose. */
-  --brand: #936862;
+  /* Default accent — the clay terracotta, the base every derived token mixes
+   * from. Themeable: the Appearance picker overrides this one value at runtime
+   * and everything below derives from it, so the whole UI recolors. The app
+   * icon (src-tauri/icons) and in-app marks are generated from this same clay,
+   * so the brand identity stays consistent across the accent set. */
+  --brand: #b5551f;
+  /* Chroma-capped companion to --brand (see the @property block). Surface
+   * neutrals mix from this so clay's high chroma doesn't over-cream the greys;
+   * the Appearance picker overrides both --brand and --brand-wash together. */
+  --brand-wash: #976851;
 
   --record: oklch(60% 0.22 27);
   /* Soft dusty tint of the brand, for quiet button backdrops and hovers
@@ -226,6 +257,12 @@
    * tracks the selected accent without touching any foreground/text color. */
   --brand-tint: color-mix(in oklch, var(--brand) 12%, var(--card));
   --brand-tint-strong: color-mix(in oklch, var(--brand) 20%, var(--card));
+  /* Accent-family hairlines for chips/cards that want a themed edge. Opaque
+   * mixes into the card (not alpha fades of the accent, which composite into
+   * a muddy grey veil on light surfaces) so the line stays a clean pastel of
+   * the accent. Adapts to dark mode through var(--card). */
+  --brand-line: color-mix(in oklch, var(--brand) 22%, var(--card));
+  --brand-line-strong: color-mix(in oklch, var(--brand) 35%, var(--card));
   /* Warm-accent set for the record button hover state — a soft peach
    * surface and a deeper terracotta foreground. Reusable for any
    * "live/recording" primary action that wants a warmer feel. */
@@ -320,20 +357,34 @@
   color-scheme: dark;
 
   /* Same wash as light, a touch stronger since a tint reads less against
-   * near-black. Foregrounds + alpha hairlines stay neutral. */
-  --background: color-mix(in oklch, oklch(0.165 0.0015 84.59), var(--brand) 6%);
+   * near-black. Surfaces mix from --brand-wash (chroma-capped) for the same
+   * reason as light: clay shouldn't over-cream the greys. Foregrounds + alpha
+   * hairlines stay neutral, and --border/--input/--ring stay pure white alpha. */
+  --background: color-mix(
+    in oklch,
+    oklch(0.165 0.0015 84.59),
+    var(--brand-wash) 6%
+  );
   --foreground: oklch(0.985 0.0015 84.59);
-  --card: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand) 6%);
+  --card: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand-wash) 6%);
   --card-foreground: oklch(0.985 0.0015 84.59);
-  --popover: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand) 6%);
+  --popover: color-mix(
+    in oklch,
+    oklch(0.195 0.0015 84.59),
+    var(--brand-wash) 6%
+  );
   --popover-foreground: oklch(0.985 0.0015 84.59);
   --primary: oklch(0.86 0.008 84.59);
   --primary-foreground: oklch(0.216 0.0015 84.59);
-  --secondary: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand) 7%);
+  --secondary: color-mix(
+    in oklch,
+    oklch(0.268 0.0015 84.59),
+    var(--brand-wash) 7%
+  );
   --secondary-foreground: oklch(0.985 0.0015 84.59);
-  --muted: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand) 7%);
+  --muted: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --muted-foreground: oklch(0.709 0.0015 84.59);
-  --accent: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand) 7%);
+  --accent: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --accent-foreground: oklch(0.985 0.0015 84.59);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-soft: oklch(0.3 0.08 22 / 40%);
@@ -342,12 +393,16 @@
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(1 0 0 / 18%);
 
-  --sidebar: color-mix(in oklch, oklch(0.14 0.0015 84.59), var(--brand) 6%);
+  --sidebar: color-mix(
+    in oklch,
+    oklch(0.14 0.0015 84.59),
+    var(--brand-wash) 6%
+  );
   --sidebar-foreground: oklch(0.985 0.0015 84.59);
   --sidebar-accent: color-mix(
     in oklch,
     oklch(0.22 0.0015 84.59),
-    var(--brand) 7%
+    var(--brand-wash) 7%
   );
   --sidebar-border: oklch(1 0 0 / 8%);
   /* Dark --border is already an 8-10% white alpha, so the light-mode
