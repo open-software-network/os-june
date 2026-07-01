@@ -524,6 +524,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn note_transcribe_hold_covers_actual_price_above_flat_estimate() {
+        // Audio priced above the flat estimate must raise the hold to the
+        // already-known price — otherwise the charge is clamped to the flat
+        // cap and the overage is silently unbilled.
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                1_000,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let output = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "note_pricey".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "pricey.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await
+            .expect("transcription succeeds");
+
+        // 2s (probed, ceiled) × 1_000 credits/sec = 2_000 > flat 1_024: the
+        // hold rises to the actual price and the charge settles unclamped.
+        assert_eq!(output.receipt.credits_charged.0, 2_000);
+        assert!(matches!(
+            os_accounts.events().first(),
+            Some(RecordedCall::Authorize {
+                estimate: 2_000,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
     async fn note_transcribe_preview_failure_still_settles_hold() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {

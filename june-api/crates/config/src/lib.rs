@@ -418,7 +418,9 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         "gpt-4o-mini-transcribe".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(1_250_000),
+            // OpenAI lists ASR prices per MINUTE ($0.003/min for mini);
+            // converted per second with the 1.25x retail multiplier.
+            credits_per_million_seconds: Some(62_500),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -426,7 +428,9 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             display_name: "GPT-4o mini transcribe".to_string(),
             description: Some("Fast OpenAI speech-to-text model.".to_string()),
             privacy: Some("anonymized".to_string()),
-            pricing: Some(serde_json::json!({ "display": "$0.00125 per second audio" })),
+            // Matches what `models.rs::price_description` derives from the
+            // credit price above (raw metadata only — the API recomputes it).
+            pricing: Some(serde_json::json!({ "display": "$0.000063 per second audio" })),
             context_tokens: Some(16_000),
             traits: vec!["prompt".to_string()],
             capabilities: Vec::new(),
@@ -930,12 +934,21 @@ mod tests {
     fn packaged_config_toml_includes_usage_margin() {
         let config = packaged_config_toml();
 
+        // Per-second conversions of OpenAI's per-MINUTE ASR list prices
+        // ($0.003/min mini, $0.006/min 4o) with the 1.25x retail multiplier.
         assert_eq!(
             config
                 .pricing
                 .get("gpt-4o-mini-transcribe")
                 .and_then(|model| model.credits_per_million_seconds),
-            Some(1_250_000)
+            Some(62_500)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("gpt-4o-transcribe")
+                .and_then(|model| model.credits_per_million_seconds),
+            Some(125_000)
         );
         assert_eq!(
             config

@@ -59,9 +59,11 @@ base_url = "https://api.openai.com/v1"
 base_url = "https://api.venice.ai/api/v1"
 
 # Usage credit prices include June's 1.25x retail multiplier over upstream cost.
+# OpenAI lists ASR prices per MINUTE of audio ($0.003/min mini, $0.006/min 4o);
+# these are the per-second conversions: $/min ÷ 60 × 1.25 × 1000 credits/$ × 1e6.
 [pricing."gpt-4o-mini-transcribe"]
 unit = "seconds"
-credits_per_million_seconds = 1250000
+credits_per_million_seconds = 62500
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o mini transcribe"
@@ -73,7 +75,7 @@ capabilities = []
 
 [pricing."gpt-4o-transcribe"]
 unit = "seconds"
-credits_per_million_seconds = 2500000
+credits_per_million_seconds = 125000
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o transcribe"
