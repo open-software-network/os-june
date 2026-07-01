@@ -1667,9 +1667,7 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(mocks.clearVeniceApiKey).toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.queryByText("Key saved.")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText("Key saved.")).not.toBeInTheDocument());
   });
 
   it("defaults the model picker to curated suggestions", async () => {

@@ -47,7 +47,7 @@ impl OsAccountsClient for LocalDevOsAccountsClient {
                 request.action.as_str(),
                 request.estimate.0
             )),
-            cap_credits: None,
+            cap_credits: Some(request.estimate),
             reason: None,
         })
     }
@@ -105,7 +105,7 @@ mod tests {
 
         assert_eq!(authorization.allowed, true);
         assert!(authorization.action_token.is_some());
-        assert_eq!(authorization.cap_credits, None);
+        assert_eq!(authorization.cap_credits, Some(Credits(250)));
 
         let receipt = client
             .charge(ChargeRequest {

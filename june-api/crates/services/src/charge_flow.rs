@@ -7,7 +7,7 @@ use std::cmp::min;
 
 pub(crate) struct AuthorizationOutcome {
     pub action_token: String,
-    pub cap_credits: Option<Credits>,
+    pub cap_credits: Credits,
 }
 
 pub(crate) struct AuthorizeParams<'a> {
@@ -65,9 +65,23 @@ fn action_token_or_error(
             );
             ServiceError::AuthorizationDenied
         })?;
+    let cap_credits = authorization.cap_credits.ok_or_else(|| {
+        tracing::error!(
+            reason = ?authorization.reason,
+            "authorization allowed but cap_credits is missing"
+        );
+        ServiceError::MeteringProvider
+    })?;
+    if cap_credits.0 == 0 {
+        tracing::warn!(
+            reason = ?authorization.reason,
+            "authorization allowed with zero cap_credits"
+        );
+        return Err(ServiceError::InsufficientCredits);
+    }
     Ok(AuthorizationOutcome {
         action_token: token,
-        cap_credits: authorization.cap_credits,
+        cap_credits,
     })
 }
 
@@ -84,11 +98,8 @@ fn is_insufficient_balance(reason: Option<&str>) -> bool {
     })
 }
 
-pub(crate) fn clamp_to_cap(actual: Credits, cap: Option<Credits>) -> Credits {
-    match cap {
-        Some(cap) => Credits(min(actual.0, cap.0)),
-        None => actual,
-    }
+pub(crate) fn clamp_to_cap(actual: Credits, cap: Credits) -> Credits {
+    Credits(min(actual.0, cap.0))
 }
 
 pub(crate) struct ChargeParams<'a> {
@@ -172,7 +183,7 @@ pub(crate) fn log_settled(action: ActionSlug, user_id: &UserId, model_id: &str, 
 mod tests {
     use super::{action_token_or_error, is_insufficient_balance};
     use crate::error::ServiceError;
-    use june_domain::Authorization;
+    use june_domain::{Authorization, Credits};
 
     fn denied(reason: Option<&str>) -> Authorization {
         Authorization {
@@ -180,6 +191,15 @@ mod tests {
             action_token: None,
             cap_credits: None,
             reason: reason.map(str::to_string),
+        }
+    }
+
+    fn allowed(cap_credits: Option<Credits>) -> Authorization {
+        Authorization {
+            allowed: true,
+            action_token: Some("agts_test".to_string()),
+            cap_credits,
+            reason: None,
         }
     }
 
@@ -201,6 +221,24 @@ mod tests {
     fn unknown_denial_reason_is_treated_as_transient() {
         let result = action_token_or_error(denied(None));
         assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
+    }
+
+    #[test]
+    fn allowed_authorization_requires_a_cap() {
+        let result = action_token_or_error(allowed(None));
+        assert!(matches!(result, Err(ServiceError::MeteringProvider)));
+    }
+
+    #[test]
+    fn allowed_authorization_with_zero_cap_is_out_of_credits() {
+        let result = action_token_or_error(allowed(Some(Credits(0))));
+        assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
+    }
+
+    #[test]
+    fn allowed_authorization_keeps_positive_cap() {
+        let result = action_token_or_error(allowed(Some(Credits(17))));
+        assert_eq!(result.map(|outcome| outcome.cap_credits), Ok(Credits(17)));
     }
 
     #[test]

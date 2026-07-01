@@ -93,6 +93,27 @@ describe("shouldBlockOnFunding", () => {
     ).toBe(false);
   });
 
+  it("blocks a negative balance even for a live subscriber", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: -1, usdMillis: -1 },
+          subscription: { subscribed: true, status: "active" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks a negative balance while subscription state is unknown", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: -1, usdMillis: -1 },
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("blocks a past-due subscriber with no credits left", () => {
     expect(
       shouldBlockOnFunding(

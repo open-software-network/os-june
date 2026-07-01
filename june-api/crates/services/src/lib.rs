@@ -862,7 +862,7 @@ mod tests {
         fn default() -> Self {
             Self {
                 allow: true,
-                cap: None,
+                cap: Some(10_000),
                 deny_reason: None,
                 fail_charge: false,
                 events: Mutex::new(Vec::new()),

@@ -206,7 +206,7 @@ mod tests {
             Ok(Authorization {
                 allowed: self.allow,
                 action_token: self.allow.then(|| "agt_test".to_string()),
-                cap_credits: None,
+                cap_credits: self.allow.then_some(request.estimate),
                 reason: (!self.allow).then(|| "insufficient_available_balance".to_string()),
             })
         }
