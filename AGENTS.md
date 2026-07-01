@@ -120,14 +120,15 @@ Every PR description should state (the template in
 
 ## Skills
 
-Vendored agent skills live in **`.agents/skills/`** and are **symlinked into
-`.claude/skills/`**. Always add a new skill under `.agents/skills/<name>/` and
-symlink it into `.claude/skills/` — never add a skill only under `.claude/`.
-The file in `.agents/skills/` is the single source of truth; the `.claude/`
-entry is a symlink so both the Claude and the non-Claude agent surfaces see the
-same skill. Current skills: `os-platform`, `os-accounts-integration`,
-`os-rust-backend`, `os-rust-backend-ci`, `os-task-prep`, `repo-build-pr`,
-`browser-test-tauri-fe`.
+Vendored agent skills live in **`.agents/skills/`** (the single source of truth)
+and **every skill is symlinked into `.claude/skills/`**. A skill must never exist
+only under `.claude/`, and a `.claude/skills/<name>` entry must always be a
+symlink to `../../.agents/skills/<name>` — never a real directory. Add a new
+skill under `.agents/skills/<name>/` and create the `.claude/skills/<name>`
+symlink in the same change. Current project skills: `os-platform`,
+`os-accounts-integration`, `os-rust-backend`, `os-rust-backend-ci`,
+`os-task-prep`, `repo-build-pr`, `browser-test-tauri-fe`, `agent-e2e-qa`, plus
+the Spec Kit workflow skills (`speckit-*`).
 
 ## Build, test, lint
 
@@ -154,6 +155,11 @@ runner-agnostic).
 - **Upstream provider keys live only in June API, never in the desktop binary.**
   The app calls June API over `/v1/*`; June API holds the Venice/OpenAI keys and
   the OS Accounts App API key.
+- **June API must stay backward-compatible — no breaking changes.** June ships
+  and auto-updates in production, so installs in the wild keep calling older
+  `/v1/*` contracts. Never remove or repurpose an existing endpoint, request
+  field, or response shape; add new optional fields or new endpoints instead. A
+  breaking API change strands every app version that has not updated yet.
 - **June presents as June, never as Hermes.** The embedded runtime is an
   implementation detail; an injected `SOUL.md` asserts June's identity.
 - **Identity and credits are OS Accounts'.** June is an on-device client of OS
