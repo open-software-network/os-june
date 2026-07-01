@@ -70,9 +70,7 @@ describe("UnsupportedEventNotice", () => {
         onReportIssue={onReportIssue}
       />,
     );
-    expect(
-      screen.queryByRole("button", { name: "Report issue" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Report issue" })).not.toBeInTheDocument();
 
     rerender(
       <UnsupportedEventNotice
@@ -81,9 +79,7 @@ describe("UnsupportedEventNotice", () => {
         onReportIssue={onReportIssue}
       />,
     );
-    expect(
-      screen.getByRole("button", { name: "Report issue" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Report issue" })).toBeInTheDocument();
   });
 
   it("invokes onReportIssue when the dev-gated Report issue is clicked", async () => {
@@ -102,26 +98,14 @@ describe("UnsupportedEventNotice", () => {
 
   it("hides Open raw trace unless dev/debug is enabled", () => {
     const { rerender } = render(
-      <UnsupportedEventNotice
-        notice={baseNotice}
-        debugEnabled={false}
-        onOpenRawTrace={vi.fn()}
-      />,
+      <UnsupportedEventNotice notice={baseNotice} debugEnabled={false} onOpenRawTrace={vi.fn()} />,
     );
-    expect(
-      screen.queryByRole("button", { name: "Open raw trace" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open raw trace" })).not.toBeInTheDocument();
 
     rerender(
-      <UnsupportedEventNotice
-        notice={baseNotice}
-        debugEnabled={true}
-        onOpenRawTrace={vi.fn()}
-      />,
+      <UnsupportedEventNotice notice={baseNotice} debugEnabled={true} onOpenRawTrace={vi.fn()} />,
     );
-    expect(
-      screen.getByRole("button", { name: "Open raw trace" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open raw trace" })).toBeInTheDocument();
   });
 
   it("invokes onOpenRawTrace with the notice session when clicked", async () => {

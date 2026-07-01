@@ -52,333 +52,294 @@ const MEETING_MENU_HEIGHT = 74;
 const MENU_GAP = 4;
 const VIEWPORT_MARGIN = 8;
 
-export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
-  function NotesList(
-    {
-      notes: allNotes,
-      activeRecordingNoteId,
-      onSelectNote,
-      onCreateNote,
-      onOpenMoveDialog,
-      onOpenMoveNotes,
-      onDeleteNote,
-      onDeleteNotes,
-    },
-    ref,
-  ) {
-    // __emptyStates() preview (dev console): render the page as a fresh
-    // install would see it, real data untouched underneath.
-    const notes = useForcedEmptyStates() ? NO_NOTES : allNotes;
-    const [query, setQuery] = useState("");
-    const [openMenu, setOpenMenu] = useState<OpenMenu | null>(null);
-    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-    const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
-    // The bar plays one of two exits when the selection ends. A deliberate
-    // dismiss (×, Escape, post-delete) slides out; the selection merely emptying
-    // (deselect all, unchecking the last row) fades. We capture the cause the
-    // moment the selection drops to zero, keep the bar mounted with data-exit,
-    // and unmount when its animation finishes.
-    const [exit, setExit] = useState<null | "slide" | "fade">(null);
-    const createNoteShortcut = primaryShiftShortcutLabel("N");
-    // The cause of the *next* empty transition, latched by the call sites.
-    // Toggling a row can't know it's the last box until the set settles, so
-    // unchecking defaults to fade unless a dismiss intent was latched first.
-    const exitCauseRef = useRef<"slide" | "fade">("fade");
+export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function NotesList(
+  {
+    notes: allNotes,
+    activeRecordingNoteId,
+    onSelectNote,
+    onCreateNote,
+    onOpenMoveDialog,
+    onOpenMoveNotes,
+    onDeleteNote,
+    onDeleteNotes,
+  },
+  ref,
+) {
+  // __emptyStates() preview (dev console): render the page as a fresh
+  // install would see it, real data untouched underneath.
+  const notes = useForcedEmptyStates() ? NO_NOTES : allNotes;
+  const [query, setQuery] = useState("");
+  const [openMenu, setOpenMenu] = useState<OpenMenu | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  // The bar plays one of two exits when the selection ends. A deliberate
+  // dismiss (×, Escape, post-delete) slides out; the selection merely emptying
+  // (deselect all, unchecking the last row) fades. We capture the cause the
+  // moment the selection drops to zero, keep the bar mounted with data-exit,
+  // and unmount when its animation finishes.
+  const [exit, setExit] = useState<null | "slide" | "fade">(null);
+  const createNoteShortcut = primaryShiftShortcutLabel("N");
+  // The cause of the *next* empty transition, latched by the call sites.
+  // Toggling a row can't know it's the last box until the set settles, so
+  // unchecking defaults to fade unless a dismiss intent was latched first.
+  const exitCauseRef = useRef<"slide" | "fade">("fade");
 
-    const sortedNotes = useMemo(
-      () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-      [notes],
-    );
-    const filteredNotes = useMemo(() => {
-      const normalized = query.trim().toLowerCase();
-      if (!normalized) return sortedNotes;
-      return sortedNotes.filter((note) => {
-        return `${note.title} ${note.preview}`
-          .toLowerCase()
-          .includes(normalized);
-      });
-    }, [sortedNotes, query]);
+  const sortedNotes = useMemo(
+    () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [notes],
+  );
+  const filteredNotes = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return sortedNotes;
+    return sortedNotes.filter((note) => {
+      return `${note.title} ${note.preview}`.toLowerCase().includes(normalized);
+    });
+  }, [sortedNotes, query]);
 
-    const selectedNoteIds = useMemo(
-      () =>
-        sortedNotes
-          .filter((note) => selectedIds.has(note.id))
-          .map((note) => note.id),
-      [sortedNotes, selectedIds],
-    );
-    const visibleSelectedCount = filteredNotes.filter((note) =>
-      selectedIds.has(note.id),
-    ).length;
-    const selectedCount = selectedNoteIds.length;
-    const hasUnselectedVisibleNotes =
-      filteredNotes.length > 0 && visibleSelectedCount < filteredNotes.length;
-    const allVisibleNotesSelected =
-      filteredNotes.length > 0 && visibleSelectedCount === filteredNotes.length;
+  const selectedNoteIds = useMemo(
+    () => sortedNotes.filter((note) => selectedIds.has(note.id)).map((note) => note.id),
+    [sortedNotes, selectedIds],
+  );
+  const visibleSelectedCount = filteredNotes.filter((note) => selectedIds.has(note.id)).length;
+  const selectedCount = selectedNoteIds.length;
+  const hasUnselectedVisibleNotes =
+    filteredNotes.length > 0 && visibleSelectedCount < filteredNotes.length;
+  const allVisibleNotesSelected =
+    filteredNotes.length > 0 && visibleSelectedCount === filteredNotes.length;
 
-    // Snapshot the last nonzero count so the exiting bar keeps its real label
-    // instead of flashing "0 selected".
-    const lastCountRef = useRef(selectedCount);
-    if (selectedCount > 0) lastCountRef.current = selectedCount;
-    const displayCount =
-      selectedCount > 0 ? selectedCount : lastCountRef.current;
+  // Snapshot the last nonzero count so the exiting bar keeps its real label
+  // instead of flashing "0 selected".
+  const lastCountRef = useRef(selectedCount);
+  if (selectedCount > 0) lastCountRef.current = selectedCount;
+  const displayCount = selectedCount > 0 ? selectedCount : lastCountRef.current;
 
-    // Drive the exit/cancel transitions off the live count. Selecting again
-    // mid-exit cancels the exit and replays the live bar. The previous-count
-    // guard keeps the initial mount (0, with nothing to exit from) from arming
-    // a ghost exit.
-    const previousCountRef = useRef(0);
-    useEffect(() => {
-      const previousCount = previousCountRef.current;
-      previousCountRef.current = selectedCount;
-      if (selectedCount > 0) {
-        setExit(null);
-        return;
-      }
-      if (previousCount === 0) return;
-      const cause = exitCauseRef.current;
-      exitCauseRef.current = "fade";
-      setExit((current) => current ?? cause);
-    }, [selectedCount]);
-
-    const barMounted = selectedCount > 0 || exit !== null;
-    const isExiting = selectedCount === 0 && exit !== null;
-
-    useEffect(() => {
-      const noteIds = new Set(notes.map((note) => note.id));
-      setSelectedIds((previous) => {
-        const next = new Set([...previous].filter((id) => noteIds.has(id)));
-        return next.size === previous.size ? previous : next;
-      });
-      if (notes.length === 0) {
-        setConfirmBulkDelete(false);
-      }
-    }, [notes]);
-
-    function toggleSelected(noteId: string) {
-      setSelectedIds((previous) => {
-        const next = new Set(previous);
-        if (next.has(noteId)) next.delete(noteId);
-        else next.add(noteId);
-        return next;
-      });
+  // Drive the exit/cancel transitions off the live count. Selecting again
+  // mid-exit cancels the exit and replays the live bar. The previous-count
+  // guard keeps the initial mount (0, with nothing to exit from) from arming
+  // a ghost exit.
+  const previousCountRef = useRef(0);
+  useEffect(() => {
+    const previousCount = previousCountRef.current;
+    previousCountRef.current = selectedCount;
+    if (selectedCount > 0) {
+      setExit(null);
+      return;
     }
+    if (previousCount === 0) return;
+    const cause = exitCauseRef.current;
+    exitCauseRef.current = "fade";
+    setExit((current) => current ?? cause);
+  }, [selectedCount]);
 
-    // A deliberate dismiss — ×, Escape, post-delete — slides the bar out.
-    const resetSelection = useCallback(() => {
-      exitCauseRef.current = "slide";
-      setSelectedIds(new Set());
+  const barMounted = selectedCount > 0 || exit !== null;
+  const isExiting = selectedCount === 0 && exit !== null;
+
+  useEffect(() => {
+    const noteIds = new Set(notes.map((note) => note.id));
+    setSelectedIds((previous) => {
+      const next = new Set([...previous].filter((id) => noteIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+    if (notes.length === 0) {
       setConfirmBulkDelete(false);
-    }, []);
-
-    useImperativeHandle(ref, () => ({ resetSelection }), [resetSelection]);
-
-    function selectAllVisibleNotes() {
-      setSelectedIds((previous) => {
-        const next = new Set(previous);
-        for (const note of filteredNotes) {
-          next.add(note.id);
-        }
-        return next;
-      });
     }
+  }, [notes]);
 
-    function deselectAllVisibleNotes() {
-      setSelectedIds((previous) => {
-        const next = new Set(previous);
-        for (const note of filteredNotes) {
-          next.delete(note.id);
-        }
-        return next;
-      });
-    }
+  function toggleSelected(noteId: string) {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(noteId)) next.delete(noteId);
+      else next.add(noteId);
+      return next;
+    });
+  }
 
-    // Escape clears an active selection. Skipped while the bulk-delete confirm
-    // dialog is open so the two don't fight over the same keypress — there the
-    // dialog owns Escape (it dismisses itself, leaving the selection intact).
-    useEffect(() => {
-      if (selectedCount === 0 || confirmBulkDelete) return;
-      function onKey(event: KeyboardEvent) {
-        if (event.key === "Escape") resetSelection();
+  // A deliberate dismiss — ×, Escape, post-delete — slides the bar out.
+  const resetSelection = useCallback(() => {
+    exitCauseRef.current = "slide";
+    setSelectedIds(new Set());
+    setConfirmBulkDelete(false);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ resetSelection }), [resetSelection]);
+
+  function selectAllVisibleNotes() {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const note of filteredNotes) {
+        next.add(note.id);
       }
-      window.addEventListener("keydown", onKey);
-      return () => window.removeEventListener("keydown", onKey);
-    }, [selectedCount, confirmBulkDelete]);
+      return next;
+    });
+  }
 
-    return (
-      <section className="all-notes-workspace" aria-label="Meeting notes">
-        <header className="folders-header">
-          <div className="folders-heading">
-            <h1>
-              Meeting notes
-              {notes.length > 0 ? (
-                <span className="folders-count">{notes.length}</span>
-              ) : null}
-            </h1>
-            <p className="folders-subtitle">
-              Everything across your workspace.
-            </p>
-          </div>
+  function deselectAllVisibleNotes() {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const note of filteredNotes) {
+        next.delete(note.id);
+      }
+      return next;
+    });
+  }
+
+  // Escape clears an active selection. Skipped while the bulk-delete confirm
+  // dialog is open so the two don't fight over the same keypress — there the
+  // dialog owns Escape (it dismisses itself, leaving the selection intact).
+  useEffect(() => {
+    if (selectedCount === 0 || confirmBulkDelete) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") resetSelection();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedCount, confirmBulkDelete]);
+
+  return (
+    <section className="all-notes-workspace" aria-label="Meeting notes">
+      <header className="folders-header">
+        <div className="folders-heading">
+          <h1>
+            Meeting notes
+            {notes.length > 0 ? <span className="folders-count">{notes.length}</span> : null}
+          </h1>
+          <p className="folders-subtitle">Everything across your workspace.</p>
+        </div>
+        <button
+          type="button"
+          className="primary-action primary-solid folders-create"
+          onClick={onCreateNote}
+        >
+          <IconPlusMedium size={13} />
+          New note
+          <kbd className="primary-action-kbd" aria-hidden>
+            {createNoteShortcut}
+          </kbd>
+        </button>
+      </header>
+
+      {notes.length > 0 ? (
+        <div className="folders-controls">
+          <label className="folders-search">
+            <IconMagnifyingGlass size={14} />
+            <input
+              type="search"
+              placeholder="Search"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+          </label>
+        </div>
+      ) : null}
+
+      {notes.length === 0 ? (
+        <EmptyState
+          label="Create your first note"
+          icon={<IconNoteText size={28} />}
+          title="Capture your first meeting"
+          description="Record a meeting, a phone call, or a half-formed thought. June transcribes it and writes the note for you."
+          action={
+            <button type="button" className="primary-action primary-solid" onClick={onCreateNote}>
+              <IconPlusMedium size={13} />
+              Create your first note
+            </button>
+          }
+        />
+      ) : filteredNotes.length === 0 ? (
+        <div className="folders-empty">
+          <p>No notes match “{query.trim()}”.</p>
+        </div>
+      ) : (
+        <ul className="folder-notes all-notes-list" role="list" data-selecting={selectedCount > 0}>
+          {filteredNotes.map((note) => (
+            <AllNoteRow
+              key={note.id}
+              note={note}
+              activeRecordingNoteId={activeRecordingNoteId}
+              menu={
+                openMenu?.noteId === note.id ? { right: openMenu.right, top: openMenu.top } : null
+              }
+              onSelect={() => onSelectNote(note.id)}
+              checked={selectedIds.has(note.id)}
+              onToggleSelected={() => toggleSelected(note.id)}
+              onOpenMenu={(position) => setOpenMenu({ noteId: note.id, ...position })}
+              onCloseMenu={() => setOpenMenu(null)}
+              onOpenMove={() => onOpenMoveDialog(note.id)}
+              onDelete={() => onDeleteNote(note.id)}
+            />
+          ))}
+        </ul>
+      )}
+
+      {barMounted ? (
+        <div
+          className="meetings-bulk-bar"
+          role="toolbar"
+          aria-label="Selection"
+          data-exit={isExiting ? exit : undefined}
+          onAnimationEnd={(event) => {
+            // Only the bar's own exit keyframes unmount it. Child button
+            // hovers fire transitionend, not animationend, but a descendant
+            // animation could still bubble here — so require the event to
+            // originate on the bar and, when the name is reported, to be an
+            // exit keyframe. (jsdom omits animationName, hence the optional
+            // check rather than a hard requirement.)
+            if (!isExiting || event.target !== event.currentTarget) return;
+            if (event.animationName && !event.animationName.startsWith("meetings-bulk-bar-out")) {
+              return;
+            }
+            setExit(null);
+          }}
+        >
+          <span className="meetings-bulk-count">{displayCount} selected</span>
+          {hasUnselectedVisibleNotes ? (
+            <button type="button" className="meetings-bulk-action" onClick={selectAllVisibleNotes}>
+              Select all
+            </button>
+          ) : null}
+          <button type="button" className="meetings-bulk-action" onClick={deselectAllVisibleNotes}>
+            Deselect all
+          </button>
           <button
             type="button"
-            className="primary-action primary-solid folders-create"
-            onClick={onCreateNote}
+            className="meetings-bulk-action"
+            onClick={() => onOpenMoveNotes(selectedNoteIds)}
           >
-            <IconPlusMedium size={13} />
-            New note
-            <kbd className="primary-action-kbd" aria-hidden>
-              {createNoteShortcut}
-            </kbd>
+            Move
           </button>
-        </header>
-
-        {notes.length > 0 ? (
-          <div className="folders-controls">
-            <label className="folders-search">
-              <IconMagnifyingGlass size={14} />
-              <input
-                type="search"
-                placeholder="Search"
-                value={query}
-                onChange={(event) => setQuery(event.currentTarget.value)}
-              />
-            </label>
-          </div>
-        ) : null}
-
-        {notes.length === 0 ? (
-          <EmptyState
-            label="Create your first note"
-            icon={<IconNoteText size={28} />}
-            title="Capture your first meeting"
-            description="Record a meeting, a phone call, or a half-formed thought. June transcribes it and writes the note for you."
-            action={
-              <button
-                type="button"
-                className="primary-action primary-solid"
-                onClick={onCreateNote}
-              >
-                <IconPlusMedium size={13} />
-                Create your first note
-              </button>
-            }
-          />
-        ) : filteredNotes.length === 0 ? (
-          <div className="folders-empty">
-            <p>No notes match “{query.trim()}”.</p>
-          </div>
-        ) : (
-          <ul
-            className="folder-notes all-notes-list"
-            role="list"
-            data-selecting={selectedCount > 0}
+          <button
+            type="button"
+            className="meetings-bulk-action"
+            onClick={() => setConfirmBulkDelete(true)}
           >
-            {filteredNotes.map((note) => (
-              <AllNoteRow
-                key={note.id}
-                note={note}
-                activeRecordingNoteId={activeRecordingNoteId}
-                menu={
-                  openMenu?.noteId === note.id
-                    ? { right: openMenu.right, top: openMenu.top }
-                    : null
-                }
-                onSelect={() => onSelectNote(note.id)}
-                checked={selectedIds.has(note.id)}
-                onToggleSelected={() => toggleSelected(note.id)}
-                onOpenMenu={(position) =>
-                  setOpenMenu({ noteId: note.id, ...position })
-                }
-                onCloseMenu={() => setOpenMenu(null)}
-                onOpenMove={() => onOpenMoveDialog(note.id)}
-                onDelete={() => onDeleteNote(note.id)}
-              />
-            ))}
-          </ul>
-        )}
-
-        {barMounted ? (
-          <div
-            className="meetings-bulk-bar"
-            role="toolbar"
-            aria-label="Selection"
-            data-exit={isExiting ? exit : undefined}
-            onAnimationEnd={(event) => {
-              // Only the bar's own exit keyframes unmount it. Child button
-              // hovers fire transitionend, not animationend, but a descendant
-              // animation could still bubble here — so require the event to
-              // originate on the bar and, when the name is reported, to be an
-              // exit keyframe. (jsdom omits animationName, hence the optional
-              // check rather than a hard requirement.)
-              if (!isExiting || event.target !== event.currentTarget) return;
-              if (
-                event.animationName &&
-                !event.animationName.startsWith("meetings-bulk-bar-out")
-              ) {
-                return;
-              }
-              setExit(null);
-            }}
+            Delete
+          </button>
+          <button
+            type="button"
+            className="meetings-bulk-dismiss"
+            aria-label="Clear selection"
+            onClick={resetSelection}
           >
-            <span className="meetings-bulk-count">{displayCount} selected</span>
-            {hasUnselectedVisibleNotes ? (
-              <button
-                type="button"
-                className="meetings-bulk-action"
-                onClick={selectAllVisibleNotes}
-              >
-                Select all
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="meetings-bulk-action"
-              onClick={deselectAllVisibleNotes}
-            >
-              Deselect all
-            </button>
-            <button
-              type="button"
-              className="meetings-bulk-action"
-              onClick={() => onOpenMoveNotes(selectedNoteIds)}
-            >
-              Move
-            </button>
-            <button
-              type="button"
-              className="meetings-bulk-action"
-              onClick={() => setConfirmBulkDelete(true)}
-            >
-              Delete
-            </button>
-            <button
-              type="button"
-              className="meetings-bulk-dismiss"
-              aria-label="Clear selection"
-              onClick={resetSelection}
-            >
-              <IconCrossMedium size={14} />
-            </button>
-          </div>
-        ) : null}
+            <IconCrossMedium size={14} />
+          </button>
+        </div>
+      ) : null}
 
-        <ConfirmDialog
-          open={confirmBulkDelete}
-          onClose={() => setConfirmBulkDelete(false)}
-          onConfirm={async () => {
-            await onDeleteNotes(selectedNoteIds);
-            resetSelection();
-          }}
-          title={`Delete ${selectedCount} ${
-            selectedCount === 1 ? "note" : "notes"
-          }?`}
-          description="This cannot be undone. Audio, transcripts, and generated notes for these notes will be removed."
-          confirmLabel={selectedCount === 1 ? "Delete note" : "Delete notes"}
-          destructive
-        />
-      </section>
-    );
-  },
-);
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        onClose={() => setConfirmBulkDelete(false)}
+        onConfirm={async () => {
+          await onDeleteNotes(selectedNoteIds);
+          resetSelection();
+        }}
+        title={`Delete ${selectedCount} ${selectedCount === 1 ? "note" : "notes"}?`}
+        description="This cannot be undone. Audio, transcripts, and generated notes for these notes will be removed."
+        confirmLabel={selectedCount === 1 ? "Delete note" : "Delete notes"}
+        destructive
+      />
+    </section>
+  );
+});
 
 function AllNoteRow({
   note,
@@ -406,12 +367,9 @@ function AllNoteRow({
   const title = note.title.trim() || "New note";
   const liveRecording = note.id === activeRecordingNoteId;
   const effectiveStatus =
-    note.processingStatus === "recording" && !liveRecording
-      ? "draft"
-      : note.processingStatus;
+    note.processingStatus === "recording" && !liveRecording ? "draft" : note.processingStatus;
   const preview =
-    note.preview.trim() ||
-    (liveRecording ? "Recording" : statusLabel(effectiveStatus));
+    note.preview.trim() || (liveRecording ? "Recording" : statusLabel(effectiveStatus));
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
@@ -458,9 +416,7 @@ function AllNoteRow({
             showingStatus={!note.preview.trim()}
           />
         </button>
-        <span className="folder-note-time">
-          {formatNoteTime(note.updatedAt)}
-        </span>
+        <span className="folder-note-time">{formatNoteTime(note.updatedAt)}</span>
         <span className="folder-note-actions">
           <button
             type="button"
@@ -547,9 +503,7 @@ function MeetingRowContent({
   // the way the agent rows signal an active session.
   const processing =
     showingStatus &&
-    (status === "transcribing" ||
-      status === "generating" ||
-      status === "validating");
+    (status === "transcribing" || status === "generating" || status === "validating");
   return (
     <>
       <span className="folder-note-icon" aria-hidden>
@@ -558,9 +512,7 @@ function MeetingRowContent({
       <span className="folder-note-body">
         <span className="folder-note-title">{title}</span>
         <span className="folder-note-subtitle">
-          {liveRecording ? (
-            <span className="note-recording-dot" aria-hidden />
-          ) : null}
+          {liveRecording ? <span className="note-recording-dot" aria-hidden /> : null}
           <span data-shimmer={processing ? "true" : undefined}>{preview}</span>
         </span>
       </span>

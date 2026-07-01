@@ -2,10 +2,7 @@ import { useMemo, useState, useSyncExternalStore } from "react";
 import { IconConsole } from "central-icons/IconConsole";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
-import type {
-  HermesTraceBuffer,
-  HermesTraceEntry,
-} from "../../lib/hermes-trace-buffer";
+import type { HermesTraceBuffer, HermesTraceEntry } from "../../lib/hermes-trace-buffer";
 import type { JuneHermesEventKind } from "../../lib/hermes-control-plane";
 
 /**
@@ -37,15 +34,9 @@ export function HermesTracePanel({
 }) {
   // Subscribe to the buffer so new frames re-render the list live. Hooks must
   // run unconditionally, so this sits above the dev/open guards below.
-  const version = useSyncExternalStore(
-    buffer.subscribe,
-    buffer.getVersion,
-    buffer.getVersion,
-  );
+  const version = useSyncExternalStore(buffer.subscribe, buffer.getVersion, buffer.getVersion);
 
-  const [sessionFilter, setSessionFilter] = useState<string | undefined>(
-    sessionId,
-  );
+  const [sessionFilter, setSessionFilter] = useState<string | undefined>(sessionId);
   const [kindFilter, setKindFilter] = useState<TraceKindFilter>("all");
 
   const sessionIds = useMemo(
@@ -58,10 +49,7 @@ export function HermesTracePanel({
   // session so the panel isn't empty when opened without an explicit one.
   const activeSession = sessionFilter ?? sessionId ?? sessionIds[0];
 
-  const entries = useMemo(
-    () => buffer.entriesFor(activeSession),
-    [buffer, activeSession, version],
-  );
+  const entries = useMemo(() => buffer.entriesFor(activeSession), [buffer, activeSession, version]);
 
   const visibleEntries = useMemo(
     () => entries.filter((entry) => matchesKind(entry, kindFilter)),
@@ -82,11 +70,7 @@ export function HermesTracePanel({
   }
 
   return (
-    <section
-      className="hermes-trace-panel"
-      role="dialog"
-      aria-label="Raw Hermes trace"
-    >
+    <section className="hermes-trace-panel" role="dialog" aria-label="Raw Hermes trace">
       <header className="hermes-trace-panel-header">
         <div className="hermes-trace-panel-title">
           <IconConsole size={16} aria-hidden="true" />
@@ -97,9 +81,7 @@ export function HermesTracePanel({
             <span>Filter by session</span>
             <select
               value={activeSession ?? ""}
-              onChange={(event) =>
-                setSessionFilter(event.target.value || undefined)
-              }
+              onChange={(event) => setSessionFilter(event.target.value || undefined)}
             >
               {sessionIds.length === 0 ? (
                 <option value="">No sessions</option>
@@ -116,9 +98,7 @@ export function HermesTracePanel({
             <span>Filter by kind</span>
             <select
               value={kindFilter}
-              onChange={(event) =>
-                setKindFilter(event.target.value as TraceKindFilter)
-              }
+              onChange={(event) => setKindFilter(event.target.value as TraceKindFilter)}
             >
               {KIND_FILTERS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -147,14 +127,11 @@ export function HermesTracePanel({
       </header>
 
       <p className="hermes-trace-panel-note">
-        Sanitized for safe sharing. Secret-like values are masked; this view is
-        dev only.
+        Sanitized for safe sharing. Secret-like values are masked; this view is dev only.
       </p>
 
       {visibleEntries.length === 0 ? (
-        <p className="hermes-trace-panel-empty">
-          No trace entries for this session yet.
-        </p>
+        <p className="hermes-trace-panel-empty">No trace entries for this session yet.</p>
       ) : (
         <ol className="hermes-trace-panel-list">
           {visibleEntries.map((entry) => (
@@ -176,20 +153,14 @@ function TraceRow({ entry }: { entry: HermesTraceEntry }) {
     >
       <div className="hermes-trace-row-head">
         <span className="hermes-trace-row-direction">{entry.direction}</span>
-        {entry.rawType ? (
-          <code className="hermes-trace-row-type">{entry.rawType}</code>
-        ) : null}
-        {entry.method ? (
-          <code className="hermes-trace-row-type">{entry.method}</code>
-        ) : null}
+        {entry.rawType ? <code className="hermes-trace-row-type">{entry.rawType}</code> : null}
+        {entry.method ? <code className="hermes-trace-row-type">{entry.method}</code> : null}
         {entry.normalizedKind ? (
           <span className="hermes-trace-row-kind">{entry.normalizedKind}</span>
         ) : null}
         <time className="hermes-trace-row-time">{entry.observedAt}</time>
       </div>
-      {entry.message ? (
-        <p className="hermes-trace-row-message">{entry.message}</p>
-      ) : null}
+      {entry.message ? <p className="hermes-trace-row-message">{entry.message}</p> : null}
       {entry.payloadPreview ? (
         <pre className="hermes-trace-row-payload">{entry.payloadPreview}</pre>
       ) : null}
@@ -215,10 +186,7 @@ const KIND_FILTERS: { value: TraceKindFilter; label: string }[] = [
 /** Whether an entry passes the kind filter. Outbound/error entries (which have
  * no `normalizedKind`) only show under "all" — the kind filter targets the
  * normalized inbound stream. */
-function matchesKind(
-  entry: HermesTraceEntry,
-  filter: TraceKindFilter,
-): boolean {
+function matchesKind(entry: HermesTraceEntry, filter: TraceKindFilter): boolean {
   if (filter === "all") return true;
   return entry.normalizedKind === filter;
 }

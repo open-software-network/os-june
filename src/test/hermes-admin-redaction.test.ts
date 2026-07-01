@@ -6,10 +6,7 @@ import {
   redactForLog,
   redactUrl,
 } from "../lib/hermes-admin";
-import {
-  makeAdminHarness,
-  targetForFake,
-} from "./fixtures/hermes-admin-harness";
+import { makeAdminHarness, targetForFake } from "./fixtures/hermes-admin-harness";
 import { FakeHermesServer } from "./fixtures/fake-hermes-server";
 import {
   FAKE_BEARER,
@@ -25,9 +22,7 @@ function logsAsText(logs: Array<Record<string, unknown>>): string {
 
 describe("hermes-admin redaction — secrets never reach logs or errors", () => {
   it("never logs the dashboard auth token", async () => {
-    const { client, logs, target } = makeAdminHarness(
-      mcpStdioWithToolsScenario(),
-    );
+    const { client, logs, target } = makeAdminHarness(mcpStdioWithToolsScenario());
     await client.skills.list();
     expect(logs.length).toBeGreaterThan(0);
     // The token is real (the fake required it) — it must not appear anywhere
@@ -45,9 +40,7 @@ describe("hermes-admin redaction — secrets never reach logs or errors", () => 
   });
 
   it("never logs anything for env.reveal (the response is a plaintext secret)", async () => {
-    const { client, server, logs } = makeAdminHarness(
-      mcpStdioWithToolsScenario(),
-    );
+    const { client, server, logs } = makeAdminHarness(mcpStdioWithToolsScenario());
     // Seed a value, then reveal it.
     await client.env.set("OPENAI_API_KEY", FAKE_SECRET);
     const logsBefore = logs.length;
@@ -93,9 +86,7 @@ describe("hermes-admin redaction — secrets never reach logs or errors", () => 
     // A 2xx body that is MALFORMED json AND contains a secret-shaped value
     // drives the transport's real `kind: "parse"` path. Both the resulting
     // error's debug preview and the emitted log record must be redacted.
-    const leakyBody = `{ "api_key": "${FAKE_SECRET}", "note": "Bearer ${"z".repeat(
-      40,
-    )}", BROKEN`;
+    const leakyBody = `{ "api_key": "${FAKE_SECRET}", "note": "Bearer ${"z".repeat(40)}", BROKEN`;
     const fetchLeaky = vi.fn(
       async () =>
         new Response(leakyBody, {

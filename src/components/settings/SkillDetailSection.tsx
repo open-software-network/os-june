@@ -70,9 +70,7 @@ export function SkillDetailSection({
   // Lifecycle actions refresh the skill's content on a successful mutation so the
   // detail view reflects a reset / update.
   const lifecycle = useSkillLifecycle(mode, undefined, state.refresh);
-  return (
-    <SkillDetailView state={state} lifecycle={lifecycle} onBack={onBack} />
-  );
+  return <SkillDetailView state={state} lifecycle={lifecycle} onBack={onBack} />;
 }
 
 /** The render-only view, split out so component tests drive it with a stubbed
@@ -95,10 +93,7 @@ export function SkillDetailView({
   const headingId = "skill-detail-heading";
 
   return (
-    <section
-      className="settings-group skill-detail"
-      aria-labelledby={headingId}
-    >
+    <section className="settings-group skill-detail" aria-labelledby={headingId}>
       <div className="skill-detail-topbar">
         {onBack ? (
           <button type="button" className="skill-detail-back" onClick={onBack}>
@@ -122,9 +117,7 @@ export function SkillDetailView({
         <span className="skill-detail-source" data-source={info?.source}>
           {meta.label}
         </span>
-        {info?.version ? (
-          <span className="skill-detail-version">v{info.version}</span>
-        ) : null}
+        {info?.version ? <span className="skill-detail-version">v{info.version}</span> : null}
         {policy.editable ? null : (
           <span className="skill-detail-readonly" title={policy.readOnlyReason}>
             <IconLock size={12} ariaHidden />
@@ -135,9 +128,8 @@ export function SkillDetailView({
       <p className="settings-group-description">
         {info?.description ?? meta.blurb}{" "}
         <span className="skill-detail-mode-note">
-          Targeting the{" "}
-          {state.mode === "unrestricted" ? "Full mode" : "Sandboxed"} runtime
-          (profile {state.profile}). Edits apply to new sessions.
+          Targeting the {state.mode === "unrestricted" ? "Full mode" : "Sandboxed"} runtime (profile{" "}
+          {state.profile}). Edits apply to new sessions.
         </span>
       </p>
 
@@ -151,11 +143,7 @@ export function SkillDetailView({
           <IconExclamationCircle size={14} ariaHidden />
           {state.error}
           {state.retryable ? (
-            <button
-              type="button"
-              className="skill-detail-retry"
-              onClick={state.refresh}
-            >
+            <button type="button" className="skill-detail-retry" onClick={state.refresh}>
               Try again
             </button>
           ) : null}
@@ -170,20 +158,14 @@ export function SkillDetailView({
         <>
           <MetadataCard info={info} />
 
-          {info && lifecycle ? (
-            <LifecycleCard info={info} lifecycle={lifecycle} />
-          ) : null}
+          {info && lifecycle ? <LifecycleCard info={info} lifecycle={lifecycle} /> : null}
 
           <SupportingFilesCard files={state.supportingFiles} />
 
           {info ? (
             <div className="settings-card skill-detail-setup-card">
               <h3 className="skill-detail-card-heading">Setup</h3>
-              <SkillSetupSection
-                skill={state.skill}
-                skillRaw={info.raw}
-                mode={state.mode}
-              />
+              <SkillSetupSection skill={state.skill} skillRaw={info.raw} mode={state.mode} />
             </div>
           ) : null}
 
@@ -211,24 +193,16 @@ function MetadataCard({ info }: { info?: HermesSkillInfo }) {
       <dl className="skill-detail-meta-grid">
         <MetaItem label="Source" value={meta.label} hint={meta.blurb} />
         {author ? <MetaItem label="Author" value={author} /> : null}
-        {info?.version ? (
-          <MetaItem label="Version" value={info.version} />
-        ) : null}
+        {info?.version ? <MetaItem label="Version" value={info.version} /> : null}
         <MetaItem label="Enabled" value={info?.enabled ? "Yes" : "No"} />
         {restrictions ? (
-          <MetaItem
-            label="Platforms"
-            value={`${restrictions.join(", ")} only`}
-          />
+          <MetaItem label="Platforms" value={`${restrictions.join(", ")} only`} />
         ) : null}
         {activation?.requires ? (
           <MetaItem label="Requires" value={activation.requires.join(", ")} />
         ) : null}
         {activation?.fallback ? (
-          <MetaItem
-            label="Falls back to"
-            value={activation.fallback.join(", ")}
-          />
+          <MetaItem label="Falls back to" value={activation.fallback.join(", ")} />
         ) : null}
         {path ? <MetaItem label="Path" value={path} mono /> : null}
       </dl>
@@ -266,12 +240,7 @@ function LifecycleCard({
           This skill has local edits. Updating or resetting it replaces them.
         </p>
       ) : null}
-      <SkillLifecycleActions
-        skill={info}
-        policy={policy}
-        state={lifecycle}
-        variant="detail"
-      />
+      <SkillLifecycleActions skill={info} policy={policy} state={lifecycle} variant="detail" />
     </div>
   );
 }
@@ -307,9 +276,7 @@ function SupportingFilesCard({ files }: { files: SkillSupportingFiles }) {
     return (
       <div className="settings-card skill-detail-files-card">
         <h3 className="skill-detail-card-heading">Supporting files</h3>
-        <p className="skill-detail-files-empty">
-          No supporting files reported for this skill.
-        </p>
+        <p className="skill-detail-files-empty">No supporting files reported for this skill.</p>
       </div>
     );
   }
@@ -343,16 +310,9 @@ function FileGroup({
 }) {
   if (paths.length === 0) return null;
   return (
-    <div
-      className="skill-detail-file-group"
-      data-danger={danger ? "true" : undefined}
-    >
+    <div className="skill-detail-file-group" data-danger={danger ? "true" : undefined}>
       <h4 className="skill-detail-file-group-heading">
-        {danger ? (
-          <IconWarningSign size={12} ariaHidden />
-        ) : (
-          <IconFolder1 size={12} ariaHidden />
-        )}
+        {danger ? <IconWarningSign size={12} ariaHidden /> : <IconFolder1 size={12} ariaHidden />}
         {label}
         <span className="skill-detail-file-count">{paths.length}</span>
       </h4>
@@ -413,12 +373,8 @@ function SkillDocumentReadView({ state }: { state: SkillDetailState }) {
  * textarea, inline issues, and a diff-before-save confirmation. */
 function SkillDocumentEditor({ state }: { state: SkillDetailState }) {
   const [confirming, setConfirming] = useState(false);
-  const errors = state.validation.issues.filter(
-    (issue) => issue.severity === "error",
-  );
-  const warnings = state.validation.issues.filter(
-    (issue) => issue.severity === "warning",
-  );
+  const errors = state.validation.issues.filter((issue) => issue.severity === "error");
+  const warnings = state.validation.issues.filter((issue) => issue.severity === "warning");
   const canSave = state.dirty && state.validation.canSave && !state.saving;
 
   return (
@@ -428,9 +384,7 @@ function SkillDocumentEditor({ state }: { state: SkillDetailState }) {
           <IconPencilLine size={14} ariaHidden />
           Edit {state.relativePath ?? "SKILL.md"}
         </h3>
-        <span className="skill-detail-doc-timing">
-          {timingLabel("next-session")}
-        </span>
+        <span className="skill-detail-doc-timing">{timingLabel("next-session")}</span>
       </div>
 
       {state.policy.warning ? (
@@ -449,9 +403,7 @@ function SkillDocumentEditor({ state }: { state: SkillDetailState }) {
         spellCheck={false}
         value={state.draft}
         aria-invalid={errors.length > 0}
-        aria-describedby={
-          errors.length > 0 ? "skill-md-editor-issues" : undefined
-        }
+        aria-describedby={errors.length > 0 ? "skill-md-editor-issues" : undefined}
         onChange={(event) => state.setDraft(event.currentTarget.value)}
       />
 
@@ -542,23 +494,18 @@ function SaveConfirm({
     >
       <p className="skill-detail-confirm-summary">
         <IconCode size={13} ariaHidden />
-        {diff.addedCount} added, {diff.removedCount} removed. This applies to
-        new sessions.
+        {diff.addedCount} added, {diff.removedCount} removed. This applies to new sessions.
       </p>
       {warnings.length > 0 ? (
         <p className="skill-detail-confirm-warning" role="note">
           <IconWarningSign size={13} ariaHidden />
-          One or more values look like secrets. Secrets belong in .env or secret
-          config, not in SKILL.md.
+          One or more values look like secrets. Secrets belong in .env or secret config, not in
+          SKILL.md.
         </p>
       ) : null}
       <DiffView diff={diff} />
       <div className="skill-detail-confirm-actions">
-        <button
-          type="button"
-          className="skill-detail-confirm-cancel"
-          onClick={onCancel}
-        >
+        <button type="button" className="skill-detail-confirm-cancel" onClick={onCancel}>
           Keep editing
         </button>
         <button
@@ -583,16 +530,8 @@ function DiffView({ diff }: { diff: SkillDiff }) {
     <pre className="skill-detail-diff" aria-label="Changes">
       <code>
         {lines.map((line, index) => (
-          <span
-            key={index}
-            className="skill-detail-diff-line"
-            data-kind={line.kind}
-          >
-            {line.kind === "added"
-              ? "+ "
-              : line.kind === "removed"
-                ? "- "
-                : "  "}
+          <span key={index} className="skill-detail-diff-line" data-kind={line.kind}>
+            {line.kind === "added" ? "+ " : line.kind === "removed" ? "- " : "  "}
             {line.text}
             {"\n"}
           </span>

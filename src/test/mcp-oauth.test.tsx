@@ -136,8 +136,7 @@ describe("mcp oauth — view logic", () => {
 
 describe("mcp oauth — redaction", () => {
   it("redacts a bearer token and token query from a login message", () => {
-    const message =
-      "Authorized. Authorization: Bearer sk-secret-token-value-1234";
+    const message = "Authorized. Authorization: Bearer sk-secret-token-value-1234";
     const safe = safeOauthMessage(message);
     expect(safe).toBeTruthy();
     expect(safe).not.toContain("sk-secret-token-value-1234");
@@ -196,9 +195,7 @@ describe("mcp oauth — controller", () => {
     expect(testSpy).toHaveBeenCalledWith("linear");
     // It invalidated the MCP servers inventory and advanced the restart banner.
     expect(harness.cache.isStale("mcpServers")).toBe(true);
-    expect(harness.lifecycle.getSnapshot().state).toBe(
-      "gateway-restart-required",
-    );
+    expect(harness.lifecycle.getSnapshot().state).toBe("gateway-restart-required");
     // It raised the durable "signed in, restart to expose tools" notification.
     const note = harness.cache.getNotifications().at(-1);
     expect(note?.mutation).toBe("mcp.oauthLogin");
@@ -277,8 +274,7 @@ describe("mcp oauth — controller", () => {
           authUrl: string | null;
           timedOut: boolean;
         }>((res) => {
-          resolve = () =>
-            res({ ok: true, message: null, authUrl: null, timedOut: false });
+          resolve = () => res({ ok: true, message: null, authUrl: null, timedOut: false });
         }),
     );
     const controller = new McpOauthController(harness as McpServersEngine, {

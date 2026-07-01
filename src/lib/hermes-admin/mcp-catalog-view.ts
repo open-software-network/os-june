@@ -30,9 +30,7 @@ import { transportMeta, type McpTransportMeta } from "./mcp-servers-view";
 // so the local-subprocess vs remote-HTTP risk labels stay identical across both.
 
 /** The transport/risk metadata for a catalog entry. */
-export function catalogTransportMeta(
-  entry: HermesMcpCatalogEntry,
-): McpTransportMeta {
+export function catalogTransportMeta(entry: HermesMcpCatalogEntry): McpTransportMeta {
   return transportMeta(entry.transport);
 }
 
@@ -58,9 +56,7 @@ export type McpCatalogAuthMeta = {
   tone: "neutral" | "attention";
 };
 
-const AUTH_META: Readonly<
-  Record<HermesMcpCatalogAuthKind, McpCatalogAuthMeta>
-> = Object.freeze({
+const AUTH_META: Readonly<Record<HermesMcpCatalogAuthKind, McpCatalogAuthMeta>> = Object.freeze({
   "api-key": {
     kind: "api-key",
     label: "API key",
@@ -94,9 +90,7 @@ const AUTH_META: Readonly<
 });
 
 /** The display metadata for an entry's auth requirement. */
-export function catalogAuthMeta(
-  kind: HermesMcpCatalogAuthKind,
-): McpCatalogAuthMeta {
+export function catalogAuthMeta(kind: HermesMcpCatalogAuthKind): McpCatalogAuthMeta {
   return AUTH_META[kind];
 }
 
@@ -107,10 +101,7 @@ export function catalogAuthMeta(
 /** The catalog status June surfaces per entry, distinct so the UI can tell
  * "available to install" from "installed but disabled" from "installed and
  * enabled". */
-export type McpCatalogEntryStatus =
-  | "available"
-  | "installed-disabled"
-  | "enabled";
+export type McpCatalogEntryStatus = "available" | "installed-disabled" | "enabled";
 
 /** A sentence-case label + tone for an entry's catalog status. */
 export type McpCatalogEntryStatusMeta = {
@@ -122,30 +113,25 @@ export type McpCatalogEntryStatusMeta = {
 /** Derives the catalog status: not installed -> available; installed with
  * `enabled === false` -> installed-disabled; installed and enabled (or enabled
  * not reported) -> enabled. */
-export function catalogStatusOf(
-  entry: HermesMcpCatalogEntry,
-): McpCatalogEntryStatus {
+export function catalogStatusOf(entry: HermesMcpCatalogEntry): McpCatalogEntryStatus {
   if (!entry.installed) return "available";
   if (entry.enabled === false) return "installed-disabled";
   return "enabled";
 }
 
-const STATUS_META: Readonly<
-  Record<McpCatalogEntryStatus, McpCatalogEntryStatusMeta>
-> = Object.freeze({
-  available: { status: "available", label: "Available", tone: "neutral" },
-  "installed-disabled": {
-    status: "installed-disabled",
-    label: "Installed, disabled",
-    tone: "neutral",
-  },
-  enabled: { status: "enabled", label: "Enabled", tone: "ok" },
-});
+const STATUS_META: Readonly<Record<McpCatalogEntryStatus, McpCatalogEntryStatusMeta>> =
+  Object.freeze({
+    available: { status: "available", label: "Available", tone: "neutral" },
+    "installed-disabled": {
+      status: "installed-disabled",
+      label: "Installed, disabled",
+      tone: "neutral",
+    },
+    enabled: { status: "enabled", label: "Enabled", tone: "ok" },
+  });
 
 /** The display metadata for a catalog status. */
-export function catalogStatusMeta(
-  status: McpCatalogEntryStatus,
-): McpCatalogEntryStatusMeta {
+export function catalogStatusMeta(status: McpCatalogEntryStatus): McpCatalogEntryStatusMeta {
   return STATUS_META[status];
 }
 
@@ -165,9 +151,7 @@ export type McpInstallDraft = {
 
 /** A blank install draft seeded with the entry's required env keys (empty
  * values) so the form renders one field per requirement. */
-export function emptyInstallDraft(
-  entry: HermesMcpCatalogEntry,
-): McpInstallDraft {
+export function emptyInstallDraft(entry: HermesMcpCatalogEntry): McpInstallDraft {
   const env: Record<string, string> = {};
   for (const requirement of entry.requiredEnv ?? []) {
     env[requirement.key] = "";
@@ -178,9 +162,7 @@ export function emptyInstallDraft(
 /** The env requirements an entry needs supplied at install (the api-key style).
  * OAuth / third-party entries collect nothing here — their flow runs after
  * install — so this returns []. */
-export function envRequirementsFor(
-  entry: HermesMcpCatalogEntry,
-): HermesMcpCatalogEnvRequirement[] {
+export function envRequirementsFor(entry: HermesMcpCatalogEntry): HermesMcpCatalogEnvRequirement[] {
   if (entry.auth === "oauth" || entry.auth === "third-party") return [];
   return entry.requiredEnv ?? [];
 }
@@ -189,9 +171,7 @@ export function envRequirementsFor(
  * be installed (so the install button opens a form rather than installing
  * straight away). */
 export function needsCredentials(entry: HermesMcpCatalogEntry): boolean {
-  return envRequirementsFor(entry).some(
-    (requirement) => requirement.required !== false,
-  );
+  return envRequirementsFor(entry).some((requirement) => requirement.required !== false);
 }
 
 /** True when an entry's install is followed by an OAuth / third-party auth flow
@@ -225,8 +205,7 @@ export function validateInstallDraft(
     const required = requirement.required !== false;
     if (!value.trim()) {
       if (required) {
-        errors[requirement.key] =
-          `Enter a value for ${requirement.label ?? requirement.key}.`;
+        errors[requirement.key] = `Enter a value for ${requirement.label ?? requirement.key}.`;
       }
       continue; // do not send a blank value
     }

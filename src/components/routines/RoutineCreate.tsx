@@ -26,23 +26,13 @@ type RoutineCreateProps = {
   onCreate: (input: RoutineCreateInput) => void;
 };
 
-export function RoutineCreate({
-  template,
-  creating,
-  error,
-  onBack,
-  onCreate,
-}: RoutineCreateProps) {
+export function RoutineCreate({ template, creating, error, onBack, onCreate }: RoutineCreateProps) {
   const [name, setName] = useState(template?.name ?? "");
   const [draft, setDraft] = useState<ScheduleDraft>(() =>
-    template
-      ? draftFromSchedule(template.schedule)
-      : { kind: "daily", time: "09:00" },
+    template ? draftFromSchedule(template.schedule) : { kind: "daily", time: "09:00" },
   );
   const [prompt, setPrompt] = useState(template?.prompt ?? "");
-  const [unrestricted, setUnrestricted] = useState(
-    template?.unrestricted ?? false,
-  );
+  const [unrestricted, setUnrestricted] = useState(template?.unrestricted ?? false);
 
   function submit() {
     if (!prompt.trim()) return;
@@ -59,10 +49,7 @@ export function RoutineCreate({
       <BreadcrumbBar
         backLabel="Back to routines"
         onBack={onBack}
-        items={[
-          { label: "Routines", onClick: onBack },
-          { label: name.trim() || "New routine" },
-        ]}
+        items={[{ label: "Routines", onClick: onBack }, { label: name.trim() || "New routine" }]}
         actions={
           <div className="routine-detail-actions">
             <button type="button" className="btn btn-ghost" onClick={onBack}>
@@ -92,10 +79,7 @@ export function RoutineCreate({
         {error ? <p className="error-banner">{error}</p> : null}
 
         <div className="routine-detail-body">
-          <section
-            className="settings-group"
-            aria-labelledby="routine-schedule"
-          >
+          <section className="settings-group" aria-labelledby="routine-schedule">
             <h2 id="routine-schedule" className="settings-group-heading">
               Schedule
             </h2>
@@ -104,10 +88,7 @@ export function RoutineCreate({
             </div>
           </section>
 
-          <section
-            className="settings-group"
-            aria-labelledby="routine-instructions"
-          >
+          <section className="settings-group" aria-labelledby="routine-instructions">
             <h2 id="routine-instructions" className="settings-group-heading">
               Instructions
             </h2>
@@ -125,10 +106,7 @@ export function RoutineCreate({
               Access
             </h2>
             <div className="settings-card">
-              <RoutineModePicker
-                unrestricted={unrestricted}
-                onChange={setUnrestricted}
-              />
+              <RoutineModePicker unrestricted={unrestricted} onChange={setUnrestricted} />
             </div>
           </section>
         </div>

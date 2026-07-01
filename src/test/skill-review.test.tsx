@@ -20,9 +20,7 @@ function editWrite(id: string): Record<string, unknown> {
     op: "edit",
     source: "background",
     gist: `Edit ${id}`,
-    files: [
-      { relativePath: "research/SKILL.md", diff: "@@\n-a\n+b\n", content: "b" },
-    ],
+    files: [{ relativePath: "research/SKILL.md", diff: "@@\n-a\n+b\n", content: "b" }],
     readable: true,
   };
 }
@@ -101,15 +99,11 @@ describe("SkillReviewController", () => {
       request: { id: "change-1", approve: true },
     });
     // The approved write is gone after the refresh.
-    expect(controller.getSnapshot().writes.map((w) => w.id)).toEqual([
-      "change-2",
-    ]);
+    expect(controller.getSnapshot().writes.map((w) => w.id)).toEqual(["change-2"]);
     // An approved write raises the shared "applies next session" notification.
-    expect(
-      controller
-        .getSnapshot()
-        .notifications.some((n) => n.mutation === "skill.toggle"),
-    ).toBe(true);
+    expect(controller.getSnapshot().notifications.some((n) => n.mutation === "skill.toggle")).toBe(
+      true,
+    );
   });
 
   it("rejects one write without raising an apply-timing notification", async () => {
@@ -129,11 +123,9 @@ describe("SkillReviewController", () => {
     });
     expect(controller.getSnapshot().writes).toHaveLength(0);
     // A reject changes nothing durable, so no skill.toggle notification.
-    expect(
-      controller
-        .getSnapshot()
-        .notifications.some((n) => n.mutation === "skill.toggle"),
-    ).toBe(false);
+    expect(controller.getSnapshot().notifications.some((n) => n.mutation === "skill.toggle")).toBe(
+      false,
+    );
   });
 
   it("surfaces a safe error and keeps the row when a resolve fails", async () => {
@@ -186,9 +178,7 @@ describe("SkillReviewController", () => {
     expect(state.gateEnabled).toBe(true);
     // The gate write is a config.set, surfaced through the shared cache as a
     // next-session notification.
-    expect(state.notifications.some((n) => n.mutation === "config.set")).toBe(
-      true,
-    );
+    expect(state.notifications.some((n) => n.mutation === "config.set")).toBe(true);
   });
 });
 
@@ -196,9 +186,7 @@ describe("SkillReviewController", () => {
 // View rendering (stubbed state, no Tauri).
 // ---------------------------------------------------------------------------
 
-function baseState(
-  overrides: Partial<SkillReviewState> = {},
-): SkillReviewState {
+function baseState(overrides: Partial<SkillReviewState> = {}): SkillReviewState {
   return {
     status: "ready",
     writes: [],
@@ -226,9 +214,7 @@ function baseState(
   };
 }
 
-function viewWrite(
-  overrides: Partial<PendingSkillWrite> = {},
-): PendingSkillWrite {
+function viewWrite(overrides: Partial<PendingSkillWrite> = {}): PendingSkillWrite {
   return {
     id: "change-1",
     skill: "research",
@@ -250,9 +236,7 @@ function viewWrite(
 describe("SkillReviewView", () => {
   it("renders the gate copy and a pending write with approve/reject", () => {
     render(<SkillReviewView state={baseState({ writes: [viewWrite()] })} />);
-    expect(
-      screen.getByText(/do not land until you approve/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/do not land until you approve/i)).toBeInTheDocument();
     expect(screen.getByText("Tighten the checklist")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
@@ -268,9 +252,7 @@ describe("SkillReviewView", () => {
     );
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
-    expect(
-      screen.getByText(/could not fully read this change/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/could not fully read this change/i)).toBeInTheDocument();
   });
 
   it("disables approve for a redacted write and points the user to Hermes", () => {
@@ -302,16 +284,12 @@ describe("SkillReviewView", () => {
     act(() => {
       toggle.click();
     });
-    expect(
-      screen.getByLabelText(/Diff for research\/SKILL.md/),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Diff for research\/SKILL.md/)).toBeInTheDocument();
   });
 
   it("wires approve to the state callback", () => {
     const approve = vi.fn();
-    render(
-      <SkillReviewView state={baseState({ writes: [viewWrite()], approve })} />,
-    );
+    render(<SkillReviewView state={baseState({ writes: [viewWrite()], approve })} />);
     act(() => {
       screen.getByRole("button", { name: "Approve" }).click();
     });
@@ -325,9 +303,7 @@ describe("SkillReviewView", () => {
 
   it("wires the gate toggle to setGate", () => {
     const setGate = vi.fn();
-    render(
-      <SkillReviewView state={baseState({ gateEnabled: false, setGate })} />,
-    );
+    render(<SkillReviewView state={baseState({ gateEnabled: false, setGate })} />);
     act(() => {
       screen.getByRole("switch").click();
     });

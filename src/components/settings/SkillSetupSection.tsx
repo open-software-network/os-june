@@ -65,11 +65,7 @@ export function SkillSetupView({
   const isError = state.status === "error";
 
   return (
-    <div
-      className="skill-setup"
-      role="group"
-      aria-label={`Set up ${state.skill}`}
-    >
+    <div className="skill-setup" role="group" aria-label={`Set up ${state.skill}`}>
       <div className="skill-setup-header">
         <div className="skill-setup-title">
           <span className="skill-setup-skill">{state.skill}</span>
@@ -98,11 +94,7 @@ export function SkillSetupView({
           <IconExclamationCircle size={14} ariaHidden />
           {state.error}
           {state.retryable ? (
-            <button
-              type="button"
-              className="skill-setup-retry"
-              onClick={state.refresh}
-            >
+            <button type="button" className="skill-setup-retry" onClick={state.refresh}>
               Try again
             </button>
           ) : null}
@@ -120,18 +112,14 @@ export function SkillSetupView({
       ) : (
         <>
           {model.env.length > 0 ? (
-            <section
-              className="skill-setup-block"
-              aria-label="Required secrets"
-            >
+            <section className="skill-setup-block" aria-label="Required secrets">
               <h4 className="skill-setup-block-heading">
                 <IconLock size={13} ariaHidden />
                 Secrets
               </h4>
               <p className="skill-setup-block-note">
-                Stored as environment variables for this profile. They become
-                available to Hermes tools and sandboxes when the skill runs.{" "}
-                {timingLabel("gateway-restart")}.
+                Stored as environment variables for this profile. They become available to Hermes
+                tools and sandboxes when the skill runs. {timingLabel("gateway-restart")}.
               </p>
               <ul className="skill-setup-rows">
                 {model.env.map((row) => (
@@ -139,9 +127,7 @@ export function SkillSetupView({
                     key={row.requirement.name}
                     row={row}
                     pending={state.pending.has(row.requirement.name)}
-                    onSave={(value) =>
-                      state.setSecret(row.requirement.name, value)
-                    }
+                    onSave={(value) => state.setSecret(row.requirement.name, value)}
                     onDelete={() => state.deleteSecret(row.requirement.name)}
                     onReveal={() => state.revealSecret(row.requirement.name)}
                   />
@@ -157,8 +143,7 @@ export function SkillSetupView({
                 Configuration
               </h4>
               <p className="skill-setup-block-note">
-                Saved under skills.config in config.yaml.{" "}
-                {timingLabel("next-session")}.
+                Saved under skills.config in config.yaml. {timingLabel("next-session")}.
               </p>
               <ul className="skill-setup-rows">
                 {model.config.map((row) => (
@@ -168,9 +153,7 @@ export function SkillSetupView({
                     pending={state.pending.has(
                       `skills.config.${state.skill}.${row.requirement.key}`,
                     )}
-                    onSave={(value) =>
-                      state.setConfig(row.requirement.key, value)
-                    }
+                    onSave={(value) => state.setConfig(row.requirement.key, value)}
                     onDelete={() => state.deleteConfig(row.requirement.key)}
                   />
                 ))}
@@ -187,11 +170,7 @@ export function SkillSetupView({
  * setup skipped. Exported so the Installed skills row can render it inline. */
 export function SetupStatusBadge({ badge }: { badge: SkillSetupBadgeModel }) {
   return (
-    <span
-      className="skill-setup-badge"
-      data-tone={badge.tone}
-      data-status={badge.status}
-    >
+    <span className="skill-setup-badge" data-tone={badge.tone} data-status={badge.status}>
       {badge.tone === "ready" ? (
         <IconCircleCheck size={12} ariaHidden />
       ) : badge.tone === "attention" ? (
@@ -261,36 +240,22 @@ function EnvSetupRow({
           {requirement.name}
         </label>
         {requirement.required ? (
-          <span className="skill-setup-tag skill-setup-tag-required">
-            Required
-          </span>
+          <span className="skill-setup-tag skill-setup-tag-required">Required</span>
         ) : (
           <span className="skill-setup-tag">Optional</span>
         )}
-        <span
-          className="skill-setup-row-state"
-          data-configured={row.configured}
-        >
+        <span className="skill-setup-row-state" data-configured={row.configured}>
           {row.configured ? "Configured" : "Not set"}
         </span>
       </div>
 
-      {requirement.prompt ? (
-        <p className="skill-setup-row-prompt">{requirement.prompt}</p>
-      ) : null}
-      {requirement.help ? (
-        <p className="skill-setup-row-help">{requirement.help}</p>
-      ) : null}
+      {requirement.prompt ? <p className="skill-setup-row-prompt">{requirement.prompt}</p> : null}
+      {requirement.help ? <p className="skill-setup-row-help">{requirement.help}</p> : null}
       {requirement.requiredFor ? (
-        <p className="skill-setup-row-help">
-          Needed for {requirement.requiredFor}.
-        </p>
+        <p className="skill-setup-row-help">Needed for {requirement.requiredFor}.</p>
       ) : null}
       {row.configured && row.preview ? (
-        <p
-          className="skill-setup-row-preview"
-          aria-label="Current value preview"
-        >
+        <p className="skill-setup-row-preview" aria-label="Current value preview">
           Current: {row.preview}
         </p>
       ) : null}
@@ -301,9 +266,7 @@ function EnvSetupRow({
           className="skill-setup-input"
           type={show ? "text" : "password"}
           value={draft}
-          placeholder={
-            row.configured ? "Enter a new value to replace" : "Enter value"
-          }
+          placeholder={row.configured ? "Enter a new value to replace" : "Enter value"}
           autoComplete="off"
           spellCheck={false}
           disabled={pending}
@@ -320,11 +283,7 @@ function EnvSetupRow({
           title={show ? "Hide" : "Show"}
           onClick={() => setShow((value) => !value)}
         >
-          {show ? (
-            <IconEyeSlash size={14} ariaHidden />
-          ) : (
-            <IconEyeOpen size={14} ariaHidden />
-          )}
+          {show ? <IconEyeSlash size={14} ariaHidden /> : <IconEyeOpen size={14} ariaHidden />}
         </button>
       </div>
 
@@ -404,9 +363,7 @@ function ConfigSetupRow({
     if (row.redacted && draft.trim() === "") {
       // The stored value is hidden; an empty save would clobber it. Require a
       // new value, or let the user reset to default to clear it explicitly.
-      setValidationError(
-        "Enter a new value to replace the hidden one, or reset to default.",
-      );
+      setValidationError("Enter a new value to replace the hidden one, or reset to default.");
       return;
     }
     const result = validateConfigValue(requirement, draft);
@@ -425,9 +382,7 @@ function ConfigSetupRow({
           {requirement.prompt ?? requirement.key}
         </label>
         {requirement.required ? (
-          <span className="skill-setup-tag skill-setup-tag-required">
-            Required
-          </span>
+          <span className="skill-setup-tag skill-setup-tag-required">Required</span>
         ) : (
           <span className="skill-setup-tag">Optional</span>
         )}
@@ -478,21 +433,11 @@ function ConfigSetupRow({
       ) : null}
 
       <div className="skill-setup-row-actions">
-        <button
-          type="button"
-          className="skill-setup-save"
-          disabled={pending}
-          onClick={save}
-        >
+        <button type="button" className="skill-setup-save" disabled={pending} onClick={save}>
           {pending ? "Saving" : "Save"}
         </button>
         {row.current !== undefined && row.current.length > 0 ? (
-          <button
-            type="button"
-            className="skill-setup-clear"
-            disabled={pending}
-            onClick={onDelete}
-          >
+          <button type="button" className="skill-setup-clear" disabled={pending} onClick={onDelete}>
             Reset to default
           </button>
         ) : null}

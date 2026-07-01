@@ -30,10 +30,7 @@ import type { HermesAdminMode } from "./target";
 
 /** The Tauri `invoke` surface this adapter needs. Injectable so a unit test can
  * assert the adapter routes through it without a Tauri runtime. */
-export type AdminInvoke = (
-  command: string,
-  args: Record<string, unknown>,
-) => Promise<unknown>;
+export type AdminInvoke = (command: string, args: Record<string, unknown>) => Promise<unknown>;
 
 /** The minimal Response-like object the transport consumes. */
 type ResponseLike = {
@@ -82,11 +79,7 @@ export function createRustAdminFetch(
       // normalizes to `network`, exactly as a failed webview fetch would have.
       const httpError = parseHermesHttpError(toMessage(error));
       if (httpError) {
-        return makeResponse(
-          httpError.status,
-          httpError.body,
-          true,
-        ) as unknown as Response;
+        return makeResponse(httpError.status, httpError.body, true) as unknown as Response;
       }
       throw error instanceof Error ? error : new Error(toMessage(error));
     }
@@ -131,11 +124,7 @@ function parseBody(body: BodyInit | null | undefined): unknown {
  * re-serialized; on the error path (`rawText`) `value` is Hermes's already-
  * serialized error body, passed through untouched so the transport's
  * `extractErrorCode` / rawBody preview see exactly what Hermes returned. */
-function makeResponse(
-  status: number,
-  value: unknown,
-  rawText = false,
-): ResponseLike {
+function makeResponse(status: number, value: unknown, rawText = false): ResponseLike {
   const text = rawText
     ? typeof value === "string"
       ? value
@@ -154,9 +143,7 @@ function makeResponse(
  * <status>: <body>`) into its status + raw body. Returns null for any other
  * failure (bridge not running, connection refused), which stays a `network`
  * error rather than being mislabeled as an HTTP response. */
-function parseHermesHttpError(
-  message: string,
-): { status: number; body: string } | null {
+function parseHermesHttpError(message: string): { status: number; body: string } | null {
   const match = /Hermes API returned (\d{3})[^:]*:\s?([\s\S]*)$/.exec(message);
   if (!match) return null;
   return { status: Number(match[1]), body: match[2] ?? "" };

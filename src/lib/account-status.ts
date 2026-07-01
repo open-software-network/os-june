@@ -27,9 +27,7 @@ export type UseAccountStatus = {
   setAccount: (next: AccountStatus) => void;
 };
 
-export function useAccountStatus(
-  options: UseAccountStatusOptions = {},
-): UseAccountStatus {
+export function useAccountStatus(options: UseAccountStatusOptions = {}): UseAccountStatus {
   const { forceLogoutOnMount = false } = options;
   const [account, setAccount] = useState<AccountStatus>(EMPTY_STATUS);
   const [loading, setLoading] = useState(true);
@@ -96,9 +94,7 @@ export function useAccountStatus(
 
 function browserOnboardingDemoEnabled() {
   if (!import.meta.env.DEV || typeof window === "undefined") return false;
-  return (
-    new URLSearchParams(window.location.search).get("juneDemoAccount") === "1"
-  );
+  return new URLSearchParams(window.location.search).get("juneDemoAccount") === "1";
 }
 
 function messageFromError(err: unknown) {

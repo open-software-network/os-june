@@ -128,7 +128,9 @@ skill under `.agents/skills/<name>/` and create the `.claude/skills/<name>`
 symlink in the same change. Current project skills: `os-platform`,
 `os-accounts-integration`, `os-rust-backend`, `os-rust-backend-ci`,
 `os-task-prep`, `repo-build-pr`, `browser-test-tauri-fe`, `agent-e2e-qa`, plus
-the Spec Kit workflow skills (`speckit-*`).
+the Spec Kit workflow skills (`speckit-*`). `make skills-update` /
+`skills-restore` / `skills-sync` (thin wrappers over `npx skills`) refresh,
+restore from the lockfile, or re-link them.
 
 ## Build, test, lint
 
@@ -147,8 +149,16 @@ runner-agnostic).
 - **Hermes pin gate:** `pnpm test:hermes-smoke` + `pnpm hermes:upgrade-check`
   before bumping the pinned Hermes runtime (see
   [docs/hermes-upgrade-checklist.md](docs/hermes-upgrade-checklist.md)).
-- **Lint / format:** `pnpm lint` (`tsc --noEmit`) and `pnpm format` (prettier);
-  Rust uses `cargo clippy` / `cargo fmt`. Never leave checks broken.
+- **Lint / format:** `pnpm check` (Biome: format + lint for `src/` and
+  `scripts/`, including the lucide import ban) and `pnpm typecheck`
+  (`tsc --noEmit`); `pnpm format` / `pnpm check:write` apply Biome fixes. Rust
+  uses `cargo fmt` / `cargo clippy` (config lives under `src-tauri/` and
+  `june-api/`). Biome ratchets high-volume retrofit rules (a11y, hook-deps,
+  non-null assertions) to `warn` in `biome.json`; keep new code clean and fix
+  the warnings incrementally. Never leave checks broken.
+- **CI parity:** `make verify` runs the full gate locally (Biome, typecheck,
+  vitest, and `cargo fmt`/`clippy`/`test` for both Rust crates); `make help`
+  lists every target. A green `make verify` should mean green CI.
 
 ## Boundaries
 

@@ -8,11 +8,7 @@ import {
 
 describe("report category model", () => {
   it("exposes exactly the three categories in canonical order", () => {
-    expect(REPORT_CATEGORIES.map((c) => c.key)).toEqual([
-      "bug",
-      "feedback",
-      "feature",
-    ]);
+    expect(REPORT_CATEGORIES.map((c) => c.key)).toEqual(["bug", "feedback", "feature"]);
   });
 
   it("looks up a category by key and rejects unknowns", () => {
@@ -36,12 +32,8 @@ describe("report category model", () => {
     expect(matchReportCategories("bug").map((c) => c.key)).toEqual(["bug"]);
     // "report" is a bug keyword; "request" a feature keyword.
     expect(matchReportCategories("report").map((c) => c.key)).toEqual(["bug"]);
-    expect(matchReportCategories("request").map((c) => c.key)).toEqual([
-      "feature",
-    ]);
-    expect(matchReportCategories("feed").map((c) => c.key)).toEqual([
-      "feedback",
-    ]);
+    expect(matchReportCategories("request").map((c) => c.key)).toEqual(["feature"]);
+    expect(matchReportCategories("feed").map((c) => c.key)).toEqual(["feedback"]);
     expect(matchReportCategories("zzz")).toHaveLength(0);
   });
 });

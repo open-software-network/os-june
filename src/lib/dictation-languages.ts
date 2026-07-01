@@ -28,7 +28,5 @@ export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export function languageLabel(value: string) {
-  return (
-    LANGUAGE_OPTIONS.find((option) => option.value === value)?.label ?? value
-  );
+  return LANGUAGE_OPTIONS.find((option) => option.value === value)?.label ?? value;
 }

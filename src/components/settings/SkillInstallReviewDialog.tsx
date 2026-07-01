@@ -49,9 +49,7 @@ export function SkillInstallReviewDialog({
   const [acknowledged, setAcknowledged] = useState(false);
   const ackId = useId();
   const modeLabel = mode === "unrestricted" ? "Full mode" : "Sandboxed";
-  const hasScripts = review.bundle.some(
-    (line) => line.label === "Helper scripts",
-  );
+  const hasScripts = review.bundle.some((line) => line.label === "Helper scripts");
 
   // Reset the acknowledgement whenever the reviewed skill changes.
   useEffect(() => {
@@ -59,13 +57,11 @@ export function SkillInstallReviewDialog({
   }, [review.identifier]);
 
   const cancel = () => onDecide({ proceed: false, force: false });
-  const confirm = () =>
-    onDecide({ proceed: true, force: review.requiresForce });
+  const confirm = () => onDecide({ proceed: true, force: review.requiresForce });
 
   // The confirm button is gated: blocked verdicts cannot install at all; a
   // force-override path requires the acknowledgement checkbox first.
-  const confirmDisabled =
-    !review.installable || (review.requiresForce && !acknowledged);
+  const confirmDisabled = !review.installable || (review.requiresForce && !acknowledged);
 
   const confirmLabel = !review.installable
     ? "Cannot install"
@@ -91,8 +87,7 @@ export function SkillInstallReviewDialog({
             <button
               type="button"
               className={`primary-action primary-solid${
-                review.verdict.tone === "danger" ||
-                review.verdict.tone === "caution"
+                review.verdict.tone === "danger" || review.verdict.tone === "caution"
                   ? " primary-destructive"
                   : ""
               }`}
@@ -113,10 +108,7 @@ export function SkillInstallReviewDialog({
             <dt>Source</dt>
             <dd>
               {review.sourceLabel}
-              <span
-                className="skill-review-verdict-pill"
-                data-tone={review.verdict.tone}
-              >
+              <span className="skill-review-verdict-pill" data-tone={review.verdict.tone}>
                 {review.verdict.label}
               </span>
             </dd>
@@ -129,15 +121,10 @@ export function SkillInstallReviewDialog({
           ) : null}
         </dl>
 
-        {review.summary ? (
-          <p className="skill-review-summary">{review.summary}</p>
-        ) : null}
+        {review.summary ? <p className="skill-review-summary">{review.summary}</p> : null}
 
         {review.findings.length > 0 ? (
-          <section
-            className="skill-review-section"
-            aria-label="Security findings"
-          >
+          <section className="skill-review-section" aria-label="Security findings">
             <h4 className="skill-review-section-title">What the scan found</h4>
             <ul className="skill-review-findings">
               {review.findings.map((finding, index) => (
@@ -147,13 +134,9 @@ export function SkillInstallReviewDialog({
                   data-tone={findingTone(finding)}
                 >
                   {finding.category ? (
-                    <span className="skill-review-finding-category">
-                      {finding.category}
-                    </span>
+                    <span className="skill-review-finding-category">{finding.category}</span>
                   ) : null}
-                  <span className="skill-review-finding-detail">
-                    {finding.detail}
-                  </span>
+                  <span className="skill-review-finding-detail">{finding.detail}</span>
                 </li>
               ))}
             </ul>
@@ -161,10 +144,7 @@ export function SkillInstallReviewDialog({
         ) : null}
 
         {review.bundle.length > 0 ? (
-          <section
-            className="skill-review-section"
-            aria-label="What it bundles"
-          >
+          <section className="skill-review-section" aria-label="What it bundles">
             <h4 className="skill-review-section-title">
               <IconCode size={14} ariaHidden />
               What this skill bundles
@@ -172,12 +152,8 @@ export function SkillInstallReviewDialog({
             <ul className="skill-review-bundle">
               {review.bundle.map((line) => (
                 <li key={line.label}>
-                  <span className="skill-review-bundle-label">
-                    {line.label}
-                  </span>
-                  <span className="skill-review-bundle-detail">
-                    {line.detail}
-                  </span>
+                  <span className="skill-review-bundle-label">{line.label}</span>
+                  <span className="skill-review-bundle-detail">{line.detail}</span>
                 </li>
               ))}
             </ul>
@@ -185,10 +161,7 @@ export function SkillInstallReviewDialog({
         ) : null}
 
         {review.capabilities.length > 0 ? (
-          <section
-            className="skill-review-section"
-            aria-label="Capabilities the skill may use"
-          >
+          <section className="skill-review-section" aria-label="Capabilities the skill may use">
             <h4 className="skill-review-section-title">
               <IconBolt size={14} ariaHidden />
               Capabilities it may ask the agent to use
@@ -236,8 +209,8 @@ export function SkillInstallReviewDialog({
 
         {hasScripts && review.installable ? (
           <p className="skill-review-runtime" role="note">
-            Helper scripts run in the {modeLabel} runtime when the agent uses
-            this skill. Only install it if you trust what those scripts do.
+            Helper scripts run in the {modeLabel} runtime when the agent uses this skill. Only
+            install it if you trust what those scripts do.
           </p>
         ) : null}
 
@@ -257,18 +230,14 @@ export function SkillInstallReviewDialog({
               checked={acknowledged}
               onChange={(event) => setAcknowledged(event.currentTarget.checked)}
             />
-            <span>
-              I reviewed the findings above and want to install this skill
-              anyway.
-            </span>
+            <span>I reviewed the findings above and want to install this skill anyway.</span>
           </label>
         ) : null}
 
         {!review.installable ? (
           <p className="skill-review-blocked" role="alert">
             <IconBlock size={14} ariaHidden />
-            Hermes blocked this skill. June will not install a skill that fails
-            the security review.
+            Hermes blocked this skill. June will not install a skill that fails the security review.
           </p>
         ) : null}
       </div>
@@ -277,11 +246,7 @@ export function SkillInstallReviewDialog({
 }
 
 /** The verdict icon shown in the dialog header. */
-function VerdictIcon({
-  tone,
-}: {
-  tone: SkillInstallReview["verdict"]["tone"];
-}) {
+function VerdictIcon({ tone }: { tone: SkillInstallReview["verdict"]["tone"] }) {
   if (tone === "trusted") {
     return <IconShieldCheck size={18} ariaHidden />;
   }

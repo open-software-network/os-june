@@ -26,27 +26,26 @@ export type SlashModelResolution =
   | { status: "missing"; query: string }
   | { status: "ambiguous"; query: string; matches: ComposerSlashModelOption[] };
 
-export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] =
-  [
-    {
-      name: "model",
-      label: "Model",
-      description: "Change the text model.",
-      insertText: "/model ",
-    },
-    {
-      name: "file",
-      label: "File",
-      description: "Attach files to this message.",
-      insertText: "/file ",
-    },
-    {
-      name: "image",
-      label: "Image",
-      description: "Generate an image from a prompt.",
-      insertText: "/image ",
-    },
-  ];
+export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] = [
+  {
+    name: "model",
+    label: "Model",
+    description: "Change the text model.",
+    insertText: "/model ",
+  },
+  {
+    name: "file",
+    label: "File",
+    description: "Attach files to this message.",
+    insertText: "/file ",
+  },
+  {
+    name: "image",
+    label: "Image",
+    description: "Generate an image from a prompt.",
+    insertText: "/image ",
+  },
+];
 
 export function parseBuiltinComposerSlashCommand(
   input: string,
@@ -77,9 +76,7 @@ export function isBuiltinComposerSlashCommand(input: string) {
   return Boolean(parseBuiltinComposerSlashCommand(input));
 }
 
-export function parseSlashFileArguments(
-  argument: string,
-): SlashFileArgumentsResult {
+export function parseSlashFileArguments(argument: string): SlashFileArgumentsResult {
   const paths: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
@@ -172,9 +169,7 @@ export function slashModelResolutionError(
   return `Could not find model "${resolution.query}".`;
 }
 
-function isBuiltinComposerSlashCommandName(
-  name: string,
-): name is BuiltinComposerSlashCommandName {
+function isBuiltinComposerSlashCommandName(name: string): name is BuiltinComposerSlashCommandName {
   return name === "model" || name === "file" || name === "image";
 }
 

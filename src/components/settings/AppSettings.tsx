@@ -8,7 +8,7 @@ import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconMoonStar } from "central-icons/IconMoonStar";
 import { IconSun } from "central-icons/IconSun";
 import { IconTelevision } from "central-icons/IconTelevision";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   JUNE_COMMUNITY_URL,
@@ -40,10 +40,7 @@ import type {
   RecordingSourceReadinessDto,
   VeniceModelDto,
 } from "../../lib/tauri";
-import {
-  AccountSettingsSection,
-  BillingSettingsSection,
-} from "../account/AccountSettings";
+import { AccountSettingsSection, BillingSettingsSection } from "../account/AccountSettings";
 import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import {
   MODIFIER_REQUIRED_MESSAGE,
@@ -60,17 +57,8 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
 import type { ReportCategory } from "../agent/composer/reportCategory";
-import {
-  getStoredTheme,
-  setStoredTheme,
-  type ThemePreference,
-} from "../../lib/theme";
-import {
-  DEFAULT_BRAND,
-  getStoredBrand,
-  setStoredBrand,
-  type BrandId,
-} from "../../lib/brand";
+import { getStoredTheme, setStoredTheme, type ThemePreference } from "../../lib/theme";
+import { DEFAULT_BRAND, getStoredBrand, setStoredBrand, type BrandId } from "../../lib/brand";
 import { AccentWheel } from "./AccentWheel";
 import {
   getReleaseChannel,
@@ -82,12 +70,7 @@ import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import { ProviderLogo } from "./ProviderLogo";
-import {
-  ModelMeta,
-  ModelPickerDialog,
-  modelOptions,
-  selectedModel,
-} from "./ModelPickerDialog";
+import { ModelMeta, ModelPickerDialog, modelOptions, selectedModel } from "./ModelPickerDialog";
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
@@ -192,10 +175,7 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   language: undefined,
 };
 
-const DEFAULT_SHORTCUTS: Record<
-  DictationShortcutKind,
-  DictationShortcutSetting
-> = {
+const DEFAULT_SHORTCUTS: Record<DictationShortcutKind, DictationShortcutSetting> = {
   push_to_talk: DEFAULT_SETTINGS.pushToTalkShortcut,
   toggle: DEFAULT_SETTINGS.toggleShortcut,
 };
@@ -313,34 +293,26 @@ export function AppSettings({
   onReportIssue,
   onStartBundleChat,
 }: AppSettingsProps) {
-  const [settings, setSettings] =
-    useState<DictationSettingsDto>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<DictationSettingsDto>(DEFAULT_SETTINGS);
   const [providerSettings, setProviderSettings] =
     useState<ProviderModelSettingsDto>(DEFAULT_PROVIDER_MODELS);
-  const [veniceModels, setVeniceModels] = useState<
-    Record<ProviderModelMode, VeniceModelDto[]>
-  >({
+  const [veniceModels, setVeniceModels] = useState<Record<ProviderModelMode, VeniceModelDto[]>>({
     transcription: [],
     generation: [],
     // Image options come from a curated local list, not the fetched catalog;
     // this stays empty and `imageOptions` supplies the picker.
     image: [],
   });
-  const [microphones, setMicrophones] = useState<
-    DictationMicrophoneDeviceDto[]
-  >([]);
-  const [defaultMicrophone, setDefaultMicrophone] =
-    useState<DictationMicrophoneDeviceDto>();
-  const [capturingShortcut, setCapturingShortcut] =
-    useState<DictationShortcutKind>();
+  const [microphones, setMicrophones] = useState<DictationMicrophoneDeviceDto[]>([]);
+  const [defaultMicrophone, setDefaultMicrophone] = useState<DictationMicrophoneDeviceDto>();
+  const [capturingShortcut, setCapturingShortcut] = useState<DictationShortcutKind>();
   const capturingShortcutRef = useRef<DictationShortcutKind>();
   const [shortcutError, setShortcutError] = useState<string>();
   const [status, setStatus] = useState<string>();
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
-  const [releaseChannel, setReleaseChannelValue] =
-    useState<ReleaseChannel>("stable");
+  const [releaseChannel, setReleaseChannelValue] = useState<ReleaseChannel>("stable");
   // Set only when a leave-rc switch turns up an installable stable, so the
   // bespoke in-context confirm below the toggle can name the exact version.
   const [reconcileVersion, setReconcileVersion] = useState<string>();
@@ -375,9 +347,7 @@ export function AppSettings({
   const micWrapRef = useRef<HTMLDivElement>(null);
   const languageWrapRef = useRef<HTMLDivElement>(null);
   const systemOn = sourceMode === "microphonePlusSystem";
-  const systemReadiness = sourceReadiness?.sources.find(
-    (source) => source.source === "system",
-  );
+  const systemReadiness = sourceReadiness?.sources.find((source) => source.source === "system");
   const microphoneReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "microphone",
   );
@@ -576,9 +546,7 @@ export function AppSettings({
         return;
       }
       setShortcutError(undefined);
-      void dictationHelperCommand({ type: "cancel_shortcut_capture" }).catch(
-        () => undefined,
-      );
+      void dictationHelperCommand({ type: "cancel_shortcut_capture" }).catch(() => undefined);
       void saveShortcutRef.current(kind, result.shortcut);
     }
     window.addEventListener("keydown", onKey, true);
@@ -642,8 +610,7 @@ export function AppSettings({
       return;
     }
     if (helperEvent.type === "mic_test_error") {
-      const message =
-        helperEvent.payload?.message ?? "Microphone test could not record.";
+      const message = helperEvent.payload?.message ?? "Microphone test could not record.";
       setMicTestState("error");
       setMicTestStartedAt(undefined);
       setMicTestError(message);
@@ -652,10 +619,7 @@ export function AppSettings({
       return;
     }
     if (helperEvent.type === "fn_monitor_unavailable") {
-      setStatus(
-        helperEvent.payload?.message ??
-          "Global shortcut monitoring is unavailable.",
-      );
+      setStatus(helperEvent.payload?.message ?? "Global shortcut monitoring is unavailable.");
       return;
     }
     if (helperEvent.type === "shortcut_capture_started") {
@@ -663,8 +627,7 @@ export function AppSettings({
       return;
     }
     if (helperEvent.type === "shortcut_capture_error") {
-      const message =
-        helperEvent.payload?.message ?? "Shortcut could not be captured.";
+      const message = helperEvent.payload?.message ?? "Shortcut could not be captured.";
       setShortcutError(message);
       setStatus(message);
       return;
@@ -676,10 +639,7 @@ export function AppSettings({
         setStatus("Shortcut capture returned without an active target.");
         return;
       }
-      const shortcut = shortcutFromCapturePayload(
-        helperEvent.payload?.shortcut,
-        1,
-      );
+      const shortcut = shortcutFromCapturePayload(helperEvent.payload?.shortcut, 1);
       if (!shortcut) {
         setShortcutError("Shortcut capture returned invalid data.");
         setStatus("Shortcut capture returned invalid data.");
@@ -702,9 +662,7 @@ export function AppSettings({
       const next = await setDictationMicrophone(id, name);
       setSettings(next);
       setMicOpen(false);
-      setStatus(
-        name ? `Microphone set to ${name}.` : "Microphone set to auto-detect.",
-      );
+      setStatus(name ? `Microphone set to ${name}.` : "Microphone set to auto-detect.");
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -712,18 +670,13 @@ export function AppSettings({
 
   async function saveShortcut(
     kind: DictationShortcutKind,
-    shortcut: Pick<
-      DictationShortcutSetting,
-      "code" | "modifiers" | "label" | "pressCount"
-    >,
+    shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label" | "pressCount">,
   ) {
     try {
       const next = await setDictationShortcut(kind, shortcut);
       setSettings(next);
       setCapturingShortcut(undefined);
-      setStatus(
-        `${shortcutKindLabel(kind)} set to ${shortcutForKind(next, kind).label}.`,
-      );
+      setStatus(`${shortcutKindLabel(kind)} set to ${shortcutForKind(next, kind).label}.`);
     } catch (error) {
       setShortcutError(messageFromError(error));
       setStatus(messageFromError(error));
@@ -836,30 +789,20 @@ export function AppSettings({
     : defaultMicrophone?.name
       ? `Auto-detect uses ${defaultMicrophone.name}.`
       : "Auto-detect uses the current system input.";
-  const microphoneOptions = [
-    { id: undefined, name: "Auto-detect" },
-    ...microphones,
-  ];
+  const microphoneOptions = [{ id: undefined, name: "Auto-detect" }, ...microphones];
   const selectedMicrophoneIndex = Math.max(
     0,
-    microphoneOptions.findIndex(
-      (option) => (option.id ?? "") === (settings.microphone.id ?? ""),
-    ),
+    microphoneOptions.findIndex((option) => (option.id ?? "") === (settings.microphone.id ?? "")),
   );
   const selectedLanguageIndex = Math.max(
     0,
-    LANGUAGE_OPTIONS.findIndex(
-      (option) => option.value === (settings.language ?? ""),
-    ),
+    LANGUAGE_OPTIONS.findIndex((option) => option.value === (settings.language ?? "")),
   );
   const transcriptionOptions = modelOptions(
     veniceModels.transcription,
     providerSettings.transcriptionModel,
   );
-  const generationOptions = modelOptions(
-    veniceModels.generation,
-    providerSettings.generationModel,
-  );
+  const generationOptions = modelOptions(veniceModels.generation, providerSettings.generationModel);
   const imageOptions = modelOptions(IMAGE_MODELS, providerSettings.imageModel);
   const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
   const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
@@ -882,11 +825,7 @@ export function AppSettings({
 
   function updateMicrophonePopoverPlacement() {
     setMicPopoverPlacement(
-      selectPopoverPlacement(
-        micWrapRef.current,
-        microphoneOptions.length,
-        selectedMicrophoneIndex,
-      ),
+      selectPopoverPlacement(micWrapRef.current, microphoneOptions.length, selectedMicrophoneIndex),
     );
   }
 
@@ -938,11 +877,7 @@ export function AppSettings({
             </p>
           </header>
 
-          <nav
-            className="settings-nav"
-            role="tablist"
-            aria-label="Settings sections"
-          >
+          <nav className="settings-nav" role="tablist" aria-label="Settings sections">
             {settingsTabs.map((tab) => (
               <button
                 key={tab.id}
@@ -975,10 +910,7 @@ export function AppSettings({
               onRefresh={onAccountRefresh}
             />
 
-            <section
-              className="settings-group"
-              aria-labelledby="appearance-heading"
-            >
+            <section className="settings-group" aria-labelledby="appearance-heading">
               <h2 id="appearance-heading" className="settings-group-heading">
                 Appearance
               </h2>
@@ -1007,8 +939,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Accent</h3>
                       <p className="settings-row-description">
-                        The brand color used across buttons, highlights, and the
-                        recorder.
+                        The brand color used across buttons, highlights, and the recorder.
                       </p>
                     </div>
                     <div className="settings-row-control">
@@ -1051,17 +982,11 @@ export function AppSettings({
         ) : null}
 
         {activeTab === "billing" && !account.localDev ? (
-          <BillingSettingsSection
-            account={account}
-            onRefresh={onAccountRefresh}
-          />
+          <BillingSettingsSection account={account} onRefresh={onAccountRefresh} />
         ) : null}
 
         {activeTab === "shortcuts" ? (
-          <section
-            className="settings-group"
-            aria-labelledby="shortcuts-heading"
-          >
+          <section className="settings-group" aria-labelledby="shortcuts-heading">
             <h2 id="shortcuts-heading" className="settings-group-heading">
               Shortcuts
             </h2>
@@ -1075,21 +1000,11 @@ export function AppSettings({
                       shortcut={settings.pushToTalkShortcut}
                       defaultShortcut={DEFAULT_SHORTCUTS.push_to_talk}
                       capturing={capturingShortcut === "push_to_talk"}
-                      disabled={
-                        !!capturingShortcut &&
-                        capturingShortcut !== "push_to_talk"
-                      }
-                      error={
-                        capturingShortcut === "push_to_talk"
-                          ? shortcutError
-                          : undefined
-                      }
+                      disabled={!!capturingShortcut && capturingShortcut !== "push_to_talk"}
+                      error={capturingShortcut === "push_to_talk" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("push_to_talk")}
                       onReset={() =>
-                        void saveShortcut(
-                          "push_to_talk",
-                          DEFAULT_SHORTCUTS.push_to_talk,
-                        )
+                        void saveShortcut("push_to_talk", DEFAULT_SHORTCUTS.push_to_talk)
                       }
                       onCancel={() => void cancelShortcutCapture()}
                     />
@@ -1100,27 +1015,17 @@ export function AppSettings({
                       shortcut={settings.toggleShortcut}
                       defaultShortcut={DEFAULT_SHORTCUTS.toggle}
                       capturing={capturingShortcut === "toggle"}
-                      disabled={
-                        !!capturingShortcut && capturingShortcut !== "toggle"
-                      }
-                      error={
-                        capturingShortcut === "toggle"
-                          ? shortcutError
-                          : undefined
-                      }
+                      disabled={!!capturingShortcut && capturingShortcut !== "toggle"}
+                      error={capturingShortcut === "toggle" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("toggle")}
-                      onReset={() =>
-                        void saveShortcut("toggle", DEFAULT_SHORTCUTS.toggle)
-                      }
+                      onReset={() => void saveShortcut("toggle", DEFAULT_SHORTCUTS.toggle)}
                       onCancel={() => void cancelShortcutCapture()}
                     />
                   </>
                 ) : (
                   <div className="settings-row">
                     <div className="settings-row-info">
-                      <h3 className="settings-row-title">
-                        Dictation shortcuts unavailable
-                      </h3>
+                      <h3 className="settings-row-title">Dictation shortcuts unavailable</h3>
                       <p className="settings-row-description">
                         Global dictation shortcuts are only supported on macOS.
                       </p>
@@ -1134,10 +1039,7 @@ export function AppSettings({
 
         {activeTab === "dictation" ? (
           <>
-            <section
-              className="settings-group"
-              aria-labelledby="dictation-heading"
-            >
+            <section className="settings-group" aria-labelledby="dictation-heading">
               <h2 id="dictation-heading" className="settings-group-heading">
                 Dictation
               </h2>
@@ -1147,8 +1049,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Language</h3>
                       <p className="settings-row-description">
-                        Default language hint for note transcription and
-                        dictation.
+                        Default language hint for note transcription and dictation.
                       </p>
                     </div>
                     <div className="settings-row-control" ref={languageWrapRef}>
@@ -1171,8 +1072,7 @@ export function AppSettings({
                           style={languagePopoverStyle()}
                         >
                           {LANGUAGE_OPTIONS.map((option) => {
-                            const selected =
-                              option.value === (settings.language ?? "");
+                            const selected = option.value === (settings.language ?? "");
                             return (
                               <li key={option.value || "auto"}>
                                 <button
@@ -1180,15 +1080,11 @@ export function AppSettings({
                                   role="option"
                                   aria-selected={selected}
                                   data-selected={selected}
-                                  onClick={() =>
-                                    void selectLanguage(option.value)
-                                  }
+                                  onClick={() => void selectLanguage(option.value)}
                                 >
                                   <span>{option.label}</span>
                                   <span className="select-check" aria-hidden>
-                                    {selected ? (
-                                      <IconCheckmark1Small size={14} />
-                                    ) : null}
+                                    {selected ? <IconCheckmark1Small size={14} /> : null}
                                   </span>
                                 </button>
                               </li>
@@ -1218,9 +1114,7 @@ export function AppSettings({
                 <div className="settings-row">
                   <div className="settings-row-info">
                     <h3 className="settings-row-title">Microphone</h3>
-                    <p className="settings-row-description">
-                      {microphoneDescription}
-                    </p>
+                    <p className="settings-row-description">{microphoneDescription}</p>
                   </div>
                   <div className="settings-row-control" ref={micWrapRef}>
                     <button
@@ -1246,9 +1140,7 @@ export function AppSettings({
                         style={microphonePopoverStyle()}
                       >
                         {microphoneOptions.map((option) => {
-                          const selected =
-                            (option.id ?? "") ===
-                            (settings.microphone.id ?? "");
+                          const selected = (option.id ?? "") === (settings.microphone.id ?? "");
                           return (
                             <li key={option.id ?? "auto"}>
                               <button
@@ -1265,9 +1157,7 @@ export function AppSettings({
                               >
                                 <span>{option.name}</span>
                                 <span className="select-check" aria-hidden>
-                                  {selected ? (
-                                    <IconCheckmark1Small size={14} />
-                                  ) : null}
+                                  {selected ? <IconCheckmark1Small size={14} /> : null}
                                 </span>
                               </button>
                             </li>
@@ -1290,9 +1180,7 @@ export function AppSettings({
                     onStart={() => void startMicTest()}
                     onStartOver={() => void startOverMicTest()}
                     onPlaybackError={() => {
-                      setMicTestError(
-                        "Microphone test recorded, but playback is unavailable.",
-                      );
+                      setMicTestError("Microphone test recorded, but playback is unavailable.");
                     }}
                     onPlayingChange={setMicTestPlaying}
                   />
@@ -1303,8 +1191,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">System audio</h3>
                       <p className="settings-row-description">
-                        Capture audio from other apps along with your
-                        microphone.
+                        Capture audio from other apps along with your microphone.
                       </p>
                     </div>
                     <div className="settings-row-control">
@@ -1322,9 +1209,7 @@ export function AppSettings({
                         disabled={checkingSourceReadiness || systemDenied}
                         aria-label="Capture system audio for notes"
                         onCheckedChange={(next) =>
-                          onSourceModeChange(
-                            next ? "microphonePlusSystem" : "microphoneOnly",
-                          )
+                          onSourceModeChange(next ? "microphonePlusSystem" : "microphoneOnly")
                         }
                       />
                     </div>
@@ -1352,10 +1237,7 @@ export function AppSettings({
               }}
             />
 
-            <section
-              className="settings-group"
-              aria-labelledby="models-heading"
-            >
+            <section className="settings-group" aria-labelledby="models-heading">
               <h2 id="models-heading" className="settings-group-heading">
                 AI models
               </h2>
@@ -1379,14 +1261,8 @@ export function AppSettings({
               </div>
             </section>
 
-            <section
-              className="settings-group"
-              aria-labelledby="image-generation-heading"
-            >
-              <h2
-                id="image-generation-heading"
-                className="settings-group-heading"
-              >
+            <section className="settings-group" aria-labelledby="image-generation-heading">
+              <h2 id="image-generation-heading" className="settings-group-heading">
                 Image generation
               </h2>
               <p className="settings-group-description">
@@ -1419,20 +1295,14 @@ export function AppSettings({
         {activeTab === "mcp-security" ? <McpSecuritySection /> : null}
         {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
         {activeTab === "taps" ? (
-          <TeamTapsSection
-            onConfigureGithubToken={() => setActiveTab("skills")}
-          />
+          <TeamTapsSection onConfigureGithubToken={() => setActiveTab("skills")} />
         ) : null}
         {activeTab === "toolsets" ? <ToolsetsSection /> : null}
-        {activeTab === "bundles" ? (
-          <SkillBundlesSection onStartChat={onStartBundleChat} />
-        ) : null}
+        {activeTab === "bundles" ? <SkillBundlesSection onStartChat={onStartBundleChat} /> : null}
         {activeTab === "profile-builder" ? <ProfileBuilderSection /> : null}
         {activeTab === "integrations-health" ? (
           <IntegrationsHealthSection
-            onNavigate={(target: IntegrationsHealthTarget) =>
-              setActiveTab(target)
-            }
+            onNavigate={(target: IntegrationsHealthTarget) => setActiveTab(target)}
           />
         ) : null}
         {activeTab === "import-export" ? <SetupSnapshotSection /> : null}
@@ -1446,9 +1316,7 @@ export function AppSettings({
               <div className="settings-rows">
                 <div className="settings-row settings-row-meta">
                   <div className="settings-row-info">
-                    <h3 className="settings-row-title settings-meta-label">
-                      Release version
-                    </h3>
+                    <h3 className="settings-row-title settings-meta-label">Release version</h3>
                   </div>
                   <div className="settings-row-control">
                     <span className="settings-meta-value">{APP_VERSION}</span>
@@ -1457,9 +1325,7 @@ export function AppSettings({
 
                 <div className="settings-row settings-row-meta">
                   <div className="settings-row-info">
-                    <h3 className="settings-row-title settings-meta-label">
-                      Commit
-                    </h3>
+                    <h3 className="settings-row-title settings-meta-label">Commit</h3>
                   </div>
                   <div className="settings-row-control">
                     <span className="settings-meta-value settings-meta-value-mono">
@@ -1492,8 +1358,7 @@ export function AppSettings({
                       <div className="settings-row-info">
                         <h3 className="settings-row-title">Release channel</h3>
                         <p className="settings-row-description">
-                          Stable is recommended. Release candidate gets early
-                          builds for testing.
+                          Stable is recommended. Release candidate gets early builds for testing.
                         </p>
                       </div>
                       <div className="settings-row-control">
@@ -1548,9 +1413,7 @@ export function AppSettings({
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() =>
-                        void juneOpenCommunityPage().catch(() => undefined)
-                      }
+                      onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
                     >
                       Join community
                     </button>
@@ -1561,17 +1424,15 @@ export function AppSettings({
                   <div className="settings-row-info">
                     <h3 className="settings-row-title">Server verification</h3>
                     <p className="settings-row-description">
-                      June&apos;s server runs in a confidential VM. See exactly
-                      what code is running and how to verify it yourself.
+                      June&apos;s server runs in a confidential VM. See exactly what code is running
+                      and how to verify it yourself.
                     </p>
                   </div>
                   <div className="settings-row-control">
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() =>
-                        void juneOpenVerifyPage().catch(() => undefined)
-                      }
+                      onClick={() => void juneOpenVerifyPage().catch(() => undefined)}
                     >
                       Verify server
                     </button>
@@ -1583,9 +1444,8 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Report an issue</h3>
                       <p className="settings-row-description">
-                        Something not working? Describe it to June, attach a
-                        screenshot if you have one, and June will send the
-                        report to the team along with its own diagnosis.
+                        Something not working? Describe it to June, attach a screenshot if you have
+                        one, and June will send the report to the team along with its own diagnosis.
                       </p>
                     </div>
                     <div className="settings-row-control">
@@ -1608,8 +1468,8 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Replay onboarding</h3>
                       <p className="settings-row-description">
-                        Dev only. Forget that onboarding finished and reload
-                        into the first-run wizard.
+                        Dev only. Forget that onboarding finished and reload into the first-run
+                        wizard.
                       </p>
                     </div>
                     <div className="settings-row-control">
@@ -1632,12 +1492,7 @@ export function AppSettings({
   );
 }
 
-type PermissionStatusTone =
-  | "allowed"
-  | "attention"
-  | "blocked"
-  | "unsupported"
-  | "unknown";
+type PermissionStatusTone = "allowed" | "attention" | "blocked" | "unsupported" | "unknown";
 
 type PermissionStatusView = {
   label: string;
@@ -1678,8 +1533,7 @@ function PermissionsSettingsSection({
             title="Microphone"
             description="Record dictation and note audio."
             status={permissionStatus(
-              microphonePermissionStatus ??
-                microphoneReadiness?.permissionState,
+              microphonePermissionStatus ?? microphoneReadiness?.permissionState,
             )}
             onManage={onEnableMicrophone}
           />
@@ -1828,11 +1682,7 @@ function ModelRow({
           aria-label={`Change ${title.toLowerCase()} model`}
         >
           <span className="model-summary-logo" aria-hidden>
-            <ProviderLogo
-              provider={model.provider}
-              id={model.id}
-              name={model.name}
-            />
+            <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
           </span>
           <span className="model-summary-name">{model.name}</span>
           <IconChevronDownSmall size={14} />
@@ -1868,8 +1718,7 @@ function ShortcutRow({
   onReset: () => void;
   onCancel: () => void;
 }) {
-  const canReset =
-    !capturing && !shortcutsMatch(shortcut, defaultShortcut) && !disabled;
+  const canReset = !capturing && !shortcutsMatch(shortcut, defaultShortcut) && !disabled;
 
   return (
     <div className="settings-row">
@@ -1907,23 +1756,13 @@ function shortcutKindLabel(kind: DictationShortcutKind) {
   return kind === "toggle" ? "Toggle dictation" : "Push to talk";
 }
 
-function shortcutForKind(
-  settings: DictationSettingsDto,
-  kind: DictationShortcutKind,
-) {
-  return kind === "toggle"
-    ? settings.toggleShortcut
-    : settings.pushToTalkShortcut;
+function shortcutForKind(settings: DictationSettingsDto, kind: DictationShortcutKind) {
+  return kind === "toggle" ? settings.toggleShortcut : settings.pushToTalkShortcut;
 }
 
-function shortcutsMatch(
-  first: DictationShortcutSetting,
-  second: DictationShortcutSetting,
-) {
+function shortcutsMatch(first: DictationShortcutSetting, second: DictationShortcutSetting) {
   const keyCodesMatch =
-    first.keyCode === undefined ||
-    second.keyCode === undefined ||
-    first.keyCode === second.keyCode;
+    first.keyCode === undefined || second.keyCode === undefined || first.keyCode === second.keyCode;
 
   return (
     keyCodesMatch &&

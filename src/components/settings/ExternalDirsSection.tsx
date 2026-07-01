@@ -36,9 +36,7 @@ type ExternalDirsSectionProps = {
  * Data lives entirely in {@link useExternalDirs}; this component is presentation
  * + the local add-form input state.
  */
-export function ExternalDirsSection({
-  mode = "sandboxed",
-}: ExternalDirsSectionProps) {
+export function ExternalDirsSection({ mode = "sandboxed" }: ExternalDirsSectionProps) {
   const state = useExternalDirs(mode);
   return <ExternalDirsView state={state} mode={mode} />;
 }
@@ -74,21 +72,14 @@ export function ExternalDirsView({
   };
 
   return (
-    <section
-      className="settings-group external-dirs"
-      aria-labelledby="external-dirs-heading"
-    >
+    <section className="settings-group external-dirs" aria-labelledby="external-dirs-heading">
       <h2 id="external-dirs-heading" className="settings-group-heading">
         External skill directories
       </h2>
       <p className="settings-group-description">
-        Shared folders Hermes scans for skills alongside your installed skills.
-        Changes apply to new sessions.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Shared folders Hermes scans for skills alongside your installed skills. Changes apply to new
+        sessions.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
@@ -126,9 +117,7 @@ export function ExternalDirsView({
             <button
               type="button"
               className="external-dirs-add-button"
-              disabled={
-                isUnavailable || state.busy || draft.trim().length === 0
-              }
+              disabled={isUnavailable || state.busy || draft.trim().length === 0}
               onClick={() => void submit()}
             >
               Add
@@ -146,8 +135,8 @@ export function ExternalDirsView({
         </div>
 
         <p className="external-dirs-hint">
-          Paths can use {"~"} for your home folder and {"${VAR}"} for
-          environment variables. June shows the resolved path below each entry.
+          Paths can use {"~"} for your home folder and {"${VAR}"} for environment variables. June
+          shows the resolved path below each entry.
         </p>
 
         {formError ? (
@@ -294,27 +283,19 @@ function DirRow({
 
         {row.presence === "unresolved" && row.unresolvedVar ? (
           <p className="external-dir-note external-dir-note-warning">
-            Set the {row.unresolvedVar} environment variable to resolve this
-            path.
+            Set the {row.unresolvedVar} environment variable to resolve this path.
           </p>
         ) : null}
 
         <div className="external-dir-meta">
           {typeof row.skillCount === "number" ? (
             <span className="external-dir-meta-item">
-              {row.skillCount === 1
-                ? "1 skill found"
-                : `${row.skillCount} skills found`}
+              {row.skillCount === 1 ? "1 skill found" : `${row.skillCount} skills found`}
             </span>
           ) : row.presence === "missing" ? (
-            <span className="external-dir-meta-item">
-              No skills loaded (directory not found)
-            </span>
+            <span className="external-dir-meta-item">No skills loaded (directory not found)</span>
           ) : null}
-          <span
-            className="external-dir-readonly"
-            title="June does not edit external skills."
-          >
+          <span className="external-dir-readonly" title="June does not edit external skills.">
             <IconLock size={12} ariaHidden />
             Read only in June
           </span>
@@ -354,13 +335,7 @@ function Loading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="external-dirs-empty" role="status">
       <span className="external-dirs-empty-icon" aria-hidden>

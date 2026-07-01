@@ -25,10 +25,7 @@ import { hermesBridgeStatus, type HermesBridgeStatus } from "../tauri";
 import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import { createRustAdminFetch } from "./rust-transport";
 import {
   DEFAULT_MCP_EXPOSURE_POLICY,
@@ -36,11 +33,7 @@ import {
   readExposurePolicy,
   type McpExposurePolicy,
 } from "./mcp-security-view";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives this surface operates on, all bound to the
  * SAME target. Production builds this from a bridge connection; tests build it
@@ -182,10 +175,7 @@ export class McpSecurityController {
     this.error = undefined;
     this.recompute();
     try {
-      const outcome = await this.engine.client.config.set(
-        MCP_EXPOSURE_POLICY_CONFIG_PATH,
-        next,
-      );
+      const outcome = await this.engine.client.config.set(MCP_EXPOSURE_POLICY_CONFIG_PATH, next);
       if (this.disposed) return;
       this.engine.cache.afterMutation(outcome.mutation, "MCP exposure policy");
       this.engine.lifecycle.noteMutation(outcome.mutation);
@@ -242,13 +232,8 @@ export class McpSecurityController {
 
 /** Binds an {@link McpSecurityController} to React for one engine. A null engine
  * yields the "unavailable" state. */
-export function useMcpSecurityController(
-  engine: McpSecurityEngine | null,
-): McpSecurityState {
-  const controller = useMemo(
-    () => (engine ? new McpSecurityController(engine) : null),
-    [engine],
-  );
+export function useMcpSecurityController(engine: McpSecurityEngine | null): McpSecurityState {
+  const controller = useMemo(() => (engine ? new McpSecurityController(engine) : null), [engine]);
 
   const [snapshot, setSnapshot] = useState<McpSecurityState>(() =>
     controller ? controller.getSnapshot() : UNAVAILABLE_STATE,
@@ -344,9 +329,7 @@ export function useMcpSecurity(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

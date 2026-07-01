@@ -2057,7 +2057,7 @@ pub async fn ensure_hermes_bridge_session(
     )
     .await
     {
-        Ok(value) => return Ok(value),
+        Ok(value) => Ok(value),
         Err(error) if hermes_api_status(&error, 404) || hermes_api_status(&error, 405) => {
             let mut legacy_body = serde_json::json!({ "id": session_id, "title": title });
             if let Some(model) = model {
@@ -2448,7 +2448,7 @@ fn validate_dropped_file_name(raw: &str) -> Result<String, AppError> {
 }
 
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
-    let hermes_home = resolve_june_hermes_home(&app)?;
+    let hermes_home = resolve_june_hermes_home(app)?;
     let requested = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
@@ -3280,7 +3280,7 @@ fn extract_tap_path_hint(line: &str) -> Option<String> {
     let marker = lower.find("path")?;
     let after = &line[marker + "path".len()..];
     let candidate = after
-        .trim_start_matches(|c: char| matches!(c, '=' | ':' | ' ' | '(' | '\t'))
+        .trim_start_matches(['=', ':', ' ', '(', '\t'])
         .split_whitespace()
         .next()?
         .trim_matches(|c: char| matches!(c, ')' | ',' | ';'));
@@ -7435,7 +7435,7 @@ mod tests {
         std::env::set_var("HERMES_ENVIRONMENT_HINT", "stale-from-shell");
         apply_isolated_hermes_env(&mut bare, Path::new("/tmp/hermes-home"), "token", None);
         std::env::remove_var("HERMES_ENVIRONMENT_HINT");
-        assert!(envs_of(&bare).get("HERMES_ENVIRONMENT_HINT").is_none());
+        assert!(!envs_of(&bare).contains_key("HERMES_ENVIRONMENT_HINT"));
     }
 
     #[test]

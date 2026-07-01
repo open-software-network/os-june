@@ -28,9 +28,7 @@ export function SessionUsagePanel({
   onClose: () => void;
 }) {
   const [usage, setUsage] = useState<SessionUsage | null>(null);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">(
-    "loading",
-  );
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   // The reason the fetch rejected, surfaced so the failure is honest about
   // whether the session ended, the gateway is down, or usage is unsupported —
   // each of which the user can act on differently.
@@ -98,9 +96,7 @@ export function SessionUsagePanel({
       {status === "error" ? (
         <div className="agent-usage-error" role="status">
           <p>Couldn't load usage for this session.</p>
-          {errorReason ? (
-            <p className="agent-usage-error-detail">{errorReason}</p>
-          ) : null}
+          {errorReason ? <p className="agent-usage-error-detail">{errorReason}</p> : null}
           <button type="button" className="agent-usage-retry" onClick={load}>
             Try again
           </button>
@@ -110,26 +106,14 @@ export function SessionUsagePanel({
           <dl className="agent-usage-grid">
             <Metric label="Model" value={usage?.model} />
             <Metric label="Provider" value={usage?.provider} />
-            <Metric
-              label="Prompt tokens"
-              value={formatCount(usage?.promptTokens)}
-            />
-            <Metric
-              label="Completion tokens"
-              value={formatCount(usage?.completionTokens)}
-            />
-            <Metric
-              label="Total tokens"
-              value={formatCount(usage?.totalTokens)}
-            />
+            <Metric label="Prompt tokens" value={formatCount(usage?.promptTokens)} />
+            <Metric label="Completion tokens" value={formatCount(usage?.completionTokens)} />
+            <Metric label="Total tokens" value={formatCount(usage?.totalTokens)} />
           </dl>
 
           <ContextMeter used={usage?.contextUsed} limit={usage?.contextLimit} />
 
-          <CostSection
-            estimatedCostUsd={usage?.estimatedCostUsd}
-            toolCosts={usage?.toolCosts}
-          />
+          <CostSection estimatedCostUsd={usage?.estimatedCostUsd} toolCosts={usage?.toolCosts} />
         </div>
       )}
     </section>
@@ -143,9 +127,7 @@ function Metric({ label, value }: { label: string; value?: string }) {
   return (
     <div className="agent-usage-metric">
       <dt>{label}</dt>
-      <dd data-unavailable={present ? undefined : "true"}>
-        {present ? value : "Unavailable"}
-      </dd>
+      <dd data-unavailable={present ? undefined : "true"}>{present ? value : "Unavailable"}</dd>
     </div>
   );
 }
@@ -156,9 +138,7 @@ function Metric({ label, value }: { label: string; value?: string }) {
 function ContextMeter({ used, limit }: { used?: number; limit?: number }) {
   const hasBoth = used !== undefined && limit !== undefined && limit > 0;
   const pct = hasBoth ? Math.min(100, Math.max(0, (used / limit) * 100)) : null;
-  const reading = hasBoth
-    ? `${formatCount(used)} / ${formatCount(limit)}`
-    : "Unavailable";
+  const reading = hasBoth ? `${formatCount(used)} / ${formatCount(limit)}` : "Unavailable";
 
   return (
     <div className="agent-usage-context">
@@ -205,10 +185,7 @@ function CostSection({
           <IconCoins size={14} ariaHidden />
           Estimated cost
         </span>
-        <span
-          className="agent-usage-cost-value"
-          data-unavailable={hasTotal ? undefined : "true"}
-        >
+        <span className="agent-usage-cost-value" data-unavailable={hasTotal ? undefined : "true"}>
           {hasTotal ? formatUsd(estimatedCostUsd) : "Unavailable"}
         </span>
       </div>
@@ -216,10 +193,7 @@ function CostSection({
         Estimate only, based on reported token usage. Actual billing may differ.
       </p>
       {toolCosts && toolCosts.length > 0 ? (
-        <ul
-          className="agent-usage-tool-costs"
-          aria-label="Tool and subagent costs"
-        >
+        <ul className="agent-usage-tool-costs" aria-label="Tool and subagent costs">
           {toolCosts.map((cost) => (
             <li key={cost.name}>
               <span className="agent-usage-tool-name">
@@ -228,9 +202,7 @@ function CostSection({
               </span>
               <span
                 className="agent-usage-tool-value"
-                data-unavailable={
-                  cost.estimatedCostUsd === undefined ? "true" : undefined
-                }
+                data-unavailable={cost.estimatedCostUsd === undefined ? "true" : undefined}
               >
                 {cost.estimatedCostUsd !== undefined
                   ? formatUsd(cost.estimatedCostUsd)

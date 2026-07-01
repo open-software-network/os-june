@@ -30,8 +30,7 @@ function skillFromWire(raw: Record<string, unknown>): HermesSkillInfo {
 
 describe("skill detail — frontmatter parsing", () => {
   it("splits a document into frontmatter and body", () => {
-    const doc =
-      "---\nname: pdf\ndescription: Read PDFs\n---\n# Heading\n\nBody text.\n";
+    const doc = "---\nname: pdf\ndescription: Read PDFs\n---\n# Heading\n\nBody text.\n";
     const parts = splitSkillDocument(doc);
     expect(parts.hasFrontmatter).toBe(true);
     expect(parts.frontmatter).toContain("name: pdf");
@@ -80,23 +79,15 @@ describe("skill detail — validation", () => {
   });
 
   it("blocks a missing name", () => {
-    const result = validateSkillContent(
-      "---\ndescription: only desc\n---\nBody",
-      requireBoth,
-    );
+    const result = validateSkillContent("---\ndescription: only desc\n---\nBody", requireBoth);
     expect(result.canSave).toBe(false);
     expect(result.issues.some((i) => i.message.includes("name"))).toBe(true);
   });
 
   it("blocks a missing required description", () => {
-    const result = validateSkillContent(
-      "---\nname: pdf\n---\nBody",
-      requireBoth,
-    );
+    const result = validateSkillContent("---\nname: pdf\n---\nBody", requireBoth);
     expect(result.canSave).toBe(false);
-    expect(result.issues.some((i) => i.message.includes("description"))).toBe(
-      true,
-    );
+    expect(result.issues.some((i) => i.message.includes("description"))).toBe(true);
   });
 
   it("does not require a description when the skill never had one", () => {
@@ -108,27 +99,16 @@ describe("skill detail — validation", () => {
   });
 
   it("blocks an unterminated frontmatter fence", () => {
-    const result = validateSkillContent(
-      "---\nname: pdf\nno closing fence here",
-      requireBoth,
-    );
+    const result = validateSkillContent("---\nname: pdf\nno closing fence here", requireBoth);
     expect(result.canSave).toBe(false);
-    expect(
-      result.issues.some((i) =>
-        i.message.toLowerCase().includes("unterminated"),
-      ),
-    ).toBe(true);
+    expect(result.issues.some((i) => i.message.toLowerCase().includes("unterminated"))).toBe(true);
   });
 
   it("blocks a document over the size limit", () => {
-    const big =
-      "---\nname: x\ndescription: y\n---\n" +
-      "a".repeat(SKILL_MD_MAX_BYTES + 1);
+    const big = "---\nname: x\ndescription: y\n---\n" + "a".repeat(SKILL_MD_MAX_BYTES + 1);
     const result = validateSkillContent(big, requireBoth);
     expect(result.canSave).toBe(false);
-    expect(result.issues.some((i) => i.message.includes("too large"))).toBe(
-      true,
-    );
+    expect(result.issues.some((i) => i.message.includes("too large"))).toBe(true);
   });
 
   it("warns (but does not block) on a secret-looking value, without leaking it", () => {
@@ -164,9 +144,7 @@ describe("skill detail — secret scan", () => {
   });
 
   it("does not flag ordinary prose", () => {
-    expect(
-      scanForSecrets("This skill helps you write a great summary.\n"),
-    ).toHaveLength(0);
+    expect(scanForSecrets("This skill helps you write a great summary.\n")).toHaveLength(0);
   });
 });
 
@@ -256,9 +234,7 @@ describe("skill detail — diff", () => {
     expect(diff.unchanged).toBe(false);
     expect(diff.addedCount).toBe(1);
     expect(diff.removedCount).toBe(1);
-    expect(diff.lines.some((l) => l.kind === "added" && l.text === "B")).toBe(
-      true,
-    );
+    expect(diff.lines.some((l) => l.kind === "added" && l.text === "B")).toBe(true);
   });
 });
 
@@ -405,9 +381,7 @@ describe("skill detail — controller", () => {
       localSkill(),
     );
     await controller.load();
-    vi.spyOn(harness.client.skills, "updateContent").mockRejectedValueOnce(
-      new Error("boom"),
-    );
+    vi.spyOn(harness.client.skills, "updateContent").mockRejectedValueOnce(new Error("boom"));
     controller.setDraft(WRITABLE.replace("Original", "Changed"));
     await controller.save();
     const snapshot = controller.getSnapshot();
@@ -473,18 +447,14 @@ describe("skill detail — component", () => {
     );
     expect(screen.getAllByText(/read only/i).length).toBeGreaterThan(0);
     // No editor textarea for a read-only skill.
-    expect(
-      screen.queryByLabelText(/skill instructions and metadata/i),
-    ).toBeNull();
+    expect(screen.queryByLabelText(/skill instructions and metadata/i)).toBeNull();
     // The instructions are shown as a read view instead.
     expect(screen.getByText(/instructions/i)).toBeInTheDocument();
   });
 
   it("renders an editor for a writable skill and a pre-edit warning", () => {
     render(<SkillDetailView state={baseState({})} />);
-    expect(
-      screen.getByLabelText(/skill instructions and metadata/i),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/skill instructions and metadata/i)).toBeInTheDocument();
     // The bundled pre-edit warning is shown.
     expect(screen.getByText(/bundled updates/i)).toBeInTheDocument();
   });
@@ -511,9 +481,7 @@ describe("skill detail — component", () => {
       name: /review changes before saving/i,
     });
     expect(within(dialog).getByText(/added/)).toBeInTheDocument();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: /save changes/i }),
-    );
+    fireEvent.click(within(dialog).getByRole("button", { name: /save changes/i }));
     expect(save).toHaveBeenCalledTimes(1);
   });
 
@@ -531,9 +499,7 @@ describe("skill detail — component", () => {
         })}
       />,
     );
-    expect(
-      screen.getByRole("button", { name: /review and save/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /review and save/i })).toBeDisabled();
     // The blocking error is shown inline.
     expect(screen.getByText(/missing a name/i)).toBeInTheDocument();
   });

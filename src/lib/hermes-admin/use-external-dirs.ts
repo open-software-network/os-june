@@ -33,21 +33,10 @@ import {
 import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  EXTERNAL_DIRS_CONFIG_PATH,
-  readExternalDirs,
-  type HermesSkillInfo,
-} from "./schemas";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { EXTERNAL_DIRS_CONFIG_PATH, readExternalDirs, type HermesSkillInfo } from "./schemas";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 import {
   addDir,
   buildExternalDirRows,
@@ -61,9 +50,7 @@ const EXTERNAL_DIRS_PATH = EXTERNAL_DIRS_CONFIG_PATH.join(".");
 
 /** The function that inspects the configured dirs read-only. Injectable so a
  * test can drive the rows without a Tauri runtime. */
-export type InspectExternalDirs = (
-  dirs: string[],
-) => Promise<ExternalDirStatus[]>;
+export type InspectExternalDirs = (dirs: string[]) => Promise<ExternalDirStatus[]>;
 
 /** The wired-up foundation primitives this surface operates on, all bound to the
  * SAME target. Production builds this from a bridge connection; tests build it
@@ -264,10 +251,7 @@ export class ExternalDirsController {
     this.error = undefined;
     this.recompute();
     try {
-      const outcome = await this.engine.client.config.setValue(
-        EXTERNAL_DIRS_PATH,
-        next,
-      );
+      const outcome = await this.engine.client.config.setValue(EXTERNAL_DIRS_PATH, next);
       if (this.disposed) return;
       this.engine.cache.afterMutation(outcome.mutation, subject);
       this.engine.lifecycle.noteMutation(outcome.mutation);
@@ -314,8 +298,7 @@ export class ExternalDirsController {
   private readonly refresh = (): void => {
     void this.load();
   };
-  private readonly addAction = (path: string): Promise<string | undefined> =>
-    this.add(path);
+  private readonly addAction = (path: string): Promise<string | undefined> => this.add(path);
   private readonly removeAction = (rawPath: string): void => {
     void this.remove(rawPath);
   };
@@ -326,13 +309,8 @@ export class ExternalDirsController {
 
 /** Binds an {@link ExternalDirsController} to React for one engine. A null
  * engine yields the "unavailable" state. */
-export function useExternalDirsController(
-  engine: ExternalDirsEngine | null,
-): ExternalDirsState {
-  const controller = useMemo(
-    () => (engine ? new ExternalDirsController(engine) : null),
-    [engine],
-  );
+export function useExternalDirsController(engine: ExternalDirsEngine | null): ExternalDirsState {
+  const controller = useMemo(() => (engine ? new ExternalDirsController(engine) : null), [engine]);
 
   const [snapshot, setSnapshot] = useState<ExternalDirsState>(() =>
     controller ? controller.getSnapshot() : UNAVAILABLE_STATE,
@@ -432,9 +410,7 @@ export function useExternalDirs(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

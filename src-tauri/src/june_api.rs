@@ -915,7 +915,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ")
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
-        .trim_end_matches(|ch: char| matches!(ch, '.' | ':' | '-'))
+        .trim_end_matches(['.', ':', '-'])
         .trim()
         .to_string();
     if title.is_empty() {
@@ -1101,6 +1101,49 @@ fn june_api_url() -> String {
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or_else(|| DEFAULT_JUNE_API_URL.to_string())
+}
+
+async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {
+    if !path.exists() {
+        return Err(AppError::new(
+            "audio_artifact_missing",
+            "Saved audio is missing and cannot be transcribed.",
+        ));
+    }
+    tokio::fs::read(path)
+        .await
+        .map_err(|error| AppError::new("audio_artifact_missing", error.to_string()))
+}
+
+fn filename_for_audio(path: &Path, fallback: &str) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn audio_part(audio: Vec<u8>, filename: &str, path: &Path) -> Result<Part, AppError> {
+    Part::bytes(audio)
+        .file_name(filename.to_string())
+        .mime_str(audio_mime(path))
+        .map_err(|error| AppError::new("june_request_failed", error.to_string()))
+}
+
+fn audio_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("m4a") | Some("mp4") => "audio/mp4",
+        _ => "audio/wav",
+    }
+}
+
+fn network_error(error: reqwest::Error) -> AppError {
+    let _ = PROVIDER_OPENAI;
+    AppError::new("june_request_failed", error.to_string())
 }
 
 #[cfg(test)]
@@ -1426,47 +1469,4 @@ mod tests {
         assert_eq!(messages[2]["role"], "tool");
         assert_eq!(messages[7]["content"], "result 5");
     }
-}
-
-async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {
-    if !path.exists() {
-        return Err(AppError::new(
-            "audio_artifact_missing",
-            "Saved audio is missing and cannot be transcribed.",
-        ));
-    }
-    tokio::fs::read(path)
-        .await
-        .map_err(|error| AppError::new("audio_artifact_missing", error.to_string()))
-}
-
-fn filename_for_audio(path: &Path, fallback: &str) -> String {
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(fallback)
-        .to_string()
-}
-
-fn audio_part(audio: Vec<u8>, filename: &str, path: &Path) -> Result<Part, AppError> {
-    Part::bytes(audio)
-        .file_name(filename.to_string())
-        .mime_str(audio_mime(path))
-        .map_err(|error| AppError::new("june_request_failed", error.to_string()))
-}
-
-fn audio_mime(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("m4a") | Some("mp4") => "audio/mp4",
-        _ => "audio/wav",
-    }
-}
-
-fn network_error(error: reqwest::Error) -> AppError {
-    let _ = PROVIDER_OPENAI;
-    AppError::new("june_request_failed", error.to_string())
 }

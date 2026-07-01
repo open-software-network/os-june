@@ -13,11 +13,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsStatus: mocks.osAccountsStatus,
 }));
 
-function StatusProbe({
-  forceLogoutOnMount = false,
-}: {
-  forceLogoutOnMount?: boolean;
-}) {
+function StatusProbe({ forceLogoutOnMount = false }: { forceLogoutOnMount?: boolean }) {
   const account = useAccountStatus({ forceLogoutOnMount }).account;
   return <div>{account.signedIn ? "Signed in" : "Signed out"}</div>;
 }

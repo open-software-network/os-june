@@ -8,6 +8,7 @@ on:
       - "hud.html"
       - "index.html"
       - "meeting-hud.html"
+      - "biome.json"
       - "package.json"
       - "pnpm-lock.yaml"
       - "public/**"
@@ -23,6 +24,7 @@ on:
       - "hud.html"
       - "index.html"
       - "meeting-hud.html"
+      - "biome.json"
       - "package.json"
       - "pnpm-lock.yaml"
       - "public/**"
@@ -42,6 +44,8 @@ concurrency:
 jobs:
   frontend:
     name: Frontend lint and tests
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -62,10 +66,39 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm lint
+        run: pnpm typecheck
 
       - name: Vitest
         run: pnpm test
+
+  # Biome enforces JS/TS/JSON/CSS formatting + linting for src/ and scripts/.
+  # `pnpm check` fails on formatting drift, lint errors, and banned imports
+  # (the icons-central-only spec bans lucide via noRestrictedImports).
+  biome:
+    name: Biome check
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Biome check
+        run: pnpm check
 
   # Decides whether the macOS Rust job has anything to test. macOS minutes
   # bill at 10x Linux, and most changes here are frontend-only — `cargo test`
@@ -78,13 +111,14 @@ jobs:
     name: Changed paths
     runs-on: ubuntu-latest
     outputs:
+      frontend: ${{ steps.diff.outputs.frontend }}
       rust: ${{ steps.diff.outputs.rust }}
       desktop_bundle: ${{ steps.diff.outputs.desktop_bundle }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-      - name: Diff rust-relevant paths
+      - name: Diff changed paths
         id: diff
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -92,11 +126,19 @@ jobs:
           set -euo pipefail
           if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]] \
             || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed_files="$(git diff --name-only "$BASE" HEAD)"
+          # Frontend checks (biome, typecheck, vitest) read src/ and scripts/, never
+          # src-tauri/, so a src-tauri-only diff skips them and vice versa.
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/desktop\.yml$|biome\.json$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|public/|scripts/|src/|tsconfig\.json$|vite\.config\.ts$)'; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
           if printf '%s\n' "$changed_files" | grep -Eq '^(src-tauri/|\.github/workflows/desktop\.yml$)'; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
@@ -108,8 +150,28 @@ jobs:
             echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # rustfmt needs no compilation and none of the macOS-only system deps, so it
+  # runs on cheap Linux for fast feedback. Clippy and tests stay on macOS (see
+  # the `rust` job) because src-tauri gates real code behind
+  # `#[cfg(target_os = "macos")]` that a Linux lint pass would silently skip.
+  rust-fmt:
+    name: Tauri Rust format
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt
+
+      - name: Cargo fmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
   rust:
-    name: Tauri Rust tests
+    name: Tauri Rust clippy and tests
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: macos-latest
@@ -118,6 +180,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
 
       - name: Cache cargo registry
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -137,6 +201,9 @@ jobs:
           key: tauri-cargo-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
             tauri-cargo-target-${{ runner.os }}-
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Cargo test
         run: cargo test --manifest-path src-tauri/Cargo.toml

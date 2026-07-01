@@ -19,13 +19,7 @@ import type { HermesHubSkillResult, HermesHubTrustLevel } from "./schemas";
  * skills, `skills-sh` is the skills.sh registry, `well-known` a well-known skill
  * endpoint, `github` a GitHub path/tap, `url` a direct single-file SKILL.md, and
  * `other` anything upstream returns that does not map cleanly. */
-export type HubSourceKind =
-  | "official"
-  | "skills-sh"
-  | "well-known"
-  | "github"
-  | "url"
-  | "other";
+export type HubSourceKind = "official" | "skills-sh" | "well-known" | "github" | "url" | "other";
 
 /** A friendly label + blurb for a source kind, so the UI never shows a raw
  * source identifier and a user can tell a curated source from a direct URL. */
@@ -37,39 +31,38 @@ export type HubSourceMeta = {
   blurb: string;
 };
 
-const SOURCE_META: Readonly<Record<HubSourceKind, HubSourceMeta>> =
-  Object.freeze({
-    official: {
-      kind: "official",
-      label: "Official",
-      blurb: "An optional skill maintained alongside Hermes.",
-    },
-    "skills-sh": {
-      kind: "skills-sh",
-      label: "skills.sh",
-      blurb: "Published to the skills.sh registry.",
-    },
-    "well-known": {
-      kind: "well-known",
-      label: "Well known",
-      blurb: "Served from a well-known skill endpoint.",
-    },
-    github: {
-      kind: "github",
-      label: "GitHub",
-      blurb: "Installed from a GitHub path or tap.",
-    },
-    url: {
-      kind: "url",
-      label: "Direct URL",
-      blurb: "A single SKILL.md file installed straight from a URL.",
-    },
-    other: {
-      kind: "other",
-      label: "Other",
-      blurb: "Source reported by Hermes.",
-    },
-  });
+const SOURCE_META: Readonly<Record<HubSourceKind, HubSourceMeta>> = Object.freeze({
+  official: {
+    kind: "official",
+    label: "Official",
+    blurb: "An optional skill maintained alongside Hermes.",
+  },
+  "skills-sh": {
+    kind: "skills-sh",
+    label: "skills.sh",
+    blurb: "Published to the skills.sh registry.",
+  },
+  "well-known": {
+    kind: "well-known",
+    label: "Well known",
+    blurb: "Served from a well-known skill endpoint.",
+  },
+  github: {
+    kind: "github",
+    label: "GitHub",
+    blurb: "Installed from a GitHub path or tap.",
+  },
+  url: {
+    kind: "url",
+    label: "Direct URL",
+    blurb: "A single SKILL.md file installed straight from a URL.",
+  },
+  other: {
+    kind: "other",
+    label: "Other",
+    blurb: "Source reported by Hermes.",
+  },
+});
 
 /** The display metadata for a source kind. */
 export function sourceKindMeta(kind: HubSourceKind): HubSourceMeta {
@@ -86,18 +79,10 @@ export function sourceKindFor(result: HermesHubSkillResult): HubSourceKind {
     if (source === "official" || source === "builtin" || source === "bundled") {
       return "official";
     }
-    if (
-      source === "skills.sh" ||
-      source === "skills-sh" ||
-      source === "skillssh"
-    ) {
+    if (source === "skills.sh" || source === "skills-sh" || source === "skillssh") {
       return "skills-sh";
     }
-    if (
-      source === "well-known" ||
-      source === "well_known" ||
-      source === "wellknown"
-    ) {
+    if (source === "well-known" || source === "well_known" || source === "wellknown") {
       return "well-known";
     }
     if (source === "github" || source === "gh" || source === "tap") {
@@ -110,15 +95,10 @@ export function sourceKindFor(result: HermesHubSkillResult): HubSourceKind {
   // Infer from the identifier when the source is absent or unrecognized.
   const id = result.identifier.toLowerCase();
   if (isDirectUrlInstall(result)) return "url";
-  if (
-    id.startsWith("github:") ||
-    id.startsWith("gh:") ||
-    id.includes("github.com")
-  ) {
+  if (id.startsWith("github:") || id.startsWith("gh:") || id.includes("github.com")) {
     return "github";
   }
-  if (id.startsWith("skills.sh/") || id.includes("skills.sh"))
-    return "skills-sh";
+  if (id.startsWith("skills.sh/") || id.includes("skills.sh")) return "skills-sh";
   return "other";
 }
 
@@ -142,35 +122,32 @@ export type HubTrustMeta = {
   advisory: string;
 };
 
-const TRUST_META: Readonly<Record<HermesHubTrustLevel, HubTrustMeta>> =
-  Object.freeze({
-    official: {
-      level: "official",
-      label: "Official",
-      tone: "trusted",
-      advisory: "Maintained alongside Hermes.",
-    },
-    verified: {
-      level: "verified",
-      label: "Verified",
-      tone: "trusted",
-      advisory: "From a verified source.",
-    },
-    community: {
-      level: "community",
-      label: "Community",
-      tone: "caution",
-      advisory:
-        "From a community source. Review what it does before you install it.",
-    },
-    unknown: {
-      level: "unknown",
-      label: "Unverified",
-      tone: "neutral",
-      advisory:
-        "Hermes did not report a trust level. Review before installing.",
-    },
-  });
+const TRUST_META: Readonly<Record<HermesHubTrustLevel, HubTrustMeta>> = Object.freeze({
+  official: {
+    level: "official",
+    label: "Official",
+    tone: "trusted",
+    advisory: "Maintained alongside Hermes.",
+  },
+  verified: {
+    level: "verified",
+    label: "Verified",
+    tone: "trusted",
+    advisory: "From a verified source.",
+  },
+  community: {
+    level: "community",
+    label: "Community",
+    tone: "caution",
+    advisory: "From a community source. Review what it does before you install it.",
+  },
+  unknown: {
+    level: "unknown",
+    label: "Unverified",
+    tone: "neutral",
+    advisory: "Hermes did not report a trust level. Review before installing.",
+  },
+});
 
 /** The display metadata for a trust level. */
 export function trustMeta(level: HermesHubTrustLevel): HubTrustMeta {
@@ -225,17 +202,8 @@ export function filterHubResults(
 /** The distinct source kinds present in a result set, in a stable display order
  * (official first, direct URL last) so the filter row never reorders as results
  * change and never offers an empty source. */
-export function sourceKindsOf(
-  results: readonly HermesHubSkillResult[],
-): HubSourceKind[] {
-  const order: HubSourceKind[] = [
-    "official",
-    "skills-sh",
-    "well-known",
-    "github",
-    "url",
-    "other",
-  ];
+export function sourceKindsOf(results: readonly HermesHubSkillResult[]): HubSourceKind[] {
+  const order: HubSourceKind[] = ["official", "skills-sh", "well-known", "github", "url", "other"];
   const present = new Set<HubSourceKind>();
   for (const result of results) present.add(sourceKindFor(result));
   return order.filter((kind) => present.has(kind));

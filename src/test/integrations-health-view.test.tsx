@@ -51,10 +51,7 @@ function serverFromWire(raw: Record<string, unknown>): HermesMcpServerInfo {
   return server;
 }
 
-function toolset(
-  name: string,
-  overrides: Partial<HermesToolsetInfo> = {},
-): HermesToolsetInfo {
+function toolset(name: string, overrides: Partial<HermesToolsetInfo> = {}): HermesToolsetInfo {
   return {
     name,
     enabled: true,
@@ -79,9 +76,7 @@ function externalDir(
   };
 }
 
-function baseInputs(
-  overrides: Partial<IntegrationsHealthInputs> = {},
-): IntegrationsHealthInputs {
+function baseInputs(overrides: Partial<IntegrationsHealthInputs> = {}): IntegrationsHealthInputs {
   return {
     mode: "sandboxed",
     profile: "default",
@@ -133,35 +128,27 @@ describe("buildIntegrationsHealth status", () => {
   });
 
   it("reports needs restart when a gateway restart is staged", () => {
-    const health = buildIntegrationsHealth(
-      baseInputs({ lifecycle: RESTART_LIFECYCLE }),
-    );
+    const health = buildIntegrationsHealth(baseInputs({ lifecycle: RESTART_LIFECYCLE }));
     expect(health.status).toBe("needs-restart");
     expect(codes(health)).toEqual(["gateway-restart-required"]);
   });
 
   it("reports broken when a gateway restart failed", () => {
-    const health = buildIntegrationsHealth(
-      baseInputs({ lifecycle: FAILED_LIFECYCLE }),
-    );
+    const health = buildIntegrationsHealth(baseInputs({ lifecycle: FAILED_LIFECYCLE }));
     expect(health.status).toBe("broken");
     expect(codes(health)).toEqual(["gateway-restart-failed"]);
     expect(health.issues[0].target).toBe("mcp-diagnostics");
   });
 
   it("reports needs review for pending skill writes", () => {
-    const health = buildIntegrationsHealth(
-      baseInputs({ pendingSkillWrites: 2 }),
-    );
+    const health = buildIntegrationsHealth(baseInputs({ pendingSkillWrites: 2 }));
     expect(health.status).toBe("needs-review");
     expect(codes(health)).toEqual(["skill-pending-review"]);
     expect(health.issues[0].message).toContain("2 agent-authored skill");
   });
 
   it("reports risky configuration for an enabled high-risk MCP", () => {
-    const servers = [
-      serverFromWire({ name: "shell", enabled: true, transport: "stdio" }),
-    ];
+    const servers = [serverFromWire({ name: "shell", enabled: true, transport: "stdio" })];
     const health = buildIntegrationsHealth(
       baseInputs({
         mcpServers: servers,
@@ -346,13 +333,9 @@ describe("issue targets", () => {
         externalDirs: [externalDir("~/missing", "missing")],
       }),
     );
-    const targetByCode = new Map(
-      health.issues.map((issue) => [issue.code, issue.target]),
-    );
+    const targetByCode = new Map(health.issues.map((issue) => [issue.code, issue.target]));
     expect(targetByCode.get("model-no-tools")).toBe("models");
-    expect(targetByCode.get("gateway-restart-required")).toBe(
-      "mcp-diagnostics",
-    );
+    expect(targetByCode.get("gateway-restart-required")).toBe("mcp-diagnostics");
     expect(targetByCode.get("skill-missing-secret")).toBe("skills");
     expect(targetByCode.get("skill-missing-config")).toBe("skills");
     expect(targetByCode.get("skill-pending-review")).toBe("skill-review");
@@ -401,8 +384,7 @@ describe("buildIntegrationsHealthReport redaction", () => {
         enabled: true,
         transport: "http",
         status: "error",
-        statusMessage:
-          "auth failed with token sk0123456789abcdef0123456789abcdef",
+        statusMessage: "auth failed with token sk0123456789abcdef0123456789abcdef",
       }),
     ];
     const health = buildIntegrationsHealth(baseInputs({ mcpServers: servers }));
@@ -430,13 +412,8 @@ describe("buildIntegrationsHealthReport redaction", () => {
   });
 
   it("builds a stable, filesystem-safe filename", () => {
-    const name = integrationsHealthReportFilename(
-      "team/profile",
-      new Date("2026-06-26T12:34:56Z"),
-    );
-    expect(name).toBe(
-      "integrations-health-team-profile-2026-06-26T12-34-56-000Z.json",
-    );
+    const name = integrationsHealthReportFilename("team/profile", new Date("2026-06-26T12:34:56Z"));
+    expect(name).toBe("integrations-health-team-profile-2026-06-26T12-34-56-000Z.json");
   });
 });
 

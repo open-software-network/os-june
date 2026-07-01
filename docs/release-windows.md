@@ -74,7 +74,7 @@ The Windows workflow performs the release steps in order:
    build matches the promoted macOS version.
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
    `open-software-network/os-june-releases`.
-5. Runs `pnpm lint` and `pnpm test`.
+5. Runs `pnpm typecheck` and `pnpm test`.
 6. Builds the bundled Hermes runtime with
    `scripts/bundle-hermes-runtime-windows.ps1`: the pinned hermes-agent
    checkout, a relocatable CPython, Python deps, prebuilt dashboard UI, and a

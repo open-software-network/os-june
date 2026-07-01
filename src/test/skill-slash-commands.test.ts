@@ -38,14 +38,12 @@ const skills: HermesSkillInfo[] = [
 
 describe("skill slash commands", () => {
   it("extracts leading slash commands and leaves the user request", () => {
-    expect(
-      parseSkillSlashCommands(
-        "  /repo-build-pr /os-platform implement issue JUN-46",
-      ),
-    ).toEqual({
-      commandNames: ["repo-build-pr", "os-platform"],
-      prompt: "implement issue JUN-46",
-    });
+    expect(parseSkillSlashCommands("  /repo-build-pr /os-platform implement issue JUN-46")).toEqual(
+      {
+        commandNames: ["repo-build-pr", "os-platform"],
+        prompt: "implement issue JUN-46",
+      },
+    );
   });
 
   it("tracks slash command token positions", () => {
@@ -56,19 +54,14 @@ describe("skill slash commands", () => {
   });
 
   it("deduplicates command names without moving the prompt before duplicates", () => {
-    expect(
-      parseSkillSlashCommands("/repo-build-pr /repo-build-pr implement"),
-    ).toEqual({
+    expect(parseSkillSlashCommands("/repo-build-pr /repo-build-pr implement")).toEqual({
       commandNames: ["repo-build-pr"],
       prompt: "implement",
     });
   });
 
   it("resolves exact and qualified short names", () => {
-    const resolutions = resolveSkillSlashCommands(
-      ["repo-build-pr", "os-platform"],
-      skills,
-    );
+    const resolutions = resolveSkillSlashCommands(["repo-build-pr", "os-platform"], skills);
 
     expect(resolutions).toMatchObject([
       { status: "resolved", skill: { name: "repo-build-pr" } },
@@ -77,10 +70,7 @@ describe("skill slash commands", () => {
   });
 
   it("reports ambiguous short names with concrete choices", () => {
-    const [resolution] = resolveSkillSlashCommands(
-      ["gh-address-comments"],
-      skills,
-    );
+    const [resolution] = resolveSkillSlashCommands(["gh-address-comments"], skills);
 
     expect(resolution).toMatchObject({ status: "ambiguous" });
     expect(skillSlashResolutionError(resolution)).toBe(
@@ -106,36 +96,28 @@ describe("skill slash commands", () => {
         enabled: false,
       },
     ];
-    const [resolution] = resolveSkillSlashCommands(
-      ["disabled-review"],
-      disabledSkills,
-    );
+    const [resolution] = resolveSkillSlashCommands(["disabled-review"], disabledSkills);
 
     expect(resolution).toMatchObject({ status: "disabled" });
     expect(skillSlashResolutionError(resolution)).toBe(
       "/disabled-review is disabled. Enable it in Agent settings to use it.",
     );
-    expect(
-      matchSkillSlashSuggestions("disabled", disabledSkills).map((s) => s.name),
-    ).toEqual([]);
+    expect(matchSkillSlashSuggestions("disabled", disabledSkills).map((s) => s.name)).toEqual([]);
   });
 
   it("ranks autocomplete suggestions by name and description", () => {
-    expect(
-      matchSkillSlashSuggestions("platform", skills).map((s) => s.name),
-    ).toEqual(["os-platform"]);
-    expect(
-      matchSkillSlashSuggestions("review", skills).map((s) => s.name),
-    ).toEqual(["github:gh-address-comments", "tools/gh-address-comments"]);
+    expect(matchSkillSlashSuggestions("platform", skills).map((s) => s.name)).toEqual([
+      "os-platform",
+    ]);
+    expect(matchSkillSlashSuggestions("review", skills).map((s) => s.name)).toEqual([
+      "github:gh-address-comments",
+      "tools/gh-address-comments",
+    ]);
   });
 
   it("maps qualified skills to the backend document lookup name", () => {
-    expect(skillDocumentLookupName("tools/gh-address-comments")).toBe(
-      "gh-address-comments",
-    );
-    expect(skillDocumentLookupName("github:gh-address-comments")).toBe(
-      "gh-address-comments",
-    );
+    expect(skillDocumentLookupName("tools/gh-address-comments")).toBe("gh-address-comments");
+    expect(skillDocumentLookupName("github:gh-address-comments")).toBe("gh-address-comments");
     expect(skillDocumentLookupName("repo-build-pr")).toBe("repo-build-pr");
   });
 
@@ -153,21 +135,15 @@ describe("skill slash commands", () => {
         content: "# Repo build PR\n\nOpen a draft PR.",
       },
     ];
-    const wrapped = explicitSkillInvocationPrompt(
-      documents,
-      "implement issue JUN-46",
-    );
+    const wrapped = explicitSkillInvocationPrompt(documents, "implement issue JUN-46");
 
     expect(wrapped).toContain("Skill: repo-build-pr");
     expect(wrapped).toContain("Open a draft PR.");
-    expect(displayedSkillInvocationText(wrapped)).toBe(
-      "implement issue JUN-46",
-    );
+    expect(displayedSkillInvocationText(wrapped)).toBe("implement issue JUN-46");
   });
 
   it("does not strip ordinary messages that mention the marker strings", () => {
-    const ordinary =
-      "Explain this example:\n---USER REQUEST---\nhello\n---END USER REQUEST---";
+    const ordinary = "Explain this example:\n---USER REQUEST---\nhello\n---END USER REQUEST---";
 
     expect(displayedSkillInvocationText(ordinary)).toBe(ordinary);
   });

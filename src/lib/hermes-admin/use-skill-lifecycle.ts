@@ -25,21 +25,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  hermesBridgeStatus,
-  hermesResetBundledSkill,
-  type HermesBridgeStatus,
-} from "../tauri";
+import { hermesBridgeStatus, hermesResetBundledSkill, type HermesBridgeStatus } from "../tauri";
 import { AdminStateCache } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { GatewayLifecycle } from "./gateway-lifecycle";
 import { createRustAdminFetch } from "./rust-transport";
-import type {
-  HermesActionStatus,
-  HermesSkillInfo,
-  HermesSkillScan,
-} from "./schemas";
+import type { HermesActionStatus, HermesSkillInfo, HermesSkillScan } from "./schemas";
 import {
   hubIdentifierOf,
   isSafeSkillName,
@@ -126,11 +118,7 @@ export type SkillLifecycleState = {
   /** Runs a lifecycle action against a skill. A no-op when the action is invalid
    * for the skill's source, or when it would overwrite local edits and the
    * divergence was not accepted. */
-  run: (
-    skill: HermesSkillInfo,
-    action: SkillLifecycleAction,
-    options?: RunActionOptions,
-  ) => void;
+  run: (skill: HermesSkillInfo, action: SkillLifecycleAction, options?: RunActionOptions) => void;
   /** Re-checks all installed hub/official skills against the hub for updates by
    * refreshing the inventory + hub search. */
   checkForUpdates: () => void;
@@ -159,10 +147,7 @@ export class SkillLifecycleController {
   private readonly aborts = new Map<string, AbortController>();
   private snapshot: SkillLifecycleState;
 
-  constructor(
-    engine: SkillLifecycleEngine,
-    options: SkillLifecycleControllerOptions = {},
-  ) {
+  constructor(engine: SkillLifecycleEngine, options: SkillLifecycleControllerOptions = {}) {
     this.engine = engine;
     this.options = options;
     this.resetBundled = options.resetBundled ?? hermesResetBundledSkill;
@@ -269,10 +254,7 @@ export class SkillLifecycleController {
     } catch (error) {
       if (this.disposed) return;
       this.sweeping = false;
-      this.sweepError = HermesAdminError.from(
-        "GET /api/skills",
-        error,
-      ).safeMessage;
+      this.sweepError = HermesAdminError.from("GET /api/skills", error).safeMessage;
       this.recompute();
     }
   }
@@ -284,11 +266,7 @@ export class SkillLifecycleController {
     if (this.disposed || this.sweeping) return;
     const eligible = skills.filter((skill) => {
       const policy = skillLifecyclePolicy(skill);
-      return (
-        policy.actions.update.available &&
-        policy.updateAvailable &&
-        !policy.locallyModified
-      );
+      return policy.actions.update.available && policy.updateAvailable && !policy.locallyModified;
     });
     if (eligible.length === 0) return;
     this.sweeping = true;
@@ -328,11 +306,7 @@ export class SkillLifecycleController {
     // delete) so the UI can target the exact button; a local skill's removal is
     // surfaced as "delete", a hub skill's as "uninstall".
     const rowAction: SkillLifecycleAction =
-      kind === "update"
-        ? "update"
-        : policy.lifecycleClass === "local"
-          ? "delete"
-          : "uninstall";
+      kind === "update" ? "update" : policy.lifecycleClass === "local" ? "delete" : "uninstall";
     this.setAction(skill.name, rowAction, {
       phase: "running",
       progress: undefined,
@@ -342,9 +316,7 @@ export class SkillLifecycleController {
       const outcome =
         kind === "update"
           ? await this.engine.client.skills.hubUpdate(skill.name)
-          : await this.engine.client.skills.hubUninstall(
-              hubIdentifierOf(skill) ?? skill.name,
-            );
+          : await this.engine.client.skills.hubUninstall(hubIdentifierOf(skill) ?? skill.name);
       if (this.disposed) return;
 
       let status: HermesActionStatus | undefined = outcome.result;
@@ -373,8 +345,7 @@ export class SkillLifecycleController {
       }
 
       if (status && status.state === "failed") {
-        const mutation =
-          kind === "update" ? "skill.hubUpdate" : "skill.hubUninstall";
+        const mutation = kind === "update" ? "skill.hubUpdate" : "skill.hubUninstall";
         this.engine.cache.afterAction(mutation, skill.name, status);
         this.setAction(skill.name, rowAction, {
           phase: "failed",
@@ -383,8 +354,7 @@ export class SkillLifecycleController {
         return;
       }
 
-      const mutation =
-        kind === "update" ? "skill.hubUpdate" : "skill.hubUninstall";
+      const mutation = kind === "update" ? "skill.hubUpdate" : "skill.hubUninstall";
       this.engine.cache.afterMutation(mutation, skill.name);
       this.engine.lifecycle.noteMutation(mutation);
       this.setAction(skill.name, rowAction, {
@@ -396,9 +366,7 @@ export class SkillLifecycleController {
     } catch (error) {
       if (this.disposed) return;
       const endpoint =
-        kind === "update"
-          ? "POST /api/skills/hub/update"
-          : "POST /api/skills/hub/uninstall";
+        kind === "update" ? "POST /api/skills/hub/update" : "POST /api/skills/hub/uninstall";
       this.setAction(skill.name, rowAction, {
         phase: "failed",
         error: HermesAdminError.from(endpoint, error).safeMessage,
@@ -409,15 +377,10 @@ export class SkillLifecycleController {
   /** Runs a read-only audit: `skills.hubScan`. It mutates nothing, so it raises
    * no durable notification beyond the immediate result; it surfaces the scan
    * inline on the row. */
-  private async runAudit(
-    skill: HermesSkillInfo,
-    policy: SkillLifecyclePolicy,
-  ): Promise<void> {
+  private async runAudit(skill: HermesSkillInfo, policy: SkillLifecyclePolicy): Promise<void> {
     this.setAction(skill.name, "audit", { phase: "running" });
     try {
-      const scan = await this.engine.client.skills.hubScan(
-        policy.hubIdentifier ?? skill.name,
-      );
+      const scan = await this.engine.client.skills.hubScan(policy.hubIdentifier ?? skill.name);
       if (this.disposed) return;
       // An audit changes nothing durable; record the result and raise the
       // "audited" notification through the cache (which also invalidates the
@@ -432,8 +395,7 @@ export class SkillLifecycleController {
       if (this.disposed) return;
       this.setAction(skill.name, "audit", {
         phase: "failed",
-        error: HermesAdminError.from("GET /api/skills/hub/scan", error)
-          .safeMessage,
+        error: HermesAdminError.from("GET /api/skills/hub/scan", error).safeMessage,
       });
     }
   }
@@ -441,16 +403,12 @@ export class SkillLifecycleController {
   /** Runs the bundled-skill reset/restore CLI fallback. The skill name is
    * validated argument-safe BEFORE the Tauri call (the Rust side re-validates),
    * so a name that could escape into a flag never leaves the webview. */
-  private async runReset(
-    skill: HermesSkillInfo,
-    restore: boolean,
-  ): Promise<void> {
+  private async runReset(skill: HermesSkillInfo, restore: boolean): Promise<void> {
     const rowAction: SkillLifecycleAction = restore ? "restore" : "reset";
     if (!isSafeSkillName(skill.name)) {
       this.setAction(skill.name, rowAction, {
         phase: "failed",
-        error:
-          "This skill's name cannot be reset safely from June. Reset it in Hermes.",
+        error: "This skill's name cannot be reset safely from June. Reset it in Hermes.",
       });
       return;
     }
@@ -487,10 +445,7 @@ export class SkillLifecycleController {
       if (this.disposed) return;
       this.setAction(skill.name, rowAction, {
         phase: "failed",
-        error:
-          error instanceof Error
-            ? error.message
-            : `Could not reset ${skill.name}.`,
+        error: error instanceof Error ? error.message : `Could not reset ${skill.name}.`,
       });
     }
   }
@@ -498,10 +453,7 @@ export class SkillLifecycleController {
   /** A "check for updates" on a single skill: re-audit it so its verdict and any
    * available-update signal refresh, plus invalidate the inventory + hub search.
    * For a hub/official skill this is its audit; the row reflects the outcome. */
-  private async runCheck(
-    skill: HermesSkillInfo,
-    policy: SkillLifecyclePolicy,
-  ): Promise<void> {
+  private async runCheck(skill: HermesSkillInfo, policy: SkillLifecyclePolicy): Promise<void> {
     this.engine.cache.invalidate(["skills", "hubSearch"]);
     await this.runAudit(skill, policy);
   }
@@ -538,9 +490,8 @@ export class SkillLifecycleController {
     for (const listener of [...this.listeners]) listener();
   }
 
-  private readonly policyForAction = (
-    skill: HermesSkillInfo,
-  ): SkillLifecyclePolicy => skillLifecyclePolicy(skill);
+  private readonly policyForAction = (skill: HermesSkillInfo): SkillLifecyclePolicy =>
+    skillLifecyclePolicy(skill);
   private readonly runAction = (
     skill: HermesSkillInfo,
     action: SkillLifecycleAction,
@@ -551,15 +502,10 @@ export class SkillLifecycleController {
   private readonly checkForUpdatesAction = (): void => {
     void this.checkForUpdates();
   };
-  private readonly updateAllAction = (
-    skills: readonly HermesSkillInfo[],
-  ): void => {
+  private readonly updateAllAction = (skills: readonly HermesSkillInfo[]): void => {
     void this.updateAll(skills);
   };
-  private readonly clearActionAction = (
-    skill: string,
-    action: SkillLifecycleAction,
-  ): void => {
+  private readonly clearActionAction = (skill: string, action: SkillLifecycleAction): void => {
     this.clearAction(skill, action);
   };
 }

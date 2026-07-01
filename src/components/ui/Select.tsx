@@ -88,8 +88,7 @@ export function Select({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [placement, setPlacement] =
-    useState<SelectPopoverPlacement>("align-selected");
+  const [placement, setPlacement] = useState<SelectPopoverPlacement>("align-selected");
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const selectedIndex = options.findIndex((option) => option.value === value);
@@ -120,21 +119,14 @@ export function Select({
       setPlacement(
         selectedIndex === -1
           ? "below"
-          : selectPopoverPlacement(
-              wrapRef.current,
-              options.length,
-              selectedIndex,
-            ),
+          : selectPopoverPlacement(wrapRef.current, options.length, selectedIndex),
       );
     }
     setOpen((current) => !current);
   }
 
   return (
-    <div
-      className={`select-control${className ? ` ${className}` : ""}`}
-      ref={wrapRef}
-    >
+    <div className={`select-control${className ? ` ${className}` : ""}`} ref={wrapRef}>
       <button
         type="button"
         className="select-trigger"

@@ -46,32 +46,21 @@ export function initTheme() {
 
 function resolveTheme(theme: ThemePreference): ResolvedTheme {
   if (theme === "light" || theme === "dark") return theme;
-  if (
-    typeof window === "undefined" ||
-    typeof window.matchMedia !== "function"
-  ) {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return "light";
   }
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function attachSystemListener() {
   if (systemListener) return;
-  if (
-    typeof window === "undefined" ||
-    typeof window.matchMedia !== "function"
-  ) {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return;
   }
   systemMedia = window.matchMedia("(prefers-color-scheme: dark)");
   systemListener = (event) => {
     withTransition(() => {
-      document.documentElement.setAttribute(
-        "data-theme",
-        event.matches ? "dark" : "light",
-      );
+      document.documentElement.setAttribute("data-theme", event.matches ? "dark" : "light");
     });
   };
   systemMedia.addEventListener("change", systemListener);
@@ -85,9 +74,8 @@ function detachSystemListener() {
 }
 
 function withTransition(mutate: () => void) {
-  const start = (
-    document as Document & { startViewTransition?: StartViewTransition }
-  ).startViewTransition;
+  const start = (document as Document & { startViewTransition?: StartViewTransition })
+    .startViewTransition;
   if (typeof start === "function") {
     start.call(document, mutate);
   } else {

@@ -36,11 +36,7 @@ import { restartPendingFromLifecycle } from "./use-mcp-diagnostics";
 import type { GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { ExternalDirRow } from "./external-dirs-view";
 import type { SkillSetupBadge } from "./skill-setup-view";
-import type {
-  HermesMcpServerInfo,
-  HermesSkillInfo,
-  HermesToolsetInfo,
-} from "./schemas";
+import type { HermesMcpServerInfo, HermesToolsetInfo } from "./schemas";
 
 // ---------------------------------------------------------------------------
 // Settings tabs an issue can deep-link to. Kept as a string union local to this
@@ -285,9 +281,7 @@ function toolsetNeedsSetup(toolset: HermesToolsetInfo): boolean {
  * Reduces the loaded inputs into the full health model. Pure and deterministic:
  * the same inputs always yield the same issues, ordering, and status.
  */
-export function buildIntegrationsHealth(
-  inputs: IntegrationsHealthInputs,
-): IntegrationsHealth {
+export function buildIntegrationsHealth(inputs: IntegrationsHealthInputs): IntegrationsHealth {
   const issues: HealthIssue[] = [];
   const restartPending = restartPendingFromLifecycle(inputs.lifecycle);
   const highRisk = new Set(inputs.highRiskMcpServers ?? []);
@@ -328,10 +322,7 @@ export function buildIntegrationsHealth(
       action: "Restart the gateway.",
       target: "mcp-diagnostics",
     });
-  } else if (
-    restartPending &&
-    inputs.lifecycle.state !== "restart-in-progress"
-  ) {
+  } else if (restartPending && inputs.lifecycle.state !== "restart-in-progress") {
     issues.push({
       code: "gateway-restart-required",
       status: "needs-restart",
@@ -498,9 +489,7 @@ function mcpNeedsAuth(server: HermesMcpServerInfo): boolean {
     server.auth === "expired";
   if (!usesOauth) return false;
   return (
-    server.auth === "unauthenticated" ||
-    server.auth === "expired" ||
-    server.auth === "unknown"
+    server.auth === "unauthenticated" || server.auth === "expired" || server.auth === "unknown"
   );
 }
 
@@ -533,17 +522,14 @@ function buildSummary(
   const enabledSkills = inputs.skills.filter((skill) => skill.enabled);
   const skillsNeedingSetup = enabledSkills.filter(
     (skill) =>
-      skill.badge?.status === "missing-api-key" ||
-      skill.badge?.status === "missing-config",
+      skill.badge?.status === "missing-api-key" || skill.badge?.status === "missing-config",
   ).length;
 
   const enabledToolsets = inputs.toolsets.filter((toolset) => toolset.enabled);
   const toolsetsNeedingSetup = inputs.toolsets.filter(toolsetNeedsSetup).length;
 
   const dirsMissing = inputs.externalDirs.filter(dirIsMissing).length;
-  const dirsUnreadable = inputs.externalDirs.filter(
-    (dir) => dir.presence === "unreadable",
-  ).length;
+  const dirsUnreadable = inputs.externalDirs.filter((dir) => dir.presence === "unreadable").length;
 
   const enabledHighRisk = inputs.mcpServers.filter(
     (server) => server.enabled && highRisk.has(server.name),
@@ -699,17 +685,12 @@ function scrubFreeText(value: string): string {
 }
 
 /** Serializes the report to a pretty JSON string for download. */
-export function serializeIntegrationsHealthReport(
-  report: IntegrationsHealthReport,
-): string {
+export function serializeIntegrationsHealthReport(report: IntegrationsHealthReport): string {
   return JSON.stringify(report, null, 2);
 }
 
 /** A stable, filesystem-safe filename for a downloaded report. */
-export function integrationsHealthReportFilename(
-  profile: string,
-  now: Date = new Date(),
-): string {
+export function integrationsHealthReportFilename(profile: string, now: Date = new Date()): string {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   const safeProfile = profile.replace(/[^a-zA-Z0-9_-]/g, "-");
   return `integrations-health-${safeProfile}-${stamp}.json`;

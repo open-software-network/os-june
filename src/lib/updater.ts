@@ -30,9 +30,7 @@ type UpdateMeta = {
 export type JuneUpdate = {
   version: string;
   body?: string;
-  downloadAndInstall: (
-    onEvent?: (event: DownloadEvent) => void,
-  ) => Promise<void>;
+  downloadAndInstall: (onEvent?: (event: DownloadEvent) => void) => Promise<void>;
 };
 
 export function getReleaseChannel(): Promise<ReleaseChannel> {
@@ -74,9 +72,7 @@ export function reconcileToStable(): Promise<JuneUpdate | null> {
   return fetchJuneUpdate(true);
 }
 
-function installStagedUpdate(
-  onEvent?: (event: DownloadEvent) => void,
-): Promise<void> {
+function installStagedUpdate(onEvent?: (event: DownloadEvent) => void): Promise<void> {
   const channel = new Channel<DownloadEvent>();
   if (onEvent) channel.onmessage = onEvent;
   return invoke("install_update", { onEvent: channel });

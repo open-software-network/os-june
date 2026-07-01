@@ -43,17 +43,10 @@ import {
 } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesActionStatus, HermesMcpCatalogEntry } from "./schemas";
 import { needsAuthHandoff } from "./mcp-catalog-view";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives one MCP catalog page operates on, all
  * bound to the SAME target. Production builds this from a bridge connection (see
@@ -105,10 +98,7 @@ export type McpCatalogState = {
   /** Installs a catalog entry from an already-validated payload (a background
    * action): polls to completion, surfaces progress, and on success refreshes
    * the MCP servers inventory + the catalog. */
-  install: (
-    entry: HermesMcpCatalogEntry,
-    payload: HermesInstallCatalogPayload,
-  ) => void;
+  install: (entry: HermesMcpCatalogEntry, payload: HermesInstallCatalogPayload) => void;
   /** Clears a terminal (done/failed) install state for an entry. */
   clearInstall: (installName: string) => void;
   dismissNotification: (id: string) => void;
@@ -145,10 +135,7 @@ export class McpCatalogController {
   private unsubscribers: Array<() => void> = [];
   private snapshot: McpCatalogState;
 
-  constructor(
-    engine: McpCatalogEngine,
-    options: McpCatalogControllerOptions = {},
-  ) {
+  constructor(engine: McpCatalogEngine, options: McpCatalogControllerOptions = {}) {
     this.engine = engine;
     this.pollOptions = options;
     this.lifecycleSnapshot = engine.lifecycle.getSnapshot();
@@ -249,10 +236,7 @@ export class McpCatalogController {
    * is a separate flow; the done state carries `needsAuthHandoff` so the UI routes
    * the user there rather than declaring the integration complete.
    */
-  async install(
-    entry: HermesMcpCatalogEntry,
-    payload: HermesInstallCatalogPayload,
-  ): Promise<void> {
+  async install(entry: HermesMcpCatalogEntry, payload: HermesInstallCatalogPayload): Promise<void> {
     const { installName } = entry;
     // Never re-enter an install that is already running for this entry.
     if (this.installs.get(installName)?.phase === "installing") return;
@@ -290,11 +274,7 @@ export class McpCatalogController {
       if (status && status.state === "failed") {
         // Reconcile the failure into the cache (raises an error notification) and
         // surface it inline on the entry.
-        this.engine.cache.afterAction(
-          "mcp.installCatalog",
-          friendlyName(entry),
-          status,
-        );
+        this.engine.cache.afterAction("mcp.installCatalog", friendlyName(entry), status);
         this.setInstall(installName, {
           phase: "failed",
           error: status.error ?? `Could not install ${friendlyName(entry)}.`,
@@ -305,10 +285,7 @@ export class McpCatalogController {
       // Success (backgrounded-then-done, or synchronous). Invalidate the MCP
       // servers inventory + catalog + toolsets, raise the durable "restart
       // required" notification, and advance the shared banner.
-      this.engine.cache.afterMutation(
-        "mcp.installCatalog",
-        friendlyName(entry),
-      );
+      this.engine.cache.afterMutation("mcp.installCatalog", friendlyName(entry));
       this.engine.lifecycle.noteMutation(outcome.mutation);
       this.markInstalledLocally(installName, payload);
       this.setInstall(installName, {
@@ -319,10 +296,7 @@ export class McpCatalogController {
       });
     } catch (error) {
       if (this.disposed) return;
-      const adminError = HermesAdminError.from(
-        "POST /api/mcp/catalog/install",
-        error,
-      );
+      const adminError = HermesAdminError.from("POST /api/mcp/catalog/install", error);
       this.setInstall(installName, {
         phase: "failed",
         error: adminError.safeMessage,
@@ -341,22 +315,14 @@ export class McpCatalogController {
 
   /** Flips the local `installed`/`enabled` flag on an entry so the card reflects
    * the new state immediately, without waiting for a re-load. */
-  private markInstalledLocally(
-    installName: string,
-    payload: HermesInstallCatalogPayload,
-  ): void {
+  private markInstalledLocally(installName: string, payload: HermesInstallCatalogPayload): void {
     const enabled = payload.enable !== false;
     this.entries = this.entries.map((entry) =>
-      entry.installName === installName
-        ? { ...entry, installed: true, enabled }
-        : entry,
+      entry.installName === installName ? { ...entry, installed: true, enabled } : entry,
     );
   }
 
-  private setInstall(
-    installName: string,
-    next: Omit<McpCatalogInstallState, "installName">,
-  ): void {
+  private setInstall(installName: string, next: Omit<McpCatalogInstallState, "installName">): void {
     this.installs.set(installName, { installName, ...next });
     this.recompute();
   }
@@ -413,13 +379,8 @@ function friendlyName(entry: HermesMcpCatalogEntry): string {
  * yields the "unavailable" state without constructing a controller. The
  * controller loads once on mount and tears down on unmount.
  */
-export function useMcpCatalogController(
-  engine: McpCatalogEngine | null,
-): McpCatalogState {
-  const controller = useMemo(
-    () => (engine ? new McpCatalogController(engine) : null),
-    [engine],
-  );
+export function useMcpCatalogController(engine: McpCatalogEngine | null): McpCatalogState {
+  const controller = useMemo(() => (engine ? new McpCatalogController(engine) : null), [engine]);
 
   const [snapshot, setSnapshot] = useState<McpCatalogState>(() =>
     controller ? controller.getSnapshot() : UNAVAILABLE_STATE,
@@ -522,9 +483,7 @@ export function useMcpCatalog(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

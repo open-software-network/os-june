@@ -78,7 +78,8 @@ Run the smallest checks that prove the change, then broaden based on blast radiu
 Common checks in this repo:
 
 ```bash
-pnpm run lint
+pnpm check
+pnpm typecheck
 pnpm test
 pnpm build
 pnpm test:rust
@@ -88,7 +89,7 @@ cargo +1.95.0-aarch64-apple-darwin test --manifest-path june-api/Cargo.toml --al
 
 Choose checks based on touched files. For example:
 
-- Frontend-only change: `pnpm run lint` plus the relevant frontend test or `pnpm test`.
+- Frontend-only change: `pnpm check` and `pnpm typecheck` plus the relevant frontend test or `pnpm test`.
 - Tauri Rust change: targeted `cargo test --manifest-path src-tauri/Cargo.toml --locked`, then broader checks if shared behavior changed.
 - June API change: the pinned Rust toolchain command above.
 - Docs or skill-only change: validate the skill structure and skip expensive app builds unless related files require them.

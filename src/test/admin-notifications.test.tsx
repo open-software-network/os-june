@@ -17,9 +17,7 @@ function note(overrides: Partial<AdminNotification> = {}): AdminNotification {
 
 describe("AdminNotifications", () => {
   it("renders nothing when there are no notifications", () => {
-    const { container } = render(
-      <AdminNotifications notifications={[]} onDismiss={vi.fn()} />,
-    );
+    const { container } = render(<AdminNotifications notifications={[]} onDismiss={vi.fn()} />);
     expect(container).toBeEmptyDOMElement();
   });
 

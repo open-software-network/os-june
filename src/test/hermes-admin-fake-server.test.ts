@@ -4,14 +4,8 @@ import {
   adminTargetFromConnection,
   createHermesAdminClient,
 } from "../lib/hermes-admin";
-import {
-  FakeHermesServer,
-  type FakeHermesScenario,
-} from "./fixtures/fake-hermes-server";
-import {
-  connectionForFake,
-  makeAdminHarness,
-} from "./fixtures/hermes-admin-harness";
+import { FakeHermesServer, type FakeHermesScenario } from "./fixtures/fake-hermes-server";
+import { connectionForFake, makeAdminHarness } from "./fixtures/hermes-admin-harness";
 import {
   emptyInstallScenario,
   gatewayRestartPendingScenario,
@@ -98,9 +92,7 @@ describe("FakeHermesServer — every route responds", () => {
     const result = await call(server, "POST", "/api/mcp/servers/broken/test");
     expect(result.status).toBe(200);
     expect((result.json as { ok: boolean }).ok).toBe(false);
-    expect((result.json as { message: string }).message).toContain(
-      "command not found",
-    );
+    expect((result.json as { message: string }).message).toContain("command not found");
   });
 
   it("backgrounds actions and advances them over polls", async () => {
@@ -145,9 +137,7 @@ describe("FakeHermesServer — every route responds", () => {
       key: "OPENAI_API_KEY",
     });
     expect(revealed.status).toBe(200);
-    expect((revealed.json as { value: string }).value).toBe(
-      "sk-FAKE-xyz1234567890",
-    );
+    expect((revealed.json as { value: string }).value).toBe("sk-FAKE-xyz1234567890");
 
     // DELETE /api/env with the key in the BODY (not the path).
     const del = await call(server, "DELETE", "/api/env", {
@@ -253,18 +243,14 @@ describe("profile switch data isolation (end to end)", () => {
     unrestrictedCache.set("skills", await unrestrictedClient.skills.list());
 
     // Each cache holds only its own profile's data.
-    expect(
-      sandboxedCache.get<Array<{ name: string }>>("skills")?.map((s) => s.name),
-    ).toEqual(["skill-a"]);
-    expect(
-      unrestrictedCache
-        .get<Array<{ name: string }>>("skills")
-        ?.map((s) => s.name),
-    ).toEqual(["skill-b"]);
+    expect(sandboxedCache.get<Array<{ name: string }>>("skills")?.map((s) => s.name)).toEqual([
+      "skill-a",
+    ]);
+    expect(unrestrictedCache.get<Array<{ name: string }>>("skills")?.map((s) => s.name)).toEqual([
+      "skill-b",
+    ]);
 
     // The cache keys differ, so no cross-profile read is even possible.
-    expect(sandboxedCache.keyFor("skills")).not.toBe(
-      unrestrictedCache.keyFor("skills"),
-    );
+    expect(sandboxedCache.keyFor("skills")).not.toBe(unrestrictedCache.keyFor("skills"));
   });
 });

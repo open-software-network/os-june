@@ -1,8 +1,6 @@
 export function isMacLikePlatform() {
   const platform =
-    typeof navigator === "undefined"
-      ? ""
-      : `${navigator.platform} ${navigator.userAgent}`;
+    typeof navigator === "undefined" ? "" : `${navigator.platform} ${navigator.userAgent}`;
   if (/Windows|Win32|Win64|Linux|Android/i.test(platform)) {
     return false;
   }

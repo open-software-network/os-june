@@ -2,11 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { TeamTapsView } from "../components/settings/TeamTapsSection";
-import {
-  validateTapPath,
-  validateTapRepo,
-  type SkillTapsState,
-} from "../lib/hermes-admin";
+import { validateTapPath, validateTapRepo, type SkillTapsState } from "../lib/hermes-admin";
 
 /** Builds a stubbed SkillTapsState so the view renders with no Tauri/network. */
 function stubState(overrides: Partial<SkillTapsState> = {}): SkillTapsState {
@@ -45,9 +41,7 @@ function stubState(overrides: Partial<SkillTapsState> = {}): SkillTapsState {
 describe("TeamTapsView", () => {
   it("shows the org-friendly tap explainer copy", () => {
     render(<TeamTapsView state={stubState()} />);
-    expect(
-      screen.getByText(/A tap is a GitHub repository of reusable SKILL.md/i),
-    ).toBeTruthy();
+    expect(screen.getByText(/A tap is a GitHub repository of reusable SKILL.md/i)).toBeTruthy();
   });
 
   it("lists configured taps with a community trust badge by default", () => {
@@ -78,10 +72,9 @@ describe("TeamTapsView", () => {
     fireEvent.change(screen.getByLabelText("Tap repository as owner/repo"), {
       target: { value: "acme/runbooks" },
     });
-    fireEvent.change(
-      screen.getByLabelText("Path override inside the repository"),
-      { target: { value: "skills/ops" } },
-    );
+    fireEvent.change(screen.getByLabelText("Path override inside the repository"), {
+      target: { value: "skills/ops" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Add tap" }));
     expect(addTap).toHaveBeenCalledWith("acme/runbooks", "skills/ops");
   });
@@ -93,9 +86,7 @@ describe("TeamTapsView", () => {
       removeTap,
     });
     render(<TeamTapsView state={state} />);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Remove acme/runbooks" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove acme/runbooks" }));
     expect(removeTap).toHaveBeenCalledWith("acme/runbooks");
   });
 
@@ -105,16 +96,9 @@ describe("TeamTapsView", () => {
       needsGithubToken: true,
       error: "API rate limit exceeded",
     });
-    render(
-      <TeamTapsView
-        state={state}
-        onConfigureGithubToken={onConfigureGithubToken}
-      />,
-    );
+    render(<TeamTapsView state={state} onConfigureGithubToken={onConfigureGithubToken} />);
     expect(screen.getByText(/GitHub access needed/i)).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", { name: /Configure GITHUB_TOKEN/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Configure GITHUB_TOKEN/i }));
     expect(onConfigureGithubToken).toHaveBeenCalled();
   });
 

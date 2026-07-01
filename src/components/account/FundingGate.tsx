@@ -28,16 +28,14 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const copy = billingRecovery
     ? {
         title: "Update billing",
-        subtitle:
-          "Your payment needs attention. Update billing to keep using June.",
+        subtitle: "Your payment needs attention. Update billing to keep using June.",
         cta: "Manage billing",
         waiting: "Waiting for your billing update",
         reopen: "Reopen billing",
       }
     : {
         title: "Upgrade to continue",
-        subtitle:
-          "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
+        subtitle: "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
         cta: "Upgrade",
         waiting: "Waiting for your upgrade",
         reopen: "Reopen checkout",
@@ -85,11 +83,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
         <div className="welcome-providers">
           {openedPortal ? (
             <>
-              <div
-                className="welcome-auth-progress"
-                role="status"
-                aria-live="polite"
-              >
+              <div className="welcome-auth-progress" role="status" aria-live="polite">
                 <span className="welcome-progress-label">
                   <Spinner className="welcome-spinner" aria-hidden />
                   <span>{copy.waiting}</span>
@@ -129,11 +123,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
 
         <p className="welcome-terms">
           {handle ? <>Signed in as @{handle}. </> : null}
-          <button
-            type="button"
-            className="funding-gate-link"
-            onClick={onSignOut}
-          >
+          <button type="button" className="funding-gate-link" onClick={onSignOut}>
             Sign out
           </button>
         </p>

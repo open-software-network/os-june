@@ -103,21 +103,13 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       label: "User message",
       description: "The person's own turn (markdown supported).",
       turns: [
-        userTurn(
-          "user",
-          "Can you summarize the meeting notes and **bold** the action items?",
-        ),
+        userTurn("user", "Can you summarize the meeting notes and **bold** the action items?"),
       ],
     },
     {
       label: "Assistant text (markdown)",
-      description:
-        "Standard assistant prose. Exercises every markdown element.",
-      turns: [
-        assistantTurn("text", [
-          { type: "text", text: MARKDOWN_SAMPLE, status: "complete" },
-        ]),
-      ],
+      description: "Standard assistant prose. Exercises every markdown element.",
+      turns: [assistantTurn("text", [{ type: "text", text: MARKDOWN_SAMPLE, status: "complete" }])],
     },
     {
       label: "Generated files",
@@ -243,8 +235,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: ERROR_SECTION_LABEL,
-      description:
-        "A surfaced error renders as a failed tool row named “Error”.",
+      description: "A surfaced error renders as a failed tool row named “Error”.",
       turns: [
         assistantTurn("error", [
           {
@@ -326,8 +317,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Approval: pending (no “Always”)",
-      description:
-        "When allowPermanent is false the “Always” button is hidden.",
+      description: "When allowPermanent is false the “Always” button is hidden.",
       turns: [
         assistantTurn("approval-no-permanent", [
           {
@@ -343,8 +333,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Approval: resolved",
-      description:
-        "Each resolved outcome: approved once / session / always / denied.",
+      description: "Each resolved outcome: approved once / session / always / denied.",
       turns: [
         assistantTurn("approval-once", [
           {
@@ -394,8 +383,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Clarify: pending (choices)",
-      description:
-        "Question with multiple-choice answers plus an “Other” escape hatch.",
+      description: "Question with multiple-choice answers plus an “Other” escape hatch.",
       turns: [
         assistantTurn("clarify-choices", [
           {
@@ -410,8 +398,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Clarify: pending (free-form)",
-      description:
-        "No preset choices. Renders the free-form textarea directly.",
+      description: "No preset choices. Renders the free-form textarea directly.",
       turns: [
         assistantTurn("clarify-freeform", [
           {
@@ -442,8 +429,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Clarify: skipped",
-      description:
-        "Resolved clarify where the person skipped without answering.",
+      description: "Resolved clarify where the person skipped without answering.",
       turns: [
         assistantTurn("clarify-skipped", [
           {
@@ -524,8 +510,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Empty: thinking placeholder",
-      description:
-        "An assistant turn with no parts yet shows the shimmering “Thinking…” fallback.",
+      description: "An assistant turn with no parts yet shows the shimmering “Thinking…” fallback.",
       turns: [assistantTurn("empty", [], "running")],
     },
   ];
@@ -535,13 +520,8 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
 // filtered to its failure surfaces — one source of truth for the samples. The
 // chrome-level error states (the error banner and the composer busy notice)
 // aren't turns, so the workspace forces those alongside these sections.
-const ERROR_SECTION_LABELS = new Set([
-  ERROR_SECTION_LABEL,
-  CREDITS_SECTION_LABEL,
-]);
+const ERROR_SECTION_LABELS = new Set([ERROR_SECTION_LABEL, CREDITS_SECTION_LABEL]);
 
 export function buildAgentErrorGallery(): AgentChatGallerySection[] {
-  return buildAgentChatGallery().filter((section) =>
-    ERROR_SECTION_LABELS.has(section.label),
-  );
+  return buildAgentChatGallery().filter((section) => ERROR_SECTION_LABELS.has(section.label));
 }

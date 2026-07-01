@@ -48,10 +48,7 @@ export type McpFilteringState = McpServersState & {
    * on success (and refreshes the list), false on failure (with `saveError`
    * set). Preserves every unrelated server field and unrelated config.
    */
-  saveToolPolicy: (
-    serverName: string,
-    draft: ToolPolicyDraft,
-  ) => Promise<SaveToolPolicyResult>;
+  saveToolPolicy: (serverName: string, draft: ToolPolicyDraft) => Promise<SaveToolPolicyResult>;
 };
 
 /**
@@ -60,18 +57,13 @@ export type McpFilteringState = McpServersState & {
  * component calls {@link useMcpFiltering}; tests call this with a harness-built
  * engine so they need no Tauri mock.
  */
-export function useMcpFilteringController(
-  engine: McpServersEngine | null,
-): McpFilteringState {
+export function useMcpFilteringController(engine: McpServersEngine | null): McpFilteringState {
   const servers = useMcpServersController(engine);
   const [savingServer, setSavingServer] = useState<string>();
   const [saveError, setSaveError] = useState<string>();
 
   const saveToolPolicy = useCallback(
-    async (
-      serverName: string,
-      draft: ToolPolicyDraft,
-    ): Promise<SaveToolPolicyResult> => {
+    async (serverName: string, draft: ToolPolicyDraft): Promise<SaveToolPolicyResult> => {
       if (!engine) return false;
       setSavingServer(serverName);
       setSaveError(undefined);
@@ -81,10 +73,7 @@ export function useMcpFilteringController(
         // path, so the jailed dashboard merges ONLY that block into config.yaml
         // and leaves the server's command/url/env/headers and all other config
         // untouched.
-        await engine.client.config.setValueAtSegments(
-          toolsConfigPath(serverName),
-          block,
-        );
+        await engine.client.config.setValueAtSegments(toolsConfigPath(serverName), block);
         // The write is `config.set` on the wire, but the FILTER only takes
         // effect after a gateway restart (Hermes builds the tool inventory at
         // gateway start), so June advances the cache/lifecycle with the

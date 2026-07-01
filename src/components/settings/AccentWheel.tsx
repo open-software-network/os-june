@@ -110,10 +110,7 @@ export function AccentWheel({
       if (next) setRingValue(next);
       setPhase("closed");
       if (next) {
-        commitTimer.current = window.setTimeout(
-          () => onChange(next),
-          COMMIT_AFTER_CLOSE_MS,
-        );
+        commitTimer.current = window.setTimeout(() => onChange(next), COMMIT_AFTER_CLOSE_MS);
       }
     }, CLOSE_MS);
   };
@@ -186,12 +183,7 @@ export function AccentWheel({
   };
 
   return (
-    <div
-      className="accent-wheel"
-      ref={rootRef}
-      data-open={mounted}
-      data-phase={phase}
-    >
+    <div className="accent-wheel" ref={rootRef} data-open={mounted} data-phase={phase}>
       <button
         type="button"
         className="accent-wheel-trigger"
@@ -228,13 +220,7 @@ export function AccentWheel({
               {/* Shadow lives inside the SVG (on the disc) rather than as a CSS
                   filter on the popover — a parent CSS filter + a will-change'd
                   animating child is what caused the white repaint flash. */}
-              <filter
-                id="accent-wheel-shadow"
-                x="-40%"
-                y="-40%"
-                width="180%"
-                height="180%"
-              >
+              <filter id="accent-wheel-shadow" x="-40%" y="-40%" width="180%" height="180%">
                 <feDropShadow
                   dx="0"
                   dy="2.5"

@@ -1,10 +1,4 @@
-import {
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   ALLOWLIST_RECOMMENDATION,
@@ -17,7 +11,6 @@ import {
   enableConfirmationFor,
   exposurePolicyMeta,
   exposurePolicyOptions,
-  installConfirmationFor,
   isDestructiveToolName,
   isSecretBacked,
   normalizeExposurePolicy,
@@ -33,7 +26,6 @@ import {
 } from "../lib/hermes-admin";
 import { McpSecurityView } from "../components/settings/McpSecuritySection";
 import { McpServersView } from "../components/settings/McpServersSection";
-import { McpCatalogView } from "../components/settings/McpCatalogSection";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
 /** Builds a HermesMcpServerInfo from a wire-shaped object. */
@@ -102,9 +94,7 @@ describe("mcp security — labels", () => {
       env: { DATABASE_URL: "postgres://secret" },
     });
     expect(isSecretBacked(withEnv)).toBe(true);
-    expect(securityLabelsFor(withEnv).map((l) => l.code)).toContain(
-      "secret-backed",
-    );
+    expect(securityLabelsFor(withEnv).map((l) => l.code)).toContain("secret-backed");
 
     const noSecret = serverFromWire({
       name: "weather",
@@ -112,9 +102,7 @@ describe("mcp security — labels", () => {
       url: "https://example.com/mcp",
     });
     expect(isSecretBacked(noSecret)).toBe(false);
-    expect(securityLabelsFor(noSecret).map((l) => l.code)).not.toContain(
-      "secret-backed",
-    );
+    expect(securityLabelsFor(noSecret).map((l) => l.code)).not.toContain("secret-backed");
   });
 
   it("never reveals a secret value in the labels or their blurbs", () => {
@@ -139,9 +127,7 @@ describe("mcp security — labels", () => {
     expect(codes).toContain("secret-backed");
 
     const remote = entryFromWire({ name: "weather", transport: "http" });
-    expect(securityLabelsForEntry(remote).map((l) => l.code)).toEqual([
-      "remote-server",
-    ]);
+    expect(securityLabelsForEntry(remote).map((l) => l.code)).toEqual(["remote-server"]);
   });
 
   it("uses sentence case and no dashes in every label and blurb", () => {
@@ -286,21 +272,15 @@ describe("mcp security — exposure policy", () => {
 
   it("normalizes junk and aliases to a known policy, defaulting safely", () => {
     expect(normalizeExposurePolicy("enable_all")).toBe("enable-all");
-    expect(normalizeExposurePolicy("enable-with-safe-allowlist")).toBe(
-      "enable-with-allowlist",
-    );
-    expect(normalizeExposurePolicy("install-disabled-by-default")).toBe(
-      "install-disabled",
-    );
+    expect(normalizeExposurePolicy("enable-with-safe-allowlist")).toBe("enable-with-allowlist");
+    expect(normalizeExposurePolicy("install-disabled-by-default")).toBe("install-disabled");
     expect(normalizeExposurePolicy(undefined)).toBe("install-disabled");
     expect(normalizeExposurePolicy("nonsense")).toBe("install-disabled");
   });
 
   it("reads the policy out of a config tree, defaulting when absent", () => {
     expect(readExposurePolicy({})).toBe("install-disabled");
-    expect(readExposurePolicy({ mcp: { exposure_policy: "enable-all" } })).toBe(
-      "enable-all",
-    );
+    expect(readExposurePolicy({ mcp: { exposure_policy: "enable-all" } })).toBe("enable-all");
     // A malformed mcp node degrades to the default.
     expect(readExposurePolicy({ mcp: "oops" })).toBe("install-disabled");
   });
@@ -338,9 +318,7 @@ const BASE_LIFECYCLE = {
   canRestart: false,
 };
 
-function securityState(
-  overrides: Partial<McpSecurityState> = {},
-): McpSecurityState {
+function securityState(overrides: Partial<McpSecurityState> = {}): McpSecurityState {
   return {
     status: "ready",
     policy: "install-disabled",
@@ -365,9 +343,7 @@ describe("McpSecurityView — component", () => {
     });
     const radios = within(group).getAllByRole("radio");
     expect(radios).toHaveLength(3);
-    const selected = radios.find(
-      (radio) => radio.getAttribute("aria-checked") === "true",
-    );
+    const selected = radios.find((radio) => radio.getAttribute("aria-checked") === "true");
     expect(selected).toHaveAttribute("data-policy", "install-disabled");
   });
 
@@ -432,15 +408,9 @@ describe("McpServersView — high-risk enable gate", () => {
     expect(setEnabled).not.toHaveBeenCalled();
 
     const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByText(LOCAL_FILE_TOOLS_WARNING),
-    ).toBeInTheDocument();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Enable server" }),
-    );
-    await waitFor(() =>
-      expect(setEnabled).toHaveBeenCalledWith("filesystem", true),
-    );
+    expect(within(dialog).getByText(LOCAL_FILE_TOOLS_WARNING)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Enable server" }));
+    await waitFor(() => expect(setEnabled).toHaveBeenCalledWith("filesystem", true));
   });
 
   it("enables a standard-risk server without a confirmation", () => {

@@ -1,19 +1,13 @@
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { useEffect, useMemo, useState } from "react";
-import {
-  onboardingResumeStep,
-  setOnboardingResumeStep,
-} from "../../lib/onboarding";
+import { onboardingResumeStep, setOnboardingResumeStep } from "../../lib/onboarding";
 import { isMacLikePlatform } from "../../lib/platform";
 import { dictationSettings, setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
-import {
-  usePermissionStatuses,
-  useSystemAudioStatus,
-} from "./use-permission-status";
+import { usePermissionStatuses, useSystemAudioStatus } from "./use-permission-status";
 
 type StepId = "sign-in" | "permissions" | "dictation-practice";
 
@@ -69,22 +63,13 @@ function initialStepIndex(steps: StepId[]): number {
 function browserOnboardingDemoStep(): StepId | null {
   if (!import.meta.env.DEV || typeof window === "undefined") return null;
   const step = new URLSearchParams(window.location.search).get("juneDemoStep");
-  return step === "sign-in" ||
-    step === "permissions" ||
-    step === "dictation-practice"
+  return step === "sign-in" || step === "permissions" || step === "dictation-practice"
     ? step
     : null;
 }
 
-export function OnboardingFlow({
-  account,
-  onAccountChanged,
-  onComplete,
-}: Props) {
-  const steps = useMemo(
-    () => (isMacLikePlatform() ? MAC_STEPS : NON_MAC_STEPS),
-    [],
-  );
+export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props) {
+  const steps = useMemo(() => (isMacLikePlatform() ? MAC_STEPS : NON_MAC_STEPS), []);
   const supportsDictationPractice = steps.includes("dictation-practice");
   const [stepIndex, setStepIndex] = useState(() => {
     const initial = initialStepIndex(steps);
@@ -137,13 +122,9 @@ export function OnboardingFlow({
           if (current.label) setShortcutLabel(current.label);
           return undefined;
         }
-        return setDictationShortcut("push_to_talk", FN_SHORTCUT).then(
-          (saved) => {
-            setShortcutLabel(
-              saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label,
-            );
-          },
-        );
+        return setDictationShortcut("push_to_talk", FN_SHORTCUT).then((saved) => {
+          setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
+        });
       })
       .catch(() => undefined);
   }, [supportsDictationPractice]);
@@ -185,24 +166,14 @@ export function OnboardingFlow({
               key={id}
               className="onboarding-progress-seg"
               aria-hidden
-              data-state={
-                index < stepIndex
-                  ? "done"
-                  : index === stepIndex
-                    ? "current"
-                    : "upcoming"
-              }
+              data-state={index < stepIndex ? "done" : index === stepIndex ? "current" : "upcoming"}
             />
           ))}
         </nav>
       </header>
       <div className="onboarding-body">
         {stepId === "sign-in" ? (
-          <SignInStep
-            account={account}
-            onAccountChanged={onAccountChanged}
-            onContinue={goNext}
-          />
+          <SignInStep account={account} onAccountChanged={onAccountChanged} onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep
             statuses={permissionStatuses}

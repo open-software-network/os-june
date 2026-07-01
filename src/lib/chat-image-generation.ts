@@ -28,10 +28,7 @@ export type GenerateChatImageDeps = {
   /** Calls the June API image endpoint; `model` falls back server-side. */
   generate: (prompt: string, model?: string) => Promise<GeneratedImageDto>;
   /** Imports raw bytes into the Hermes workspace (the paste path's importer). */
-  importImageBytes: (
-    name: string,
-    bytes: Uint8Array,
-  ) => Promise<ImportedHermesFile>;
+  importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedHermesFile>;
   /** Resolves the default image model when the caller passes none. */
   defaultModel?: () => string;
 };
@@ -58,10 +55,7 @@ const EXTENSION_BY_MIME: Record<string, string> = {
 
 /** Wrap a generated image in a data URL — the shape the existing display path
  * (and {@link parseImageDataUrl}) understands. */
-export function generatedImageDataUrl(image: {
-  mimeType: string;
-  imageBase64: string;
-}): string {
+export function generatedImageDataUrl(image: { mimeType: string; imageBase64: string }): string {
   return `data:${image.mimeType};base64,${image.imageBase64}`;
 }
 

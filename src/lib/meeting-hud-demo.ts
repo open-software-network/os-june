@@ -47,9 +47,7 @@ export function registerMeetingHudDemo({ local }: MeetingHudDemoOptions) {
       payload: { activeProcessCount: appLabels.length, appLabels },
     };
     if (local) {
-      window.dispatchEvent(
-        new CustomEvent(MEETING_DETECTION_EVENT, { detail: envelope }),
-      );
+      window.dispatchEvent(new CustomEvent(MEETING_DETECTION_EVENT, { detail: envelope }));
       return;
     }
     void import("@tauri-apps/api/event")

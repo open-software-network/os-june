@@ -30,11 +30,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { hermesMcpOauthLogin, type HermesMcpOauthLoginResult } from "../tauri";
 import { HermesAdminError } from "./errors";
-import {
-  OAUTH_GENERIC_MESSAGE,
-  safeAuthorizationUrl,
-  safeOauthMessage,
-} from "./mcp-oauth-view";
+import { OAUTH_GENERIC_MESSAGE, safeAuthorizationUrl, safeOauthMessage } from "./mcp-oauth-view";
 import type { McpServersEngine } from "./use-mcp-servers";
 
 /** A bridge that runs the OAuth sign-in for one server. The production binding
@@ -51,12 +47,7 @@ export type McpOauthBridge = (input: {
  * attempt. `waiting` means the bridge timed out before the CLI confirmed (the
  * browser step is still the user's to finish), so the row stays in a non-error
  * "still waiting" state. */
-export type McpOauthPhase =
-  | "idle"
-  | "signing-in"
-  | "waiting"
-  | "done"
-  | "failed";
+export type McpOauthPhase = "idle" | "signing-in" | "waiting" | "done" | "failed";
 
 /** The live sign-in state for one server, keyed by server name. */
 export type McpOauthLoginState = {
@@ -104,10 +95,7 @@ export class McpOauthController {
   private disposed = false;
   private snapshot: McpOauthState;
 
-  constructor(
-    engine: McpServersEngine,
-    options: McpOauthControllerOptions = {},
-  ) {
+  constructor(engine: McpServersEngine, options: McpOauthControllerOptions = {}) {
     this.engine = engine;
     this.bridge = options.bridge ?? hermesMcpOauthLogin;
     this.snapshot = this.buildSnapshot();
@@ -208,10 +196,7 @@ export class McpOauthController {
     this.engine.lifecycle.noteMutation("mcp.oauthLogin");
   }
 
-  private setLogin(
-    server: string,
-    next: Omit<McpOauthLoginState, "server">,
-  ): void {
+  private setLogin(server: string, next: Omit<McpOauthLoginState, "server">): void {
     this.logins.set(server, { server, ...next });
     this.recompute();
   }

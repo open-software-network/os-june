@@ -1,10 +1,4 @@
-import {
-  render,
-  renderHook,
-  screen,
-  waitFor,
-  act,
-} from "@testing-library/react";
+import { render, renderHook, screen, waitFor, act } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   applySnapshot,
@@ -26,15 +20,8 @@ import {
   type SetupSnapshotState,
 } from "../lib/hermes-admin";
 import { SetupSnapshotView } from "../components/settings/SetupSnapshotSection";
-import {
-  makeAdminHarness,
-  instantSleep,
-} from "./fixtures/hermes-admin-harness";
-import {
-  FAKE_BEARER,
-  FAKE_SECRET,
-  richInstallScenario,
-} from "./fixtures/hermes-admin-scenarios";
+import { makeAdminHarness, instantSleep } from "./fixtures/hermes-admin-harness";
+import { FAKE_BEARER, FAKE_SECRET, richInstallScenario } from "./fixtures/hermes-admin-scenarios";
 
 /** Parses a wire-shaped object into a HermesMcpServerInfo so the snapshot's
  * raw-reading redaction sees exactly what the client would hand it, including
@@ -74,10 +61,7 @@ describe("setup snapshot — redaction", () => {
     });
     const text = serializeSetupSnapshot(snapshot);
 
-    expect(snapshot.mcpServers[0].envKeys).toEqual([
-      "GITHUB_TOKEN",
-      "NODE_ENV",
-    ]);
+    expect(snapshot.mcpServers[0].envKeys).toEqual(["GITHUB_TOKEN", "NODE_ENV"]);
     expect(text).not.toContain(FAKE_SECRET);
     expect(text).toContain("GITHUB_TOKEN");
   });
@@ -96,10 +80,7 @@ describe("setup snapshot — redaction", () => {
     });
     const text = serializeSetupSnapshot(snapshot);
 
-    expect(snapshot.mcpServers[0].headerKeys).toEqual([
-      "Authorization",
-      "X-Trace",
-    ]);
+    expect(snapshot.mcpServers[0].headerKeys).toEqual(["Authorization", "X-Trace"]);
     expect(text).not.toContain(FAKE_BEARER);
     expect(text).not.toContain("FAKE-aaaa");
   });
@@ -156,13 +137,10 @@ describe("setup snapshot — redaction", () => {
       },
     ];
     const snapshot = buildSetupSnapshot({ ...emptyInput, catalog });
-    expect(snapshot.catalogInstalls[0].requiredEnvKeys).toEqual([
-      "GITHUB_TOKEN",
-    ]);
+    expect(snapshot.catalogInstalls[0].requiredEnvKeys).toEqual(["GITHUB_TOKEN"]);
     expect(
       snapshot.requiredInputs.some(
-        (secret) =>
-          secret.scope === "catalog-env" && secret.key === "GITHUB_TOKEN",
+        (secret) => secret.scope === "catalog-env" && secret.key === "GITHUB_TOKEN",
       ),
     ).toBe(true);
   });
@@ -179,9 +157,7 @@ describe("setup snapshot — redaction", () => {
       },
     });
     const text = serializeSetupSnapshot(snapshot);
-    expect(snapshot.skillConfig).toEqual([
-      { skill: "deploy", key: "region", value: "us-east-1" },
-    ]);
+    expect(snapshot.skillConfig).toEqual([{ skill: "deploy", key: "region", value: "us-east-1" }]);
     expect(text).not.toContain("AKIA0000000000000000");
   });
 
@@ -310,13 +286,9 @@ describe("setup snapshot — diff", () => {
 
   it("marks an enabled-state difference as changed", () => {
     const snapshot = snapshotOf({
-      skills: [
-        { name: "pdf", enabled: false, source: "bundled", hubInstalled: false },
-      ],
+      skills: [{ name: "pdf", enabled: false, source: "bundled", hubInstalled: false }],
     });
-    const live: HermesSkillInfo[] = [
-      { name: "pdf", enabled: true, source: "bundled", raw: {} },
-    ];
+    const live: HermesSkillInfo[] = [{ name: "pdf", enabled: true, source: "bundled", raw: {} }];
     const diff = diffSnapshot(snapshot, {
       skills: live,
       mcpServers: [],
@@ -329,9 +301,7 @@ describe("setup snapshot — diff", () => {
 
   it("marks a live skill missing from the snapshot as removed (advisory)", () => {
     const snapshot = snapshotOf({});
-    const live: HermesSkillInfo[] = [
-      { name: "legacy", enabled: true, source: "bundled", raw: {} },
-    ];
+    const live: HermesSkillInfo[] = [{ name: "legacy", enabled: true, source: "bundled", raw: {} }];
     const diff = diffSnapshot(snapshot, {
       skills: live,
       mcpServers: [],
@@ -372,9 +342,7 @@ describe("setup snapshot — diff", () => {
       catalog: [],
     });
     expect(diff.requiredSecrets).toHaveLength(1);
-    expect(requiredSecretId(diff.requiredSecrets[0])).toBe(
-      "mcp-env:github:GITHUB_TOKEN",
-    );
+    expect(requiredSecretId(diff.requiredSecrets[0])).toBe("mcp-env:github:GITHUB_TOKEN");
   });
 });
 
@@ -384,10 +352,7 @@ describe("setup snapshot — diff", () => {
 
 describe("setup snapshot — filename", () => {
   it("builds a stable, filesystem-safe filename", () => {
-    const name = setupSnapshotFilename(
-      "my profile",
-      new Date("2026-06-26T10:00:00Z"),
-    );
+    const name = setupSnapshotFilename("my profile", new Date("2026-06-26T10:00:00Z"));
     expect(name).toBe("june-setup-my-profile-2026-06-26T10-00-00-000Z.json");
   });
 });
@@ -448,12 +413,8 @@ describe("setup snapshot — import driver", () => {
 
     // Hub install happened before the toggle.
     const categories = report.steps.map((s) => s.category);
-    expect(categories.indexOf("skill-install")).toBeLessThan(
-      categories.indexOf("skill-toggle"),
-    );
-    expect(categories.indexOf("mcp-add")).toBeLessThan(
-      categories.indexOf("mcp-toggle"),
-    );
+    expect(categories.indexOf("skill-install")).toBeLessThan(categories.indexOf("skill-toggle"));
+    expect(categories.indexOf("mcp-add")).toBeLessThan(categories.indexOf("mcp-toggle"));
     // Health check ran last.
     expect(report.steps.at(-1)?.category).toBe("health-check");
     expect(report.health).toBeDefined();
@@ -484,9 +445,7 @@ describe("setup snapshot — import driver", () => {
     );
     const body = addRequest?.body as Record<string, unknown> | undefined;
     expect(body?.env ?? {}).not.toHaveProperty("MEMORY_KEY");
-    expect(JSON.stringify(harness.server.requestLog)).not.toContain(
-      SECRET_PLACEHOLDER,
-    );
+    expect(JSON.stringify(harness.server.requestLog)).not.toContain(SECRET_PLACEHOLDER);
   });
 
   it("reports a partial failure without aborting the run", async () => {
@@ -559,9 +518,7 @@ describe("setup snapshot — controller", () => {
       mode: "sandboxed",
       notes: [],
       profiles: [],
-      skills: [
-        { name: "pdf", enabled: false, source: "bundled", hubInstalled: false },
-      ],
+      skills: [{ name: "pdf", enabled: false, source: "bundled", hubInstalled: false }],
       mcpServers: [],
       catalogInstalls: [],
       toolFilters: [],
@@ -575,9 +532,7 @@ describe("setup snapshot — controller", () => {
 
     await waitFor(() => expect(result.current.importPhase).toBe("previewed"));
     // pdf is enabled live but disabled in the snapshot => a change.
-    const entry = result.current.previewDiff?.entries.find(
-      (e) => e.name === "pdf",
-    );
+    const entry = result.current.previewDiff?.entries.find((e) => e.name === "pdf");
     expect(entry?.status).toBe("changed");
   });
 });
@@ -646,9 +601,7 @@ describe("setup snapshot — view", () => {
     );
     expect(screen.getByText("github")).toBeTruthy();
     // The secret prompt is a password input so a value is never shown.
-    const secretInput = screen.getByLabelText(
-      "github · GITHUB_TOKEN",
-    ) as HTMLInputElement;
+    const secretInput = screen.getByLabelText("github · GITHUB_TOKEN") as HTMLInputElement;
     expect(secretInput.type).toBe("password");
   });
 

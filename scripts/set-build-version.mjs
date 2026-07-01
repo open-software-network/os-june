@@ -9,8 +9,7 @@ import { bumpVersionContents } from "./bump-version.mjs";
 // sort *below* the current version — `0.0.25-rc.1 < 0.0.25` is the whole point,
 // so the updater orders rc.1 < rc.2 < ... < 0.0.25. Only `-rc.N` prereleases
 // are accepted (no leading zero on N), matching the published manifest scheme.
-const BUILD_VERSION_RE =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-rc\.(0|[1-9]\d*))?$/;
+const BUILD_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-rc\.(0|[1-9]\d*))?$/;
 
 export function isBuildVersion(version) {
   return typeof version === "string" && BUILD_VERSION_RE.test(version);
@@ -36,9 +35,7 @@ export function compareBuildVersion(left, right) {
   const a = parseBuildVersion(left);
   const b = parseBuildVersion(right);
   if (!a || !b) {
-    throw new Error(
-      `Cannot compare invalid build versions: "${left}" vs "${right}".`,
-    );
+    throw new Error(`Cannot compare invalid build versions: "${left}" vs "${right}".`);
   }
   for (const key of ["major", "minor", "patch", "rc"]) {
     if (a[key] > b[key]) return 1;
@@ -49,9 +46,7 @@ export function compareBuildVersion(left, right) {
 
 export function setBuildVersionContents(files, version) {
   if (!isBuildVersion(version)) {
-    throw new Error(
-      `Build version "${version}" must be X.Y.Z or X.Y.Z-rc.N (no leading zeros).`,
-    );
+    throw new Error(`Build version "${version}" must be X.Y.Z or X.Y.Z-rc.N (no leading zeros).`);
   }
   // bumpVersionContents only does the file string-replace — the X.Y.Z-only
   // validation and monotonic check live in bump-version.mjs's main(), which we

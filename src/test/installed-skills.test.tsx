@@ -88,42 +88,32 @@ describe("installed skills — view logic", () => {
   });
 
   it("searches by name, description, category, tags, source, version, and path", () => {
-    expect(filterSkills(skills, { query: "PDF" }).map((s) => s.name)).toEqual([
-      "pdf",
-    ]);
+    expect(filterSkills(skills, { query: "PDF" }).map((s) => s.name)).toEqual(["pdf"]);
     // description
-    expect(
-      filterSkills(skills, { query: "multi-source" }).map((s) => s.name),
-    ).toEqual(["research"]);
+    expect(filterSkills(skills, { query: "multi-source" }).map((s) => s.name)).toEqual([
+      "research",
+    ]);
     // tag
-    expect(
-      filterSkills(skills, { query: "office" }).map((s) => s.name),
-    ).toEqual(["pdf"]);
+    expect(filterSkills(skills, { query: "office" }).map((s) => s.name)).toEqual(["pdf"]);
     // source label
-    expect(
-      filterSkills(skills, { query: "external" }).map((s) => s.name),
-    ).toEqual(["company-style"]);
+    expect(filterSkills(skills, { query: "external" }).map((s) => s.name)).toEqual([
+      "company-style",
+    ]);
     // path
-    expect(
-      filterSkills(skills, { query: ".agents/skills" }).map((s) => s.name),
-    ).toEqual(["company-style"]);
+    expect(filterSkills(skills, { query: ".agents/skills" }).map((s) => s.name)).toEqual([
+      "company-style",
+    ]);
     // version
-    expect(filterSkills(skills, { query: "1.0.0" }).map((s) => s.name)).toEqual(
-      ["pdf"],
-    );
+    expect(filterSkills(skills, { query: "1.0.0" }).map((s) => s.name)).toEqual(["pdf"]);
   });
 
   it("filters by category and lists categories present in the data", () => {
-    expect(categoriesOf(skills)).toEqual(
-      ["Documents", "Knowledge", "External"].sort(),
-    );
-    expect(
-      filterSkills(skills, { category: "Knowledge" }).map((s) => s.name),
-    ).toEqual(["research"]);
+    expect(categoriesOf(skills)).toEqual(["Documents", "Knowledge", "External"].sort());
+    expect(filterSkills(skills, { category: "Knowledge" }).map((s) => s.name)).toEqual([
+      "research",
+    ]);
     // Category + query combine (AND).
-    expect(
-      filterSkills(skills, { category: "Documents", query: "research" }),
-    ).toEqual([]);
+    expect(filterSkills(skills, { category: "Documents", query: "research" })).toEqual([]);
   });
 
   it("derives a category, falling back to the source label", () => {
@@ -158,22 +148,15 @@ describe("installed skills — view logic", () => {
 describe("installed skills — toggle mutation", () => {
   it("toggles a skill, refreshes, and records a next-session notification", async () => {
     const harness = makeAdminHarness(richInstallScenario());
-    const controller = new InstalledSkillsController(
-      harness as InstalledSkillsEngine,
-    );
+    const controller = new InstalledSkillsController(harness as InstalledSkillsEngine);
     await controller.load();
 
-    expect(
-      controller.getSnapshot().skills.find((s) => s.name === "research")
-        ?.enabled,
-    ).toBe(false);
+    expect(controller.getSnapshot().skills.find((s) => s.name === "research")?.enabled).toBe(false);
 
     await controller.toggle("research", true);
 
     const snapshot = controller.getSnapshot();
-    expect(snapshot.skills.find((s) => s.name === "research")?.enabled).toBe(
-      true,
-    );
+    expect(snapshot.skills.find((s) => s.name === "research")?.enabled).toBe(true);
     expect(snapshot.pending.size).toBe(0);
     // The shared lifecycle banner advanced to next-session, never "applied now".
     expect(snapshot.lifecycle.state).toBe("changes-apply-next-session");
@@ -189,9 +172,7 @@ describe("installed skills — toggle mutation", () => {
 
   it("rolls back the optimistic flip and surfaces a safe error on failure", async () => {
     const harness = makeAdminHarness(richInstallScenario());
-    const controller = new InstalledSkillsController(
-      harness as InstalledSkillsEngine,
-    );
+    const controller = new InstalledSkillsController(harness as InstalledSkillsEngine);
     await controller.load();
 
     // Force the toggle to fail at the transport.
@@ -202,9 +183,7 @@ describe("installed skills — toggle mutation", () => {
 
     const snapshot = controller.getSnapshot();
     // Rolled back to the real (still disabled) state — the switch never lies.
-    expect(snapshot.skills.find((s) => s.name === "research")?.enabled).toBe(
-      false,
-    );
+    expect(snapshot.skills.find((s) => s.name === "research")?.enabled).toBe(false);
     expect(snapshot.pending.size).toBe(0);
     expect(snapshot.error).toBeTruthy();
     // The fake server was never mutated.
@@ -216,9 +195,7 @@ describe("installed skills — toggle mutation", () => {
 
   it("shows a pending state on the row while the toggle is in flight", async () => {
     const harness = makeAdminHarness(richInstallScenario());
-    const controller = new InstalledSkillsController(
-      harness as InstalledSkillsEngine,
-    );
+    const controller = new InstalledSkillsController(harness as InstalledSkillsEngine);
     await controller.load();
 
     let resolveToggle: (() => void) | undefined;
@@ -239,10 +216,7 @@ describe("installed skills — toggle mutation", () => {
     const toggling = controller.toggle("research", true);
     // While in flight: optimistic enabled + pending marker.
     expect(controller.getSnapshot().pending.has("research")).toBe(true);
-    expect(
-      controller.getSnapshot().skills.find((s) => s.name === "research")
-        ?.enabled,
-    ).toBe(true);
+    expect(controller.getSnapshot().skills.find((s) => s.name === "research")?.enabled).toBe(true);
 
     resolveToggle?.();
     await toggling;
@@ -254,9 +228,7 @@ describe("installed skills — toggle mutation", () => {
   it("refuses to toggle a read-only external skill and explains why", async () => {
     const harness = makeAdminHarness(richInstallScenario());
     const toggleSpy = vi.spyOn(harness.client.skills, "toggle");
-    const controller = new InstalledSkillsController(
-      harness as InstalledSkillsEngine,
-    );
+    const controller = new InstalledSkillsController(harness as InstalledSkillsEngine);
     await controller.load();
 
     await controller.toggle("company-style", false);
@@ -264,25 +236,20 @@ describe("installed skills — toggle mutation", () => {
     expect(toggleSpy).not.toHaveBeenCalled();
     expect(controller.getSnapshot().error).toContain("read-only");
     // Still enabled — unchanged.
-    expect(
-      controller.getSnapshot().skills.find((s) => s.name === "company-style")
-        ?.enabled,
-    ).toBe(true);
+    expect(controller.getSnapshot().skills.find((s) => s.name === "company-style")?.enabled).toBe(
+      true,
+    );
 
     controller.dispose();
   });
 
   it("keeps showing rows and surfaces the error inline when a refresh fails", async () => {
     const harness = makeAdminHarness(richInstallScenario());
-    const controller = new InstalledSkillsController(
-      harness as InstalledSkillsEngine,
-    );
+    const controller = new InstalledSkillsController(harness as InstalledSkillsEngine);
     await controller.load();
     expect(controller.getSnapshot().status).toBe("ready");
 
-    vi.spyOn(harness.client.skills, "list").mockRejectedValueOnce(
-      new Error("network down"),
-    );
+    vi.spyOn(harness.client.skills, "list").mockRejectedValueOnce(new Error("network down"));
     await controller.load();
 
     const snapshot = controller.getSnapshot();
@@ -317,17 +284,11 @@ describe("installed skills — profile isolation", () => {
     await sandboxedController.load();
     await unrestrictedController.load();
 
-    expect(sandboxedController.getSnapshot().skills.map((s) => s.name)).toEqual(
-      ["skill-a"],
-    );
-    expect(
-      unrestrictedController.getSnapshot().skills.map((s) => s.name),
-    ).toEqual(["skill-b"]);
+    expect(sandboxedController.getSnapshot().skills.map((s) => s.name)).toEqual(["skill-a"]);
+    expect(unrestrictedController.getSnapshot().skills.map((s) => s.name)).toEqual(["skill-b"]);
     // skill-a is unknown to the unrestricted runtime — it is simply not present.
     expect(
-      unrestrictedController
-        .getSnapshot()
-        .skills.find((s) => s.name === "skill-a"),
+      unrestrictedController.getSnapshot().skills.find((s) => s.name === "skill-a"),
     ).toBeUndefined();
     // The two caches key differently, so no cross-read is possible.
     expect(sandboxedHarness.cache.keyFor("skills")).not.toBe(
@@ -356,9 +317,7 @@ describe("installed skills — useInstalledSkillsController", () => {
     await act(async () => {
       await result.current.toggle("research", true);
     });
-    expect(
-      result.current.skills.find((s) => s.name === "research")?.enabled,
-    ).toBe(true);
+    expect(result.current.skills.find((s) => s.name === "research")?.enabled).toBe(true);
   });
 
   it("returns the unavailable state for a null engine", () => {
@@ -380,9 +339,7 @@ const BASE_LIFECYCLE: InstalledSkillsState["lifecycle"] = {
   canRestart: false,
 };
 
-function stubState(
-  overrides: Partial<InstalledSkillsState> = {},
-): InstalledSkillsState {
+function stubState(overrides: Partial<InstalledSkillsState> = {}): InstalledSkillsState {
   return {
     status: "ready",
     skills: [],
@@ -432,13 +389,9 @@ describe("InstalledSkillsView — component", () => {
     // "External" label also appears as a fallback category chip).
     const pdfRow = within(screen.getByText("pdf").closest("li") as HTMLElement);
     expect(pdfRow.getByText("Bundled")).toBeInTheDocument();
-    const researchRow = within(
-      screen.getByText("research").closest("li") as HTMLElement,
-    );
+    const researchRow = within(screen.getByText("research").closest("li") as HTMLElement);
     expect(researchRow.getByText("Hub")).toBeInTheDocument();
-    const externalRow = within(
-      screen.getByText("company-style").closest("li") as HTMLElement,
-    );
+    const externalRow = within(screen.getByText("company-style").closest("li") as HTMLElement);
     expect(externalRow.getByText("External")).toBeInTheDocument();
     // The toggles reflect enabled state.
     const switches = screen.getAllByRole("switch");
@@ -476,11 +429,7 @@ describe("InstalledSkillsView — component", () => {
 
   it("calls toggle with the new state when a switch is flipped", () => {
     const toggle = vi.fn();
-    render(
-      <InstalledSkillsView
-        state={stubState({ skills: VIEW_SKILLS, toggle })}
-      />,
-    );
+    render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS, toggle })} />);
     const switches = screen.getAllByRole("switch");
     fireEvent.click(switches[1]); // research is disabled -> enable
     expect(toggle).toHaveBeenCalledWith("research", true);
@@ -497,32 +446,21 @@ describe("InstalledSkillsView — component", () => {
 
   it("renders the open-skill action only when a handler is provided", () => {
     const onOpenSkill = vi.fn();
-    const { rerender } = render(
-      <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />,
-    );
-    expect(
-      screen.queryByRole("button", { name: /open pdf/i }),
-    ).not.toBeInTheDocument();
+    const { rerender } = render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
+    expect(screen.queryByRole("button", { name: /open pdf/i })).not.toBeInTheDocument();
 
     rerender(
-      <InstalledSkillsView
-        state={stubState({ skills: VIEW_SKILLS })}
-        onOpenSkill={onOpenSkill}
-      />,
+      <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} onOpenSkill={onOpenSkill} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /open pdf/i }));
     expect(onOpenSkill).toHaveBeenCalledWith("pdf");
   });
 
   it("shows the Hermes-not-running surface when unavailable", () => {
-    render(
-      <InstalledSkillsView state={stubState({ status: "unavailable" })} />,
-    );
+    render(<InstalledSkillsView state={stubState({ status: "unavailable" })} />);
     expect(screen.getByText("Hermes is not running")).toBeInTheDocument();
     // The search box is disabled — there is nothing to filter.
-    expect(
-      screen.getByRole("searchbox", { name: /filter installed skills/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole("searchbox", { name: /filter installed skills/i })).toBeDisabled();
   });
 
   it("shows the no-skills-installed empty state for an empty ready list", () => {
@@ -548,9 +486,7 @@ describe("InstalledSkillsView — component", () => {
   });
 
   it("always shows the standing next-session lifecycle banner, even on a clean page", () => {
-    const { rerender } = render(
-      <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />,
-    );
+    const { rerender } = render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
     // Clean page: the standing next-session banner is shown up front, so the
     // timing is clear before any toggle (not the raw clean snapshot copy).
     expect(screen.getByText("Applies next session")).toBeInTheDocument();
@@ -596,9 +532,7 @@ describe("InstalledSkillsView — component", () => {
         })}
       />,
     );
-    expect(
-      screen.getByText("Skill updated. New sessions can use it."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Skill updated. New sessions can use it.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
     expect(dismissNotification).toHaveBeenCalledWith("n1");
   });
@@ -646,14 +580,10 @@ describe("InstalledSkillsView — component", () => {
   it("renders an empty install scenario end to end through the controller hook", async () => {
     const harness = makeAdminHarness(emptyInstallScenario());
     function Mounted() {
-      const state = useInstalledSkillsController(
-        harness as InstalledSkillsEngine,
-      );
+      const state = useInstalledSkillsController(harness as InstalledSkillsEngine);
       return <InstalledSkillsView state={state} />;
     }
     render(<Mounted />);
-    await waitFor(() =>
-      expect(screen.getByText("No skills installed")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("No skills installed")).toBeInTheDocument());
   });
 });

@@ -53,16 +53,11 @@ describe("chat image generation", () => {
       importImageBytes: vi.fn().mockResolvedValue(file),
     };
 
-    const result = await generateChatImage(
-      "a red bicycle",
-      deps,
-      "venice-sd35",
-    );
+    const result = await generateChatImage("a red bicycle", deps, "venice-sd35");
 
     expect(deps.generate).toHaveBeenCalledWith("a red bicycle", "venice-sd35");
     // The decoded bytes (not the base64) are imported into the workspace.
-    const [name, bytes] = (deps.importImageBytes as ReturnType<typeof vi.fn>)
-      .mock.calls[0];
+    const [name, bytes] = (deps.importImageBytes as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(name).toMatch(/^generated-image-\d+\.png$/);
     expect(Array.from(bytes as Uint8Array)).toEqual(HELLO_BYTES);
 
@@ -106,9 +101,7 @@ describe("chat image generation", () => {
 
   it("surfaces a generation failure as an error without importing", async () => {
     const deps: GenerateChatImageDeps = {
-      generate: vi
-        .fn()
-        .mockRejectedValue(new Error("upstream_provider_failed")),
+      generate: vi.fn().mockRejectedValue(new Error("upstream_provider_failed")),
       importImageBytes: vi.fn(),
     };
 

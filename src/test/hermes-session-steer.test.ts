@@ -20,25 +20,19 @@ describe("normalizeSteerText", () => {
   });
 
   it("keeps interior whitespace and newlines intact", () => {
-    expect(normalizeSteerText("  line one\nline two ")).toBe(
-      "line one\nline two",
-    );
+    expect(normalizeSteerText("  line one\nline two ")).toBe("line one\nline two");
   });
 });
 
 describe("steerErrorNotice", () => {
   it("explains the session is busy on a 4009 rejection without leaking the code", () => {
-    const notice = steerErrorNotice(
-      new HermesGatewayError("session busy", 4009),
-    );
+    const notice = steerErrorNotice(new HermesGatewayError("session busy", 4009));
     expect(notice).toMatch(/busy|already working|finish/i);
     expect(notice).not.toMatch(/4009/);
   });
 
   it("explains a dropped connection when the gateway is disconnected", () => {
-    const notice = steerErrorNotice(
-      new Error("Hermes bridge did not return a gateway URL."),
-    );
+    const notice = steerErrorNotice(new Error("Hermes bridge did not return a gateway URL."));
     expect(notice).toMatch(/connection|disconnected|reconnect|bridge/i);
   });
 
@@ -142,9 +136,6 @@ describe("steering transcript item via buildHermesSessionChatTurns", () => {
       ],
     );
 
-    expect(turns.map((turn) => turn.parts[0]?.type)).toEqual([
-      "text",
-      "steering",
-    ]);
+    expect(turns.map((turn) => turn.parts[0]?.type)).toEqual(["text", "steering"]);
   });
 });

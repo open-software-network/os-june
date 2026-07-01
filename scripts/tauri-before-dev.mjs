@@ -6,10 +6,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const rootDir = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiDir = path.join(rootDir, "june-api");
 const frontendPort = Number.parseInt(process.env.VITE_PORT ?? "1421", 10);
 const apiPort = Number.parseInt(process.env.JUNE_API_PORT ?? "8080", 10);
@@ -75,16 +72,9 @@ if (!fs.existsSync(path.join(apiDir, "Cargo.toml"))) {
 }
 
 if (await portIsOpen(apiPort)) {
-  console.error(
-    `June API port ${apiPort} is already in use. Reusing it for Tauri dev.`,
-  );
+  console.error(`June API port ${apiPort} is already in use. Reusing it for Tauri dev.`);
 } else {
-  apiChild = spawnManaged(
-    "june-api",
-    "cargo",
-    ["run", "-p", "june", "--", "serve"],
-    apiDir,
-  );
+  apiChild = spawnManaged("june-api", "cargo", ["run", "-p", "june", "--", "serve"], apiDir);
   apiChild.on("exit", (code, signal) => {
     if (shuttingDown) return;
     console.error(`june-api exited with ${signal ?? code}`);
@@ -93,9 +83,7 @@ if (await portIsOpen(apiPort)) {
 }
 
 if (await portIsOpen(frontendPort)) {
-  console.error(
-    `Vite port ${frontendPort} is already in use. Reusing it for Tauri dev.`,
-  );
+  console.error(`Vite port ${frontendPort} is already in use. Reusing it for Tauri dev.`);
 } else {
   frontendChild = spawnManaged("Vite", "pnpm", ["run", "dev"], rootDir);
   frontendChild.on("exit", exitFromChild);

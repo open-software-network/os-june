@@ -28,32 +28,21 @@ import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import {
   parsePendingSkillWrites,
   readWriteApproval,
   WRITE_APPROVAL_PATH,
   type PendingSkillWrite,
 } from "./skill-review-view";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The Tauri commands this hook calls. */
 export const PENDING_SKILL_WRITES_COMMAND = "hermes_pending_skill_writes";
-export const RESOLVE_PENDING_SKILL_WRITE_COMMAND =
-  "hermes_resolve_pending_skill_write";
+export const RESOLVE_PENDING_SKILL_WRITE_COMMAND = "hermes_resolve_pending_skill_write";
 
 /** The injectable `invoke` surface (so tests need no Tauri runtime). */
-export type ReviewInvoke = (
-  command: string,
-  args?: Record<string, unknown>,
-) => Promise<unknown>;
+export type ReviewInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 
 /** The wired-up primitives one review queue operates on, bound to ONE target. */
 export type SkillReviewEngine = {
@@ -192,10 +181,7 @@ export class SkillReviewController {
       this.error = undefined;
       this.retryable = false;
     } else {
-      const adminError = HermesAdminError.from(
-        PENDING_SKILL_WRITES_COMMAND,
-        writesResult.reason,
-      );
+      const adminError = HermesAdminError.from(PENDING_SKILL_WRITES_COMMAND, writesResult.reason);
       this.error = adminError.safeMessage;
       this.retryable = adminError.retryable;
       this.status = this.writes.length > 0 ? "ready" : "error";
@@ -238,10 +224,7 @@ export class SkillReviewController {
     } catch (error) {
       if (this.disposed) return;
       this.pending.delete(id);
-      const adminError = HermesAdminError.from(
-        RESOLVE_PENDING_SKILL_WRITE_COMMAND,
-        error,
-      );
+      const adminError = HermesAdminError.from(RESOLVE_PENDING_SKILL_WRITE_COMMAND, error);
       this.error = adminError.safeMessage;
       this.recompute();
     }
@@ -349,13 +332,8 @@ export class SkillReviewController {
 
 /** Binds a {@link SkillReviewController} to React for one engine. A null engine
  * yields the unavailable state. */
-export function useSkillReviewController(
-  engine: SkillReviewEngine | null,
-): SkillReviewState {
-  const controller = useMemo(
-    () => (engine ? new SkillReviewController(engine) : null),
-    [engine],
-  );
+export function useSkillReviewController(engine: SkillReviewEngine | null): SkillReviewState {
+  const controller = useMemo(() => (engine ? new SkillReviewController(engine) : null), [engine]);
 
   const [snapshot, setSnapshot] = useState<SkillReviewState>(() =>
     controller ? controller.getSnapshot() : UNAVAILABLE_STATE,
@@ -452,9 +430,7 @@ export function useSkillReview(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

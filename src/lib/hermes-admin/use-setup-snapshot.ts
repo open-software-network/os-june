@@ -44,11 +44,7 @@ import {
   type SnapshotCapabilities,
   type SnapshotDiff,
 } from "./setup-snapshot";
-import {
-  applySnapshot,
-  type ApplyOptions,
-  type ImportReport,
-} from "./setup-import";
+import { applySnapshot, type ApplyOptions, type ImportReport } from "./setup-import";
 
 /** A loaded export bundle: the snapshot, its serialized text, and a filename. */
 export type ExportBundle = {
@@ -58,13 +54,7 @@ export type ExportBundle = {
 };
 
 /** The phase of the import preview/apply flow. */
-export type ImportPhase =
-  | "idle"
-  | "previewing"
-  | "previewed"
-  | "applying"
-  | "applied"
-  | "error";
+export type ImportPhase = "idle" | "previewing" | "previewed" | "applying" | "applied" | "error";
 
 /** Everything the setup snapshot component renders, plus the actions it calls. */
 export type SetupSnapshotState = {

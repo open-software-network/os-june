@@ -258,7 +258,8 @@ tccutil reset Microphone co.opensoftware.june
 ## Development commands
 
 ```sh
-pnpm lint
+pnpm check
+pnpm typecheck
 pnpm test
 pnpm test:rust
 pnpm test:june-api

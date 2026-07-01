@@ -29,16 +29,9 @@ import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesSkillInfo } from "./schemas";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives one installed-Skills page operates on,
  * all bound to the SAME target. Production builds this from a bridge connection
@@ -217,8 +210,7 @@ export class InstalledSkillsController {
     if (!current) return;
     // External skills are read-only in June; never attempt a write.
     if (current.readOnly) {
-      this.error =
-        "This skill loads from an external directory and is read-only in June.";
+      this.error = "This skill loads from an external directory and is read-only in June.";
       this.recompute();
       return;
     }
@@ -260,9 +252,7 @@ export class InstalledSkillsController {
   }
 
   private applyOptimistic(name: string, enabled: boolean): void {
-    this.skills = this.skills.map((skill) =>
-      skill.name === name ? { ...skill, enabled } : skill,
-    );
+    this.skills = this.skills.map((skill) => (skill.name === name ? { ...skill, enabled } : skill));
   }
 
   private buildSnapshot(): InstalledSkillsState {
@@ -421,9 +411,7 @@ export function useInstalledSkills(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

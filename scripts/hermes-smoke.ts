@@ -84,9 +84,7 @@ main().catch((error) => {
 });
 
 async function main(): Promise<void> {
-  console.log(
-    `hermes-smoke: release gate for pinned Hermes ${PINNED_HERMES_VERSION}`,
-  );
+  console.log(`hermes-smoke: release gate for pinned Hermes ${PINNED_HERMES_VERSION}`);
 
   const resolved = resolveHermesCommand({
     env: process.env,
@@ -110,9 +108,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  console.log(
-    `hermes-smoke: using hermes (${resolved.source}): ${resolved.command}`,
-  );
+  console.log(`hermes-smoke: using hermes (${resolved.source}): ${resolved.command}`);
 
   const port = await allocatePort();
   const token = generateSessionToken();
@@ -151,9 +147,7 @@ async function main(): Promise<void> {
   let failed = false;
 
   try {
-    record(
-      `hermes-smoke: spawned hermes dashboard on ${HOST}:${port} (pid ${child.pid ?? "?"})`,
-    );
+    record(`hermes-smoke: spawned hermes dashboard on ${HOST}:${port} (pid ${child.pid ?? "?"})`);
 
     await waitForStatus(
       port,
@@ -175,18 +169,14 @@ async function main(): Promise<void> {
     });
     const sessionId = sessionIdFrom(created);
     if (!sessionId) {
-      throw new Error(
-        `session.create returned no session id: ${safeJson(created)}`,
-      );
+      throw new Error(`session.create returned no session id: ${safeJson(created)}`);
     }
     record(`hermes-smoke: PASS session.create -> ${sessionId}`);
 
     // session.active_list — June polls this as ground truth for what runs.
     const active = await rpc.request("session.active_list", {});
     if (!active || typeof active !== "object" || !("sessions" in active)) {
-      throw new Error(
-        `session.active_list missing sessions array: ${safeJson(active)}`,
-      );
+      throw new Error(`session.active_list missing sessions array: ${safeJson(active)}`);
     }
     record("hermes-smoke: PASS session.active_list returned a sessions list");
 
@@ -251,9 +241,7 @@ function hermesCandidatePaths(): string[] {
   if (home) {
     candidates.push(venvBin(join(home, ".hermes", "hermes-agent", "venv")));
     candidates.push(
-      windows
-        ? join(home, ".local", "bin", "hermes.exe")
-        : join(home, ".local", "bin", "hermes"),
+      windows ? join(home, ".local", "bin", "hermes.exe") : join(home, ".local", "bin", "hermes"),
     );
   }
   return candidates;
@@ -381,9 +369,7 @@ type RpcClient = {
     params?: Record<string, unknown>,
     timeoutMs?: number,
   ) => Promise<unknown>;
-  onEvent: (
-    handler: (type: string, params: Record<string, unknown>) => void,
-  ) => void;
+  onEvent: (handler: (type: string, params: Record<string, unknown>) => void) => void;
 };
 
 /** A minimal JSON-RPC client over the open socket, framing requests with
@@ -399,9 +385,7 @@ function makeRpcClient(socket: WebSocket): RpcClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
-  const eventHandlers: Array<
-    (type: string, params: Record<string, unknown>) => void
-  > = [];
+  const eventHandlers: Array<(type: string, params: Record<string, unknown>) => void> = [];
 
   socket.addEventListener("message", (event) => {
     const frame: HermesInboundFrame = parseRpcFrame(String(event.data));
@@ -434,11 +418,11 @@ function makeRpcClient(socket: WebSocket): RpcClient {
 
   return {
     request(method, params = {}, timeoutMs = RPC_TIMEOUT_MS) {
-      const id = (nextId += 1);
+      nextId += 1;
+      const id = nextId;
       return new Promise<unknown>((resolveValue, reject) => {
         const timer = setTimeout(() => {
-          if (pending.delete(id))
-            reject(new Error(`request timed out: ${method}`));
+          if (pending.delete(id)) reject(new Error(`request timed out: ${method}`));
         }, timeoutMs);
         pending.set(id, { resolve: resolveValue, reject, timer });
         socket.send(JSON.stringify(buildRpcFrame(id, method, params)));
@@ -502,9 +486,7 @@ async function runModelPhase(
         resolveDone();
       } else if (type === "error") {
         clearTimeout(timer);
-        reject(
-          new Error("gateway emitted an error event during prompt.submit"),
-        );
+        reject(new Error("gateway emitted an error event during prompt.submit"));
       }
     });
   });
@@ -517,10 +499,7 @@ async function runModelPhase(
 }
 
 /** Stops the hermes child cleanly: SIGTERM, then SIGKILL if it lingers. */
-async function stopChild(
-  child: ReturnType<typeof spawn>,
-  alreadyExited: boolean,
-): Promise<void> {
+async function stopChild(child: ReturnType<typeof spawn>, alreadyExited: boolean): Promise<void> {
   if (alreadyExited || child.exitCode !== null || child.killed) return;
   child.kill("SIGTERM");
   const stopped = await Promise.race([

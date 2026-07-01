@@ -47,9 +47,7 @@ describe("SudoPart card", () => {
     ).toBeInTheDocument();
     // The execution mode is shown explicitly so the user knows the blast radius.
     expect(screen.getByText(/unrestricted/i)).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /approve/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
   });
 
@@ -68,10 +66,7 @@ describe("SudoPart card", () => {
     render(<SudoPart part={sudoPart()} onSudo={onSudo} />);
     await userEvent.click(screen.getByRole("button", { name: /approve/i }));
 
-    expect(onSudo).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "su-1" }),
-      true,
-    );
+    expect(onSudo).toHaveBeenCalledWith(expect.objectContaining({ id: "su-1" }), true);
     expect(request).toHaveBeenCalledWith("sudo.respond", {
       session_id: "sess-sudo",
       request_id: "su-1",
@@ -94,10 +89,7 @@ describe("SudoPart card", () => {
     render(<SudoPart part={sudoPart()} onSudo={onSudo} />);
     await userEvent.click(screen.getByRole("button", { name: /deny/i }));
 
-    expect(onSudo).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "su-1" }),
-      false,
-    );
+    expect(onSudo).toHaveBeenCalledWith(expect.objectContaining({ id: "su-1" }), false);
     expect(request).toHaveBeenCalledWith("sudo.respond", {
       session_id: "sess-sudo",
       request_id: "su-1",
@@ -116,9 +108,7 @@ describe("SudoPart card", () => {
         onSudo={() => {}}
       />,
     );
-    expect(
-      screen.getByRole("button", { name: /approve/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
   });
 });
@@ -128,9 +118,7 @@ describe("SecretPart card", () => {
     render(<SecretPart part={secretPart()} onSecret={() => {}} />);
 
     // The reason explains where the secret is used.
-    expect(
-      screen.getByText(/Needed to call the OpenAI API on your behalf/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Needed to call the OpenAI API on your behalf/)).toBeInTheDocument();
     // OPENAI_API_KEY matches the sensitive-key pattern, so the label is masked
     // rather than shown verbatim (see the dedicated redaction test).
     expect(screen.queryByText("OPENAI_API_KEY")).not.toBeInTheDocument();
@@ -142,13 +130,12 @@ describe("SecretPart card", () => {
   it("submits the typed value through respondToSecret then clears it from local state", async () => {
     const request = vi.fn().mockResolvedValue(undefined);
     const methods = createHermesMethods(request);
-    const onSecret = vi.fn(
-      (part: Extract<AgentChatPart, { type: "secret" }>, value: string) =>
-        methods.respondToSecret({
-          sessionId: part.sessionId ?? "",
-          requestId: part.id,
-          value,
-        }),
+    const onSecret = vi.fn((part: Extract<AgentChatPart, { type: "secret" }>, value: string) =>
+      methods.respondToSecret({
+        sessionId: part.sessionId ?? "",
+        requestId: part.id,
+        value,
+      }),
     );
 
     render(<SecretPart part={secretPart()} onSecret={onSecret} />);
@@ -156,10 +143,7 @@ describe("SecretPart card", () => {
     await userEvent.type(input, SECRET_VALUE);
     await userEvent.click(screen.getByRole("button", { name: /submit/i }));
 
-    expect(onSecret).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "se-1" }),
-      SECRET_VALUE,
-    );
+    expect(onSecret).toHaveBeenCalledWith(expect.objectContaining({ id: "se-1" }), SECRET_VALUE);
     expect(request).toHaveBeenCalledWith("secret.respond", {
       session_id: "sess-secret",
       request_id: "se-1",
@@ -169,9 +153,7 @@ describe("SecretPart card", () => {
     // SECURITY: the input is cleared immediately after submit so the value
     // does not linger in the DOM/local state.
     await waitFor(() => {
-      expect(
-        (screen.getByLabelText(/secret value/i) as HTMLInputElement).value,
-      ).toBe("");
+      expect((screen.getByLabelText(/secret value/i) as HTMLInputElement).value).toBe("");
     });
   });
 
@@ -190,9 +172,7 @@ describe("SecretPart card", () => {
     // attribute).
     await userEvent.click(screen.getByRole("button", { name: /submit/i }));
     await waitFor(() => {
-      const cleared = screen.getByLabelText(
-        /secret value/i,
-      ) as HTMLInputElement;
+      const cleared = screen.getByLabelText(/secret value/i) as HTMLInputElement;
       expect(cleared.value).toBe("");
     });
     expect(document.body.innerHTML).not.toContain(SECRET_VALUE);
@@ -205,37 +185,22 @@ describe("SecretPart card", () => {
   it("supports cancel without submitting any value", async () => {
     const onSecret = vi.fn();
     const onCancel = vi.fn();
-    render(
-      <SecretPart
-        part={secretPart()}
-        onSecret={onSecret}
-        onCancel={onCancel}
-      />,
-    );
+    render(<SecretPart part={secretPart()} onSecret={onSecret} onCancel={onCancel} />);
     const input = screen.getByLabelText(/secret value/i) as HTMLInputElement;
     await userEvent.type(input, SECRET_VALUE);
     await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
 
     expect(onSecret).not.toHaveBeenCalled();
-    expect(onCancel).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "se-1" }),
-    );
+    expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: "se-1" }));
     // Cancel also wipes the entered value.
     await waitFor(() => {
-      expect(
-        (screen.getByLabelText(/secret value/i) as HTMLInputElement).value,
-      ).toBe("");
+      expect((screen.getByLabelText(/secret value/i) as HTMLInputElement).value).toBe("");
     });
   });
 
   it("redacts a secret-like key name in the label", () => {
     // A key like "DATABASE_PASSWORD" must be masked, never shown verbatim.
-    render(
-      <SecretPart
-        part={secretPart({ keyName: "DATABASE_PASSWORD" })}
-        onSecret={() => {}}
-      />,
-    );
+    render(<SecretPart part={secretPart({ keyName: "DATABASE_PASSWORD" })} onSecret={() => {}} />);
     expect(screen.queryByText("DATABASE_PASSWORD")).not.toBeInTheDocument();
     expect(screen.getByText(/\[redacted\]/i)).toBeInTheDocument();
   });

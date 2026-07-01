@@ -49,19 +49,12 @@ export function ConfirmDialog({
       width={420}
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             {cancelLabel}
           </button>
           <button
             type="button"
-            className={`primary-action primary-solid${
-              destructive ? " primary-destructive" : ""
-            }`}
+            className={`primary-action primary-solid${destructive ? " primary-destructive" : ""}`}
             onClick={() => void handleConfirm()}
             disabled={submitting}
           >

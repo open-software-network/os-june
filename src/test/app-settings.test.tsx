@@ -1,11 +1,4 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
@@ -91,8 +84,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
-  updateHermesBridgeMessagingPlatform:
-    mocks.updateHermesBridgeMessagingPlatform,
+  updateHermesBridgeMessagingPlatform: mocks.updateHermesBridgeMessagingPlatform,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
@@ -206,10 +198,7 @@ describe("AppSettings", () => {
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
-      selectedModel:
-        mode === "transcription"
-          ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5-2",
+      selectedModel: mode === "transcription" ? "nvidia/parakeet-tdt-0.6b-v3" : "zai-org-glm-5-2",
       models:
         mode === "transcription"
           ? [
@@ -271,8 +260,7 @@ describe("AppSettings", () => {
                 id: "kimi-k2-6",
                 name: "Kimi K2.6",
                 modelType: "text",
-                description:
-                  "Open-weights model built for long tool-driven tasks.",
+                description: "Open-weights model built for long tool-driven tasks.",
                 privacy: "private",
                 priceUnit: "tokens",
                 inputCreditsPerMillionTokens: 850,
@@ -335,11 +323,8 @@ describe("AppSettings", () => {
     }));
     mocks.setVeniceModel.mockImplementation(async (mode, modelId) => ({
       transcriptionProvider:
-        mode === "transcription" && modelId.startsWith("gpt-")
-          ? "openai"
-          : "venice",
-      transcriptionModel:
-        mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
+        mode === "transcription" && modelId.startsWith("gpt-") ? "openai" : "venice",
+      transcriptionModel: mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       imageModel: mode === "image" ? modelId : "venice-sd35",
     }));
@@ -353,14 +338,10 @@ describe("AppSettings", () => {
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
-    mocks.setHermesAgentCliAccess.mockImplementation(
-      async (enabled: boolean) => ({ enabled }),
-    );
+    mocks.setHermesAgentCliAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
-      ...(kind === "toggle"
-        ? { toggleShortcut: shortcut }
-        : { pushToTalkShortcut: shortcut }),
+      ...(kind === "toggle" ? { toggleShortcut: shortcut } : { pushToTalkShortcut: shortcut }),
     }));
     mocks.setDictationMicrophone.mockImplementation(async (id, name) => ({
       ...baseSettings,
@@ -460,17 +441,14 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(
-      screen.getByRole("heading", { name: "Billing" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Billing" })).toBeInTheDocument();
     expect(screen.getByText("64%")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Free plan" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Free plan" })).toBeInTheDocument();
     expect(screen.getByText("Usage remaining")).toBeInTheDocument();
-    expect(
-      screen.getByRole("progressbar", { name: "Usage remaining" }),
-    ).toHaveAttribute("aria-valuenow", "64");
+    expect(screen.getByRole("progressbar", { name: "Usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "64",
+    );
     expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
   });
 
@@ -496,9 +474,7 @@ describe("AppSettings", () => {
         }),
       ).not.toBeInTheDocument();
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Accent color: Rose. Change" }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Accent color: Rose. Change" }));
       fireEvent.click(screen.getByRole("radio", { name: "Clay" }));
 
       act(() => {
@@ -516,8 +492,7 @@ describe("AppSettings", () => {
         name: "Accent color: Clay. Change",
       });
       expect(
-        resetButton.compareDocumentPosition(accentButton) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
+        resetButton.compareDocumentPosition(accentButton) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
 
       fireEvent.click(resetButton);
@@ -565,12 +540,11 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
     expect(screen.getByText("23%")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Pro plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("progressbar", { name: "Usage remaining" }),
-    ).toHaveAttribute("aria-valuenow", "23");
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "23",
+    );
   });
 
   it("falls back to the free grant for unsubscribed accounts without usage percentage", async () => {
@@ -602,12 +576,11 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
     expect(screen.getByText("97%")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Free plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("progressbar", { name: "Usage remaining" }),
-    ).toHaveAttribute("aria-valuenow", "97");
+    expect(screen.getByRole("heading", { name: "Free plan" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "97",
+    );
   });
 
   it("runs sign-in, cancel, and sign-out actions from account settings", async () => {
@@ -626,9 +599,7 @@ describe("AppSettings", () => {
       />,
     );
 
-    await user.click(
-      screen.getByRole("button", { name: "Sign in with OpenSoftware" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Sign in with OpenSoftware" }));
     await waitFor(() => expect(mocks.osAccountsLogin).toHaveBeenCalledOnce());
     expect(onAccountChanged).toHaveBeenCalledWith(signedInAccount);
     expect(await screen.findByText("Signed in as Alex.")).toBeInTheDocument();
@@ -641,16 +612,12 @@ describe("AppSettings", () => {
           rejectLogin = reject;
         }),
     );
-    await user.click(
-      screen.getByRole("button", { name: "Sign in with OpenSoftware" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Sign in with OpenSoftware" }));
     expect(await screen.findByRole("button", { name: "Cancel" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mocks.osAccountsCancelLogin).toHaveBeenCalledOnce();
     rejectLogin(new Error("Login canceled"));
-    expect(
-      await screen.findByRole("button", { name: "Sign in with OpenSoftware" }),
-    ).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Sign in with OpenSoftware" })).toBeEnabled();
 
     const signedOut = vi.fn();
     render(
@@ -737,12 +704,8 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(
-      screen.getByRole("heading", { name: "Pro plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Update billing in your account portal."),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.getByText("Update billing in your account portal.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Manage billing" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
     expect(
@@ -775,15 +738,9 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(
-      screen.getByRole("heading", { name: "Pro plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Manage billing" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Upgrade" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upgrade" })).not.toBeInTheDocument();
   });
 
   it("hides billing and sign-out controls in local mode", () => {
@@ -805,16 +762,10 @@ describe("AppSettings", () => {
     );
 
     expect(
-      screen.getByText(
-        "Requests use your local June API. No OpenSoftware account is used.",
-      ),
+      screen.getByText("Requests use your local June API. No OpenSoftware account is used."),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("tab", { name: "Billing" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Sign out" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Billing" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
   });
 
   it("updates dictation microphone and note recording source", async () => {
@@ -849,24 +800,16 @@ describe("AppSettings", () => {
     });
 
     await user.click(screen.getByRole("tab", { name: "Audio" }));
-    expect(
-      screen.getByText("Auto-detect uses MacBook Pro Microphone."),
-    ).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
-    );
+    expect(screen.getByText("Auto-detect uses MacBook Pro Microphone.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Auto-detect|USB Mic/ }));
     await user.click(await screen.findByRole("option", { name: "USB Mic" }));
 
     expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
     await waitFor(() =>
-      expect(
-        screen.getByText("Input device used for dictation."),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("Input device used for dictation.")).toBeInTheDocument(),
     );
 
-    await user.click(
-      screen.getByRole("switch", { name: "Capture system audio for notes" }),
-    );
+    await user.click(screen.getByRole("switch", { name: "Capture system audio for notes" }));
     expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
   });
 
@@ -901,9 +844,10 @@ describe("AppSettings", () => {
       }),
     });
     await waitFor(() =>
-      expect(
-        screen.getByRole("progressbar", { name: "Microphone test level" }),
-      ).toHaveAttribute("aria-valuenow", "72"),
+      expect(screen.getByRole("progressbar", { name: "Microphone test level" })).toHaveAttribute(
+        "aria-valuenow",
+        "72",
+      ),
     );
 
     mocks.eventHandler?.({
@@ -917,25 +861,17 @@ describe("AppSettings", () => {
       }),
     });
 
-    expect(
-      await screen.findByText("Sample ready. Check volume."),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Play microphone test sample" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Start over" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Sample ready. Check volume.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play microphone test sample" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start over" })).toBeInTheDocument();
 
-    const play = vi
-      .spyOn(window.HTMLMediaElement.prototype, "play")
-      .mockImplementation(function (this: HTMLMediaElement) {
-        this.dispatchEvent(new Event("play"));
-        return Promise.resolve();
-      });
-    await user.click(
-      screen.getByRole("button", { name: "Play microphone test sample" }),
-    );
+    const play = vi.spyOn(window.HTMLMediaElement.prototype, "play").mockImplementation(function (
+      this: HTMLMediaElement,
+    ) {
+      this.dispatchEvent(new Event("play"));
+      return Promise.resolve();
+    });
+    await user.click(screen.getByRole("button", { name: "Play microphone test sample" }));
 
     expect(play).toHaveBeenCalledTimes(1);
     expect(
@@ -1025,21 +961,15 @@ describe("AppSettings", () => {
       }),
     ).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
-    );
+    await user.click(screen.getByRole("button", { name: /Auto-detect|USB Mic/ }));
     await user.click(await screen.findByRole("option", { name: "USB Mic" }));
 
     expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
       type: "discard_mic_test",
     });
     expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
-    expect(
-      screen.getByRole("button", { name: "Start test" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Play microphone test sample" }),
-    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Start test" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Play microphone test sample" })).toBeNull();
   });
 
   it("resets microphone test state when leaving audio settings", async () => {
@@ -1083,12 +1013,8 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Audio" }));
-    expect(
-      screen.getByRole("button", { name: "Start test" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Play microphone test sample" }),
-    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Start test" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Play microphone test sample" })).toBeNull();
   });
 
   it("saves the default transcription language", async () => {
@@ -1169,28 +1095,18 @@ describe("AppSettings", () => {
       />,
     );
 
-    const microphoneRow = screen
-      .getByText("Microphone")
-      .closest(".settings-row");
-    const accessibilityRow = screen
-      .getByText("Accessibility")
-      .closest(".settings-row");
-    const systemAudioRow = screen
-      .getByText("System audio")
-      .closest(".settings-row");
+    const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
+    const accessibilityRow = screen.getByText("Accessibility").closest(".settings-row");
+    const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
 
     expect(microphoneRow).not.toBeNull();
     expect(accessibilityRow).not.toBeNull();
     expect(systemAudioRow).not.toBeNull();
-    expect(
-      within(microphoneRow as HTMLElement).getByLabelText("Blocked"),
-    ).toBeInTheDocument();
+    expect(within(microphoneRow as HTMLElement).getByLabelText("Blocked")).toBeInTheDocument();
     expect(
       within(accessibilityRow as HTMLElement).getByLabelText("Needs access"),
     ).toBeInTheDocument();
-    expect(
-      within(systemAudioRow as HTMLElement).getByLabelText("Blocked"),
-    ).toBeInTheDocument();
+    expect(within(systemAudioRow as HTMLElement).getByLabelText("Blocked")).toBeInTheDocument();
 
     await user.click(
       within(microphoneRow as HTMLElement).getByRole("button", {
@@ -1265,16 +1181,12 @@ describe("AppSettings", () => {
         />,
       );
 
-      expect(
-        screen.getByText("Access used for recording audio."),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
       expect(screen.queryByText("System audio")).not.toBeInTheDocument();
 
-      const microphoneRow = screen
-        .getByText("Microphone")
-        .closest(".settings-row");
+      const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
       expect(microphoneRow).not.toBeNull();
       await userEvent.click(
         within(microphoneRow as HTMLElement).getByRole("button", {
@@ -1299,9 +1211,7 @@ describe("AppSettings", () => {
       ).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
-      expect(
-        screen.getByText("Dictation shortcuts unavailable"),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     } finally {
       restoreNavigator();
@@ -1326,9 +1236,7 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Shortcuts" }));
     expect(await screen.findByText("Push to talk")).toBeInTheDocument();
     expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
-    expect(
-      screen.queryByLabelText("Dictation activation mode"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Dictation activation mode")).not.toBeInTheDocument();
 
     const changeButtons = await screen.findAllByRole("button", {
       name: "Change",
@@ -1375,9 +1283,7 @@ describe("AppSettings", () => {
       }),
     );
 
-    await user.click(
-      (await screen.findAllByRole("button", { name: "Change" }))[0],
-    );
+    await user.click((await screen.findAllByRole("button", { name: "Change" }))[0]);
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
@@ -1419,9 +1325,7 @@ describe("AppSettings", () => {
       }),
     );
 
-    await user.click(
-      (await screen.findAllByRole("button", { name: "Change" }))[1],
-    );
+    await user.click((await screen.findAllByRole("button", { name: "Change" }))[1]);
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
@@ -1601,10 +1505,8 @@ describe("AppSettings", () => {
 
   it("does not show reset for legacy default shortcuts without key codes", async () => {
     const user = userEvent.setup();
-    const { keyCode: _pushKeyCode, ...legacyPushToTalkShortcut } =
-      baseSettings.pushToTalkShortcut;
-    const { keyCode: _toggleKeyCode, ...legacyToggleShortcut } =
-      baseSettings.toggleShortcut;
+    const { keyCode: _pushKeyCode, ...legacyPushToTalkShortcut } = baseSettings.pushToTalkShortcut;
+    const { keyCode: _toggleKeyCode, ...legacyToggleShortcut } = baseSettings.toggleShortcut;
 
     mocks.dictationSettings.mockResolvedValue({
       settings: {
@@ -1646,10 +1548,7 @@ describe("AppSettings", () => {
   it("loads Venice model options and saves selected models", async () => {
     const user = userEvent.setup();
     const modelChanged = vi.fn();
-    window.addEventListener(
-      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
-      modelChanged,
-    );
+    window.addEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
 
     try {
       render(
@@ -1665,31 +1564,20 @@ describe("AppSettings", () => {
         />,
       );
 
-      await waitFor(() =>
-        expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
-      );
+      await waitFor(() => expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"));
       await user.click(screen.getByRole("tab", { name: "Models" }));
       await user.click(
         await screen.findByRole("button", {
           name: "Change transcription model",
         }),
       );
-      expect(
-        await screen.findByRole("option", { name: /Parakeet/ }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole("option", { name: /Parakeet/ })).toBeInTheDocument();
       // The non-suggested catalog lives under the All tab.
       await user.click(screen.getByRole("tab", { name: "All" }));
-      expect(
-        screen.getAllByText("$0.0001 per second audio").length,
-      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("$0.0001 per second audio").length).toBeGreaterThan(0);
       expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
-      await user.click(
-        await screen.findByRole("option", { name: /GPT-4o Transcribe/ }),
-      );
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-        "transcription",
-        "gpt-4o-transcribe",
-      );
+      await user.click(await screen.findByRole("option", { name: /GPT-4o Transcribe/ }));
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("transcription", "gpt-4o-transcribe");
       expect(modelChanged).toHaveBeenCalledWith(
         expect.objectContaining({
           detail: {
@@ -1711,13 +1599,8 @@ describe("AppSettings", () => {
       expect(screen.getAllByText("Private mode").length).toBeGreaterThan(0);
       expect(screen.getByText("Anonymous mode")).toBeInTheDocument();
       expect(screen.queryByText("Anon")).not.toBeInTheDocument();
-      await user.click(
-        await screen.findByRole("option", { name: /Venice Uncensored/ }),
-      );
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-        "generation",
-        "venice-uncensored",
-      );
+      await user.click(await screen.findByRole("option", { name: /Venice Uncensored/ }));
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
       expect(modelChanged).toHaveBeenCalledWith(
         expect.objectContaining({
           detail: {
@@ -1727,10 +1610,7 @@ describe("AppSettings", () => {
         }),
       );
     } finally {
-      window.removeEventListener(
-        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
-        modelChanged,
-      );
+      window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
     }
   });
 
@@ -1750,46 +1630,29 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Change text model" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
 
     // Suggested is the default view: only the curated picks present in the
     // catalog show, each with its recommendation reason.
-    expect(
-      await screen.findByRole("option", { name: /GLM 5\.2/ }),
-    ).toBeInTheDocument();
-    expect(
-      await screen.findByRole("option", { name: /GLM 5\.1/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: /Kimi K2\.6/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("option", { name: /Venice Uncensored/ }),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Venice Uncensored/ })).not.toBeInTheDocument();
     expect(screen.getByText(/Default pick/)).toBeInTheDocument();
 
     // All shows the full catalog, without recommendation copy.
     await user.click(screen.getByRole("tab", { name: "All" }));
-    expect(
-      screen.getByRole("option", { name: /Venice Uncensored/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
     expect(screen.queryByText(/Default pick/)).not.toBeInTheDocument();
 
     // Searching looks across the whole catalog even from Suggested, and a
     // suggested pick stays selectable.
     await user.click(screen.getByRole("tab", { name: "Suggested" }));
     await user.type(screen.getByLabelText("Search models"), "uncensored");
-    expect(
-      screen.getByRole("option", { name: /Venice Uncensored/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
     await user.clear(screen.getByLabelText("Search models"));
     await user.click(screen.getByRole("option", { name: /GLM 5\.1/ }));
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-      "generation",
-      "zai-org-glm-5-1",
-    );
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-1");
   });
 
   it("shows the image generation section and saves the default image model", async () => {
@@ -1810,21 +1673,13 @@ describe("AppSettings", () => {
     await user.click(await screen.findByRole("tab", { name: "Models" }));
 
     // The section renders and the saved default is shown.
-    expect(
-      screen.getByRole("heading", { name: "Image generation" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Image generation" })).toBeInTheDocument();
     expect(screen.getByText("Venice SD3.5")).toBeInTheDocument();
 
     // The picker opens with the curated image options (no backend fetch).
-    await user.click(
-      screen.getByRole("button", { name: "Change image model" }),
-    );
-    expect(
-      await screen.findByRole("option", { name: /Venice SD3\.5/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: /FLUX 2 Pro/ }),
-    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Change image model" }));
+    expect(await screen.findByRole("option", { name: /Venice SD3\.5/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /FLUX 2 Pro/ })).toBeInTheDocument();
     // Image models are not fetched from the catalog.
     expect(mocks.listVeniceModels).not.toHaveBeenCalledWith("image");
 
@@ -1832,9 +1687,7 @@ describe("AppSettings", () => {
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("image", "flux-2-pro");
     // The picker closes after a selection.
     await waitFor(() =>
-      expect(
-        screen.queryByRole("option", { name: /FLUX 2 Pro/ }),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByRole("option", { name: /FLUX 2 Pro/ })).not.toBeInTheDocument(),
     );
   });
 
@@ -1856,9 +1709,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Change text model" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
     // Tool-less models are not suggested, so judge them on the All tab.
     await user.click(await screen.findByRole("tab", { name: "All" }));
 
@@ -1873,10 +1724,7 @@ describe("AppSettings", () => {
 
     // Tool-capable models stay selectable.
     await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-      "generation",
-      "venice-uncensored",
-    );
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
   });
 
   it("shows app build metadata", async () => {
@@ -2039,9 +1887,7 @@ describe("AppSettings", () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("tab", { name: "About" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Verify server" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Verify server" }));
     expect(mocks.juneOpenVerifyPage).toHaveBeenCalledOnce();
   });
 
@@ -2094,14 +1940,10 @@ describe("AppSettings", () => {
 
       const user = userEvent.setup();
       await user.click(screen.getByRole("tab", { name: "About" }));
-      await user.click(
-        await screen.findByRole("button", { name: "Replay onboarding" }),
-      );
+      await user.click(await screen.findByRole("button", { name: "Replay onboarding" }));
 
       // The completion flag is gone and the app reloads into the wizard.
-      expect(
-        window.localStorage.getItem("june.onboarding.completedVersion"),
-      ).toBeNull();
+      expect(window.localStorage.getItem("june.onboarding.completedVersion")).toBeNull();
       expect(reload).toHaveBeenCalledOnce();
     } finally {
       Object.defineProperty(window, "location", {
@@ -2139,9 +1981,7 @@ describe("AppSettings", () => {
   it("shows a refreshable messaging state when platform loading hangs", async () => {
     vi.useFakeTimers();
     try {
-      mocks.hermesBridgeMessagingPlatforms.mockReturnValue(
-        new Promise(() => {}),
-      );
+      mocks.hermesBridgeMessagingPlatforms.mockReturnValue(new Promise(() => {}));
       render(
         <AppSettings
           account={signedInAccount}
@@ -2165,9 +2005,7 @@ describe("AppSettings", () => {
 
       expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
       expect(screen.getByText("No matching platforms")).toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Refresh" }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -2230,15 +2068,11 @@ describe("AppSettings", () => {
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
 
     await user.click(cliSwitch);
-    await waitFor(() =>
-      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true),
-    );
+    await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true));
     expect(cliSwitch).toHaveAttribute("aria-checked", "true");
 
     await user.click(cliSwitch);
-    await waitFor(() =>
-      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false),
-    );
+    await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false));
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
   });
 });

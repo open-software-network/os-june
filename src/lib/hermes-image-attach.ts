@@ -40,11 +40,7 @@ import { messageFromError } from "./errors";
  * - `attached`: the structured image attach RPC acked — visible to model/tools.
  * - `failed`: import or attach errored; `error` carries the user-facing copy.
  */
-export type HermesAttachmentStatus =
-  | "pending"
-  | "imported"
-  | "attached"
-  | "failed";
+export type HermesAttachmentStatus = "pending" | "imported" | "attached" | "failed";
 
 /**
  * UI/runtime state for one attachment. Carries file REFERENCES (a workspace
@@ -169,19 +165,13 @@ export function attachmentStateFrom(
 /** The imported images still awaiting a structured attach (eligible to send to
  * structured attach before the next prompt). Skips files and already-attached/failed
  * images. */
-export function pendingImageAttachments(
-  states: HermesAttachmentState[],
-): HermesAttachmentState[] {
-  return states.filter(
-    (state) => state.kind === "image" && state.status === "imported",
-  );
+export function pendingImageAttachments(states: HermesAttachmentState[]): HermesAttachmentState[] {
+  return states.filter((state) => state.kind === "image" && state.status === "imported");
 }
 
 /** Whether any attachment is in a failed state that should block/​warn before a
  * prompt submit (so the user doesn't send believing the image went through). */
-export function attachmentBlocksSubmit(
-  states: HermesAttachmentState[],
-): boolean {
+export function attachmentBlocksSubmit(states: HermesAttachmentState[]): boolean {
   return states.some((state) => state.status === "failed");
 }
 
@@ -221,10 +211,7 @@ export async function attachImageToSession(
   }
 
   if (attachment.kind !== "image" || !attachment.workspacePath) {
-    const error = attachErrorNotice(
-      attachment.displayName,
-      new Error("unsupported file type"),
-    );
+    const error = attachErrorNotice(attachment.displayName, new Error("unsupported file type"));
     return {
       state: { ...withSession, status: "failed", error },
       artifact: failedArtifact(withSession),
@@ -234,9 +221,7 @@ export async function attachImageToSession(
 
   let parsed: { mimeType: string; dataBase64: string } | null;
   try {
-    parsed = parseImageDataUrl(
-      await deps.readImageData(attachment.workspacePath),
-    );
+    parsed = parseImageDataUrl(await deps.readImageData(attachment.workspacePath));
   } catch (err) {
     const error = attachErrorNotice(attachment.displayName, err);
     return {
@@ -247,10 +232,7 @@ export async function attachImageToSession(
   }
 
   if (!parsed) {
-    const error = attachErrorNotice(
-      attachment.displayName,
-      new Error("unsupported file type"),
-    );
+    const error = attachErrorNotice(attachment.displayName, new Error("unsupported file type"));
     return {
       state: { ...withSession, status: "failed", error },
       artifact: failedArtifact(withSession),

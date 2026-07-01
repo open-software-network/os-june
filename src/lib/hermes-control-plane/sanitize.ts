@@ -51,10 +51,7 @@ export function sanitizePayload(
 /** Whether a key name should have its value masked. Exported so debug tooling
  * can highlight the same fields it redacts. `extra` carries context-specific
  * key names (lowercased) that are sensitive only for a particular caller. */
-export function isSensitiveKey(
-  key: string,
-  extra?: ReadonlySet<string>,
-): boolean {
+export function isSensitiveKey(key: string, extra?: ReadonlySet<string>): boolean {
   if (extra?.has(key.toLowerCase())) return true;
   return SENSITIVE_KEY_PATTERN.test(key);
 }
@@ -91,9 +88,7 @@ function sanitize(
     out = value.map((item) => sanitize(item, depth + 1, seen, extra));
   } else {
     const obj: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(
-      value as Record<string, unknown>,
-    )) {
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       if (isSensitiveKey(key, extra)) {
         obj[key] = REDACTED;
         continue;
@@ -126,11 +121,7 @@ function isLikelySecretValue(value: string): boolean {
   // A path or url is a location, not a credential: never mask it on shape alone.
   if (looksLikePathOrUrl(trimmed)) return false;
   // A long, unbroken token (no whitespace) is almost never user-facing copy.
-  if (
-    trimmed.length >= 32 &&
-    !/\s/.test(trimmed) &&
-    /[A-Za-z0-9]/.test(trimmed)
-  ) {
+  if (trimmed.length >= 32 && !/\s/.test(trimmed) && /[A-Za-z0-9]/.test(trimmed)) {
     return true;
   }
   return false;

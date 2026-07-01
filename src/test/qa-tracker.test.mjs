@@ -37,9 +37,7 @@ describe("feature user-story tracker", () => {
     lines = readFileSync(TRACKER_PATH, "utf8").trimEnd().split("\n");
     header = lines[0].split("\t");
     rows = lines.slice(1).map((line) => line.split("\t"));
-    columnIndex = Object.fromEntries(
-      header.map((column, index) => [column, index]),
-    );
+    columnIndex = Object.fromEntries(header.map((column, index) => [column, index]));
   });
 
   it("keeps the canonical TSV schema intact", () => {
@@ -95,10 +93,9 @@ describe("feature user-story tracker", () => {
         if (isCommandRef(ref)) continue;
         expect(existsSync(ref), `${id} missing ref: ${ref}`).toBe(true);
         const stat = statSync(ref);
-        expect(
-          stat.isFile() || stat.isDirectory(),
-          `${id} non-file-or-directory ref: ${ref}`,
-        ).toBe(true);
+        expect(stat.isFile() || stat.isDirectory(), `${id} non-file-or-directory ref: ${ref}`).toBe(
+          true,
+        );
       }
     }
   });
@@ -106,11 +103,7 @@ describe("feature user-story tracker", () => {
   it("does not carry stale single-instance blocker language", () => {
     const content = lines.join("\n");
 
-    expect(content).not.toContain(
-      "local dev app could not own the single-instance identity",
-    );
-    expect(content).not.toContain(
-      "already running with the same single-instance identifier",
-    );
+    expect(content).not.toContain("local dev app could not own the single-instance identity");
+    expect(content).not.toContain("already running with the same single-instance identifier");
   });
 });

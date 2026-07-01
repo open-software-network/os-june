@@ -25,12 +25,7 @@ export function InlineNotice({
 }: InlineNoticeProps) {
   const classes = ["inline-notice", className].filter(Boolean).join(" ");
   return (
-    <section
-      className={classes}
-      data-tone={tone}
-      role={role}
-      aria-label={ariaLabel}
-    >
+    <section className={classes} data-tone={tone} role={role} aria-label={ariaLabel}>
       <p className="inline-notice-message">
         {eyebrow || icon ? (
           <span className="inline-notice-eyebrow">

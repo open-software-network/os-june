@@ -79,7 +79,6 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
 import {
   cancelAgentTask,
-  createAgentTask,
   dictationHelperCommand,
   explainAgentApproval,
   getAgentTask,
@@ -103,7 +102,6 @@ import {
   osAccountsUpgrade,
   providerModelSettings,
   retryAgentTask,
-  sendAgentMessage,
   setHermesAgentCliAccess,
   setVeniceModel,
   startHermesBridge,
@@ -166,10 +164,7 @@ import {
   pendingImageAttachments,
   type HermesAttachmentState,
 } from "../../lib/hermes-image-attach";
-import {
-  parseSessionUsage,
-  type SessionUsage,
-} from "../../lib/hermes-session-usage";
+import { parseSessionUsage, type SessionUsage } from "../../lib/hermes-session-usage";
 import {
   parseCompressSessionResult,
   type CompressSessionResult,
@@ -179,10 +174,7 @@ import {
   parseBranchSessionResult,
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
-import {
-  normalizeSteerText,
-  steeringLiveEvent,
-} from "../../lib/hermes-session-steer";
+import { normalizeSteerText, steeringLiveEvent } from "../../lib/hermes-session-steer";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesActivityStore } from "../../lib/hermes-activity-store";
@@ -193,10 +185,7 @@ import {
   type AgentArtifact as TimelineArtifact,
 } from "../../lib/hermes-artifact-store";
 import { SessionUsagePanel } from "./SessionUsagePanel";
-import {
-  AgentActivityDrawer,
-  AgentArtifactsSection,
-} from "./AgentActivityDrawer";
+import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawer";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
@@ -210,20 +199,14 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
-import {
-  preferredVisionFallbackModel,
-  suggestedModelsForMode,
-} from "../../lib/suggested-models";
+import { preferredVisionFallbackModel, suggestedModelsForMode } from "../../lib/suggested-models";
 import {
   contextLabel,
   modelOptions,
   pricingLabel,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import {
-  isHermesSessionsStartupRequestError,
-  messageFromError,
-} from "../../lib/errors";
+import { isHermesSessionsStartupRequestError, messageFromError } from "../../lib/errors";
 import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
@@ -248,10 +231,7 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage } from "../../lib/chat-image-generation";
-import {
-  ComposerEditor,
-  type ComposerEditorHandle,
-} from "./composer/ComposerEditor";
+import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
 import { CategoryIcon } from "./composer/CategoryIcon";
 import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
 import {
@@ -265,10 +245,7 @@ import {
   rememberSessionMode,
   sessionUnrestricted,
 } from "../../lib/agent-session-modes";
-import {
-  HERMES_TUI_DEBUG_WARNING,
-  hermesTuiDebugAvailable,
-} from "../../lib/hermes-tui-debug";
+import { HERMES_TUI_DEBUG_WARNING, hermesTuiDebugAvailable } from "../../lib/hermes-tui-debug";
 import {
   AGENT_CLI_ACCESS_ENABLED_MESSAGE,
   hasAgentCliAccessRequest,
@@ -293,17 +270,12 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 
-const POLLED_STATUSES = new Set<AgentTaskStatus>([
-  "queued",
-  "running",
-  "waitingForUser",
-]);
+const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
 const AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000];
 const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
-  AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[
-    AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS.length - 1
-  ] ?? 2000;
+  AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS.length - 1] ??
+  2000;
 const QUEUED_STEER_RETRY_DELAY_MS = 300;
 const RESTORED_QUEUED_STEER_RECONCILE_DELAY_MS = 1000;
 const RESTORED_QUEUED_STEER_BUSY_RECONCILE_DELAY_MS = 3000;
@@ -325,8 +297,7 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 // request is now permanently unanswerable. Every respond handler treats this as
 // terminal: it retires the dead-end card and shows SESSION_GONE_MESSAGE rather
 // than leaking the raw "Hermes API returned 404 ... Session not found" error.
-const SESSION_GONE_MESSAGE =
-  "This session has ended, so the request can no longer be answered.";
+const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
@@ -351,9 +322,7 @@ function setGalleryDesired(show: boolean, errors = false) {
 }
 
 if (import.meta.env.DEV && typeof window !== "undefined") {
-  (window as unknown as Record<string, unknown>).__agentGallery = (
-    show: boolean = true,
-  ) => {
+  (window as unknown as Record<string, unknown>).__agentGallery = (show: boolean = true) => {
     setGalleryDesired(show);
     return show
       ? "Agent response gallery shown. Run __agentGallery(false) to hide."
@@ -362,9 +331,7 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
   // Error-focused variant: just the failure sections, plus the chrome-level
   // error surfaces (error banner, composer busy notice) the turn-based
   // gallery can't represent.
-  (window as unknown as Record<string, unknown>).__agentErrors = (
-    show: boolean = true,
-  ) => {
+  (window as unknown as Record<string, unknown>).__agentErrors = (show: boolean = true) => {
     setGalleryDesired(show, true);
     return show
       ? "Agent error gallery shown. Run __agentErrors(false) to hide."
@@ -382,9 +349,7 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
 const AGENT_DEV_FILES_EVENT = "june:agent:dev-files";
 
 if (import.meta.env.DEV && typeof window !== "undefined") {
-  (window as unknown as Record<string, unknown>).__agentFiles = (
-    show: boolean = true,
-  ) => {
+  (window as unknown as Record<string, unknown>).__agentFiles = (show: boolean = true) => {
     window.dispatchEvent(
       new CustomEvent<{ show: boolean }>(AGENT_DEV_FILES_EVENT, {
         detail: { show },
@@ -470,9 +435,7 @@ function buildSampleArtifactFiles(): { name: string; bytes: Uint8Array }[] {
   const encoder = new TextEncoder();
   // 0xFE/0xFF never appear in UTF-8, so the backend's text preview rejects
   // this and the viewer lands on its no-preview download fallback.
-  const binary = new Uint8Array(512).map((_, index) =>
-    index % 2 ? 0xfe : 0xff,
-  );
+  const binary = new Uint8Array(512).map((_, index) => (index % 2 ? 0xfe : 0xff));
   return [
     { name: "june-sample.md", bytes: encoder.encode(SAMPLE_MARKDOWN) },
     { name: "june-sample.txt", bytes: encoder.encode(SAMPLE_TEXT) },
@@ -593,8 +556,7 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     icon: <IconDeepSearch size={18} />,
     title: "Research a topic",
     description: "Get a short, sourced write-up on anything.",
-    prompt:
-      "Research <topic> and write a short summary of what you find, with sources.",
+    prompt: "Research <topic> and write a short summary of what you find, with sources.",
     action: "prefill",
   },
   {
@@ -602,8 +564,7 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     icon: <IconFileSparkle size={18} />,
     title: "Summarize a file",
     description: "Pick a document and get the key points out of it.",
-    prompt:
-      "Summarize the key points of the attached file and pull out any action items.",
+    prompt: "Summarize the key points of the attached file and pull out any action items.",
     action: "attach",
   },
   {
@@ -620,8 +581,7 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     icon: <IconMagnifyingGlass size={18} />,
     title: "Find a file",
     description: "Describe what you remember; June tracks it down.",
-    prompt:
-      "Find <a file I half-remember> on my computer and tell me where it is.",
+    prompt: "Find <a file I half-remember> on my computer and tell me where it is.",
     action: "prefill",
   },
   {
@@ -638,8 +598,7 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     icon: <IconFileText size={18} />,
     title: "Extract text from a file",
     description: "Pull clean text out of a PDF, image, or scan.",
-    prompt:
-      "Extract all the text from the attached file and clean it up into tidy Markdown.",
+    prompt: "Extract all the text from the attached file and clean it up into tidy Markdown.",
     action: "attach",
   },
   {
@@ -671,10 +630,7 @@ function advanceHeroGreeting(): string {
   try {
     const index =
       Math.abs(
-        Number.parseInt(
-          window.localStorage.getItem(HERO_GREETING_INDEX_KEY) ?? "0",
-          10,
-        ) || 0,
+        Number.parseInt(window.localStorage.getItem(HERO_GREETING_INDEX_KEY) ?? "0", 10) || 0,
       ) % HERO_GREETINGS.length;
     window.localStorage.setItem(
       HERO_GREETING_INDEX_KEY,
@@ -697,15 +653,11 @@ const HERO_CHIP_SWAP_MS = 500;
 const PROVISIONAL_HERMES_SESSION_PREFIX = "pending:new-session:";
 
 function makeProvisionalHermesSessionId() {
-  return `${PROVISIONAL_HERMES_SESSION_PREFIX}${Date.now()}:${Math.random()
-    .toString(36)
-    .slice(2)}`;
+  return `${PROVISIONAL_HERMES_SESSION_PREFIX}${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
 
 function isProvisionalHermesSessionId(sessionId?: string | null) {
-  return Boolean(
-    sessionId && sessionId.startsWith(PROVISIONAL_HERMES_SESSION_PREFIX),
-  );
+  return Boolean(sessionId && sessionId.startsWith(PROVISIONAL_HERMES_SESSION_PREFIX));
 }
 
 // Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
@@ -816,9 +768,7 @@ type ComposerDraftSnapshot = {
 
 /** The right-hand file viewer: a list of every file surfaced in the
  * conversation, or one file opened for reading. */
-type AgentArtifactPanelState =
-  | { view: "list" }
-  | { view: "file"; artifact: AgentArtifact };
+type AgentArtifactPanelState = { view: "list" } | { view: "file"; artifact: AgentArtifact };
 
 type TauriFileDropPayload = {
   paths?: string[];
@@ -880,9 +830,7 @@ type AgentSessionContinuity = {
   submittingIssueReportSessionIds: string[];
 };
 
-type IssueReportDeliveryResult =
-  | { sent: true }
-  | { sent: false; errorMessage: string };
+type IssueReportDeliveryResult = { sent: true } | { sent: false; errorMessage: string };
 
 type IssueReportDeliverySettledDetail = {
   sessionId: string;
@@ -898,10 +846,8 @@ type IssueReportFollowUpSubmitFailedDetail = {
 
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
-const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY =
-  "june:agent:reviewable-issue-reports";
-const ISSUE_REPORT_DELIVERY_SETTLED_EVENT =
-  "june-agent-issue-report-delivery-settled";
+const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY = "june:agent:reviewable-issue-reports";
+const ISSUE_REPORT_DELIVERY_SETTLED_EVENT = "june-agent-issue-report-delivery-settled";
 const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
 const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
@@ -952,8 +898,7 @@ function activeToolCallsMap(
       sessionId,
       new Map(
         Object.entries(tools).filter(
-          (entry): entry is [string, number] =>
-            Number.isFinite(entry[1]) && entry[1] > 0,
+          (entry): entry is [string, number] => Number.isFinite(entry[1]) && entry[1] > 0,
         ),
       ),
     ]),
@@ -974,10 +919,7 @@ function captureSessionContinuity(state: {
   diagnosisRefreshIssueReportSessionIds: Set<string>;
   submittingIssueReportSessionIds: Set<string>;
 }): AgentSessionContinuity | null {
-  const activeIds = new Set([
-    ...state.workingSessionIds,
-    ...state.waitingSessionIds,
-  ]);
+  const activeIds = new Set([...state.workingSessionIds, ...state.waitingSessionIds]);
   for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
     if (pending.length > 0) activeIds.add(sessionId);
   }
@@ -998,13 +940,9 @@ function captureSessionContinuity(state: {
   }
   if (activeIds.size === 0) return null;
   const pick = <T,>(record: Record<string, T>) =>
-    Object.fromEntries(
-      Object.entries(record).filter(([sessionId]) => activeIds.has(sessionId)),
-    );
+    Object.fromEntries(Object.entries(record).filter(([sessionId]) => activeIds.has(sessionId)));
   return {
-    sessionItems: state.sessionItems.filter((session) =>
-      activeIds.has(session.id),
-    ),
+    sessionItems: state.sessionItems.filter((session) => activeIds.has(session.id)),
     pendingMessages: pick(state.pendingMessages),
     workingSessionIds: [...state.workingSessionIds],
     waitingSessionIds: [...state.waitingSessionIds],
@@ -1014,20 +952,18 @@ function captureSessionContinuity(state: {
     activeToolCallsBySession: pick(state.activeToolCallsBySession),
     pendingIssueReports: pick(state.pendingIssueReports),
     reviewableIssueReports: pick(state.reviewableIssueReports),
-    diagnosisRefreshIssueReportSessionIds: [
-      ...state.diagnosisRefreshIssueReportSessionIds,
-    ].filter((sessionId) => activeIds.has(sessionId)),
-    submittingIssueReportSessionIds: [
-      ...state.submittingIssueReportSessionIds,
-    ].filter((sessionId) => activeIds.has(sessionId)),
+    diagnosisRefreshIssueReportSessionIds: [...state.diagnosisRefreshIssueReportSessionIds].filter(
+      (sessionId) => activeIds.has(sessionId),
+    ),
+    submittingIssueReportSessionIds: [...state.submittingIssueReportSessionIds].filter(
+      (sessionId) => activeIds.has(sessionId),
+    ),
   };
 }
 
 function persistedReviewableIssueReports(): Record<string, PendingIssueReport> {
   try {
-    const raw = window.localStorage.getItem(
-      REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY,
-    );
+    const raw = window.localStorage.getItem(REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -1046,9 +982,7 @@ function persistedReviewableIssueReports(): Record<string, PendingIssueReport> {
   }
 }
 
-function persistReviewableIssueReports(
-  reports: Record<string, PendingIssueReport>,
-) {
+function persistReviewableIssueReports(reports: Record<string, PendingIssueReport>) {
   try {
     const entries = Object.entries(reports);
     if (entries.length === 0) {
@@ -1099,9 +1033,7 @@ function persistedIssueReport(value: unknown): PendingIssueReport | undefined {
   };
 }
 
-function updateContinuityAfterIssueReportDelivery(
-  detail: IssueReportDeliverySettledDetail,
-) {
+function updateContinuityAfterIssueReportDelivery(detail: IssueReportDeliverySettledDetail) {
   if (!sessionContinuity) return;
   const reviewableIssueReports = {
     ...sessionContinuity.reviewableIssueReports,
@@ -1110,10 +1042,7 @@ function updateContinuityAfterIssueReportDelivery(
   const diagnosisRefreshIssueReportSessionIds = new Set(
     sessionContinuity.diagnosisRefreshIssueReportSessionIds,
   );
-  if (
-    detail.result.sent &&
-    reviewableIssueReports[detail.sessionId] === detail.report
-  ) {
+  if (detail.result.sent && reviewableIssueReports[detail.sessionId] === detail.report) {
     delete reviewableIssueReports[detail.sessionId];
     diagnosisRefreshIssueReportSessionIds.delete(detail.sessionId);
   } else if (!detail.result.sent && !pendingIssueReports[detail.sessionId]) {
@@ -1170,27 +1099,20 @@ function updateContinuityAfterIssueReportFollowUpSubmitFailed(
     diagnosisRefreshIssueReportSessionIds: new Set(
       sessionContinuity.diagnosisRefreshIssueReportSessionIds,
     ),
-    submittingIssueReportSessionIds: new Set(
-      sessionContinuity.submittingIssueReportSessionIds,
-    ),
+    submittingIssueReportSessionIds: new Set(sessionContinuity.submittingIssueReportSessionIds),
   });
 }
 
-function dispatchIssueReportDeliverySettled(
-  detail: IssueReportDeliverySettledDetail,
-) {
+function dispatchIssueReportDeliverySettled(detail: IssueReportDeliverySettledDetail) {
   updateContinuityAfterIssueReportDelivery(detail);
   window.dispatchEvent(
-    new CustomEvent<IssueReportDeliverySettledDetail>(
-      ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
-      { detail },
-    ),
+    new CustomEvent<IssueReportDeliverySettledDetail>(ISSUE_REPORT_DELIVERY_SETTLED_EVENT, {
+      detail,
+    }),
   );
 }
 
-function dispatchIssueReportFollowUpSubmitFailed(
-  detail: IssueReportFollowUpSubmitFailedDetail,
-) {
+function dispatchIssueReportFollowUpSubmitFailed(detail: IssueReportFollowUpSubmitFailedDetail) {
   updateContinuityAfterIssueReportFollowUpSubmitFailed(detail);
   window.dispatchEvent(
     new CustomEvent<IssueReportFollowUpSubmitFailedDetail>(
@@ -1201,9 +1123,7 @@ function dispatchIssueReportFollowUpSubmitFailed(
 }
 
 function issueReportDescription(report: PendingIssueReport) {
-  const followUps = report.followUps
-    .map((followUp) => followUp.trim())
-    .filter(Boolean);
+  const followUps = report.followUps.map((followUp) => followUp.trim()).filter(Boolean);
   if (followUps.length === 0) return report.description;
   return [
     report.description,
@@ -1285,17 +1205,14 @@ export function AgentWorkspace({
   const [generatingImage, setGeneratingImage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(
-    null,
-  );
+  const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
   // A rejected send into a still-running session, explained by the composer.
   // Separate from `errorState` because background session refreshes clear that
   // banner on success — this notice must survive until the turn finishes.
   const [busyNotice, setBusyNotice] = useState<string | null>(null);
   // Confirmation that a submitted issue report reached the June team; shown
   // in the composer notice slot until dismissed by the next send.
-  const [issueReportNotice, setIssueReportNotice] =
-    useState<AgentWorkspaceNotice | null>(null);
+  const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
   // Honest result of the last model switch (feature 10): scoped to the session
   // it acted on so it survives background refreshes and disappears when the
   // user moves to another conversation. A null sessionId means it reports a
@@ -1314,9 +1231,7 @@ export function AgentWorkspace({
   } | null>(null);
   // Which message a branch is currently in flight for, so its action shows a
   // disabled/working state and double-clicks can't fork twice.
-  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(
-    null,
-  );
+  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -1337,15 +1252,10 @@ export function AgentWorkspace({
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachTriggerRef = useRef<HTMLButtonElement | null>(null);
   const attachMenuRef = useRef<HTMLDivElement | null>(null);
-  const [hermesSessionItems, setHermesSessionItems] = useState<
-    HermesSessionInfo[]
-  >(() => {
+  const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
     const restored = continuity?.sessionItems ?? [];
     if (!initialSession) return restored;
-    return [
-      initialSession,
-      ...restored.filter((session) => session.id !== initialSession.id),
-    ];
+    return [initialSession, ...restored.filter((session) => session.id !== initialSession.id)];
   });
   const hermesSessionItemsRef = useRef(hermesSessionItems);
   // False until the first listHermesSessions fetch lands. Until then the
@@ -1360,16 +1270,10 @@ export function AgentWorkspace({
   // dispatch would otherwise announce the restored session as selected, which
   // App reads as "switched to an existing session" and drops a pending
   // project assignment before the new session even exists.
-  const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
-    string | undefined
-  >(
-    () =>
-      initialSessionId ??
-      (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
+  const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<string | undefined>(
+    () => initialSessionId ?? (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
   );
-  const selectedHermesSessionIdRef = useRef<string | undefined>(
-    selectedHermesSessionId,
-  );
+  const selectedHermesSessionIdRef = useRef<string | undefined>(selectedHermesSessionId);
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
   const [newSessionMode, setNewSessionMode] = useState(
     () => !initialSessionId && hasPendingNewSessionRequest(),
@@ -1392,14 +1296,10 @@ export function AgentWorkspace({
   );
   const handleTopUp = useCallback(() => {
     const result = onTopUp ? onTopUp() : osAccountsUpgrade();
-    void Promise.resolve(result).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+    void Promise.resolve(result).catch((err: unknown) => setError(messageFromError(err)));
   }, [onTopUp, setError]);
   const clearErrorForSession = useCallback((sessionId: string) => {
-    setErrorState((current) =>
-      current?.sessionId === sessionId ? null : current,
-    );
+    setErrorState((current) => (current?.sessionId === sessionId ? null : current));
   }, []);
   const [heroGreeting, setHeroGreeting] = useState(advanceHeroGreeting);
   const heroGreetingConsumedRef = useRef(false);
@@ -1417,33 +1317,28 @@ export function AgentWorkspace({
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >(() => continuity?.pendingMessages ?? {});
-  const pendingHermesMessagesRef = useRef<
-    Record<string, HermesSessionMessage[]>
-  >(pendingHermesMessages);
+  const pendingHermesMessagesRef =
+    useRef<Record<string, HermesSessionMessage[]>>(pendingHermesMessages);
   // Per-session, client-synthesized assistant turns for the `/image` slash
   // command. The generated image never comes off the gateway message stream, so
   // it can't ride in `pendingHermesMessages` (those are HermesSessionMessages);
   // it lives here as a ready-built AgentChatTurn carrying the image part inline,
   // merged into the rendered turns by createdAt. In-memory like the artifact
   // store — survives session switches, not a full app reload.
-  const [imageTurnsBySession, setImageTurnsBySession] = useState<
-    Record<string, AgentChatTurn[]>
-  >({});
+  const [imageTurnsBySession, setImageTurnsBySession] = useState<Record<string, AgentChatTurn[]>>(
+    {},
+  );
   // Per-session ordering for message fetches: the sequence handed out at
   // fetch start, and the highest sequence whose response was applied. See
   // listSessionMessagesOrdered.
   const sessionMessagesFetchSeqRef = useRef<Map<string, number>>(new Map());
   const sessionMessagesAppliedSeqRef = useRef<Map<string, number>>(new Map());
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
-  const [liveEvents, setLiveEvents] = useState<
-    Record<string, LiveHermesEvent[]>
-  >(() => continuity?.liveEvents ?? {});
-  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<
-    Record<string, boolean>
-  >({});
-  const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(
-    () => new Set(),
+  const [liveEvents, setLiveEvents] = useState<Record<string, LiveHermesEvent[]>>(
+    () => continuity?.liveEvents ?? {},
   );
+  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
+  const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(() => new Set());
   const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
     () => new Set(continuity?.workingSessionIds),
   );
@@ -1466,16 +1361,14 @@ export function AgentWorkspace({
     () => new Set(continuity?.waitingSessionIds),
   );
   const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
-  const [runtimeSessionIds, setRuntimeSessionIds] = useState<
-    Record<string, string>
-  >(() => continuity?.runtimeSessionIds ?? {});
+  const [runtimeSessionIds, setRuntimeSessionIds] = useState<Record<string, string>>(
+    () => continuity?.runtimeSessionIds ?? {},
+  );
   const runtimeSessionIdsRef = useRef(runtimeSessionIds);
   // Consecutive runtime-reconcile polls in which a locally-working session was
   // absent from the gateway's live list. Cleared the moment it's seen live.
   const workingReconcileMissesRef = useRef(new Map<string, number>());
-  const [stoppingSessionIds, setStoppingSessionIds] = useState<
-    ReadonlySet<string>
-  >(new Set());
+  const [stoppingSessionIds, setStoppingSessionIds] = useState<ReadonlySet<string>>(new Set());
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
   const skillCommandsLoadRef = useRef<Promise<HermesSkillInfo[]> | null>(null);
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
@@ -1488,13 +1381,10 @@ export function AgentWorkspace({
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
   const defaultGenerationModelIdRef = useRef("");
   const sessionModelOverridesRef = useRef<Record<string, string>>({});
-  const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>(
-    [],
-  );
+  const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
-  const [composerModelFlyout, setComposerModelFlyout] =
-    useState<ComposerModelFlyout>(null);
+  const [composerModelFlyout, setComposerModelFlyout] = useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const composerModelTriggerRef = useRef<HTMLButtonElement | null>(null);
   const composerModelPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -1505,21 +1395,16 @@ export function AgentWorkspace({
   const [capabilityLoading, setCapabilityLoading] = useState(false);
   const [skillCommandLoading, setSkillCommandLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
-  const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] =
-    useState<string>();
-  const [messagingEnvEdits, setMessagingEnvEdits] = useState<
-    Record<string, string>
-  >({});
-  const [filesystemSnapshot, setFilesystemSnapshot] =
-    useState<HermesFilesystemSnapshot | null>(null);
-  const [filesystemLoading, setFilesystemLoading] = useState(false);
-  const [artifactPanel, setArtifactPanel] =
-    useState<AgentArtifactPanelState | null>(null);
-  // The session whose usage/cost panel is open, or null. Self-contained for
-  // feature 09; feature 11's activity drawer will later host the same panel.
-  const [usagePanelSessionId, setUsagePanelSessionId] = useState<string | null>(
+  const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] = useState<string>();
+  const [messagingEnvEdits, setMessagingEnvEdits] = useState<Record<string, string>>({});
+  const [filesystemSnapshot, setFilesystemSnapshot] = useState<HermesFilesystemSnapshot | null>(
     null,
   );
+  const [filesystemLoading, setFilesystemLoading] = useState(false);
+  const [artifactPanel, setArtifactPanel] = useState<AgentArtifactPanelState | null>(null);
+  // The session whose usage/cost panel is open, or null. Self-contained for
+  // feature 09; feature 11's activity drawer will later host the same panel.
+  const [usagePanelSessionId, setUsagePanelSessionId] = useState<string | null>(null);
   // The session whose context-compaction dialog is open, or null (feature 08).
   const [compactSessionId, setCompactSessionId] = useState<string | null>(null);
   // Dev-only sample files seeded by window.__agentFiles — surfaced alongside
@@ -1528,17 +1413,11 @@ export function AgentWorkspace({
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, AgentApprovalChoice>>
   >({});
-  const [clarifySubmitting, setClarifySubmitting] = useState<
-    Record<string, string>
-  >({});
+  const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
   // Sudo records which choice (approve/deny) is in flight per request id;
   // secret records only that a submit is in flight (NEVER the value).
-  const [sudoSubmitting, setSudoSubmitting] = useState<
-    Record<string, "approve" | "deny">
-  >({});
-  const [secretSubmitting, setSecretSubmitting] = useState<
-    Record<string, true>
-  >({});
+  const [sudoSubmitting, setSudoSubmitting] = useState<Record<string, "approve" | "deny">>({});
+  const [secretSubmitting, setSecretSubmitting] = useState<Record<string, true>>({});
   // Whether "Agent CLI access" (Settings, Agent tab) is on — drives the
   // in-chat request card June can raise via its soul token. undefined until
   // the stored value loads, so a card never flashes the wrong state.
@@ -1564,9 +1443,7 @@ export function AgentWorkspace({
   // window.__agentGallery() — see the effect below. The errors flag marks the
   // __agentErrors() variant, which additionally forces the chrome-level error
   // surfaces (error banner, composer busy notice) for styling.
-  const [gallerySections, setGallerySections] = useState<
-    AgentChatGallerySection[] | null
-  >(null);
+  const [gallerySections, setGallerySections] = useState<AgentChatGallerySection[] | null>(null);
   const [galleryErrors, setGalleryErrors] = useState(false);
   // One gateway client per write-access mode: the sandboxed and unrestricted
   // runtime processes run side by side, each with its own socket. Sessions
@@ -1601,39 +1478,25 @@ export function AgentWorkspace({
     ...persistedReviewableIssueReports(),
     ...(continuity?.reviewableIssueReports ?? {}),
   }));
-  const reviewableIssueReportsRef = useRef<Record<string, PendingIssueReport>>(
-    reviewableIssueReports,
-  );
-  const [
-    diagnosisRefreshIssueReportSessionIds,
-    setDiagnosisRefreshIssueReportSessionIds,
-  ] = useState<Set<string>>(
-    () => new Set(continuity?.diagnosisRefreshIssueReportSessionIds ?? []),
-  );
+  const reviewableIssueReportsRef =
+    useRef<Record<string, PendingIssueReport>>(reviewableIssueReports);
+  const [diagnosisRefreshIssueReportSessionIds, setDiagnosisRefreshIssueReportSessionIds] =
+    useState<Set<string>>(() => new Set(continuity?.diagnosisRefreshIssueReportSessionIds ?? []));
   const diagnosisRefreshIssueReportSessionIdsRef = useRef<Set<string>>(
     diagnosisRefreshIssueReportSessionIds,
   );
-  const issueReportDiagnosisRefreshesRef = useRef<Map<string, Promise<void>>>(
-    new Map(),
-  );
-  const deferredFailedIssueReportDeliverySessionIdsRef = useRef<Set<string>>(
-    new Set(),
-  );
-  const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] =
-    useState<Set<string>>(
-      () => new Set(continuity?.submittingIssueReportSessionIds ?? []),
-    );
-  const submittingIssueReportSessionIdsRef = useRef<Set<string>>(
-    submittingIssueReportSessionIds,
-  );
+  const issueReportDiagnosisRefreshesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const deferredFailedIssueReportDeliverySessionIdsRef = useRef<Set<string>>(new Set());
+  const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] = useState<
+    Set<string>
+  >(() => new Set(continuity?.submittingIssueReportSessionIds ?? []));
+  const submittingIssueReportSessionIdsRef = useRef<Set<string>>(submittingIssueReportSessionIds);
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
   // selecting an existing chat from the sidebar (that should swap instantly).
   const heroExitViaThreadRef = useRef(false);
-  const sessionTitleOverridesRef = useRef<Record<string, string>>(
-    continuity?.titleOverrides ?? {},
-  );
+  const sessionTitleOverridesRef = useRef<Record<string, string>>(continuity?.titleOverrides ?? {});
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1643,10 +1506,7 @@ export function AgentWorkspace({
   // startNewTask for the sidebar/settings report entry points.
   const pendingSeedCategoryRef = useRef<ReportCategory | null>(null);
 
-  function setReviewableIssueReport(
-    sessionId: string,
-    report: PendingIssueReport | null,
-  ) {
+  function setReviewableIssueReport(sessionId: string, report: PendingIssueReport | null) {
     const next = { ...reviewableIssueReportsRef.current };
     if (report) {
       next[sessionId] = report;
@@ -1658,10 +1518,7 @@ export function AgentWorkspace({
     setReviewableIssueReports(next);
   }
 
-  function setIssueReportDiagnosisRefreshing(
-    sessionId: string,
-    refreshing: boolean,
-  ) {
+  function setIssueReportDiagnosisRefreshing(sessionId: string, refreshing: boolean) {
     const next = new Set(diagnosisRefreshIssueReportSessionIdsRef.current);
     if (refreshing) {
       next.add(sessionId);
@@ -1729,25 +1586,18 @@ export function AgentWorkspace({
 
   useEffect(() => {
     function onIssueReportDeliverySettled(event: Event) {
-      const detail = (event as CustomEvent<IssueReportDeliverySettledDetail>)
-        .detail;
+      const detail = (event as CustomEvent<IssueReportDeliverySettledDetail>).detail;
       if (!detail?.sessionId) return;
       setIssueReportSubmitting(detail.sessionId, false);
       if (detail.result.sent) {
-        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
-          detail.sessionId,
-        );
-        if (
-          reviewableIssueReportsRef.current[detail.sessionId] === detail.report
-        ) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(detail.sessionId);
+        if (reviewableIssueReportsRef.current[detail.sessionId] === detail.report) {
           setReviewableIssueReport(detail.sessionId, null);
         }
         return;
       }
       if (pendingIssueReportsRef.current.has(detail.sessionId)) {
-        deferredFailedIssueReportDeliverySessionIdsRef.current.add(
-          detail.sessionId,
-        );
+        deferredFailedIssueReportDeliverySessionIdsRef.current.add(detail.sessionId);
       } else if (!reviewableIssueReportsRef.current[detail.sessionId]) {
         setReviewableIssueReport(detail.sessionId, detail.report);
       }
@@ -1755,37 +1605,23 @@ export function AgentWorkspace({
     }
 
     function onIssueReportFollowUpSubmitFailed(event: Event) {
-      const detail = (
-        event as CustomEvent<IssueReportFollowUpSubmitFailedDetail>
-      ).detail;
+      const detail = (event as CustomEvent<IssueReportFollowUpSubmitFailedDetail>).detail;
       if (!detail?.sessionId) return;
-      if (
-        pendingIssueReportsRef.current.get(detail.sessionId) ===
-        detail.queuedReport
-      ) {
+      if (pendingIssueReportsRef.current.get(detail.sessionId) === detail.queuedReport) {
         pendingIssueReportsRef.current.delete(detail.sessionId);
       }
-      if (
-        detail.restoreReport &&
-        !reviewableIssueReportsRef.current[detail.sessionId]
-      ) {
+      if (detail.restoreReport && !reviewableIssueReportsRef.current[detail.sessionId]) {
         setReviewableIssueReport(detail.sessionId, detail.restoreReport);
       }
     }
 
-    window.addEventListener(
-      ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
-      onIssueReportDeliverySettled,
-    );
+    window.addEventListener(ISSUE_REPORT_DELIVERY_SETTLED_EVENT, onIssueReportDeliverySettled);
     window.addEventListener(
       ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
       onIssueReportFollowUpSubmitFailed,
     );
     return () => {
-      window.removeEventListener(
-        ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
-        onIssueReportDeliverySettled,
-      );
+      window.removeEventListener(ISSUE_REPORT_DELIVERY_SETTLED_EVENT, onIssueReportDeliverySettled);
       window.removeEventListener(
         ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
         onIssueReportFollowUpSubmitFailed,
@@ -1813,9 +1649,7 @@ export function AgentWorkspace({
         const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
         if (!runtimeSessionId) continue;
         try {
-          const gateway = await ensureHermesGateway(
-            sessionUnrestricted(sessionId),
-          );
+          const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
           if (cancelled || !workingSessionIdsRef.current.has(sessionId)) {
             continue;
           }
@@ -1823,9 +1657,8 @@ export function AgentWorkspace({
             gateway,
             runtimeSessionId,
             sessionDisplayTitle:
-              hermesSessionItemsRef.current.find(
-                (session) => session.id === sessionId,
-              )?.title ?? "Agent session",
+              hermesSessionItemsRef.current.find((session) => session.id === sessionId)?.title ??
+              "Agent session",
             storedSessionId: sessionId,
           });
         } catch {
@@ -1855,21 +1688,18 @@ export function AgentWorkspace({
     workingSessionIds,
   ]);
 
-  const setSessionToolCallActive = useCallback(
-    (sessionId: string, active: boolean) => {
-      setToolCallSessionIds((current) => {
-        const next = new Set(current);
-        if (active) {
-          next.add(sessionId);
-        } else {
-          next.delete(sessionId);
-        }
-        toolCallSessionIdsRef.current = next;
-        return next;
-      });
-    },
-    [],
-  );
+  const setSessionToolCallActive = useCallback((sessionId: string, active: boolean) => {
+    setToolCallSessionIds((current) => {
+      const next = new Set(current);
+      if (active) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      toolCallSessionIdsRef.current = next;
+      return next;
+    });
+  }, []);
 
   function clearSessionToolCalls(sessionId: string) {
     activeToolCallsBySessionRef.current.delete(sessionId);
@@ -1882,9 +1712,7 @@ export function AgentWorkspace({
     phase: HermesToolEventPhase,
   ) {
     const eventKey = toolEventActivityKey(event);
-    const current = new Map(
-      activeToolCallsBySessionRef.current.get(sessionId) ?? [],
-    );
+    const current = new Map(activeToolCallsBySessionRef.current.get(sessionId) ?? []);
 
     if (phase === "progress" && eventKey === undefined) {
       return current.size > 0;
@@ -1916,37 +1744,31 @@ export function AgentWorkspace({
     return false;
   }
 
-  const setSessionWorking = useCallback(
-    (sessionId: string, working: boolean) => {
-      setWorkingSessionIds((current) => {
-        const next = new Set(current);
-        if (working) {
-          next.add(sessionId);
-        } else {
-          next.delete(sessionId);
-        }
-        workingSessionIdsRef.current = next;
-        return next;
-      });
-    },
-    [],
-  );
+  const setSessionWorking = useCallback((sessionId: string, working: boolean) => {
+    setWorkingSessionIds((current) => {
+      const next = new Set(current);
+      if (working) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      workingSessionIdsRef.current = next;
+      return next;
+    });
+  }, []);
 
-  const setSessionWaiting = useCallback(
-    (sessionId: string, waiting: boolean) => {
-      setWaitingSessionIds((current) => {
-        const next = new Set(current);
-        if (waiting) {
-          next.add(sessionId);
-        } else {
-          next.delete(sessionId);
-        }
-        waitingSessionIdsRef.current = next;
-        return next;
-      });
-    },
-    [],
-  );
+  const setSessionWaiting = useCallback((sessionId: string, waiting: boolean) => {
+    setWaitingSessionIds((current) => {
+      const next = new Set(current);
+      if (waiting) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      waitingSessionIdsRef.current = next;
+      return next;
+    });
+  }, []);
 
   const clearSessionActivity = useCallback(
     (sessionId: string) => {
@@ -2002,19 +1824,14 @@ export function AgentWorkspace({
     [selectedTaskId, tasks],
   );
   const selectedHermesSession = useMemo(
-    () =>
-      hermesSessionItems.find(
-        (session) => session.id === selectedHermesSessionId,
-      ),
+    () => hermesSessionItems.find((session) => session.id === selectedHermesSessionId),
     [hermesSessionItems, selectedHermesSessionId],
   );
   useEffect(() => {
     if (selectedHermesSessionId && !selectedHermesSession) return;
     onSessionSelected?.(selectedHermesSession);
   }, [onSessionSelected, selectedHermesSession, selectedHermesSessionId]);
-  const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(
-    selectedHermesSessionId,
-  );
+  const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(selectedHermesSessionId);
   const activeGenerationModelId =
     selectedHermesSessionId && !newSessionMode
       ? selectedHermesSession?.model?.trim() || defaultGenerationModelId
@@ -2026,9 +1843,7 @@ export function AgentWorkspace({
         : undefined,
     [activeGenerationModelId, generationModels],
   );
-  const generationPrivacyBadge = generationModel
-    ? modelPrivacyBadge(generationModel)
-    : undefined;
+  const generationPrivacyBadge = generationModel ? modelPrivacyBadge(generationModel) : undefined;
   // The model the image-attach banner offers to switch to: a vision + tool
   // capable model, preferring a curated suggested pick (Kimi K2.6) over the
   // alphabetically-first vision model. See preferredVisionFallbackModel.
@@ -2046,8 +1861,7 @@ export function AgentWorkspace({
     ? generationModels.find((model) => model.id === activeGenerationModelId)
     : undefined;
   const composerHasPendingImage =
-    pendingImageAttachments(attachments.map((attachment) => attachment.attach))
-      .length > 0;
+    pendingImageAttachments(attachments.map((attachment) => attachment.attach)).length > 0;
   const showImageInputWarning =
     composerHasPendingImage &&
     !!resolvedGenerationModel &&
@@ -2098,11 +1912,7 @@ export function AgentWorkspace({
   // button) so the keyboard alone both adds context (Enter -> steer) and halts
   // the run. Cooperates with other Escape owners via defaultPrevented.
   useEffect(() => {
-    if (
-      !selectedHermesSessionId ||
-      !workingSessionIds.has(selectedHermesSessionId)
-    )
-      return;
+    if (!selectedHermesSessionId || !workingSessionIds.has(selectedHermesSessionId)) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) {
         event.preventDefault();
@@ -2128,9 +1938,7 @@ export function AgentWorkspace({
       void (async () => {
         const imported: AgentArtifact[] = [];
         for (const sample of buildSampleArtifactFiles()) {
-          imported.push(
-            await importHermesBridgeFileBytes(sample.name, sample.bytes),
-          );
+          imported.push(await importHermesBridgeFileBytes(sample.name, sample.bytes));
         }
         setDevArtifacts(imported);
         setArtifactPanel({ view: "list" });
@@ -2145,12 +1953,8 @@ export function AgentWorkspace({
   // fall-through in the render, minus the dev gallery. Computed up here
   // because the composer auto-grow effect below needs it as a dependency.
   const heroMode =
-    !gallerySections &&
-    (newSessionMode || (!selectedHermesSessionId && !selectedTask));
-  const visibleError = visibleAgentWorkspaceError(
-    errorState,
-    selectedHermesSessionId,
-  );
+    !gallerySections && (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+  const visibleError = visibleAgentWorkspaceError(errorState, selectedHermesSessionId);
   const visibleIssueReportNotice =
     issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
@@ -2158,8 +1962,7 @@ export function AgentWorkspace({
   // The model-switch notice (feature 10) shows on the session it acted on; a
   // null sessionId is the default-only notice, shown while no session is open.
   const visibleModelSwitchNotice =
-    modelSwitchNotice &&
-    modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
+    modelSwitchNotice && modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
       ? modelSwitchNotice.message
       : null;
   // Unsupported Hermes events for the selected session surface a generic,
@@ -2179,8 +1982,7 @@ export function AgentWorkspace({
   // falling back to the raw id when the session isn't in the loaded list
   // (unknown title must never crash or blank the row).
   const titleForPendingSession = useCallback(
-    (sessionId: string) =>
-      hermesSessionItems.find((session) => session.id === sessionId)?.title,
+    (sessionId: string) => hermesSessionItems.find((session) => session.id === sessionId)?.title,
     [hermesSessionItems],
   );
 
@@ -2209,8 +2011,7 @@ export function AgentWorkspace({
   // The store only knows the count once a session has reported activity; treat a
   // never-touched store as "loading" so the very first paint shows a spinner
   // copy rather than the empty state flashing before any event lands.
-  const activityStatus: "loading" | "ready" =
-    activityStoreVersion === 0 ? "loading" : "ready";
+  const activityStatus: "loading" | "ready" = activityStoreVersion === 0 ? "loading" : "ready";
   // Open a session from a drawer row: clear new-session mode, switch panel +
   // selection.
   const openSessionFromDrawer = useCallback((sessionId: string) => {
@@ -2237,18 +2038,13 @@ export function AgentWorkspace({
   );
   // Count of sessions currently doing work — the toggle badge. Re-derived from
   // the same version signal as the rows.
-  const activeAgentCount = useMemo(
-    () => hermesActivityStore.activeCount(),
-    [activityStoreVersion],
-  );
+  const activeAgentCount = useMemo(() => hermesActivityStore.activeCount(), [activityStoreVersion]);
   // Resolve a session's model from the loaded session list for the drawer (no
   // provider is tracked on the session record, so only `model` is supplied;
   // feature 09's usage panel remains the authority for full cost/provider).
   const modelForActivitySession = useCallback(
     (sessionId: string) => {
-      const model = hermesSessionItems.find(
-        (session) => session.id === sessionId,
-      )?.model;
+      const model = hermesSessionItems.find((session) => session.id === sessionId)?.model;
       return model ? { model } : undefined;
     },
     [hermesSessionItems],
@@ -2277,9 +2073,7 @@ export function AgentWorkspace({
   // Feature 15: the dev/debug raw-trace panel. Holds the session it was opened
   // for; `undefined` means closed. Dev-gated where it renders (HermesTracePanel
   // returns null in production), so this state is inert in shipped builds.
-  const [rawTraceSession, setRawTraceSession] = useState<string | undefined>(
-    undefined,
-  );
+  const [rawTraceSession, setRawTraceSession] = useState<string | undefined>(undefined);
   const selectedIssueReportReview = selectedHermesSessionId
     ? reviewableIssueReports[selectedHermesSessionId]
     : undefined;
@@ -2288,17 +2082,13 @@ export function AgentWorkspace({
       ? {
           report: selectedIssueReportReview,
           sessionId: selectedHermesSessionId,
-          submitting: submittingIssueReportSessionIds.has(
-            selectedHermesSessionId,
-          ),
+          submitting: submittingIssueReportSessionIds.has(selectedHermesSessionId),
         }
       : undefined;
   const visibleIssueReportHasUnsentContext = Boolean(
     visibleIssueReportReview && (draft.trim() || attachments.length),
   );
-  const visibleIssueReportImportingFiles = Boolean(
-    visibleIssueReportReview && importingFiles,
-  );
+  const visibleIssueReportImportingFiles = Boolean(visibleIssueReportReview && importingFiles);
   // Holds the prior render's heroMode. Read by both the composer auto-grow
   // effect (to skip its glide across a hero transition) and the hero→dock FLIP
   // below (to detect the hero handoff); the FLIP effect, which runs last, is
@@ -2455,9 +2245,7 @@ export function AgentWorkspace({
   const upsertTask = useCallback((task: AgentTaskDto) => {
     setTasks((prev) => {
       const rest = prev.filter((item) => item.id !== task.id);
-      return [task, ...rest].sort((a, b) =>
-        b.updatedAt.localeCompare(a.updatedAt),
-      );
+      return [task, ...rest].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     });
   }, []);
 
@@ -2466,9 +2254,7 @@ export function AgentWorkspace({
       const response = await listAgentTasks();
       setTasks(response.items);
       setSelectedTaskId((current) =>
-        newSessionModeRef.current
-          ? undefined
-          : (current ?? response.items[0]?.id),
+        newSessionModeRef.current ? undefined : (current ?? response.items[0]?.id),
       );
       setError(null);
     } catch (err) {
@@ -2520,10 +2306,7 @@ export function AgentWorkspace({
             return current;
           }
           const taskSession = selectedTask?.hermesSessionId;
-          if (
-            taskSession &&
-            sessions.some((session) => session.id === taskSession)
-          ) {
+          if (taskSession && sessions.some((session) => session.id === taskSession)) {
             selectedHermesSessionIdRef.current = taskSession;
             return taskSession;
           }
@@ -2570,8 +2353,7 @@ export function AgentWorkspace({
         listVeniceModels("generation"),
       ]);
       const selectedModelId =
-        settingsResponse.settings.generationModel ||
-        modelsResponse.selectedModel;
+        settingsResponse.settings.generationModel || modelsResponse.selectedModel;
       if (requestId === generationModelRequestSequence.current) {
         defaultGenerationModelIdRef.current = selectedModelId;
         generationModelsRef.current = modelsResponse.models;
@@ -2606,9 +2388,7 @@ export function AgentWorkspace({
 
   useEffect(() => {
     function handleProviderModelSettingsChanged(event: Event) {
-      const { mode } = (
-        event as CustomEvent<ProviderModelSettingsChangedDetail>
-      ).detail;
+      const { mode } = (event as CustomEvent<ProviderModelSettingsChangedDetail>).detail;
       if (mode === "generation") {
         void loadGenerationModel();
       }
@@ -2646,21 +2426,15 @@ export function AgentWorkspace({
   // unsupported, so there is no confirming event to wait on.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
-    const chosen = generationModelsRef.current.find(
-      (model) => model.id === modelId,
-    );
+    const chosen = generationModelsRef.current.find((model) => model.id === modelId);
     // Defense in depth: the picker already hides tool-less models, but the
     // agent bricks without function calling, so refuse one rather than switch.
     if (chosen && !modelSupportsTools(chosen)) {
-      setError(
-        `${chosen.name} can't run June's tools, so it can't be used for the agent.`,
-      );
+      setError(`${chosen.name} can't run June's tools, so it can't be used for the agent.`);
       return false;
     }
     const modelName = chosen?.name ?? modelId;
-    const sessionId = newSessionModeRef.current
-      ? undefined
-      : selectedHermesSessionIdRef.current;
+    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
 
     // No open chat: changing the model updates the global generation default.
     if (!sessionId) {
@@ -2730,15 +2504,13 @@ export function AgentWorkspace({
     let retryTimeout: number | undefined;
 
     function load(attempt: number) {
-      void loadHermesSessions({ suppressStartupRequestError: true }).then(
-        (result) => {
-          if (cancelled || result !== "transient-startup-error") return;
-          const retryDelay =
-            AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[attempt] ??
-            AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS;
-          retryTimeout = window.setTimeout(() => load(attempt + 1), retryDelay);
-        },
-      );
+      void loadHermesSessions({ suppressStartupRequestError: true }).then((result) => {
+        if (cancelled || result !== "transient-startup-error") return;
+        const retryDelay =
+          AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[attempt] ??
+          AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS;
+        retryTimeout = window.setTimeout(() => load(attempt + 1), retryDelay);
+      });
     }
 
     load(0);
@@ -2788,9 +2560,7 @@ export function AgentWorkspace({
     // real fetch lands.
     if (!hermesSessionsHydrated) return;
     dispatchAgentSessionsChanged({
-      sessions: hermesSessionItems.filter(
-        (session) => !isProvisionalHermesSessionId(session.id),
-      ),
+      sessions: hermesSessionItems.filter((session) => !isProvisionalHermesSessionId(session.id)),
       selectedSessionId: isProvisionalHermesSessionId(selectedHermesSessionId)
         ? undefined
         : selectedHermesSessionId,
@@ -2841,9 +2611,7 @@ export function AgentWorkspace({
     function handleDeleteSession(event: Event) {
       const detail = (event as CustomEvent<AgentDeleteSessionDetail>).detail;
       if (!detail?.sessionId) return;
-      windowEventHandlersRef.current.removeHermesSessionLocally(
-        detail.sessionId,
-      );
+      windowEventHandlersRef.current.removeHermesSessionLocally(detail.sessionId);
     }
 
     const pending = pendingNewSessionRequest();
@@ -2857,10 +2625,7 @@ export function AgentWorkspace({
     window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
     return () => {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
-      window.removeEventListener(
-        AGENT_DELETE_SESSION_EVENT,
-        handleDeleteSession,
-      );
+      window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
     };
   }, []);
 
@@ -2914,9 +2679,8 @@ export function AgentWorkspace({
             dispatchAgentSessionStatus({
               sessionId: selectedHermesSessionId,
               title:
-                hermesSessionItems.find(
-                  (session) => session.id === selectedHermesSessionId,
-                )?.title ?? "Agent session",
+                hermesSessionItems.find((session) => session.id === selectedHermesSessionId)
+                  ?.title ?? "Agent session",
               status: "completed",
               summary: "June finished.",
               ...activityCounts,
@@ -2962,9 +2726,7 @@ export function AgentWorkspace({
       .then((fullTask) => {
         if (!cancelled) {
           taskHistoryLoadedIdsRef.current.add(fullTask.id);
-          setTasks((current) =>
-            current.map((item) => (item.id === fullTask.id ? fullTask : item)),
-          );
+          setTasks((current) => current.map((item) => (item.id === fullTask.id ? fullTask : item)));
         }
       })
       .catch((err: unknown) => {
@@ -3005,15 +2767,11 @@ export function AgentWorkspace({
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
-        activeToolCallsBySession: activeToolCallsRecord(
-          activeToolCallsBySessionRef.current,
-        ),
+        activeToolCallsBySession: activeToolCallsRecord(activeToolCallsBySessionRef.current),
         pendingIssueReports: Object.fromEntries(pendingIssueReportsRef.current),
         reviewableIssueReports: reviewableIssueReportsRef.current,
-        diagnosisRefreshIssueReportSessionIds:
-          diagnosisRefreshIssueReportSessionIdsRef.current,
-        submittingIssueReportSessionIds:
-          submittingIssueReportSessionIdsRef.current,
+        diagnosisRefreshIssueReportSessionIds: diagnosisRefreshIssueReportSessionIdsRef.current,
+        submittingIssueReportSessionIds: submittingIssueReportSessionIdsRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -3059,15 +2817,12 @@ export function AgentWorkspace({
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const installListener = async (eventName: string) => {
-      const unlisten = await listen<TauriFileDropPayload>(
-        eventName,
-        (event) => {
-          const paths = event.payload?.paths ?? [];
-          if (paths.length) {
-            void importDroppedFilePaths(paths);
-          }
-        },
-      );
+      const unlisten = await listen<TauriFileDropPayload>(eventName, (event) => {
+        const paths = event.payload?.paths ?? [];
+        if (paths.length) {
+          void importDroppedFilePaths(paths);
+        }
+      });
       if (disposed) {
         unlisten();
         return;
@@ -3110,11 +2865,7 @@ export function AgentWorkspace({
   // session that isn't running.
   useEffect(() => {
     if (!busyNotice) return;
-    if (
-      selectedHermesSessionId &&
-      workingSessionIds.has(selectedHermesSessionId)
-    )
-      return;
+    if (selectedHermesSessionId && workingSessionIds.has(selectedHermesSessionId)) return;
     setBusyNotice(null);
   }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
 
@@ -3138,14 +2889,10 @@ export function AgentWorkspace({
     }
 
     const availableSkills = await loadSkillCommands();
-    const resolutions = resolveSkillSlashCommands(
-      parsed.commandNames,
-      availableSkills,
-    );
+    const resolutions = resolveSkillSlashCommands(parsed.commandNames, availableSkills);
     const pathLikePromptIndex = resolutions.findIndex(
       (resolution, index) =>
-        resolution.status !== "resolved" &&
-        isPathLikeSlashToken(commandTokens[index]?.name ?? ""),
+        resolution.status !== "resolved" && isPathLikeSlashToken(commandTokens[index]?.name ?? ""),
     );
     if (pathLikePromptIndex === 0) {
       const content = promptWithAttachments(message, messageAttachments);
@@ -3158,16 +2905,10 @@ export function AgentWorkspace({
     }
 
     const skillResolutions =
-      pathLikePromptIndex === -1
-        ? resolutions
-        : resolutions.slice(0, pathLikePromptIndex);
-    const problem = skillResolutions.find(
-      (resolution) => resolution.status !== "resolved",
-    );
+      pathLikePromptIndex === -1 ? resolutions : resolutions.slice(0, pathLikePromptIndex);
+    const problem = skillResolutions.find((resolution) => resolution.status !== "resolved");
     if (problem) {
-      throw new Error(
-        skillSlashResolutionError(problem) ?? "Skill command failed.",
-      );
+      throw new Error(skillSlashResolutionError(problem) ?? "Skill command failed.");
     }
 
     const typedMessage =
@@ -3181,16 +2922,11 @@ export function AgentWorkspace({
     const resolved = skillResolutions.filter(isResolvedSkillSlashResolution);
     const documents = await Promise.all(
       resolved.map(async (resolution) => ({
-        ...(await getHermesBridgeSkill(
-          skillDocumentLookupName(resolution.skill.name),
-        )),
+        ...(await getHermesBridgeSkill(skillDocumentLookupName(resolution.skill.name))),
         name: resolution.skill.name,
       })),
     );
-    const displayContent = promptWithAttachments(
-      typedMessage,
-      messageAttachments,
-    );
+    const displayContent = promptWithAttachments(typedMessage, messageAttachments);
     return {
       displayContent,
       runtimeContent: explicitSkillInvocationPrompt(documents, displayContent),
@@ -3271,9 +3007,7 @@ export function AgentWorkspace({
     // Inject a running assistant turn so the loader shows immediately, ordered
     // just after the user prompt bubble (createdAt + 1ms).
     const turnId = `image:${sessionId}:${Date.now()}`;
-    const updateImagePart = (
-      patch: Partial<Extract<AgentChatPart, { type: "image" }>>,
-    ) =>
+    const updateImagePart = (patch: Partial<Extract<AgentChatPart, { type: "image" }>>) =>
       setImageTurnsBySession((current) => {
         const turns = current[sessionId] ?? [];
         return {
@@ -3402,12 +3136,7 @@ export function AgentWorkspace({
     categoryRef.current = null;
     setDraft("");
     setCategory(null);
-    rememberComposerDraft(
-      composerDraftKeyRef.current,
-      "",
-      null,
-      attachmentsRef.current,
-    );
+    rememberComposerDraft(composerDraftKeyRef.current, "", null, attachmentsRef.current);
   }
 
   async function submit(event?: FormEvent) {
@@ -3458,6 +3187,7 @@ export function AgentWorkspace({
           // A rejected steer (common during a no-tool phase) is not fatal — the
           // completion fallback still delivers it. Don't alarm the user.
           if (import.meta.env.DEV) {
+            // biome-ignore lint/suspicious/noConsole: dev-only steer-rejection diagnostic
             console.debug("[steer] rejected; will deliver as follow-up", err);
           }
         });
@@ -3500,9 +3230,7 @@ export function AgentWorkspace({
             category: reportCategory,
             // An attachments-only send has no typed text, but the server
             // requires a description; the report must not bounce there.
-            description:
-              prepared.typedMessage ||
-              "No description was typed; see the attachments.",
+            description: prepared.typedMessage || "No description was typed; see the attachments.",
             followUps: [],
             attachmentNames: attachments.map((attachment) => attachment.name),
             attachmentPaths: attachments.map((attachment) => attachment.path),
@@ -3515,10 +3243,7 @@ export function AgentWorkspace({
               attachments.map((attachment) => attachment.path),
             )
           : undefined;
-      if (
-        draftRef.current.trim() === message &&
-        categoryRef.current === reportCategory
-      ) {
+      if (draftRef.current.trim() === message && categoryRef.current === reportCategory) {
         composerEditorRef.current?.clear();
         setDraft("");
         setCategory(null);
@@ -3537,9 +3262,8 @@ export function AgentWorkspace({
           sessionId: reportFollowUpSessionId,
           report: reportFollowUp,
           queuedReport: nextIssueReport,
-          deliveryWasSubmitting: submittingIssueReportSessionIdsRef.current.has(
-            reportFollowUpSessionId,
-          ),
+          deliveryWasSubmitting:
+            submittingIssueReportSessionIdsRef.current.has(reportFollowUpSessionId),
         };
       }
       setIssueReportNotice(null);
@@ -3556,9 +3280,7 @@ export function AgentWorkspace({
         },
       );
       if (reportFollowUpSessionId) {
-        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
-          reportFollowUpSessionId,
-        );
+        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(reportFollowUpSessionId);
       }
       setError(null);
       setBusyNotice(null);
@@ -3568,29 +3290,19 @@ export function AgentWorkspace({
       // typed or attached something new during the in-flight send.
       if (clearedDraft && (composerEditorRef.current?.isEmpty() ?? true)) {
         composerEditorRef.current?.setContent(message, reportCategory);
-        rememberComposerDraft(
-          submittedDraftKey,
-          message,
-          reportCategory,
-          attachments,
-        );
+        rememberComposerDraft(submittedDraftKey, message, reportCategory, attachments);
       }
       if (clearedAttachments) {
         // A blocked image attach carries the failed-status chips so the user
         // sees which image didn't go through; fall back to the originals
         // otherwise.
-        const restore =
-          err instanceof AttachBlockedError ? err.attachments : attachments;
-        setComposerAttachments((current) =>
-          current.length ? current : restore,
-        );
+        const restore = err instanceof AttachBlockedError ? err.attachments : attachments;
+        setComposerAttachments((current) => (current.length ? current : restore));
       }
       if (clearedIssueReportReview) {
         const shouldRestoreIssueReportReview =
           !clearedIssueReportReview.deliveryWasSubmitting ||
-          submittingIssueReportSessionIdsRef.current.has(
-            clearedIssueReportReview.sessionId,
-          ) ||
+          submittingIssueReportSessionIdsRef.current.has(clearedIssueReportReview.sessionId) ||
           deferredFailedIssueReportDeliverySessionIdsRef.current.has(
             clearedIssueReportReview.sessionId,
           );
@@ -3721,10 +3433,7 @@ export function AgentWorkspace({
     });
   }
 
-  async function importFileBytes(
-    files: File[],
-    options: FileBytesImportOptions,
-  ) {
+  async function importFileBytes(files: File[], options: FileBytesImportOptions) {
     await importAttachments(files.slice(0, 8), async (file) => {
       if (file.size > 50 * 1024 * 1024) {
         throw new Error(options.tooLargeMessage);
@@ -3737,9 +3446,7 @@ export function AgentWorkspace({
   }
 
   function removeAttachment(id: string) {
-    setComposerAttachments((current) =>
-      current.filter((item) => item.id !== id),
-    );
+    setComposerAttachments((current) => current.filter((item) => item.id !== id));
   }
 
   // Focus the composer, then toggle the dictation helper's listening state —
@@ -3793,12 +3500,8 @@ export function AgentWorkspace({
       agentDiagnosis = messages
         .slice()
         .reverse()
-        .filter((message) =>
-          messageAfterIssueReportDiagnosisBoundary(message, report),
-        )
-        .map((message) =>
-          message.role === "assistant" ? visibleHermesMessageText(message) : "",
-        )
+        .filter((message) => messageAfterIssueReportDiagnosisBoundary(message, report))
+        .map((message) => (message.role === "assistant" ? visibleHermesMessageText(message) : ""))
         .find((text) => text.trim())
         ?.trim();
     } catch {
@@ -3816,8 +3519,7 @@ export function AgentWorkspace({
       clearErrorForSession(sessionId);
       if (selectedHermesSessionIdRef.current === sessionId) {
         setIssueReportNotice({
-          message:
-            "Your report was sent to the June team. Thank you for helping improve June.",
+          message: "Your report was sent to the June team. Thank you for helping improve June.",
           sessionId,
         });
       }
@@ -3842,10 +3544,7 @@ export function AgentWorkspace({
         "Issue report diagnosis refresh timed out.",
       ).catch(() => undefined);
       result = await deliverIssueReport(sessionId, report);
-      if (
-        result.sent &&
-        reviewableIssueReportsRef.current[sessionId] === report
-      ) {
+      if (result.sent && reviewableIssueReportsRef.current[sessionId] === report) {
         setReviewableIssueReport(sessionId, null);
       }
     } finally {
@@ -3871,9 +3570,7 @@ export function AgentWorkspace({
     storedSessionId: string,
     turnAttachments: AgentAttachment[],
   ) {
-    const pending = pendingImageAttachments(
-      turnAttachments.map((attachment) => attachment.attach),
-    );
+    const pending = pendingImageAttachments(turnAttachments.map((attachment) => attachment.attach));
     if (!pending.length) return;
     const methods = createHermesMethods(gateway);
     const deps = {
@@ -3888,11 +3585,7 @@ export function AgentWorkspace({
     // restore the chips WITH their failed status (not the stale imported one).
     const nextStates = new Map<string, HermesAttachmentState>();
     for (const attachment of pending) {
-      const result = await attachImageToSession(
-        attachment,
-        runtimeSessionId,
-        deps,
-      );
+      const result = await attachImageToSession(attachment, runtimeSessionId, deps);
       // The RPC keys off the runtime (live process) session id, but the chip
       // state, artifact timeline, and trace all key off the STORED session id —
       // the identity the rest of the UI uses (event handler, drawer, trace
@@ -3906,9 +3599,7 @@ export function AgentWorkspace({
       // (matched by localId, stable across the submit). Refs/ids only, no bytes.
       setComposerAttachments((current) =>
         current.map((item) =>
-          item.attach.localId === attachment.localId
-            ? { ...item, attach: state }
-            : item,
+          item.attach.localId === attachment.localId ? { ...item, attach: state } : item,
         ),
       );
       if (result.artifact) {
@@ -4034,19 +3725,13 @@ export function AgentWorkspace({
       });
       return replaced ? next : [replacement, ...next];
     });
-    setHermesSessionMessages((current) =>
-      moveRecordKey(current, fromSessionId, toSessionId),
-    );
+    setHermesSessionMessages((current) => moveRecordKey(current, fromSessionId, toSessionId));
     setPendingHermesMessages((current) => {
       const next = moveRecordKey(current, fromSessionId, toSessionId);
       pendingHermesMessagesRef.current = next;
       return next;
     });
-    liveEventsRef.current = moveRecordKey(
-      liveEventsRef.current,
-      fromSessionId,
-      toSessionId,
-    );
+    liveEventsRef.current = moveRecordKey(liveEventsRef.current, fromSessionId, toSessionId);
     setLiveEvents(liveEventsRef.current);
     setWorkingSessionIds((current) => {
       const next = new Set(current);
@@ -4064,18 +3749,13 @@ export function AgentWorkspace({
     setSelectedHermesSessionId(toSessionId);
   }
 
-  function removeOptimisticHermesSession(
-    optimisticSessionId: string,
-    realSessionId?: string,
-  ) {
+  function removeOptimisticHermesSession(optimisticSessionId: string, realSessionId?: string) {
     const ids = new Set(
-      [optimisticSessionId, realSessionId].filter(
-        (sessionId): sessionId is string => Boolean(sessionId),
+      [optimisticSessionId, realSessionId].filter((sessionId): sessionId is string =>
+        Boolean(sessionId),
       ),
     );
-    setHermesSessionItems((current) =>
-      current.filter((session) => !ids.has(session.id)),
-    );
+    setHermesSessionItems((current) => current.filter((session) => !ids.has(session.id)));
     setHermesSessionMessages((current) => {
       let next = current;
       for (const id of ids) next = omitRecordKey(next, id);
@@ -4126,11 +3806,7 @@ export function AgentWorkspace({
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     let unlisten = () => {};
     const removeListener = gateway.onEvent((event) => {
-      if (
-        event.session_id !== runtimeSessionId &&
-        event.session_id !== storedSessionId
-      )
-        return;
+      if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
       // Run every live frame through the typed control plane alongside the
       // existing string-based handling below. This is the first consumer of
@@ -4152,6 +3828,7 @@ export function AgentWorkspace({
         // by the classifier; nothing raw is retained or logged.
         unsupportedEventStore.record(classified);
         if (import.meta.env.DEV) {
+          // biome-ignore lint/suspicious/noConsole: dev-only unsupported-event diagnostic
           console.debug(
             "[hermes] unsupported event",
             classified.rawType,
@@ -4206,11 +3883,7 @@ export function AgentWorkspace({
       }
       const hasActiveToolCalls =
         toolEventPhase !== undefined
-          ? updateSessionToolCallActivity(
-              storedSessionId,
-              event,
-              toolEventPhase,
-            )
+          ? updateSessionToolCallActivity(storedSessionId, event, toolEventPhase)
           : toolCallSessionIdsRef.current.has(storedSessionId);
       const status = agentStatusFromHermesEvent(event);
       if (status === "waitingForUser") {
@@ -4264,29 +3937,24 @@ export function AgentWorkspace({
             (session) => session.id === storedSessionId,
           );
           if (followUpSession) {
-            const followUpText = unconsumedSteers
-              .map((entry) => entry.text)
-              .join("\n");
+            const followUpText = unconsumedSteers.map((entry) => entry.text).join("\n");
             window.setTimeout(() => {
-              void submitHermesSession(followUpText, followUpSession).catch(
-                (err: unknown) => {
-                  // The follow-up never reached June (e.g. a gateway reconnect
-                  // or a still-busy session right after completion). Surface it
-                  // rather than silently losing the instruction.
-                  setError(messageFromError(err), {
-                    sessionId: storedSessionId,
-                  });
-                },
-              );
+              void submitHermesSession(followUpText, followUpSession).catch((err: unknown) => {
+                // The follow-up never reached June (e.g. a gateway reconnect
+                // or a still-busy session right after completion). Surface it
+                // rather than silently losing the instruction.
+                setError(messageFromError(err), {
+                  sessionId: storedSessionId,
+                });
+              });
             }, 0);
           }
         }
         // The diagnostic turn is over (even on error): let the user append
         // anything June's summary surfaced before sending the bundled report.
-        const promotedIssueReport = promotePendingIssueReportToReview(
-          storedSessionId,
-          { queueDiagnosisRefresh: true },
-        );
+        const promotedIssueReport = promotePendingIssueReportToReview(storedSessionId, {
+          queueDiagnosisRefresh: true,
+        });
         if (!promotedIssueReport) {
           window.setTimeout(() => {
             void refreshHermesSession(storedSessionId);
@@ -4348,9 +4016,7 @@ export function AgentWorkspace({
     // wrongly downgrade a vision-capable (but stale/not-yet-loaded) model. find
     // returns undefined when unresolved so the guard below skips the fallback.
     const targetGenerationModel = targetSessionModelId
-      ? generationModelsRef.current.find(
-          (model) => model.id === targetSessionModelId,
-        )
+      ? generationModelsRef.current.find((model) => model.id === targetSessionModelId)
       : undefined;
     const imageInputFallbackContent =
       // Only downgrade to the text-only fallback when the model is KNOWN to lack
@@ -4363,9 +4029,7 @@ export function AgentWorkspace({
       !modelSupportsImageInput(targetGenerationModel)
         ? unsupportedImageInputPrompt({
             displayContent,
-            imageNames: pendingImages.map(
-              (attachment) => attachment.displayName,
-            ),
+            imageNames: pendingImages.map((attachment) => attachment.displayName),
             modelName: targetGenerationModel?.name ?? targetSessionModelId,
             runtimeContent: content,
           })
@@ -4393,10 +4057,7 @@ export function AgentWorkspace({
     let storedSessionIdForRollback: string | undefined;
     const rollbackOptimisticBeforePrompt = (err: unknown): never => {
       if (optimisticSession) {
-        removeOptimisticHermesSession(
-          optimisticSession.id,
-          storedSessionIdForRollback,
-        );
+        removeOptimisticHermesSession(optimisticSession.id, storedSessionIdForRollback);
       }
       throw err;
     };
@@ -4405,42 +4066,32 @@ export function AgentWorkspace({
     // the mode its session was created with. Without this, one Unrestricted
     // session would leave the runtime unsandboxed under every other
     // session's follow-ups.
-    const { created, gateway, sessionTitle, storedSessionId } =
-      await (async () => {
-        const [nextGateway, nextSessionTitle] = await Promise.all([
-          ensureHermesGateway(
-            targetSessionId
-              ? sessionUnrestricted(targetSessionId)
-              : fullModeDraftRef.current,
-          ),
-          titlePromise ?? Promise.resolve(undefined),
-        ]);
-        const nextCreated = targetSessionId
-          ? undefined
-          : await nextGateway.request<HermesRuntimeSessionResponse>(
-              "session.create",
-              {
-                title: nextSessionTitle ?? fallbackSessionTitle,
-                cols: 96,
-                ...(targetSessionModelId
-                  ? { model: targetSessionModelId }
-                  : {}),
-              },
-            );
-        const nextStoredSessionId =
-          targetSessionId ??
-          nextCreated?.stored_session_id ??
-          nextCreated?.session_id;
-        if (!nextStoredSessionId) {
-          throw new Error("Hermes did not create a session.");
-        }
-        return {
-          created: nextCreated,
-          gateway: nextGateway,
-          sessionTitle: nextSessionTitle,
-          storedSessionId: nextStoredSessionId,
-        };
-      })().catch(rollbackOptimisticBeforePrompt);
+    const { created, gateway, sessionTitle, storedSessionId } = await (async () => {
+      const [nextGateway, nextSessionTitle] = await Promise.all([
+        ensureHermesGateway(
+          targetSessionId ? sessionUnrestricted(targetSessionId) : fullModeDraftRef.current,
+        ),
+        titlePromise ?? Promise.resolve(undefined),
+      ]);
+      const nextCreated = targetSessionId
+        ? undefined
+        : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
+            title: nextSessionTitle ?? fallbackSessionTitle,
+            cols: 96,
+            ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+          });
+      const nextStoredSessionId =
+        targetSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
+      if (!nextStoredSessionId) {
+        throw new Error("Hermes did not create a session.");
+      }
+      return {
+        created: nextCreated,
+        gateway: nextGateway,
+        sessionTitle: nextSessionTitle,
+        storedSessionId: nextStoredSessionId,
+      };
+    })().catch(rollbackOptimisticBeforePrompt);
     storedSessionIdForRollback = storedSessionId;
     const queuedIssueReport = options?.issueReport;
     if (queuedIssueReport && targetSessionId) {
@@ -4449,8 +4100,7 @@ export function AgentWorkspace({
     const clearQueuedIssueReport = () => {
       if (
         queuedIssueReport &&
-        pendingIssueReportsRef.current.get(storedSessionId) ===
-          queuedIssueReport
+        pendingIssueReportsRef.current.get(storedSessionId) === queuedIssueReport
       ) {
         pendingIssueReportsRef.current.delete(storedSessionId);
       }
@@ -4491,9 +4141,7 @@ export function AgentWorkspace({
       setHermesSessionItems((current) => applySessionTitleOverrides(current));
     }
     if (!optimisticSession) {
-      await withTimeout(ensureStoredHermesSession(), 2500).catch(
-        () => undefined,
-      );
+      await withTimeout(ensureStoredHermesSession(), 2500).catch(() => undefined);
     }
     let runtimeSessionId: string | undefined;
     try {
@@ -4501,29 +4149,21 @@ export function AgentWorkspace({
         created?.session_id ??
         runtimeSessionIds[storedSessionId] ??
         (
-          await gateway.request<HermesRuntimeSessionResponse>(
-            "session.resume",
-            {
-              session_id: storedSessionId,
-              cols: 96,
-            },
-          )
+          await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+            session_id: storedSessionId,
+            cols: 96,
+          })
         ).session_id;
     } catch (err) {
       clearQueuedIssueReport();
       if (optimisticSession) {
-        removeOptimisticHermesSession(
-          optimisticSession.id,
-          storedSessionIdForRollback,
-        );
+        removeOptimisticHermesSession(optimisticSession.id, storedSessionIdForRollback);
       }
       throw err;
     }
     if (!runtimeSessionId) {
       clearQueuedIssueReport();
-      rollbackOptimisticBeforePrompt(
-        new Error("Hermes did not resume the session."),
-      );
+      rollbackOptimisticBeforePrompt(new Error("Hermes did not resume the session."));
     }
     if (!imageInputFallbackContent) {
       // Feature 19: send any imported images to the session through the
@@ -4533,12 +4173,7 @@ export function AgentWorkspace({
       // which the submit() catch turns into a restored composer the user can
       // retry — the prompt is NOT sent with a silently-missing image.
       try {
-        await attachPendingImages(
-          gateway,
-          runtimeSessionId,
-          storedSessionId,
-          turnAttachments,
-        );
+        await attachPendingImages(gateway, runtimeSessionId, storedSessionId, turnAttachments);
       } catch (err) {
         clearQueuedIssueReport();
         rollbackOptimisticBeforePrompt(err);
@@ -4565,16 +4200,12 @@ export function AgentWorkspace({
         ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
       };
       setHermesSessionItems((current) => {
-        const existingSession = current.find(
-          (session) => session.id === storedSessionId,
-        );
+        const existingSession = current.find((session) => session.id === storedSessionId);
         if (existingSession) {
           const mergedSession: HermesSessionInfo = targetSessionId
             ? {
                 ...existingSession,
-                title: existingSession.title?.trim()
-                  ? existingSession.title
-                  : sessionDisplayTitle,
+                title: existingSession.title?.trim() ? existingSession.title : sessionDisplayTitle,
                 preview: displayContent,
                 last_active: createdAt,
                 message_count:
@@ -4603,10 +4234,7 @@ export function AgentWorkspace({
       setPendingHermesMessages((current) => {
         const next = {
           ...current,
-          [storedSessionId]: [
-            ...(current[storedSessionId] ?? []),
-            pendingUserMessage,
-          ],
+          [storedSessionId]: [...(current[storedSessionId] ?? []), pendingUserMessage],
         };
         pendingHermesMessagesRef.current = next;
         return next;
@@ -4699,10 +4327,7 @@ export function AgentWorkspace({
   // per-session modes mean a process per mode) — ensuring one never touches
   // the other's process or in-flight work.
   async function ensureHermesGateway(fullMode = false) {
-    let connection = hermesConnectionForMode(
-      bridge.running ? bridge : undefined,
-      fullMode,
-    );
+    let connection = hermesConnectionForMode(bridge.running ? bridge : undefined, fullMode);
     if (!connection) {
       const next = await startBridge(fullMode);
       connection = hermesConnectionForMode(next, fullMode);
@@ -4728,15 +4353,10 @@ export function AgentWorkspace({
   // feature 11's activity drawer.
   const fetchSessionUsage = useCallback(
     async (storedSessionId: string): Promise<SessionUsage> => {
-      const gateway = await ensureHermesGateway(
-        sessionUnrestricted(storedSessionId),
-      );
+      const gateway = await ensureHermesGateway(sessionUnrestricted(storedSessionId));
       const methods = createHermesMethods(gateway);
       const usageFor = async (runtimeId: string) =>
-        parseSessionUsage(
-          storedSessionId,
-          await methods.getSessionUsage({ sessionId: runtimeId }),
-        );
+        parseSessionUsage(storedSessionId, await methods.getSessionUsage({ sessionId: runtimeId }));
       // session.usage reads the LIVE runtime, keyed by the runtime id — not the
       // stored id the panel passes. Use the cached runtime if it is still alive;
       // if it has been torn down between turns ("session not found"), resume the
@@ -4750,10 +4370,10 @@ export function AgentWorkspace({
           if (!isSessionGoneError(messageFromError(err))) throw err;
         }
       }
-      const resumed = await gateway.request<HermesRuntimeSessionResponse>(
-        "session.resume",
-        { session_id: storedSessionId, cols: 96 },
-      );
+      const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+        session_id: storedSessionId,
+        cols: 96,
+      });
       const runtimeSessionId = resumed.session_id;
       if (!runtimeSessionId) {
         throw new Error("Hermes did not resume the session.");
@@ -4820,10 +4440,10 @@ export function AgentWorkspace({
       await Promise.all(
         Array.from(activeSessionIds).map(async (sessionId) => {
           try {
-            const resumed = await gateway.request<HermesRuntimeSessionResponse>(
-              "session.resume",
-              { session_id: sessionId, cols: 96 },
-            );
+            const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+              session_id: sessionId,
+              cols: 96,
+            });
             const runtimeSessionId = resumed.session_id;
             if (runtimeSessionId) {
               setRuntimeSessionIds((current) => ({
@@ -4877,8 +4497,7 @@ export function AgentWorkspace({
   // consecutive polls gets its activity cleared. Two misses, not one: a
   // just-submitted prompt can race the runtime session registering.
   async function liveRuntimeSessionsForModes(modes: boolean[]) {
-    let rows: Array<{ id?: string; session_key?: string; status?: string }> =
-      [];
+    let rows: Array<{ id?: string; session_key?: string; status?: string }> = [];
     const reachableModes = new Set<boolean>();
     for (const mode of modes) {
       try {
@@ -4890,9 +4509,7 @@ export function AgentWorkspace({
             status?: string;
           }>;
         }>("session.active_list", {});
-        rows = rows.concat(
-          Array.isArray(response?.sessions) ? response.sessions : [],
-        );
+        rows = rows.concat(Array.isArray(response?.sessions) ? response.sessions : []);
         reachableModes.add(mode);
       } catch {
         // Can't reach this runtime — keep ITS sessions' current state rather
@@ -4909,10 +4526,7 @@ export function AgentWorkspace({
     return { live, reachableModes };
   }
 
-  function runtimeSnapshotHasSession(
-    snapshot: { live: Set<string> },
-    sessionId: string,
-  ) {
+  function runtimeSnapshotHasSession(snapshot: { live: Set<string> }, sessionId: string) {
     const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
     return (
       snapshot.live.has(sessionId) ||
@@ -4931,16 +4545,13 @@ export function AgentWorkspace({
     // has one and union the answers. A mode we can't reach keeps its
     // sessions' current state rather than guessing — so a one-gateway
     // failure must not mark the other mode's sessions dead either.
-    const modes = Array.from(
-      new Set(working.map((sessionId) => sessionUnrestricted(sessionId))),
-    );
+    const modes = Array.from(new Set(working.map((sessionId) => sessionUnrestricted(sessionId))));
     const snapshot = await liveRuntimeSessionsForModes(modes);
     if (snapshot.reachableModes.size === 0) return;
     for (const sessionId of working) {
       // Sessions of an unreachable mode were not in any answer we got;
       // counting them as misses would mark live work dead.
-      if (!snapshot.reachableModes.has(sessionUnrestricted(sessionId)))
-        continue;
+      if (!snapshot.reachableModes.has(sessionUnrestricted(sessionId))) continue;
       if (runtimeSnapshotHasSession(snapshot, sessionId)) {
         misses.delete(sessionId);
         continue;
@@ -4958,8 +4569,7 @@ export function AgentWorkspace({
       dispatchAgentSessionStatus({
         sessionId,
         title:
-          hermesSessionItems.find((session) => session.id === sessionId)
-            ?.title ?? "Agent session",
+          hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session",
         status: "completed",
         summary: "June stopped.",
         ...activityCounts,
@@ -5008,9 +4618,7 @@ export function AgentWorkspace({
         return next;
       });
       void suggestTitleForUntitledSession(sessionId, messages);
-      if (
-        sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
-      ) {
+      if (sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])) {
         promotePendingIssueReportToReview(sessionId, {
           queueDiagnosisRefresh: false,
         });
@@ -5025,8 +4633,8 @@ export function AgentWorkspace({
           dispatchAgentSessionStatus({
             sessionId,
             title:
-              hermesSessionItems.find((session) => session.id === sessionId)
-                ?.title ?? "Agent session",
+              hermesSessionItems.find((session) => session.id === sessionId)?.title ??
+              "Agent session",
             status: "completed",
             summary: "June finished.",
             ...activityCounts,
@@ -5088,10 +4696,7 @@ export function AgentWorkspace({
           sessionGatewayUnlistenRef.current.get(key)?.();
           clearSessionActivity(key);
         }
-        liveEventsRef.current = omitRecordKey(
-          liveEventsRef.current,
-          liveEventKey,
-        );
+        liveEventsRef.current = omitRecordKey(liveEventsRef.current, liveEventKey);
         setLiveEvents(liveEventsRef.current);
         // The request can never be answered now — retire its card so neither the
         // sidebar count nor the inline prompt offers a dead-end "Respond".
@@ -5279,19 +4884,15 @@ export function AgentWorkspace({
   ) {
     if (branchingMessageId) return;
     if (!sessionId) {
-      setError(
-        "Cannot branch from this message because its session is unavailable.",
-        {
-          sessionId: modeSessionId ?? null,
-        },
-      );
+      setError("Cannot branch from this message because its session is unavailable.", {
+        sessionId: modeSessionId ?? null,
+      });
       return;
     }
     setBranchingMessageId(fromMessageId);
     const sourceTitle =
-      hermesSessionItems.find(
-        (session) => session.id === sessionId || session.id === modeSessionId,
-      )?.title ?? "this session";
+      hermesSessionItems.find((session) => session.id === sessionId || session.id === modeSessionId)
+        ?.title ?? "this session";
     const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
@@ -5299,10 +4900,10 @@ export function AgentWorkspace({
         sessionId,
         fromMessageId,
       });
-      const result: BranchSessionResult | undefined = parseBranchSessionResult(
-        raw,
-        { sourceSessionId: sessionId, sourceMessageId: fromMessageId },
-      );
+      const result: BranchSessionResult | undefined = parseBranchSessionResult(raw, {
+        sourceSessionId: sessionId,
+        sourceMessageId: fromMessageId,
+      });
       if (!result) {
         throw new Error("Hermes did not return a branched session.");
       }
@@ -5330,9 +4931,7 @@ export function AgentWorkspace({
 
   function pushLiveEvent(key: string, event: HermesGatewayEvent) {
     const liveEvent = { ...event, receivedAt: new Date().toISOString() };
-    const nextEvents = [...(liveEventsRef.current[key] ?? []), liveEvent].slice(
-      -200,
-    );
+    const nextEvents = [...(liveEventsRef.current[key] ?? []), liveEvent].slice(-200);
     liveEventsRef.current = {
       ...liveEventsRef.current,
       [key]: nextEvents,
@@ -5482,13 +5081,10 @@ export function AgentWorkspace({
   }
 
   function setComposerAttachments(
-    nextValue:
-      | AgentAttachment[]
-      | ((current: AgentAttachment[]) => AgentAttachment[]),
+    nextValue: AgentAttachment[] | ((current: AgentAttachment[]) => AgentAttachment[]),
   ) {
     setAttachments((current) => {
-      const next =
-        typeof nextValue === "function" ? nextValue(current) : nextValue;
+      const next = typeof nextValue === "function" ? nextValue(current) : nextValue;
       attachmentsRef.current = next;
       rememberComposerDraft(
         composerDraftKeyRef.current,
@@ -5624,8 +5220,7 @@ export function AgentWorkspace({
     dispatchAgentSessionStatus({
       sessionId,
       title:
-        hermesSessionItems.find((session) => session.id === sessionId)?.title ??
-        "Agent session",
+        hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session",
       status: "cancelled",
       summary: "Stopped.",
       ...activityCounts,
@@ -5634,9 +5229,7 @@ export function AgentWorkspace({
     try {
       const runtimeSessionId = runtimeSessionIds[sessionId];
       if (runtimeSessionId) {
-        const gateway = await ensureHermesGateway(
-          sessionUnrestricted(sessionId),
-        );
+        const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
         await gateway.request("session.interrupt", {
           session_id: runtimeSessionId,
         });
@@ -5706,9 +5299,7 @@ export function AgentWorkspace({
       return await loadPromise;
     } catch (err) {
       if (!options?.silent) {
-        throw new Error(
-          `Skill commands are unavailable. ${messageFromError(err)}`,
-        );
+        throw new Error(`Skill commands are unavailable. ${messageFromError(err)}`);
       }
       return [];
     } finally {
@@ -5788,9 +5379,7 @@ export function AgentWorkspace({
       [sessionId]: title,
     };
     setHermesSessionItems((current) =>
-      current.map((item) =>
-        item.id === sessionId ? { ...item, title } : item,
-      ),
+      current.map((item) => (item.id === sessionId ? { ...item, title } : item)),
     );
   }
 
@@ -5803,11 +5392,7 @@ export function AgentWorkspace({
       const next = current.filter((session) => session.id !== sessionId);
       setSelectedHermesSessionId((selected) => {
         const nextSelected =
-          selected === sessionId
-            ? selectNext
-              ? next[0]?.id
-              : undefined
-            : selected;
+          selected === sessionId ? (selectNext ? next[0]?.id : undefined) : selected;
         selectedHermesSessionIdRef.current = nextSelected;
         return nextSelected;
       });
@@ -5855,12 +5440,8 @@ export function AgentWorkspace({
     }
     const session = hermesSessionItems.find((item) => item.id === sessionId);
     if (!session || !isReplaceableAgentSessionTitle(session.title)) return;
-    const firstUserMessage = messages.find(
-      (message) => message.role === "user",
-    );
-    const prompt = firstUserMessage
-      ? visibleHermesMessageText(firstUserMessage).trim()
-      : "";
+    const firstUserMessage = messages.find((message) => message.role === "user");
+    const prompt = firstUserMessage ? visibleHermesMessageText(firstUserMessage).trim() : "";
     if (!prompt) return;
     titleSuggestionSessionIdsRef.current.add(sessionId);
     const title = await agentSessionTitleForPrompt(prompt);
@@ -5869,9 +5450,7 @@ export function AgentWorkspace({
       [sessionId]: title,
     };
     setHermesSessionItems((current) =>
-      current.map((item) =>
-        item.id === sessionId ? { ...item, title } : item,
-      ),
+      current.map((item) => (item.id === sessionId ? { ...item, title } : item)),
     );
   }
 
@@ -5881,9 +5460,8 @@ export function AgentWorkspace({
       await toggleHermesBridgeSkill({ name: skill.name, enabled });
       setSkills(
         (current) =>
-          current?.map((item) =>
-            item.name === skill.name ? { ...item, enabled } : item,
-          ) ?? current,
+          current?.map((item) => (item.name === skill.name ? { ...item, enabled } : item)) ??
+          current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -5892,18 +5470,14 @@ export function AgentWorkspace({
     }
   }
 
-  async function setToolsetEnabled(
-    toolset: HermesToolsetInfo,
-    enabled: boolean,
-  ) {
+  async function setToolsetEnabled(toolset: HermesToolsetInfo, enabled: boolean) {
     setCapabilitySaving(`toolset:${toolset.name}`);
     try {
       await toggleHermesBridgeToolset({ name: toolset.name, enabled });
       setToolsets(
         (current) =>
-          current?.map((item) =>
-            item.name === toolset.name ? { ...item, enabled } : item,
-          ) ?? current,
+          current?.map((item) => (item.name === toolset.name ? { ...item, enabled } : item)) ??
+          current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -5924,9 +5498,8 @@ export function AgentWorkspace({
       });
       setMessagingPlatforms(
         (current) =>
-          current?.map((item) =>
-            item.id === platform.id ? { ...item, enabled } : item,
-          ) ?? current,
+          current?.map((item) => (item.id === platform.id ? { ...item, enabled } : item)) ??
+          current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -5935,9 +5508,7 @@ export function AgentWorkspace({
     }
   }
 
-  async function saveMessagingPlatformEnv(
-    platform: HermesMessagingPlatformInfo,
-  ) {
+  async function saveMessagingPlatformEnv(platform: HermesMessagingPlatformInfo) {
     const env = Object.fromEntries(
       Object.entries(messagingEnvEdits)
         .map(([key, value]) => [key, value.trim()])
@@ -5969,11 +5540,7 @@ export function AgentWorkspace({
     if (!import.meta.env.DEV) return;
     const apply = (show: boolean, errors: boolean) => {
       setGallerySections(
-        show
-          ? errors
-            ? buildAgentErrorGallery()
-            : buildAgentChatGallery()
-          : null,
+        show ? (errors ? buildAgentErrorGallery() : buildAgentChatGallery()) : null,
       );
       setGalleryErrors(show && errors);
     };
@@ -6033,31 +5600,24 @@ export function AgentWorkspace({
   }, []);
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
-  const surfacedArtifacts = [...turnArtifacts.values()]
-    .flat()
-    .concat(devArtifacts);
+  const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
   const downloadArtifact = (artifact: AgentArtifact) =>
     void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
       setError(messageFromError(err)),
     );
-  const openArtifact = (artifact: AgentArtifact) =>
-    setArtifactPanel({ view: "file", artifact });
+  const openArtifact = (artifact: AgentArtifact) => setArtifactPanel({ view: "file", artifact });
 
   // A `/image` result reuses the artifact view/download flow: download saves the
   // imported workspace file; "open" enlarges it in the same file viewer any
   // generated file uses. The image part carries its bytes inline for the
   // thumbnail, but the affordances key off the imported path on disk.
-  const downloadGeneratedImage = (
-    part: Extract<AgentChatPart, { type: "image" }>,
-  ) => {
+  const downloadGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
     if (!part.path) return;
     void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
       setError(messageFromError(err)),
     );
   };
-  const openGeneratedImage = (
-    part: Extract<AgentChatPart, { type: "image" }>,
-  ) => {
+  const openGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
     if (!part.path) return;
     openArtifact({
       name: part.name?.trim() || "Generated image",
@@ -6119,8 +5679,7 @@ export function AgentWorkspace({
         selectedTask.toolEvents.length > 0 ||
         taskHistoryLoadedIdsRef.current.has(selectedTask.id)
       : false;
-  const startupSessionHydrationPending =
-    hermesSessionsLoading && !hermesSessionsHydrated;
+  const startupSessionHydrationPending = hermesSessionsLoading && !hermesSessionsHydrated;
 
   useEffect(() => {
     if (heroMode) return;
@@ -6139,16 +5698,14 @@ export function AgentWorkspace({
       if (transcriptProgrammaticScrollRef.current) {
         if (scroller.scrollTop < previousScrollTop) {
           clearProgrammaticScroll();
-          transcriptShouldStickToBottomRef.current =
-            isAgentTranscriptNearBottom(scroller);
+          transcriptShouldStickToBottomRef.current = isAgentTranscriptNearBottom(scroller);
           return;
         }
         transcriptShouldStickToBottomRef.current = true;
         if (isAgentTranscriptNearBottom(scroller)) clearProgrammaticScroll();
         return;
       }
-      transcriptShouldStickToBottomRef.current =
-        isAgentTranscriptNearBottom(scroller);
+      transcriptShouldStickToBottomRef.current = isAgentTranscriptNearBottom(scroller);
     };
     const updateFromUserScroll = () => {
       clearProgrammaticScroll();
@@ -6201,8 +5758,7 @@ export function AgentWorkspace({
       }
       transcriptProgrammaticScrollTimeoutRef.current = window.setTimeout(() => {
         transcriptProgrammaticScrollRef.current = false;
-        transcriptShouldStickToBottomRef.current =
-          isAgentTranscriptNearBottom(scroller);
+        transcriptShouldStickToBottomRef.current = isAgentTranscriptNearBottom(scroller);
         transcriptProgrammaticScrollTimeoutRef.current = undefined;
       }, 800);
     } else {
@@ -6213,12 +5769,7 @@ export function AgentWorkspace({
       behavior: settled ? "smooth" : "auto",
     });
     transcriptShouldStickToBottomRef.current = true;
-  }, [
-    renderedTurnsSignature,
-    selectedHermesSessionId,
-    selectedHistoryLoaded,
-    selectedTaskId,
-  ]);
+  }, [renderedTurnsSignature, selectedHermesSessionId, selectedHistoryLoaded, selectedTaskId]);
 
   // Reshuffle the deck each time the hero comes back, so repeat visits start
   // from a fresh hand instead of wherever the last rotation left off.
@@ -6249,9 +5800,7 @@ export function AgentWorkspace({
       if (draftRef.current.trim()) return;
       setHeroChipPhase("out");
       swapTimeout = window.setTimeout(() => {
-        setHeroDeckStart(
-          (start) => (start + HERO_SHORTCUT_COUNT) % AGENT_SHORTCUTS.length,
-        );
+        setHeroDeckStart((start) => (start + HERO_SHORTCUT_COUNT) % AGENT_SHORTCUTS.length);
         // Two frames so the incoming chips paint hidden (phase still "out")
         // before the fade-in transition has a start state to run from.
         requestAnimationFrame(() => {
@@ -6400,14 +5949,9 @@ export function AgentWorkspace({
                   visibleIssueReportImportingFiles ||
                   visibleIssueReportHasUnsentContext
                 }
-                onClick={() =>
-                  void sendReviewableIssueReport(
-                    visibleIssueReportReview.sessionId,
-                  )
-                }
+                onClick={() => void sendReviewableIssueReport(visibleIssueReportReview.sessionId)}
               >
-                {visibleIssueReportReview.submitting ||
-                visibleIssueReportImportingFiles ? (
+                {visibleIssueReportReview.submitting || visibleIssueReportImportingFiles ? (
                   <DotSpinner className="agent-composer-notice-button-spinner" />
                 ) : null}
                 {visibleIssueReportReview.submitting
@@ -6456,17 +6000,11 @@ export function AgentWorkspace({
                   title={attachment.attach.error ?? attachment.name}
                 >
                   {attachment.previewDataUrl ? (
-                    <img
-                      src={attachment.previewDataUrl}
-                      alt=""
-                      aria-hidden="true"
-                    />
+                    <img src={attachment.previewDataUrl} alt="" aria-hidden="true" />
                   ) : (
                     <FileTypeIcon name={attachment.name} size={14} />
                   )}
-                  <span className="agent-attachment-name">
-                    {attachment.name}
-                  </span>
+                  <span className="agent-attachment-name">{attachment.name}</span>
                   {attachmentStatusLabel(attachment.attach) ? (
                     <span
                       className="agent-attachment-status"
@@ -6494,8 +6032,7 @@ export function AgentWorkspace({
                 className="agent-composer-image-warning-icon"
               />
               <span className="agent-composer-image-warning-text">
-                {resolvedGenerationModel?.name ?? "This model"} can't read
-                images.
+                {resolvedGenerationModel?.name ?? "This model"} can't read images.
               </span>
               {preferredVisionModel ? (
                 <button
@@ -6627,9 +6164,7 @@ export function AgentWorkspace({
                   aria-label="Stop June"
                   title="Stop June"
                   disabled={stoppingSessionIds.has(selectedHermesSessionId)}
-                  onClick={() =>
-                    void stopHermesSession(selectedHermesSessionId)
-                  }
+                  onClick={() => void stopHermesSession(selectedHermesSessionId)}
                 >
                   <IconStop size={16} />
                 </button>
@@ -6644,9 +6179,7 @@ export function AgentWorkspace({
                     (!draft.trim() && !attachments.length)
                   }
                   aria-label={
-                    selectedHermesSessionId || selectedTask
-                      ? "Send message"
-                      : "Start session"
+                    selectedHermesSessionId || selectedTask ? "Send message" : "Start session"
                   }
                 >
                   {submitting ? <Spinner /> : <IconArrowUp size={18} />}
@@ -6689,15 +6222,10 @@ export function AgentWorkspace({
                   composerEditorRef.current?.focus();
                 }}
               >
-                <span
-                  className="agent-attach-menu-icon"
-                  data-category={reportCategory.key}
-                >
+                <span className="agent-attach-menu-icon" data-category={reportCategory.key}>
                   <CategoryIcon category={reportCategory.key} size={16} />
                 </span>
-                <span className="agent-attach-menu-label">
-                  {reportCategory.label}
-                </span>
+                <span className="agent-attach-menu-label">{reportCategory.label}</span>
               </button>
             ))}
           </div>
@@ -6735,11 +6263,7 @@ export function AgentWorkspace({
                   // First arm of the app session goes through the confirm
                   // dialog; once acknowledged it arms directly, and going
                   // back to sandboxed never asks.
-                  if (
-                    option.unrestricted &&
-                    !fullModeDraft &&
-                    !unrestrictedAcknowledged()
-                  ) {
+                  if (option.unrestricted && !fullModeDraft && !unrestrictedAcknowledged()) {
                     setConfirmUnrestricted(true);
                     return;
                   }
@@ -6749,12 +6273,8 @@ export function AgentWorkspace({
               >
                 {option.icon}
                 <span className="agent-sandbox-option">
-                  <span className="agent-sandbox-option-title">
-                    {option.title}
-                  </span>
-                  <span className="agent-sandbox-option-desc">
-                    {option.description}
-                  </span>
+                  <span className="agent-sandbox-option-title">{option.title}</span>
+                  <span className="agent-sandbox-option-desc">{option.description}</span>
                 </span>
                 {fullModeDraft === option.unrestricted ? (
                   <IconCheckmark1Small
@@ -6827,6 +6347,7 @@ export function AgentWorkspace({
           // `sanitizePayload`; there is no real reporting surface yet — see the
           // feature 15 notes). Logged in dev until that surface lands.
           if (import.meta.env.DEV) {
+            // biome-ignore lint/suspicious/noConsole: dev-only trace-bundle diagnostic
             console.debug(
               "[hermes] report issue trace bundle",
               hermesTraceBuffer.exportSanitizedTrace(selectedHermesSessionId),
@@ -6910,8 +6431,7 @@ export function AgentWorkspace({
           onEditUserPrompt={editUserPrompt}
         />
       ))}
-      {workingSessionIds.has(selectedHermesSessionId) &&
-      hermesTurns.at(-1)?.role === "user" ? (
+      {workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user" ? (
         <AgentThinking />
       ) : null}
     </div>
@@ -6919,18 +6439,14 @@ export function AgentWorkspace({
     <>
       <header className="agent-detail-header">
         <div className="agent-detail-title">
-          <ActivityIndicator
-            active={workingTaskIds.has(selectedTask.id)}
-            large
-          />
+          <ActivityIndicator active={workingTaskIds.has(selectedTask.id)} large />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
             <PrivacyModeBadge badge={generationPrivacyBadge} />
           </div>
         </div>
         <div className="agent-actions">
-          {selectedTask.status !== "cancelled" &&
-          selectedTask.status !== "completed" ? (
+          {selectedTask.status !== "cancelled" && selectedTask.status !== "completed" ? (
             <button
               type="button"
               className="agent-icon-button"
@@ -6940,8 +6456,7 @@ export function AgentWorkspace({
               <IconStopCircle size={15} />
             </button>
           ) : null}
-          {selectedTask.status === "failed" ||
-          selectedTask.status === "paused" ? (
+          {selectedTask.status === "failed" || selectedTask.status === "paused" ? (
             <button
               type="button"
               className="agent-icon-button"
@@ -7020,8 +6535,7 @@ export function AgentWorkspace({
             onEditUserPrompt={editUserPrompt}
           />
         ))}
-        {workingTaskIds.has(selectedTask.id) &&
-        taskTurns.at(-1)?.role === "user" ? (
+        {workingTaskIds.has(selectedTask.id) && taskTurns.at(-1)?.role === "user" ? (
           <AgentThinking />
         ) : null}
       </div>
@@ -7079,15 +6593,12 @@ export function AgentWorkspace({
           />
         }
       />
-      {!heroMode &&
-      !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
+      {!heroMode && !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
         <AgentSessionBar
           origin={origin}
           artifactCount={!newSessionMode ? surfacedArtifacts.length : 0}
           artifactsOpen={artifactPanel !== null}
-          onToggleArtifacts={() =>
-            setArtifactPanel((open) => (open ? null : { view: "list" }))
-          }
+          onToggleArtifacts={() => setArtifactPanel((open) => (open ? null : { view: "list" }))}
           privacyBadge={generationPrivacyBadge}
           // The badge describes the selected session, not the live runtime:
           // every send re-enforces the session's recorded mode, so a
@@ -7105,30 +6616,22 @@ export function AgentWorkspace({
               : undefined
           }
           onRename={
-            !newSessionMode &&
-            selectedHermesSessionId &&
-            !selectedHermesSessionIsProvisional
+            !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? (title) => renameHermesSession(selectedHermesSessionId, title)
               : undefined
           }
           onDelete={
-            !newSessionMode &&
-            selectedHermesSessionId &&
-            !selectedHermesSessionIsProvisional
+            !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
               : undefined
           }
           onShowUsage={
-            !newSessionMode &&
-            selectedHermesSessionId &&
-            !selectedHermesSessionIsProvisional
+            !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? () => setUsagePanelSessionId(selectedHermesSessionId)
               : undefined
           }
           onCompactContext={
-            !newSessionMode &&
-            selectedHermesSessionId &&
-            !selectedHermesSessionIsProvisional
+            !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? () => setCompactSessionId(selectedHermesSessionId)
               : undefined
           }
@@ -7205,10 +6708,7 @@ export function AgentWorkspace({
               <p className="agent-hero-footnote">
                 {bridgeStarting || startupSessionHydrationPending
                   ? "Getting June ready…"
-                  : heroPrivacyFootnote(
-                      generationModel,
-                      generationPrivacyBadge,
-                    )}
+                  : heroPrivacyFootnote(generationModel, generationPrivacyBadge)}
               </p>
             </div>
           ) : null}
@@ -7234,8 +6734,7 @@ export function AgentWorkspace({
                   onDismiss={() => setError(null)}
                 />
               ) : null}
-              {branchedNotice &&
-              branchedNotice.sessionId === selectedHermesSessionId ? (
+              {branchedNotice && branchedNotice.sessionId === selectedHermesSessionId ? (
                 <AgentBranchedBanner
                   sourceTitle={branchedNotice.sourceTitle}
                   onDismiss={() => setBranchedNotice(null)}
@@ -7335,10 +6834,7 @@ function ComposerModelPicker({
 // lists the curated suggested models as plain rows, and a flyout panel
 // opens beside it — hover details for a suggested row, or the searchable
 // full catalog behind the "All models" row.
-type ComposerModelFlyout =
-  | { kind: "model"; id: string }
-  | { kind: "all" }
-  | null;
+type ComposerModelFlyout = { kind: "model"; id: string } | { kind: "all" } | null;
 
 // Hover-intent delay before a hover opens a flyout or card — a pointer
 // sweeping across rows (or rows scrolling under a resting pointer) should
@@ -7409,10 +6905,7 @@ function ComposerModelPopover({
   }, []);
   const scheduleCatalogClose = useCallback(() => {
     cancelCatalogClose();
-    closeTimerRef.current = window.setTimeout(
-      () => setCatalogHover(null),
-      MODEL_HOVER_INTENT_MS,
-    );
+    closeTimerRef.current = window.setTimeout(() => setCatalogHover(null), MODEL_HOVER_INTENT_MS);
   }, [cancelCatalogClose]);
   useEffect(() => cancelCatalogClose, [cancelCatalogClose]);
   // Position-aware scroll fades on the catalog list, same treatment as the
@@ -7428,9 +6921,7 @@ function ComposerModelPopover({
     setFade((prev) => {
       const top = canScroll && !atTop;
       const bottom = canScroll && !atBottom;
-      return prev.top === top && prev.bottom === bottom
-        ? prev
-        : { top, bottom };
+      return prev.top === top && prev.bottom === bottom ? prev : { top, bottom };
     });
   }, []);
 
@@ -7459,8 +6950,7 @@ function ComposerModelPopover({
     } else {
       el.style.top = "";
       el.style.bottom = "";
-      const titlebar =
-        parseFloat(getComputedStyle(el).getPropertyValue("--titlebar-h")) || 0;
+      const titlebar = parseFloat(getComputedStyle(el).getPropertyValue("--titlebar-h")) || 0;
       const room = el.getBoundingClientRect().bottom - titlebar - 16;
       el.style.maxHeight = `${Math.max(160, Math.min(room, 400))}px`;
     }
@@ -7487,16 +6977,12 @@ function ComposerModelPopover({
   // June's agent needs tool calls, so models without tool support can never
   // be picked — leave them out of the quick-switch list entirely instead of
   // showing dead rows. (Settings still lists them, greyed, for context.)
-  const selectable = options.filter(
-    (option) => !option.provider || modelSupportsTools(option),
-  );
+  const selectable = options.filter((option) => !option.provider || modelSupportsTools(option));
   const filteredOptions = query
     ? selectable.filter((option) => modelMatchesQuery(option, query))
     : selectable;
   const detail =
-    flyout?.kind === "model"
-      ? suggested.find((item) => item.model.id === flyout.id)
-      : undefined;
+    flyout?.kind === "model" ? suggested.find((item) => item.model.id === flyout.id) : undefined;
 
   function showCatalogHover(option: VeniceModelDto, row: HTMLElement) {
     cancelCatalogClose();
@@ -7506,16 +6992,10 @@ function ComposerModelPopover({
     const panelRect = panel.getBoundingClientRect();
     const preferred = panel.dataset.side === "right" ? "right" : "left";
     const canOpenLeft =
-      panelRect.left -
-        MODEL_HOVERCARD_GAP -
-        MODEL_HOVERCARD_W -
-        MODEL_HOVERCARD_VIEWPORT_MARGIN >=
+      panelRect.left - MODEL_HOVERCARD_GAP - MODEL_HOVERCARD_W - MODEL_HOVERCARD_VIEWPORT_MARGIN >=
       0;
     const canOpenRight =
-      panelRect.right +
-        MODEL_HOVERCARD_GAP +
-        MODEL_HOVERCARD_W +
-        MODEL_HOVERCARD_VIEWPORT_MARGIN <=
+      panelRect.right + MODEL_HOVERCARD_GAP + MODEL_HOVERCARD_W + MODEL_HOVERCARD_VIEWPORT_MARGIN <=
       window.innerWidth;
     const side =
       preferred === "left"
@@ -7558,11 +7038,7 @@ function ComposerModelPopover({
       }}
     >
       <p className="agent-composer-model-title">Model</p>
-      <div
-        className="agent-composer-model-menu"
-        role="listbox"
-        aria-label="Suggested text models"
-      >
+      <div className="agent-composer-model-menu" role="listbox" aria-label="Suggested text models">
         {suggested.length ? (
           suggested.map(({ model: option }) => (
             <button
@@ -7571,14 +7047,9 @@ function ComposerModelPopover({
               className="agent-composer-model-row"
               role="option"
               aria-selected={option.id === model.id}
-              data-active={
-                (flyout?.kind === "model" && flyout.id === option.id) ||
-                undefined
-              }
+              data-active={(flyout?.kind === "model" && flyout.id === option.id) || undefined}
               onMouseEnter={() =>
-                hoverIntent(() =>
-                  onFlyoutChange({ kind: "model", id: option.id }),
-                )
+                hoverIntent(() => onFlyoutChange({ kind: "model", id: option.id }))
               }
               onFocus={() => {
                 cancelHoverIntent();
@@ -7586,9 +7057,7 @@ function ComposerModelPopover({
               }}
               onClick={() => onSelect(option.id)}
             >
-              <span className="agent-composer-model-row-name">
-                {option.name}
-              </span>
+              <span className="agent-composer-model-row-name">{option.name}</span>
               {option.id === model.id ? (
                 <IconCheckmark1Small
                   size={14}
@@ -7599,9 +7068,7 @@ function ComposerModelPopover({
             </button>
           ))
         ) : (
-          <p className="agent-composer-model-empty">
-            Loading suggested models.
-          </p>
+          <p className="agent-composer-model-empty">Loading suggested models.</p>
         )}
       </div>
       <button
@@ -7622,17 +7089,10 @@ function ComposerModelPopover({
         }}
       >
         <span className="agent-composer-model-row-name">All models</span>
-        <IconChevronRightSmall
-          size={12}
-          aria-hidden
-          className="agent-composer-model-row-chevron"
-        />
+        <IconChevronRightSmall size={12} aria-hidden className="agent-composer-model-row-chevron" />
       </button>
       {detail ? (
-        <div
-          ref={flyoutRef}
-          className="agent-composer-model-flyout agent-composer-model-detail"
-        >
+        <div ref={flyoutRef} className="agent-composer-model-flyout agent-composer-model-detail">
           <div className="agent-composer-model-surface">
             <ComposerModelCardContent model={detail.model} />
           </div>
@@ -7694,9 +7154,7 @@ function ComposerModelPopover({
                     />
                   ))
                 ) : (
-                  <p className="agent-composer-model-empty">
-                    No models match your search.
-                  </p>
+                  <p className="agent-composer-model-empty">No models match your search.</p>
                 )}
               </div>
             </div>
@@ -7719,10 +7177,7 @@ function ComposerModelPopover({
           }
         >
           <div className="agent-composer-model-surface">
-            <ComposerModelCardContent
-              model={catalogHover.model}
-              withDescription
-            />
+            <ComposerModelCardContent model={catalogHover.model} withDescription />
           </div>
         </div>
       ) : null}
@@ -7764,19 +7219,13 @@ function ComposerModelCardContent({
   withDescription?: boolean;
 }) {
   const badge = modelPrivacyBadge(model);
-  const values = [pricingLabel(model), contextLabel(model)]
-    .filter(Boolean)
-    .join(" · ");
+  const values = [pricingLabel(model), contextLabel(model)].filter(Boolean).join(" · ");
   return (
     <>
       <p className="agent-composer-model-detail-name">
         <span>{model.name}</span>
         {badge ? (
-          <span
-            className="model-trait-icon"
-            data-mode={badge.mode}
-            title={badge.description}
-          >
+          <span className="model-trait-icon" data-mode={badge.mode} title={badge.description}>
             {badge.mode === "e2ee" ? (
               <IconLock size={14} aria-hidden />
             ) : badge.mode === "private" ? (
@@ -7788,9 +7237,7 @@ function ComposerModelCardContent({
           </span>
         ) : null}
       </p>
-      {values ? (
-        <p className="agent-composer-model-detail-values">{values}</p>
-      ) : null}
+      {values ? <p className="agent-composer-model-detail-values">{values}</p> : null}
       {withDescription && model.description ? (
         <ComposerModelDescription text={model.description} />
       ) : null}
@@ -7835,11 +7282,7 @@ function ComposerModelOption({
   model: VeniceModelDto;
   selected: boolean;
   onSelect: (modelId: string) => void;
-  onHover: (
-    model: VeniceModelDto,
-    row: HTMLElement,
-    immediate: boolean,
-  ) => void;
+  onHover: (model: VeniceModelDto, row: HTMLElement, immediate: boolean) => void;
 }) {
   return (
     <button
@@ -7853,24 +7296,14 @@ function ComposerModelOption({
     >
       <span className="agent-composer-model-row-name">{model.name}</span>
       {selected ? (
-        <IconCheckmark1Small
-          size={14}
-          aria-hidden
-          className="agent-composer-model-row-check"
-        />
+        <IconCheckmark1Small size={14} aria-hidden className="agent-composer-model-row-check" />
       ) : null}
     </button>
   );
 }
 
 function modelMatchesQuery(model: VeniceModelDto, query: string) {
-  return [
-    model.name,
-    model.id,
-    model.description,
-    model.privacy,
-    ...model.traits,
-  ]
+  return [model.name, model.id, model.description, model.privacy, ...model.traits]
     .filter(Boolean)
     .join(" ")
     .toLowerCase()
@@ -7994,9 +7427,7 @@ function AgentSessionBar({
 
   return (
     <div className="detail-bar agent-session-bar" data-tauri-drag-region>
-      {origin ? (
-        <BackButton label={origin.backLabel} onClick={origin.onBack} />
-      ) : null}
+      {origin ? <BackButton label={origin.backLabel} onClick={origin.onBack} /> : null}
       <nav className="detail-breadcrumb" aria-label="Breadcrumb">
         <ol>
           {origin ? (
@@ -8007,11 +7438,7 @@ function AgentSessionBar({
                     /
                   </span>
                 ) : null}
-                <button
-                  type="button"
-                  className="detail-breadcrumb-link"
-                  onClick={crumb.onClick}
-                >
+                <button type="button" className="detail-breadcrumb-link" onClick={crumb.onClick}>
                   {crumb.label}
                 </button>
               </li>
@@ -8046,9 +7473,7 @@ function AgentSessionBar({
                   }}
                 />
               ) : (
-                <span className="detail-breadcrumb-current">
-                  {title || "Untitled session"}
-                </span>
+                <span className="detail-breadcrumb-current">{title || "Untitled session"}</span>
               )}
             </li>
           ) : origin ? (
@@ -8090,10 +7515,7 @@ function AgentSessionBar({
               <IconDotGrid1x3Horizontal size={16} />
             </button>
             {menuOpen ? (
-              <div
-                className="sidebar-identity-menu agent-session-menu"
-                role="menu"
-              >
+              <div className="sidebar-identity-menu agent-session-menu" role="menu">
                 {onShowUsage ? (
                   <button
                     type="button"
@@ -8178,10 +7600,7 @@ function AgentSessionBar({
 
 async function agentSessionTitleForPrompt(prompt: string) {
   try {
-    const response = await withTimeout(
-      suggestAgentSessionTitle(prompt),
-      AGENT_TITLE_TIMEOUT_MS,
-    );
+    const response = await withTimeout(suggestAgentSessionTitle(prompt), AGENT_TITLE_TIMEOUT_MS);
     return response.title.trim() || titleFromPrompt(prompt);
   } catch {
     return titleFromPrompt(prompt);
@@ -8210,11 +7629,7 @@ function PanelTabs({
 }) {
   return (
     <div className="agent-panel-tabs" role="tablist" aria-label="Agent panels">
-      <button
-        type="button"
-        aria-selected={activePanel === "chat"}
-        onClick={() => onChange("chat")}
-      >
+      <button type="button" aria-selected={activePanel === "chat"} onClick={() => onChange("chat")}>
         <IconBubble3 size={14} />
         Chat
       </button>
@@ -8261,16 +7676,10 @@ export function SkillsToolsPanel({
   onToggleSkill: (skill: HermesSkillInfo, enabled: boolean) => void;
   onToggleToolset: (toolset: HermesToolsetInfo, enabled: boolean) => void;
   onOpenSkill?: (skill: HermesSkillInfo) => Promise<HermesSkillDocument>;
-  onSaveSkill?: (
-    skill: HermesSkillInfo,
-    content: string,
-  ) => Promise<HermesSkillDocument>;
+  onSaveSkill?: (skill: HermesSkillInfo, content: string) => Promise<HermesSkillDocument>;
 }) {
-  const [selectedSkillName, setSelectedSkillName] = useState<string | null>(
-    null,
-  );
-  const [skillDocument, setSkillDocument] =
-    useState<HermesSkillDocument | null>(null);
+  const [selectedSkillName, setSelectedSkillName] = useState<string | null>(null);
+  const [skillDocument, setSkillDocument] = useState<HermesSkillDocument | null>(null);
   const [skillDraft, setSkillDraft] = useState("");
   const [skillLoading, setSkillLoading] = useState(false);
   const [skillSaving, setSkillSaving] = useState(false);
@@ -8282,13 +7691,9 @@ export function SkillsToolsPanel({
     .sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
   const visibleToolsets = (toolsets ?? [])
     .filter((toolset) => capabilityMatches(toolset, q))
-    .sort((a, b) =>
-      safeText(a.label ?? a.name).localeCompare(safeText(b.label ?? b.name)),
-    );
-  const selectedSkill =
-    (skills ?? []).find((skill) => skill.name === selectedSkillName) ?? null;
-  const skillDirty =
-    Boolean(skillDocument) && skillDraft !== (skillDocument?.content ?? "");
+    .sort((a, b) => safeText(a.label ?? a.name).localeCompare(safeText(b.label ?? b.name)));
+  const selectedSkill = (skills ?? []).find((skill) => skill.name === selectedSkillName) ?? null;
+  const skillDirty = Boolean(skillDocument) && skillDraft !== (skillDocument?.content ?? "");
 
   async function openSkill(skill: HermesSkillInfo) {
     if (!onOpenSkill) return;
@@ -8383,11 +7788,7 @@ export function SkillsToolsPanel({
         </div>
       ) : (
         <div className="agent-management-scroll">
-          <CapabilityGroup
-            title="Skills"
-            count={visibleSkills.length}
-            empty="No matching skills"
-          >
+          <CapabilityGroup title="Skills" count={visibleSkills.length} empty="No matching skills">
             {visibleSkills.map((skill) => (
               <CapabilityRow
                 key={skill.name}
@@ -8411,9 +7812,7 @@ export function SkillsToolsPanel({
                 key={toolset.name}
                 title={toolset.label ?? toolset.name}
                 description={toolset.description}
-                meta={
-                  toolset.provider ?? toolNames(toolset).slice(0, 4).join(", ")
-                }
+                meta={toolset.provider ?? toolNames(toolset).slice(0, 4).join(", ")}
                 enabled={Boolean(toolset.enabled)}
                 saving={saving === `toolset:${toolset.name}`}
                 onToggle={(enabled) => onToggleToolset(toolset, enabled)}
@@ -8454,17 +7853,10 @@ function SkillEditorPanel({
   const title = skill?.name ?? document?.name ?? "Skill";
   const readOnly = Boolean(document?.readOnly);
   return (
-    <section
-      className="agent-management-panel agent-skill-editor-panel"
-      aria-label={title}
-    >
+    <section className="agent-management-panel agent-skill-editor-panel" aria-label={title}>
       <div className="agent-skill-editor">
         <header className="agent-skill-editor-header">
-          <button
-            type="button"
-            className="btn btn-ghost agent-skill-editor-back"
-            onClick={onBack}
-          >
+          <button type="button" className="btn btn-ghost agent-skill-editor-back" onClick={onBack}>
             <IconChevronLeftSmall size={15} aria-hidden />
             Skills
           </button>
@@ -8475,13 +7867,9 @@ function SkillEditorPanel({
             </div>
             <div className="agent-platform-pills">
               {skill?.category ? <span>{skill.category}</span> : null}
-              {document?.relativePath ? (
-                <span>{document.relativePath}</span>
-              ) : null}
+              {document?.relativePath ? <span>{document.relativePath}</span> : null}
               {readOnly ? <span>Read-only</span> : null}
-              {skill ? (
-                <span>{skill.enabled ? "Enabled" : "Disabled"}</span>
-              ) : null}
+              {skill ? <span>{skill.enabled ? "Enabled" : "Disabled"}</span> : null}
             </div>
           </div>
         </header>
@@ -8558,9 +7946,7 @@ export function MessagingPanel({
     .filter((platform) => capabilityMatches(platform, q))
     .sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
   const selected =
-    visible.find((platform) => platform.id === selectedPlatformId) ??
-    visible[0] ??
-    null;
+    visible.find((platform) => platform.id === selectedPlatformId) ?? visible[0] ?? null;
   return (
     <section className="agent-management-panel" aria-label="Messaging">
       <ManagementToolbar
@@ -8577,23 +7963,16 @@ export function MessagingPanel({
       ) : (
         <div className="agent-messaging-layout">
           <div className="agent-messaging-list" aria-label="Messaging channels">
-            <CapabilityGroup
-              title="Messaging"
-              count={visible.length}
-              empty="No matching platforms"
-            >
+            <CapabilityGroup title="Messaging" count={visible.length} empty="No matching platforms">
               {visible.map((platform) => {
                 const envVars = platform.envVars ?? platform.env_vars ?? [];
                 const requiredSet = envVars.filter(
                   (field) => field.required && envFieldSet(field),
                 ).length;
-                const requiredTotal = envVars.filter(
-                  (field) => field.required,
-                ).length;
+                const requiredTotal = envVars.filter((field) => field.required).length;
                 const state = platform.state ?? "unknown";
                 const configured =
-                  platform.configured ||
-                  (requiredTotal > 0 && requiredSet === requiredTotal);
+                  platform.configured || (requiredTotal > 0 && requiredSet === requiredTotal);
                 return (
                   <CapabilityRow
                     key={platform.id}
@@ -8687,11 +8066,7 @@ export function FilesystemPanel({
               {root.entries.length ? (
                 <div className="agent-files-tree">
                   {root.entries.map((entry) => (
-                    <FilesystemEntryRow
-                      key={entry.path}
-                      entry={entry}
-                      level={0}
-                    />
+                    <FilesystemEntryRow key={entry.path} entry={entry} level={0} />
                   ))}
                 </div>
               ) : (
@@ -8713,27 +8088,14 @@ export function FilesystemPanel({
   );
 }
 
-function FilesystemEntryRow({
-  entry,
-  level,
-}: {
-  entry: HermesFilesystemEntry;
-  level: number;
-}) {
+function FilesystemEntryRow({ entry, level }: { entry: HermesFilesystemEntry; level: number }) {
   const isDirectory = entry.kind === "directory";
   const children = entry.children ?? [];
   return (
     <div className="agent-files-entry-group">
-      <div
-        className="agent-files-entry"
-        style={{ "--agent-file-depth": level } as CSSProperties}
-      >
+      <div className="agent-files-entry" style={{ "--agent-file-depth": level } as CSSProperties}>
         <span className="agent-files-entry-icon" aria-hidden="true">
-          {isDirectory ? (
-            <IconFolder1 size={14} />
-          ) : (
-            <FileTypeIcon name={entry.name} size={14} />
-          )}
+          {isDirectory ? <IconFolder1 size={14} /> : <FileTypeIcon name={entry.name} size={14} />}
         </span>
         <span className="agent-files-entry-name">{entry.name}</span>
         <span className="agent-files-entry-meta">
@@ -8744,11 +8106,7 @@ function FilesystemEntryRow({
       {children.length ? (
         <div className="agent-files-children">
           {children.map((child) => (
-            <FilesystemEntryRow
-              key={child.path}
-              entry={child}
-              level={level + 1}
-            />
+            <FilesystemEntryRow key={child.path} entry={child} level={level + 1} />
           ))}
         </div>
       ) : null}
@@ -8785,9 +8143,7 @@ function MessagingPlatformDetail({
   }
   const envVars = platform.envVars ?? platform.env_vars ?? [];
   const required = envVars.filter((field) => field.required);
-  const recommended = envVars.filter(
-    (field) => !field.required && !field.advanced,
-  );
+  const recommended = envVars.filter((field) => !field.required && !field.advanced);
   const advanced = envVars.filter((field) => !field.required && field.advanced);
   const hasEdits = Object.values(messagingTrimEdits(envEdits)).length > 0;
   const docsUrl = platform.docsUrl ?? platform.docs_url;
@@ -8805,9 +8161,7 @@ function MessagingPlatformDetail({
             <p>{platform.description}</p>
             <div className="agent-platform-pills">
               <span>{stateLabel(platform.state ?? "unknown")}</span>
-              <span>
-                {platform.configured ? "Credentials set" : "Needs setup"}
-              </span>
+              <span>{platform.configured ? "Credentials set" : "Needs setup"}</span>
               {platform.gatewayRunning || platform.gateway_running ? null : (
                 <span>Messaging gateway stopped</span>
               )}
@@ -8820,12 +8174,7 @@ function MessagingPlatformDetail({
           </div>
         ) : null}
         {docsUrl ? (
-          <a
-            className="agent-platform-docs"
-            href={docsUrl}
-            rel="noreferrer"
-            target="_blank"
-          >
+          <a className="agent-platform-docs" href={docsUrl} rel="noreferrer" target="_blank">
             Open setup guide
           </a>
         ) : null}
@@ -8916,14 +8265,10 @@ function MessagingFieldGroup({
             disabled={saving === `env:${field.key}`}
             placeholder={
               envFieldSet(field)
-                ? (field.redactedValue ??
-                  field.redacted_value ??
-                  "Replace current value")
+                ? (field.redactedValue ?? field.redacted_value ?? "Replace current value")
                 : (field.prompt ?? field.key)
             }
-            onChange={(event) =>
-              onEditEnv(field.key, event.currentTarget.value)
-            }
+            onChange={(event) => onEditEnv(field.key, event.currentTarget.value)}
           />
           {field.description ? <small>{field.description}</small> : null}
         </label>
@@ -9034,11 +8379,7 @@ function chatTurnsSignature(turns: AgentChatTurn[]) {
       1 +
       turn.parts.reduce(
         (size, part) =>
-          size +
-          1 +
-          ("text" in part && typeof part.text === "string"
-            ? part.text.length
-            : 0),
+          size + 1 + ("text" in part && typeof part.text === "string" ? part.text.length : 0),
         0,
       ),
     0,
@@ -9061,13 +8402,8 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
   const isThinkingOnly = (turn: AgentChatTurn): boolean =>
     turn.role === "assistant" &&
     turn.parts.length > 0 &&
-    turn.parts.every(
-      (part) => part.type === "reasoning" || part.type === "tool",
-    );
-  const rebuild = (
-    turn: AgentChatTurn,
-    parts: AgentChatPart[],
-  ): AgentChatTurn => ({
+    turn.parts.every((part) => part.type === "reasoning" || part.type === "tool");
+  const rebuild = (turn: AgentChatTurn, parts: AgentChatPart[]): AgentChatTurn => ({
     id: turn.id,
     role: turn.role,
     createdAt: turn.createdAt,
@@ -9079,10 +8415,7 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
   let pending: AgentChatTurn | undefined;
   for (const turn of turns) {
     if (isThinkingOnly(turn)) {
-      pending =
-        pending === undefined
-          ? turn
-          : rebuild(turn, [...pending.parts, ...turn.parts]);
+      pending = pending === undefined ? turn : rebuild(turn, [...pending.parts, ...turn.parts]);
       continue;
     }
     if (turn.role === "assistant" && pending !== undefined) {
@@ -9116,9 +8449,7 @@ function AgentResponseGallery({
   errors?: boolean;
   onClose: () => void;
 }) {
-  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<
-    Record<string, boolean>
-  >({});
+  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
   const setThinkingOpen = useCallback((key: string, open: boolean) => {
     setThinkingOpenByKey((current) =>
       current[key] === open ? current : { ...current, [key]: open },
@@ -9128,9 +8459,7 @@ function AgentResponseGallery({
     <div className="agent-timeline agent-gallery">
       <div className="agent-gallery-banner">
         <div>
-          <strong>
-            {errors ? "Agent error gallery" : "Agent response gallery"}
-          </strong>
+          <strong>{errors ? "Agent error gallery" : "Agent response gallery"}</strong>
           <p>
             {errors
               ? "Every error surface in agent chat. The banner above and the composer notice below are forced samples too."
@@ -9218,18 +8547,9 @@ function AgentChatTurnRow({
     part: Extract<AgentChatPart, { type: "approval" }>,
     choice: AgentApprovalChoice,
   ) => void;
-  onClarify: (
-    part: Extract<AgentChatPart, { type: "clarify" }>,
-    answer: string,
-  ) => void;
-  onSudo: (
-    part: Extract<AgentChatPart, { type: "sudo" }>,
-    approved: boolean,
-  ) => void;
-  onSecret: (
-    part: Extract<AgentChatPart, { type: "secret" }>,
-    value: string,
-  ) => void;
+  onClarify: (part: Extract<AgentChatPart, { type: "clarify" }>, answer: string) => void;
+  onSudo: (part: Extract<AgentChatPart, { type: "sudo" }>, approved: boolean) => void;
+  onSecret: (part: Extract<AgentChatPart, { type: "secret" }>, value: string) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
   /** Save a `/image` result to disk; enlarge it in the file viewer. Optional so
@@ -9250,27 +8570,20 @@ function AgentChatTurnRow({
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "text" }> =>
-      part.type === "text",
+    (part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text",
   );
   const reasoningParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
-      part.type === "reasoning",
+    (part): part is Extract<AgentChatPart, { type: "reasoning" }> => part.type === "reasoning",
   );
   const toolParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
-      part.type === "tool",
+    (part): part is Extract<AgentChatPart, { type: "tool" }> => part.type === "tool",
   );
   // The disclosure owns internal reasoning only. Tool/action rows stay visible
   // outside it so users can see what June is doing without expanding Thought.
-  const thinkingRunning = reasoningParts.some(
-    (part) => part.status === "running",
-  );
+  const thinkingRunning = reasoningParts.some((part) => part.status === "running");
   const completedThinkingKey = `turn:${turn.id}:thinking`;
   const thinkingKey =
-    thinkingRunning && activeThinkingKey
-      ? activeThinkingKey
-      : completedThinkingKey;
+    thinkingRunning && activeThinkingKey ? activeThinkingKey : completedThinkingKey;
   const wasThinkingRunningRef = useRef(thinkingRunning);
   const carriedOpen =
     !thinkingRunning &&
@@ -9315,8 +8628,7 @@ function AgentChatTurnRow({
   );
 
   const contextParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "context" }> =>
-      part.type === "context",
+    (part): part is Extract<AgentChatPart, { type: "context" }> => part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const copyText = copyableTextForTurn(turn);
@@ -9370,10 +8682,7 @@ function AgentChatTurnRow({
     </button>
   ) : null;
   const editAction =
-    turn.role === "user" &&
-    !turn.isScheduledRun &&
-    userPromptText &&
-    onEditUserPrompt ? (
+    turn.role === "user" && !turn.isScheduledRun && userPromptText && onEditUserPrompt ? (
       <button
         type="button"
         className="agent-turn-action"
@@ -9396,10 +8705,7 @@ function AgentChatTurnRow({
       </div>
     ) : null;
 
-  if (
-    contextParts.length &&
-    turn.parts.every((part) => part.type === "context")
-  ) {
+  if (contextParts.length && turn.parts.every((part) => part.type === "context")) {
     return (
       <>
         {contextParts.map((part, index) => (
@@ -9466,10 +8772,7 @@ function AgentChatTurnRow({
               // as text.
               <div key={`${turn.id}:text:${index}`}>
                 {stripAgentCliAccessRequest(part.text) ? (
-                  <MarkdownContent
-                    markdown={stripAgentCliAccessRequest(part.text)}
-                    repairProse
-                  />
+                  <MarkdownContent markdown={stripAgentCliAccessRequest(part.text)} repairProse />
                 ) : null}
                 <AgentCliAccessCard cliAccess={cliAccess} />
               </div>
@@ -9560,10 +8863,7 @@ function copyableTextForTurn(turn: AgentChatTurn): string {
   if (turn.role === "user") return userPromptTextForTurn(turn);
   if (turn.role !== "assistant") return "";
   return turn.parts
-    .filter(
-      (part): part is Extract<AgentChatPart, { type: "text" }> =>
-        part.type === "text",
-    )
+    .filter((part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text")
     .map((part) => stripAgentCliAccessRequest(part.text).trim())
     .filter(Boolean)
     .join("\n\n")
@@ -9572,10 +8872,7 @@ function copyableTextForTurn(turn: AgentChatTurn): string {
 
 function userPromptTextForTurn(turn: AgentChatTurn): string {
   return turn.parts
-    .filter(
-      (part): part is Extract<AgentChatPart, { type: "text" }> =>
-        part.type === "text",
-    )
+    .filter((part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text")
     .map((part) => displayedComposerUserMessageText(part.text).trim())
     .filter(Boolean)
     .join("\n\n")
@@ -9636,9 +8933,7 @@ export function SessionCompactDialog({
   compress: (sessionId: string) => Promise<CompressSessionResult>;
   onClose: () => void;
 }) {
-  const [phase, setPhase] = useState<"idle" | "working" | "done" | "error">(
-    "idle",
-  );
+  const [phase, setPhase] = useState<"idle" | "working" | "done" | "error">("idle");
   const [result, setResult] = useState<CompressSessionResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // Guards against a resolve landing after a newer run or after close/reopen.
@@ -9699,22 +8994,13 @@ export function SessionCompactDialog({
             <button type="button" className="primary-action" onClick={onClose}>
               Close
             </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              onClick={runCompaction}
-            >
+            <button type="button" className="primary-action primary-solid" onClick={runCompaction}>
               Try again
             </button>
           </>
         ) : (
           <>
-            <button
-              type="button"
-              className="primary-action"
-              onClick={onClose}
-              disabled={working}
-            >
+            <button type="button" className="primary-action" onClick={onClose} disabled={working}>
               Cancel
             </button>
             <button
@@ -9742,12 +9028,11 @@ export function SessionCompactDialog({
         ) : (
           <>
             <p className="agent-compact-explainer">
-              This summarizes older context so the agent can continue with a
-              smaller working memory.
+              This summarizes older context so the agent can continue with a smaller working memory.
             </p>
             <p className="agent-compact-caveat">
-              Older messages may be summarized. The agent keeps a reference
-              summary rather than the full earlier transcript.
+              Older messages may be summarized. The agent keeps a reference summary rather than the
+              full earlier transcript.
             </p>
           </>
         )}
@@ -9774,9 +9059,7 @@ function CompactSuccess({ result }: { result: CompressSessionResult | null }) {
       {hasSavings ? (
         <p className="agent-compact-savings">
           {before.toLocaleString()} to {after.toLocaleString()} tokens
-          {saved !== undefined && saved > 0
-            ? ` (${saved.toLocaleString()} saved)`
-            : ""}
+          {saved !== undefined && saved > 0 ? ` (${saved.toLocaleString()} saved)` : ""}
         </p>
       ) : (
         <p className="agent-compact-savings" data-unavailable="true">
@@ -9930,12 +9213,7 @@ function AgentGeneratedImage({
 }) {
   if (part.status === "running") {
     return (
-      <div
-        className="agent-generated-image"
-        data-status="running"
-        role="status"
-        aria-live="polite"
-      >
+      <div className="agent-generated-image" data-status="running" role="status" aria-live="polite">
         <div className="agent-generated-image-placeholder">
           <span className="text-shimmer">Generating image…</span>
         </div>
@@ -9961,9 +9239,7 @@ function AgentGeneratedImage({
         aria-label={`Open ${label}`}
         title="Open image"
       >
-        {part.dataUrl ? (
-          <img src={part.dataUrl} alt={part.prompt} draggable={false} />
-        ) : null}
+        {part.dataUrl ? <img src={part.dataUrl} alt={part.prompt} draggable={false} /> : null}
       </button>
       <figcaption className="agent-generated-image-bar">
         <span className="agent-generated-image-name" title={label}>
@@ -9991,10 +9267,7 @@ function ClarifyPart({
   part,
   submitting,
 }: {
-  onClarify: (
-    part: Extract<AgentChatPart, { type: "clarify" }>,
-    answer: string,
-  ) => void;
+  onClarify: (part: Extract<AgentChatPart, { type: "clarify" }>, answer: string) => void;
   part: Extract<AgentChatPart, { type: "clarify" }>;
   submitting?: string;
 }) {
@@ -10019,9 +9292,7 @@ function ClarifyPart({
         </div>
         <p>{part.question}</p>
         {part.answer !== undefined ? (
-          <p className="agent-clarify-answer">
-            {part.answer.trim() ? part.answer : "Skipped"}
-          </p>
+          <p className="agent-clarify-answer">{part.answer.trim() ? part.answer : "Skipped"}</p>
         ) : null}
         {part.status === "pending" ? (
           <>
@@ -10117,50 +9388,32 @@ type AgentCliAccessCardProps = {
  * live setting rather than stored per message: a revisited transcript shows
  * "Enabled" once the grant is on, and re-offers the choice while it is off.
  * Mirrors the approval card chrome. */
-function AgentCliAccessCard({
-  cliAccess,
-}: {
-  cliAccess?: AgentCliAccessCardProps;
-}) {
+function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
   const [dismissed, setDismissed] = useState(false);
   const enabled = cliAccess?.enabled === true;
   const resolved = enabled || dismissed;
   const busy = Boolean(cliAccess?.submitting);
   return (
-    <article
-      className="agent-approval-card"
-      data-status={resolved ? "resolved" : "pending"}
-    >
+    <article className="agent-approval-card" data-status={resolved ? "resolved" : "pending"}>
       <span className="agent-tool-icon">
         <IconConsole size={14} />
       </span>
       <div>
         <div className="agent-tool-title">
           <span>Agent CLI access requested</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={resolved ? "complete" : "running"}
-          >
+          <span className="agent-tool-live-status" data-status={resolved ? "complete" : "running"}>
             {resolved ? "Resolved" : "Waiting"}
           </span>
         </div>
         <p>
-          June wants write access to the state folders of your coding CLIs
-          (Claude Code, Codex, Gemini, opencode) so they stay logged in and can
-          save their work in sandboxed sessions. Those folders configure
-          software that also runs outside June's sandbox. Enabling turns on
+          June wants write access to the state folders of your coding CLIs (Claude Code, Codex,
+          Gemini, opencode) so they stay logged in and can save their work in sandboxed sessions.
+          Those folders configure software that also runs outside June's sandbox. Enabling turns on
           "Agent CLI access" in Settings and restarts the sandboxed runtime.
         </p>
         {resolved ? (
-          <p
-            className="agent-approval-result"
-            data-choice={enabled ? "once" : "deny"}
-          >
-            {enabled ? (
-              <IconCheckmark1Small size={14} />
-            ) : (
-              <IconCrossMedium size={14} />
-            )}
+          <p className="agent-approval-result" data-choice={enabled ? "once" : "deny"}>
+            {enabled ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
             {enabled ? "Agent CLI access enabled" : "Not now"}
           </p>
         ) : (
@@ -10209,9 +9462,7 @@ function ApprovalPart({
   // The answer is cached for the card's lifetime; an error retries on the
   // next open and falls back to static copy meanwhile.
   const [explanation, setExplanation] = useState<string>();
-  const [explainState, setExplainState] = useState<
-    "idle" | "loading" | "ready" | "error"
-  >("idle");
+  const [explainState, setExplainState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const explanationId = useId();
 
   function toggleExplain() {
@@ -10254,11 +9505,7 @@ function ApprovalPart({
         {!resolved && explainOpen ? (
           <div className="agent-approval-explanation" id={explanationId}>
             {explainState === "loading" ? (
-              <p
-                className="agent-approval-explanation-loading"
-                role="status"
-                aria-live="polite"
-              >
+              <p className="agent-approval-explanation-loading" role="status" aria-live="polite">
                 <Spinner aria-hidden />
                 <span>Working out what this request does…</span>
               </p>
@@ -10272,16 +9519,14 @@ function ApprovalPart({
               // Generation unavailable (offline, signed out): keep the
               // static framing rather than an empty panel.
               <p>
-                June is paused because this request needs your explicit
-                permission before it can continue.
+                June is paused because this request needs your explicit permission before it can
+                continue.
               </p>
             )}
             <p>
-              Approve once allows only this request. This session allows
-              matching requests until the session ends.{" "}
-              {part.allowPermanent
-                ? "Always allows matching requests in future sessions. "
-                : null}
+              Approve once allows only this request. This session allows matching requests until the
+              session ends.{" "}
+              {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
               Deny blocks the request.
             </p>
           </div>
@@ -10358,15 +9603,12 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
   if (choice === "once") return pending ? "Approving once" : "Approved once";
   if (choice === "session")
     return pending ? "Approving for this session" : "Approved for this session";
-  if (choice === "always")
-    return pending ? "Approving permanently" : "Always approved";
+  if (choice === "always") return pending ? "Approving permanently" : "Always approved";
   if (choice === "deny") return pending ? "Denying" : "Denied";
   return "Resolved";
 }
 
-export function branchSourceSessionIdForTurn(
-  turn: Pick<AgentChatTurn, "parts">,
-) {
+export function branchSourceSessionIdForTurn(turn: Pick<AgentChatTurn, "parts">) {
   for (const part of turn.parts) {
     if (!("sessionId" in part)) continue;
     const sessionId = part.sessionId?.trim();
@@ -10401,11 +9643,7 @@ export function BranchFromHereAction({
       className="agent-turn-action"
       // The disabled reason is honest, not silent: a synthetic/in-flight turn
       // has no persisted id Hermes can fork from yet.
-      title={
-        branchable
-          ? "Branch from here"
-          : "Branching is available once the message is saved"
-      }
+      title={branchable ? "Branch from here" : "Branching is available once the message is saved"}
       aria-label="Branch from here"
       disabled={disabled}
       onClick={() => onBranch(messageId, sessionId)}
@@ -10426,10 +9664,7 @@ export function SudoPart({
   part,
   submitting,
 }: {
-  onSudo: (
-    part: Extract<AgentChatPart, { type: "sudo" }>,
-    approved: boolean,
-  ) => void;
+  onSudo: (part: Extract<AgentChatPart, { type: "sudo" }>, approved: boolean) => void;
   part: Extract<AgentChatPart, { type: "sudo" }>;
   submitting?: "approve" | "deny";
 }) {
@@ -10439,17 +9674,12 @@ export function SudoPart({
   // implies more access than is being granted.
   const mode: HermesMode = part.mode ?? "sandboxed";
   const unrestricted = mode === "unrestricted";
-  const decided =
-    part.approved ?? (submitting ? submitting === "approve" : undefined);
+  const decided = part.approved ?? (submitting ? submitting === "approve" : undefined);
 
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
-        {unrestricted ? (
-          <IconShieldCrossed size={14} />
-        ) : (
-          <IconShieldCheck size={14} />
-        )}
+        {unrestricted ? <IconShieldCrossed size={14} /> : <IconShieldCheck size={14} />}
       </span>
       <div>
         <div className="agent-tool-title">
@@ -10461,10 +9691,7 @@ export function SudoPart({
             {part.status === "pending" ? "Waiting" : "Resolved"}
           </span>
         </div>
-        <p>
-          {part.reason ??
-            "June needs elevated permissions before it can continue."}
-        </p>
+        <p>{part.reason ?? "June needs elevated permissions before it can continue."}</p>
         {part.command ? <pre>{part.command}</pre> : null}
         <p
           className="agent-sudo-mode"
@@ -10485,22 +9712,9 @@ export function SudoPart({
             : "Will run sandboxed (limited write access)"}
         </p>
         {resolved ? (
-          <p
-            className="agent-approval-result"
-            data-choice={decided ? "once" : "deny"}
-          >
-            {decided ? (
-              <IconCheckmark1Small size={14} />
-            ) : (
-              <IconCrossMedium size={14} />
-            )}
-            {decided
-              ? submitting
-                ? "Approving"
-                : "Approved"
-              : submitting
-                ? "Denying"
-                : "Denied"}
+          <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
+            {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
+            {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
           </p>
         ) : (
           <div className="agent-approval-actions">
@@ -10539,10 +9753,7 @@ export function SecretPart({
   part,
   submitting,
 }: {
-  onSecret: (
-    part: Extract<AgentChatPart, { type: "secret" }>,
-    value: string,
-  ) => void;
+  onSecret: (part: Extract<AgentChatPart, { type: "secret" }>, value: string) => void;
   onCancel?: (part: Extract<AgentChatPart, { type: "secret" }>) => void;
   part: Extract<AgentChatPart, { type: "secret" }>;
   submitting?: true;
@@ -10587,9 +9798,7 @@ export function SecretPart({
             {part.status === "pending" ? "Waiting" : "Provided"}
           </span>
         </div>
-        <p>
-          {part.reason ?? "June needs a secret value before it can continue."}
-        </p>
+        <p>{part.reason ?? "June needs a secret value before it can continue."}</p>
         {label ? (
           <p className="agent-secret-key">
             <span>Key</span>
@@ -10627,11 +9836,7 @@ export function SecretPart({
               Sent straight to the agent and never saved, logged, or shown.
             </p>
             <div className="agent-approval-actions">
-              <button
-                type="submit"
-                className="btn btn-secondary"
-                disabled={disabled || !value}
-              >
+              <button type="submit" className="btn btn-secondary" disabled={disabled || !value}>
                 {submitting ? "Submitting" : "Submit"}
               </button>
               <button
@@ -10695,9 +9900,7 @@ function AgentThinkingGroup({
         <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
       </summary>
       <div className="agent-reasoning-body">
-        {reasoningText ? (
-          <div className="agent-reasoning-text">{reasoningText}</div>
-        ) : null}
+        {reasoningText ? <div className="agent-reasoning-text">{reasoningText}</div> : null}
       </div>
     </details>
   );
@@ -10741,10 +9944,7 @@ function AgentToolDisclosure({
   );
   if (!body) {
     return (
-      <div
-        className="agent-tool-disclosure agent-tool-disclosure-static"
-        data-status={status}
-      >
+      <div className="agent-tool-disclosure agent-tool-disclosure-static" data-status={status}>
         {summary(false)}
       </div>
     );
@@ -10757,11 +9957,7 @@ function AgentToolDisclosure({
   );
 }
 
-function AgentToolPartRow({
-  part,
-}: {
-  part: Extract<AgentChatPart, { type: "tool" }>;
-}) {
+function AgentToolPartRow({ part }: { part: Extract<AgentChatPart, { type: "tool" }> }) {
   return (
     <AgentToolDisclosure
       name={part.name}
@@ -10769,12 +9965,7 @@ function AgentToolPartRow({
       text={part.text}
       statusNode={
         part.status === "running" ? (
-          <span
-            className="agent-tool-spinner"
-            role="status"
-            aria-label="Running"
-            title="Running"
-          >
+          <span className="agent-tool-spinner" role="status" aria-label="Running" title="Running">
             <DotSpinner />
           </span>
         ) : part.status === "failed" ? (
@@ -10829,9 +10020,7 @@ function AgentArtifactCard({
       <div className="agent-artifact-meta">
         <span className="agent-artifact-name">{artifact.name}</span>
         {artifact.size != null ? (
-          <span className="agent-artifact-size">
-            {formatBytes(artifact.size)}
-          </span>
+          <span className="agent-artifact-size">{formatBytes(artifact.size)}</span>
         ) : null}
       </div>
     </>
@@ -10884,13 +10073,8 @@ const FILES_PANEL_MAX_W = 600;
 
 function clampFilesPanelWidth(width: number) {
   const viewportCap =
-    typeof window === "undefined"
-      ? FILES_PANEL_MAX_W
-      : Math.round(window.innerWidth * 0.48);
-  const max = Math.max(
-    FILES_PANEL_MIN_W,
-    Math.min(FILES_PANEL_MAX_W, viewportCap),
-  );
+    typeof window === "undefined" ? FILES_PANEL_MAX_W : Math.round(window.innerWidth * 0.48);
+  const max = Math.max(FILES_PANEL_MIN_W, Math.min(FILES_PANEL_MAX_W, viewportCap));
   return Math.min(Math.max(Math.round(width), FILES_PANEL_MIN_W), max);
 }
 
@@ -10930,15 +10114,9 @@ function AgentArtifactPanel({
   useEffect(() => {
     const shell = panelRef.current?.closest(".app-shell");
     if (!(shell instanceof HTMLElement)) return;
-    const stored = Number.parseInt(
-      window.localStorage.getItem(AGENT_FILES_WIDTH_KEY) ?? "",
-      10,
-    );
+    const stored = Number.parseInt(window.localStorage.getItem(AGENT_FILES_WIDTH_KEY) ?? "", 10);
     if (Number.isFinite(stored)) {
-      shell.style.setProperty(
-        "--agent-files-w",
-        `${clampFilesPanelWidth(stored)}px`,
-      );
+      shell.style.setProperty("--agent-files-w", `${clampFilesPanelWidth(stored)}px`);
     }
   }, []);
 
@@ -10975,18 +10153,12 @@ function AgentArtifactPanel({
     if (!artifactPath) return;
     let cancelled = false;
     setPreview({ kind: "loading" });
-    const load: Promise<AgentArtifactPreview> = isPreviewableImagePath(
-      artifactPath,
-    )
+    const load: Promise<AgentArtifactPreview> = isPreviewableImagePath(artifactPath)
       ? hermesBridgeFilePreview(artifactPath).then((dataUrl) =>
-          dataUrl
-            ? ({ kind: "image", dataUrl } as const)
-            : ({ kind: "none" } as const),
+          dataUrl ? ({ kind: "image", dataUrl } as const) : ({ kind: "none" } as const),
         )
       : hermesBridgeFileText(artifactPath).then((text) =>
-          text !== null
-            ? ({ kind: "text", text } as const)
-            : ({ kind: "none" } as const),
+          text !== null ? ({ kind: "text", text } as const) : ({ kind: "none" } as const),
         );
     void load
       .then((next) => {
@@ -11005,10 +10177,7 @@ function AgentArtifactPanel({
     setFilterOpen(false);
   }, [artifactPath, state.view]);
 
-  const markdown =
-    artifact !== null &&
-    isMarkdownPath(artifact.path) &&
-    preview.kind === "text";
+  const markdown = artifact !== null && isMarkdownPath(artifact.path) && preview.kind === "text";
 
   // In the list the magnifier filters file names; on a text preview it finds
   // within the document. Images and binaries have nothing to search.
@@ -11028,9 +10197,7 @@ function AgentArtifactPanel({
     const id = window.setTimeout(() => setDebouncedQuery(query), 150);
     return () => window.clearTimeout(id);
   }, [query]);
-  const docHighlight = artifact
-    ? debouncedQuery.trim() || undefined
-    : undefined;
+  const docHighlight = artifact ? debouncedQuery.trim() || undefined : undefined;
 
   // Position-aware scroll fades on the document body (same recipe as the
   // dictation history dialog): the header has no divider, so the top fade is
@@ -11079,8 +10246,7 @@ function AgentArtifactPanel({
         aria-label="Files"
         data-entered={entered ? "true" : undefined}
         onAnimationEnd={(event) => {
-          if (event.animationName === "agent-artifact-panel-in")
-            setEntered(true);
+          if (event.animationName === "agent-artifact-panel-in") setEntered(true);
         }}
       >
         <header className="agent-artifact-panel-bar">
@@ -11137,9 +10303,7 @@ function AgentArtifactPanel({
               </button>
             </label>
           ) : (
-            <h2 className="agent-artifact-panel-title">
-              {artifact ? artifact.name : "Files"}
-            </h2>
+            <h2 className="agent-artifact-panel-title">{artifact ? artifact.name : "Files"}</h2>
           )}
           {searchable && !filterOpen ? (
             <button
@@ -11204,15 +10368,10 @@ function AgentArtifactPanel({
                 alt={artifact.name}
               />
             ) : preview.kind === "text" && markdown && !showSource ? (
-              <MarkdownContent
-                markdown={preview.text}
-                highlight={docHighlight}
-              />
+              <MarkdownContent markdown={preview.text} highlight={docHighlight} />
             ) : preview.kind === "text" ? (
               <pre className="agent-artifact-source">
-                {docHighlight
-                  ? highlightText(preview.text, docHighlight, "source")
-                  : preview.text}
+                {docHighlight ? highlightText(preview.text, docHighlight, "source") : preview.text}
               </pre>
             ) : (
               <div className="agent-artifact-panel-empty">
@@ -11252,12 +10411,8 @@ function AgentArtifactPanel({
                           <span className="agent-artifact-icon">
                             <ArtifactIcon size={18} />
                           </span>
-                          <span className="agent-artifact-row-name">
-                            {item.name}
-                          </span>
-                          <span className="agent-artifact-row-meta">
-                            {formatBytes(item.size)}
-                          </span>
+                          <span className="agent-artifact-row-name">{item.name}</span>
+                          <span className="agent-artifact-row-meta">{formatBytes(item.size)}</span>
                         </button>
                       </li>
                     );
@@ -11295,9 +10450,7 @@ function MarkdownContent({
   repairProse?: boolean;
 }) {
   return (
-    <div className="agent-markdown">
-      {renderMarkdownBlocks(markdown, highlight, repairProse)}
-    </div>
+    <div className="agent-markdown">{renderMarkdownBlocks(markdown, highlight, repairProse)}</div>
   );
 }
 
@@ -11305,11 +10458,7 @@ function MarkdownContent({
  * untouched when there's nothing to find. Every text emission point in the
  * markdown renderer funnels through here so find-in-file can light up
  * rendered documents, not just raw source. */
-function highlightText(
-  text: string,
-  highlight: string | undefined,
-  keySeed: string,
-): ReactNode[] {
+function highlightText(text: string, highlight: string | undefined, keySeed: string): ReactNode[] {
   const needle = highlight?.toLowerCase();
   if (!needle) return [text];
   const lower = text.toLowerCase();
@@ -11320,22 +10469,14 @@ function highlightText(
     const at = lower.indexOf(needle, cursor);
     if (at < 0) break;
     if (at > cursor) nodes.push(text.slice(cursor, at));
-    nodes.push(
-      <mark key={`hl-${keySeed}-${count++}`}>
-        {text.slice(at, at + needle.length)}
-      </mark>,
-    );
+    nodes.push(<mark key={`hl-${keySeed}-${count++}`}>{text.slice(at, at + needle.length)}</mark>);
     cursor = at + needle.length;
   }
   if (cursor < text.length) nodes.push(text.slice(cursor));
   return nodes;
 }
 
-function renderMarkdownBlocks(
-  markdown: string,
-  highlight?: string,
-  repairProse = false,
-) {
+function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse = false) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -11346,9 +10487,7 @@ function renderMarkdownBlocks(
     paragraph = [];
     if (!text) return;
     blocks.push(
-      <p key={`p-${key++}`}>
-        {renderInlineMarkdown(text, key, highlight, repairProse)}
-      </p>,
+      <p key={`p-${key++}`}>{renderInlineMarkdown(text, key, highlight, repairProse)}</p>,
     );
   };
 
@@ -11434,9 +10573,7 @@ function renderMarkdownBlocks(
             <thead>
               <tr>
                 {header.map((cell, cellIndex) => (
-                  <th key={cellIndex}>
-                    {renderInlineMarkdown(cell, key, highlight, repairProse)}
-                  </th>
+                  <th key={cellIndex}>{renderInlineMarkdown(cell, key, highlight, repairProse)}</th>
                 ))}
               </tr>
             </thead>
@@ -11461,18 +10598,9 @@ function renderMarkdownBlocks(
     if (heading) {
       flushParagraph();
       const level = Math.min(heading[1].length, 3);
-      const content = renderInlineMarkdown(
-        heading[2],
-        key,
-        highlight,
-        repairProse,
-      );
+      const content = renderInlineMarkdown(heading[2], key, highlight, repairProse);
       blocks.push(
-        level === 1 ? (
-          <h2 key={`h-${key++}`}>{content}</h2>
-        ) : (
-          <h3 key={`h-${key++}`}>{content}</h3>
-        ),
+        level === 1 ? <h2 key={`h-${key++}`}>{content}</h2> : <h3 key={`h-${key++}`}>{content}</h3>,
       );
       continue;
     }
@@ -11531,50 +10659,32 @@ function renderInlineMarkdown(
   const pattern =
     /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
   let index = 0;
-  while ((match = pattern.exec(text))) {
+  let match = pattern.exec(text);
+  while (match !== null) {
     if (match.index > lastIndex) {
       nodes.push(...markProse(text.slice(lastIndex, match.index), `g${index}`));
     }
     if (match[2]) {
       nodes.push(
-        <strong key={`strong-${keySeed}-${index}`}>
-          {markProse(match[2], `s${index}`)}
-        </strong>,
+        <strong key={`strong-${keySeed}-${index}`}>{markProse(match[2], `s${index}`)}</strong>,
       );
     } else if (match[3]) {
-      nodes.push(
-        <em key={`em-${keySeed}-${index}`}>
-          {markProse(match[3], `e${index}`)}
-        </em>,
-      );
+      nodes.push(<em key={`em-${keySeed}-${index}`}>{markProse(match[3], `e${index}`)}</em>);
     } else if (match[4]) {
-      nodes.push(
-        <del key={`del-${keySeed}-${index}`}>
-          {markProse(match[4], `d${index}`)}
-        </del>,
-      );
+      nodes.push(<del key={`del-${keySeed}-${index}`}>{markProse(match[4], `d${index}`)}</del>);
     } else if (match[5]) {
-      nodes.push(
-        <code key={`code-${keySeed}-${index}`}>
-          {mark(match[5], `c${index}`)}
-        </code>,
-      );
+      nodes.push(<code key={`code-${keySeed}-${index}`}>{mark(match[5], `c${index}`)}</code>);
     } else if (match[6] && match[7]) {
       nodes.push(
-        <a
-          key={`link-${keySeed}-${index}`}
-          href={match[7]}
-          rel="noreferrer"
-          target="_blank"
-        >
+        <a key={`link-${keySeed}-${index}`} href={match[7]} rel="noreferrer" target="_blank">
           {markProse(match[6], `a${index}`)}
         </a>,
       );
     }
     lastIndex = pattern.lastIndex;
     index += 1;
+    match = pattern.exec(text);
   }
   if (lastIndex < text.length) {
     nodes.push(...markProse(text.slice(lastIndex), "t"));
@@ -11598,10 +10708,7 @@ function eventText(event: HermesGatewayEvent) {
   ]) {
     const value = stringValue(
       payload[key],
-      key === "text" ||
-        key === "delta" ||
-        key === "message" ||
-        key === "content",
+      key === "text" || key === "delta" || key === "message" || key === "content",
     );
     if (value) return value;
   }
@@ -11645,11 +10752,7 @@ function filterFilesystemEntries(
   if (!query) return entries;
   return entries.flatMap((entry) => {
     const children = filterFilesystemEntries(entry.children ?? [], query);
-    if (
-      includesQuery(entry.name, query) ||
-      includesQuery(entry.path, query) ||
-      children.length
-    ) {
+    if (includesQuery(entry.name, query) || includesQuery(entry.path, query) || children.length) {
       return [{ ...entry, children }];
     }
     return [];
@@ -11664,10 +10767,7 @@ function artifactsFromFilesystemSnapshot(
   );
 }
 
-function promptWithAttachments(
-  message: string,
-  attachments: AgentAttachment[],
-): string {
+function promptWithAttachments(message: string, attachments: AgentAttachment[]): string {
   if (!attachments.length) return message;
   return [
     message || "Use the attached file(s).",
@@ -11700,9 +10800,7 @@ function unsupportedImageInputPrompt({
     "--- Attached Context ---",
     `${modelLabel} does not support image input in June.`,
     "The user attached image file(s), but this model cannot read their visual contents.",
-    imageNames.length
-      ? `Attached image file(s): ${imageNames.join(", ")}.`
-      : undefined,
+    imageNames.length ? `Attached image file(s): ${imageNames.join(", ")}.` : undefined,
     "Do not call vision_analyze, image tools, shell, filesystem tools, or any other tool to inspect the image files.",
     "Reply directly and briefly. Say that you cannot view the attached image with the current model, then ask the user to describe the image or paste the relevant text. If they expected the image to be readable, suggest choosing a model with image support and sending the image again.",
     runtimeContent !== displayContent
@@ -11724,10 +10822,7 @@ function filesystemEntriesToArtifacts(
   rootLabel: string,
 ): AgentArtifact[] {
   return entries.flatMap((entry) => {
-    const children = filesystemEntriesToArtifacts(
-      entry.children ?? [],
-      rootLabel,
-    );
+    const children = filesystemEntriesToArtifacts(entry.children ?? [], rootLabel);
     if (entry.kind !== "file") return children;
     return [
       {
@@ -11770,9 +10865,7 @@ function assignArtifactsToTurns(
         text.includes(artifact.path.toLowerCase()) ||
         text.includes(attachmentPromptPath(artifact.path).toLowerCase());
       const nameMentioned =
-        turn.role === "assistant" &&
-        !claimedNames.has(name) &&
-        text.includes(name);
+        turn.role === "assistant" && !claimedNames.has(name) && text.includes(name);
       if (!pathMentioned && !nameMentioned) continue;
       claimedPaths.add(artifact.path);
       claimedNames.add(name);
@@ -11812,8 +10905,7 @@ function mergeActiveHermesSessions(
   });
   const seen = new Set(mergedFresh.map((session) => session.id));
   const retained = current.filter(
-    (session) =>
-      !seen.has(session.id) && shouldRetainHermesSessionId(session.id, options),
+    (session) => !seen.has(session.id) && shouldRetainHermesSessionId(session.id, options),
   );
   return [...mergedFresh, ...retained].sort((a, b) =>
     sessionTimestamp(b).localeCompare(sessionTimestamp(a)),
@@ -11868,10 +10960,7 @@ function retainUnpersistedPendingMessages(
       // copy — an older identical message (e.g. a re-sent "continue") must
       // not swallow the new pending entry and fake a completed turn.
       const persistedAt = hermesMessageTimestampMs(message);
-      return (
-        persistedAt === undefined ||
-        persistedAt >= pendingAt - PENDING_MATCH_SKEW_MS
-      );
+      return persistedAt === undefined || persistedAt >= pendingAt - PENDING_MATCH_SKEW_MS;
     });
   });
 }
@@ -11911,14 +11000,10 @@ const RESUME_ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
 
 function shouldResumeSessionActivity(messages: HermesSessionMessage[]) {
   if (sessionHasAssistantAfterLatestUser(messages)) return false;
-  const latestUser = [...messages]
-    .reverse()
-    .find((message) => message.role === "user");
+  const latestUser = [...messages].reverse().find((message) => message.role === "user");
   if (!latestUser) return false;
   const sentAt = hermesMessageTimestampMs(latestUser);
-  return (
-    sentAt !== undefined && Date.now() - sentAt < RESUME_ACTIVITY_WINDOW_MS
-  );
+  return sentAt !== undefined && Date.now() - sentAt < RESUME_ACTIVITY_WINDOW_MS;
 }
 
 function sessionHasActiveWork(
@@ -11968,9 +11053,7 @@ function toolEventActivityKey(event: HermesGatewayEvent) {
   );
 }
 
-function agentStatusFromHermesEvent(
-  event: HermesGatewayEvent,
-): AgentSessionStatusKind | undefined {
+function agentStatusFromHermesEvent(event: HermesGatewayEvent): AgentSessionStatusKind | undefined {
   if (event.type === "error") return "failed";
   if (event.type === "clarify.request" || event.type === "approval.request") {
     return "waitingForUser";
@@ -11996,9 +11079,7 @@ function agentStatusSummaryFromHermesEvent(
   status: AgentSessionStatusKind,
 ) {
   if (status === "waitingForUser") {
-    return event.type === "approval.request"
-      ? "June needs approval."
-      : "June has a question.";
+    return event.type === "approval.request" ? "June needs approval." : "June has a question.";
   }
   if (status === "completed") return "June finished.";
   if (status === "failed") return eventText(event) || "June hit a problem.";
@@ -12008,9 +11089,7 @@ function agentStatusSummaryFromHermesEvent(
   if (event.type.startsWith("tool.")) {
     const payload = event.payload as Record<string, unknown> | undefined;
     const name =
-      stringValue(payload?.name) ??
-      stringValue(payload?.tool_name) ??
-      stringValue(payload?.tool);
+      stringValue(payload?.name) ?? stringValue(payload?.tool_name) ?? stringValue(payload?.tool);
     return toolActivitySentence(name, payload);
   }
   if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
@@ -12020,10 +11099,7 @@ function agentStatusSummaryFromHermesEvent(
 }
 
 function visibleHermesMessageText(message: HermesSessionMessage) {
-  const text =
-    textFromHermesContent(message.content) ??
-    textFromHermesContent(message.text) ??
-    "";
+  const text = textFromHermesContent(message.content) ?? textFromHermesContent(message.text) ?? "";
   return displayedComposerUserMessageText(stripHermesVisibleContext(text));
 }
 
@@ -12033,10 +11109,7 @@ function isResolvedSkillSlashResolution(
   return resolution.status === "resolved";
 }
 
-function sameAgentAttachments(
-  left: AgentAttachment[],
-  right: AgentAttachment[],
-) {
+function sameAgentAttachments(left: AgentAttachment[], right: AgentAttachment[]) {
   return (
     left.length === right.length &&
     left.every((attachment, index) => attachment.id === right[index]?.id)
@@ -12062,14 +11135,8 @@ function commandTokensForResolutions(
   tokens: Array<{ name: string; from: number; to: number }>,
 ) {
   return commandNames
-    .map((name) =>
-      tokens.find(
-        (token) => slashCommandKey(token.name) === slashCommandKey(name),
-      ),
-    )
-    .filter((token): token is { name: string; from: number; to: number } =>
-      Boolean(token),
-    );
+    .map((name) => tokens.find((token) => slashCommandKey(token.name) === slashCommandKey(name)))
+    .filter((token): token is { name: string; from: number; to: number } => Boolean(token));
 }
 
 function slashCommandKey(name: string) {
@@ -12081,13 +11148,9 @@ function sameVisibleMessageText(left: string, right: string) {
 }
 
 function stripHermesVisibleContext(value: string) {
-  const withoutWarnings = value.replace(
-    /\n*--- Context Warnings ---[\s\S]*$/m,
-    "",
-  );
+  const withoutWarnings = value.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
-  const visible =
-    marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
+  const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
   // Drop the scheduled-run delivery preamble so a routine's title and dedup
   // key come from its actual prompt, not the cron scaffolding.
   return stripScheduledRunPreamble(visible.trim());
@@ -12118,17 +11181,13 @@ function clipboardImageFiles(data: DataTransfer | null): File[] {
   const itemFiles =
     data.items && data.items.length
       ? Array.from(data.items)
-          .filter(
-            (item) => item.kind === "file" && isClipboardImageType(item.type),
-          )
+          .filter((item) => item.kind === "file" && isClipboardImageType(item.type))
           .map((item) => item.getAsFile())
           .filter((file): file is File => Boolean(file))
       : [];
   if (itemFiles.length) return normalizeClipboardImageFiles(itemFiles);
   return normalizeClipboardImageFiles(
-    Array.from(data.files ?? []).filter((file) =>
-      isClipboardImageType(file.type),
-    ),
+    Array.from(data.files ?? []).filter((file) => isClipboardImageType(file.type)),
   );
 }
 
@@ -12155,14 +11214,10 @@ function hasDistinctClipboardFileNames(files: File[]) {
 function ensureClipboardImageName(file: File, index: number) {
   if (file.name.trim()) return file;
   const suffix = index === 0 ? "" : `-${index + 1}`;
-  return new File(
-    [file],
-    `pasted-image${suffix}.${clipboardImageExtension(file)}`,
-    {
-      type: file.type,
-      lastModified: file.lastModified,
-    },
-  );
+  return new File([file], `pasted-image${suffix}.${clipboardImageExtension(file)}`, {
+    type: file.type,
+    lastModified: file.lastModified,
+  });
 }
 
 function isClipboardImageType(type: string) {
@@ -12241,11 +11296,7 @@ function ActivityIndicator({
 }) {
   if (!active) return null;
   return (
-    <span
-      className="agent-activity-indicator"
-      data-large={large}
-      data-status={status}
-    >
+    <span className="agent-activity-indicator" data-large={large} data-status={status}>
       <span aria-hidden="true" />
       {status === "waitingForUser" ? "Needs you" : "Working"}
     </span>
@@ -12292,8 +11343,7 @@ function readFileBytes(file: File) {
   return new Promise<Uint8Array>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("Could not read the dropped file."));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the dropped file."));
     reader.readAsArrayBuffer(file);
   });
 }
@@ -12305,11 +11355,7 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
   return next;
 }
 
-function moveRecordKey<T>(
-  record: Record<string, T[]>,
-  from: string,
-  to: string,
-) {
+function moveRecordKey<T>(record: Record<string, T[]>, from: string, to: string) {
   const moved = record[from] ?? [];
   const existing = record[to] ?? [];
   const next = { ...record };
@@ -12339,9 +11385,7 @@ const AUTO_SUBMIT_ECHO_WINDOW_MS = 1_000;
 
 function readLastOpenSessionId(): string | undefined {
   try {
-    return (
-      window.localStorage.getItem(AGENT_LAST_OPEN_SESSION_KEY) ?? undefined
-    );
+    return window.localStorage.getItem(AGENT_LAST_OPEN_SESSION_KEY) ?? undefined;
   } catch {
     return undefined;
   }
@@ -12429,9 +11473,7 @@ function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
       }
       return {
         ...(typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {}),
-        ...(isReportCategory(parsed.category)
-          ? { category: parsed.category }
-          : {}),
+        ...(isReportCategory(parsed.category) ? { category: parsed.category } : {}),
       };
     } catch {
       return undefined;

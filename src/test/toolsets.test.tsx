@@ -84,9 +84,7 @@ describe("toolsets — schema parsing", () => {
       enabled: false,
       requirements: [{ label: "GITHUB_TOKEN", satisfied: false }],
     });
-    expect(toolset.requirements).toEqual([
-      { label: "GITHUB_TOKEN", satisfied: false },
-    ]);
+    expect(toolset.requirements).toEqual([{ label: "GITHUB_TOKEN", satisfied: false }]);
   });
 });
 
@@ -102,9 +100,7 @@ describe("toolsets — status derivation", () => {
   });
 
   it("marks a disabled toolset inactive", () => {
-    const view = toolsetStatus(
-      toolsetFromWire({ name: "calendar", enabled: false }),
-    );
+    const view = toolsetStatus(toolsetFromWire({ name: "calendar", enabled: false }));
     expect(view.status).toBe("inactive");
   });
 
@@ -121,9 +117,7 @@ describe("toolsets — status derivation", () => {
   });
 
   it("honors an explicit configured:false as missing setup", () => {
-    const view = toolsetStatus(
-      toolsetFromWire({ name: "x", enabled: true, configured: false }),
-    );
+    const view = toolsetStatus(toolsetFromWire({ name: "x", enabled: true, configured: false }));
     expect(view.status).toBe("missing-setup");
   });
 
@@ -191,12 +185,8 @@ describe("toolsets — search and labels", () => {
 
   it("filters by name, tool name, and requirement label", () => {
     expect(filterToolsets(toolsets, "web").map((t) => t.name)).toEqual(["web"]);
-    expect(filterToolsets(toolsets, "gh_pr").map((t) => t.name)).toEqual([
-      "github",
-    ]);
-    expect(filterToolsets(toolsets, "github_token").map((t) => t.name)).toEqual(
-      ["github"],
-    );
+    expect(filterToolsets(toolsets, "gh_pr").map((t) => t.name)).toEqual(["github"]);
+    expect(filterToolsets(toolsets, "github_token").map((t) => t.name)).toEqual(["github"]);
   });
 
   it("returns all when the query is blank", () => {
@@ -214,15 +204,9 @@ describe("toolsets — last refreshed label", () => {
     const now = 1_000_000;
     expect(lastRefreshedLabel(undefined, now)).toBe("Not refreshed yet");
     expect(lastRefreshedLabel(now, now)).toBe("Refreshed just now");
-    expect(lastRefreshedLabel(now - 30_000, now)).toBe(
-      "Refreshed 30 seconds ago",
-    );
-    expect(lastRefreshedLabel(now - 60_000, now)).toBe(
-      "Refreshed 1 minute ago",
-    );
-    expect(lastRefreshedLabel(now - 3_600_000, now)).toBe(
-      "Refreshed 1 hour ago",
-    );
+    expect(lastRefreshedLabel(now - 30_000, now)).toBe("Refreshed 30 seconds ago");
+    expect(lastRefreshedLabel(now - 60_000, now)).toBe("Refreshed 1 minute ago");
+    expect(lastRefreshedLabel(now - 3_600_000, now)).toBe("Refreshed 1 hour ago");
   });
 });
 
@@ -344,9 +328,7 @@ describe("toolsets — controller load", () => {
 
   it("keeps rendering toolsets when the skills load fails", async () => {
     const harness = makeAdminHarness(toolsetsInventoryScenario());
-    vi.spyOn(harness.client.skills, "list").mockRejectedValue(
-      new Error("skills down"),
-    );
+    vi.spyOn(harness.client.skills, "list").mockRejectedValue(new Error("skills down"));
     const controller = new ToolsetsController(harness as ToolsetsEngine);
     await controller.load();
 
@@ -365,9 +347,7 @@ describe("toolsets — controller load", () => {
     await controller.load();
     expect(controller.getSnapshot().status).toBe("ready");
 
-    vi.spyOn(harness.client.toolsets, "list").mockRejectedValueOnce(
-      new Error("network down"),
-    );
+    vi.spyOn(harness.client.toolsets, "list").mockRejectedValueOnce(new Error("network down"));
     await controller.load();
 
     const snapshot = controller.getSnapshot();
@@ -404,9 +384,7 @@ describe("toolsets — controller load", () => {
     });
 
     await waitFor(() =>
-      expect(
-        controller.getSnapshot().toolsets.find((t) => t.name === "slack"),
-      ).toBeTruthy(),
+      expect(controller.getSnapshot().toolsets.find((t) => t.name === "slack")).toBeTruthy(),
     );
 
     controller.dispose();
@@ -437,9 +415,7 @@ describe("toolsets — profile isolation", () => {
 describe("toolsets — useToolsetsController", () => {
   it("loads on mount", async () => {
     const harness = makeAdminHarness(toolsetsInventoryScenario());
-    const { result } = renderHook(() =>
-      useToolsetsController(harness as ToolsetsEngine),
-    );
+    const { result } = renderHook(() => useToolsetsController(harness as ToolsetsEngine));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.toolsets.length).toBe(5);
   });
@@ -529,16 +505,12 @@ describe("ToolsetsView — component", () => {
     expect(webRow.getByText("web_search")).toBeInTheDocument();
     expect(webRow.getByText("Sandboxed and Full mode")).toBeInTheDocument();
 
-    const githubRow = within(
-      screen.getByText("github").closest("li") as HTMLElement,
-    );
+    const githubRow = within(screen.getByText("github").closest("li") as HTMLElement);
     expect(githubRow.getByText("Missing setup")).toBeInTheDocument();
     expect(githubRow.getByText("GITHUB_TOKEN")).toBeInTheDocument();
     expect(githubRow.getByText("Full mode only")).toBeInTheDocument();
 
-    const memoryRow = within(
-      screen.getByText("memory").closest("li") as HTMLElement,
-    );
+    const memoryRow = within(screen.getByText("memory").closest("li") as HTMLElement);
     expect(memoryRow.getByText("Mode unknown")).toBeInTheDocument();
   });
 
@@ -551,21 +523,13 @@ describe("ToolsetsView — component", () => {
   });
 
   it("explains why skills are visible, hidden, or waiting on setup", () => {
-    render(
-      <ToolsetsView
-        state={stubState({ toolsets: VIEW_TOOLSETS, skills: VIEW_SKILLS })}
-      />,
-    );
+    render(<ToolsetsView state={stubState({ toolsets: VIEW_TOOLSETS, skills: VIEW_SKILLS })} />);
     expect(screen.getByText("Skill availability")).toBeInTheDocument();
     // research: visible (web available).
-    const researchRow = within(
-      screen.getByText("research").closest("li") as HTMLElement,
-    );
+    const researchRow = within(screen.getByText("research").closest("li") as HTMLElement);
     expect(researchRow.getByText(/Visible because/)).toBeInTheDocument();
     // deploy: missing setup (github unavailable).
-    const deployRow = within(
-      screen.getByText("deploy").closest("li") as HTMLElement,
-    );
+    const deployRow = within(screen.getByText("deploy").closest("li") as HTMLElement);
     expect(deployRow.getByText(/Not useful until/)).toBeInTheDocument();
     // notes: no metadata -> dropped from the section entirely.
     expect(screen.queryByText("notes")).not.toBeInTheDocument();
@@ -597,9 +561,7 @@ describe("ToolsetsView — component", () => {
 
   it("calls refresh when the refresh button is clicked", () => {
     const refresh = vi.fn();
-    render(
-      <ToolsetsView state={stubState({ toolsets: VIEW_TOOLSETS, refresh })} />,
-    );
+    render(<ToolsetsView state={stubState({ toolsets: VIEW_TOOLSETS, refresh })} />);
     fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
     expect(refresh).toHaveBeenCalled();
   });
@@ -607,9 +569,7 @@ describe("ToolsetsView — component", () => {
   it("shows the Hermes-not-running surface when unavailable", () => {
     render(<ToolsetsView state={stubState({ status: "unavailable" })} />);
     expect(screen.getByText("Hermes is not running")).toBeInTheDocument();
-    expect(
-      screen.getByRole("searchbox", { name: /filter toolsets/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole("searchbox", { name: /filter toolsets/i })).toBeDisabled();
   });
 
   it("shows the no-toolsets empty state for an empty ready list", () => {
@@ -653,9 +613,7 @@ describe("ToolsetsView — component", () => {
         })}
       />,
     );
-    expect(
-      screen.getByText("Gateway restarted. Tool inventory refreshed."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Gateway restarted. Tool inventory refreshed.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
     expect(dismissNotification).toHaveBeenCalledWith("n1");
   });
@@ -667,8 +625,6 @@ describe("ToolsetsView — component", () => {
       return <ToolsetsView state={state} />;
     }
     render(<Mounted />);
-    await waitFor(() =>
-      expect(screen.getByText("No toolsets reported")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("No toolsets reported")).toBeInTheDocument());
   });
 });

@@ -15,22 +15,18 @@ export type ModelPrivacyFlags = {
   uncensored: boolean;
 };
 
-export const PROVIDER_MODEL_SETTINGS_CHANGED_EVENT =
-  "june:provider-model-settings-changed";
+export const PROVIDER_MODEL_SETTINGS_CHANGED_EVENT = "june:provider-model-settings-changed";
 
 export type ProviderModelSettingsChangedDetail = {
   mode: ProviderModelMode;
   modelId: string;
 };
 
-export function dispatchProviderModelSettingsChanged(
-  detail: ProviderModelSettingsChangedDetail,
-) {
+export function dispatchProviderModelSettingsChanged(detail: ProviderModelSettingsChangedDetail) {
   window.dispatchEvent(
-    new CustomEvent<ProviderModelSettingsChangedDetail>(
-      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
-      { detail },
-    ),
+    new CustomEvent<ProviderModelSettingsChangedDetail>(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, {
+      detail,
+    }),
   );
 }
 
@@ -50,15 +46,10 @@ type ModelPrivacySignals = Pick<VeniceModelDto, "privacy" | "traits"> &
  * inference can't expose tools. The capability name comes from Venice's
  * catalog (`supportsFunctionCalling`); match defensively on the normalized
  * name so a rename to snake_case or "tool calling" keeps working. */
-export function modelSupportsTools(
-  model: Partial<Pick<VeniceModelDto, "capabilities">>,
-) {
+export function modelSupportsTools(model: Partial<Pick<VeniceModelDto, "capabilities">>) {
   return (model.capabilities ?? []).some((capability) => {
     const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
-    return (
-      normalized.includes("functioncalling") ||
-      normalized.includes("toolcalling")
-    );
+    return normalized.includes("functioncalling") || normalized.includes("toolcalling");
   });
 }
 
@@ -72,9 +63,7 @@ export function modelSupportsTools(
  * switch to a model that can't actually read the image. The capability name
  * comes from Venice's catalog (`supportsVision`); match defensively on the
  * normalized name so a rename to snake_case keeps working. */
-export function modelSupportsImageInput(
-  model: Partial<Pick<VeniceModelDto, "capabilities">>,
-) {
+export function modelSupportsImageInput(model: Partial<Pick<VeniceModelDto, "capabilities">>) {
   return (model.capabilities ?? []).some((capability) => {
     const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
     return normalized.includes("supportsvision");
@@ -111,27 +100,20 @@ export function modelPrivacyBadge(
   return undefined;
 }
 
-export function modelPrivacyFlags(
-  model: ModelPrivacySignals,
-): ModelPrivacyFlags {
+export function modelPrivacyFlags(model: ModelPrivacySignals): ModelPrivacyFlags {
   const privacy = (model.privacy ?? "").toLowerCase();
   const traits = model.traits.map((trait) => trait.toLowerCase());
-  const capabilities = (model.capabilities ?? []).map((capability) =>
-    capability.toLowerCase(),
-  );
+  const capabilities = (model.capabilities ?? []).map((capability) => capability.toLowerCase());
   return {
     e2ee:
       privacy === "e2ee" ||
       traits.some((trait) => trait === "e2ee") ||
       capabilities.some((capability) => capability === "e2ee"),
-    private:
-      privacy === "private" || traits.some((trait) => trait === "private"),
+    private: privacy === "private" || traits.some((trait) => trait === "private"),
     anonymous:
       privacy.includes("anonymous") ||
       privacy.includes("anonymized") ||
-      traits.some(
-        (trait) => trait.includes("anonymous") || trait.includes("anonymized"),
-      ),
+      traits.some((trait) => trait.includes("anonymous") || trait.includes("anonymized")),
     uncensored: traits.some((trait) => trait.includes("uncensored")),
   };
 }

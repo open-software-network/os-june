@@ -71,7 +71,7 @@ commit.
    reflect the classifier's ACTUAL current behavior. If a frame classifies as
    `unsupported` today (an unmodeled family), lock that honestly and note the
    gap, rather than asserting an aspirational kind.
-6. `pnpm test` and `pnpm lint` (imports are type-checked via `resolveJsonModule`).
+6. `pnpm test` and `pnpm typecheck` (imports are type-checked via `resolveJsonModule`).
 
 ## On Hermes upgrade (feature 20 checklist)
 

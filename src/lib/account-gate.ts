@@ -15,9 +15,7 @@ export function hasLiveSubscription(account: AccountStatus): boolean {
 }
 
 export function depletedBalanceActionLabel(account: AccountStatus) {
-  return shouldOpenPortalForDepletedBalance(account)
-    ? "Top up credits"
-    : "Upgrade";
+  return shouldOpenPortalForDepletedBalance(account) ? "Top up credits" : "Upgrade";
 }
 
 export function shouldOpenPortalForDepletedBalance(account: AccountStatus) {

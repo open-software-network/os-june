@@ -9,12 +9,7 @@ type EditFolderDialogProps = {
   onSave: (name: string, description?: string) => Promise<unknown> | void;
 };
 
-export function EditFolderDialog({
-  open,
-  onClose,
-  folder,
-  onSave,
-}: EditFolderDialogProps) {
+export function EditFolderDialog({ open, onClose, folder, onSave }: EditFolderDialogProps) {
   const [name, setName] = useState(folder.name);
   const [description, setDescription] = useState(folder.description ?? "");
   const [submitting, setSubmitting] = useState(false);
@@ -32,10 +27,7 @@ export function EditFolderDialog({
     if (!trimmed || submitting) return;
     setSubmitting(true);
     try {
-      await onSave(
-        trimmed,
-        description.trim() ? description.trim() : undefined,
-      );
+      await onSave(trimmed, description.trim() ? description.trim() : undefined);
       onClose();
     } finally {
       setSubmitting(false);
@@ -54,12 +46,7 @@ export function EditFolderDialog({
       initialFocusSelector='input[name="edit-folder-name"]'
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
           <button
@@ -73,11 +60,7 @@ export function EditFolderDialog({
         </>
       }
     >
-      <form
-        id="edit-folder-form"
-        className="dialog-body"
-        onSubmit={handleSubmit}
-      >
+      <form id="edit-folder-form" className="dialog-body" onSubmit={handleSubmit}>
         <DialogField label="Name" htmlFor="edit-folder-name">
           <input
             id="edit-folder-name"

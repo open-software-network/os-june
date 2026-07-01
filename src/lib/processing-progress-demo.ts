@@ -227,9 +227,7 @@ export function registerProcessingProgressDemo({
   // Every push re-seeds and re-selects the note, so the indicator shows even
   // after navigating away to another note between commands.
   function pushStage(status: ProcessingStatus, queued = 0) {
-    seedNote(
-      status === "ready" ? buildReadyNote() : buildDemoNote(status, queued),
-    );
+    seedNote(status === "ready" ? buildReadyNote() : buildDemoNote(status, queued));
   }
 
   function park(status: DemoStage, queued = 0) {

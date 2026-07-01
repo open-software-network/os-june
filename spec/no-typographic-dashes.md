@@ -9,7 +9,13 @@ inconsistently across surfaces and are easy to get subtly wrong.
 
 **How to apply.** Applies across the board: labels, titles, body copy, tooltips,
 aria-labels, notifications, empty states, error messages, and HTML pages. Grep
-changed strings for `–` / `—` before review.
+your changed strings for `–` / `—` before review.
+
+Not CI-enforced (unlike [icons-central-only](icons-central-only.md), which Biome
+checks). A repo-wide grep can't tell user-facing copy from the en/em dashes used
+freely in code comments (the exception below), test `describe`/`it` names, and
+dev demo strings, so an automated gate would be all false positives. This stays
+a human review step.
 
 **Exceptions.** Code comments (they are not copy). Third-party or legal text
 quoted verbatim.

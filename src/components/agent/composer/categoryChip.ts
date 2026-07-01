@@ -12,11 +12,7 @@ import {
   type CategorySuggestionListHandle,
   type CategorySuggestionListProps,
 } from "./CategorySuggestionList";
-import {
-  matchReportCategories,
-  reportCategoryDef,
-  type ReportCategory,
-} from "./reportCategory";
+import { matchReportCategories, reportCategoryDef, type ReportCategory } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import { matchSkillSlashSuggestions } from "../../../lib/skill-slash-commands";
 import { matchBuiltinComposerSlashCommands } from "../../../lib/agent-composer-slash-commands";
@@ -62,8 +58,7 @@ function clearChips(tr: Transaction, doc: ProseMirrorNode) {
   for (const pos of positions.sort((a, b) => b - a)) {
     const afterChip = pos + 1;
     const followedBySpace =
-      afterChip < doc.content.size &&
-      doc.textBetween(afterChip, afterChip + 1) === " ";
+      afterChip < doc.content.size && doc.textBetween(afterChip, afterChip + 1) === " ";
     tr.delete(pos, followedBySpace ? afterChip + 1 : afterChip);
   }
 }
@@ -72,10 +67,7 @@ function clearChips(tr: Transaction, doc: ProseMirrorNode) {
  * drops any existing chip, then inserts the new chip (plus a trailing space so
  * the caret lands on editable text) at `range` when one is given (the "/query"
  * span) or at the selection otherwise (the "+" menu). */
-function insertCategoryCommand(
-  category: ReportCategory,
-  range?: { from: number; to: number },
-) {
+function insertCategoryCommand(category: ReportCategory, range?: { from: number; to: number }) {
   return ({
     tr,
     state,
@@ -127,9 +119,7 @@ const CategoryChipBase = Mention.extend({
         default: null,
         parseHTML: (element) => element.getAttribute("data-category"),
         renderHTML: (attributes) =>
-          attributes.category
-            ? { "data-category": attributes.category as string }
-            : {},
+          attributes.category ? { "data-category": attributes.category as string } : {},
       },
     };
   },
@@ -169,17 +159,12 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
       // A leading "/" only — typing a path like "src/foo" mid-word must not pop
       // the palette.
       allowSpaces: false,
-      items: ({ query }) =>
-        composerSlashCommandItems(query, options.skills?.()),
+      items: ({ query }) => composerSlashCommandItems(query, options.skills?.()),
       command: ({ editor, range, props }) => {
         const item = props as unknown as ComposerSlashCommandItem;
         if (item.kind === "category") {
           const { key: category } = item.category;
-          editor
-            .chain()
-            .focus()
-            .command(insertCategoryCommand(category, range))
-            .run();
+          editor.chain().focus().command(insertCategoryCommand(category, range)).run();
           return;
         }
         if (item.kind === "builtin") {
@@ -202,18 +187,13 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
         } | null = null;
         let ownerDocument: Document | null = null;
 
-        function position(props: {
-          clientRect?: (() => DOMRect | null) | null;
-          editor: Editor;
-        }) {
+        function position(props: { clientRect?: (() => DOMRect | null) | null; editor: Editor }) {
           if (!host || !props.clientRect) return;
           const rect = props.clientRect();
           if (!rect) return;
           const gap = 6;
           const pad = 8;
-          const composerBox = props.editor.view.dom.closest<HTMLElement>(
-            ".agent-composer-box",
-          );
+          const composerBox = props.editor.view.dom.closest<HTMLElement>(".agent-composer-box");
           const composerRect = composerBox?.getBoundingClientRect();
           const width = Math.min(
             composerRect?.width ?? host.getBoundingClientRect().width,
@@ -232,21 +212,12 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
           const hostRect = host.getBoundingClientRect();
           const fitsBelow = belowSpace >= hostRect.height;
           const placeBelow = fitsBelow || belowSpace >= aboveSpace;
-          const maxHeight = Math.max(
-            88,
-            Math.min(placeBelow ? belowSpace : aboveSpace, 280),
-          );
+          const maxHeight = Math.max(88, Math.min(placeBelow ? belowSpace : aboveSpace, 280));
           const top = placeBelow
             ? belowTop
-            : Math.max(
-                anchorRect.top - Math.min(hostRect.height, maxHeight) - gap,
-                pad,
-              );
+            : Math.max(anchorRect.top - Math.min(hostRect.height, maxHeight) - gap, pad);
 
-          host.style.setProperty(
-            "--agent-category-menu-max-height",
-            `${maxHeight}px`,
-          );
+          host.style.setProperty("--agent-category-menu-max-height", `${maxHeight}px`);
           host.style.bottom = "";
           host.style.top = `${Math.max(top, pad)}px`;
           host.style.left = `${left}px`;
@@ -267,10 +238,7 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
         function refreshItems() {
           if (!renderer || !latestProps) return;
           renderer.updateProps({
-            items: composerSlashCommandItems(
-              latestProps.query,
-              options.skills?.(),
-            ),
+            items: composerSlashCommandItems(latestProps.query, options.skills?.()),
             command: latestProps.command,
           });
           position(latestProps);
@@ -290,15 +258,8 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
 
         function cleanupPopover() {
           renderer?.destroy();
-          host?.removeEventListener(
-            CATEGORY_SKILLS_CHANGED_EVENT,
-            refreshItems,
-          );
-          ownerDocument?.removeEventListener(
-            "pointerdown",
-            dismissFromPointerDown,
-            true,
-          );
+          host?.removeEventListener(CATEGORY_SKILLS_CHANGED_EVENT, refreshItems);
+          ownerDocument?.removeEventListener("pointerdown", dismissFromPointerDown, true);
           host?.remove();
           renderer = null;
           host = null;
@@ -319,11 +280,7 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
             host.appendChild(renderer.element);
             document.body.appendChild(host);
             ownerDocument = props.editor.view.dom.ownerDocument;
-            ownerDocument.addEventListener(
-              "pointerdown",
-              dismissFromPointerDown,
-              true,
-            );
+            ownerDocument.addEventListener("pointerdown", dismissFromPointerDown, true);
             position(props);
           },
           onUpdate(props) {
@@ -367,20 +324,14 @@ function composerSlashCommandItems(
   return [
     ...builtins,
     ...categories,
-    ...matchSkillSlashSuggestions(query, skills, SLASH_MENU_SKILL_LIMIT).map(
-      (skill) => ({
-        kind: "skill" as const,
-        skill,
-      }),
-    ),
+    ...matchSkillSlashSuggestions(query, skills, SLASH_MENU_SKILL_LIMIT).map((skill) => ({
+      kind: "skill" as const,
+      skill,
+    })),
   ];
 }
 
-function insertSlashCommandText(
-  editor: Editor,
-  text: string,
-  range: { from: number; to: number },
-) {
+function insertSlashCommandText(editor: Editor, text: string, range: { from: number; to: number }) {
   editor
     .chain()
     .focus()

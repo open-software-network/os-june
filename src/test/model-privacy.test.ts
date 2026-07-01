@@ -10,8 +10,7 @@ import type { VeniceModelDto } from "../lib/tauri";
 
 // Excess-property checks would reject a `traits` field on the narrowed
 // capabilities-only param, so route test shapes through a Partial helper.
-const model = (partial: Partial<VeniceModelDto>): Partial<VeniceModelDto> =>
-  partial;
+const model = (partial: Partial<VeniceModelDto>): Partial<VeniceModelDto> => partial;
 
 describe("model privacy labels", () => {
   it("uses e2ee mode over private — the stronger claim wins", () => {
@@ -29,22 +28,15 @@ describe("model privacy labels", () => {
   });
 
   it("reads the e2ee signal from privacy, traits, or capabilities", () => {
-    expect(modelPrivacyBadge({ privacy: "e2ee", traits: [] })?.mode).toBe(
+    expect(modelPrivacyBadge({ privacy: "e2ee", traits: [] })?.mode).toBe("e2ee");
+    expect(modelPrivacyBadge({ privacy: "", traits: ["e2ee"] })?.mode).toBe("e2ee");
+    expect(modelPrivacyBadge({ privacy: "", traits: [], capabilities: ["E2EE"] })?.mode).toBe(
       "e2ee",
     );
-    expect(modelPrivacyBadge({ privacy: "", traits: ["e2ee"] })?.mode).toBe(
-      "e2ee",
-    );
-    expect(
-      modelPrivacyBadge({ privacy: "", traits: [], capabilities: ["E2EE"] })
-        ?.mode,
-    ).toBe("e2ee");
   });
 
   it("uses private mode for private models even when they are anonymized", () => {
-    expect(
-      modelPrivacyBadge({ privacy: "private", traits: ["anonymized"] }),
-    ).toMatchObject({
+    expect(modelPrivacyBadge({ privacy: "private", traits: ["anonymized"] })).toMatchObject({
       mode: "private",
       label: "Private mode",
       description: PRIVATE_MODEL_DESCRIPTION,
@@ -52,9 +44,7 @@ describe("model privacy labels", () => {
   });
 
   it("uses anonymous mode for anonymous-only models", () => {
-    expect(
-      modelPrivacyBadge({ privacy: "anonymous", traits: [] }),
-    ).toMatchObject({
+    expect(modelPrivacyBadge({ privacy: "anonymous", traits: [] })).toMatchObject({
       mode: "anonymous",
       label: "Anonymous mode",
       description: ANONYMOUS_MODEL_DESCRIPTION,
@@ -62,27 +52,19 @@ describe("model privacy labels", () => {
   });
 
   it("does not label models without a privacy signal", () => {
-    expect(modelPrivacyBadge({ privacy: "OpenAI", traits: ["prompt"] })).toBe(
-      undefined,
-    );
+    expect(modelPrivacyBadge({ privacy: "OpenAI", traits: ["prompt"] })).toBe(undefined);
   });
 });
 
 describe("model image input support", () => {
   it("is true when the authoritative supportsVision capability is present", () => {
-    expect(modelSupportsImageInput({ capabilities: ["supportsVision"] })).toBe(
-      true,
-    );
+    expect(modelSupportsImageInput({ capabilities: ["supportsVision"] })).toBe(true);
   });
 
   it("recognizes a real vision model (Fable/Kimi shape: vision + tools)", () => {
     expect(
       modelSupportsImageInput({
-        capabilities: [
-          "supportsFunctionCalling",
-          "supportsVision",
-          "supportsMultipleImages",
-        ],
+        capabilities: ["supportsFunctionCalling", "supportsVision", "supportsMultipleImages"],
       }),
     ).toBe(true);
   });
@@ -100,20 +82,14 @@ describe("model image input support", () => {
       ),
     ).toBe(false);
     expect(
-      modelSupportsImageInput(
-        model({ capabilities: [], traits: ["multimodal", "uncensored"] }),
-      ),
+      modelSupportsImageInput(model({ capabilities: [], traits: ["multimodal", "uncensored"] })),
     ).toBe(false);
   });
 
   it("is false for a non-vision model (GLM 5.2 shape: tools, no vision)", () => {
     expect(
       modelSupportsImageInput({
-        capabilities: [
-          "supportsFunctionCalling",
-          "supportsReasoning",
-          "supportsWebSearch",
-        ],
+        capabilities: ["supportsFunctionCalling", "supportsReasoning", "supportsWebSearch"],
       }),
     ).toBe(false);
   });
