@@ -432,9 +432,12 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: src-tauri/target
-          key: tauri-cargo-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          # runner.os is "Linux" on every ubuntu image, but target artifacts
+          # built against ubuntu-latest system libs are not usable on the
+          # pinned 22.04 image; key by image so the caches never mix.
+          key: tauri-cargo-target-ubuntu-22.04-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
-            tauri-cargo-target-${{ runner.os }}-
+            tauri-cargo-target-ubuntu-22.04-
 
       - name: Bundle Hermes runtime
         run: ./scripts/bundle-hermes-runtime-linux.sh
