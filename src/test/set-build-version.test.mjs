@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareBuildVersion,
   isBuildVersion,
   setBuildVersionContents,
 } from "../../scripts/set-build-version.mjs";
@@ -50,5 +51,32 @@ describe("setBuildVersionContents", () => {
 
   it("throws on an invalid version rather than writing garbage", () => {
     expect(() => setBuildVersionContents(files, "1.2")).toThrow();
+  });
+});
+
+describe("compareBuildVersion", () => {
+  it("orders rc iterations of the same base", () => {
+    expect(compareBuildVersion("0.0.25-rc.2", "0.0.25-rc.1")).toBe(1);
+    expect(compareBuildVersion("0.0.25-rc.1", "0.0.25-rc.2")).toBe(-1);
+    expect(compareBuildVersion("0.0.25-rc.10", "0.0.25-rc.9")).toBe(1);
+  });
+
+  it("treats a clean base as greater than its prereleases", () => {
+    expect(compareBuildVersion("0.0.25", "0.0.25-rc.9")).toBe(1);
+    expect(compareBuildVersion("0.0.25-rc.9", "0.0.25")).toBe(-1);
+  });
+
+  it("orders across bases before rc number", () => {
+    expect(compareBuildVersion("0.0.26-rc.1", "0.0.25-rc.9")).toBe(1);
+    // A lower base still loses even with a higher rc number.
+    expect(compareBuildVersion("0.0.25-rc.9", "0.0.26-rc.1")).toBe(-1);
+  });
+
+  it("reports equality for identical versions", () => {
+    expect(compareBuildVersion("0.0.25-rc.2", "0.0.25-rc.2")).toBe(0);
+  });
+
+  it("throws on an unparseable operand", () => {
+    expect(() => compareBuildVersion("0.0.25-rc.2", "garbage")).toThrow();
   });
 });

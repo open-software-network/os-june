@@ -16,6 +16,37 @@ export function isBuildVersion(version) {
   return typeof version === "string" && BUILD_VERSION_RE.test(version);
 }
 
+export function parseBuildVersion(version) {
+  const match = BUILD_VERSION_RE.exec(String(version));
+  if (!match) return undefined;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    // A clean release outranks every prerelease of the same base (semver:
+    // 0.0.25 > 0.0.25-rc.9), so model "no -rc" as +Infinity; an -rc.N sorts by N.
+    rc: match[5] === undefined ? Infinity : Number(match[5]),
+  };
+}
+
+// Orders build versions the same way the updater does (rc.1 < rc.2 < ... < base).
+// Returns -1/0/1. Unlike bump-version.mjs's compareSemver, this understands the
+// `-rc.N` prerelease, so it can gate the rc channel against going backward.
+export function compareBuildVersion(left, right) {
+  const a = parseBuildVersion(left);
+  const b = parseBuildVersion(right);
+  if (!a || !b) {
+    throw new Error(
+      `Cannot compare invalid build versions: "${left}" vs "${right}".`,
+    );
+  }
+  for (const key of ["major", "minor", "patch", "rc"]) {
+    if (a[key] > b[key]) return 1;
+    if (a[key] < b[key]) return -1;
+  }
+  return 0;
+}
+
 export function setBuildVersionContents(files, version) {
   if (!isBuildVersion(version)) {
     throw new Error(
