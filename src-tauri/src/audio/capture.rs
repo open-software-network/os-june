@@ -463,15 +463,29 @@ pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
 /// later consumes it via [`take_pending_recording`].
 pub fn stage_finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
     let finished = finish_capture(session_id)?;
-    if let Ok(mut pending) = PENDING_RECORDINGS.lock() {
-        pending.insert(finished.session_id.clone(), finished.clone());
-    }
+    // Recover from a poisoned lock rather than dropping `finished`. finish_capture
+    // has already consumed ACTIVE_RECORDING, so this staged clone is the only
+    // remaining handle to the finalized recording. Skipping the insert (or
+    // propagating an error, which drops `finished`) would strand the captured
+    // audio: `finish_recording`'s fallback would re-run finish_capture against an
+    // already-consumed session and fail.
+    pending_recordings().insert(finished.session_id.clone(), finished.clone());
     Ok(finished)
 }
 
 /// Remove a staged recording awaiting trim review, if one exists for the session.
 pub fn take_pending_recording(session_id: &str) -> Option<FinishedRecording> {
-    PENDING_RECORDINGS.lock().ok()?.remove(session_id)
+    pending_recordings().remove(session_id)
+}
+
+/// Lock the pending-recordings store, recovering from a poisoned lock. The store
+/// only maps session ids to finalized recordings, so a panic elsewhere cannot
+/// leave it in a state that makes recovery unsafe. Recovering keeps a staged
+/// recording reachable even after such a panic, so captured audio is never lost.
+fn pending_recordings() -> std::sync::MutexGuard<'static, HashMap<String, FinishedRecording>> {
+    PENDING_RECORDINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {
