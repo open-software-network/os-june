@@ -488,29 +488,32 @@ describe("AppSettings", () => {
         />,
       );
 
-      const trigger = () => screen.getByRole("button", { name: "Accent color" });
-      expect(trigger()).toHaveTextContent("Clay");
+      // The accessible name carries the current selection so screen readers
+      // announce the active accent, not just the static "Accent color" label.
+      const trigger = (label: string) =>
+        screen.getByRole("button", { name: `Accent color: ${label}` });
+      expect(trigger("Clay")).toHaveTextContent("Clay");
 
       // Pick a non-default accent from the shared select popover.
-      fireEvent.click(trigger());
+      fireEvent.click(trigger("Clay"));
       fireEvent.click(screen.getByRole("option", { name: "Rose" }));
       act(() => {
         vi.advanceTimersByTime(320);
       });
 
       expect(localStorage.getItem("os-june:brand")).toBe("rose");
-      expect(trigger()).toHaveTextContent("Rose");
+      expect(trigger("Rose")).toHaveTextContent("Rose");
 
       // Re-selecting the default from the list is the reset (no separate
       // button), mirroring how the language picker's "Auto-detect" works.
-      fireEvent.click(trigger());
+      fireEvent.click(trigger("Rose"));
       fireEvent.click(screen.getByRole("option", { name: "Clay" }));
       act(() => {
         vi.advanceTimersByTime(320);
       });
 
       expect(localStorage.getItem("os-june:brand")).toBe("clay");
-      expect(trigger()).toHaveTextContent("Clay");
+      expect(trigger("Clay")).toHaveTextContent("Clay");
     } finally {
       vi.useRealTimers();
     }

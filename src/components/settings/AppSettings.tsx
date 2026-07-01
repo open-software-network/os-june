@@ -988,7 +988,10 @@ export function AppSettings({
                           color: preset.value,
                         }))}
                         placeholder="Clay"
-                        ariaLabel="Accent color"
+                        ariaLabel={`Accent color: ${
+                          BRAND_PRESETS.find((preset) => preset.id === brand)?.label ??
+                          BRAND_PRESETS[0].label
+                        }`}
                         onChange={(id) => {
                           setBrand(id as BrandId);
                           setStoredBrand(id as BrandId);

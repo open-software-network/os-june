@@ -594,7 +594,10 @@ export function Sidebar({
       // rows don't flood the default Quick actions list. The general tab
       // hosts Appearance, so its search text carries those terms too.
       ...(normalized
-        ? SETTINGS_TABS.filter((tab) => !HIDDEN_SETTINGS_TABS.has(tab.id)).map(
+        ? SETTINGS_TABS.filter(
+            (tab) =>
+              !HIDDEN_SETTINGS_TABS.has(tab.id) && !(account.localDev && tab.id === "billing"),
+          ).map(
             (tab): CommandPaletteItem => ({
               id: `quick:settings-${tab.id}`,
               label: `Settings -> ${tab.label}`,
@@ -618,6 +621,7 @@ export function Sidebar({
       { title: "Quick actions", items: quickItems },
     ].filter((group) => group.items.length > 0);
   }, [
+    account.localDev,
     agentSessions,
     commandQuery,
     notes,
