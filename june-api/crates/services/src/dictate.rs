@@ -63,8 +63,6 @@ impl DictateService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
-        // Flat-estimate mode — see the matching comment in note_transcribe.rs.
-        let estimate = Credits(self.flat_estimate_credits);
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -92,6 +90,9 @@ impl DictateService {
                 receipt: zero_receipt(),
             });
         }
+        // Hold covers the already-known price, floored at the flat estimate —
+        // see the matching comment in note_transcribe.rs.
+        let estimate = Credits(actual.0.max(self.flat_estimate_credits));
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),

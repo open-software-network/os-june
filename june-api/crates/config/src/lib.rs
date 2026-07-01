@@ -31,7 +31,8 @@ pub struct AppConfig {
     /// into the served model pickers. A model absent here is rejected at the
     /// `/image/generate` boundary (`model_not_priced`), so the settings picker
     /// must only offer models listed here. `$1 = 1000 credits`; values are the
-    /// Venice per-image cost with margin (e.g. SD3.5 costs ~$0.01, charged 20).
+    /// Venice per-image cost with margin (e.g. SD3.5 costs about $0.01,
+    /// charged 20).
     #[serde(default = "default_image_pricing")]
     pub image_pricing: BTreeMap<String, u64>,
 }
@@ -408,13 +409,18 @@ struct TextModelFallback {
 /// reached at startup so metered charges still settle. The catalog carries the
 /// authoritative numbers and extends over this on every boot. Split out of
 /// `AppConfig::default` to keep that constructor under the line limit.
+///
+/// Usage credit prices include June's 1.2x retail multiplier over upstream
+/// cost. `$1 = 1000 credits`.
 fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     let mut pricing = BTreeMap::new();
     pricing.insert(
         "gpt-4o-mini-transcribe".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(1_000_000),
+            // OpenAI lists ASR prices per MINUTE ($0.003/min for mini);
+            // converted per second with the 1.2x retail multiplier.
+            credits_per_million_seconds: Some(60_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -422,7 +428,9 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             display_name: "GPT-4o mini transcribe".to_string(),
             description: Some("Fast OpenAI speech-to-text model.".to_string()),
             privacy: Some("anonymized".to_string()),
-            pricing: Some(serde_json::json!({ "display": "$0.001/sec audio" })),
+            // Matches what `models.rs::price_description` derives from the
+            // credit price above (raw metadata only — the API recomputes it).
+            pricing: Some(serde_json::json!({ "display": "$0.00006 per second audio" })),
             context_tokens: Some(16_000),
             traits: vec!["prompt".to_string()],
             capabilities: Vec::new(),
@@ -432,7 +440,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         "nvidia/parakeet-tdt-0.6b-v3".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(100_000),
+            credits_per_million_seconds: Some(120_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Venice,
@@ -455,8 +463,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-2",
             display_name: "GLM 5.2",
-            input_credits_per_million_tokens: 1_750,
-            output_credits_per_million_tokens: 5_500,
+            input_credits_per_million_tokens: 2_100,
+            output_credits_per_million_tokens: 6_600,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -469,8 +477,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "kimi-k2-6",
             display_name: "Kimi K2.6",
-            input_credits_per_million_tokens: 850,
-            output_credits_per_million_tokens: 4_660,
+            input_credits_per_million_tokens: 1_020,
+            output_credits_per_million_tokens: 5_592,
             context_tokens: 256_000,
             // Kimi K2.6 is natively multimodal (Venice `supportsVision`), so it
             // is the image-input fallback the frontend switches to when an image
@@ -486,8 +494,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-1",
             display_name: "GLM 5.1",
-            input_credits_per_million_tokens: 1_750,
-            output_credits_per_million_tokens: 5_500,
+            input_credits_per_million_tokens: 2_100,
+            output_credits_per_million_tokens: 6_600,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -500,8 +508,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5",
             display_name: "GLM 5",
-            input_credits_per_million_tokens: 1_000,
-            output_credits_per_million_tokens: 3_200,
+            input_credits_per_million_tokens: 1_200,
+            output_credits_per_million_tokens: 3_840,
             context_tokens: 198_000,
             capabilities: &["supportsFunctionCalling"],
         },
@@ -857,6 +865,19 @@ mod tests {
         config
     }
 
+    fn packaged_config_toml() -> AppConfig {
+        use figment::{
+            Figment,
+            providers::{Format, Serialized, Toml},
+        };
+        let toml_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.toml");
+        Figment::new()
+            .merge(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::file(toml_path))
+            .extract::<AppConfig>()
+            .unwrap_or_default()
+    }
+
     #[test]
     fn default_kimi_declares_vision_but_glm_does_not() {
         // Kimi K2.6 is the image-input fallback the app switches to, so it must
@@ -890,16 +911,7 @@ mod tests {
         // Docker image, so it is what `/models` serves when the live Venice
         // catalog is unreachable. It must agree that Kimi is a vision model, or
         // the image-attach fallback breaks in the packaged build (JUN-165).
-        use figment::{
-            Figment,
-            providers::{Format, Serialized, Toml},
-        };
-        let toml_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.toml");
-        let config = Figment::new()
-            .merge(Serialized::defaults(AppConfig::default()))
-            .merge(Toml::file(toml_path))
-            .extract::<AppConfig>()
-            .unwrap_or_default();
+        let config = packaged_config_toml();
         // A TOML-only model proves config.toml actually merged, so a failed
         // load can't make the vision assertion below pass on the default alone.
         assert!(
@@ -915,6 +927,49 @@ mod tests {
         assert!(
             kimi_declares_vision,
             "packaged config.toml must declare supportsVision for kimi-k2-6"
+        );
+    }
+
+    #[test]
+    fn packaged_config_toml_includes_usage_margin() {
+        let config = packaged_config_toml();
+
+        // Per-second conversions of OpenAI's per-MINUTE ASR list prices
+        // ($0.003/min mini, $0.006/min 4o) with the 1.2x retail multiplier.
+        assert_eq!(
+            config
+                .pricing
+                .get("gpt-4o-mini-transcribe")
+                .and_then(|model| model.credits_per_million_seconds),
+            Some(60_000)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("gpt-4o-transcribe")
+                .and_then(|model| model.credits_per_million_seconds),
+            Some(120_000)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("zai-org-glm-5-2")
+                .and_then(|model| model.input_credits_per_million_tokens),
+            Some(2_100)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("zai-org-glm-5-2")
+                .and_then(|model| model.output_credits_per_million_tokens),
+            Some(6_600)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("nvidia-nemotron-3-nano-30b-a3b")
+                .and_then(|model| model.input_credits_per_million_tokens),
+            Some(84)
         );
     }
 
