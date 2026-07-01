@@ -4660,7 +4660,8 @@ input:focus-visible,
  * offer a one-tap switch to an image-capable model (the send-time fallback in
  * unsupportedImageInputPrompt still degrades gracefully if the user sends
  * anyway). */
-.agent-composer-image-warning {
+.agent-composer-image-warning,
+.agent-composer-size-warning {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
@@ -4672,13 +4673,33 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.agent-composer-image-warning-icon {
+.agent-composer-size-warning {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.agent-composer-image-warning-icon,
+.agent-composer-size-warning-icon {
   flex: 0 0 auto;
   color: var(--muted-foreground);
 }
 
-.agent-composer-image-warning-text {
+.agent-composer-image-warning-text,
+.agent-composer-size-warning-text {
   min-width: 0;
+}
+
+.agent-composer-size-warning-text {
+  flex: 1 1 240px;
+}
+
+.agent-composer-size-warning-actions {
+  display: inline-flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  margin-left: auto;
 }
 
 .agent-composer-image-warning-action {

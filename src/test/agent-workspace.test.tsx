@@ -5285,6 +5285,175 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
   });
 
+  it("warns before sending composer text that exceeds the active model context", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 16,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "long-context",
+          name: "Long context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 256,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await screen.findByRole("button", { name: "Model: Short context" });
+    await user.type(screen.getByRole("textbox"), "a".repeat(100));
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 16 token context window.",
+    );
+    expect(screen.getByRole("button", { name: "Proceed" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Trim input" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to Long context" })).toBeInTheDocument();
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Proceed" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
+    );
+  });
+
+  it("switches to a larger-context model from the oversize composer warning", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 16,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "long-context",
+          name: "Long context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 256,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await screen.findByRole("button", { name: "Model: Short context" });
+    await user.type(screen.getByRole("textbox"), "a".repeat(100));
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await user.click(await screen.findByRole("button", { name: "Switch to Long context" }));
+
+    expect(await screen.findByRole("button", { name: "Model: Long context" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText(/This message is about/)).not.toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
+    );
+  });
+
+  it("counts pending attachment size in the oversize composer estimate", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 100,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: ["/Users/alex/Desktop/large-notes.txt"],
+      },
+    });
+
+    expect(await screen.findByText("large-notes.txt")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 100 token context window.",
+    );
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+  });
+
   it("prefers the suggested vision model over the first eligible one (JUN-165)", async () => {
     // The banner action is a one-tap fix, and with several image-capable models
     // it prefers a curated suggested pick (Kimi K2.6) rather than the

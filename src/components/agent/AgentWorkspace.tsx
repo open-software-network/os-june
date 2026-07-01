@@ -280,6 +280,7 @@ const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
 const QUEUED_STEER_RETRY_DELAY_MS = 300;
 const RESTORED_QUEUED_STEER_RECONCILE_DELAY_MS = 1000;
 const RESTORED_QUEUED_STEER_BUSY_RECONCILE_DELAY_MS = 3000;
+const COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4;
 
 // What the user reads instead of the gateway's "session busy" rejection. No
 // action in the pill — the composer's send slot already shows stop while
@@ -761,6 +762,14 @@ type PreparedComposerSubmission = {
   typedMessage: string;
 };
 
+type ComposerInputSizeWarning = {
+  signature: string;
+  estimatedTokens: number;
+  contextLimit: number;
+  modelName: string;
+  switchModel?: VeniceModelDto;
+};
+
 type ComposerDraftSnapshot = {
   text: string;
   category: ReportCategory | null;
@@ -1214,6 +1223,10 @@ export function AgentWorkspace({
   // Confirmation that a submitted issue report reached the June team; shown
   // in the composer notice slot until dismissed by the next send.
   const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
+  const [composerSizeWarningSignature, setComposerSizeWarningSignature] = useState<string | null>(
+    null,
+  );
+  const composerSizeProceedSignatureRef = useRef<string | null>(null);
   // Honest result of the last model switch (feature 10): scoped to the session
   // it acted on so it survives background refreshes and disappears when the
   // user moves to another conversation. A null sessionId means it reports a
@@ -1867,6 +1880,22 @@ export function AgentWorkspace({
     composerHasPendingImage &&
     !!resolvedGenerationModel &&
     !modelSupportsImageInput(resolvedGenerationModel);
+  const composerInputSizeWarning = useMemo(
+    () =>
+      oversizedComposerInputWarning({
+        message: draft.trim(),
+        category,
+        attachments,
+        model: generationModel,
+        models: generationModels,
+      }),
+    [attachments, category, draft, generationModel, generationModels],
+  );
+  const visibleComposerSizeWarning =
+    composerSizeWarningSignature &&
+    composerInputSizeWarning?.signature === composerSizeWarningSignature
+      ? composerInputSizeWarning
+      : null;
   const selectedHermesMessages = useMemo(() => {
     if (!selectedHermesSessionId) return [];
     return [
@@ -2815,6 +2844,19 @@ export function AgentWorkspace({
   }, [attachments]);
 
   useEffect(() => {
+    const signature = composerInputSizeWarning?.signature ?? null;
+    if (composerSizeWarningSignature && composerSizeWarningSignature !== signature) {
+      setComposerSizeWarningSignature(null);
+    }
+    if (
+      composerSizeProceedSignatureRef.current &&
+      composerSizeProceedSignatureRef.current !== signature
+    ) {
+      composerSizeProceedSignatureRef.current = null;
+    }
+  }, [composerInputSizeWarning?.signature, composerSizeWarningSignature]);
+
+  useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const installListener = async (eventName: string) => {
@@ -3155,6 +3197,14 @@ export function AgentWorkspace({
     )
       return;
     if (message && (await handleBuiltinComposerSlashCommand(message))) return;
+    if (
+      composerInputSizeWarning &&
+      composerSizeProceedSignatureRef.current !== composerInputSizeWarning.signature
+    ) {
+      setComposerSizeWarningSignature(composerInputSizeWarning.signature);
+      composerEditorRef.current?.focus();
+      return;
+    }
     // June is mid-run: send the message straight into the loop via steer so
     // June picks it up after the current tool call (adds context without
     // interrupting — Escape or Stop interrupts instead). Plain-text follow-ups
@@ -3348,6 +3398,26 @@ export function AgentWorkspace({
       // is dropped and can land on the always-on-top agent HUD.
       window.requestAnimationFrame(() => composerEditorRef.current?.focus());
     }
+  }
+
+  function proceedWithOversizeComposerInput() {
+    if (!visibleComposerSizeWarning) return;
+    composerSizeProceedSignatureRef.current = visibleComposerSizeWarning.signature;
+    setComposerSizeWarningSignature(null);
+    void submit();
+  }
+
+  function trimOversizeComposerInput() {
+    setComposerSizeWarningSignature(null);
+    composerEditorRef.current?.focus();
+  }
+
+  function switchOversizeComposerModel() {
+    const switchModel = visibleComposerSizeWarning?.switchModel;
+    if (!switchModel) return;
+    setComposerSizeWarningSignature(null);
+    composerSizeProceedSignatureRef.current = null;
+    void handleSelectGenerationModel(switchModel.id);
   }
 
   function handleComposerDragOver(event: DragEvent<HTMLFormElement>) {
@@ -6058,6 +6128,47 @@ export function AgentWorkspace({
                   Switch to {preferredVisionModel.name}
                 </button>
               ) : null}
+            </div>
+          ) : null}
+          {visibleComposerSizeWarning ? (
+            <div className="agent-composer-size-warning" role="status">
+              <IconExclamationTriangle
+                size={14}
+                aria-hidden
+                className="agent-composer-size-warning-icon"
+              />
+              <span className="agent-composer-size-warning-text">
+                This message is about{" "}
+                {formatComposerTokenCount(visibleComposerSizeWarning.estimatedTokens)} tokens, over{" "}
+                {visibleComposerSizeWarning.modelName}'s{" "}
+                {formatComposerTokenCount(visibleComposerSizeWarning.contextLimit)} token context
+                window.
+              </span>
+              <span className="agent-composer-size-warning-actions">
+                <button
+                  type="button"
+                  className="agent-composer-notice-button"
+                  onClick={proceedWithOversizeComposerInput}
+                >
+                  Proceed
+                </button>
+                <button
+                  type="button"
+                  className="agent-composer-notice-button"
+                  onClick={trimOversizeComposerInput}
+                >
+                  Trim input
+                </button>
+                {visibleComposerSizeWarning.switchModel ? (
+                  <button
+                    type="button"
+                    className="agent-composer-notice-button"
+                    onClick={switchOversizeComposerModel}
+                  >
+                    Switch to {visibleComposerSizeWarning.switchModel.name}
+                  </button>
+                ) : null}
+              </span>
             </div>
           ) : null}
           <ComposerEditor
@@ -10770,6 +10881,115 @@ function artifactsFromFilesystemSnapshot(
   return (snapshot?.roots ?? []).flatMap((root) =>
     filesystemEntriesToArtifacts(root.entries, root.label),
   );
+}
+
+function oversizedComposerInputWarning({
+  message,
+  category,
+  attachments,
+  model,
+  models,
+}: {
+  message: string;
+  category: ReportCategory | null;
+  attachments: AgentAttachment[];
+  model?: VeniceModelDto;
+  models: VeniceModelDto[];
+}): ComposerInputSizeWarning | null {
+  const contextLimit = positiveContextTokens(model?.contextTokens);
+  if (!contextLimit) return null;
+
+  const displayContent = promptWithAttachments(message, attachments);
+  const routedContent = category ? categoryPrompt(category, displayContent) : displayContent;
+  const attachmentBytes = attachments.reduce(
+    (total, attachment) => total + nonNegativeAttachmentSize(attachment.size),
+    0,
+  );
+  const estimatedTokens = Math.ceil(
+    (routedContent.length + attachmentBytes) / COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN,
+  );
+  if (estimatedTokens <= contextLimit) return null;
+
+  const attachmentSignature = attachments
+    .map((attachment) =>
+      [
+        attachment.id,
+        attachment.path,
+        attachment.name,
+        attachment.size ?? "",
+        attachment.attach.status,
+      ].join("|"),
+    )
+    .join("\n");
+  const signature = [
+    model?.id ?? "",
+    contextLimit,
+    category ?? "",
+    estimatedTokens,
+    composerInputHash(`${routedContent}\n${attachmentSignature}`),
+  ].join(":");
+
+  return {
+    signature,
+    estimatedTokens,
+    contextLimit,
+    modelName: model?.name?.trim() || "the selected model",
+    switchModel: largerContextModel({
+      currentModel: model,
+      estimatedTokens,
+      currentContextLimit: contextLimit,
+      models,
+    }),
+  };
+}
+
+function positiveContextTokens(value?: number) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function nonNegativeAttachmentSize(value?: number | null) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
+}
+
+function largerContextModel({
+  currentModel,
+  estimatedTokens,
+  currentContextLimit,
+  models,
+}: {
+  currentModel?: VeniceModelDto;
+  estimatedTokens: number;
+  currentContextLimit: number;
+  models: VeniceModelDto[];
+}) {
+  const candidates = models
+    .filter((model) => model.id !== currentModel?.id)
+    .filter((model) => modelSupportsTools(model))
+    .map((model) => ({ model, contextTokens: positiveContextTokens(model.contextTokens) }))
+    .filter(
+      (item): item is { model: VeniceModelDto; contextTokens: number } =>
+        item.contextTokens !== undefined && item.contextTokens > currentContextLimit,
+    );
+  const sufficient = candidates
+    .filter((item) => item.contextTokens >= estimatedTokens)
+    .sort((a, b) => a.contextTokens - b.contextTokens);
+  if (sufficient.length) return sufficient[0].model;
+  return candidates.sort((a, b) => b.contextTokens - a.contextTokens)[0]?.model;
+}
+
+function composerInputHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function formatComposerTokenCount(value: number) {
+  return value.toLocaleString();
 }
 
 function promptWithAttachments(message: string, attachments: AgentAttachment[]): string {
