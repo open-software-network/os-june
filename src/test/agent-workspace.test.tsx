@@ -215,13 +215,13 @@ describe("AgentWorkspace", () => {
     // Feature 14: the artifact store is a process-wide singleton; drop the
     // session rows these tests touch so one test's artifacts don't leak into
     // the next.
-    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+    for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       hermesArtifactStore.clearSession(id);
     }
     // Feature 04: the pending-action store is the same kind of process-wide
     // singleton. Clear these tests' session ids so a prior test's "Needs you"
     // rows (now keyed by the durable stored id) don't leak into the next.
-    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+    for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       pendingActionStore.resolveSession(id);
     }
     window.sessionStorage.clear();
