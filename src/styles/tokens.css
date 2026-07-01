@@ -196,23 +196,11 @@
   --destructive: oklch(57% 0.22 27);
   --destructive-soft: oklch(95% 0.025 27);
   --success: oklch(48% 0.12 150);
-  --border: color-mix(
-    in oklch,
-    oklch(86.91% 0.0015 84.59),
-    var(--brand-wash) 5%
-  );
-  --input: color-mix(
-    in oklch,
-    oklch(86.91% 0.0015 84.59),
-    var(--brand-wash) 5%
-  );
+  --border: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
+  --input: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
   --ring: oklch(75% 0.0015 84.59);
 
-  --sidebar: color-mix(
-    in oklch,
-    oklch(95.13% 0.0015 84.59),
-    var(--brand-wash) 4%
-  );
+  --sidebar: color-mix(in oklch, oklch(95.13% 0.0015 84.59), var(--brand-wash) 4%);
   --sidebar-foreground: oklch(27.24% 0.0015 84.59);
   --sidebar-accent: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand-wash) 5%);
   --sidebar-border: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
@@ -341,27 +329,15 @@
    * near-black. Surfaces mix from --brand-wash (chroma-capped) for the same
    * reason as light: clay shouldn't over-cream the greys. Foregrounds + alpha
    * hairlines stay neutral, and --border/--input/--ring stay pure white alpha. */
-  --background: color-mix(
-    in oklch,
-    oklch(0.165 0.0015 84.59),
-    var(--brand-wash) 6%
-  );
+  --background: color-mix(in oklch, oklch(0.165 0.0015 84.59), var(--brand-wash) 6%);
   --foreground: oklch(0.985 0.0015 84.59);
   --card: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand-wash) 6%);
   --card-foreground: oklch(0.985 0.0015 84.59);
-  --popover: color-mix(
-    in oklch,
-    oklch(0.195 0.0015 84.59),
-    var(--brand-wash) 6%
-  );
+  --popover: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand-wash) 6%);
   --popover-foreground: oklch(0.985 0.0015 84.59);
   --primary: oklch(0.86 0.008 84.59);
   --primary-foreground: oklch(0.216 0.0015 84.59);
-  --secondary: color-mix(
-    in oklch,
-    oklch(0.268 0.0015 84.59),
-    var(--brand-wash) 7%
-  );
+  --secondary: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --secondary-foreground: oklch(0.985 0.0015 84.59);
   --muted: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --muted-foreground: oklch(0.709 0.0015 84.59);
@@ -374,11 +350,7 @@
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(1 0 0 / 18%);
 
-  --sidebar: color-mix(
-    in oklch,
-    oklch(0.14 0.0015 84.59),
-    var(--brand-wash) 6%
-  );
+  --sidebar: color-mix(in oklch, oklch(0.14 0.0015 84.59), var(--brand-wash) 6%);
   --sidebar-foreground: oklch(0.985 0.0015 84.59);
   --sidebar-accent: color-mix(in oklch, oklch(0.22 0.0015 84.59), var(--brand-wash) 7%);
   --sidebar-border: oklch(1 0 0 / 8%);

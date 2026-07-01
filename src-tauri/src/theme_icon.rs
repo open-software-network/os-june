@@ -14,7 +14,7 @@ fn icon_bytes(brand: &str) -> &'static [u8] {
         "plum" => include_bytes!("../icons/themed/icon-plum.png"),
         // Clay is the default. "amber" was dropped and folded into clay, so it
         // (and anything unrecognized) falls back to the clay icon.
-        "clay" | "amber" | _ => include_bytes!("../icons/themed/icon-clay.png"),
+        _ => include_bytes!("../icons/themed/icon-clay.png"),
     }
 }
 

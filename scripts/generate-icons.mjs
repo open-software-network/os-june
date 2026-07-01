@@ -80,21 +80,15 @@ function readBrandPresets() {
   const source = readFileSync(BRAND_TS, "utf8");
   const block = /BRAND_PRESETS\s*[^=]*=\s*\[([\s\S]*?)\]\s*;/.exec(source);
   if (!block) {
-    throw new Error(
-      `Could not find BRAND_PRESETS array in ${BRAND_TS}. Did the shape change?`,
-    );
+    throw new Error(`Could not find BRAND_PRESETS array in ${BRAND_TS}. Did the shape change?`);
   }
-  const entryRe =
-    /id:\s*["']([^"']+)["'][^}]*?value:\s*["'](#[0-9a-fA-F]{6})["']/g;
+  const entryRe = /id:\s*["']([^"']+)["'][^}]*?value:\s*["'](#[0-9a-fA-F]{6})["']/g;
   const presets = [];
-  let match;
-  while ((match = entryRe.exec(block[1])) !== null) {
+  for (const match of block[1].matchAll(entryRe)) {
     presets.push({ id: match[1], value: match[2].toLowerCase() });
   }
   if (presets.length === 0) {
-    throw new Error(
-      `Parsed BRAND_PRESETS but found no id/value pairs in ${BRAND_TS}.`,
-    );
+    throw new Error(`Parsed BRAND_PRESETS but found no id/value pairs in ${BRAND_TS}.`);
   }
   return presets;
 }
@@ -106,9 +100,7 @@ function hexToRgb(hex) {
 
 function rgbToHex([r, g, b]) {
   const clamp = (x) => Math.max(0, Math.min(255, Math.round(x)));
-  return `#${[r, g, b]
-    .map((c) => clamp(c).toString(16).padStart(2, "0"))
-    .join("")}`;
+  return `#${[r, g, b].map((c) => clamp(c).toString(16).padStart(2, "0")).join("")}`;
 }
 
 function rgbToHsl([r, g, b]) {
@@ -146,11 +138,7 @@ function hslToRgb([h, s, l]) {
   };
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
-  return [
-    hue2rgb(p, q, h + 1 / 3) * 255,
-    hue2rgb(p, q, h) * 255,
-    hue2rgb(p, q, h - 1 / 3) * 255,
-  ];
+  return [hue2rgb(p, q, h + 1 / 3) * 255, hue2rgb(p, q, h) * 255, hue2rgb(p, q, h - 1 / 3) * 255];
 }
 
 function shiftLightness(hex, delta) {
@@ -171,9 +159,7 @@ function renderSvgToPng(svgPath, destPath, size) {
       { shell: process.platform === "win32", stdio: "pipe", encoding: "utf8" },
     );
     if (result.status !== 0) {
-      throw new Error(
-        `tauri icon failed for ${svgPath}:\n${result.stderr || result.stdout}`,
-      );
+      throw new Error(`tauri icon failed for ${svgPath}:\n${result.stderr || result.stdout}`);
     }
     const rendered = join(outDir, `${size}x${size}.png`);
     if (!existsSync(rendered)) {
@@ -209,9 +195,7 @@ function generateThemedIcons(presets) {
   for (const { id, value } of presets) {
     const light = shiftLightness(value, LIGHT_OFFSET);
     const dark = shiftLightness(value, DARK_OFFSET);
-    const svg = template
-      .replaceAll("{{ACCENT_LIGHT}}", light)
-      .replaceAll("{{ACCENT_DARK}}", dark);
+    const svg = template.replaceAll("{{ACCENT_LIGHT}}", light).replaceAll("{{ACCENT_DARK}}", dark);
 
     const svgDir = mkdtempSync(join(tmpdir(), "june-themed-svg-"));
     const svgFile = join(svgDir, `icon-${id}.svg`);
@@ -220,9 +204,7 @@ function generateThemedIcons(presets) {
       writeFileSync(svgFile, svg);
       renderSvgToPng(svgFile, destPng, THEMED_SIZE);
       written.add(`icon-${id}.png`);
-      console.log(
-        `Themed dock icon: icon-${id}.png  (${value} -> ${light} / ${dark})`,
-      );
+      console.log(`Themed dock icon: icon-${id}.png  (${value} -> ${light} / ${dark})`);
     } finally {
       rmSync(svgDir, { recursive: true, force: true });
     }
@@ -264,9 +246,7 @@ function verifyThemedIcons(presets) {
       problems.push(`icon-${id}.png is ${width}x${height}, want ${THEMED_SIZE}`);
       continue;
     }
-    console.log(
-      `Verified icon-${id}.png: ${width}x${height}, ${statSync(png).size} bytes`,
-    );
+    console.log(`Verified icon-${id}.png: ${width}x${height}, ${statSync(png).size} bytes`);
   }
   if (problems.length > 0) {
     throw new Error(`Themed icon verification failed:\n  ${problems.join("\n  ")}`);
@@ -275,9 +255,7 @@ function verifyThemedIcons(presets) {
 
 function main() {
   const presets = readBrandPresets();
-  console.log(
-    `Presets from brand.ts: ${presets.map((p) => `${p.id} ${p.value}`).join(", ")}`,
-  );
+  console.log(`Presets from brand.ts: ${presets.map((p) => `${p.id} ${p.value}`).join(", ")}`);
   generateBaseIcons();
   generateThemedIcons(presets);
   verifyThemedIcons(presets);

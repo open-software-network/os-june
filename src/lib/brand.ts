@@ -46,9 +46,7 @@ const LEGACY_BRAND_IDS: Record<string, BrandId> = { blue: "ocean", amber: "clay"
 
 function presetFor(id: string | null) {
   const canonical = (id && LEGACY_BRAND_IDS[id]) ?? id;
-  return (
-    BRAND_PRESETS.find((preset) => preset.id === canonical) ?? BRAND_PRESETS[0]
-  );
+  return BRAND_PRESETS.find((preset) => preset.id === canonical) ?? BRAND_PRESETS[0];
 }
 
 export function getStoredBrand(): BrandId {

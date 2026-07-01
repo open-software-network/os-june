@@ -145,11 +145,7 @@ export function Select({
         onClick={toggle}
       >
         {selected?.color ? (
-          <span
-            className="select-swatch"
-            style={{ background: selected.color }}
-            aria-hidden
-          />
+          <span className="select-swatch" style={{ background: selected.color }} aria-hidden />
         ) : null}
         <span>{selected?.label ?? placeholder}</span>
         <IconChevronDownSmall size={14} />
