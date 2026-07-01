@@ -416,6 +416,7 @@ pub async fn process_saved_source_audio(
                     artifact_id: artifact_id.clone(),
                     source: source.clone(),
                     source_path: audio_path.clone(),
+                    extraction_start_ms: 0,
                     start_ms: 0,
                     end_ms: 0,
                     turn_index: index as i64,
