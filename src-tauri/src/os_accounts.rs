@@ -1226,7 +1226,7 @@ async fn store_tokens(pair: &TokenPair) -> Result<(), AppError> {
     store_platform_tokens(json).await
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 async fn store_platform_tokens(json: String) -> Result<(), AppError> {
     let service = keychain_service().to_string();
     tokio::task::spawn_blocking(move || {
@@ -1237,11 +1237,11 @@ async fn store_platform_tokens(json: String) -> Result<(), AppError> {
     .map_err(|e| AppError::new("keychain_write_failed", e.to_string()))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 async fn store_platform_tokens(_json: String) -> Result<(), AppError> {
     Err(AppError::new(
         "secure_token_storage_unavailable",
-        "Secure token storage is only available on macOS and Windows.",
+        "Secure token storage is only available on macOS, Windows, and Linux.",
     ))
 }
 
@@ -1253,7 +1253,7 @@ async fn load_tokens() -> Option<TokenPair> {
     load_platform_tokens().await
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 async fn load_platform_tokens() -> Option<TokenPair> {
     let service = keychain_service().to_string();
     let raw = tokio::task::spawn_blocking(move || {
@@ -1266,7 +1266,7 @@ async fn load_platform_tokens() -> Option<TokenPair> {
     serde_json::from_str(&raw).ok()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 async fn load_platform_tokens() -> Option<TokenPair> {
     None
 }
@@ -1283,7 +1283,7 @@ async fn clear_tokens() {
     clear_platform_tokens().await;
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 async fn clear_platform_tokens() {
     let service = keychain_service().to_string();
     let _ = tokio::task::spawn_blocking(move || {
@@ -1294,7 +1294,7 @@ async fn clear_platform_tokens() {
     .await;
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 async fn clear_platform_tokens() {}
 
 fn keychain_service() -> &'static str {

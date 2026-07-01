@@ -8,11 +8,13 @@ import { fileURLToPath } from "node:url";
 const platformBundles = {
   darwin: ["app", "dmg"],
   win32: ["nsis"],
+  linux: ["appimage", "deb"],
 };
 
 const platformConfigs = {
   darwin: "src-tauri/tauri.macos.conf.json",
   win32: "src-tauri/tauri.windows.conf.json",
+  linux: "src-tauri/tauri.linux.conf.json",
 };
 
 const rawUserArgs = process.argv.slice(2);
@@ -70,6 +72,9 @@ function platformForTarget(targetTriple) {
   }
   if (targetTriple.includes("apple-darwin")) {
     return "darwin";
+  }
+  if (targetTriple.includes("linux")) {
+    return "linux";
   }
   return undefined;
 }
