@@ -3095,6 +3095,56 @@ describe("AgentWorkspace", () => {
     }
   });
 
+  it("keeps turn actions inside the message row so hover reveal cannot move the transcript", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "Draft the launch plan",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here is the launch plan.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const userTurn = (await screen.findByText("Draft the launch plan")).closest("article");
+    const assistantTurn = (await screen.findByText("Here is the launch plan.")).closest("article");
+
+    // Both action rows are always-mounted DESCENDANTS of their message
+    // article — never flow siblings in the timeline column that could open
+    // the inter-turn gap. Out-of-flow positioning (absolute at 100% block
+    // offset, opacity-only reveal) is the CSS contract pinned in
+    // agent-turn-actions-css.test.ts; together the two tests guarantee the
+    // reveal cannot change transcript spacing.
+    for (const turn of [userTurn, assistantTurn]) {
+      expect(turn).not.toBeNull();
+      expect((turn as HTMLElement).querySelector(".agent-turn-actions")).not.toBeNull();
+    }
+
+    // The reveal itself is pure CSS (:hover flips opacity/pointer-events), so
+    // hovering must not mutate the transcript DOM at all — there is no React
+    // path that could insert or resize anything between messages.
+    const timeline = (userTurn as HTMLElement).parentElement as HTMLElement;
+    const observer = new MutationObserver(() => {});
+    observer.observe(timeline, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    fireEvent.mouseOver(userTurn as HTMLElement);
+    fireEvent.mouseOver(assistantTurn as HTMLElement);
+    const mutations = observer.takeRecords();
+    observer.disconnect();
+    expect(mutations).toEqual([]);
+  });
+
   it("resumes a torn-down runtime and retries when branching answers session not found", async () => {
     mocks.listHermesSessionMessages.mockResolvedValue([
       {

@@ -3830,12 +3830,13 @@ input:focus-visible,
   inline-size: var(--sp-10);
   block-size: var(--sp-10);
   padding: 0;
-  /* Same register as the composer box right below it: its hairline border and
-   * soft shadow, with the brand-colored arrow tying it to the active accent. */
+  /* The composer box's hairline border, but the big soft system shadow — the
+   * pill floats over transcript prose, so it needs real elevation to lift off
+   * the text underneath it. */
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
   background: var(--popover);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-lg);
   color: var(--brand);
   line-height: 1;
   cursor: pointer;

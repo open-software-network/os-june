@@ -27,10 +27,10 @@ describe("agent scroll-to-latest styles", () => {
     expect(rule).toContain("bottom: calc(100% + var(--sp-2));");
     expect(rule).toContain("border-radius: var(--r-pill);");
     expect(rule).toContain("background: var(--popover);");
-    // Same register as the composer box below it (hairline border, soft
-    // shadow), with the brand arrow tying it to the active theme.
+    // The composer box's hairline border, the big system shadow for real
+    // elevation over prose, and the brand arrow tying it to the active theme.
     expect(rule).toContain("border: 1px solid var(--border-subtle);");
-    expect(rule).toContain("box-shadow: var(--shadow-sm);");
+    expect(rule).toContain("box-shadow: var(--shadow-lg);");
     expect(rule).toContain("color: var(--brand);");
     // Inert at rest: no stray click target or tab stop when hidden.
     expect(rule).toContain("opacity: 0;");
