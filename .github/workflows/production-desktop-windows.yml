@@ -11,8 +11,11 @@ on:
 permissions:
   contents: read
 
+# Shared with the other platform release workflows: each downloads the
+# release's latest.json, builds, then re-uploads it with its own platform key
+# merged in, so concurrent runs would clobber each other's updater entry.
 concurrency:
-  group: production-desktop-windows
+  group: production-desktop-release-assets
   cancel-in-progress: false
 
 env:
