@@ -398,6 +398,49 @@ describe("App shortcuts", () => {
     }
   });
 
+  it("opens a report draft from the account menu while a session is active", async () => {
+    const user = userEvent.setup();
+    const activeSession = {
+      id: "session-1",
+      title: "Existing session",
+      preview: "Existing session preview",
+      last_active: now,
+    };
+
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [activeSession],
+            selectedSessionId: undefined,
+            workingSessionIds: [],
+            waitingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    for (const [menuItem, chipLabel] of [
+      ["Report a bug", "Bug report"],
+      ["Send feedback", "Feedback"],
+      ["Request a feature", "Feature request"],
+    ] as const) {
+      await user.click(await screen.findByRole("button", { name: "Existing session" }));
+      expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /account menu/i }));
+      await user.click(screen.getByRole("menuitem", { name: menuItem }));
+
+      expect(await screen.findByText(chipLabel)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    }
+  });
+
   it("keeps a newly started chat attached to its tab before sessions hydrate", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "MacIntel",

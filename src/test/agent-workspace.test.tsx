@@ -686,6 +686,43 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
   });
 
+  it("seeds a report chip while the current session is still running", async () => {
+    const user = userEvent.setup();
+    let resolveSubmit: (() => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return new Promise((resolve) => {
+          resolveSubmit = () => resolve({});
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "keep working");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByRole("button", { name: "Stop June" })).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { category: "feedback" },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Feedback")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+
+    act(() => resolveSubmit?.());
+  });
+
   it("wraps a submitted issue report for June and waits for explicit send", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
