@@ -48,12 +48,30 @@ const mocks = vi.hoisted(() => ({
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
   deleteDictionaryEntry: vi.fn(),
+  juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
+  getReleaseChannel: vi.fn(),
+  setReleaseChannel: vi.fn(),
+  reconcileToStable: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
 
+vi.mock("../lib/updater", () => ({
+  getReleaseChannel: mocks.getReleaseChannel,
+  setReleaseChannel: mocks.setReleaseChannel,
+  reconcileToStable: mocks.reconcileToStable,
+}));
+
+// Pin a prerelease build so the leave-rc reconcile offer can be exercised; the
+// About meta rows read these same mocked constants.
+vi.mock("../app/build-info", () => ({
+  APP_VERSION: "9.9.9-rc.2",
+  APP_COMMIT_HASH: "abc1234",
+}));
+
 vi.mock("../lib/tauri", () => ({
+  JUNE_COMMUNITY_URL: "https://t.me/osjune",
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
   localAudioFileSrc: mocks.localAudioFileSrc,
@@ -87,6 +105,7 @@ vi.mock("../lib/tauri", () => ({
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
   deleteDictionaryEntry: mocks.deleteDictionaryEntry,
+  juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
 }));
 
@@ -175,12 +194,17 @@ describe("AppSettings", () => {
       language,
     }));
     mocks.listDictionaryEntries.mockResolvedValue([]);
+    mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
     mocks.juneOpenVerifyPage.mockResolvedValue(undefined);
+    mocks.getReleaseChannel.mockResolvedValue("stable");
+    mocks.setReleaseChannel.mockResolvedValue(undefined);
+    mocks.reconcileToStable.mockResolvedValue(null);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
         generationModel: "zai-org-glm-5-2",
+        imageModel: "venice-sd35",
         veniceApiKeyConfigured: false,
       },
     });
@@ -322,18 +346,21 @@ describe("AppSettings", () => {
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
+      imageModel: mode === "image" ? modelId : "venice-sd35",
       veniceApiKeyConfigured: false,
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
       transcriptionProvider: "venice",
       transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: "zai-org-glm-5-2",
+      imageModel: "venice-sd35",
       veniceApiKeyConfigured: true,
     });
     mocks.clearVeniceApiKey.mockResolvedValue({
       transcriptionProvider: "venice",
       transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: "zai-org-glm-5-2",
+      imageModel: "venice-sd35",
       veniceApiKeyConfigured: false,
     });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
@@ -465,6 +492,68 @@ describe("AppSettings", () => {
       screen.getByRole("progressbar", { name: "Usage remaining" }),
     ).toHaveAttribute("aria-valuenow", "64");
     expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
+  });
+
+  it("shows an accent reset button after choosing a non-default accent", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.queryByRole("button", {
+          name: "Reset accent color to default",
+        }),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Accent color: Rose. Change" }),
+      );
+      fireEvent.click(screen.getByRole("radio", { name: "Clay" }));
+
+      act(() => {
+        vi.advanceTimersByTime(316);
+      });
+
+      expect(localStorage.getItem("os-june:brand")).toBe("clay");
+      expect(
+        screen.getByRole("button", { name: "Accent color: Clay. Change" }),
+      ).toBeInTheDocument();
+      const resetButton = screen.getByRole("button", {
+        name: "Reset accent color to default",
+      });
+      const accentButton = screen.getByRole("button", {
+        name: "Accent color: Clay. Change",
+      });
+      expect(
+        resetButton.compareDocumentPosition(accentButton) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      fireEvent.click(resetButton);
+
+      expect(localStorage.getItem("os-june:brand")).toBe("rose");
+      expect(
+        screen.getByRole("button", { name: "Accent color: Rose. Change" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: "Reset accent color to default",
+        }),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to subscription plan credits when balance has no usage percentage", async () => {
@@ -1761,6 +1850,52 @@ describe("AppSettings", () => {
     );
   });
 
+  it("shows the image generation section and saves the default image model", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    // The section renders and the saved default is shown.
+    expect(
+      screen.getByRole("heading", { name: "Image generation" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Venice SD3.5")).toBeInTheDocument();
+
+    // The picker opens with the curated image options (no backend fetch).
+    await user.click(
+      screen.getByRole("button", { name: "Change image model" }),
+    );
+    expect(
+      await screen.findByRole("option", { name: /Venice SD3\.5/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /FLUX 2 Pro/ }),
+    ).toBeInTheDocument();
+    // Image models are not fetched from the catalog.
+    expect(mocks.listVeniceModels).not.toHaveBeenCalledWith("image");
+
+    await user.click(screen.getByRole("option", { name: /FLUX 2 Pro/ }));
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith("image", "flux-2-pro");
+    // The picker closes after a selection.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /FLUX 2 Pro/ }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it("blocks selecting a text model that cannot use tools", async () => {
     // June's agent works through tool calls — a tool-less model (Venice's
     // E2EE models) bricks it, so the picker must not let it be selected.
@@ -1850,6 +1985,100 @@ describe("AppSettings", () => {
     expect(onCheckForUpdates).toHaveBeenCalledOnce();
   });
 
+  it("switches the release channel from About", async () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    // The control loads the persisted channel before becoming interactive.
+    const rcOption = await screen.findByRole("button", {
+      name: "Release candidate",
+    });
+    await user.click(rcOption);
+
+    expect(mocks.setReleaseChannel).toHaveBeenCalledWith("rc");
+  });
+
+  it("offers a stable reconcile when leaving rc on a prerelease build", async () => {
+    mocks.getReleaseChannel.mockResolvedValue("rc");
+    mocks.reconcileToStable.mockResolvedValue({ version: "9.9.8" });
+    const onReconcileToStable = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+        onReconcileToStable={onReconcileToStable}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    const stableOption = await screen.findByRole("button", { name: "Stable" });
+    await user.click(stableOption);
+
+    expect(mocks.setReleaseChannel).toHaveBeenCalledWith("stable");
+    // The bespoke in-context confirm names the exact stable on offer plus the
+    // base the rc will reach once promoted (9.9.9-rc.2 -> 9.9.9).
+    const confirm = await screen.findByText(/Installs 9\.9\.8/);
+    expect(confirm).toHaveTextContent("9.9.9");
+
+    await user.click(screen.getByRole("button", { name: "Switch to stable" }));
+    expect(onReconcileToStable).toHaveBeenCalledOnce();
+  });
+
+  it("skips the reconcile offer when stable has nothing to install", async () => {
+    mocks.getReleaseChannel.mockResolvedValue("rc");
+    mocks.reconcileToStable.mockResolvedValue(null);
+    const onReconcileToStable = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+        onReconcileToStable={onReconcileToStable}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    const stableOption = await screen.findByRole("button", { name: "Stable" });
+    await user.click(stableOption);
+
+    await waitFor(() => expect(mocks.reconcileToStable).toHaveBeenCalled());
+    expect(screen.queryByText(/Switch to stable now/)).not.toBeInTheDocument();
+    expect(onReconcileToStable).not.toHaveBeenCalled();
+  });
+
   it("opens the server attestation page from About through Rust", async () => {
     // Not an anchor: the webview drops target="_blank" navigations, so the
     // button must invoke the june_open_verify_page command instead.
@@ -1872,6 +2101,30 @@ describe("AppSettings", () => {
       await screen.findByRole("button", { name: "Verify server" }),
     );
     expect(mocks.juneOpenVerifyPage).toHaveBeenCalledOnce();
+  });
+
+  it("opens the June community page from About through Rust", async () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+    expect(await screen.findByText("Community")).toBeInTheDocument();
+    expect(screen.getByText(/t\.me\/osjune/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Join community" }));
+
+    expect(mocks.juneOpenCommunityPage).toHaveBeenCalledOnce();
   });
 
   it("replays onboarding from About in dev builds", async () => {

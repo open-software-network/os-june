@@ -86,6 +86,17 @@ function greet(name: string) {
 | Beta   | 2     |
 `;
 
+// A self-contained sample image for the "Generated image" gallery section — an
+// inline SVG data URL so the catalog stays dependency-free (no fixture file, no
+// network). Shape matches what generatedImageDataUrl produces at runtime.
+const SAMPLE_IMAGE_DATA_URL =
+  "data:image/svg+xml;utf8," +
+  "<svg xmlns='http://www.w3.org/2000/svg' width='320' height='220'>" +
+  "<rect width='100%25' height='100%25' fill='%23e7ddcf'/>" +
+  "<circle cx='160' cy='110' r='56' fill='%23c08457'/>" +
+  "<text x='50%25' y='195' text-anchor='middle' font-family='sans-serif' " +
+  "font-size='14' fill='%237a6a55'>sample image</text></svg>";
+
 export function buildAgentChatGallery(): AgentChatGallerySection[] {
   return [
     {
@@ -140,6 +151,36 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           rootLabel: "Home",
           size: 1_280_000,
         },
+      ],
+    },
+    {
+      label: "Generated image",
+      description:
+        "The /image slash command result, inline in the assistant turn. Running shows a shimmer placeholder; complete shows the image (click to enlarge) with a download action; error shows the failure message.",
+      turns: [
+        assistantTurn(
+          "image-running",
+          [{ type: "image", status: "running", prompt: "a fox reading a book" }],
+          "running",
+        ),
+        assistantTurn("image-complete", [
+          {
+            type: "image",
+            status: "complete",
+            prompt: "a fox reading a book",
+            name: "generated-image-1.png",
+            path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/generated-image-1.png",
+            dataUrl: SAMPLE_IMAGE_DATA_URL,
+          },
+        ]),
+        assistantTurn("image-error", [
+          {
+            type: "image",
+            status: "error",
+            prompt: "a fox reading a book",
+            error: "June returned an image it can't display.",
+          },
+        ]),
       ],
     },
     {

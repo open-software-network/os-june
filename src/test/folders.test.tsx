@@ -87,7 +87,7 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(screen.getByText("June")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "June" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Meeting notes" }),
     ).toBeInTheDocument();

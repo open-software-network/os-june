@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
+  generateImage: vi.fn(),
   getAgentTask: vi.fn(),
   getHermesBridgeSkill: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
@@ -94,9 +95,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  // The pending skill-writes tray loads through the Rust bridge via this named
+  // `invoke`. A quiet stub keeps these workspace tests off that path.
+  invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
+  generateImage: mocks.generateImage,
   getAgentTask: mocks.getAgentTask,
   getHermesBridgeSkill: mocks.getHermesBridgeSkill,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
@@ -228,6 +233,12 @@ describe("AgentWorkspace", () => {
     // the next.
     for (const id of ["session-1", "session-2", "runtime-session-2"]) {
       hermesArtifactStore.clearSession(id);
+    }
+    // Feature 04: the pending-action store is the same kind of process-wide
+    // singleton. Clear these tests' session ids so a prior test's "Needs you"
+    // rows (now keyed by the durable stored id) don't leak into the next.
+    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+      pendingActionStore.resolveSession(id);
     }
     window.sessionStorage.clear();
     window.localStorage.clear();
@@ -5770,21 +5781,24 @@ describe("AgentWorkspace", () => {
       await screen.findByText("GLM 5.2 can't read images."),
     ).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: "Switch to a vision model" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Switch to Qwen VL" }));
 
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "qwen-vl",
+      ),
     );
     // The switch picks the image-capable model and keeps the dropped image.
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
   });
 
-  it("switches to the first eligible vision model when several qualify", async () => {
-    // The banner action is a one-tap fix: with several image-capable models it
-    // switches straight to the first eligible one rather than opening the
-    // generic (non-vision-scoped) picker.
+  it("prefers the suggested vision model over the first eligible one (JUN-165)", async () => {
+    // The banner action is a one-tap fix, and with several image-capable models
+    // it prefers a curated suggested pick (Kimi K2.6) rather than the
+    // alphabetically-first vision model — otherwise it lands on an arbitrary
+    // model like Claude Fable 5. Qwen VL is listed first here to prove the
+    // preference overrides list order; no non-vision-scoped picker is opened.
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessions.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
@@ -5812,8 +5826,8 @@ describe("AgentWorkspace", () => {
         },
         {
           provider: "venice",
-          id: "gpt-vision",
-          name: "GPT Vision",
+          id: "kimi-k2-6",
+          name: "Kimi K2.6",
           modelType: "text",
           privacy: "private",
           traits: [],
@@ -5839,11 +5853,15 @@ describe("AgentWorkspace", () => {
     });
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
     await user.click(
-      screen.getByRole("button", { name: "Switch to a vision model" }),
+      screen.getByRole("button", { name: "Switch to Kimi K2.6" }),
     );
-    // Lands on the first eligible vision model (Qwen VL), no picker dialog.
+    // Lands on the suggested vision model (Kimi), not first-listed Qwen VL, and
+    // no picker dialog opens.
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "kimi-k2-6",
+      ),
     );
     expect(
       screen.queryByRole("dialog", { name: "Choose text model" }),
@@ -5928,7 +5946,7 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Switch to a vision model" }),
+      screen.queryByRole("button", { name: /^Switch to / }),
     ).not.toBeInTheDocument();
   });
 
@@ -6119,6 +6137,50 @@ describe("AgentWorkspace", () => {
       expect.any(Uint8Array),
     );
     expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+  });
+
+  it("generates an image from the /image slash command and renders it inline in the thread", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "generated-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "/image a red bicycle");
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    // The image renders inline in the assistant turn (loader -> image), shown
+    // from the generated bytes directly — NOT dropped into the composer as an
+    // attachment chip. Its alt text is the prompt, so it is also accessible.
+    const image = await screen.findByRole("img", { name: "a red bicycle" });
+    expect(image).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=");
+    expect(image.closest(".agent-generated-image-frame")).not.toBeNull();
+    expect(document.querySelector(".agent-attachment-chip")).toBeNull();
+    // The prompt went to generation (model defaulted server-side); the decoded
+    // bytes were imported into the workspace.
+    expect(mocks.generateImage).toHaveBeenCalledWith(
+      "a red bicycle",
+      undefined,
+    );
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
+      expect.stringMatching(/^generated-image-\d+\.png$/),
+      expect.any(Uint8Array),
+    );
   });
 
   it("chooses one preferred image when paste exposes multiple representations", async () => {

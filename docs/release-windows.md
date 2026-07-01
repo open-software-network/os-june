@@ -44,16 +44,21 @@ the update artifact that Tauri verifies before installation.
 
 ## Cutting a production Windows release
 
-Run the macOS production release first:
+Cut the macOS release first (build an RC, then promote it):
 
 ```text
-GitHub Actions -> production-desktop-release -> Run workflow -> version X.Y.Z
+GitHub Actions -> rc-desktop-release -> Run workflow (base-version X.Y.Z, rc-number N)
+GitHub Actions -> promote-desktop-release -> Run workflow (rc-version X.Y.Z-rc.N)
 ```
 
-That workflow owns the semver bump, `main` push, release creation, macOS assets,
-and initial `latest.json`.
+Promote owns the clean semver `X.Y.Z`, the `release: vX.Y.Z` bump committed
+directly to `main` by the release bot, the stable release creation, macOS assets,
+and initial `latest.json`. It also records the source commit in a
+`stable-build.json` asset on the `vX.Y.Z` release. The Windows workflow reads that
+commit and rebuilds the same tree, so it does not depend on the bump and can run
+as soon as promote finishes.
 
-After it succeeds, run:
+Once promote has published `vX.Y.Z`, run:
 
 ```text
 GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z
@@ -61,11 +66,12 @@ GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z
 
 The Windows workflow performs the release steps in order:
 
-1. Checks out `main`.
+1. Reads `stable-build.json` from the `vX.Y.Z` release to learn the promoted
+   source commit, then checks that commit out (not `main`).
 2. Validates required Windows signing, updater, release, and production runtime
    secrets.
-3. Verifies `package.json`, `src-tauri/tauri.conf.json`, and
-   `src-tauri/Cargo.toml` already match the requested version.
+3. Stamps the clean `X.Y.Z` version into the checked-out tree so the Windows
+   build matches the promoted macOS version.
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
    `open-software-network/os-june-releases`.
 5. Runs `pnpm lint` and `pnpm test`.

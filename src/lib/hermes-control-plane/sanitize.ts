@@ -10,8 +10,21 @@
 /** Keys whose values are masked wherever they appear in a payload. Matched
  * case-insensitively against each object key. Covers the obvious secret-bearing
  * names; widen here (one place) if Hermes introduces a new sensitive field. */
+// NOTE: deliberately NO `value` here. A field literally named `value` is far
+// more often a benign tool result (`{result:{value:42}}`, `numericValue`) than
+// a credential, and masking it surfaced `[redacted]` on common tool cards and
+// in the artifact store. Credential-shaped values under benign keys are still
+// caught by the value-shape backstop (`isLikelySecretValue`), so dropping the
+// key match does not widen leakage for the general case.
+//
+// The one place a raw secret rides under `value` is an outbound `secret.respond`
+// frame (the user's answer to a `secret.request`). A SHORT answer (a 4-digit
+// OTP) is below the value-shape threshold, so it would slip through here. That
+// path supplies `value` via `extraSensitiveKeys` (see `sanitizePayload` options)
+// so the answer is masked in that context only, without globally over-redacting
+// every benign `value` field on tool cards and in the artifact store.
 const SENSITIVE_KEY_PATTERN =
-  /(token|api[_-]?key|secret|password|passphrase|private[_-]?key|credential|authorization|value|pin|otp)/i;
+  /(token|api[_-]?key|secret|password|passphrase|private[_-]?key|credential|authorization|pin|otp)/i;
 
 const REDACTED = "[redacted]";
 
@@ -25,13 +38,24 @@ const MAX_DEPTH = 8;
  * so a bearer token assigned to `headers` is still caught. Never mutates the
  * input; never throws.
  */
-export function sanitizePayload(value: unknown): unknown {
-  return sanitize(value, 0, new WeakSet());
+export function sanitizePayload(
+  value: unknown,
+  options?: { readonly extraSensitiveKeys?: readonly string[] },
+): unknown {
+  const extra = options?.extraSensitiveKeys?.length
+    ? new Set(options.extraSensitiveKeys.map((key) => key.toLowerCase()))
+    : undefined;
+  return sanitize(value, 0, new WeakSet(), extra);
 }
 
 /** Whether a key name should have its value masked. Exported so debug tooling
- * can highlight the same fields it redacts. */
-export function isSensitiveKey(key: string): boolean {
+ * can highlight the same fields it redacts. `extra` carries context-specific
+ * key names (lowercased) that are sensitive only for a particular caller. */
+export function isSensitiveKey(
+  key: string,
+  extra?: ReadonlySet<string>,
+): boolean {
+  if (extra?.has(key.toLowerCase())) return true;
   return SENSITIVE_KEY_PATTERN.test(key);
 }
 
@@ -39,6 +63,7 @@ function sanitize(
   value: unknown,
   depth: number,
   seen: WeakSet<object>,
+  extra?: ReadonlySet<string>,
 ): unknown {
   if (value === null || value === undefined) return value;
 
@@ -63,17 +88,17 @@ function sanitize(
 
   let out: unknown;
   if (Array.isArray(value)) {
-    out = value.map((item) => sanitize(item, depth + 1, seen));
+    out = value.map((item) => sanitize(item, depth + 1, seen, extra));
   } else {
     const obj: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(
       value as Record<string, unknown>,
     )) {
-      if (isSensitiveKey(key)) {
+      if (isSensitiveKey(key, extra)) {
         obj[key] = REDACTED;
         continue;
       }
-      obj[key] = sanitize(entry, depth + 1, seen);
+      obj[key] = sanitize(entry, depth + 1, seen, extra);
     }
     out = obj;
   }

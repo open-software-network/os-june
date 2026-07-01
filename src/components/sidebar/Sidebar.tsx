@@ -6,13 +6,17 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconRobot2 } from "central-icons/IconRobot2";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
+import { IconBox2 } from "central-icons/IconBox2";
 import { IconBrain2 } from "central-icons/IconBrain2";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
+import { IconFolderShared } from "central-icons/IconFolderShared";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconGift1 } from "central-icons/IconGift1";
+import { IconLayersThree } from "central-icons/IconLayersThree";
+import { IconMagicWand } from "central-icons/IconMagicWand";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
@@ -20,9 +24,18 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPin } from "central-icons/IconPin";
+import { IconGithub } from "central-icons/IconGithub";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
+import { IconToolbox } from "central-icons/IconToolbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
+import { IconHeartBeat } from "central-icons/IconHeartBeat";
+import { IconGauge } from "central-icons/IconGauge";
+import { IconServer1 } from "central-icons/IconServer1";
+import { IconShield } from "central-icons/IconShield";
+import { IconShieldCheck } from "central-icons/IconShieldCheck";
+import { IconStore1 } from "central-icons/IconStore1";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconShortcut } from "central-icons/IconShortcut";
 import { IconTrashCan } from "central-icons/IconTrashCan";
@@ -42,6 +55,7 @@ import {
   type AgentSessionsChangedDetail,
 } from "../agent/AgentWorkspace";
 import { CategoryIcon } from "../agent/composer/CategoryIcon";
+import { JuneWordmark } from "../brand/JuneWordmark";
 import type { ReportCategory } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -219,12 +233,77 @@ const SETTINGS_SIDEBAR_GROUPS: {
   {
     title: "AI",
     items: [
+      {
+        id: "integrations-health",
+        label: "Integrations health",
+        icon: <IconGauge size={16} />,
+      },
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
       {
         id: "skills",
         label: "Installed skills",
         icon: <IconPlugin2 size={16} />,
+      },
+      {
+        id: "external-dirs",
+        label: "External skill directories",
+        icon: <IconFolderShared size={16} />,
+      },
+      {
+        id: "skill-review",
+        label: "Pending skill changes",
+        icon: <IconShieldCheck size={16} />,
+      },
+      {
+        id: "mcp",
+        label: "MCP servers",
+        icon: <IconServer1 size={16} />,
+      },
+      {
+        id: "mcp-catalog",
+        label: "MCP catalog",
+        icon: <IconStore1 size={16} />,
+      },
+      {
+        id: "mcp-diagnostics",
+        label: "MCP diagnostics",
+        icon: <IconHeartBeat size={16} />,
+      },
+      {
+        id: "mcp-security",
+        label: "MCP security",
+        icon: <IconShield size={16} />,
+      },
+      {
+        id: "skills-hub",
+        label: "Skills hub",
+        icon: <IconArrowInbox size={16} />,
+      },
+      {
+        id: "taps",
+        label: "Team skill taps",
+        icon: <IconGithub size={16} />,
+      },
+      {
+        id: "toolsets",
+        label: "Toolsets",
+        icon: <IconToolbox size={16} />,
+      },
+      {
+        id: "bundles",
+        label: "Bundles",
+        icon: <IconLayersThree size={16} />,
+      },
+      {
+        id: "profile-builder",
+        label: "Profile builder",
+        icon: <IconMagicWand size={16} />,
+      },
+      {
+        id: "import-export",
+        label: "Import / export",
+        icon: <IconBox2 size={16} />,
       },
     ],
   },
@@ -235,6 +314,31 @@ const SETTINGS_SIDEBAR_GROUPS: {
     ],
   },
 ];
+
+/**
+ * Settings tabs introduced by the admin-surfaces PR, hidden from the nav until
+ * they're stabilized. The pre-PR tabs (General, Billing, Shortcuts, Dictation,
+ * Audio, Models, Agent, Installed skills, About) stay visible, plus External
+ * skill directories (PR-new but verified working). These are hidden, not
+ * removed: tabs, panels, and logic are all intact. Re-enable one by deleting its
+ * id here; restore the full nav by deleting this set and the `.filter` in
+ * SettingsSidebar that uses it. See docs/settings-focus-runbook.md.
+ */
+export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> =
+  new Set<SettingsTab>([
+    "skill-review",
+    "mcp",
+    "mcp-catalog",
+    "mcp-diagnostics",
+    "mcp-security",
+    "skills-hub",
+    "taps",
+    "toolsets",
+    "bundles",
+    "profile-builder",
+    "integrations-health",
+    "import-export",
+  ]);
 
 export function Sidebar({
   notes,
@@ -903,19 +1007,7 @@ export function Sidebar({
       {inSettings ? null : (
         <header className="sidebar-header">
           <a className="sidebar-brand" href="#" aria-label="June">
-            <img
-              className="sidebar-brand-img light"
-              src="/os-june-light.svg"
-              alt=""
-              height={16}
-            />
-            <img
-              className="sidebar-brand-img dark"
-              src="/os-june-dark.svg"
-              alt=""
-              height={16}
-            />
-            <span style={{ position: "absolute", left: -9999 }}>June</span>
+            <JuneWordmark className="sidebar-brand-mark" />
           </a>
           {recordingStatus ? (
             <SidebarRecordingIndicator
@@ -1459,12 +1551,17 @@ function SettingsSidebarNav({
   onSelectTab: (tab: SettingsTab) => void;
   onBack: () => void;
 }) {
-  const groups = localDev
-    ? SETTINGS_SIDEBAR_GROUPS.map((group) => ({
-        ...group,
-        items: group.items.filter((item) => item.id !== "billing"),
-      })).filter((group) => group.items.length > 0)
-    : SETTINGS_SIDEBAR_GROUPS;
+  // Hide the admin-surfaces-PR tabs until stabilized, keeping the pre-PR billing
+  // rule (billing is hidden in local dev). Empty groups drop out so their
+  // headers don't render.
+  const groups = SETTINGS_SIDEBAR_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter(
+      (item) =>
+        !HIDDEN_SETTINGS_TABS.has(item.id) &&
+        !(localDev && item.id === "billing"),
+    ),
+  })).filter((group) => group.items.length > 0);
 
   return (
     <section
@@ -1892,6 +1989,7 @@ function SidebarIdentity({
 function accountDisplayName(account: AccountStatus) {
   return (
     account.user?.displayName?.trim() ||
+    account.user?.email?.trim() ||
     account.user?.handle?.trim() ||
     "Account"
   );

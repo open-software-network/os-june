@@ -1,3 +1,4 @@
+import { modelSupportsImageInput, modelSupportsTools } from "./model-privacy";
 import type { ProviderModelMode, VeniceModelDto } from "./tauri";
 
 export type SuggestedModel = {
@@ -63,7 +64,37 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
         "Best multilingual accuracy at the same low price, with zero data retention.",
     },
   ],
+  // Image models are a curated local list (see lib/image-models.ts), not a
+  // priced catalog the picker fetches, so there is no "Suggested" subset to
+  // surface — the picker shows the full curated list.
+  image: [],
 };
+
+/**
+ * The model June switches to when the user attaches an image while a
+ * non-vision model is active. The switch must land on a model that can both
+ * read images AND run tools — a vision model without function calling would
+ * brick the agent the same way the model picker guards against — so we filter
+ * on both capabilities. Among the eligible models we prefer a curated
+ * suggested pick (Kimi K2.6 is the suggested vision model), so the one-tap fix
+ * lands on a sensible default instead of the alphabetically-first vision model
+ * (which is otherwise arbitrary — the catalog sorts by display name). If no
+ * suggested model is eligible we fall back to the first eligible catalog model
+ * so a suggested-list change can never leave the fallback empty. The target is
+ * derived entirely from live catalog capabilities: no model id is hardcoded,
+ * so a retired model can never become the fallback.
+ */
+export function preferredVisionFallbackModel(
+  models: VeniceModelDto[],
+): VeniceModelDto | undefined {
+  const eligible = models.filter(
+    (model) => modelSupportsImageInput(model) && modelSupportsTools(model),
+  );
+  const suggested = SUGGESTED_MODELS.generation
+    .map((pick) => eligible.find((model) => model.id === pick.id))
+    .find((model): model is VeniceModelDto => model !== undefined);
+  return suggested ?? eligible[0];
+}
 
 /** The curated picks that are actually present in the live catalog, in
  * curated order, with their recommendation reasons attached. */

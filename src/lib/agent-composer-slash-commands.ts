@@ -1,4 +1,4 @@
-export type BuiltinComposerSlashCommandName = "model" | "file";
+export type BuiltinComposerSlashCommandName = "model" | "file" | "image";
 
 export type BuiltinComposerSlashCommandDef = {
   name: BuiltinComposerSlashCommandName;
@@ -39,6 +39,12 @@ export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] =
       label: "File",
       description: "Attach files to this message.",
       insertText: "/file ",
+    },
+    {
+      name: "image",
+      label: "Image",
+      description: "Generate an image from a prompt.",
+      insertText: "/image ",
     },
   ];
 
@@ -169,7 +175,7 @@ export function slashModelResolutionError(
 function isBuiltinComposerSlashCommandName(
   name: string,
 ): name is BuiltinComposerSlashCommandName {
-  return name === "model" || name === "file";
+  return name === "model" || name === "file" || name === "image";
 }
 
 function normalizeSlashCommandQuery(value: string) {

@@ -12,6 +12,8 @@ use june_domain::{
 };
 use std::sync::Arc;
 
+pub const NOTE_GENERATE_PROMPT_VERSION: &str = "notes-mvp-v5";
+
 pub struct NoteGenerateServiceDeps {
     pub pricing: Arc<PricingTable>,
     pub os_accounts: Arc<dyn OsAccountsClient>,
@@ -76,7 +78,7 @@ impl NoteGenerateService {
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "note_generate:{}:{}:{}",
-            params.user_id.0, params.note_id, params.prompt_version
+            params.user_id.0, params.note_id, NOTE_GENERATE_PROMPT_VERSION
         );
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -91,7 +93,11 @@ impl NoteGenerateService {
             &params.model_id.0,
             &receipt,
         );
-        Ok(NoteGenerateOutput { generated, receipt })
+        Ok(NoteGenerateOutput {
+            generated,
+            receipt,
+            prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
+        })
     }
 }
 
@@ -114,4 +120,5 @@ pub struct NoteGenerateParams {
 pub struct NoteGenerateOutput {
     pub generated: GeneratedNote,
     pub receipt: Receipt,
+    pub prompt_version: String,
 }

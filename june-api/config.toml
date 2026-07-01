@@ -10,7 +10,7 @@ max_json_bytes = 524288
 [attestation]
 source_repo_url = "https://github.com/open-software-network/os-june"
 image_repo = "ghcr.io/open-software-network/june-api"
-trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
+trust_center_url = "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
 
 [issue_reports]
 # User-submitted issue reports are filed as os-platform Issues in the June
@@ -119,7 +119,16 @@ model_type = "text"
 display_name = "Kimi K2.6"
 privacy = "private"
 context_tokens = 256000
-capabilities = ["supportsFunctionCalling"]
+# Kimi K2.6 is natively multimodal (Venice supportsVision); it is the
+# image-input fallback the app switches to. Keep in sync with the kimi-k2-6
+# entry in default_pricing() (crates/config/src/lib.rs) so the fallback still
+# resolves to a vision model when the live Venice catalog is unreachable and
+# this packaged config is what /models serves.
+capabilities = [
+  "supportsFunctionCalling",
+  "supportsVision",
+  "supportsMultipleImages",
+]
 
 [pricing."zai-org-glm-5-1"]
 unit = "tokens"

@@ -4,6 +4,7 @@ mod agent_chat;
 mod charge_flow;
 mod dictate;
 mod error;
+mod image;
 mod note_generate;
 mod note_transcribe;
 mod pricing;
@@ -17,8 +18,10 @@ pub use dictate::{
     DictateTranscribeOutput, DictateTranscribeParams,
 };
 pub use error::ServiceError;
+pub use image::{ImageGenerateOutput, ImageGenerateParams, ImageService, ImageServiceDeps};
 pub use note_generate::{
-    NoteGenerateOutput, NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps,
+    NOTE_GENERATE_PROMPT_VERSION, NoteGenerateOutput, NoteGenerateParams, NoteGenerateService,
+    NoteGenerateServiceDeps,
 };
 pub use note_transcribe::{
     NoteTranscribeOutput, NoteTranscribeParams, NoteTranscribeService, NoteTranscribeServiceDeps,
@@ -33,8 +36,9 @@ pub use web_augment::{
 mod tests {
     use super::{
         DictateCleanupParams, DictateService, DictateServiceDeps, DictateTranscribeParams,
-        NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeParams,
-        NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, ServiceError,
+        NOTE_GENERATE_PROMPT_VERSION, NoteGenerateParams, NoteGenerateService,
+        NoteGenerateServiceDeps, NoteTranscribeParams, NoteTranscribeService,
+        NoteTranscribeServiceDeps, PricingTable, ServiceError,
     };
     use async_trait::async_trait;
     use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
@@ -113,10 +117,13 @@ mod tests {
                 RecordedCall::Charge {
                     action_token: "agt_test".to_string(),
                     credits: 40,
-                    idempotency_key: "note_generate:usr_123:note_1:v7".to_string(),
+                    idempotency_key: format!(
+                        "note_generate:usr_123:note_1:{NOTE_GENERATE_PROMPT_VERSION}"
+                    ),
                 },
             ]
         );
+        assert_eq!(output.prompt_version, NOTE_GENERATE_PROMPT_VERSION);
     }
 
     #[tokio::test]
@@ -287,6 +294,36 @@ mod tests {
         assert!(prompt.contains("markdown H1 headings"));
         assert!(prompt.contains("# Heading"));
         assert!(prompt.contains("Do not add wrapper headings"));
+    }
+
+    #[tokio::test]
+    async fn note_generate_prompt_requests_contextual_meeting_filtering() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let generator = Arc::new(RecordingGenerator::default());
+        let service = NoteGenerateService::new(NoteGenerateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                1,
+                ModelType::Text,
+            )]))),
+            os_accounts,
+            generator: generator.clone(),
+            hold_ttl_seconds: 300,
+            flat_estimate_credits: 1024,
+        });
+
+        service
+            .generate(note_generate_params())
+            .await
+            .expect("generate succeeds with happy path");
+
+        let prompt = generator.last_system_prompt().unwrap_or_default();
+        assert!(prompt.contains("Use contextual judgment like a human meeting note-taker"));
+        assert!(prompt.contains("decisions, commitments, action items"));
+        assert!(prompt.contains("Do not preserve transient logistics"));
+        assert!(prompt.contains("someone possibly being late"));
+        assert!(prompt.contains("Prefer useful meeting notes over a faithful summary"));
     }
 
     #[tokio::test]

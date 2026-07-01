@@ -571,6 +571,14 @@ pub fn june_open_verify_page() -> Result<(), AppError> {
     crate::os_accounts::open_in_browser(&crate::june_api::verify_url())
 }
 
+const JUNE_COMMUNITY_URL: &str = "https://t.me/osjune";
+
+/// Opens the June Telegram community in the default browser.
+#[tauri::command]
+pub fn june_open_community_page() -> Result<(), AppError> {
+    crate::os_accounts::open_in_browser(JUNE_COMMUNITY_URL)
+}
+
 #[tauri::command]
 pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]

@@ -91,6 +91,7 @@ import {
   hermesBridgeFileText,
   hermesAgentCliAccess,
   hermesBridgeSkills,
+  generateImage,
   hermesBridgeStatus,
   hermesBridgeToolsets,
   importHermesBridgeFile,
@@ -209,7 +210,10 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
-import { suggestedModelsForMode } from "../../lib/suggested-models";
+import {
+  preferredVisionFallbackModel,
+  suggestedModelsForMode,
+} from "../../lib/suggested-models";
 import {
   contextLabel,
   modelOptions,
@@ -243,6 +247,7 @@ import {
   resolveSlashModel,
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
+import { generateChatImage } from "../../lib/chat-image-generation";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -488,7 +493,7 @@ function sampleImageBytes(): Uint8Array {
   const context = canvas.getContext("2d");
   if (context) {
     const gradient = context.createLinearGradient(0, 0, 480, 320);
-    gradient.addColorStop(0, "#c25a33");
+    gradient.addColorStop(0, "#936862");
     gradient.addColorStop(1, "#f4e3d7");
     context.fillStyle = gradient;
     context.fillRect(0, 0, 480, 320);
@@ -1275,6 +1280,9 @@ export function AgentWorkspace({
   const attachmentsRef = useRef<AgentAttachment[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
+  // Reuses the importingFiles busy-gating (set alongside it); this flag only
+  // tailors the composer placeholder copy while an image is generating.
+  const [generatingImage, setGeneratingImage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(
@@ -1412,6 +1420,15 @@ export function AgentWorkspace({
   const pendingHermesMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
   >(pendingHermesMessages);
+  // Per-session, client-synthesized assistant turns for the `/image` slash
+  // command. The generated image never comes off the gateway message stream, so
+  // it can't ride in `pendingHermesMessages` (those are HermesSessionMessages);
+  // it lives here as a ready-built AgentChatTurn carrying the image part inline,
+  // merged into the rendered turns by createdAt. In-memory like the artifact
+  // store — survives session switches, not a full app reload.
+  const [imageTurnsBySession, setImageTurnsBySession] = useState<
+    Record<string, AgentChatTurn[]>
+  >({});
   // Per-session ordering for message fetches: the sequence handed out at
   // fetch start, and the highest sequence whose response was applied. See
   // listSessionMessagesOrdered.
@@ -2012,14 +2029,11 @@ export function AgentWorkspace({
   const generationPrivacyBadge = generationModel
     ? modelPrivacyBadge(generationModel)
     : undefined;
-  // The agent can only switch to a model that reads images AND runs tools —
-  // a vision model without function calling would brick the agent the same way
-  // modelSupportsTools guards the picker, so it can't be an escape hatch here.
-  const visionModelOptions = useMemo(
-    () =>
-      generationModels.filter(
-        (model) => modelSupportsImageInput(model) && modelSupportsTools(model),
-      ),
+  // The model the image-attach banner offers to switch to: a vision + tool
+  // capable model, preferring a curated suggested pick (Kimi K2.6) over the
+  // alphabetically-first vision model. See preferredVisionFallbackModel.
+  const preferredVisionModel = useMemo(
+    () => preferredVisionFallbackModel(generationModels),
     [generationModels],
   );
   // Mirror the send-time fallback trigger (pendingImageAttachments +
@@ -3195,8 +3209,137 @@ export function AgentWorkspace({
       return true;
     }
 
+    if (parsed.name === "image") {
+      await runImageSlashCommand(parsed.argument, commandText);
+      return true;
+    }
+
     await runFileSlashCommand(parsed.argument, commandText);
     return true;
+  }
+
+  // `/image <prompt>` renders the generated image inline in the chat as an
+  // assistant turn (loader -> image, with view + download), NOT as a composer
+  // attachment chip. It creates/uses a real session and the prompt becomes a
+  // user turn, but the model is never invoked — the image endpoint IS the whole
+  // response (see submitHermesSession's `skipPrompt`). The image model is
+  // resolved server-side from the saved default.
+  async function runImageSlashCommand(argument: string, commandText: string) {
+    const prompt = argument.trim();
+    if (!prompt) {
+      setError("Type a description after /image to generate an image.");
+      return;
+    }
+
+    // The prompt is about to become a user turn — clear the draft up front and,
+    // on a fresh session, play the hero teardown so the conversation view takes
+    // over while the session is created.
+    const heroMode = newSessionModeRef.current;
+    if (heroMode) setHeroLeaving(true);
+    clearComposerCommandDraft(commandText);
+    setError(null);
+    // Busy-gate the WHOLE flow (session create + generation) via the same
+    // importingFiles flag submit() and the send button already check, so a
+    // second Enter or /image can't launch another billable generation while this
+    // one is in flight. generatingImage only tailors the placeholder copy.
+    setImportingFiles(true);
+    setGeneratingImage(true);
+
+    let targetSessionId: string | undefined;
+    try {
+      targetSessionId = await submitHermesSession(prompt, undefined, {
+        skipPrompt: true,
+        displayContent: prompt,
+        titleContent: prompt,
+      });
+    } catch (err) {
+      if (heroMode) setHeroLeaving(false);
+      setGeneratingImage(false);
+      setImportingFiles(false);
+      setError(messageFromError(err));
+      return;
+    }
+    if (!targetSessionId) {
+      if (heroMode) setHeroLeaving(false);
+      setGeneratingImage(false);
+      setImportingFiles(false);
+      setError("Could not start an image session. Try again.");
+      return;
+    }
+    const sessionId = targetSessionId;
+
+    // Inject a running assistant turn so the loader shows immediately, ordered
+    // just after the user prompt bubble (createdAt + 1ms).
+    const turnId = `image:${sessionId}:${Date.now()}`;
+    const updateImagePart = (
+      patch: Partial<Extract<AgentChatPart, { type: "image" }>>,
+    ) =>
+      setImageTurnsBySession((current) => {
+        const turns = current[sessionId] ?? [];
+        return {
+          ...current,
+          [sessionId]: turns.map((turn) => {
+            if (turn.id !== turnId) return turn;
+            const parts = turn.parts.map((part) =>
+              part.type === "image" ? { ...part, ...patch } : part,
+            );
+            const running = parts.some(
+              (part) => part.type === "image" && part.status === "running",
+            );
+            return { ...turn, parts, status: running ? "running" : "complete" };
+          }),
+        };
+      });
+
+    setImageTurnsBySession((current) => ({
+      ...current,
+      [sessionId]: [
+        ...(current[sessionId] ?? []),
+        {
+          id: turnId,
+          role: "assistant",
+          createdAt: new Date(Date.now() + 1).toISOString(),
+          status: "running",
+          parts: [{ type: "image", status: "running", prompt }],
+        },
+      ],
+    }));
+
+    try {
+      const result = await generateChatImage(prompt, {
+        generate: (text, model) => generateImage(text, model),
+        importImageBytes: importHermesBridgeFileBytes,
+      });
+      if (result.status !== "ok") {
+        updateImagePart({ status: "error", error: result.message });
+        return;
+      }
+      updateImagePart({
+        status: "complete",
+        dataUrl: result.dataUrl,
+        path: result.file.path,
+        name: result.file.name,
+      });
+      // Mirror into the files drawer/timeline like any artifact the agent
+      // touches, so the image is reachable after it scrolls away.
+      hermesArtifactStore.recordArtifact(
+        {
+          sessionId,
+          kind: "image",
+          action: "attached",
+          path: result.file.path,
+          displayName: result.file.name,
+          previewAvailable: true,
+        },
+        hermesModeFor(sessionId),
+      );
+      void loadFilesystemSnapshot();
+    } catch (err) {
+      updateImagePart({ status: "error", error: messageFromError(err) });
+    } finally {
+      setGeneratingImage(false);
+      setImportingFiles(false);
+    }
   }
 
   async function runModelSlashCommand(argument: string, commandText: string) {
@@ -4173,8 +4316,15 @@ export function AgentWorkspace({
        * session id is known and before prompt.submit; a failed attach throws to
        * block the send so the user can retry. */
       attachments?: AgentAttachment[];
+      /** Create + select the session and add the user bubble, then stop BEFORE
+       * `prompt.submit` (the `/image` flow): the model is never invoked, and the
+       * caller renders the result itself. Returns the stored session id so the
+       * caller can attach its own turns. Forces the non-optimistic create path so
+       * the selected id is the canonical stored id (optimistic migration doesn't
+       * move the selection). */
+      skipPrompt?: boolean;
     },
-  ) {
+  ): Promise<string | undefined> {
     const displayContent = options?.displayContent ?? content;
     const titleContent = options?.titleContent ?? displayContent;
     const targetSessionId = explicitSession?.id
@@ -4232,13 +4382,14 @@ export function AgentWorkspace({
       : explicitSession?.title?.trim() ||
         explicitSession?.preview?.trim() ||
         titleFromPrompt(titleContent);
-    const optimisticSession = targetSessionId
-      ? undefined
-      : startOptimisticHermesSession({
-          displayContent,
-          title: fallbackSessionTitle,
-          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-        });
+    const optimisticSession =
+      targetSessionId || options?.skipPrompt
+        ? undefined
+        : startOptimisticHermesSession({
+            displayContent,
+            title: fallbackSessionTitle,
+            ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+          });
     let storedSessionIdForRollback: string | undefined;
     const rollbackOptimisticBeforePrompt = (err: unknown): never => {
       if (optimisticSession) {
@@ -4461,6 +4612,11 @@ export function AgentWorkspace({
         return next;
       });
     }
+    // `/image`: the session exists and the user bubble is shown — hand the id
+    // back and let the caller render the generated image. No prompt.submit, so
+    // the model is never called and no "working" loader competes with the
+    // image's own in-thread loader.
+    if (options?.skipPrompt) return storedSessionId;
     setSessionWorking(storedSessionId, true);
     setSessionWaiting(storedSessionId, false);
     dispatchAgentSessionStatus({
@@ -5834,12 +5990,19 @@ export function AgentWorkspace({
   // send (last turn is the user's) — once an assistant turn exists it carries
   // its own thinking/streaming state, so we don't double up.
   const hermesTurns = selectedHermesSessionId
-    ? mergeThinkingTurns(
-        buildHermesSessionChatTurns(
-          selectedHermesMessages,
-          liveEvents[selectedHermesSessionId] ?? [],
+    ? // Merge the `/image` overlay (client-synthesized assistant image turns)
+      // with the gateway-derived turns, ordered by createdAt. Array.sort is
+      // stable, and an image turn's createdAt is minted strictly after its user
+      // prompt, so the image always renders below the prompt that produced it.
+      [
+        ...mergeThinkingTurns(
+          buildHermesSessionChatTurns(
+            selectedHermesMessages,
+            liveEvents[selectedHermesSessionId] ?? [],
+          ),
         ),
-      )
+        ...(imageTurnsBySession[selectedHermesSessionId] ?? []),
+      ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
   const taskTurns = selectedTask
     ? mergeThinkingTurns(
@@ -5879,6 +6042,29 @@ export function AgentWorkspace({
     );
   const openArtifact = (artifact: AgentArtifact) =>
     setArtifactPanel({ view: "file", artifact });
+
+  // A `/image` result reuses the artifact view/download flow: download saves the
+  // imported workspace file; "open" enlarges it in the same file viewer any
+  // generated file uses. The image part carries its bytes inline for the
+  // thumbnail, but the affordances key off the imported path on disk.
+  const downloadGeneratedImage = (
+    part: Extract<AgentChatPart, { type: "image" }>,
+  ) => {
+    if (!part.path) return;
+    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
+      setError(messageFromError(err)),
+    );
+  };
+  const openGeneratedImage = (
+    part: Extract<AgentChatPart, { type: "image" }>,
+  ) => {
+    if (!part.path) return;
+    openArtifact({
+      name: part.name?.trim() || "Generated image",
+      path: part.path,
+      rootLabel: "Workspace",
+    });
+  };
 
   // Feature 14: open an artifact from the drawer's timeline. The timeline's
   // record (hermes-artifact-store's AgentArtifact) is a different, richer shape
@@ -6311,23 +6497,23 @@ export function AgentWorkspace({
                 {resolvedGenerationModel?.name ?? "This model"} can't read
                 images.
               </span>
-              {visionModelOptions.length ? (
+              {preferredVisionModel ? (
                 <button
                   type="button"
                   className="agent-composer-notice-button agent-composer-image-warning-action"
                   onClick={() =>
-                    // Switch straight to the first image-capable model. The
+                    // Switch straight to the preferred image-capable model. The
                     // label promises a one-tap fix, and the generic model picker
                     // isn't vision-scoped — opening it for the multi-candidate
                     // case would drop the user into an unfiltered list that
-                    // doesn't surface the eligible models. visionModelOptions is
-                    // pre-filtered to image + tool support;
-                    // handleSelectGenerationModel routes the global default vs
-                    // per-chat override.
-                    void handleSelectGenerationModel(visionModelOptions[0].id)
+                    // doesn't surface the eligible models. preferredVisionModel
+                    // is pre-filtered to image + tool support and prefers a
+                    // suggested pick; handleSelectGenerationModel routes the
+                    // global default vs per-chat override.
+                    void handleSelectGenerationModel(preferredVisionModel.id)
                   }
                 >
-                  Switch to a vision model
+                  Switch to {preferredVisionModel.name}
                 </button>
               ) : null}
             </div>
@@ -6336,11 +6522,13 @@ export function AgentWorkspace({
             ref={composerEditorRef}
             skills={skills}
             placeholder={
-              importingFiles
-                ? "Attaching file…"
-                : heroMode
-                  ? "Ask June anything, run / commands"
-                  : "Send a message"
+              generatingImage
+                ? "Generating image…"
+                : importingFiles
+                  ? "Attaching file…"
+                  : heroMode
+                    ? "Ask June anything, run / commands"
+                    : "Send a message"
             }
             onChange={(text, nextCategory) => {
               draftRef.current = text;
@@ -6461,7 +6649,7 @@ export function AgentWorkspace({
                       : "Start session"
                   }
                 >
-                  {submitting ? <Spinner /> : <IconArrowUp size={16} />}
+                  {submitting ? <Spinner /> : <IconArrowUp size={18} />}
                 </button>
               )}
             </div>
@@ -6671,6 +6859,8 @@ export function AgentWorkspace({
           onThinkingOpenChange={setThinkingOpen}
           onDownloadArtifact={downloadArtifact}
           onOpenArtifact={openArtifact}
+          onDownloadImage={downloadGeneratedImage}
+          onOpenImage={openGeneratedImage}
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
@@ -9004,6 +9194,8 @@ function AgentChatTurnRow({
   onSecret,
   onDownloadArtifact,
   onOpenArtifact,
+  onDownloadImage,
+  onOpenImage,
   onThinkingOpenChange,
   onTopUp,
   topUpLabel,
@@ -9040,6 +9232,10 @@ function AgentChatTurnRow({
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
+  /** Save a `/image` result to disk; enlarge it in the file viewer. Optional so
+   * the dev gallery can render image rows without the live bridge. */
+  onDownloadImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
+  onOpenImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
@@ -9317,16 +9513,27 @@ function AgentChatTurnRow({
               onSecret={onSecret}
             />
           ) : part.type === "notice" ? (
-            <CreditsNoticePart
-              key={`${turn.id}:notice:${index}`}
-              onTopUp={onTopUp}
-              topUpLabel={topUpLabel}
-            />
+            part.kind === "context-overflow" ? (
+              <ContextOverflowNoticePart key={`${turn.id}:notice:${index}`} />
+            ) : (
+              <CreditsNoticePart
+                key={`${turn.id}:notice:${index}`}
+                onTopUp={onTopUp}
+                topUpLabel={topUpLabel}
+              />
+            )
           ) : part.type === "steering" ? (
             <SteeringPart
               key={`${turn.id}:steering:${index}`}
               createdAt={turn.createdAt}
               part={part}
+            />
+          ) : part.type === "image" ? (
+            <AgentGeneratedImage
+              key={`${turn.id}:image:${index}`}
+              part={part}
+              onOpen={onOpenImage}
+              onDownload={onDownloadImage}
             />
           ) : null,
         )}
@@ -9667,6 +9874,24 @@ function CreditsNoticePart({
   );
 }
 
+// A turn that died because the request outgrew the model's context (or the
+// agent request-size limit) folds into this card instead of a raw "Cannot
+// compress further." error with only Copy/Branch (JUN-169). On a single
+// oversized turn there is nothing to compress, so the honest recovery is to
+// shrink the input or start fresh, not to retry as-is. No wired action yet —
+// the guidance points at the composer / branch controls already on the turn.
+function ContextOverflowNoticePart() {
+  return (
+    <InlineNotice
+      className="agent-context-overflow-notice"
+      tone="warning"
+      role="alert"
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
+      body="This message is too large for the model's context. Try attaching a smaller file, splitting it into parts, or starting a new session."
+    />
+  );
+}
+
 /** A "Steering" system item (feature 06): the instruction the user redirected
  * June toward mid-run, recorded quietly in the transcript so the conversation
  * shows what changed course. Mirrors {@link ContextCompactionPart}'s quiet,
@@ -9687,6 +9912,77 @@ function SteeringPart({
       <span className="agent-steering-text">{part.text}</span>
       <time>{relativeDate(createdAt)}</time>
     </div>
+  );
+}
+
+// The `/image` result, inline in the assistant turn. Running -> shimmer loader;
+// complete -> the image (click to enlarge in the file viewer) with a download
+// action; error -> the failure message. The bytes ride in `part.dataUrl` for an
+// instant thumbnail; open/download key off the imported workspace path.
+function AgentGeneratedImage({
+  part,
+  onOpen,
+  onDownload,
+}: {
+  part: Extract<AgentChatPart, { type: "image" }>;
+  onOpen?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
+  onDownload?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
+}) {
+  if (part.status === "running") {
+    return (
+      <div
+        className="agent-generated-image"
+        data-status="running"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="agent-generated-image-placeholder">
+          <span className="text-shimmer">Generating image…</span>
+        </div>
+      </div>
+    );
+  }
+  if (part.status === "error") {
+    return (
+      <div className="agent-generated-image" data-status="error">
+        <p className="agent-generated-image-error">
+          {part.error?.trim() || "Could not generate the image."}
+        </p>
+      </div>
+    );
+  }
+  const label = part.name?.trim() || "Generated image";
+  return (
+    <figure className="agent-generated-image" data-status="complete">
+      <button
+        type="button"
+        className="agent-generated-image-frame"
+        onClick={() => onOpen?.(part)}
+        aria-label={`Open ${label}`}
+        title="Open image"
+      >
+        {part.dataUrl ? (
+          <img src={part.dataUrl} alt={part.prompt} draggable={false} />
+        ) : null}
+      </button>
+      <figcaption className="agent-generated-image-bar">
+        <span className="agent-generated-image-name" title={label}>
+          {label}
+        </span>
+        {onDownload ? (
+          <button
+            type="button"
+            className="agent-generated-image-download"
+            onClick={() => onDownload(part)}
+            aria-label="Download image"
+            title="Download image"
+          >
+            <IconArrowInbox size={14} aria-hidden />
+            <span>Download</span>
+          </button>
+        ) : null}
+      </figcaption>
+    </figure>
   );
 }
 

@@ -858,6 +858,104 @@ dependencies = [
 ]
 
 [[package]]
+name = "june"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dotenvy",
+ "june-api",
+ "june-config",
+ "june-domain",
+ "june-providers",
+ "june-services",
+ "reqwest",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "june-api"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "june-config",
+ "june-domain",
+ "june-services",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "june-config"
+version = "0.2.0"
+dependencies = [
+ "figment",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
+name = "june-domain"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "june-providers"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "hound",
+ "jsonwebtoken",
+ "june-config",
+ "june-domain",
+ "mp4",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "june-services"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "june-config",
+ "june-domain",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1427,104 +1525,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "june"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "dotenvy",
- "reqwest",
- "june-api",
- "june-config",
- "june-domain",
- "june-providers",
- "june-services",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "june-api"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "axum",
- "pretty_assertions",
- "june-config",
- "june-domain",
- "june-services",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "june-config"
-version = "0.2.0"
-dependencies = [
- "figment",
- "pretty_assertions",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "url",
-]
-
-[[package]]
-name = "june-domain"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "june-providers"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "base64",
- "hound",
- "jsonwebtoken",
- "mp4",
- "pretty_assertions",
- "reqwest",
- "june-config",
- "june-domain",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "june-services"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "pretty_assertions",
- "june-config",
- "june-domain",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "serde"

@@ -5,7 +5,11 @@ import type {
   HermesSessionMessage,
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
-import { isInsufficientCreditsMessage } from "./errors";
+import {
+  isContextOverflowErrorSentinel,
+  isContextOverflowMessage,
+  isInsufficientCreditsMessage,
+} from "./errors";
 import {
   isScheduledRunPreamble,
   stripScheduledRunPreamble,
@@ -100,11 +104,13 @@ export type AgentChatSecretPart = {
   status: "pending" | "resolved";
 };
 
-/** A turn-level condition the user can act on (today: the turn died because
- * the balance ran out), rendered as a notice card instead of raw error text. */
+/** A turn-level condition the user can act on, rendered as a notice card
+ * instead of raw error text: `credits` (the balance ran out) or
+ * `context-overflow` (the request outgrew the model's context / the agent
+ * request-size limit and cannot be retried as-is — JUN-169). */
 export type AgentChatNoticePart = {
   type: "notice";
-  kind: "credits";
+  kind: "credits" | "context-overflow";
   text: string;
 };
 
@@ -117,6 +123,28 @@ export type AgentChatSteeringPart = {
   text: string;
 };
 
+/** A built-in image generation result (the `/image` slash command). It lives as
+ * an assistant part so the generated image renders inline in the thread — with
+ * its own loader and error states — instead of being dropped into the composer
+ * as an attachment chip. `dataUrl` is the inline preview shown directly; `path`
+ * is the imported workspace file the open/download affordances reuse (the same
+ * bridge file flow as any other artifact). Synthesized client-side: it never
+ * comes off the gateway message stream, so it carries its bytes inline. */
+export type AgentChatImagePart = {
+  type: "image";
+  status: "running" | "complete" | "error";
+  /** The prompt the user typed after `/image`. */
+  prompt: string;
+  /** Imported workspace path; set once `status === "complete"`. */
+  path?: string;
+  /** `data:<mime>;base64,…` for the inline preview; set when complete. */
+  dataUrl?: string;
+  /** Display name of the imported file; set when complete. */
+  name?: string;
+  /** User-facing failure message; set when `status === "error"`. */
+  error?: string;
+};
+
 export type AgentChatPart =
   | AgentChatTextPart
   | AgentChatReasoningPart
@@ -127,7 +155,8 @@ export type AgentChatPart =
   | AgentChatSudoPart
   | AgentChatSecretPart
   | AgentChatNoticePart
-  | AgentChatSteeringPart;
+  | AgentChatSteeringPart
+  | AgentChatImagePart;
 
 export type AgentChatTurn = {
   id: string;
@@ -241,7 +270,8 @@ export function buildHermesSessionChatTurns(
       if (content) {
         turn.parts.push(
           (turn.role === "assistant"
-            ? creditsNoticeFromTurnText(content)
+            ? (creditsNoticeFromTurnText(content) ??
+              persistedContextOverflowNotice(content))
             : undefined) ?? {
             type: "text",
             text: content,
@@ -311,6 +341,38 @@ function creditsNotice(text: string): AgentChatNoticePart | undefined {
     : undefined;
 }
 
+// A turn that died because the request outgrew the model's context (or the
+// agent request-size limit) reaches us as a raw provider/gateway error
+// ("Context length exceeded (…). Cannot compress further.", "prompt_too_long
+// …maximum context length"). Surface it as a first-class notice — on a single
+// oversized turn there is nothing to compress, so retrying as-is only loops
+// (JUN-169). Unlike a billing failure the wording never starts with "Error:",
+// so this matches the overflow phrases anywhere in the text.
+function contextOverflowNotice(text: string): AgentChatNoticePart | undefined {
+  return isContextOverflowMessage(text)
+    ? { type: "notice", kind: "context-overflow", text }
+    : undefined;
+}
+
+// Persisted/reloaded turns carry no failure flag (the stored message has no
+// status field), so only the unambiguous error sentinels may fold. An ordinary
+// saved answer that discusses "the maximum context length" must stay text, not
+// reload as a notice that drops the real answer (JUN-169). Mirrors the credits
+// path's reliance on the "Error:" text prefix for the same persisted case.
+function persistedContextOverflowNotice(
+  text: string,
+): AgentChatNoticePart | undefined {
+  return isContextOverflowErrorSentinel(text)
+    ? { type: "notice", kind: "context-overflow", text }
+    : undefined;
+}
+
+// Resolve the most specific actionable notice for a failed turn's text: a
+// billing failure first (most specific), then a context overflow.
+function turnNotice(text: string): AgentChatNoticePart | undefined {
+  return creditsNotice(text) ?? contextOverflowNotice(text);
+}
+
 // Assistant text only counts as a billing failure when it's the runtime's
 // error sentinel ("Error: <provider error>") — June talking *about* credits in
 // prose must stay ordinary text.
@@ -323,7 +385,8 @@ function creditsNoticeFromTurnText(
 function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   const notice =
     message.role === "assistant"
-      ? creditsNoticeFromTurnText(message.content)
+      ? (creditsNoticeFromTurnText(message.content) ??
+        persistedContextOverflowNotice(message.content))
       : undefined;
   return {
     id: message.id,
@@ -436,7 +499,15 @@ function appendLiveHermesEvents(
 
     if (event.type === "message.complete") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const notice = text ? creditsNoticeFromTurnText(text) : undefined;
+      const payload = event.payload as Record<string, unknown> | undefined;
+      // A billing failure is recognizable from its "Error:" text prefix; a
+      // context overflow is not, so only fold it when the turn actually failed
+      // — an ordinary sentence that mentions "context length" stays prose.
+      const failed = stringValue(payload?.status)?.toLowerCase() === "error";
+      const notice = text
+        ? (creditsNoticeFromTurnText(text) ??
+          (failed ? contextOverflowNotice(text) : undefined))
+        : undefined;
       if (notice) {
         // The complete text is authoritative for the turn (see
         // completeAssistantTextPart); when it's a billing failure, any
@@ -737,7 +808,7 @@ function appendLiveHermesEvents(
 
     if (event.type === "error") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const notice = text ? creditsNotice(text) : undefined;
+      const notice = text ? turnNotice(text) : undefined;
       if (notice) {
         currentAssistant.parts.push(notice);
       } else {
@@ -1347,6 +1418,9 @@ function partText(part: AgentChatPart) {
   if (part.type === "secret")
     return [part.keyName ?? "", part.reason ?? "", "secret"].join(" ");
   if (part.type === "context") return part.preview || part.text;
+  // A generated image is meaningful even though it has no body text — report the
+  // prompt so the turn isn't filtered out as empty and a copy reads sensibly.
+  if (part.type === "image") return part.prompt;
   return part.text;
 }
 

@@ -31,15 +31,17 @@
   --popover: oklch(0.195 0.0015 84.59);
   --muted-foreground: oklch(0.709 0.0015 84.59);
   --border: oklch(1 0 0 / 12%);
-  /* Terracotta "live recording" coloring for the June mark. Keep in sync with
-   * agent-hud.css :root (--attention / --attention-bright) — each HUD is a
-   * separate window and locally redefines the tokens it needs. The brand
-   * terracotta (--brand in tokens.css), lifted for legibility on dark glass. */
-  --attention: oklch(0.74 0.13 42);
-  /* The shimmer highlight. A lifted, dull terracotta rather than a bright
-   * yellow, so the sweep stays in the brand family instead of reading as gold,
-   * while staying light enough for the tiny masked glyph to keep contrast. */
-  --attention-bright: oklch(0.82 0.12 48);
+  /* Accent "live recording" coloring for the June mark. Keep in sync with
+   * agent-hud.css :root (--brand / --attention / --attention-bright) — each HUD
+   * is a separate window and locally redefines the tokens it needs.
+   * subscribeBrand() (src/lib/brand.ts) overrides --brand from the stored
+   * preference and live-syncs it. */
+  --brand: #936862;
+  /* The accent lifted for legibility on the dark glass, derived from --brand. */
+  --attention: color-mix(in oklch, var(--brand) 62%, white);
+  /* The shimmer highlight — a brighter lift of the same accent so the sweep
+   * stays in the brand family rather than reading as gold. */
+  --attention-bright: color-mix(in oklch, var(--brand) 42%, white);
 
   color: var(--foreground);
   background: transparent;

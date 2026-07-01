@@ -18,6 +18,7 @@ pub enum ActionSlug {
     AgentChat,
     DictateCleanup,
     DictateTranscribe,
+    ImageGenerate,
     NoteGenerate,
     NoteTranscribe,
     WebFetch,
@@ -30,6 +31,7 @@ impl ActionSlug {
             Self::AgentChat => "agent_chat",
             Self::DictateCleanup => "dictate_cleanup",
             Self::DictateTranscribe => "dictate_transcribe",
+            Self::ImageGenerate => "image_generate",
             Self::NoteGenerate => "note_generate",
             Self::NoteTranscribe => "note_transcribe",
             Self::WebFetch => "web_fetch",
@@ -201,6 +203,30 @@ pub struct AgentChatRequest {
     pub provider_credentials: ProviderCredentials,
 }
 
+/// What an image generator needs: a prompt, the model, and optional pixel
+/// dimensions. Deliberately carries no user id — image generation is not
+/// metered yet (subscription metering is a follow-up), so the provider sees
+/// only the inference inputs.
+#[derive(Clone, Debug)]
+pub struct ImageGenerationRequest {
+    pub prompt: String,
+    pub model: ModelId,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImage {
+    /// Base64-encoded image bytes, no `data:` prefix. The frontend wraps this
+    /// in a data URL for the existing inline image display path.
+    pub image_base64: String,
+    /// IANA mime of the encoded bytes, e.g. `image/png`.
+    pub mime_type: String,
+    pub model: String,
+    pub provider: String,
+}
+
 /// Which upstream engine Venice should run a web search against. Brave is the
 /// default and runs under zero data retention; Google is anonymized and
 /// proxied through Venice so the query is not associated with an identity.
@@ -356,6 +382,14 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+}
+
+#[async_trait]
+pub trait ImageGenerator: Send + Sync {
+    async fn generate(
+        &self,
+        request: ImageGenerationRequest,
+    ) -> Result<GeneratedImage, DomainError>;
 }
 
 #[async_trait]

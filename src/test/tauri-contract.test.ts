@@ -4,6 +4,7 @@ import {
   ensureHermesBridgeGateway,
   finishRecording,
   getNote,
+  juneOpenCommunityPage,
   recoverRecording,
   retryProcessing,
   startRecording,
@@ -86,5 +87,11 @@ describe("Tauri command contracts", () => {
     await ensureHermesBridgeGateway();
 
     expect(mocks.invoke).toHaveBeenCalledWith("ensure_hermes_bridge_gateway");
+  });
+
+  it("opens the June community through a dedicated command", async () => {
+    await juneOpenCommunityPage();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("june_open_community_page");
   });
 });

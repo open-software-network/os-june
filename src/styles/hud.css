@@ -23,11 +23,14 @@
   --muted-foreground: oklch(0.709 0.0015 84.59);
   --border: oklch(1 0 0 / 12%);
   --destructive: oklch(0.704 0.191 22.216);
-  /* The brand terracotta lifted for the dark glass — same pair the agent
-   * HUD uses for its "needs input" mark, so the meeting prompt speaks the
-   * same color language. */
-  --attention: oklch(0.74 0.13 42);
-  --attention-bright: oklch(0.91 0.2 72);
+  /* The selected accent (default dusty rose), overridden + live-synced by
+   * subscribeBrand() in src/lib/brand.ts. */
+  --brand: #936862;
+  /* The accent lifted for the dark glass — same derivation the agent HUD uses
+   * for its "needs input" mark, so the meeting prompt speaks the same color
+   * language and follows the selected accent. */
+  --attention: color-mix(in oklch, var(--brand) 62%, white);
+  --attention-bright: color-mix(in oklch, var(--brand) 42%, white);
 
   color: var(--foreground);
   background: transparent;

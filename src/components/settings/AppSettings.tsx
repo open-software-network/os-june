@@ -11,11 +11,13 @@ import { IconTelevision } from "central-icons/IconTelevision";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
+  JUNE_COMMUNITY_URL,
   dictationHelperCommand,
   dictationSettings,
   listVeniceModels,
   localAudioFileSrc,
   providerModelSettings,
+  juneOpenCommunityPage,
   juneOpenVerifyPage,
   clearVeniceApiKey,
   setDictationLanguage,
@@ -56,6 +58,7 @@ import {
   type SelectPopoverPlacement,
 } from "../ui/Select";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { InlineNotice } from "../ui/InlineNotice";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
 import type { ReportCategory } from "../agent/composer/reportCategory";
@@ -64,6 +67,19 @@ import {
   setStoredTheme,
   type ThemePreference,
 } from "../../lib/theme";
+import {
+  DEFAULT_BRAND,
+  getStoredBrand,
+  setStoredBrand,
+  type BrandId,
+} from "../../lib/brand";
+import { AccentWheel } from "./AccentWheel";
+import {
+  getReleaseChannel,
+  reconcileToStable,
+  setReleaseChannel,
+  type ReleaseChannel,
+} from "../../lib/updater";
 import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -74,8 +90,25 @@ import {
   modelOptions,
   selectedModel,
 } from "./ModelPickerDialog";
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
+import { SkillReviewSection } from "./SkillReviewSection";
+import { McpCatalogSection } from "./McpCatalogSection";
+import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
+import { McpSecuritySection } from "./McpSecuritySection";
+import { McpServersSection } from "./McpServersSection";
+import {
+  IntegrationsHealthSection,
+  type IntegrationsHealthTarget,
+} from "./IntegrationsHealthSection";
+import { ProfileBuilderSection } from "./ProfileBuilderSection";
+import { SetupSnapshotSection } from "./SetupSnapshotSection";
+import { SkillBundlesSection } from "./SkillBundlesSection";
+import { SkillsHubSection } from "./SkillsHubSection";
+import { TeamTapsSection } from "./TeamTapsSection";
+import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
@@ -115,6 +148,14 @@ const THEME_OPTIONS: readonly {
     ),
     ariaLabel: "Use dark theme",
   },
+];
+
+const RELEASE_CHANNEL_OPTIONS: readonly {
+  value: ReleaseChannel;
+  label: ReactNode;
+}[] = [
+  { value: "stable", label: "Stable" },
+  { value: "rc", label: "Release candidate" },
 ];
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
@@ -167,6 +208,8 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
   generationModel: "zai-org-glm-5-2",
+  // Mirrors DEFAULT_IMAGE_MODEL in the Rust providers module.
+  imageModel: DEFAULT_IMAGE_MODEL,
   veniceApiKeyConfigured: false,
 };
 
@@ -181,6 +224,19 @@ export type SettingsTab =
   | "models"
   | "agent"
   | "skills"
+  | "external-dirs"
+  | "skill-review"
+  | "mcp"
+  | "mcp-catalog"
+  | "mcp-diagnostics"
+  | "mcp-security"
+  | "skills-hub"
+  | "taps"
+  | "toolsets"
+  | "bundles"
+  | "profile-builder"
+  | "integrations-health"
+  | "import-export"
   | "about";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -192,6 +248,19 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
   { id: "skills", label: "Installed skills" },
+  { id: "external-dirs", label: "External skill directories" },
+  { id: "skill-review", label: "Pending skill changes" },
+  { id: "mcp", label: "MCP servers" },
+  { id: "mcp-catalog", label: "MCP catalog" },
+  { id: "mcp-diagnostics", label: "MCP diagnostics" },
+  { id: "mcp-security", label: "MCP security" },
+  { id: "skills-hub", label: "Skills hub" },
+  { id: "taps", label: "Team skill taps" },
+  { id: "toolsets", label: "Toolsets" },
+  { id: "bundles", label: "Bundles" },
+  { id: "profile-builder", label: "Profile builder" },
+  { id: "integrations-health", label: "Integrations health" },
+  { id: "import-export", label: "Import / export" },
   { id: "about", label: "About" },
 ];
 
@@ -217,8 +286,13 @@ type AppSettingsProps = {
   onTabChange?: (tab: SettingsTab) => void;
   // Runs the app updater's manual check flow.
   onCheckForUpdates?: () => void;
+  // Confirmed leave-rc reconcile: downloads and installs the current stable,
+  // even if it is older than the running prerelease build (Q4-Q8).
+  onReconcileToStable?: () => void;
   // Opens a new agent session seeded with a report category chip.
   onReportIssue?: (category: ReportCategory) => void;
+  // Opens a new agent session that runs a skill bundle's slash command.
+  onStartBundleChat?: (prompt: string) => void;
 };
 
 export function AppSettings({
@@ -238,7 +312,9 @@ export function AppSettings({
   activeTab: controlledTab,
   onTabChange,
   onCheckForUpdates,
+  onReconcileToStable,
   onReportIssue,
+  onStartBundleChat,
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
@@ -249,6 +325,9 @@ export function AppSettings({
   >({
     transcription: [],
     generation: [],
+    // Image options come from a curated local list, not the fetched catalog;
+    // this stays empty and `imageOptions` supplies the picker.
+    image: [],
   });
   const [microphones, setMicrophones] = useState<
     DictationMicrophoneDeviceDto[]
@@ -262,6 +341,12 @@ export function AppSettings({
   const [status, setStatus] = useState<string>();
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
+  const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
+  const [releaseChannel, setReleaseChannelValue] =
+    useState<ReleaseChannel>("stable");
+  // Set only when a leave-rc switch turns up an installable stable, so the
+  // bespoke in-context confirm below the toggle can name the exact version.
+  const [reconcileVersion, setReconcileVersion] = useState<string>();
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
@@ -309,6 +394,63 @@ export function AppSettings({
     capturingShortcutRef.current = capturingShortcut;
   }, [capturingShortcut]);
 
+  // Load the persisted release channel once the updater is available. Gated on
+  // a stable boolean (not the onCheckForUpdates prop itself, which is an inline
+  // arrow with a new identity each render) so this loads once, not per render.
+  const updaterAvailable = Boolean(onCheckForUpdates);
+  useEffect(() => {
+    if (!updaterAvailable) return;
+    let active = true;
+    void getReleaseChannel()
+      .then((channel) => {
+        if (active) setReleaseChannelValue(channel);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [updaterAvailable]);
+
+  const handleReleaseChannelChange = (next: ReleaseChannel) => {
+    setReleaseChannelValue(next);
+    // Any channel change dismisses a stale reconcile offer (e.g. toggling back
+    // to rc, or stable -> rc -> stable) before we decide whether to re-offer.
+    setReconcileVersion(undefined);
+    void setReleaseChannel(next)
+      .then(() => {
+        // Leaving rc for stable while running a prerelease build: stable is
+        // normally older than the rc you are on, so a routine check would never
+        // pull it. Offer a one-time reconcile down onto the current stable (Q4-Q8).
+        if (next === "stable" && isPrereleaseBuild()) {
+          void offerReconcileToStable();
+        }
+      })
+      .catch(() => {
+        // Persist failed: re-read so the toggle reflects the real saved channel
+        // rather than an optimistic value that never reached disk.
+        void getReleaseChannel()
+          .then(setReleaseChannelValue)
+          .catch(() => undefined);
+      });
+  };
+
+  async function offerReconcileToStable() {
+    try {
+      const update = await reconcileToStable();
+      // Only prompt when a stable is actually installable. If stable has already
+      // caught up or passed the rc, the routine updater handles it (no reconcile).
+      if (update) setReconcileVersion(update.version);
+    } catch {
+      // A failed reconcile check is silent: the channel is already saved and the
+      // routine update flow will retry on its next check.
+    }
+  }
+
+  function confirmReconcileToStable() {
+    setReconcileVersion(undefined);
+    onReconcileToStable?.();
+  }
+
   useEffect(() => {
     setMicOpen(false);
     setLanguageOpen(false);
@@ -339,7 +481,12 @@ export function AppSettings({
         setSettings(response.settings);
         const modelResponse = await providerModelSettings();
         if (cancelled) return;
-        setProviderSettings(modelResponse.settings);
+        // Merge over defaults so a settings payload that predates a field
+        // (e.g. imageModel from an older backend) still has every model set.
+        setProviderSettings({
+          ...DEFAULT_PROVIDER_MODELS,
+          ...modelResponse.settings,
+        });
         await requestMicrophones();
         await Promise.all([
           requestVeniceModels("transcription"),
@@ -664,7 +811,9 @@ export function AppSettings({
       setStatus(
         mode === "transcription"
           ? "Transcription model updated."
-          : "Text model updated.",
+          : mode === "image"
+            ? "Image model updated."
+            : "Text model updated.",
       );
     } catch (error) {
       setStatus(messageFromError(error));
@@ -743,6 +892,7 @@ export function AppSettings({
     veniceModels.generation,
     providerSettings.generationModel,
   );
+  const imageOptions = modelOptions(IMAGE_MODELS, providerSettings.imageModel);
   const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
   const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
 
@@ -783,19 +933,22 @@ export function AppSettings({
   }
 
   function modelOptionsForMode(mode: ProviderModelMode) {
-    return mode === "transcription" ? transcriptionOptions : generationOptions;
+    if (mode === "transcription") return transcriptionOptions;
+    if (mode === "image") return imageOptions;
+    return generationOptions;
   }
 
   function modelValueForMode(mode: ProviderModelMode) {
-    return mode === "transcription"
-      ? providerSettings.transcriptionModel
-      : providerSettings.generationModel;
+    if (mode === "transcription") return providerSettings.transcriptionModel;
+    if (mode === "image") return providerSettings.imageModel;
+    return providerSettings.generationModel;
   }
 
   function openModelPicker(mode: ProviderModelMode) {
     setPickerMode(mode);
     setModelSearch("");
-    void requestVeniceModels(mode);
+    // Image models are a curated local list, not a fetched catalog.
+    if (mode !== "image") void requestVeniceModels(mode);
   }
 
   function microphonePopoverStyle(): CSSProperties {
@@ -878,6 +1031,37 @@ export function AppSettings({
                         onValueChange={(next) => {
                           setTheme(next);
                           setStoredTheme(next);
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Accent</h3>
+                      <p className="settings-row-description">
+                        The brand color used across buttons, highlights, and the
+                        recorder.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      {brand !== DEFAULT_BRAND ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          aria-label="Reset accent color to default"
+                          onClick={() => {
+                            setBrand(DEFAULT_BRAND);
+                            setStoredBrand(DEFAULT_BRAND);
+                          }}
+                        >
+                          Reset
+                        </button>
+                      ) : null}
+                      <AccentWheel
+                        value={brand}
+                        onChange={(id) => {
+                          setBrand(id);
+                          setStoredBrand(id);
                         }}
                       />
                     </div>
@@ -1255,12 +1439,64 @@ export function AppSettings({
                 </div>
               </div>
             </section>
+
+            <section
+              className="settings-group"
+              aria-labelledby="image-generation-heading"
+            >
+              <h2
+                id="image-generation-heading"
+                className="settings-group-heading"
+              >
+                Image generation
+              </h2>
+              <p className="settings-group-description">
+                Choose the model June uses when you ask it to generate an image.
+              </p>
+              <div className="settings-card">
+                <div className="settings-rows">
+                  <ModelRow
+                    title="Image"
+                    description="Used when you generate an image from chat."
+                    value={providerSettings.imageModel}
+                    options={imageOptions}
+                    onOpen={() => openModelPicker("image")}
+                  />
+                </div>
+              </div>
+            </section>
           </>
         ) : null}
 
         {activeTab === "agent" ? <AgentSettingsSection /> : null}
 
         {activeTab === "skills" ? <InstalledSkillsSection /> : null}
+        {activeTab === "external-dirs" ? <ExternalDirsSection /> : null}
+        {activeTab === "skill-review" ? <SkillReviewSection /> : null}
+
+        {activeTab === "mcp" ? <McpServersSection /> : null}
+        {activeTab === "mcp-catalog" ? <McpCatalogSection /> : null}
+        {activeTab === "mcp-diagnostics" ? <McpDiagnosticsSection /> : null}
+        {activeTab === "mcp-security" ? <McpSecuritySection /> : null}
+        {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
+        {activeTab === "taps" ? (
+          <TeamTapsSection
+            onConfigureGithubToken={() => setActiveTab("skills")}
+          />
+        ) : null}
+        {activeTab === "toolsets" ? <ToolsetsSection /> : null}
+        {activeTab === "bundles" ? (
+          <SkillBundlesSection onStartChat={onStartBundleChat} />
+        ) : null}
+        {activeTab === "profile-builder" ? <ProfileBuilderSection /> : null}
+        {activeTab === "integrations-health" ? (
+          <IntegrationsHealthSection
+            onNavigate={(target: IntegrationsHealthTarget) =>
+              setActiveTab(target)
+            }
+          />
+        ) : null}
+        {activeTab === "import-export" ? <SetupSnapshotSection /> : null}
 
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">
@@ -1294,24 +1530,93 @@ export function AppSettings({
                 </div>
 
                 {onCheckForUpdates ? (
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Updates</h3>
-                      <p className="settings-row-description">
-                        Check whether a newer version of June is available.
-                      </p>
+                  <>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Updates</h3>
+                        <p className="settings-row-description">
+                          Check whether a newer version of June is available.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={onCheckForUpdates}
+                        >
+                          Check for updates
+                        </button>
+                      </div>
                     </div>
-                    <div className="settings-row-control">
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={onCheckForUpdates}
-                      >
-                        Check for updates
-                      </button>
+
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Release channel</h3>
+                        <p className="settings-row-description">
+                          Stable is recommended. Release candidate gets early
+                          builds for testing.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <SegmentedControl<ReleaseChannel>
+                          aria-label="Release channel"
+                          value={releaseChannel}
+                          options={RELEASE_CHANNEL_OPTIONS}
+                          onValueChange={handleReleaseChannelChange}
+                        />
+                      </div>
                     </div>
-                  </div>
+
+                    {reconcileVersion ? (
+                      <div className="settings-row">
+                        <InlineNotice
+                          aria-label="Switch to stable now"
+                          eyebrow="Switch to stable now?"
+                          body={`Installs ${reconcileVersion}, replacing your release candidate build. You'll get ${baseVersion()} when it reaches stable.`}
+                          actions={
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                onClick={() => setReconcileVersion(undefined)}
+                              >
+                                Not now
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={confirmReconcileToStable}
+                              >
+                                Switch to stable
+                              </button>
+                            </>
+                          }
+                        />
+                      </div>
+                    ) : null}
+                  </>
                 ) : null}
+
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Community</h3>
+                    <p className="settings-row-description">
+                      Join us in the June community on Telegram at{" "}
+                      {JUNE_COMMUNITY_URL.replace("https://", "")}.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() =>
+                        void juneOpenCommunityPage().catch(() => undefined)
+                      }
+                    >
+                      Join community
+                    </button>
+                  </div>
+                </div>
 
                 <div className="settings-row">
                   <div className="settings-row-info">
@@ -1769,4 +2074,16 @@ function messageFromError(error: unknown) {
     return String((error as { message: unknown }).message);
   }
   return String(error);
+}
+
+// The running build is a release candidate (X.Y.Z-rc.N). Only these get the
+// leave-rc reconcile offer; a clean stable build has nothing to reconcile.
+function isPrereleaseBuild() {
+  return APP_VERSION.includes("-rc");
+}
+
+// The base version an rc will become once promoted (0.0.25-rc.2 -> 0.0.25), used
+// to reassure the user which stable they will land on when it ships.
+function baseVersion() {
+  return APP_VERSION.split("-")[0];
 }

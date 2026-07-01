@@ -163,7 +163,16 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
 
   function recordOutbound(call: OutboundTraceInput): void {
     const sessionId = nonEmpty(call.sessionId);
-    const { payloadKeys, payloadPreview } = describePayload(call.params);
+    // A `secret.respond` frame carries the user's secret answer under `value`,
+    // a key that is intentionally NOT globally sensitive (it is usually benign
+    // tool output). Mark it sensitive for this frame only, so a short OTP that
+    // the value-shape backstop can't catch is still masked.
+    const { payloadKeys, payloadPreview } = describePayload(
+      call.params,
+      isSecretResponseMethod(call.method)
+        ? SECRET_RESPONSE_SENSITIVE_KEYS
+        : undefined,
+    );
     push(sessionId, {
       id: nextId++,
       direction: "outbound",
@@ -245,19 +254,36 @@ function eventSession(event: JuneHermesEvent): string | undefined {
   return "sessionId" in event ? event.sessionId : undefined;
 }
 
+/** Param keys that hold a secret only in a `secret.respond` context. `value` is
+ * the user's answer to a `secret.request`; it is deliberately not globally
+ * sensitive (see `sanitize.ts`), so we scope it to this frame. */
+const SECRET_RESPONSE_SENSITIVE_KEYS = ["value"] as const;
+
+/** Whether an outbound method delivers a secret answer back to the gateway. The
+ * raw value rides in its params, so its trace entry needs the extra key mask. */
+function isSecretResponseMethod(method: string): boolean {
+  return /secret/i.test(method);
+}
+
 /**
  * Turns a (possibly raw) payload into the export-safe shape: top-level keys plus
  * a capped JSON preview. Always runs {@link sanitizePayload} first, so a raw
  * frame is never `JSON.stringify`-ed and secret values are masked at any depth.
  */
-function describePayload(value: unknown): {
+function describePayload(
+  value: unknown,
+  extraSensitiveKeys?: readonly string[],
+): {
   payloadKeys: string[];
   payloadPreview?: string;
 } {
   if (value === null || value === undefined) {
     return { payloadKeys: [] };
   }
-  const safe = sanitizePayload(value);
+  const safe = sanitizePayload(
+    value,
+    extraSensitiveKeys ? { extraSensitiveKeys } : undefined,
+  );
   const payloadKeys =
     typeof safe === "object" && safe !== null && !Array.isArray(safe)
       ? Object.keys(safe as Record<string, unknown>)

@@ -1,5 +1,5 @@
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
-import { IconArrowRight } from "central-icons/IconArrowRight";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -40,6 +40,7 @@ import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToP
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
+import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import {
   NotesList,
   type NotesListHandle,
@@ -171,8 +172,16 @@ import {
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import { checkJuneUpdate, relaunchJune, type JuneUpdate } from "../lib/updater";
-import { shouldPollProcessingStatus } from "./processing-polling";
+import {
+  checkJuneUpdate,
+  reconcileToStable,
+  relaunchJune,
+  type JuneUpdate,
+} from "../lib/updater";
+import {
+  PROCESSING_DEMO_NOTE_ID,
+  shouldPollProcessingStatus,
+} from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import { handleSidebarResizeStart } from "./sidebar-resize";
@@ -429,6 +438,8 @@ export function App() {
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
+  const [accessibilityBannerDismissed, setAccessibilityBannerDismissed] =
+    useState(false);
   const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
@@ -511,6 +522,52 @@ export function App() {
       cancelled = true;
       demoRecorderRef.current?.dispose();
       demoRecorderRef.current = null;
+    };
+  }, []);
+  // Dev-only console driver (window.__processingDemo) that seeds a synthetic
+  // meeting note parked in a transcription-processing stage so the
+  // ProcessingProgressIndicator can be inspected without a real recording.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/processing-progress-demo").then(
+      ({ registerProcessingProgressDemo }) => {
+        if (cancelled) return;
+        ({ dispose } = registerProcessingProgressDemo({
+          seedNote: (note) => {
+            dispatch({ type: "noteLoaded", note });
+            setActiveView("meetings");
+          },
+        }));
+      },
+    );
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+  // Dev console driver for the sidebar "Relaunch to update" card
+  // (window.__updateCard). Pushes synthetic values into the real update state
+  // so the card's styling can be parked and inspected without a live update.
+  const updateCardDemoRef = useRef<UpdateCardDemoApi | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    void import("../lib/update-card-demo").then(
+      ({ registerUpdateCardDemo }) => {
+        if (cancelled) return;
+        updateCardDemoRef.current = registerUpdateCardDemo({
+          setReadyUpdate,
+          setStatus: setUpdateStatus,
+          setRelaunching: setRelaunchingUpdate,
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+      updateCardDemoRef.current?.dispose();
+      updateCardDemoRef.current = null;
     };
   }, []);
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
@@ -1094,7 +1151,12 @@ export function App() {
   );
 
   const runUpdateCheck = useCallback(
-    (mode: UpdateCheckMode) => {
+    // `check` defaults to the routine, forward-only check; the leave-rc reconcile
+    // passes reconcileToStable so it can pull an older stable (see below).
+    (
+      mode: UpdateCheckMode,
+      check: () => Promise<JuneUpdate | null> = checkJuneUpdate,
+    ) => {
       if (readyUpdateRef.current || relaunchingUpdateRef.current) return;
       if (checkingUpdateRef.current) return;
       if (preparingUpdateRef.current) {
@@ -1109,7 +1171,7 @@ export function App() {
       else if (mode === "launch") setUpdateStatus(null);
       void checkForJuneUpdate(
         {
-          check: checkJuneUpdate,
+          check,
           prompt: (payload) => {
             prepareUpdate(payload, mode);
           },
@@ -1127,6 +1189,14 @@ export function App() {
     },
     [prepareUpdate],
   );
+
+  // Confirmed in Settings after switching off the rc channel: re-check with
+  // reconcile=true (which re-stashes the Rust-side pending update, so a periodic
+  // check between the Settings confirm and this call can't leave a stale handle)
+  // then run the same download -> ready -> relaunch flow as any update.
+  const handleReconcileToStable = useCallback(() => {
+    runUpdateCheck("manual", reconcileToStable);
+  }, [runUpdateCheck]);
 
   const handleRelaunchUpdate = useCallback(() => {
     if (!readyUpdateRef.current || relaunchingUpdateRef.current) return;
@@ -1606,6 +1676,10 @@ export function App() {
   }, []);
 
   const accessibilityBlocked = isAccessibilityBlocked(accessibilityStatus);
+  useEffect(() => {
+    if (!accessibilityBlocked) setAccessibilityBannerDismissed(false);
+  }, [accessibilityBlocked]);
+
   // The Rust readiness check probes mic via cpal, which doesn't reflect
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
   // instead — that's the authoritative macOS API for the mic privacy
@@ -1879,6 +1953,12 @@ export function App() {
     ) {
       return;
     }
+    // The dev __processingDemo note lives only in the reducer; there is no
+    // backend row to poll, and getNote would clobber its synthetic stage with
+    // a "note not found". Stripped from production via import.meta.env.DEV.
+    if (import.meta.env.DEV && selectedNote.id === PROCESSING_DEMO_NOTE_ID) {
+      return;
+    }
     const noteId = selectedNote.id;
     // Drops in-flight responses once this effect is torn down (note switched,
     // status moved on, note deleted) so a late resolution can't apply a stale
@@ -2123,6 +2203,26 @@ export function App() {
       window.dispatchEvent(
         new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
           detail: { category },
+        }),
+      );
+    }, 0);
+  }
+
+  // "Start chat with this bundle" from the Bundles settings tab: the same
+  // fresh-chat handshake the dictation prompt path uses, auto-submitting the
+  // bundle's slash command so Hermes resolves the bundle and loads its skills.
+  function handleStartBundleChat(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending(trimmed);
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: trimmed },
         }),
       );
     }, 0);
@@ -2882,8 +2982,9 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
-          {accessibilityBlocked ? (
+          {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
+              onDismiss={() => setAccessibilityBannerDismissed(true)}
               onEnableAccessibility={handleEnableAccessibility}
             />
           ) : null}
@@ -2916,7 +3017,9 @@ export function App() {
                   activeTab={settingsTab}
                   onTabChange={setSettingsTab}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
+                  onReconcileToStable={handleReconcileToStable}
                   onReportIssue={handleReportIssue}
+                  onStartBundleChat={handleStartBundleChat}
                 />
               ) : activeView === "dictation" ? (
                 <DictationHistoryView
@@ -3517,18 +3620,26 @@ function UpdateRelaunchCard({
           <JuneMark />
         </span>
         <span className="update-relaunch-copy">
-          <span className="update-relaunch-title">
+          <span
+            className={
+              relaunching
+                ? "update-relaunch-title text-shimmer"
+                : "update-relaunch-title"
+            }
+          >
             {relaunching ? "Relaunching..." : "Relaunch to update"}
           </span>
           <span className={status ? "update-relaunch-status" : undefined}>
             {meta}
           </span>
         </span>
-        <IconArrowRight
-          className="update-relaunch-arrow"
-          size={18}
-          aria-hidden
-        />
+        {!relaunching && (
+          <IconChevronRightSmall
+            className="update-relaunch-arrow"
+            size={16}
+            aria-hidden
+          />
+        )}
       </button>
     </aside>
   );

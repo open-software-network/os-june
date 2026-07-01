@@ -13,6 +13,8 @@ pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
+pub mod theme_icon;
+pub mod updates;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -131,6 +133,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            theme_icon::set_dock_icon,
             commands::bootstrap_app,
             commands::create_note,
             commands::list_notes,
@@ -165,7 +168,19 @@ pub fn run() {
             commands::list_agent_tool_events,
             hermes_bridge::hermes_bridge_status,
             hermes_bridge::ensure_hermes_bridge_gateway,
+            hermes_bridge::hermes_admin_request,
+            hermes_bridge::hermes_mcp_oauth_login,
+            hermes_bridge::hermes_reset_bundled_skill,
+            hermes_bridge::hermes_skill_tap_list,
+            hermes_bridge::hermes_skill_tap_add,
+            hermes_bridge::hermes_skill_tap_remove,
+            hermes_bridge::hermes_inspect_external_dirs,
+            hermes_bridge::hermes_list_skill_bundles,
+            hermes_bridge::hermes_save_skill_bundle,
+            hermes_bridge::hermes_delete_skill_bundle,
             hermes_bridge::hermes_bridge_skills,
+            hermes_bridge::hermes_pending_skill_writes,
+            hermes_bridge::hermes_resolve_pending_skill_write,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
             hermes_bridge::hermes_bridge_filesystem_snapshot,
@@ -197,6 +212,7 @@ pub fn run() {
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
             commands::june_open_verify_page,
+            commands::june_open_community_page,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -236,6 +252,7 @@ pub fn run() {
             providers::set_venice_model,
             providers::set_venice_api_key,
             providers::clear_venice_api_key,
+            providers::generate_image,
             os_accounts::os_accounts_status,
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
@@ -243,6 +260,10 @@ pub fn run() {
             os_accounts::os_accounts_upgrade,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
+            updates::get_release_channel,
+            updates::set_release_channel,
+            updates::fetch_update,
+            updates::install_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
@@ -251,6 +272,7 @@ pub fn run() {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
+            updates::setup(app);
             dictation::setup(app);
             agent_hud::setup(app);
             meeting_detection::setup(app);

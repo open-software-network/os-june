@@ -143,7 +143,12 @@ export function ModelPickerDialog({
     return options;
   }, [options, query, searching, suggested, tab]);
   const showReasons = !searching && tab === "suggested" && suggested.length > 0;
-  const title = mode === "transcription" ? "Transcription model" : "Text model";
+  const title =
+    mode === "transcription"
+      ? "Transcription model"
+      : mode === "image"
+        ? "Image model"
+        : "Text model";
 
   return (
     <Dialog

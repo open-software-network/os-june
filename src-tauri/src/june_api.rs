@@ -181,6 +181,7 @@ struct GenerateResponse {
     content: String,
     title_suggestion: Option<String>,
     provider: String,
+    prompt_version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -278,7 +279,9 @@ pub async fn generate_note_from_transcript(
         content: response.content,
         title_suggestion: response.title_suggestion,
         provider: response.provider,
-        prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
+        prompt_version: response
+            .prompt_version
+            .unwrap_or_else(|| crate::domain::processing::PROMPT_VERSION.to_string()),
     })
 }
 
@@ -349,6 +352,37 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
         .await
         .map_err(network_error)?;
     parse_response("/v1/models", response).await
+}
+
+/// One generated image from the June API `/v1/image/generate` endpoint. The
+/// bytes arrive base64-encoded so the frontend can wrap them in a data URL for
+/// the existing inline image display path.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImageDto {
+    pub image_base64: String,
+    pub mime_type: String,
+    pub model: String,
+    pub provider: String,
+}
+
+#[derive(Serialize)]
+struct ImageGenerateBody {
+    prompt: String,
+    model: String,
+}
+
+/// Forwards a prompt to June API image generation with the user's access token.
+/// Image generation is not metered yet, but the endpoint is still authenticated
+/// like every other call, so the token attaches the same way.
+pub async fn generate_image(prompt: String, model: String) -> Result<GeneratedImageDto, AppError> {
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
+    post_json(
+        "/v1/image/generate",
+        &ImageGenerateBody { prompt, model },
+        send_venice_api_key,
+    )
+    .await
 }
 
 pub async fn proxy_agent_chat_completions(
@@ -1059,6 +1093,7 @@ fn path_accepts_venice_api_key(path: &str) -> bool {
             | "/v1/dictate"
             | "/v1/dictate/cleanup"
             | "/v1/chat/completions"
+            | "/v1/image/generate"
             | "/v1/web/search"
             | "/v1/web/fetch"
     )
@@ -1312,6 +1347,10 @@ mod tests {
         assert!(!request_accepts_venice_api_key(
             "/v1/issue-reports",
             model_accepts_venice_api_key(crate::providers::DEFAULT_TRANSCRIPTION_MODEL)
+        ));
+        assert!(request_accepts_venice_api_key(
+            "/v1/image/generate",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_IMAGE_MODEL)
         ));
     }
 

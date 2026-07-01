@@ -4,7 +4,14 @@ import {
   E2EE_MODEL_DESCRIPTION,
   PRIVATE_MODEL_DESCRIPTION,
   modelPrivacyBadge,
+  modelSupportsImageInput,
 } from "../lib/model-privacy";
+import type { VeniceModelDto } from "../lib/tauri";
+
+// Excess-property checks would reject a `traits` field on the narrowed
+// capabilities-only param, so route test shapes through a Partial helper.
+const model = (partial: Partial<VeniceModelDto>): Partial<VeniceModelDto> =>
+  partial;
 
 describe("model privacy labels", () => {
   it("uses e2ee mode over private — the stronger claim wins", () => {
@@ -58,5 +65,61 @@ describe("model privacy labels", () => {
     expect(modelPrivacyBadge({ privacy: "OpenAI", traits: ["prompt"] })).toBe(
       undefined,
     );
+  });
+});
+
+describe("model image input support", () => {
+  it("is true when the authoritative supportsVision capability is present", () => {
+    expect(modelSupportsImageInput({ capabilities: ["supportsVision"] })).toBe(
+      true,
+    );
+  });
+
+  it("recognizes a real vision model (Fable/Kimi shape: vision + tools)", () => {
+    expect(
+      modelSupportsImageInput({
+        capabilities: [
+          "supportsFunctionCalling",
+          "supportsVision",
+          "supportsMultipleImages",
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores descriptive traits — a 'multimodal' trait is not vision (JUN-165)", () => {
+    // Marketing/descriptive traits conflate image OUTPUT with image INPUT, so
+    // they must never make a non-vision model look vision-capable, or the
+    // image-attach fallback would switch to a model that can't read the image.
+    expect(
+      modelSupportsImageInput(
+        model({
+          capabilities: ["supportsFunctionCalling"],
+          traits: ["multimodal"],
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      modelSupportsImageInput(
+        model({ capabilities: [], traits: ["multimodal", "uncensored"] }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for a non-vision model (GLM 5.2 shape: tools, no vision)", () => {
+    expect(
+      modelSupportsImageInput({
+        capabilities: [
+          "supportsFunctionCalling",
+          "supportsReasoning",
+          "supportsWebSearch",
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("is false when no capabilities are reported", () => {
+    expect(modelSupportsImageInput({})).toBe(false);
+    expect(modelSupportsImageInput({ capabilities: [] })).toBe(false);
   });
 });

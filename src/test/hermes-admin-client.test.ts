@@ -218,6 +218,44 @@ describe("HermesAdminClient — real-contract paths and shapes (v2026.6.19)", ()
     expect(entry?.path).toBe("/api/skills/hub/update");
     expect(entry?.body).toEqual({});
   });
+
+  it("startTestSession stops before open-terminal when the profile switch reports not-ok", async () => {
+    const { client, server } = makeAdminHarness({
+      profiles: [
+        { name: "alpha", active: false },
+        { name: "beta", active: true },
+      ],
+      profileActivateNotOk: true,
+    });
+    const result = await client.profiles.startTestSession("alpha");
+    // A body-level { ok: false } on the switch (HTTP 2xx) must short-circuit:
+    // the failure rides in the result and no terminal is opened under the
+    // un-switched profile (Greptile P1).
+    expect(result.result.ok).toBe(false);
+    expect(
+      server.requestLog.some((r) => r.path.includes("/open-terminal")),
+    ).toBe(false);
+  });
+
+  it("config.setValueAtSegments writes a dotted name as ONE key, not nested", async () => {
+    const { client, server } = makeAdminHarness(emptyInstallScenario());
+    // A skill named with a dot would mis-nest under a dotted path.
+    await client.config.setValueAtSegments(
+      ["skills", "config", "my.skill", "apiBase"],
+      "https://x",
+    );
+    const entry = server.requestLog.at(-1);
+    expect(entry?.method).toBe("PUT");
+    expect(entry?.path).toBe("/api/config");
+    const body = entry?.body as {
+      config?: { skills?: { config?: Record<string, { apiBase?: string }> } };
+    };
+    expect(body?.config?.skills?.config?.["my.skill"]?.apiBase).toBe(
+      "https://x",
+    );
+    // Not split into my -> skill.
+    expect(body?.config?.skills?.config?.["my"]).toBeUndefined();
+  });
 });
 
 describe("HermesAdminClient — error normalization", () => {

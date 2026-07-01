@@ -39,30 +39,53 @@ export type AdminResource =
   | "profiles"
   | "gatewayStatus"
   | "actionStatus"
-  | "envConfig";
+  | "envConfig"
+  | "configTree";
 
 /** The resources each mutation invalidates. These encode the spec's rules:
  * - skill toggle / hub install-update-uninstall: skills (+ hub + toolsets for
  *   hub ops, since a new skill can register tools);
+ * - skill content edit (SKILL.md rewrite): skills (the metadata/description a
+ *   row shows is read from SKILL.md frontmatter, so a rewrite can change it);
  * - MCP add/remove/test/enable/filter: mcpServers AND toolsets;
  * - catalog install: mcpServers, catalog, toolsets;
  * - env writes: envConfig (+ gatewayStatus, since a restart may be needed);
+ * - skill config writes: configTree (+ skills, since a skill's setup status can
+ *   change once its config is filled in);
  * - gateway restart: mcpServers, toolsets, skills, gatewayStatus (full refresh).
  */
 const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> =
   Object.freeze({
     "skill.toggle": ["skills"],
+    "skill.editContent": ["skills"],
     "skill.hubInstall": ["skills", "hubSearch", "toolsets"],
     "skill.hubUpdate": ["skills", "hubSearch", "toolsets"],
     "skill.hubUninstall": ["skills", "hubSearch", "toolsets"],
+    // An audit changes nothing durable, so it invalidates only the hub search
+    // (whose scan/verdict the row may reflect), not the installed inventory.
+    "skill.audit": ["hubSearch"],
+    // Resetting a bundled skill rewrites its manifest, so the inventory (and any
+    // tools it registers) must refresh, exactly like a hub update.
+    "skill.reset": ["skills", "toolsets"],
     "toolset.toggle": ["toolsets"],
     "mcp.add": ["mcpServers", "toolsets"],
     "mcp.remove": ["mcpServers", "toolsets"],
     "mcp.setEnabled": ["mcpServers", "toolsets"],
+    // A tool-filter write changes config.yaml; the server list reflects the new
+    // include/exclude policy and the toolset inventory it feeds, so both refresh.
+    "mcp.setTools": ["mcpServers", "toolsets", "configTree"],
     "mcp.test": ["mcpServers", "toolsets"],
+    "mcp.oauthLogin": ["mcpServers", "toolsets"],
     "mcp.installCatalog": ["mcpServers", "mcpCatalog", "toolsets"],
     "env.set": ["envConfig", "gatewayStatus"],
     "env.delete": ["envConfig", "gatewayStatus"],
+    "config.set": ["configTree", "skills"],
+    "config.delete": ["configTree", "skills"],
+    // Creating a profile (and writing its SOUL) changes the profile roster; it
+    // does not touch the active runtime's skills/toolsets, so only `profiles`
+    // is invalidated.
+    "profile.create": ["profiles"],
+    "profile.setSoul": ["profiles"],
     "gateway.restart": ["mcpServers", "toolsets", "skills", "gatewayStatus"],
   });
 

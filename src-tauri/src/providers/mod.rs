@@ -15,6 +15,7 @@ pub const PROVIDER_OPENAI: &str = "openai";
 pub const PROVIDER_VENICE: &str = "venice";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
+pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
 const MAX_VENICE_API_KEY_CHARS: usize = 4_096;
 
 // Kept exported under the legacy names so existing callers compile until they
@@ -36,6 +37,10 @@ pub struct ProviderModelSettings {
     pub transcription_provider: String,
     pub transcription_model: String,
     pub generation_model: String,
+    // Defaulted so provider-settings.json files written before image
+    // generation existed still deserialize (they predate this field).
+    #[serde(default = "default_image_model")]
+    pub image_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub venice_api_key: Option<String>,
 }
@@ -46,6 +51,7 @@ pub struct ProviderModelSettingsDto {
     pub transcription_provider: String,
     pub transcription_model: String,
     pub generation_model: String,
+    pub image_model: String,
     pub venice_api_key_configured: bool,
 }
 
@@ -55,6 +61,7 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
             transcription_provider: settings.transcription_provider.clone(),
             transcription_model: settings.transcription_model.clone(),
             generation_model: settings.generation_model.clone(),
+            image_model: settings.image_model.clone(),
             venice_api_key_configured: settings
                 .venice_api_key
                 .as_deref()
@@ -182,6 +189,10 @@ pub fn generation_model() -> String {
     current_settings().generation_model
 }
 
+pub fn image_model() -> String {
+    current_settings().image_model
+}
+
 pub fn venice_api_key() -> Option<String> {
     current_settings().venice_api_key
 }
@@ -268,7 +279,36 @@ pub fn set_venice_model(
             settings.transcription_model = model_id.to_string();
         }
         ModelMode::Generation => settings.generation_model = model_id.to_string(),
+        ModelMode::Image => settings.image_model = model_id.to_string(),
     })
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateImageRequest {
+    pub prompt: String,
+    /// Optional model override; falls back to the saved default image model.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Generates an image from a prompt via the June API, defaulting to the saved
+/// image model. Provider keys and the upstream call live in June API; this
+/// command only resolves the model and forwards the prompt.
+#[tauri::command]
+pub async fn generate_image(
+    request: GenerateImageRequest,
+) -> Result<crate::june_api::GeneratedImageDto, AppError> {
+    let prompt = request.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err(AppError::new("image_prompt_required", "Enter a prompt."));
+    }
+    let model = request
+        .model
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(image_model);
+    crate::june_api::generate_image(prompt, model).await
 }
 
 #[tauri::command]
@@ -303,6 +343,18 @@ pub async fn list_venice_models(
 ) -> Result<VeniceModelsResponse, AppError> {
     let model_type = request.mode.api_type();
     let selected_model = selected_model_for_mode(&state, request.mode)?;
+    // Image models aren't part of the priced catalog the backend serves (image
+    // billing is deferred); the picker uses a curated frontend list instead.
+    // Short-circuit so a direct caller never gets unrelated text/asr models
+    // back, and we skip a pointless catalog round-trip.
+    if request.mode == ModelMode::Image {
+        return Ok(VeniceModelsResponse {
+            mode: request.mode,
+            model_type: model_type.to_string(),
+            selected_model,
+            models: Vec::new(),
+        });
+    }
     let mut models = crate::june_api::list_models(model_type)
         .await?
         .into_iter()
@@ -359,12 +411,17 @@ fn default_settings() -> ProviderModelSettings {
         transcription_provider: PROVIDER_VENICE.to_string(),
         transcription_model: DEFAULT_TRANSCRIPTION_MODEL.to_string(),
         generation_model: DEFAULT_GENERATION_MODEL.to_string(),
+        image_model: DEFAULT_IMAGE_MODEL.to_string(),
         venice_api_key: None,
     }
 }
 
 fn default_transcription_provider() -> String {
     PROVIDER_VENICE.to_string()
+}
+
+fn default_image_model() -> String {
+    DEFAULT_IMAGE_MODEL.to_string()
 }
 
 fn provider_settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -394,6 +451,7 @@ fn load_settings_from_disk(app: &AppHandle) -> ProviderModelSettings {
                     settings.generation_model,
                     &defaults.generation_model,
                 ),
+                image_model: non_empty_or(settings.image_model, &defaults.image_model),
                 venice_api_key: normalize_api_key_option(settings.venice_api_key),
             }
         })
@@ -472,6 +530,7 @@ fn selected_model_for_mode(
     Ok(match mode {
         ModelMode::Transcription => settings.transcription_model.clone(),
         ModelMode::Generation => settings.generation_model.clone(),
+        ModelMode::Image => settings.image_model.clone(),
     })
 }
 
@@ -480,6 +539,7 @@ fn selected_model_for_mode(
 pub enum ModelMode {
     Transcription,
     Generation,
+    Image,
 }
 
 impl<'de> Deserialize<'de> for ModelMode {
@@ -497,6 +557,7 @@ impl ModelMode {
         match self {
             Self::Transcription => "asr",
             Self::Generation => "text",
+            Self::Image => "image",
         }
     }
 
@@ -504,6 +565,7 @@ impl ModelMode {
         match value.trim() {
             "transcription" | "dictation" | "asr" => Some(Self::Transcription),
             "generation" | "notes" | "text" => Some(Self::Generation),
+            "image" | "images" => Some(Self::Image),
             _ => None,
         }
     }
@@ -538,8 +600,29 @@ mod tests {
     }
 
     #[test]
+    fn model_mode_deserializes_image() {
+        assert_eq!(
+            serde_json::from_value::<ModelMode>(serde_json::json!("image")).unwrap(),
+            ModelMode::Image
+        );
+    }
+
+    #[test]
     fn model_mode_rejects_unknown_values() {
-        assert!(serde_json::from_value::<ModelMode>(serde_json::json!("image")).is_err());
+        assert!(serde_json::from_value::<ModelMode>(serde_json::json!("video")).is_err());
+    }
+
+    #[test]
+    fn provider_settings_deserialize_defaults_missing_image_model() {
+        // A provider-settings.json written before image generation existed has
+        // no `imageModel` field; it must still load with the default.
+        let settings: ProviderModelSettings = serde_json::from_value(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "zai-org-glm-5-2"
+        }))
+        .unwrap();
+        assert_eq!(settings.image_model, DEFAULT_IMAGE_MODEL);
     }
 
     #[test]

@@ -62,21 +62,23 @@ export function modelSupportsTools(
   });
 }
 
+/** Whether the model can read image input (vision). Mirrors
+ * `modelSupportsTools`: key off the authoritative capability flag on
+ * `capabilities` only, never `traits`. Venice's backend emits a capability
+ * string only when its boolean is true (`collect_capability_names` in
+ * june-api), so `capabilities` reliably lists genuine vision support. `traits`
+ * is descriptive/marketing text (e.g. "multimodal") that conflates image
+ * OUTPUT with image INPUT — matching it would let the image-attach fallback
+ * switch to a model that can't actually read the image. The capability name
+ * comes from Venice's catalog (`supportsVision`); match defensively on the
+ * normalized name so a rename to snake_case keeps working. */
 export function modelSupportsImageInput(
-  model: Partial<Pick<VeniceModelDto, "capabilities" | "traits">>,
+  model: Partial<Pick<VeniceModelDto, "capabilities">>,
 ) {
-  return [...(model.capabilities ?? []), ...(model.traits ?? [])].some(
-    (capability) => {
-      const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
-      return (
-        normalized.includes("supportsvision") ||
-        normalized.includes("vision") ||
-        normalized.includes("imageinput") ||
-        normalized.includes("imageunderstanding") ||
-        normalized.includes("multimodal")
-      );
-    },
-  );
+  return (model.capabilities ?? []).some((capability) => {
+    const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
+    return normalized.includes("supportsvision");
+  });
 }
 
 // Strongest claim wins: E2EE models are also private, but "encrypted into the
