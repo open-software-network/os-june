@@ -1,0 +1,367 @@
+name: production-desktop-linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing semver release to attach Linux assets to (for example 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-desktop-linux
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    name: Build production Linux app
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-june,os-june-releases
+
+      # Read which source commit the stable macOS release was built from (no
+      # checkout needed yet) so Linux rebuilds that exact tree rather than
+      # whatever main has since advanced to. Also validates the version input.
+      - name: Resolve stable source commit
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$VERSION_INPUT" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::Version must be semver X.Y.Z with no leading zeros, got: $VERSION_INPUT"
+            exit 1
+          fi
+
+          meta_dir="$RUNNER_TEMP/stable-meta"
+          mkdir -p "$meta_dir"
+          if ! gh release download "v$VERSION_INPUT" --repo open-software-network/os-june-releases --pattern "stable-build.json" --dir "$meta_dir"; then
+            echo "::error::Release v$VERSION_INPUT does not include stable-build.json. Promote the macOS release first, then attach Linux assets for the same version."
+            exit 1
+          fi
+
+          meta_version="$(jq -r '.version' "$meta_dir/stable-build.json")"
+          meta_commit="$(jq -r '.commit' "$meta_dir/stable-build.json")"
+          if [ "$meta_version" != "$VERSION_INPUT" ]; then
+            echo "::error::stable-build.json version is $meta_version, expected $VERSION_INPUT."
+            exit 1
+          fi
+          if ! printf '%s' "$meta_commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::stable-build.json commit is not a 40-char sha: $meta_commit"
+            exit 1
+          fi
+
+          {
+            echo "VERSION=$VERSION_INPUT"
+            echo "STABLE_COMMIT=$meta_commit"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # The exact commit the promoted macOS release was built from, so the
+          # Linux packages ship the same tested source under the same version.
+          ref: ${{ env.STABLE_COMMIT }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: tauri-cargo-registry-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-registry-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libasound2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Install uv
+        run: pipx install uv==0.11.15
+
+      - name: Validate release secrets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
+          PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
+          PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+        run: |
+          set -euo pipefail
+          # Linux ships no OS code-signing certificate; the only signing secret
+          # is the Tauri updater key. Everything else is release plumbing and
+          # production runtime config baked in as fallback.
+          missing=0
+          for name in \
+            TAURI_SIGNING_PRIVATE_KEY \
+            RELEASE_APP_ID \
+            RELEASE_APP_PRIVATE_KEY \
+            PRODUCTION_OS_ACCOUNTS_URL \
+            PRODUCTION_OS_ACCOUNTS_API_URL \
+            PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
+            PRODUCTION_JUNE_API_URL; do
+            value="$(printenv "$name" 2>/dev/null || true)"
+            if [ -z "${value//[[:space:]]/}" ]; then
+              echo "::error::$name is required for a production Linux release."
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Stamp clean release version
+        run: |
+          set -euo pipefail
+          # The checked-out commit still carries the RC's version files; stamp the
+          # clean X.Y.Z so the Linux build matches the promoted macOS version.
+          node scripts/set-build-version.mjs "$VERSION"
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "v$VERSION" --repo open-software-network/os-june-releases >/dev/null 2>&1; then
+            echo "::error::Release v$VERSION does not exist in open-software-network/os-june-releases."
+            exit 1
+          fi
+
+          manifest_dir="$RUNNER_TEMP/release-manifest"
+          mkdir -p "$manifest_dir"
+          if ! gh release download "v$VERSION" --repo open-software-network/os-june-releases --pattern "latest.json" --dir "$manifest_dir"; then
+            echo "::error::Release v$VERSION does not include latest.json. Run the production macOS release before attaching Linux assets."
+            exit 1
+          fi
+
+          manifest_path="$manifest_dir/latest.json"
+          if [ ! -f "$manifest_path" ]; then
+            echo "::error::Downloaded latest.json was not found at $manifest_path."
+            exit 1
+          fi
+          echo "RELEASE_MANIFEST_PATH=$manifest_path" >> "$GITHUB_ENV"
+
+      - name: Run release checks
+        run: |
+          pnpm typecheck
+          pnpm test
+
+      - name: Bundle Hermes runtime into app resources
+        run: ./scripts/bundle-hermes-runtime-linux.sh
+
+      - name: Build production Linux bundle
+        env:
+          OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
+          OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
+          OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri:build
+
+      - name: Verify Linux outputs and payload
+        run: |
+          set -euo pipefail
+          bundle_root="src-tauri/target/release/bundle"
+
+          appimage="$(find "$bundle_root/appimage" -maxdepth 1 -name '*.AppImage' | head -1)"
+          if [ -z "$appimage" ]; then
+            echo "::error::AppImage was not produced."
+            exit 1
+          fi
+          if [ ! -s "$appimage" ]; then
+            echo "::error::AppImage is empty."
+            exit 1
+          fi
+
+          # The Tauri updater artifact for AppImage (createUpdaterArtifacts: true,
+          # the v2 default format) is the signed .AppImage itself, with a
+          # detached .sig beside it. Discover the artifact via its signature so
+          # the exact versioned filename never has to be hardcoded (and this
+          # keeps working if the bundle is ever switched to the v1Compatible
+          # .AppImage.tar.gz format).
+          updater_sig="$(find "$bundle_root/appimage" -maxdepth 1 -name '*.sig' | head -1)"
+          if [ -z "$updater_sig" ]; then
+            echo "::error::AppImage updater signature (.sig) was not produced. Is TAURI_SIGNING_PRIVATE_KEY configured?"
+            exit 1
+          fi
+          updater_artifact="${updater_sig%.sig}"
+          if [ ! -s "$updater_artifact" ]; then
+            echo "::error::Updater artifact $updater_artifact is missing or empty."
+            exit 1
+          fi
+          if [ ! -s "$updater_sig" ]; then
+            echo "::error::Updater signature $updater_sig is empty."
+            exit 1
+          fi
+
+          deb="$(find "$bundle_root/deb" -maxdepth 1 -name '*.deb' | head -1)"
+          if [ -z "$deb" ]; then
+            echo "::error::deb package was not produced."
+            exit 1
+          fi
+          if [ ! -s "$deb" ]; then
+            echo "::error::deb package is empty."
+            exit 1
+          fi
+
+          expected_paths="native/hermes/bin/hermes native/hermes/python/current native/hermes/hermes-agent/pyproject.toml"
+
+          # deb payload: dpkg-deb lists the archive contents without unpacking.
+          deb_listing="$(dpkg-deb -c "$deb")"
+          for expected in $expected_paths; do
+            if ! printf '%s\n' "$deb_listing" | grep -q "$expected"; then
+              echo "::error::deb payload does not include bundled Hermes path $expected."
+              exit 1
+            fi
+          done
+
+          # AppImage payload: --appimage-extract unpacks the squashfs without
+          # FUSE (the runtime intercepts the flag before any mount).
+          appimage_abs="$(readlink -f "$appimage")"
+          extract_dir="$RUNNER_TEMP/appimage-extract"
+          rm -rf "$extract_dir"
+          mkdir -p "$extract_dir"
+          chmod +x "$appimage_abs"
+          ( cd "$extract_dir" && "$appimage_abs" --appimage-extract >/dev/null )
+          for expected in $expected_paths; do
+            if ! find "$extract_dir/squashfs-root" -path "*$expected" | grep -q .; then
+              echo "::error::AppImage payload does not include bundled Hermes path $expected."
+              exit 1
+            fi
+          done
+
+          {
+            echo "APPIMAGE_PATH=$appimage"
+            echo "UPDATER_ARTIFACT_PATH=$updater_artifact"
+            echo "UPDATER_SIG_PATH=$updater_sig"
+            echo "DEB_PATH=$deb"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: june-linux-production-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/appimage/*
+            src-tauri/target/release/bundle/deb/*
+          if-no-files-found: error
+
+      - name: Publish Linux release assets
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          appimage="$APPIMAGE_PATH"
+          updater_artifact="$UPDATER_ARTIFACT_PATH"
+          updater_sig="$UPDATER_SIG_PATH"
+          deb="$DEB_PATH"
+
+          # Stable-named aliases for marketing download URLs, matching the
+          # Windows June_x64-setup.exe convention.
+          stable_appimage="$RUNNER_TEMP/June_amd64.AppImage"
+          stable_deb="$RUNNER_TEMP/June_amd64.deb"
+          cp "$appimage" "$stable_appimage"
+          cp "$deb" "$stable_deb"
+
+          # Merge linux-x86_64 into latest.json without disturbing the macOS or
+          # Windows platform entries or the release notes. The updater url points
+          # at the versioned updater artifact uploaded below.
+          updater_name="$(basename "$updater_artifact")"
+          MANIFEST_PATH="$RELEASE_MANIFEST_PATH" \
+          VERSION="$VERSION" \
+          UPDATER_NAME="$updater_name" \
+          UPDATER_SIG="$updater_sig" \
+          node <<'NODE'
+          const fs = require("node:fs");
+          const manifestPath = process.env.MANIFEST_PATH;
+          const version = process.env.VERSION;
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+          if (manifest.version !== version && manifest.version !== `v${version}`) {
+            throw new Error(`latest.json version is ${manifest.version}, expected ${version}.`);
+          }
+          if (!manifest.platforms || typeof manifest.platforms !== "object") {
+            manifest.platforms = {};
+          }
+          const signature = fs.readFileSync(process.env.UPDATER_SIG, "utf8").trim();
+          const url = `https://github.com/open-software-network/os-june-releases/releases/download/v${version}/${encodeURIComponent(process.env.UPDATER_NAME)}`;
+          manifest.platforms["linux-x86_64"] = { signature, url };
+          fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+
+          # The AppImage updater artifact and the marketing AppImage are the same
+          # file in the v2 format, so re-uploading it under the same name just
+          # clobbers idempotently.
+          for asset in \
+            "$updater_artifact" \
+            "$updater_sig" \
+            "$appimage" \
+            "$deb" \
+            "$stable_appimage" \
+            "$stable_deb" \
+            "$RELEASE_MANIFEST_PATH"; do
+            if ! gh release upload "v$VERSION" "$asset" --repo open-software-network/os-june-releases --clobber; then
+              echo "::error::Failed to upload $asset."
+              exit 1
+            fi
+          done
+
+      - name: Summary
+        run: |
+          {
+            echo "### Production Linux release"
+            echo "- Version: \`$VERSION\`"
+            echo "- Release repo: \`open-software-network/os-june-releases\`"
+            echo "- AppImage download: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_amd64.AppImage\`"
+            echo "- deb download: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_amd64.deb\`"
+            echo "- Updater platform key: \`linux-x86_64\` (AppImage auto-updates; deb installs do not)"
+            echo "- OS code signing: none on Linux; the updater artifact is signed with the Tauri updater key"
+          } >> "$GITHUB_STEP_SUMMARY"
