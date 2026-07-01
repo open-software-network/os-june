@@ -576,7 +576,9 @@ pub async fn process_saved_source_audio(
     let _ = std::fs::remove_dir_all(&segment_dir);
 
     let has_valid_transcript = !transcription_outcome.candidates.is_empty();
-    for failure in &transcription_outcome.failures {
+    let visible_failures =
+        visible_transcription_failures(&transcription_outcome.failures, has_valid_transcript);
+    for failure in &visible_failures {
         let warning = failure
             .input
             .warning
@@ -644,6 +646,19 @@ pub async fn process_saved_source_audio(
             )
             .await?;
         return Err(AppError::new("transcription_failed", failure_message));
+    }
+    if let Some(failure_message) = blocking_transcription_failure_summary(&visible_failures) {
+        repos
+            .set_note_status(
+                note_id,
+                ProcessingStatus::Failed,
+                Some(failure_message.clone()),
+            )
+            .await?;
+        return Err(AppError::new(
+            "transcription_partially_failed",
+            failure_message,
+        ));
     }
     let labeled_transcript = labeled_transcript_from_sources(&valid_sources);
     repos
@@ -1408,6 +1423,46 @@ fn source_failure_summary(failures: &[FailedTranscriptCandidate]) -> Option<Stri
     )
 }
 
+fn visible_transcription_failures(
+    failures: &[FailedTranscriptCandidate],
+    has_valid_transcript: bool,
+) -> Vec<FailedTranscriptCandidate> {
+    failures
+        .iter()
+        .filter(|failure| {
+            let warning = failure
+                .input
+                .warning
+                .as_deref()
+                .unwrap_or("Source did not produce a usable transcript.");
+            should_record_source_failure(
+                failure.input.source.as_str(),
+                warning,
+                has_valid_transcript,
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn blocking_transcription_failure_summary(
+    failures: &[FailedTranscriptCandidate],
+) -> Option<String> {
+    let blocking_failures = failures
+        .iter()
+        .filter(|failure| {
+            let warning = failure
+                .input
+                .warning
+                .as_deref()
+                .unwrap_or("Source did not produce a usable transcript.");
+            !is_no_speech_message(warning)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    source_failure_summary(&blocking_failures)
+}
+
 /// Remove system-audio sources whose track is effectively silent, but only when
 /// another source remains to carry the recording. Keeping the last source — even
 /// a silent one — preserves the "no speech" failure for system-only captures.
@@ -2156,6 +2211,38 @@ mod tests {
     }
 
     #[test]
+    fn no_speech_failures_do_not_block_partial_note_generation() {
+        let visible = visible_transcription_failures(
+            &[failed_candidate(
+                "microphone",
+                "No speech detected. Try speaking louder or moving closer to the microphone.",
+                2,
+            )],
+            true,
+        );
+
+        assert_eq!(visible.len(), 1);
+        assert!(blocking_transcription_failure_summary(&visible).is_none());
+    }
+
+    #[test]
+    fn invalid_turn_failures_block_partial_note_generation() {
+        let visible = visible_transcription_failures(
+            &[failed_candidate(
+                "microphone",
+                "The processing service returned an invalid response.",
+                5,
+            )],
+            true,
+        );
+
+        assert_eq!(
+            blocking_transcription_failure_summary(&visible).as_deref(),
+            Some("Microphone: The processing service returned an invalid response.")
+        );
+    }
+
+    #[test]
     fn never_drops_microphone_failures() {
         assert!(should_record_source_failure(
             "microphone",
@@ -2269,6 +2356,21 @@ mod tests {
             source_path: PathBuf::from(source_path),
             covers_full_source: false,
             ..test_job(path, source, turn_index)
+        }
+    }
+
+    fn failed_candidate(source: &str, warning: &str, turn_index: i64) -> FailedTranscriptCandidate {
+        FailedTranscriptCandidate {
+            artifact_id: format!("{source}-artifact"),
+            input: SourceTranscriptInput {
+                source: source.to_string(),
+                text: String::new(),
+                valid: false,
+                warning: Some(warning.to_string()),
+                start_ms: Some(turn_index * 1_000),
+                end_ms: Some(turn_index * 1_000 + 500),
+                turn_index: Some(turn_index),
+            },
         }
     }
 
