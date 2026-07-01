@@ -720,7 +720,9 @@ describe("AgentWorkspace", () => {
     expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
 
-    act(() => resolveSubmit?.());
+    await act(async () => {
+      resolveSubmit?.();
+    });
   });
 
   it("wraps a submitted issue report for June and waits for explicit send", async () => {
