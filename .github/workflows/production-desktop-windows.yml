@@ -184,7 +184,7 @@ jobs:
 
       - name: Run release checks
         run: |
-          pnpm lint
+          pnpm typecheck
           pnpm test
 
       - name: Bundle Hermes runtime into app resources
