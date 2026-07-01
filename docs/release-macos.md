@@ -67,14 +67,27 @@ in-app updater, then promote it to stable. There is no direct stable-build path.
 GitHub Actions -> rc-desktop-release -> Run workflow
   base-version = X.Y.Z   (the version you are heading toward)
   rc-number    = 1        (2, 3, ... for later candidates)
+  macos-target = aarch64-apple-darwin
   macos-runner = mac-studio
 ```
 
-`rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
-version `X.Y.Z-rc.N` (bundling the Hermes runtime), and publishes it to a fixed
-`rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
-It records the source commit in `rc-build.json` (so promote can rebuild the same
-tree) and does NOT touch `main`.
+`rc-desktop-release` builds a signed + notarized app at version `X.Y.Z-rc.N`
+(bundling the Hermes runtime), and publishes it to a fixed `rc` prerelease in
+`open-software-network/os-june-releases` with `latest-rc.json`. RC builds
+default to `aarch64-apple-darwin` because the RC tester pool is Apple Silicon.
+Choose `universal-apple-darwin` only when you explicitly need an Intel-capable
+RC candidate. The workflow records the source commit in `rc-build.json` (so
+promote can rebuild the same tree) and does NOT touch `main`.
+
+The RC workflow does not rerun the full frontend and Rust suites itself. It
+waits for the release-relevant `desktop` validation jobs (`Changed paths`,
+`Frontend lint and tests`, `Tauri Rust format`, and `Tauri Rust clippy and
+tests`) to have completed successfully or intentionally skipped for the latest
+desktop app-source commit on `main`, then stamps the RC version and builds from
+the current `main` commit. Those commits are usually identical; they can differ
+after docs or workflow-only merges. If the validation jobs are still running,
+the RC workflow waits; if any required job failed or the run is missing, the RC
+workflow fails.
 
 ### 2. Test the candidate
 
@@ -95,8 +108,9 @@ holds; a mismatch (or a blank field) fails the run, so you can never promote a
 different candidate than you intend.
 
 `promote-desktop-release` checks out the exact commit the RC was built from,
-stamps the clean `X.Y.Z`, and reruns the full sign + notarize path, so stable
-ships the same source you tested with a clean version string. It then:
+stamps the clean `X.Y.Z`, and reruns the full universal sign + notarize path, so
+stable ships the same source you tested with a clean version string and support
+for both Apple Silicon and Intel Macs. It then:
 
 - publishes the `vX.Y.Z` stable release (marked latest) with the DMG, updater
   archive + signature, a regenerated `latest.json`, and a `stable-build.json`

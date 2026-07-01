@@ -1,11 +1,12 @@
 name: rc-desktop-release
 
-# Builds a signed + notarized universal macOS app for the `rc` update channel,
-# on demand. The artifact version is X.Y.Z-rc.N (prerelease semver, so the
-# updater orders rc.1 < rc.2 < ... < X.Y.Z). Assets publish to a FIXED `rc`
-# release tag in os-june-releases with stable filenames, so the channel URL
+# Builds a signed + notarized Apple Silicon macOS app for the `rc` update
+# channel by default, with universal builds still available on demand. The
+# artifact version is X.Y.Z-rc.N (prerelease semver, so the updater orders
+# rc.1 < rc.2 < ... < X.Y.Z). Assets publish to a FIXED `rc` release tag in
+# os-june-releases with stable filenames, so the channel URL
 # (releases/download/rc/latest-rc.json) never moves. promote-desktop.yml later
-# republishes the exact same notarized bytes to the stable channel.
+# rebuilds this exact source commit for the stable channel.
 on:
   workflow_dispatch:
     inputs:
@@ -18,6 +19,14 @@ on:
         required: true
         default: "1"
         type: string
+      macos-target:
+        description: "macOS target for the RC build"
+        required: true
+        default: "aarch64-apple-darwin"
+        type: choice
+        options:
+          - aarch64-apple-darwin
+          - universal-apple-darwin
       macos-runner:
         description: "Runner for the signed macOS build"
         required: true
@@ -28,6 +37,7 @@ on:
           - github-hosted
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -42,6 +52,10 @@ jobs:
     name: Release rc macOS app
     runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["macos-latest"]') }}
     environment: production
+    env:
+      MACOS_TARGET: ${{ inputs.macos-target }}
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       # Same release App identity as production: it publishes to os-june-releases.
       - name: Mint release token (GitHub App)
@@ -75,7 +89,10 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ inputs.macos-target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || inputs.macos-target }}
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       - name: Cache cargo registry
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -181,6 +198,27 @@ jobs:
           # Record the exact source commit so promote-desktop.yml can rebuild the
           # clean X.Y.Z from this same tree (only the version string differs).
           echo "BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          desktop_validation_commit="$(
+            git rev-list -n 1 HEAD -- \
+              .github/workflows/desktop.yml \
+              hud.html \
+              index.html \
+              meeting-hud.html \
+              biome.json \
+              package.json \
+              pnpm-lock.yaml \
+              public \
+              scripts \
+              src \
+              src-tauri \
+              tsconfig.json \
+              vite.config.ts
+          )"
+          if [ -z "$desktop_validation_commit" ]; then
+            echo "::error::Could not find a desktop app source commit to validate."
+            exit 1
+          fi
+          echo "DESKTOP_VALIDATION_COMMIT=$desktop_validation_commit" >> "$GITHUB_ENV"
 
       - name: Guard rc version advances the channel
         env:
@@ -220,6 +258,77 @@ jobs:
           console.log(`rc version ${next} advances the channel (current ${current}).`);
           NODE
 
+      - name: Verify desktop validation jobs passed for release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="open-software-network/os-june"
+          if [ "$DESKTOP_VALIDATION_COMMIT" != "$BUILD_COMMIT" ]; then
+            echo "Build commit $BUILD_COMMIT has no desktop app source changes; validating latest desktop app source commit $DESKTOP_VALIDATION_COMMIT."
+          fi
+          for attempt in $(seq 1 60); do
+            result="$(
+              gh run list \
+                --repo "$repo" \
+                --workflow desktop.yml \
+                --branch main \
+                --limit 100 \
+                --json databaseId,headSha,status,conclusion,url,createdAt \
+                --jq "map(select(.headSha == \"$DESKTOP_VALIDATION_COMMIT\")) | sort_by(.createdAt) | reverse | first // {} | [.databaseId // \"\", .status // \"missing\", .url // \"\"] | @tsv"
+            )"
+            IFS=$'\t' read -r run_id status url <<<"$result"
+            if [ "$status" = "completed" ]; then
+              jobs_file="$RUNNER_TEMP/desktop-jobs.json"
+              gh run view "$run_id" \
+                --repo "$repo" \
+                --json jobs \
+                --jq ".jobs" > "$jobs_file"
+              JOBS_FILE="$jobs_file" DESKTOP_RUN_URL="$url" node <<'NODE'
+          const { readFileSync } = require("node:fs");
+          const jobs = JSON.parse(readFileSync(process.env.JOBS_FILE, "utf8"));
+          const requiredJobs = [
+            "Changed paths",
+            "Frontend lint and tests",
+            "Tauri Rust format",
+            "Tauri Rust clippy and tests",
+          ];
+          let failed = false;
+          for (const name of requiredJobs) {
+            const job = jobs.find((candidate) => candidate.name === name);
+            if (!job) {
+              console.error(`::error::Missing required desktop job '${name}' in ${process.env.DESKTOP_RUN_URL}`);
+              failed = true;
+              continue;
+            }
+            if (job.status !== "completed") {
+              console.error(`::error::Desktop job '${name}' is ${job.status} in ${process.env.DESKTOP_RUN_URL}`);
+              failed = true;
+              continue;
+            }
+            if (!["success", "skipped"].includes(job.conclusion)) {
+              console.error(`::error::Desktop job '${name}' concluded '${job.conclusion}' in ${process.env.DESKTOP_RUN_URL}`);
+              failed = true;
+            }
+          }
+          if (failed) {
+            process.exit(1);
+          }
+          console.log(`Required desktop validation jobs passed for ${process.env.DESKTOP_RUN_URL}`);
+          NODE
+              echo "Desktop validation already passed for $DESKTOP_VALIDATION_COMMIT: $url"
+              exit 0
+            fi
+            if [ "$status" = "missing" ]; then
+              echo "Waiting for desktop validation for $DESKTOP_VALIDATION_COMMIT (attempt $attempt/60)."
+            else
+              echo "Desktop validation for $DESKTOP_VALIDATION_COMMIT is $status (attempt $attempt/60): $url"
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out waiting for desktop validation to pass for $DESKTOP_VALIDATION_COMMIT."
+          exit 1
+
       - name: Stamp rc build version
         run: |
           set -euo pipefail
@@ -227,13 +336,6 @@ jobs:
           # NOT committed — rc versions are ephemeral and sort below their base.
           node scripts/set-build-version.mjs "$VERSION"
           cargo update --workspace --manifest-path src-tauri/Cargo.toml
-
-      - name: Run release checks
-        run: |
-          set -euo pipefail
-          pnpm typecheck
-          pnpm test
-          pnpm test:rust
 
       - name: Generate rc release notes
         run: |
@@ -306,10 +408,13 @@ jobs:
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         with:
-          args: --bundles app,dmg --target universal-apple-darwin
+          args: --bundles app,dmg --target ${{ inputs.macos-target }}
           # The DMG is notarized after the build, so don't let tauri-action
           # publish anything itself.
           includeUpdaterJson: false
+
+      - name: Show sccache stats
+        run: ${SCCACHE_PATH} --show-stats
 
       - name: Notarize, verify, and publish rc release assets
         env:
@@ -320,8 +425,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          # shellcheck disable=SC2206
           dmgs=(
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/${MACOS_TARGET}/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/dmg/*.dmg
           )
           if [ "${#dmgs[@]}" -ne 1 ]; then
@@ -345,12 +451,14 @@ jobs:
           xcrun stapler validate "$dmg"
           spctl --assess --type install --verbose "$dmg"
 
+          # shellcheck disable=SC2206
           app_archives=(
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${MACOS_TARGET}/release/bundle/macos/*.app.tar.gz
             src-tauri/target/release/bundle/macos/*.app.tar.gz
           )
+          # shellcheck disable=SC2206
           app_signatures=(
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            src-tauri/target/${MACOS_TARGET}/release/bundle/macos/*.app.tar.gz.sig
             src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           )
           if [ "${#app_archives[@]}" -ne 1 ]; then
@@ -365,9 +473,13 @@ jobs:
           release_dir="$RUNNER_TEMP/rc-release-assets"
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
-          stable_dmg="$release_dir/June_universal.dmg"
-          app_archive="$release_dir/June_universal.app.tar.gz"
-          app_signature="$release_dir/June_universal.app.tar.gz.sig"
+          artifact_slug="aarch64"
+          if [ "$MACOS_TARGET" = "universal-apple-darwin" ]; then
+            artifact_slug="universal"
+          fi
+          stable_dmg="$release_dir/June_${artifact_slug}.dmg"
+          app_archive="$release_dir/June_${artifact_slug}.app.tar.gz"
+          app_signature="$release_dir/June_${artifact_slug}.app.tar.gz.sig"
           latest_rc_json="$release_dir/latest-rc.json"
           cp "$dmg" "$stable_dmg"
           cp "${app_archives[0]}" "$app_archive"
@@ -379,29 +491,34 @@ jobs:
           printf '{\n  "version": "%s",\n  "commit": "%s"\n}\n' \
             "$VERSION" "$BUILD_COMMIT" > "$rc_build_json"
 
-          # Stable filenames + the fixed `rc` tag keep the manifest and asset URLs
-          # constant across rc builds, so the app's RC_ENDPOINT never moves.
+          # Stable per-target filenames + the fixed `rc` tag keep the manifest
+          # and asset URLs constant across rc builds, so the app's RC_ENDPOINT
+          # never moves.
           SIGNATURE_PATH="$app_signature" \
           LATEST_JSON_PATH="$latest_rc_json" \
           NOTES_PATH="$RC_NOTES_PATH" \
+          APP_ARCHIVE_NAME="$(basename "$app_archive")" \
+          MACOS_TARGET="$MACOS_TARGET" \
           node <<'NODE'
           const fs = require("node:fs");
           const version = process.env.VERSION;
           const signature = fs.readFileSync(process.env.SIGNATURE_PATH, "utf8");
           const notes = fs.readFileSync(process.env.NOTES_PATH, "utf8").trim();
-          const url =
-            "https://github.com/open-software-network/os-june-releases/releases/download/rc/June_universal.app.tar.gz";
+          const url = `https://github.com/open-software-network/os-june-releases/releases/download/rc/${process.env.APP_ARCHIVE_NAME}`;
           const platform = { signature, url };
+          const platforms = {
+            "darwin-aarch64": platform,
+            "darwin-aarch64-app": platform,
+          };
+          if (process.env.MACOS_TARGET === "universal-apple-darwin") {
+            platforms["darwin-x86_64"] = platform;
+            platforms["darwin-x86_64-app"] = platform;
+          }
           const latest = {
             version,
             notes,
             pub_date: new Date().toISOString(),
-            platforms: {
-              "darwin-aarch64": platform,
-              "darwin-x86_64": platform,
-              "darwin-aarch64-app": platform,
-              "darwin-x86_64-app": platform,
-            },
+            platforms,
           };
           fs.writeFileSync(
             process.env.LATEST_JSON_PATH,
@@ -425,6 +542,33 @@ jobs:
               --target main
           fi
 
+          stale_assets=()
+          if [ "$artifact_slug" = "aarch64" ]; then
+            stale_assets=(
+              June_universal.dmg
+              June_universal.app.tar.gz
+              June_universal.app.tar.gz.sig
+            )
+          else
+            stale_assets=(
+              June_aarch64.dmg
+              June_aarch64.app.tar.gz
+              June_aarch64.app.tar.gz.sig
+            )
+          fi
+          for stale_asset in "${stale_assets[@]}"; do
+            stale_api_url="$(
+              gh release view rc \
+                --repo open-software-network/os-june-releases \
+                --json assets \
+                --jq ".assets[] | select(.name == \"$stale_asset\") | .apiUrl"
+            )"
+            if [ -n "$stale_api_url" ]; then
+              echo "Deleting stale rc asset $stale_asset"
+              gh api -X DELETE "$stale_api_url"
+            fi
+          done
+
           gh release upload rc \
             "$stable_dmg" \
             "$app_archive" \
@@ -439,6 +583,9 @@ jobs:
           {
             echo "### rc macOS release"
             echo "- Version: \`$VERSION\`"
+            echo "- Target: \`$MACOS_TARGET\`"
+            echo "- Build commit: \`$BUILD_COMMIT\`"
+            echo "- Desktop validation commit: \`$DESKTOP_VALIDATION_COMMIT\`"
             echo "- Channel manifest: \`https://github.com/open-software-network/os-june-releases/releases/download/rc/latest-rc.json\`"
             echo "- Promote to stable: run \`promote-desktop.yml\`"
           } >> "$GITHUB_STEP_SUMMARY"

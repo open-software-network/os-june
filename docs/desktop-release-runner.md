@@ -36,7 +36,9 @@ self-hosted machine.
 ```
 
 The workflow installs Node and pnpm through GitHub Actions, but the host still
-needs the Apple and Rust build toolchain:
+needs the Apple and Rust build toolchain. Install both Rust macOS targets:
+RC builds default to Apple Silicon, while stable promotion still builds a
+universal app.
 
 ```sh
 xcode-select --install
@@ -69,3 +71,8 @@ The workflows cache `.tauri-hermes/hermes` by runner OS, runner architecture,
 Hermes pin, and bundling script. On a cache hit, `scripts/bundle-hermes-runtime.sh`
 reuses the restored runtime, re-signs every Mach-O file with the current
 Developer ID identity, and runs the relocation self-test before the app build.
+
+The RC workflow also enables `sccache` through GitHub Actions cache. The first
+run after a dependency or Rust source change may still compile normally, but
+later RC builds for nearby commits should reuse compiler outputs without
+restoring `src-tauri/target` directly.
