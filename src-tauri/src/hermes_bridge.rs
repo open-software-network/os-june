@@ -64,6 +64,18 @@ const JUNE_WEB_MCP_SCRIPT: &str = include_str!("hermes/june_web_mcp.py");
 /// Environment variable the `june_web` MCP reads its loopback proxy token from.
 /// Kept out of argv so it does not appear in process listings.
 const JUNE_WEB_MCP_TOKEN_ENV: &str = "JUNE_WEB_PROXY_TOKEN";
+const JUNE_IMAGE_MCP_SERVER_NAME: &str = "june_image";
+const JUNE_IMAGE_MCP_SCRIPT_NAME: &str = "june_image_mcp.py";
+const JUNE_IMAGE_MCP_SCRIPT: &str = include_str!("hermes/june_image_mcp.py");
+/// Hermes's own shared image directory (under the Hermes home). The runtime
+/// stores uploaded/attached images here as `upload_*.png`, and the `june_image`
+/// MCP writes generated/edited images here too — one unified filename space, so
+/// `edit_image` can resolve a source image by the name the model sees whether it
+/// came from `generate_image`, the `/image` fast path, or a user attachment.
+const JUNE_IMAGE_MCP_IMAGES_DIR_NAME: &str = "images";
+/// Environment variable the `june_image` MCP reads its loopback proxy token
+/// from. Kept out of argv so it does not appear in process listings.
+const JUNE_IMAGE_MCP_TOKEN_ENV: &str = "JUNE_IMAGE_PROXY_TOKEN";
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -103,6 +115,17 @@ Clarifying questions: before acting on a request, especially the first user mess
 /// first-class capability.
 const JUNE_SOUL_WEB_MD: &str = r#"
 Web tools: you have a `june_web` MCP toolset with `web_search` and `web_fetch`. Use `web_search` for current information, recent events, or facts you are not sure of, then `web_fetch` to read a specific result or URL in full as markdown. Reach for these instead of guessing when an answer may have changed since your training, and base your reply only on what the results actually say. Some sites block automated fetching; if a fetch is refused, search for another source.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The `generate_image` and
+/// `edit_image` tools are discovered through the `june_image` MCP server; this
+/// note teaches the model when to reach for them and to thread a returned
+/// filename back when editing. Image generation runs through the app's metered,
+/// privacy-preserving proxy, so the model should treat it as a first-class
+/// capability.
+const JUNE_SOUL_IMAGE_MD: &str = r#"
+Image tools: you have a `june_image` MCP toolset with `generate_image` and `edit_image`. Use `generate_image` when the user asks you to draw, create, make, or generate an image, picture, illustration, or logo; the result is shown to the user in the conversation and the tool returns a `filename`.
+When the user asks to change, adjust, refine, or reframe an image you just made — including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon" — call `edit_image` with that exact `filename` as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image you already produced, even if you cannot see it. Only pass a `source_filename` a prior image tool returned.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -786,12 +809,14 @@ async fn start_hermes_bridge_inner(
     let provider_proxy = ensure_provider_proxy(bridge).await?;
     let june_context_mcp = sync_june_context_mcp(app, &command)?;
     let june_web_mcp = sync_june_web_mcp(app, &command)?;
+    let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
     sync_hermes_config(
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
         &june_context_mcp,
         &june_web_mcp,
+        &june_image_mcp,
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -972,6 +997,13 @@ struct JuneContextMcpConfig {
 struct JuneWebMcpConfig {
     command: String,
     script_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneImageMcpConfig {
+    command: String,
+    script_path: PathBuf,
+    images_dir: PathBuf,
 }
 
 #[tauri::command]
@@ -5837,6 +5869,34 @@ fn sync_june_web_mcp(app: &AppHandle, hermes_command: &str) -> Result<JuneWebMcp
     })
 }
 
+fn sync_june_image_mcp(
+    app: &AppHandle,
+    hermes_home: &std::path::Path,
+    hermes_command: &str,
+) -> Result<JuneImageMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_IMAGE_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_IMAGE_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
+    // Share Hermes's own image dir so edit_image resolves a source image by the
+    // name the model sees, whether generate_image, the /image fast path, or a
+    // user attachment produced it (uploads land here as upload_*.png). Persists
+    // across spawns, so an earlier session's image can still be edited later.
+    let images_dir = hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME);
+    fs::create_dir_all(&images_dir)
+        .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
+
+    Ok(JuneImageMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+        images_dir,
+    })
+}
+
 fn hermes_python_command(hermes_command: &str) -> String {
     let command_path = Path::new(hermes_command);
     if let Some(parent) = command_path
@@ -5872,6 +5932,7 @@ fn sync_hermes_config(
     provider_proxy_token: &str,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
+    june_image_mcp: &JuneImageMcpConfig,
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
@@ -5883,6 +5944,7 @@ fn sync_hermes_config(
         &external_skill_dirs(),
         Some(june_context_mcp),
         Some(june_web_mcp),
+        Some(june_image_mcp),
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -5900,6 +5962,7 @@ fn render_hermes_config(
     external_skill_dirs: &[PathBuf],
     june_context_mcp: Option<&JuneContextMcpConfig>,
     june_web_mcp: Option<&JuneWebMcpConfig>,
+    june_image_mcp: Option<&JuneImageMcpConfig>,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
         "  external_dirs: []\n".to_string()
@@ -5913,6 +5976,7 @@ fn render_hermes_config(
     let mcp_servers_block = render_mcp_servers_config(
         june_context_mcp,
         june_web_mcp,
+        june_image_mcp,
         base_url,
         provider_proxy_token,
     );
@@ -5943,6 +6007,7 @@ skills:
 fn render_mcp_servers_config(
     context: Option<&JuneContextMcpConfig>,
     web: Option<&JuneWebMcpConfig>,
+    image: Option<&JuneImageMcpConfig>,
     base_url: &str,
     proxy_token: &str,
 ) -> String {
@@ -5952,6 +6017,9 @@ fn render_mcp_servers_config(
     }
     if let Some(config) = web {
         entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
+    }
+    if let Some(config) = image {
+        entries.push_str(&render_image_mcp_entry(config, base_url, proxy_token));
     }
     if entries.is_empty() {
         return "mcp_servers: {}\n".to_string();
@@ -6006,6 +6074,39 @@ fn render_web_mcp_entry(config: &JuneWebMcpConfig, base_url: &str, proxy_token: 
     )
 }
 
+/// The image MCP gets the loopback proxy base URL and its images directory as
+/// arguments, and the proxy token via the environment (kept out of argv). The
+/// longer timeout matches image generation, which is far slower than a text
+/// tool call.
+fn render_image_mcp_entry(
+    config: &JuneImageMcpConfig,
+    base_url: &str,
+    proxy_token: &str,
+) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+      - {images_dir}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: 180
+    connect_timeout: 10
+"#,
+        server_name = JUNE_IMAGE_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        images_dir = yaml_string(&config.images_dir.to_string_lossy()),
+        token_env = JUNE_IMAGE_MCP_TOKEN_ENV,
+        token = yaml_string(proxy_token),
+    )
+}
+
 /// User-global skill directories Hermes loads in addition to its built-in
 /// `$HERMES_HOME/skills`. June advertises the conventional `~/.agents/skills`
 /// folder (where the `skills` CLI installs) when it exists, so a user or team
@@ -6043,10 +6144,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -6334,6 +6435,24 @@ async fn handle_june_provider_connection(
         ("POST", "/v1/web/fetch") => {
             forward_web_tool(&mut stream, "/v1/web/fetch", &request.body).await?;
         }
+        ("POST", "/v1/image/generate") => {
+            // The image MCP sends no model, so the user's selected image model
+            // is authoritative — inject it here (June API requires a model).
+            // safe_mode likewise comes from the on-device setting.
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            ensure_image_generation_model(&mut body);
+            ensure_image_safe_mode(&mut body);
+            forward_image_tool(&mut stream, "/v1/image/generate", &body).await?;
+        }
+        ("POST", "/v1/image/edit") => {
+            // Edits use June API's default edit model (a separate catalog), so
+            // no model is injected here; safe_mode still comes from the setting.
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            ensure_image_safe_mode(&mut body);
+            forward_image_tool(&mut stream, "/v1/image/edit", &body).await?;
+        }
         _ => {
             write_json_response(
                 &mut stream,
@@ -6570,6 +6689,75 @@ async fn forward_web_tool(
             )
             .await
         }
+    }
+}
+
+/// Forwards an image tool request (`/v1/image/generate` or `/v1/image/edit`) to
+/// June API with the user's token, passing the response envelope straight
+/// through so the MCP sees the same `{success, data|message}` shape (and its
+/// metering-derived 402/422 statuses) the desktop image path gets.
+async fn forward_image_tool(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    body: &serde_json::Value,
+) -> io::Result<()> {
+    match crate::june_api::forward_image_request(path, body).await {
+        Ok(response) => {
+            write_raw_response(
+                stream,
+                response.status,
+                &response.content_type,
+                &response.body,
+            )
+            .await
+        }
+        Err(error) => {
+            write_json_response(
+                stream,
+                502,
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("Image request failed: {}", error.message),
+                }),
+            )
+            .await
+        }
+    }
+}
+
+/// Injects the user's selected image-generation model when the request omits it,
+/// mirroring how the chat-completions proxy injects the chat model. The image
+/// MCP intentionally sends no model so this setting stays authoritative.
+fn ensure_image_generation_model(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let has_model = object
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|model| !model.is_empty())
+        .unwrap_or(false);
+    if !has_model {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(crate::providers::image_model()),
+        );
+    }
+}
+
+/// Injects the on-device image safe-mode setting when the request omits it, so
+/// MCP-driven generation/editing honors the user's Settings toggle (the MCP
+/// never sends `safeMode`). Uses the camelCase key June API expects.
+fn ensure_image_safe_mode(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    if !object.contains_key("safeMode") {
+        object.insert(
+            "safeMode".to_string(),
+            serde_json::Value::Bool(crate::providers::image_safe_mode()),
+        );
     }
 }
 
@@ -7088,6 +7276,7 @@ mod tests {
             &dirs,
             None,
             None,
+            None,
         );
 
         assert!(config.contains("model:\n  default: \"glm\""));
@@ -7107,6 +7296,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
 
         assert!(config.contains("skills:\n  external_dirs: []\n"));
@@ -7120,10 +7310,19 @@ mod tests {
         }
     }
 
+    fn test_june_image_mcp_config() -> JuneImageMcpConfig {
+        JuneImageMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_image_mcp.py"),
+            images_dir: PathBuf::from("/tmp/hermes-home/images"),
+        }
+    }
+
     #[test]
     fn render_hermes_config_registers_june_context_mcp_server() {
         let context = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
         let config = render_hermes_config(
             "glm",
             "http://127.0.0.1:9/v1",
@@ -7132,9 +7331,10 @@ mod tests {
             &[],
             Some(&context),
             Some(&web),
+            Some(&image),
         );
 
-        // Both built-in servers live under one mcp_servers map.
+        // All three built-in servers live under one mcp_servers map.
         assert!(config.contains("mcp_servers:\n  june_context:\n"));
         assert!(config.contains("  june_web:\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
@@ -7145,6 +7345,12 @@ mod tests {
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_web_mcp.py\"\n"));
         assert!(config.contains("      - \"http://127.0.0.1:9/v1\"\n"));
         assert!(config.contains("      JUNE_WEB_PROXY_TOKEN: \"proxy-tok\"\n"));
+        // The image server gets the loopback proxy URL and its images dir as
+        // args and the proxy token via env, same as the web server.
+        assert!(config.contains("  june_image:\n"));
+        assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_image_mcp.py\"\n"));
+        assert!(config.contains("      - \"/tmp/hermes-home/images\"\n"));
+        assert!(config.contains("      JUNE_IMAGE_PROXY_TOKEN: \"proxy-tok\"\n"));
     }
 
     #[test]
@@ -7155,6 +7361,7 @@ mod tests {
             "tok",
             "web",
             &[],
+            None,
             None,
             None,
         );
@@ -7448,7 +7655,9 @@ mod tests {
 
         let mcp = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
-        sync_hermes_config(home.path(), 4242, "proxy-token", &mcp, &web).expect("sync config");
+        let image = test_june_image_mcp_config();
+        sync_hermes_config(home.path(), 4242, "proxy-token", &mcp, &web, &image)
+            .expect("sync config");
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
         assert!(config.contains("platform_toolsets:"));

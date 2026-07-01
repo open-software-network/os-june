@@ -385,19 +385,30 @@ pub struct GeneratedImageDto {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ImageGenerateBody {
     prompt: String,
     model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_mode: Option<bool>,
 }
 
 /// Forwards a prompt to June API image generation with the user's access token.
-/// Image generation is not metered yet, but the endpoint is still authenticated
-/// like every other call, so the token attaches the same way.
-pub async fn generate_image(prompt: String, model: String) -> Result<GeneratedImageDto, AppError> {
+/// `safe_mode` carries the on-device setting (blur adult content); `None` leaves
+/// it unset so June API applies its own default.
+pub async fn generate_image(
+    prompt: String,
+    model: String,
+    safe_mode: Option<bool>,
+) -> Result<GeneratedImageDto, AppError> {
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     post_json(
         "/v1/image/generate",
-        &ImageGenerateBody { prompt, model },
+        &ImageGenerateBody {
+            prompt,
+            model,
+            safe_mode,
+        },
         send_venice_api_key,
     )
     .await
@@ -639,6 +650,18 @@ pub async fn forward_web_request(
         content_type,
         body: bytes.to_vec(),
     })
+}
+
+/// Forwards an image tool request (`/v1/image/generate` or `/v1/image/edit`) to
+/// the June API with the user's access token, returning the raw response so the
+/// loopback proxy can pass the metered envelope straight through to the local
+/// image MCP. Same token-injection guarantee as the web proxy path: the access
+/// token never leaves this process.
+pub async fn forward_image_request(
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<WebProxyResponse, AppError> {
+    forward_web_request(path, body).await
 }
 
 fn limit_agent_chat_messages_for_proxy(body: &mut serde_json::Value) {
@@ -1440,6 +1463,7 @@ fn path_accepts_venice_api_key(path: &str) -> bool {
             | "/v1/dictate/cleanup"
             | "/v1/chat/completions"
             | "/v1/image/generate"
+            | "/v1/image/edit"
             | "/v1/web/search"
             | "/v1/web/fetch"
     )
@@ -1811,6 +1835,10 @@ mod tests {
         ));
         assert!(request_accepts_venice_api_key(
             "/v1/image/generate",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_IMAGE_MODEL)
+        ));
+        assert!(request_accepts_venice_api_key(
+            "/v1/image/edit",
             model_accepts_venice_api_key(crate::providers::DEFAULT_IMAGE_MODEL)
         ));
     }
