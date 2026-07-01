@@ -1,0 +1,90 @@
+import type { LocalGenerationSettingsDto, VeniceModelDto } from "./tauri";
+
+// Bring-your-own local text generation. The model catalog is derived
+// client-side from provider settings, so the user's configured local endpoint
+// is surfaced as a synthetic catalog option. These helpers are shared between
+// the settings surface and the agent composer, so they live outside
+// AppSettings.
+
+export const LOCAL_GENERATION_OPTION_ID_PREFIX = "__june_local_generation__:";
+
+/** Stable synthetic id for the local model catalog option. Prefixed so it can
+ * never collide with a real remote model id (finding: a raw local id that
+ * matched a remote id let the picker persist it as the remote model). */
+export function localGenerationOptionId(modelId: string) {
+  return `${LOCAL_GENERATION_OPTION_ID_PREFIX}${encodeURIComponent(modelId.trim())}`;
+}
+
+/** Inverse of {@link localGenerationOptionId}: the raw local model id encoded
+ * in a synthetic option id, or null when the id is not a synthetic local
+ * option (or is malformed). Hermes only knows the raw id (the provider proxy
+ * advertises it on /v1/models), so every id that crosses into Hermes, such as
+ * session.create, the /model dispatch, and the session ensure call, must be
+ * translated through this first. */
+export function rawLocalGenerationModelId(optionId: string): string | null {
+  if (!optionId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) return null;
+  try {
+    const decoded = decodeURIComponent(
+      optionId.slice(LOCAL_GENERATION_OPTION_ID_PREFIX.length),
+    ).trim();
+    return decoded || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when the endpoint resolves to this machine: localhost, any
+ * *.localhost name, the 127.0.0.0/8 loopback block, or the IPv6 [::1]
+ * literal. Invalid input is treated as non-loopback (returns false) so the
+ * caller shows the "leaves your device" warning rather than a false
+ * reassurance. */
+export function isLoopbackUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // URL.hostname keeps the brackets on IPv6 literals ("[::1]").
+  const bare = host.replace(/^\[|\]$/g, "");
+  if (bare === "localhost" || bare.endsWith(".localhost")) return true;
+  if (bare === "::1") return true;
+  const octets = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (octets) {
+    const parts = octets.slice(1).map(Number);
+    if (parts.every((part) => part <= 255) && parts[0] === 127) return true;
+  }
+  return false;
+}
+
+/** Prepends the user's configured local endpoint as a synthetic catalog
+ * option when a model id is set. Capabilities are left empty: a local model's
+ * tool support can't be verified from here, so it must not be advertised as
+ * tool-capable (see modelSupportsTools, which special-cases the local
+ * provider instead). Privacy is only claimed as "local" for a loopback
+ * endpoint; a remote endpoint is marked "external" since prompts leave the
+ * device. */
+export function withLocalGenerationOption(
+  models: VeniceModelDto[],
+  localGeneration: LocalGenerationSettingsDto,
+): VeniceModelDto[] {
+  const modelId = localGeneration.modelId.trim();
+  if (!modelId) return models;
+  const loopback = isLoopbackUrl(localGeneration.baseUrl);
+  const localModel: VeniceModelDto = {
+    provider: "local",
+    id: localGenerationOptionId(modelId),
+    name: `Local: ${modelId}`,
+    modelType: "text",
+    description: loopback
+      ? "OpenAI-compatible local text model."
+      : "OpenAI-compatible text model on a remote endpoint.",
+    privacy: loopback ? "local" : "external",
+    pricing: { display: "Local" },
+    traits: ["local"],
+    capabilities: [],
+    priceUnit: "local",
+    priceDescription: "Local",
+  };
+  return [localModel, ...models];
+}

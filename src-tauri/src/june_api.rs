@@ -1,6 +1,7 @@
 //! June API client. The Tauri side calls the backend for metered remote
 //! actions. When the user explicitly selects a local model, text generation
-//! uses their loopback OpenAI-compatible endpoint directly.
+//! uses their own OpenAI-compatible endpoint directly (bring your own
+//! inference; any http/https host, optional bearer api key).
 
 use crate::{
     domain::types::AppError,
@@ -362,6 +363,14 @@ pub async fn proxy_agent_chat_completions(
     if crate::providers::generation_provider() == PROVIDER_LOCAL {
         return proxy_local_agent_chat_completions(body).await;
     }
+    // Remote provider safety net: a Hermes session started while local mode was
+    // on keeps sending the local model id (Hermes loads its model at spawn and
+    // does not reload on a settings change), which the remote backend rejects
+    // via require_priced_model and would hard-fail every message until restart.
+    // Degrade a stale local model id to the current global model instead.
+    let local_model_id = crate::providers::local_generation_settings().model_id;
+    let global_model = crate::providers::generation_model();
+    redirect_stale_local_model(&mut body, &local_model_id, &global_model);
     let url = format!("{}/v1/chat/completions", june_api_url());
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
@@ -420,8 +429,11 @@ async fn generate_note_from_transcript_local(
             { "role": "user", "content": user_message }
         ]
     });
-    let response = agent_http_client()
-        .post(local_chat_completions_url(&settings)?)
+    let local_request = with_local_auth(
+        agent_http_client().post(local_chat_completions_url(&settings)?),
+        &settings,
+    );
+    let response = local_request
         .json(&body)
         .send()
         .await
@@ -474,12 +486,11 @@ async fn proxy_local_agent_chat_completions(
         );
         inject_local_safety_context(object);
     }
-    let response = agent_http_client()
-        .post(local_chat_completions_url(&settings)?)
-        .json(&body)
-        .send()
-        .await
-        .map_err(network_error)?;
+    let request = with_local_auth(
+        agent_http_client().post(local_chat_completions_url(&settings)?),
+        &settings,
+    );
+    let response = request.json(&body).send().await.map_err(network_error)?;
     let status = response.status().as_u16();
     let content_type = response
         .headers()
@@ -503,6 +514,21 @@ fn local_generation_settings_or_error() -> Result<LocalGenerationSettings, AppEr
         ));
     }
     Ok(settings)
+}
+
+/// Attaches `Authorization: Bearer {api_key}` when the user configured an api
+/// key for their local endpoint (Ollama needs none; vLLM / LiteLLM / a hosted
+/// gateway may). No header is sent when the key is empty.
+fn with_local_auth(
+    request: reqwest::RequestBuilder,
+    settings: &LocalGenerationSettings,
+) -> reqwest::RequestBuilder {
+    let api_key = settings.api_key.trim();
+    if api_key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
 }
 
 fn local_chat_completions_url(settings: &LocalGenerationSettings) -> Result<String, AppError> {
@@ -587,6 +613,54 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
     }
     clamp_agent_chat_output_tokens(object, "max_tokens");
     clamp_agent_chat_output_tokens(object, "max_completion_tokens");
+}
+
+/// The frontend's synthetic catalog id prefix for the local model option
+/// (`LOCAL_GENERATION_OPTION_ID_PREFIX` in `src/lib/local-generation.ts`).
+/// The prefix exists so the synthetic id can never collide with a real
+/// remote model id, which makes it sufficient on its own to identify a local
+/// reference — no need to decode the percent-encoded remainder.
+const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
+
+/// True when `model` names a local model: the configured raw id, or ANY id in
+/// the frontend's prefixed synthetic catalog form. Defense in depth: the
+/// synthetic id is translated to the raw id at the Hermes boundary, but
+/// sessions persisted before that fix can still carry the prefixed form —
+/// and a prefixed id is by construction never a valid remote model, even
+/// when it encodes a since-changed local id.
+fn is_local_model_reference(model: &str, local_model_id: &str) -> bool {
+    (!local_model_id.is_empty() && model == local_model_id)
+        || model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX)
+}
+
+/// Rewrites a request that still carries a local model reference to the
+/// current global generation model, for the remote proxy path only. Mirrors
+/// the local path's unconditional model stomp: when the global provider is
+/// remote, a body still naming the local model is a stale spawn-time default
+/// from a session created while local mode was on, and the remote backend
+/// would reject it. Genuine remote per-session overrides (any non-synthetic
+/// id other than the configured local model id) are left untouched, so an
+/// explicit `/model` switch to a real remote model still wins.
+fn redirect_stale_local_model(
+    body: &mut serde_json::Value,
+    local_model_id: &str,
+    global_model: &str,
+) {
+    let local_model_id = local_model_id.trim();
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let is_stale_local = object
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_some_and(|model| is_local_model_reference(model, local_model_id));
+    if is_stale_local {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(global_model.to_string()),
+        );
+    }
 }
 
 fn clamp_agent_chat_output_tokens(
@@ -1474,6 +1548,78 @@ mod tests {
         normalize_agent_chat_request_for_proxy(&mut body);
 
         assert_eq!(body["model"], serde_json::json!("hermes-selected-model"));
+    }
+
+    #[test]
+    fn remote_proxy_redirects_stale_local_model_to_global_model() {
+        // A session started while local mode was on keeps sending the local
+        // model id; on the remote path it must degrade to the global model
+        // rather than hard-fail against require_priced_model.
+        let mut body = serde_json::json!({
+            "model": "llama3.1:8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
+    }
+
+    #[test]
+    fn remote_proxy_redirects_prefixed_synthetic_local_model_to_global_model() {
+        // A session persisted before the Hermes-boundary translation can carry
+        // the frontend's synthetic catalog id (prefix + encodeURIComponent of
+        // the raw id). The guard must recognize and rewrite that form too.
+        let mut body = serde_json::json!({
+            "model": "__june_local_generation__:llama3.1%3A8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
+    }
+
+    #[test]
+    fn remote_proxy_redirects_any_prefixed_synthetic_id_even_without_local_settings() {
+        // A prefixed id is never a valid remote model, so it degrades to the
+        // global model even when the encoded id no longer matches the saved
+        // local settings (here: local settings cleared entirely).
+        let mut body = serde_json::json!({
+            "model": "__june_local_generation__:other-model",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
+    }
+
+    #[test]
+    fn remote_proxy_preserves_genuine_remote_model_override() {
+        // A real remote per-session override (an explicit /model switch) must
+        // survive the guard so the session keeps the model the user chose.
+        let mut body = serde_json::json!({
+            "model": "kimi-k2-6",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("kimi-k2-6"));
+    }
+
+    #[test]
+    fn remote_proxy_stale_local_redirect_is_noop_without_local_model() {
+        // No local model configured: never touch the request model.
+        let mut body = serde_json::json!({
+            "model": "kimi-k2-6",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "   ", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("kimi-k2-6"));
     }
 
     #[test]

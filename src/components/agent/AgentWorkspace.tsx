@@ -104,6 +104,7 @@ import {
   retryAgentTask,
   sendAgentMessage,
   setHermesAgentCliAccess,
+  setLocalGenerationEnabled,
   setVeniceModel,
   startHermesBridge,
   submitIssueReport,
@@ -124,6 +125,8 @@ import {
   type HermesSkillDocument,
   type HermesSkillInfo,
   type HermesToolsetInfo,
+  type LocalGenerationSettingsDto,
+  type ProviderModelSettingsDto,
   type VeniceModelDto,
 } from "../../lib/tauri";
 import {
@@ -209,6 +212,13 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
+import {
+  LOCAL_GENERATION_OPTION_ID_PREFIX,
+  isLoopbackUrl,
+  localGenerationOptionId,
+  rawLocalGenerationModelId,
+  withLocalGenerationOption,
+} from "../../lib/local-generation";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import {
   contextLabel,
@@ -1247,6 +1257,31 @@ export function resetAgentSessionContinuity() {
   agentComposerDrafts.clear();
 }
 
+/** The catalog id that represents the current global generation selection:
+ * the synthetic "Local: <id>" option when local generation is the active
+ * provider, otherwise the configured remote model id. Pure so it can back both
+ * the mount fetch and the model-switch handler. */
+function generationSelectionId(
+  settings: ProviderModelSettingsDto,
+  fallbackModelId = "",
+): string {
+  const localModelId = settings.localGeneration?.modelId?.trim();
+  if (settings.generationProvider === "local" && localModelId) {
+    return localGenerationOptionId(localModelId);
+  }
+  return settings.generationModel || fallbackModelId;
+}
+
+/** Translates a catalog model id to the id Hermes understands: the synthetic
+ * local option id becomes the raw local model id (the only id the provider
+ * proxy advertises on /v1/models); every other id passes through. Every model
+ * id sent to Hermes — session.create, session ensure, /model dispatch — must
+ * cross this boundary, or a session would carry the prefixed synthetic id
+ * that no provider recognizes once local mode is off. */
+function hermesModelIdFor(modelId: string): string {
+  return rawLocalGenerationModelId(modelId) ?? modelId;
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
@@ -1475,6 +1510,27 @@ export function AgentWorkspace({
     [],
   );
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
+  // Bring-your-own local text generation. When the global provider is "local"
+  // the model catalog carries a synthetic "Local: <id>" option and the pill
+  // resolves to it, so the composer never shows a raw local id or silently
+  // reverts the app to metered remote generation. Kept as refs too because the
+  // async model-switch handler reads the latest values.
+  const [localGeneration, setLocalGeneration] =
+    useState<LocalGenerationSettingsDto>({
+      baseUrl: "",
+      modelId: "",
+      apiKey: "",
+    });
+  const localGenerationRef = useRef(localGeneration);
+  const [generationProvider, setGenerationProvider] = useState("venice");
+  const generationProviderRef = useRef("venice");
+  // Two-step confirm for enabling a NON-loopback local endpoint from the
+  // composer (requests would leave the device, so no path may enable one
+  // silently — Settings has the same invariant with its "Enable anyway"
+  // affordance). Holds the exact base URL the warning was shown for: a second
+  // selection only proceeds while the saved URL still matches, so editing the
+  // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
+  const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] =
     useState<ComposerModelFlyout>(null);
@@ -1998,16 +2054,46 @@ export function AgentWorkspace({
   const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(
     selectedHermesSessionId,
   );
-  const activeGenerationModelId =
+  // When local generation is the active provider, the pill/selection is the
+  // synthetic local option so it renders "Local: <id>" and never a raw id or a
+  // stale remote override — every session routes through the local endpoint.
+  const localOptionId =
+    localGeneration.modelId.trim().length > 0
+      ? localGenerationOptionId(localGeneration.modelId)
+      : "";
+  const localGenerationActive =
+    generationProvider === "local" && localOptionId.length > 0;
+  const sessionOrDefaultModelId =
     selectedHermesSessionId && !newSessionMode
       ? selectedHermesSession?.model?.trim() || defaultGenerationModelId
       : defaultGenerationModelId;
+  // A local model id (synthetic or raw) can linger on a session row after
+  // local is turned off; fall back to the remote default so the pill matches
+  // what the remote proxy actually serves (its stale-local guard degrades
+  // exactly these ids to the global model).
+  const staleLocalModelId =
+    !localGenerationActive &&
+    (sessionOrDefaultModelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX) ||
+      (localGeneration.modelId.trim().length > 0 &&
+        sessionOrDefaultModelId === localGeneration.modelId.trim()));
+  const activeGenerationModelId = localGenerationActive
+    ? localOptionId
+    : staleLocalModelId
+      ? defaultGenerationModelId
+      : sessionOrDefaultModelId;
+  // Catalog surfaced in the composer picker: the remote models plus, when a
+  // local endpoint is configured, the synthetic local option (even while
+  // remote is active, so the user can switch to local from the composer).
+  const generationModelOptions = useMemo(
+    () => withLocalGenerationOption(generationModels, localGeneration),
+    [generationModels, localGeneration],
+  );
   const generationModel = useMemo(
     () =>
       activeGenerationModelId
-        ? selectedModelOption(generationModels, activeGenerationModelId)
+        ? selectedModelOption(generationModelOptions, activeGenerationModelId)
         : undefined,
-    [activeGenerationModelId, generationModels],
+    [activeGenerationModelId, generationModelOptions],
   );
   const generationPrivacyBadge = generationModel
     ? modelPrivacyBadge(generationModel)
@@ -2545,6 +2631,30 @@ export function AgentWorkspace({
     void loadTasks();
   }, [loadTasks]);
 
+  // Reflects a provider/model settings change into the composer state: the
+  // active provider, the saved local endpoint, and the pill selection (the
+  // synthetic local option when local is active). Shared by the mount fetch
+  // and the model-switch handler so both stay in lockstep with the backend.
+  const commitGenerationSettings = useCallback(
+    (settings: ProviderModelSettingsDto, fallbackModelId = "") => {
+      const local = settings.localGeneration ?? {
+        baseUrl: "",
+        modelId: "",
+        apiKey: "",
+      };
+      const provider = settings.generationProvider || "venice";
+      const selectedModelId = generationSelectionId(settings, fallbackModelId);
+      localGenerationRef.current = local;
+      setLocalGeneration(local);
+      generationProviderRef.current = provider;
+      setGenerationProvider(provider);
+      defaultGenerationModelIdRef.current = selectedModelId;
+      setDefaultGenerationModelId(selectedModelId);
+      return selectedModelId;
+    },
+    [],
+  );
+
   // Out-of-order responses (a slow mount fetch landing after a settings
   // change refresh) must not clobber the newer result.
   const generationModelRequestSequence = useRef(0);
@@ -2555,14 +2665,17 @@ export function AgentWorkspace({
         providerModelSettings(),
         listVeniceModels("generation"),
       ]);
-      const selectedModelId =
-        settingsResponse.settings.generationModel ||
-        modelsResponse.selectedModel;
+      const selectedModelId = generationSelectionId(
+        settingsResponse.settings,
+        modelsResponse.selectedModel,
+      );
       if (requestId === generationModelRequestSequence.current) {
-        defaultGenerationModelIdRef.current = selectedModelId;
         generationModelsRef.current = modelsResponse.models;
         setGenerationModels(modelsResponse.models);
-        setDefaultGenerationModelId(selectedModelId);
+        commitGenerationSettings(
+          settingsResponse.settings,
+          modelsResponse.selectedModel,
+        );
       }
       return { models: modelsResponse.models, selectedModelId };
     } catch {
@@ -2573,7 +2686,7 @@ export function AgentWorkspace({
       }
       return null;
     }
-  }, []);
+  }, [commitGenerationSettings]);
 
   useEffect(() => {
     defaultGenerationModelIdRef.current = defaultGenerationModelId;
@@ -2623,15 +2736,119 @@ export function AgentWorkspace({
     void loadGenerationModel();
   }
 
-  // Switching the model always writes the global text-model default (Settings'
+  // Enables the saved local endpoint as the global generation provider. The
+  // local provider proxy routes EVERY request by the global provider and
+  // rewrites the model to the local id, so flipping the provider is what moves
+  // a running session onto local — a per-chat override could not. That makes
+  // the "switched this session" claim honest here without waiting on the
+  // /model ack; the dispatch is best effort, only to keep Hermes' own session
+  // model aligned (the local id is advertised on /v1/models once local is on).
+  // Reflects the global generation selection into composer state directly (not
+  // via the backend return value, which tests stub out): the remote flip and
+  // the mount fetch already round-trip through commitGenerationSettings.
+  function markRemoteGenerationSelected(modelId: string) {
+    generationProviderRef.current = "venice";
+    setGenerationProvider("venice");
+    defaultGenerationModelIdRef.current = modelId;
+    setDefaultGenerationModelId(modelId);
+  }
+
+  async function selectLocalGeneration(sessionId: string | undefined) {
+    const localModelId = localGenerationRef.current.modelId.trim();
+    const modelName = localModelId ? `Local: ${localModelId}` : "the local model";
+    const selectedModelId = localModelId
+      ? localGenerationOptionId(localModelId)
+      : "";
+    // An off-device endpoint takes a deliberate second step, same invariant as
+    // the Settings toggle: the first selection warns instead of enabling.
+    // Loopback endpoints enable in one step.
+    const baseUrl = localGenerationRef.current.baseUrl.trim();
+    if (!isLoopbackUrl(baseUrl)) {
+      if (localEnableConfirmArmedForRef.current !== baseUrl) {
+        localEnableConfirmArmedForRef.current = baseUrl;
+        setModelSwitchNotice({
+          message:
+            "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+          sessionId: sessionId ?? null,
+        });
+        return false;
+      }
+      localEnableConfirmArmedForRef.current = null;
+    }
+    try {
+      await setLocalGenerationEnabled(true);
+      generationProviderRef.current = "local";
+      setGenerationProvider("local");
+      defaultGenerationModelIdRef.current = selectedModelId;
+      setDefaultGenerationModelId(selectedModelId);
+      dispatchProviderModelSettingsChanged({
+        mode: "generation",
+        modelId: selectedModelId,
+      });
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+      return false;
+    }
+    if (!sessionId) {
+      setModelSwitchNotice({
+        message: resolveModelSwitchOutcome({
+          hasActiveSession: false,
+          dispatchSucceeded: false,
+          modelName,
+        }).notice,
+        sessionId: null,
+      });
+      return true;
+    }
+    const rawLocalModelId = localGenerationRef.current.modelId.trim();
+    if (rawLocalModelId) {
+      try {
+        const gateway = await ensureHermesGateway(
+          sessionUnrestricted(sessionId),
+        );
+        await createHermesMethods(gateway).switchActiveSessionModel({
+          mode: hermesModeFor(sessionId),
+          sessionId,
+          model: rawLocalModelId,
+        });
+      } catch {
+        // Best effort: the proxy already serves this session from local.
+      }
+    }
+    setModelSwitchNotice({
+      message: resolveModelSwitchOutcome({
+        hasActiveSession: true,
+        dispatchSucceeded: true,
+        modelName,
+      }).notice,
+      sessionId,
+    });
+    return true;
+  }
+
+  // Switching the model always writes the global text-model selection (Settings'
   // model rows and this pill refresh through the same changed event). When a
   // session is open, it ALSO switches that live session via Hermes
-  // command.dispatch (/model …) — and the UI only claims the running session
-  // moved when Hermes accepts the dispatch (feature 10). The gateway result is
-  // the source of truth: raw model.switch/model.changed frames classify as
-  // unsupported, so there is no confirming event to wait on.
+  // command.dispatch (/model …), and the UI only claims the running session
+  // moved when Hermes accepts the dispatch (feature 10) — except when the
+  // switch flips the global provider (local <-> remote), where the provider
+  // proxy decides the model for every request and so guarantees the claim.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
+    const sessionId = newSessionModeRef.current
+      ? undefined
+      : selectedHermesSessionIdRef.current;
+
+    // Local is a synthetic catalog option (prefixed id), so it routes through
+    // the provider switch rather than a remote model set.
+    if (modelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
+      return selectLocalGeneration(sessionId);
+    }
+    // Picking anything else stands down a pending off-device confirm: the
+    // next local selection warns afresh instead of enabling in one step.
+    localEnableConfirmArmedForRef.current = null;
+
     const chosen = generationModelsRef.current.find(
       (model) => model.id === modelId,
     );
@@ -2644,16 +2861,18 @@ export function AgentWorkspace({
       return false;
     }
     const modelName = chosen?.name ?? modelId;
-    const sessionId = newSessionModeRef.current
-      ? undefined
-      : selectedHermesSessionIdRef.current;
+    // Selecting a remote model while local is active is an informed switch back
+    // to metered remote generation (the picker showed "Local: …" as current).
+    // The local proxy routes by the GLOBAL provider, so a per-chat override
+    // alone could not move this session off local — flip the global provider
+    // too, or the pill would claim a model the responses do not come from.
+    const wasLocalActive = generationProviderRef.current === "local";
 
     // No open chat: changing the model updates the global generation default.
     if (!sessionId) {
       try {
         await setVeniceModel("generation", modelId);
-        defaultGenerationModelIdRef.current = modelId;
-        setDefaultGenerationModelId(modelId);
+        markRemoteGenerationSelected(modelId);
         dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
         setError(null);
       } catch (err) {
@@ -2671,10 +2890,24 @@ export function AgentWorkspace({
       return true;
     }
 
-    // Open chat: override the model for THIS chat only (never the global
-    // default), then dispatch /model to the live session so the running turn
-    // switches immediately. Hermes session metadata updates are title-only, so
-    // the local per-chat override is the source of truth for this row.
+    // Open chat coming off local: flip the global provider to remote first so
+    // the running session actually leaves the local endpoint before we claim it
+    // did. (In remote mode this is skipped — the switch stays per-chat.)
+    if (wasLocalActive) {
+      try {
+        await setVeniceModel("generation", modelId);
+        markRemoteGenerationSelected(modelId);
+        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
+      } catch (err) {
+        setError(messageFromError(err));
+        return false;
+      }
+    }
+
+    // Open chat: override the model for THIS chat, then dispatch /model to the
+    // live session so the running turn switches immediately. Hermes session
+    // metadata updates are title-only, so the per-chat override is the source
+    // of truth for this row.
     sessionModelOverridesRef.current = {
       ...sessionModelOverridesRef.current,
       [sessionId]: modelId,
@@ -4182,13 +4415,18 @@ export function AgentWorkspace({
       : newSessionModeRef.current
         ? undefined
         : selectedHermesSessionId;
-    const targetSessionModelId = targetSessionId
-      ? explicitSession?.model?.trim() ||
-        hermesSessionItemsRef.current
-          .find((session) => session.id === targetSessionId)
-          ?.model?.trim() ||
-        defaultGenerationModelId
-      : defaultGenerationModelId;
+    // hermesModelIdFor: when local generation is active the default (and any
+    // session row backfilled from it) carries the synthetic local option id,
+    // which must never reach Hermes — session.create/ensure get the raw id.
+    const targetSessionModelId = hermesModelIdFor(
+      targetSessionId
+        ? explicitSession?.model?.trim() ||
+            hermesSessionItemsRef.current
+              .find((session) => session.id === targetSessionId)
+              ?.model?.trim() ||
+            defaultGenerationModelId
+        : defaultGenerationModelId,
+    );
     const turnAttachments = options?.attachments ?? [];
     const pendingImages = pendingImageAttachments(
       turnAttachments.map((attachment) => attachment.attach),
@@ -6518,7 +6756,10 @@ export function AgentWorkspace({
           <ComposerModelPopover
             flyout={composerModelFlyout}
             model={generationModel}
-            options={modelOptions(generationModels, generationModel?.id ?? "")}
+            options={modelOptions(
+              generationModelOptions,
+              generationModel?.id ?? "",
+            )}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}

@@ -332,7 +332,7 @@ pub async fn process_saved_audio(
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await?;
     let generated = match generate_note_from_transcript(GenerationRequest {
-        provider: crate::providers::configured_provider(),
+        provider: crate::providers::generation_provider(),
         operation_id: Some(note_id.to_string()),
         title,
         existing_generated_note,
@@ -651,7 +651,7 @@ pub async fn process_saved_source_audio(
         .await?;
     let generation_started = Instant::now();
     let generated = match generate_note_from_transcript(GenerationRequest {
-        provider: crate::providers::configured_provider(),
+        provider: crate::providers::generation_provider(),
         operation_id: Some(note_id.to_string()),
         title,
         existing_generated_note,

@@ -55,6 +55,7 @@ const mocks = vi.hoisted(() => ({
   downloadHermesBridgeFile: vi.fn(),
   osAccountsUpgrade: vi.fn(),
   setVeniceModel: vi.fn(),
+  setLocalGenerationEnabled: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -116,6 +117,7 @@ vi.mock("../lib/tauri", () => ({
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
+  setLocalGenerationEnabled: mocks.setLocalGenerationEnabled,
   setVeniceModel: mocks.setVeniceModel,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
@@ -7495,6 +7497,358 @@ describe("AgentWorkspace", () => {
       expect(
         within(panel).queryByRole("option", { name: /Enclave Mini/ }),
       ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("local generation in the composer", () => {
+    const remoteCatalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    const localGeneration = {
+      baseUrl: "http://localhost:11434/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+    };
+
+    function mockLocalActive(local = localGeneration) {
+      mocks.providerModelSettings.mockResolvedValue({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationProvider: "local",
+          generationModel: local.modelId,
+          remoteGenerationModel: "zai-org-glm-5-2",
+          localGeneration: local,
+        },
+      });
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: remoteCatalog,
+      });
+    }
+
+    function mockRemoteWithLocalConfigured(local = localGeneration) {
+      mocks.providerModelSettings.mockResolvedValue({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationProvider: "venice",
+          generationModel: "zai-org-glm-5-2",
+          remoteGenerationModel: "zai-org-glm-5-2",
+          localGeneration: local,
+        },
+      });
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: remoteCatalog,
+      });
+    }
+
+    function markNewSessionPending() {
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+    }
+
+    async function openAllModels(user: ReturnType<typeof userEvent.setup>) {
+      const dialog = await screen.findByRole("dialog", {
+        name: "Choose text model",
+      });
+      await user.click(
+        within(dialog).getByRole("button", { name: "All models" }),
+      );
+      return screen.findByRole("group", { name: "All text models" });
+    }
+
+    it("shows the local option as the current model when local mode is on", async () => {
+      mockLocalActive();
+      markNewSessionPending();
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      // The pill resolves to "Local: <id>", never the raw local id.
+      await user.click(
+        await screen.findByRole("button", {
+          name: "Model: Local: llama3.1:8b",
+        }),
+      );
+      const panel = await openAllModels(user);
+      expect(
+        within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }),
+      ).toBeInTheDocument();
+    });
+
+    it("flips the global provider off local when a remote model is picked with no open session", async () => {
+      mockLocalActive();
+      mocks.setVeniceModel.mockResolvedValue(undefined);
+      markNewSessionPending();
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: "Model: Local: llama3.1:8b",
+        }),
+      );
+      const panel = await openAllModels(user);
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+
+      await waitFor(() =>
+        expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+          "generation",
+          "kimi-k2-6",
+        ),
+      );
+      expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+      expect(
+        await screen.findByText(
+          "Default model updated. It applies to new sessions.",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("enables local generation when the local option is picked with no open session", async () => {
+      mockRemoteWithLocalConfigured();
+      mocks.setLocalGenerationEnabled.mockResolvedValue(undefined);
+      markNewSessionPending();
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      const panel = await openAllModels(user);
+      await user.click(
+        within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }),
+      );
+
+      await waitFor(() =>
+        expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(true),
+      );
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+      expect(
+        await screen.findByText(
+          "Default model updated. It applies to new sessions.",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("claims the session switched to local and dispatches the raw local id", async () => {
+      mockRemoteWithLocalConfigured();
+      mocks.setLocalGenerationEnabled.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      const panel = await openAllModels(user);
+      await user.click(
+        within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }),
+      );
+
+      await waitFor(() =>
+        expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(true),
+      );
+      // The /model dispatch carries the RAW local id (advertised by the proxy),
+      // never the synthetic catalog id.
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
+          session_id: "session-1",
+          command: "/model llama3.1:8b",
+        }),
+      );
+      expect(
+        await screen.findByText("Switched this session to Local: llama3.1:8b."),
+      ).toBeInTheDocument();
+    });
+
+    it("flips the global provider AND dispatches /model when a remote model is picked on an open local session", async () => {
+      mockLocalActive();
+      mocks.setVeniceModel.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: "Model: Local: llama3.1:8b",
+        }),
+      );
+      const panel = await openAllModels(user);
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+
+      // Honest: the running session truly leaves the local endpoint (global
+      // provider flip) before the UI claims it did, AND /model is dispatched.
+      await waitFor(() =>
+        expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+          "generation",
+          "kimi-k2-6",
+        ),
+      );
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
+          session_id: "session-1",
+          command: "/model kimi-k2-6",
+        }),
+      );
+      expect(
+        await screen.findByText("Switched this session to Kimi K2.6."),
+      ).toBeInTheDocument();
+    });
+
+    it("sends the raw local model id to Hermes when creating a session in local mode", async () => {
+      mockLocalActive();
+      markNewSessionPending();
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      // Settings are loaded once the pill resolves to the local option.
+      await screen.findByRole("button", {
+        name: "Model: Local: llama3.1:8b",
+      });
+      const composer = await screen.findByRole("textbox", {
+        name: "Message June",
+      });
+      await user.type(composer, "hello local");
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+
+      // Hermes only knows the raw id (the provider proxy advertises it on
+      // /v1/models); the synthetic catalog id must never cross this boundary,
+      // or the session would persist an id no provider accepts once local
+      // mode is turned off.
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+          "session.create",
+          expect.objectContaining({ model: "llama3.1:8b" }),
+        ),
+      );
+      const syntheticModelCalls = mocks.gatewayRequest.mock.calls.filter(
+        ([method, params]) =>
+          method === "session.create" &&
+          typeof (params as { model?: string })?.model === "string" &&
+          (params as { model: string }).model.startsWith(
+            "__june_local_generation__:",
+          ),
+      );
+      expect(syntheticModelCalls).toEqual([]);
+      await waitFor(() =>
+        expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith(
+          expect.objectContaining({ model: "llama3.1:8b" }),
+        ),
+      );
+    });
+
+    it("requires a second selection to enable an off-device local endpoint from the composer", async () => {
+      const offDeviceLocal = {
+        baseUrl: "http://192.168.1.5:11434/v1",
+        modelId: "llama3.1:8b",
+        apiKey: "",
+      };
+      mockRemoteWithLocalConfigured(offDeviceLocal);
+      mocks.setLocalGenerationEnabled.mockResolvedValue(undefined);
+      markNewSessionPending();
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      // First selection warns instead of enabling.
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      let panel = await openAllModels(user);
+      await user.click(
+        within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }),
+      );
+      expect(
+        await screen.findByText(
+          "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+        ),
+      ).toBeInTheDocument();
+      expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+
+      // Second selection confirms and enables.
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      panel = await openAllModels(user);
+      await user.click(
+        within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }),
+      );
+      await waitFor(() =>
+        expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(true),
+      );
+    });
+
+    it("re-arms the off-device confirm after picking another model in between", async () => {
+      const offDeviceLocal = {
+        baseUrl: "http://192.168.1.5:11434/v1",
+        modelId: "llama3.1:8b",
+        apiKey: "",
+      };
+      mockRemoteWithLocalConfigured(offDeviceLocal);
+      mocks.setVeniceModel.mockResolvedValue(undefined);
+      markNewSessionPending();
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      // Arm the confirm, then pick a remote model instead.
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      let panel = await openAllModels(user);
+      await user.click(
+        within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }),
+      );
+      expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      panel = await openAllModels(user);
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+      await waitFor(() =>
+        expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+          "generation",
+          "kimi-k2-6",
+        ),
+      );
+
+      // The stood-down confirm means the next local selection warns again.
+      // (The changed-settings reload resets the pill to the mocked backend
+      // state, GLM 5.2; findByRole waits for that refresh to land.)
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      panel = await openAllModels(user);
+      await user.click(
+        within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }),
+      );
+      expect(
+        await screen.findByText(
+          "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+        ),
+      ).toBeInTheDocument();
+      expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
     });
   });
 });
