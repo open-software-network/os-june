@@ -10,7 +10,7 @@ max_json_bytes = 524288
 [attestation]
 source_repo_url = "https://github.com/open-software-network/os-june"
 image_repo = "ghcr.io/open-software-network/june-api"
-trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
+trust_center_url = "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
 
 [issue_reports]
 # User-submitted issue reports are filed as os-platform Issues in the June

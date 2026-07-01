@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c">
+  <a href="https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54">
     <img alt="Phala Trust Center - TEE verified" src="https://img.shields.io/badge/Phala%20Trust%20Center-TEE%20verified-success">
   </a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
@@ -221,7 +221,7 @@ The chain has three public anchors:
    Deploys pin immutable per-commit tags, and each deployed digest is recorded
    as a signed `deploy/<env>/<sha>` git tag.
 3. **Attestation:** the
-   [Phala Trust Center report](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c)
+   [Phala Trust Center report](https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54)
    proves the expected image is running inside an Intel TDX confidential VM.
 
 Every deployment also serves a self-contained walkthrough at
@@ -274,8 +274,9 @@ Useful validation docs:
 
 Architecture and product notes:
 
-- [docs/adr/0001-auto-updates-via-tauri-updater.md](docs/adr/0001-auto-updates-via-tauri-updater.md)
-- [docs/adr/0002-live-transcript-preview-strategy.md](docs/adr/0002-live-transcript-preview-strategy.md)
+- [docs/index.md](docs/index.md): the full index of docs, ADRs, subsystem guides, and specs
+- [CONTEXT.md](CONTEXT.md): the domain glossary
+- [AGENTS.md](AGENTS.md): the contributor and agent guide
 
 ## Release notes
 

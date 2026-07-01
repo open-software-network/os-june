@@ -561,7 +561,7 @@ impl Default for AppConfig {
                 source_repo_url: "https://github.com/open-software-network/os-june".to_string(),
                 image_repo: "ghcr.io/open-software-network/june-api".to_string(),
                 trust_center_url:
-                    "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
+                    "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
                         .to_string(),
             },
             issue_reports: IssueReportsConfig::default(),
