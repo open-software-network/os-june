@@ -5332,7 +5332,7 @@ describe("AgentWorkspace", () => {
       "over Short context's 16 token context window.",
     );
     expect(screen.getByRole("button", { name: "Proceed" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Trim input" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit message" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch to Long context" })).toBeInTheDocument();
     expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
       false,

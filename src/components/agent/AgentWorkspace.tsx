@@ -3422,7 +3422,7 @@ export function AgentWorkspace({
     void submit();
   }
 
-  function trimOversizeComposerInput() {
+  function editOversizeComposerInput() {
     setComposerSizeWarning(null);
     composerSizeProceedSignatureRef.current = null;
     composerSizeProceedInputSignatureRef.current = null;
@@ -6173,9 +6173,9 @@ export function AgentWorkspace({
                 <button
                   type="button"
                   className="agent-composer-notice-button"
-                  onClick={trimOversizeComposerInput}
+                  onClick={editOversizeComposerInput}
                 >
-                  Trim input
+                  Edit message
                 </button>
                 {visibleComposerSizeWarning.switchModel ? (
                   <button
@@ -10937,12 +10937,14 @@ function oversizedComposerInputWarning({
   const contextLimit = positiveContextTokens(model?.contextTokens);
   if (!contextLimit) return null;
 
-  const attachmentBytes = attachments.reduce(
+  // The composer only has attachment metadata here. Treat file bytes as a
+  // conservative character proxy so large pending files still get a warning.
+  const attachmentCharacterProxy = attachments.reduce(
     (total, attachment) => total + nonNegativeAttachmentSize(attachment.size),
     0,
   );
   const estimatedTokens = Math.ceil(
-    (content.length + attachmentBytes) / COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN,
+    (content.length + attachmentCharacterProxy) / COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN,
   );
   if (estimatedTokens <= contextLimit) return null;
 
