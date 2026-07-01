@@ -32,6 +32,7 @@ feature specs). Full index: [spec/index.md](../spec/index.md).
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [configuration.md](configuration.md) — env + config reference (desktop client + June API)
+- [development.md](development.md) — local development: quick start, local data, permissions, agent skills, verification commands
 - [os-accounts-login.md](os-accounts-login.md) — Login with Open Software: PKCE, keychain, account gates
 - [onboarding-design.md](onboarding-design.md) — onboarding flow design (verify against what shipped)
 - ~~os-accounts-backend.md~~ — historical; superseded by `june-api-prd.md`
