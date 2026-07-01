@@ -370,26 +370,39 @@ jobs:
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          # promote's tree is the rc's pinned commit with the build version stamped
-          # in; discard that and branch from current main to record the bump there.
-          git fetch origin main
-          git reset --hard
-          git checkout -B main origin/main
-          # version:bump (not set-build-version) so main's monotonic X.Y.Z gate applies.
-          pnpm version:bump "$VERSION"
-          cargo update --workspace --manifest-path src-tauri/Cargo.toml
-          git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
-          if git diff --cached --quiet; then
-            echo "main is already at v$VERSION; skipping version commit."
-            exit 0
-          fi
           bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
           git config user.name "${APP_SLUG}[bot]"
           git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
-          git commit -m "release: v$VERSION"
-          # Plain push (never force main). A non-fast-forward here means main moved
-          # since the fetch above; rerun promote (the bump is deterministic).
-          git push origin HEAD:main
+
+          # This bump is the last step, after the stable release is already
+          # published. Its push can lose a race with an unrelated commit to main;
+          # rather than fail the whole promote (which would force a 30-60 min
+          # rebuild rerun), re-fetch and replay the deterministic bump onto the new
+          # tip, then fast-forward push again. promote's own tree (the rc's pinned
+          # commit with the build version stamped in) is discarded each attempt.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard
+            git checkout -B main origin/main
+            current="$(node -e 'process.stdout.write(require("./package.json").version)')"
+            if [ "$current" = "$VERSION" ]; then
+              echo "main is already at v$VERSION; nothing to record."
+              exit 0
+            fi
+            # version:bump (not set-build-version) so main's monotonic X.Y.Z gate applies.
+            pnpm version:bump "$VERSION"
+            cargo update --workspace --manifest-path src-tauri/Cargo.toml
+            git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            git commit -m "release: v$VERSION"
+            # Plain push (never force main); the App bypasses branch protection.
+            if git push origin HEAD:main; then
+              echo "Recorded release: v$VERSION on main."
+              exit 0
+            fi
+            echo "::warning::Push to main was rejected (it advanced); retrying ($attempt/5)."
+          done
+          echo "::error::Could not record release: v$VERSION on main after 5 attempts."
+          exit 1
 
       # Release announcements are handled by the org's GitHub Slack app
       # (`/github subscribe open-software-network/os-june-releases releases`),

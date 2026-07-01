@@ -136,8 +136,10 @@ version-bump PR being merged first.
   `release: vX.Y.Z` directly (no PR to merge), advancing the version files so the
   next RC's Q9 gate and the next changelog anchor work. It runs only after the
   stable release is published, so a build failure never leaves `main` bumped
-  without a matching release. A non-fast-forward push (main moved since promote's
-  fetch) fails the step; rerun, since the bump is deterministic.
+  without a matching release. If the push loses a race with a concurrent commit
+  to `main`, promote re-fetches and replays the deterministic bump onto the new
+  tip (a few attempts) rather than failing after the release is already published
+  and forcing a full rebuild rerun.
 - **Release announcements are delegated to the GitHub Slack app.** Rather than a
   webhook step in the workflows, a channel subscribes with
   `/github subscribe open-software-network/os-june-releases releases`. This
