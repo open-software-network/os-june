@@ -45,10 +45,31 @@ export function isInsufficientCreditsMessage(message?: string) {
  * layers — the June API's `prompt_too_long`/`request_too_large`, the provider
  * proxy's rewritten "maximum context length" wording, and Hermes' terminal
  * "Cannot compress further." when it cannot shrink a single oversized turn
- * (JUN-169). */
+ * (JUN-169).
+ *
+ * BROAD match, including natural-language phrasings ("maximum context length")
+ * that also occur in ordinary assistant prose. Use this ONLY where the turn is
+ * already known to have failed — a live `error` event, or a `message.complete`
+ * carrying an error status. For a persisted/reloaded turn that carries no
+ * failure flag, use {@link isContextOverflowErrorSentinel} instead. */
 export function isContextOverflowMessage(message?: string) {
   if (!message) return false;
   return /cannot compress further|context length exceeded|context_length_exceeded|maximum context length|prompt_too_long|request_too_large/i.test(
+    message,
+  );
+}
+
+/** STRICT context-overflow match: only the error sentinels that never occur in
+ * natural prose. For classifying a persisted turn that carries no failure flag
+ * (mirrors the credits path's "Error:"-prefix gate). Without this, a saved
+ * assistant answer that merely discusses "the maximum context length" would
+ * reload as an overflow notice and drop the real answer (JUN-169). Every real
+ * overflow error still contains one of these tokens: the proxy prefixes
+ * `prompt_too_long`, and Hermes' terminal message says "Cannot compress
+ * further." */
+export function isContextOverflowErrorSentinel(message?: string) {
+  if (!message) return false;
+  return /cannot compress further|context_length_exceeded|prompt_too_long|request_too_large/i.test(
     message,
   );
 }

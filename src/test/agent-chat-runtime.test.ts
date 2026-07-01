@@ -1396,6 +1396,26 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("keeps a persisted assistant answer that mentions context length as prose", () => {
+    // A saved answer, not an error — the persisted path has no failure flag, so
+    // it must fold only on unambiguous error sentinels, never on prose that
+    // merely discusses context length (JUN-169 review: persisted prose
+    // misclassification would drop the real answer on reload).
+    const prose = "The maximum context length for GLM 5.2 is 200k tokens.";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: prose,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: prose, status: "complete" },
+    ]);
+  });
+
   it("keeps a successful message.complete that mentions context length as prose", () => {
     const prose = "The maximum context length for GLM 5.2 is 200k tokens.";
     const turns = buildHermesSessionChatTurns(

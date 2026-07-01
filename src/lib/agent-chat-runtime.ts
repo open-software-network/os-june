@@ -6,6 +6,7 @@ import type {
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
 import {
+  isContextOverflowErrorSentinel,
   isContextOverflowMessage,
   isInsufficientCreditsMessage,
 } from "./errors";
@@ -247,7 +248,7 @@ export function buildHermesSessionChatTurns(
         turn.parts.push(
           (turn.role === "assistant"
             ? (creditsNoticeFromTurnText(content) ??
-              contextOverflowNotice(content))
+              persistedContextOverflowNotice(content))
             : undefined) ?? {
             type: "text",
             text: content,
@@ -330,6 +331,19 @@ function contextOverflowNotice(text: string): AgentChatNoticePart | undefined {
     : undefined;
 }
 
+// Persisted/reloaded turns carry no failure flag (the stored message has no
+// status field), so only the unambiguous error sentinels may fold. An ordinary
+// saved answer that discusses "the maximum context length" must stay text, not
+// reload as a notice that drops the real answer (JUN-169). Mirrors the credits
+// path's reliance on the "Error:" text prefix for the same persisted case.
+function persistedContextOverflowNotice(
+  text: string,
+): AgentChatNoticePart | undefined {
+  return isContextOverflowErrorSentinel(text)
+    ? { type: "notice", kind: "context-overflow", text }
+    : undefined;
+}
+
 // Resolve the most specific actionable notice for a failed turn's text: a
 // billing failure first (most specific), then a context overflow.
 function turnNotice(text: string): AgentChatNoticePart | undefined {
@@ -349,7 +363,7 @@ function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   const notice =
     message.role === "assistant"
       ? (creditsNoticeFromTurnText(message.content) ??
-        contextOverflowNotice(message.content))
+        persistedContextOverflowNotice(message.content))
       : undefined;
   return {
     id: message.id,
