@@ -78,25 +78,20 @@ describe("bundleSlashCommand / display name / chat prompt", () => {
     expect(bundleSlashCommand("backend-dev")).toBe("/backend-dev");
   });
   it("falls back to the slug when no name is set", () => {
-    expect(bundleDisplayName({ slug: "backend-dev", skills: [] })).toBe(
-      "backend-dev",
-    );
-    expect(
-      bundleDisplayName({ slug: "backend-dev", name: "Backend", skills: [] }),
-    ).toBe("Backend");
+    expect(bundleDisplayName({ slug: "backend-dev", skills: [] })).toBe("backend-dev");
+    expect(bundleDisplayName({ slug: "backend-dev", name: "Backend", skills: [] })).toBe("Backend");
   });
   it("the chat prompt is the slash command", () => {
-    expect(bundleChatPrompt({ slug: "backend-dev", skills: [] })).toBe(
-      "/backend-dev",
-    );
+    expect(bundleChatPrompt({ slug: "backend-dev", skills: [] })).toBe("/backend-dev");
   });
 });
 
 describe("parseBundleSkillsInput", () => {
   it("splits on newlines and commas, trims, dedupes", () => {
-    expect(
-      parseBundleSkillsInput("backend-dev\n database, backend-dev"),
-    ).toEqual(["backend-dev", "database"]);
+    expect(parseBundleSkillsInput("backend-dev\n database, backend-dev")).toEqual([
+      "backend-dev",
+      "database",
+    ]);
   });
   it("drops empty entries", () => {
     expect(parseBundleSkillsInput("\n\n , a , ")).toEqual(["a"]);
@@ -111,11 +106,7 @@ describe("resolveBundle", () => {
     };
     const resolved = resolveBundle(bundle, INSTALLED);
     expect(resolved.slashCommand).toBe("/backend-dev");
-    expect(resolved.members.map((m) => m.missing)).toEqual([
-      false,
-      false,
-      true,
-    ]);
+    expect(resolved.members.map((m) => m.missing)).toEqual([false, false, true]);
     expect(resolved.hasMissing).toBe(true);
   });
 
@@ -139,28 +130,18 @@ describe("validateBundleDraft", () => {
   const base = { skills: INSTALLED, existingSlugs: [] as string[] };
 
   it("errors on an empty or unsafe slug", () => {
-    const empty = validateBundleDraft(
-      { slug: "", skills: ["backend-dev"] },
-      base,
-    );
+    const empty = validateBundleDraft({ slug: "", skills: ["backend-dev"] }, base);
     expect(empty.canSave).toBe(false);
-    expect(
-      empty.issues.some((i) => i.field === "slug" && i.severity === "error"),
-    ).toBe(true);
+    expect(empty.issues.some((i) => i.field === "slug" && i.severity === "error")).toBe(true);
 
-    const unsafe = validateBundleDraft(
-      { slug: "Bad Slug", skills: ["backend-dev"] },
-      base,
-    );
+    const unsafe = validateBundleDraft({ slug: "Bad Slug", skills: ["backend-dev"] }, base);
     expect(unsafe.canSave).toBe(false);
   });
 
   it("errors when the skills list is empty", () => {
     const result = validateBundleDraft({ slug: "ok", skills: [] }, base);
     expect(result.canSave).toBe(false);
-    expect(
-      result.issues.some((i) => i.field === "skills" && i.severity === "error"),
-    ).toBe(true);
+    expect(result.issues.some((i) => i.field === "skills" && i.severity === "error")).toBe(true);
   });
 
   it("errors on a collision with another bundle slug", () => {
@@ -173,27 +154,15 @@ describe("validateBundleDraft", () => {
   });
 
   it("warns but allows save when a member is not installed", () => {
-    const result = validateBundleDraft(
-      { slug: "mix", skills: ["backend-dev", "ghost"] },
-      base,
-    );
+    const result = validateBundleDraft({ slug: "mix", skills: ["backend-dev", "ghost"] }, base);
     expect(result.canSave).toBe(true);
-    expect(
-      result.issues.some(
-        (i) => i.field === "skills" && i.severity === "warning",
-      ),
-    ).toBe(true);
+    expect(result.issues.some((i) => i.field === "skills" && i.severity === "warning")).toBe(true);
   });
 
   it("warns about a skill-name collision but lets the bundle win", () => {
-    const result = validateBundleDraft(
-      { slug: "database", skills: ["backend-dev"] },
-      base,
-    );
+    const result = validateBundleDraft({ slug: "database", skills: ["backend-dev"] }, base);
     expect(result.canSave).toBe(true);
-    const collision = result.issues.find(
-      (i) => i.field === "slug" && i.severity === "warning",
-    );
+    const collision = result.issues.find((i) => i.field === "slug" && i.severity === "warning");
     expect(collision).toBeTruthy();
     expect(collision?.message.toLowerCase()).toContain("precedence");
   });

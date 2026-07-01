@@ -17,15 +17,9 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
-import {
-  AGENT_SESSION_STATUS_EVENT,
-  type AgentSessionStatusDetail,
-} from "./lib/agent-events";
+import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "./lib/agent-events";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
-import {
-  isOnboardingComplete,
-  subscribeToOnboardingComplete,
-} from "./lib/onboarding";
+import { isOnboardingComplete, subscribeToOnboardingComplete } from "./lib/onboarding";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
 import "./styles/hud.css";
@@ -64,12 +58,9 @@ const errorText = document.querySelector<HTMLElement>("#hud-error-text");
 const errorIcon = document.querySelector<HTMLElement>(".hud-error-icon");
 const errorLayer = document.querySelector<HTMLElement>(".hud-error-layer");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
-const meetingStartButton =
-  document.querySelector<HTMLButtonElement>("#hud-meeting-start");
+const meetingStartButton = document.querySelector<HTMLButtonElement>("#hud-meeting-start");
 const meetingAppLabel = document.querySelector<HTMLElement>("#hud-meeting-app");
-const meetingDismissButton = document.querySelector<HTMLButtonElement>(
-  "#hud-meeting-dismiss",
-);
+const meetingDismissButton = document.querySelector<HTMLButtonElement>("#hud-meeting-dismiss");
 const statusText = document.querySelector<HTMLElement>("#hud-status");
 
 // House iconography (central-icons), injected like the agent HUD does.
@@ -91,9 +82,7 @@ if (errorIcon) {
     }),
   );
 }
-const meetingStartIcon = document.querySelector<HTMLElement>(
-  ".hud-meeting-start-icon",
-);
+const meetingStartIcon = document.querySelector<HTMLElement>(".hud-meeting-start-icon");
 if (meetingStartIcon) {
   meetingStartIcon.innerHTML = renderToStaticMarkup(
     createElement(IconMicrophone, {
@@ -144,10 +133,7 @@ function invokeBestEffort(command: string, args?: Record<string, unknown>) {
   }
 }
 
-async function invokeBestEffortAsync(
-  command: string,
-  args?: Record<string, unknown>,
-) {
+async function invokeBestEffortAsync(command: string, args?: Record<string, unknown>) {
   try {
     await Promise.resolve(invoke(command, args));
   } catch {
@@ -269,9 +255,7 @@ async function updateErrorPlacement() {
   if (!hud) return;
   let placement: unknown;
   try {
-    placement = await Promise.resolve(
-      invoke("dictation_hud_preferred_error_placement"),
-    );
+    placement = await Promise.resolve(invoke("dictation_hud_preferred_error_placement"));
   } catch {
     placement = undefined;
   }
@@ -295,21 +279,14 @@ function startBarLoop() {
       speech = Math.max(speech, meter.displayed[i]);
     }
     for (let i = 0; i < bars.length; i++) {
-      const level = withWaveLayers(
-        meter.displayed[i],
-        i,
-        now,
-        speech,
-        bars.length,
-      );
+      const level = withWaveLayers(meter.displayed[i], i, now, speech, bars.length);
       bars[i].style.setProperty("--level", level.toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;
     const reactive = stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS;
     // Once the idle pulse is on, keep animating for as long as we're listening
     // so the travelling pulse never freezes.
-    const keepShimmering =
-      IDLE_PULSE_AMP > 0 && hud?.dataset.state === "listening";
+    const keepShimmering = IDLE_PULSE_AMP > 0 && hud?.dataset.state === "listening";
     if (reactive) {
       // Bars moving or audio recent → paint every frame for responsiveness.
       rafHandle = window.requestAnimationFrame(tick);
@@ -387,8 +364,7 @@ function stopBraille() {
 function playAgentStartTone() {
   const AudioContextCtor =
     window.AudioContext ??
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-      .webkitAudioContext;
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextCtor) return;
   try {
     const context = new AudioContextCtor();
@@ -516,10 +492,7 @@ function measureWindowSize() {
 // window around it changes. With `morph` the contents fade out while the
 // glass eases to its new frame, then fade back in (the invoke resolves when
 // the native motion finishes).
-async function syncWindowToPill(options?: {
-  animate?: boolean;
-  morph?: boolean;
-}) {
+async function syncWindowToPill(options?: { animate?: boolean; morph?: boolean }) {
   if (!hud) return;
   // ABC Diatype may still be loading on the window's first show; measuring
   // with the fallback font bakes the wrong width into the window frame.
@@ -656,8 +629,7 @@ async function hideHud() {
   }
   let nativeExit = false;
   if (hud) {
-    const meetingExit =
-      hud.dataset.state === "meeting" && !prefersReducedMotion();
+    const meetingExit = hud.dataset.state === "meeting" && !prefersReducedMotion();
     hud.classList.toggle("hud-exit-up", meetingExit);
     hud.classList.toggle("hud-error-exit", exitingError);
     if (exitState) {
@@ -682,9 +654,7 @@ async function hideHud() {
       // stalling if the window is already occluded/hidden.
       await Promise.race([
         fadeWindowAlpha(requestId),
-        new Promise((resolve) =>
-          window.setTimeout(resolve, EXIT_TRANSITION_MS + 60),
-        ),
+        new Promise((resolve) => window.setTimeout(resolve, EXIT_TRANSITION_MS + 60)),
       ]);
     }
   }
@@ -736,10 +706,7 @@ function showHud(options?: { fresh?: boolean; morph?: boolean }) {
   return run;
 }
 
-async function showHudNow(
-  requestId: number,
-  options?: { fresh?: boolean; morph?: boolean },
-) {
+async function showHudNow(requestId: number, options?: { fresh?: boolean; morph?: boolean }) {
   if (requestId !== showRequestId) return;
   if (options?.fresh) {
     setWindowAlpha(0);
@@ -930,9 +897,7 @@ async function handleDictationEventPayload(payload: unknown) {
       triggerShake();
       return;
     }
-    const message = String(
-      dictationEvent.payload?.message ?? "Dictation failed.",
-    ).trim();
+    const message = String(dictationEvent.payload?.message ?? "Dictation failed.").trim();
     await updateErrorPlacement();
     const transition = setHud("error", message || "Dictation failed.");
     // Render the pill with the message layer drawn in, snap the window to
@@ -1001,9 +966,7 @@ async function showMeetingPrompt(meetingEvent: DictationHudEvent) {
   // Set the app line before the pill is measured so the window is sized
   // for it. Heartbeats refresh it (the mic can move between apps).
   if (meetingAppLabel) {
-    meetingAppLabel.textContent = meetingAppLine(
-      meetingEvent.payload?.appLabels,
-    );
+    meetingAppLabel.textContent = meetingAppLine(meetingEvent.payload?.appLabels);
   }
   const transition = setHud("meeting", "Meeting detected");
   await showHud(showOptionsForTransition(transition));
@@ -1028,10 +991,7 @@ function showPendingMeetingPromptAfterOnboarding() {
 // label survives validation, say what we actually know.
 function meetingAppLine(labels: unknown) {
   const names = Array.isArray(labels)
-    ? labels.filter(
-        (label): label is string =>
-          typeof label === "string" && label.trim() !== "",
-      )
+    ? labels.filter((label): label is string => typeof label === "string" && label.trim() !== "")
     : [];
   return names.length > 0 ? names.join(", ") : "Microphone in use";
 }
@@ -1049,18 +1009,11 @@ function usesFrostlessChrome(state: string | undefined) {
 }
 
 function canShowMeetingPrompt(state: string | undefined) {
-  return (
-    state === undefined ||
-    state === "idle" ||
-    state === "meeting" ||
-    state === "exiting"
-  );
+  return state === undefined || state === "idle" || state === "meeting" || state === "exiting";
 }
 
 function handleAgentStatusEventPayload(payload: unknown) {
-  const event = parseEvent(payload) as unknown as
-    | AgentSessionStatusDetail
-    | undefined;
+  const event = parseEvent(payload) as unknown as AgentSessionStatusDetail | undefined;
   if (event?.status !== "received") return;
 
   // Audible ack only: the agent HUD (top right) is the visual announcement

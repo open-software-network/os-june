@@ -101,10 +101,7 @@ function setNavigatorPlatform(platform: string, userAgent: string) {
 // first-run onboarding so the wizard doesn't gate them. Onboarding tests
 // opt back in by clearing localStorage.
 beforeEach(() => {
-  setNavigatorPlatform(
-    "MacIntel",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
-  );
+  setNavigatorPlatform("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)");
   markOnboardingComplete();
 });
 

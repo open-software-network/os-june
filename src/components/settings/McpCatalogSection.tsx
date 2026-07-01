@@ -59,9 +59,7 @@ type McpCatalogSectionProps = {
  * them; for an OAuth / third-party entry it explains the sign-in still has to
  * happen (feature 17) rather than pretending install is complete.
  */
-export function McpCatalogSection({
-  mode = "sandboxed",
-}: McpCatalogSectionProps) {
+export function McpCatalogSection({ mode = "sandboxed" }: McpCatalogSectionProps) {
   const state = useMcpCatalog(mode);
   return <McpCatalogView state={state} mode={mode} />;
 }
@@ -85,10 +83,7 @@ export function McpCatalogView({
   // direct-install path runs. This holds the entry awaiting that confirmation.
   const [toConfirm, setToConfirm] = useState<string>();
 
-  const visible = useMemo(
-    () => filterCatalog(state.entries, query),
-    [state.entries, query],
-  );
+  const visible = useMemo(() => filterCatalog(state.entries, query), [state.entries, query]);
 
   const inspected = inspecting
     ? state.entries.find((entry) => entry.installName === inspecting)
@@ -136,14 +131,9 @@ export function McpCatalogView({
         MCP catalog
       </h2>
       <p className="settings-group-description">
-        Browse the Nous-approved catalog and install a server in one step.
-        Installs add an MCP server. Changes apply after the Hermes gateway
-        restarts.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Browse the Nous-approved catalog and install a server in one step. Installs add an MCP
+        server. Changes apply after the Hermes gateway restarts.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
@@ -155,11 +145,7 @@ export function McpCatalogView({
       <div className="settings-card mcp-servers-card">
         <div className="mcp-servers-toolbar">
           <div className="mcp-servers-search">
-            <IconMagnifyingGlass
-              size={15}
-              ariaHidden
-              className="mcp-servers-search-icon"
-            />
+            <IconMagnifyingGlass size={15} ariaHidden className="mcp-servers-search-icon" />
             <input
               type="search"
               value={query}
@@ -353,9 +339,7 @@ function CatalogRow({
             {auth.label}
           </span>
           <span className="mcp-catalog-status" data-tone={status.tone}>
-            {status.status !== "available" ? (
-              <IconCircleCheck size={12} ariaHidden />
-            ) : null}
+            {status.status !== "available" ? <IconCircleCheck size={12} ariaHidden /> : null}
             {status.label}
           </span>
         </div>
@@ -371,16 +355,13 @@ function CatalogRow({
         {risk.tier === "high" ? (
           <p className="mcp-server-risk-note" data-tier="high" role="note">
             <IconExclamationCircle size={13} ariaHidden />
-            {risk.reasons[0]?.detail ??
-              "This server can take high-impact actions."}
+            {risk.reasons[0]?.detail ?? "This server can take high-impact actions."}
           </p>
         ) : null}
 
         <p className="mcp-catalog-trust">
           <IconShieldCheck size={12} ariaHidden />
-          {entry.source
-            ? `Nous-approved catalog (${entry.source})`
-            : "Nous-approved catalog"}
+          {entry.source ? `Nous-approved catalog (${entry.source})` : "Nous-approved catalog"}
         </p>
       </div>
 
@@ -441,9 +422,7 @@ function InstallControl({
     return (
       <span className="skills-hub-install-done" role="status">
         <IconCircleCheck size={14} ariaHidden />
-        {install?.needsAuthHandoff
-          ? "Installed. Sign in to finish"
-          : "Restart to apply"}
+        {install?.needsAuthHandoff ? "Installed. Sign in to finish" : "Restart to apply"}
       </span>
     );
   }
@@ -455,11 +434,7 @@ function InstallControl({
           <IconExclamationCircle size={13} ariaHidden />
           {install?.error ?? "Install failed."}
         </span>
-        <button
-          type="button"
-          className="skills-hub-install-retry"
-          onClick={onInstall}
-        >
+        <button type="button" className="skills-hub-install-retry" onClick={onInstall}>
           Try again
         </button>
         <button
@@ -512,11 +487,7 @@ function InspectDrawer({
   }, [onClose]);
 
   return (
-    <div
-      className="skills-hub-drawer-backdrop"
-      role="presentation"
-      onClick={onClose}
-    >
+    <div className="skills-hub-drawer-backdrop" role="presentation" onClick={onClose}>
       <aside
         className="skills-hub-drawer"
         role="dialog"
@@ -526,10 +497,7 @@ function InspectDrawer({
       >
         <header className="skills-hub-drawer-header">
           <div className="skills-hub-drawer-title-row">
-            <h3
-              id="mcp-catalog-drawer-title"
-              className="skills-hub-drawer-title"
-            >
+            <h3 id="mcp-catalog-drawer-title" className="skills-hub-drawer-title">
               {entry.name}
             </h3>
             <button
@@ -563,22 +531,18 @@ function InspectDrawer({
 
           {local ? (
             <p className="skills-hub-drawer-note">
-              <IconShield size={13} ariaHidden /> This runs a local subprocess
-              and inherits June and Hermes sandbox constraints.
+              <IconShield size={13} ariaHidden /> This runs a local subprocess and inherits June and
+              Hermes sandbox constraints.
             </p>
           ) : null}
 
           {envRequirements.length > 0 ? (
             <div className="mcp-catalog-requirements">
-              <p className="mcp-catalog-requirements-title">
-                Install will ask for
-              </p>
+              <p className="mcp-catalog-requirements-title">Install will ask for</p>
               <ul className="mcp-catalog-requirements-list">
                 {envRequirements.map((requirement) => (
                   <li key={requirement.key}>
-                    <span className="skills-hub-drawer-mono">
-                      {requirement.key}
-                    </span>
+                    <span className="skills-hub-drawer-mono">{requirement.key}</span>
                     {requirement.label ? `: ${requirement.label}` : null}
                     {requirement.required === false ? " (optional)" : null}
                   </li>
@@ -589,8 +553,7 @@ function InspectDrawer({
 
           {needsAuthHandoff(entry) ? (
             <p className="skills-hub-drawer-note">
-              After install you sign in to finish connecting. June opens that
-              flow in your browser.
+              After install you sign in to finish connecting. June opens that flow in your browser.
             </p>
           ) : null}
 
@@ -699,11 +662,7 @@ function InstallDialog({
           <button type="button" className="primary-action" onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="button"
-            className="primary-action primary-solid"
-            onClick={handleSubmit}
-          >
+          <button type="button" className="primary-action primary-solid" onClick={handleSubmit}>
             Install
           </button>
         </>
@@ -747,8 +706,8 @@ function InstallDialog({
 
         <p className="mcp-add-note">
           <IconCircleInfo size={13} ariaHidden />
-          Installing adds an MCP server. Its tools become available to new
-          sessions after the Hermes gateway restarts.
+          Installing adds an MCP server. Its tools become available to new sessions after the Hermes
+          gateway restarts.
         </p>
       </div>
     </Dialog>
@@ -759,11 +718,7 @@ function InstallDialog({
  * installed (local subprocess / remote server / OAuth / secret-backed / sandbox
  * constrained / unrestricted capable). Pure presentation; the derivation and
  * copy live in `mcp-security-view`. */
-function CatalogSecurityLabels({
-  labels,
-}: {
-  labels: ReturnType<typeof securityLabelsForEntry>;
-}) {
+function CatalogSecurityLabels({ labels }: { labels: ReturnType<typeof securityLabelsForEntry> }) {
   if (labels.length === 0) return null;
   return (
     <ul className="mcp-server-security-labels" aria-label="Security labels">
@@ -834,13 +789,7 @@ function CatalogLoading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="mcp-servers-empty" role="status">
       <span className="mcp-servers-empty-icon" aria-hidden>

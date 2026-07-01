@@ -34,9 +34,7 @@ export type SkillSlashResolution =
       matches: HermesSkillInfo[];
     };
 
-export function parseSkillSlashCommands(
-  input: string,
-): ParsedSkillSlashCommands {
+export function parseSkillSlashCommands(input: string): ParsedSkillSlashCommands {
   const commands = parseSkillSlashCommandTokens(input);
   const commandNames: string[] = [];
   const seen = new Set<string>();
@@ -52,9 +50,7 @@ export function parseSkillSlashCommands(
   };
 }
 
-export function parseSkillSlashCommandTokens(
-  input: string,
-): ParsedSkillSlashCommandToken[] {
+export function parseSkillSlashCommandTokens(input: string): ParsedSkillSlashCommandToken[] {
   let index = 0;
   const commands: ParsedSkillSlashCommandToken[] = [];
 
@@ -87,9 +83,7 @@ export function matchSkillSlashSuggestions(
     .map((skill) => ({ skill, score: skillMatchScore(skill, normalized) }))
     .filter((item) => item.score > 0)
     .sort(
-      (a, b) =>
-        b.score - a.score ||
-        safeText(a.skill.name).localeCompare(safeText(b.skill.name)),
+      (a, b) => b.score - a.score || safeText(a.skill.name).localeCompare(safeText(b.skill.name)),
     )
     .slice(0, limit)
     .map((item) => item.skill);
@@ -142,18 +136,13 @@ export function skillSlashResolutionError(resolution: SkillSlashResolution) {
       ? `${matches} is disabled. Enable it in Agent settings to use it.`
       : `${matches} are disabled. Enable one in Agent settings to use it.`;
   }
-  const suggestions = resolution.suggestions
-    .map((skill) => `/${skill.name}`)
-    .join(", ");
+  const suggestions = resolution.suggestions.map((skill) => `/${skill.name}`).join(", ");
   return suggestions
     ? `Could not find skill /${resolution.token}. Try ${suggestions}.`
     : `Could not find skill /${resolution.token}.`;
 }
 
-export function explicitSkillInvocationPrompt(
-  documents: HermesSkillDocument[],
-  request: string,
-) {
+export function explicitSkillInvocationPrompt(documents: HermesSkillDocument[], request: string) {
   const skillBlocks = documents.map((document) =>
     [
       `Skill: ${document.name}`,
@@ -168,9 +157,7 @@ export function explicitSkillInvocationPrompt(
     EXPLICIT_SKILLS_START,
     "The user explicitly invoked these skills for this turn. Follow each selected skill's instructions before handling the user request. Use normal automatic skill matching for any additional relevant skills.",
     "",
-    ...skillBlocks.flatMap((block, index) =>
-      index === 0 ? [block] : ["", block],
-    ),
+    ...skillBlocks.flatMap((block, index) => (index === 0 ? [block] : ["", block])),
     EXPLICIT_SKILLS_END,
     "",
     USER_REQUEST_START,
@@ -186,10 +173,7 @@ export function displayedSkillInvocationText(content: string): string {
   const skillsEnd = text.indexOf(EXPLICIT_SKILLS_END);
   if (skillsEnd === -1) return content;
 
-  const start = text.indexOf(
-    USER_REQUEST_START,
-    skillsEnd + EXPLICIT_SKILLS_END.length,
-  );
+  const start = text.indexOf(USER_REQUEST_START, skillsEnd + EXPLICIT_SKILLS_END.length);
   if (start === -1) return content;
   const end = text.lastIndexOf(USER_REQUEST_END);
   if (end <= start) return content;
@@ -210,13 +194,9 @@ export function isPathLikeSlashToken(token: string) {
 
 function matchingSkills(token: string, skills: HermesSkillInfo[]) {
   const normalized = normalizeSkillName(token);
-  const exact = skills.filter(
-    (skill) => normalizeSkillName(skill.name) === normalized,
-  );
+  const exact = skills.filter((skill) => normalizeSkillName(skill.name) === normalized);
   if (exact.length) return exact;
-  return skills.filter((skill) =>
-    skillAliases(skill.name).some((alias) => alias === normalized),
-  );
+  return skills.filter((skill) => skillAliases(skill.name).some((alias) => alias === normalized));
 }
 
 function skillMatchScore(skill: HermesSkillInfo, query: string) {

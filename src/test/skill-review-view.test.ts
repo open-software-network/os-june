@@ -160,12 +160,8 @@ describe("readWriteApproval", () => {
   });
 
   it("reads string and numeric truthiness", () => {
-    expect(readWriteApproval({ skills: { write_approval: "true" } })).toBe(
-      true,
-    );
-    expect(readWriteApproval({ skills: { write_approval: "false" } })).toBe(
-      false,
-    );
+    expect(readWriteApproval({ skills: { write_approval: "true" } })).toBe(true);
+    expect(readWriteApproval({ skills: { write_approval: "false" } })).toBe(false);
     expect(readWriteApproval({ skills: { write_approval: 1 } })).toBe(true);
     expect(readWriteApproval({ skills: { write_approval: 0 } })).toBe(false);
   });

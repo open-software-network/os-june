@@ -58,10 +58,7 @@ export function ToolsetsView({
 }) {
   const [query, setQuery] = useState("");
 
-  const visible = useMemo(
-    () => filterToolsets(state.toolsets, query),
-    [state.toolsets, query],
-  );
+  const visible = useMemo(() => filterToolsets(state.toolsets, query), [state.toolsets, query]);
 
   // Only skills that declare requirement metadata get an explanation row — the
   // spec is explicit that unknown metadata is not fabricated.
@@ -76,21 +73,14 @@ export function ToolsetsView({
   const hasToolsets = state.toolsets.length > 0;
 
   return (
-    <section
-      className="settings-group toolsets"
-      aria-labelledby="toolsets-heading"
-    >
+    <section className="settings-group toolsets" aria-labelledby="toolsets-heading">
       <h2 id="toolsets-heading" className="settings-group-heading">
         Toolsets
       </h2>
       <p className="settings-group-description">
-        See which capabilities Hermes can use and what setup is still missing.
-        Toolsets are read only here. Install skills or MCP servers to add more.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        See which capabilities Hermes can use and what setup is still missing. Toolsets are read
+        only here. Install skills or MCP servers to add more.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
@@ -102,11 +92,7 @@ export function ToolsetsView({
       <div className="settings-card toolsets-card">
         <div className="toolsets-toolbar">
           <div className="toolsets-search">
-            <IconMagnifyingGlass
-              size={15}
-              ariaHidden
-              className="toolsets-search-icon"
-            />
+            <IconMagnifyingGlass size={15} ariaHidden className="toolsets-search-icon" />
             <input
               type="search"
               value={query}
@@ -174,9 +160,7 @@ export function ToolsetsView({
         </div>
       </div>
 
-      {!isUnavailable && explained.length > 0 ? (
-        <SkillExplanations entries={explained} />
-      ) : null}
+      {!isUnavailable && explained.length > 0 ? <SkillExplanations entries={explained} /> : null}
     </section>
   );
 }
@@ -227,9 +211,7 @@ function ToolsetRow({ toolset }: { toolset: HermesToolsetInfo }) {
           </span>
         </div>
 
-        {toolset.description ? (
-          <p className="toolset-description">{toolset.description}</p>
-        ) : null}
+        {toolset.description ? <p className="toolset-description">{toolset.description}</p> : null}
 
         {tools.length > 0 ? (
           <div className="toolset-tools" aria-label="Included tools">
@@ -240,9 +222,7 @@ function ToolsetRow({ toolset }: { toolset: HermesToolsetInfo }) {
             ))}
           </div>
         ) : (
-          <p className="toolset-tools-empty">
-            Hermes did not list the tools in this toolset.
-          </p>
+          <p className="toolset-tools-empty">Hermes did not list the tools in this toolset.</p>
         )}
 
         {unmet.length > 0 ? (
@@ -297,21 +277,14 @@ function SkillExplanations({ entries }: { entries: ExplainedSkill[] }) {
           Skill availability
         </span>
         <p className="toolsets-skills-description">
-          Why these skills are visible, hidden, or waiting on setup, based on
-          the toolsets above.
+          Why these skills are visible, hidden, or waiting on setup, based on the toolsets above.
         </p>
       </div>
       <ul className="toolsets-skills-list">
         {entries.map(({ skill, explanation }) => (
-          <li
-            key={skill.name}
-            className="toolsets-skill-row"
-            data-status={explanation.status}
-          >
+          <li key={skill.name} className="toolsets-skill-row" data-status={explanation.status}>
             <span className="toolsets-skill-name">{skill.name}</span>
-            <span className="toolsets-skill-explanation">
-              {explanation.message}
-            </span>
+            <span className="toolsets-skill-explanation">{explanation.message}</span>
           </li>
         ))}
       </ul>
@@ -358,13 +331,7 @@ function ToolsetsLoading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="toolsets-empty" role="status">
       <span className="toolsets-empty-icon" aria-hidden>

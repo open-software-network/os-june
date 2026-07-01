@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 import { preferredVisionFallbackModel } from "../lib/suggested-models";
 import type { VeniceModelDto } from "../lib/tauri";
 
-const model = (
-  id: string,
-  name: string,
-  capabilities: string[],
-): VeniceModelDto => ({
+const model = (id: string, name: string, capabilities: string[]): VeniceModelDto => ({
   provider: "venice",
   id,
   name,
@@ -50,9 +46,7 @@ describe("preferredVisionFallbackModel", () => {
   });
 
   it("returns undefined when no model can read images", () => {
-    const glm51 = model("zai-org-glm-5-1", "GLM 5.1", [
-      "supportsFunctionCalling",
-    ]);
+    const glm51 = model("zai-org-glm-5-1", "GLM 5.1", ["supportsFunctionCalling"]);
     expect(preferredVisionFallbackModel([glm52, glm51])).toBeUndefined();
     expect(preferredVisionFallbackModel([])).toBeUndefined();
   });

@@ -56,9 +56,7 @@ if (import.meta.env.DEV) {
   );
   // __billingDemo("pro") parks the Account → Billing card in any plan state;
   // __billingDemo("all") stacks every variant; __billingDemo("off") resets.
-  void import("./lib/billing-demo").then(({ registerBillingDemo }) =>
-    registerBillingDemo(),
-  );
+  void import("./lib/billing-demo").then(({ registerBillingDemo }) => registerBillingDemo());
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

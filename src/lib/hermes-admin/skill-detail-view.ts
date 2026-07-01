@@ -56,10 +56,9 @@ export function splitSkillDocument(content: string): SkillDocumentParts {
   // Tolerate a BOM and the most common newline styles; do NOT trim the body,
   // so the editor preserves trailing content exactly.
   const withoutBom = content.replace(/^﻿/, "");
-  const match =
-    /^(?:\s*\n)?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/.exec(
-      withoutBom,
-    );
+  const match = /^(?:\s*\n)?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/.exec(
+    withoutBom,
+  );
   if (!match) {
     return { body: content, hasFrontmatter: false };
   }
@@ -81,9 +80,7 @@ export type FrontmatterScalars = Readonly<Record<string, string>>;
  * values are unwrapped; lines that begin a nested block (`key:` with no value)
  * or a sequence are skipped. Returns an empty map for empty/whitespace input.
  * Never throws — a malformed line is skipped, not fatal. */
-export function readFrontmatterScalars(
-  frontmatter: string,
-): FrontmatterScalars {
+export function readFrontmatterScalars(frontmatter: string): FrontmatterScalars {
   const out: Record<string, string> = {};
   for (const rawLine of frontmatter.split(/\r?\n/)) {
     const line = rawLine.trimEnd();
@@ -184,9 +181,7 @@ export function skillEditPolicy(input: {
   if (input.readOnly || !risk.editable) {
     return {
       editable: false,
-      readOnlyReason:
-        risk.readOnly ??
-        "This skill is read-only in June and cannot be edited here.",
+      readOnlyReason: risk.readOnly ?? "This skill is read-only in June and cannot be edited here.",
       requiresSharedSourceAck: false,
     };
   }
@@ -225,9 +220,7 @@ const GROUP_PREFIXES: ReadonlyArray<[keyof SkillSupportingFiles, string]> = [
  * `contents`, ...). `SKILL.md` itself is excluded (it is shown separately). A
  * path outside the four known groups lands in `other`. Returns empty groups
  * when nothing is reported. */
-export function skillSupportingFiles(
-  skill: HermesSkillInfo,
-): SkillSupportingFiles {
+export function skillSupportingFiles(skill: HermesSkillInfo): SkillSupportingFiles {
   const groups: SkillSupportingFiles = {
     references: [],
     templates: [],
@@ -238,9 +231,7 @@ export function skillSupportingFiles(
   for (const path of supportingFilePaths(skill)) {
     const normalized = path.replace(/^\.?\//, "");
     if (/^skill\.md$/i.test(normalized)) continue;
-    const group = GROUP_PREFIXES.find(([, prefix]) =>
-      normalized.toLowerCase().startsWith(prefix),
-    );
+    const group = GROUP_PREFIXES.find(([, prefix]) => normalized.toLowerCase().startsWith(prefix));
     if (group) groups[group[0]].push(normalized);
     else groups.other.push(normalized);
   }
@@ -433,8 +424,7 @@ function lineLooksSecret(line: string): boolean {
   const unq = value.replace(/^["']|["']$/g, "");
   if (!unq) return false;
   // A path or URL is a location, not a credential.
-  const looksLikePath =
-    unq.includes("/") || unq.includes("\\") || /^[a-z]+:\/\//i.test(unq);
+  const looksLikePath = unq.includes("/") || unq.includes("\\") || /^[a-z]+:\/\//i.test(unq);
   if (KNOWN_SECRET_PREFIX.test(unq)) return true;
   if (SECRET_KEY.test(key) && !looksLikePath && CREDENTIAL_TOKEN.test(unq)) {
     return true;

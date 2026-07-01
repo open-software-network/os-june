@@ -97,9 +97,7 @@ export type UnsupportedEventStore = {
    * when that session has none. A `undefined`/empty session never has a notice
    * (a session-less event can't be attributed to the active session).
    */
-  activeNotice(
-    sessionId: string | undefined,
-  ): UnsupportedEventNoticeData | undefined;
+  activeNotice(sessionId: string | undefined): UnsupportedEventNoticeData | undefined;
   /** Subscribe to changes (for `useSyncExternalStore`). Returns an unsubscribe. */
   subscribe(listener: () => void): () => void;
   /**
@@ -133,9 +131,7 @@ export function createUnsupportedEventStore(): UnsupportedEventStore {
     const key = sessionId ?? NO_SESSION_KEY;
     const type = nonEmpty(event.rawType);
     const observedAt = new Date().toISOString();
-    const { payloadKeys, payloadPreview } = describePayload(
-      event.sanitizedPayload,
-    );
+    const { payloadKeys, payloadPreview } = describePayload(event.sanitizedPayload);
 
     const entries = bySession.get(key) ?? [];
     // Aggregate by type within the session. A missing type aggregates under one
@@ -172,9 +168,7 @@ export function createUnsupportedEventStore(): UnsupportedEventStore {
     return (bySession.get(key) ?? []).map(cloneEntry);
   }
 
-  function recordsFor(
-    sessionId: string | undefined,
-  ): UnsupportedHermesEventRecord[] {
+  function recordsFor(sessionId: string | undefined): UnsupportedHermesEventRecord[] {
     return entriesFor(sessionId).map(entryToRecord);
   }
 
@@ -186,9 +180,7 @@ export function createUnsupportedEventStore(): UnsupportedEventStore {
     return out;
   }
 
-  function activeNotice(
-    sessionId: string | undefined,
-  ): UnsupportedEventNoticeData | undefined {
+  function activeNotice(sessionId: string | undefined): UnsupportedEventNoticeData | undefined {
     const key = nonEmpty(sessionId);
     if (!key) return undefined;
     const entries = bySession.get(key);
@@ -259,9 +251,7 @@ function describePayload(sanitized: unknown): {
     const json = JSON.stringify(safe, null, 2);
     if (typeof json === "string") {
       payloadPreview =
-        json.length > PREVIEW_MAX_LENGTH
-          ? `${json.slice(0, PREVIEW_MAX_LENGTH)}…`
-          : json;
+        json.length > PREVIEW_MAX_LENGTH ? `${json.slice(0, PREVIEW_MAX_LENGTH)}…` : json;
     }
   } catch {
     // A value that can't be stringified (shouldn't happen post-sanitize) just
@@ -271,9 +261,7 @@ function describePayload(sanitized: unknown): {
   return { payloadKeys, payloadPreview };
 }
 
-function entryToRecord(
-  entry: UnsupportedEventEntry,
-): UnsupportedHermesEventRecord {
+function entryToRecord(entry: UnsupportedEventEntry): UnsupportedHermesEventRecord {
   return {
     observedAt: entry.lastSeen,
     sessionId: entry.sessionId,

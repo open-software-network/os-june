@@ -144,17 +144,14 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
 
   function recordInbound(frame: InboundTraceInput): void {
     const classified: JuneHermesEvent = classifyHermesEvent(frame);
-    const sessionId =
-      nonEmpty(frame?.session_id) ?? nonEmpty(eventSession(classified));
+    const sessionId = nonEmpty(frame?.session_id) ?? nonEmpty(eventSession(classified));
     const { payloadKeys, payloadPreview } = describePayload(frame?.payload);
     push(sessionId, {
       id: nextId++,
       direction: "inbound",
       observedAt: new Date().toISOString(),
       sessionId,
-      rawType: nonEmpty(
-        typeof frame?.type === "string" ? frame.type : undefined,
-      ),
+      rawType: nonEmpty(typeof frame?.type === "string" ? frame.type : undefined),
       normalizedKind: classified.kind,
       payloadKeys,
       payloadPreview,
@@ -169,9 +166,7 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     // the value-shape backstop can't catch is still masked.
     const { payloadKeys, payloadPreview } = describePayload(
       call.params,
-      isSecretResponseMethod(call.method)
-        ? SECRET_RESPONSE_SENSITIVE_KEYS
-        : undefined,
+      isSecretResponseMethod(call.method) ? SECRET_RESPONSE_SENSITIVE_KEYS : undefined,
     );
     push(sessionId, {
       id: nextId++,
@@ -206,9 +201,7 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     return [...bySession.keys()].filter((key) => key !== NO_SESSION_KEY);
   }
 
-  function exportSanitizedTrace(
-    sessionId: string | undefined,
-  ): SanitizedTraceBundle {
+  function exportSanitizedTrace(sessionId: string | undefined): SanitizedTraceBundle {
     return {
       sessionId: nonEmpty(sessionId),
       exportedAt: new Date().toISOString(),
@@ -280,10 +273,7 @@ function describePayload(
   if (value === null || value === undefined) {
     return { payloadKeys: [] };
   }
-  const safe = sanitizePayload(
-    value,
-    extraSensitiveKeys ? { extraSensitiveKeys } : undefined,
-  );
+  const safe = sanitizePayload(value, extraSensitiveKeys ? { extraSensitiveKeys } : undefined);
   const payloadKeys =
     typeof safe === "object" && safe !== null && !Array.isArray(safe)
       ? Object.keys(safe as Record<string, unknown>)
@@ -293,9 +283,7 @@ function describePayload(
     const json = JSON.stringify(safe, null, 2);
     if (typeof json === "string") {
       payloadPreview =
-        json.length > PREVIEW_MAX_LENGTH
-          ? `${json.slice(0, PREVIEW_MAX_LENGTH)}…`
-          : json;
+        json.length > PREVIEW_MAX_LENGTH ? `${json.slice(0, PREVIEW_MAX_LENGTH)}…` : json;
     }
   } catch {
     // A value that can't be stringified (shouldn't happen post-sanitize) just

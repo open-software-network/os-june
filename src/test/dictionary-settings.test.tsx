@@ -56,9 +56,7 @@ describe("DictionarySettingsSection", () => {
       name: "Add dictionary entry",
     });
     await user.type(within(addDialog).getByLabelText("Word or phrase"), "OSS");
-    await user.click(
-      within(addDialog).getByRole("button", { name: "Add entry" }),
-    );
+    await user.click(within(addDialog).getByRole("button", { name: "Add entry" }));
 
     expect(mocks.createDictionaryEntry).toHaveBeenCalledWith({
       phrase: "OSS",
@@ -70,25 +68,16 @@ describe("DictionarySettingsSection", () => {
       name: "Edit dictionary entry",
     });
     await user.clear(within(editDialog).getByLabelText("Word or phrase"));
-    await user.type(
-      within(editDialog).getByLabelText("Word or phrase"),
-      "Open Source Software",
-    );
-    await user.click(
-      within(editDialog).getByRole("button", { name: "Save changes" }),
-    );
+    await user.type(within(editDialog).getByLabelText("Word or phrase"), "Open Source Software");
+    await user.click(within(editDialog).getByRole("button", { name: "Save changes" }));
 
     expect(mocks.updateDictionaryEntry).toHaveBeenCalledWith({
       entryId: "entry-2",
       phrase: "Open Source Software",
     });
 
-    await user.click(
-      screen.getByRole("button", { name: "Delete Open Source Software" }),
-    );
-    await waitFor(() =>
-      expect(mocks.deleteDictionaryEntry).toHaveBeenCalledWith("entry-2"),
-    );
+    await user.click(screen.getByRole("button", { name: "Delete Open Source Software" }));
+    await waitFor(() => expect(mocks.deleteDictionaryEntry).toHaveBeenCalledWith("entry-2"));
   });
 
   it("renders an empty state when there are no entries", async () => {

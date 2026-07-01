@@ -25,12 +25,7 @@
  * Copy is sentence case, no em/en-dashes, per June conventions.
  */
 
-import {
-  isLocalSubprocess,
-  redactedEnv,
-  redactedHeaders,
-  transportMeta,
-} from "./mcp-servers-view";
+import { isLocalSubprocess, redactedEnv, redactedHeaders, transportMeta } from "./mcp-servers-view";
 import { isLocalSubprocessEntry } from "./mcp-catalog-view";
 import type { HermesMcpCatalogEntry, HermesMcpServerInfo } from "./schemas";
 
@@ -62,49 +57,45 @@ export type McpSecurityLabel = {
 
 /** The fixed copy for each label. Centralized so the servers page and the
  * catalog page render identical wording. */
-const LABEL_COPY: Readonly<Record<McpSecurityLabelCode, McpSecurityLabel>> =
-  Object.freeze({
-    "local-subprocess": {
-      code: "local-subprocess",
-      label: "Local subprocess",
-      blurb:
-        "Runs on this Mac as a child process of the Hermes and June runtime.",
-      tone: "caution",
-    },
-    "remote-server": {
-      code: "remote-server",
-      label: "Remote server",
-      blurb: "Receives requests over the network. Tools run outside this Mac.",
-      tone: "caution",
-    },
-    oauth: {
-      code: "oauth",
-      label: "OAuth",
-      blurb: "Can act as the connected account within the scopes you grant it.",
-      tone: "caution",
-    },
-    "secret-backed": {
-      code: "secret-backed",
-      label: "Secret-backed",
-      blurb:
-        "Environment or header values are exposed to the server process or request.",
-      tone: "caution",
-    },
-    "sandbox-constrained": {
-      code: "sandbox-constrained",
-      label: "Sandbox constrained",
-      blurb:
-        "In sandboxed sessions, writes outside allowed roots may be denied.",
-      tone: "neutral",
-    },
-    "unrestricted-capable": {
-      code: "unrestricted-capable",
-      label: "Unrestricted capable",
-      blurb:
-        "In unrestricted sessions, it can write anywhere your user account can, unless the server limits itself.",
-      tone: "caution",
-    },
-  });
+const LABEL_COPY: Readonly<Record<McpSecurityLabelCode, McpSecurityLabel>> = Object.freeze({
+  "local-subprocess": {
+    code: "local-subprocess",
+    label: "Local subprocess",
+    blurb: "Runs on this Mac as a child process of the Hermes and June runtime.",
+    tone: "caution",
+  },
+  "remote-server": {
+    code: "remote-server",
+    label: "Remote server",
+    blurb: "Receives requests over the network. Tools run outside this Mac.",
+    tone: "caution",
+  },
+  oauth: {
+    code: "oauth",
+    label: "OAuth",
+    blurb: "Can act as the connected account within the scopes you grant it.",
+    tone: "caution",
+  },
+  "secret-backed": {
+    code: "secret-backed",
+    label: "Secret-backed",
+    blurb: "Environment or header values are exposed to the server process or request.",
+    tone: "caution",
+  },
+  "sandbox-constrained": {
+    code: "sandbox-constrained",
+    label: "Sandbox constrained",
+    blurb: "In sandboxed sessions, writes outside allowed roots may be denied.",
+    tone: "neutral",
+  },
+  "unrestricted-capable": {
+    code: "unrestricted-capable",
+    label: "Unrestricted capable",
+    blurb:
+      "In unrestricted sessions, it can write anywhere your user account can, unless the server limits itself.",
+    tone: "caution",
+  },
+});
 
 /** Looks up the fixed label metadata for a code. */
 export function securityLabel(code: McpSecurityLabelCode): McpSecurityLabel {
@@ -118,9 +109,7 @@ export function securityLabel(code: McpSecurityLabelCode): McpSecurityLabel {
  * mode). A remote server is a remote-server; an OAuth server adds the OAuth
  * label. Any server with configured env/header KEYS is secret-backed.
  */
-export function securityLabelsFor(
-  server: HermesMcpServerInfo,
-): McpSecurityLabel[] {
+export function securityLabelsFor(server: HermesMcpServerInfo): McpSecurityLabel[] {
   const codes: McpSecurityLabelCode[] = [];
   const local = isLocalSubprocess(server);
   if (local) {
@@ -147,9 +136,7 @@ export function securityLabelsFor(
  * never secret-backed until installed). Lets the catalog page show the same
  * boundary badges the server will carry once installed.
  */
-export function securityLabelsForEntry(
-  entry: HermesMcpCatalogEntry,
-): McpSecurityLabel[] {
+export function securityLabelsForEntry(entry: HermesMcpCatalogEntry): McpSecurityLabel[] {
   const codes: McpSecurityLabelCode[] = [];
   const local = isLocalSubprocessEntry(entry);
   if (local) {
@@ -184,9 +171,7 @@ const TRANSPORT_REDUNDANT: ReadonlySet<McpSecurityLabelCode> = new Set([
  * the transport-equivalent labels (local subprocess / remote server) are dropped
  * because the row's transport pill already conveys them. Keeps the OAuth /
  * secret-backed / sandbox boundary labels, which the transport pill does not. */
-export function inlineSecurityLabels(
-  labels: readonly McpSecurityLabel[],
-): McpSecurityLabel[] {
+export function inlineSecurityLabels(labels: readonly McpSecurityLabel[]): McpSecurityLabel[] {
   return labels.filter((label) => !TRANSPORT_REDUNDANT.has(label.code));
 }
 
@@ -283,8 +268,7 @@ const CATEGORY_KEYWORDS: Readonly<
       "run-command",
       "runcommand",
     ],
-    detail:
-      "Runs shell commands. A shell tool can do anything the running user can do.",
+    detail: "Runs shell commands. A shell tool can do anything the running user can do.",
   },
   browser: {
     keywords: [
@@ -297,8 +281,7 @@ const CATEGORY_KEYWORDS: Readonly<
       "selenium",
       "headless",
     ],
-    detail:
-      "Drives a browser. It can reach any site you are signed in to and act there.",
+    detail: "Drives a browser. It can reach any site you are signed in to and act there.",
   },
   database: {
     keywords: [
@@ -317,8 +300,7 @@ const CATEGORY_KEYWORDS: Readonly<
       "-sql",
       "sql-",
     ],
-    detail:
-      "Connects to a database. It can read and modify the data it can reach.",
+    detail: "Connects to a database. It can read and modify the data it can reach.",
   },
   "cloud-admin": {
     keywords: [
@@ -336,8 +318,7 @@ const CATEGORY_KEYWORDS: Readonly<
       "admin-api",
       "cloud-admin",
     ],
-    detail:
-      "Administers cloud infrastructure. It can change or destroy live resources.",
+    detail: "Administers cloud infrastructure. It can change or destroy live resources.",
   },
 });
 
@@ -399,9 +380,7 @@ export function destructiveToolsFor(server: HermesMcpServerInfo): string[] {
  * This NEVER blocks: it only ranks and explains. The caller decides whether to
  * show a note (elevated) or gate behind a confirmation (high).
  */
-export function classifyServerRisk(
-  server: HermesMcpServerInfo,
-): McpRiskAssessment {
+export function classifyServerRisk(server: HermesMcpServerInfo): McpRiskAssessment {
   const haystack = riskHaystack(
     server.name,
     server.command,
@@ -418,27 +397,19 @@ export function classifyServerRisk(
  * heuristic and same warning-only contract as {@link classifyServerRisk}, so
  * the catalog install confirmation matches what the enabled server will warn.
  */
-export function classifyEntryRisk(
-  entry: HermesMcpCatalogEntry,
-): McpRiskAssessment {
+export function classifyEntryRisk(entry: HermesMcpCatalogEntry): McpRiskAssessment {
   const haystack = riskHaystack(
     entry.name,
     entry.installName,
     entry.description,
     entry.defaultTools ?? [],
   );
-  const destructiveTools = (entry.defaultTools ?? []).filter((name) =>
-    isDestructiveToolName(name),
-  );
+  const destructiveTools = (entry.defaultTools ?? []).filter((name) => isDestructiveToolName(name));
   return assess(haystack, isLocalSubprocessEntry(entry), destructiveTools);
 }
 
 /** Shared assessment from a prepared haystack + the local/destructive signals. */
-function assess(
-  haystack: string,
-  local: boolean,
-  destructiveTools: string[],
-): McpRiskAssessment {
+function assess(haystack: string, local: boolean, destructiveTools: string[]): McpRiskAssessment {
   const reasons: McpRiskReason[] = [];
 
   for (const [code, group] of Object.entries(CATEGORY_KEYWORDS)) {
@@ -471,11 +442,7 @@ function assess(
   // High when a high-risk category or a destructive tool is present. A local
   // subprocess with no category match is elevated (worth a note, no gate). A
   // remote server with no category match is standard.
-  const tier: McpRiskTier = hasHighCategory
-    ? "high"
-    : local
-      ? "elevated"
-      : "standard";
+  const tier: McpRiskTier = hasHighCategory ? "high" : local ? "elevated" : "standard";
 
   return {
     tier,
@@ -529,9 +496,7 @@ export type McpRiskConfirmation = {
 };
 
 /** Confirmation copy for enabling an already-configured high-risk server. */
-export function enableConfirmationFor(
-  server: HermesMcpServerInfo,
-): McpRiskConfirmation {
+export function enableConfirmationFor(server: HermesMcpServerInfo): McpRiskConfirmation {
   const assessment = classifyServerRisk(server);
   const local = isLocalSubprocess(server);
   return {
@@ -544,9 +509,7 @@ export function enableConfirmationFor(
 }
 
 /** Confirmation copy for installing a high-risk catalog entry. */
-export function installConfirmationFor(
-  entry: HermesMcpCatalogEntry,
-): McpRiskConfirmation {
+export function installConfirmationFor(entry: HermesMcpCatalogEntry): McpRiskConfirmation {
   const assessment = classifyEntryRisk(entry);
   const local = isLocalSubprocessEntry(entry);
   return {
@@ -572,15 +535,11 @@ export function installConfirmationFor(
  * - `enable-all`: enable a new server with all of its tools. The least
  *   conservative option; June warns when it is selected.
  */
-export type McpExposurePolicy =
-  | "install-disabled"
-  | "enable-with-allowlist"
-  | "enable-all";
+export type McpExposurePolicy = "install-disabled" | "enable-with-allowlist" | "enable-all";
 
 /** The conservative default the spec calls for: nothing is enabled until the
  * user opts in. */
-export const DEFAULT_MCP_EXPOSURE_POLICY: McpExposurePolicy =
-  "install-disabled";
+export const DEFAULT_MCP_EXPOSURE_POLICY: McpExposurePolicy = "install-disabled";
 
 /** The dotted config path the policy persists at in a profile's `config.yaml`.
  * Stored through the same `PUT /api/config` REST surface the jailed dashboard
@@ -598,35 +557,31 @@ export type McpExposurePolicyMeta = {
   recommended: boolean;
 };
 
-const POLICY_META: Readonly<Record<McpExposurePolicy, McpExposurePolicyMeta>> =
-  Object.freeze({
-    "install-disabled": {
-      policy: "install-disabled",
-      label: "Install disabled by default",
-      description:
-        "New servers install turned off. You enable each one after reviewing it. Most conservative.",
-      recommended: true,
-    },
-    "enable-with-allowlist": {
-      policy: "enable-with-allowlist",
-      label: "Enable with a safe allowlist",
-      description:
-        "New servers turn on, but allow only the tools you choose rather than every tool they expose.",
-      recommended: false,
-    },
-    "enable-all": {
-      policy: "enable-all",
-      label: "Enable all tools",
-      description:
-        "New servers turn on with every tool they expose. Least conservative.",
-      recommended: false,
-    },
-  });
+const POLICY_META: Readonly<Record<McpExposurePolicy, McpExposurePolicyMeta>> = Object.freeze({
+  "install-disabled": {
+    policy: "install-disabled",
+    label: "Install disabled by default",
+    description:
+      "New servers install turned off. You enable each one after reviewing it. Most conservative.",
+    recommended: true,
+  },
+  "enable-with-allowlist": {
+    policy: "enable-with-allowlist",
+    label: "Enable with a safe allowlist",
+    description:
+      "New servers turn on, but allow only the tools you choose rather than every tool they expose.",
+    recommended: false,
+  },
+  "enable-all": {
+    policy: "enable-all",
+    label: "Enable all tools",
+    description: "New servers turn on with every tool they expose. Least conservative.",
+    recommended: false,
+  },
+});
 
 /** The display metadata for a policy. */
-export function exposurePolicyMeta(
-  policy: McpExposurePolicy,
-): McpExposurePolicyMeta {
+export function exposurePolicyMeta(policy: McpExposurePolicy): McpExposurePolicyMeta {
   return POLICY_META[policy];
 }
 
@@ -668,14 +623,10 @@ export function normalizeExposurePolicy(value: unknown): McpExposurePolicy {
 /** Reads the exposure policy out of a parsed config tree. Walks
  * `mcp.exposure_policy`, normalizing whatever is found (or the default when
  * absent). Defensive: tolerates the key being absent or malformed. */
-export function readExposurePolicy(
-  config: Record<string, unknown>,
-): McpExposurePolicy {
+export function readExposurePolicy(config: Record<string, unknown>): McpExposurePolicy {
   const mcp = config.mcp;
   if (mcp && typeof mcp === "object" && !Array.isArray(mcp)) {
-    return normalizeExposurePolicy(
-      (mcp as Record<string, unknown>).exposure_policy,
-    );
+    return normalizeExposurePolicy((mcp as Record<string, unknown>).exposure_policy);
   }
   return DEFAULT_MCP_EXPOSURE_POLICY;
 }

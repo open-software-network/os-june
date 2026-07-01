@@ -144,19 +144,13 @@ export function InstalledSkillsView({
     if (!lifecycle) return 0;
     return state.skills.filter((skill) => {
       const policy = lifecycle.policyFor(skill);
-      return (
-        policy.actions.update.available &&
-        policy.updateAvailable &&
-        !policy.locallyModified
-      );
+      return policy.actions.update.available && policy.updateAvailable && !policy.locallyModified;
     }).length;
   }, [lifecycle, state.skills]);
 
   // A category that vanished after a refresh should not strand the filter.
   const activeCategory =
-    category !== ALL_CATEGORIES && !categories.includes(category)
-      ? ALL_CATEGORIES
-      : category;
+    category !== ALL_CATEGORIES && !categories.includes(category) ? ALL_CATEGORIES : category;
 
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
@@ -164,21 +158,14 @@ export function InstalledSkillsView({
   const hasSkills = state.skills.length > 0;
 
   return (
-    <section
-      className="settings-group installed-skills"
-      aria-labelledby="installed-skills-heading"
-    >
+    <section className="settings-group installed-skills" aria-labelledby="installed-skills-heading">
       <h2 id="installed-skills-heading" className="settings-group-heading">
         Installed skills
       </h2>
       <p className="settings-group-description">
-        Browse the skills Hermes has installed and choose which ones future
-        sessions can use. Changes apply to new sessions.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Browse the skills Hermes has installed and choose which ones future sessions can use.
+        Changes apply to new sessions.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
@@ -190,11 +177,7 @@ export function InstalledSkillsView({
       <div className="settings-card installed-skills-card">
         <div className="installed-skills-toolbar">
           <div className="installed-skills-search">
-            <IconMagnifyingGlass
-              size={15}
-              ariaHidden
-              className="installed-skills-search-icon"
-            />
+            <IconMagnifyingGlass size={15} ariaHidden className="installed-skills-search-icon" />
             <input
               type="search"
               value={query}
@@ -244,11 +227,7 @@ export function InstalledSkillsView({
         ) : null}
 
         {categories.length > 1 && !isUnavailable ? (
-          <div
-            className="installed-skills-filters"
-            role="group"
-            aria-label="Filter by category"
-          >
+          <div className="installed-skills-filters" role="group" aria-label="Filter by category">
             <CategoryChip
               label="All"
               count={state.skills.length}
@@ -259,10 +238,7 @@ export function InstalledSkillsView({
               <CategoryChip
                 key={name}
                 label={name}
-                count={
-                  state.skills.filter((skill) => skillCategory(skill) === name)
-                    .length
-                }
+                count={state.skills.filter((skill) => skillCategory(skill) === name).length}
                 active={activeCategory === name}
                 onSelect={() => setCategory(name)}
               />
@@ -309,18 +285,14 @@ export function InstalledSkillsView({
                   skill={skill}
                   pending={state.pending.has(skill.name)}
                   onToggle={(enabled) => state.toggle(skill.name, enabled)}
-                  onOpen={
-                    onOpenSkill ? () => onOpenSkill(skill.name) : undefined
-                  }
+                  onOpen={onOpenSkill ? () => onOpenSkill(skill.name) : undefined}
                   lifecycle={lifecycle}
                   setupBadge={setup?.badgeFor(skill)}
                   setupOpen={openSetup === skill.name}
                   onToggleSetup={
                     setup
                       ? () =>
-                          setOpenSetup((current) =>
-                            current === skill.name ? null : skill.name,
-                          )
+                          setOpenSetup((current) => (current === skill.name ? null : skill.name))
                       : undefined
                   }
                   setupMode={state.mode ?? mode}
@@ -465,9 +437,7 @@ function SkillRow({
             {skill.name}
           </span>
           <SourcePill source={skill.source} label={meta.label} />
-          {skill.version ? (
-            <span className="installed-skill-version">v{skill.version}</span>
-          ) : null}
+          {skill.version ? <span className="installed-skill-version">v{skill.version}</span> : null}
           {setupBadge ? <SetupStatusBadge badge={setupBadge} /> : null}
           {readOnly ? (
             <span className="installed-skill-readonly" title={meta.blurb}>
@@ -511,8 +481,8 @@ function SkillRow({
 
         {readOnly ? (
           <p className="installed-skill-note">
-            Loaded from an external directory. It may be shared with other tools
-            and cannot be changed from June.
+            Loaded from an external directory. It may be shared with other tools and cannot be
+            changed from June.
           </p>
         ) : null}
 
@@ -592,10 +562,7 @@ function SkillsLoading() {
   return (
     <ul className="installed-skills-list" aria-hidden>
       {[0, 1, 2].map((index) => (
-        <li
-          key={index}
-          className="installed-skill-row installed-skill-skeleton"
-        >
+        <li key={index} className="installed-skill-row installed-skill-skeleton">
           <div className="installed-skill-main">
             <span className="installed-skill-skeleton-line installed-skill-skeleton-title" />
             <span className="installed-skill-skeleton-line" />
@@ -606,13 +573,7 @@ function SkillsLoading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="installed-skills-empty" role="status">
       <span className="installed-skills-empty-icon" aria-hidden>
@@ -641,11 +602,7 @@ function ErrorState({
       <p className="installed-skills-empty-title">Couldn't load skills</p>
       <p className="installed-skills-empty-description">{message}</p>
       {retryable ? (
-        <button
-          type="button"
-          className="installed-skills-retry"
-          onClick={onRetry}
-        >
+        <button type="button" className="installed-skills-retry" onClick={onRetry}>
           Try again
         </button>
       ) : null}

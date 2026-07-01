@@ -43,10 +43,7 @@ export function isEditableContextMenuTarget(target: EventTarget | null) {
     return false;
   }
 
-  if (
-    editable instanceof HTMLInputElement ||
-    editable instanceof HTMLTextAreaElement
-  ) {
+  if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
     return !editable.disabled && !editable.readOnly;
   }
 

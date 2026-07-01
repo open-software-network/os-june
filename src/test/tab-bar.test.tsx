@@ -74,9 +74,7 @@ describe("TabBar", () => {
   it("keeps the first tab aligned while preserving paint room", () => {
     const rule = cssRuleFor(".tab-strip");
 
-    expect(rule).toContain(
-      "margin-left: calc(-1 * var(--tab-strip-shadow-pad));",
-    );
+    expect(rule).toContain("margin-left: calc(-1 * var(--tab-strip-shadow-pad));");
     expect(rule).toContain("padding: var(--tab-strip-shadow-pad);");
     expect(rule).not.toContain("padding-left: 0;");
   });
@@ -91,9 +89,7 @@ describe("TabBar", () => {
       '.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel',
     );
 
-    expect(panelRule).toContain(
-      "margin-right: calc(var(--agent-files-w) + var(--sp-3));",
-    );
+    expect(panelRule).toContain("margin-right: calc(var(--agent-files-w) + var(--sp-3));");
     expect(appCss).not.toMatch(
       /\.app-shell:has\(\.agent-workspace\[data-artifact-panel="open"\]\) \.main-column\s*\{[\s\S]*?padding-right:\s*calc\(var\(--agent-files-w\)/,
     );
@@ -170,12 +166,8 @@ describe("TabBar", () => {
 
       rerender(<TabBar {...props} layoutFrozen={false} />);
 
-      expect(
-        screen.queryByRole("tab", { name: "Tab 6" }),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Show all 6 tabs" }),
-      ).toBeInTheDocument();
+      expect(screen.queryByRole("tab", { name: "Tab 6" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Show all 6 tabs" })).toBeInTheDocument();
     } finally {
       Object.defineProperty(globalThis, "ResizeObserver", {
         configurable: true,
@@ -183,14 +175,9 @@ describe("TabBar", () => {
         value: OriginalResizeObserver,
       });
       if (originalClientWidth) {
-        Object.defineProperty(
-          HTMLElement.prototype,
-          "clientWidth",
-          originalClientWidth,
-        );
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", originalClientWidth);
       } else {
-        delete (HTMLElement.prototype as unknown as { clientWidth?: number })
-          .clientWidth;
+        delete (HTMLElement.prototype as unknown as { clientWidth?: number }).clientWidth;
       }
     }
   });

@@ -88,9 +88,7 @@ export type HermesMethods = {
    * the source of truth that the switch took — there is no separate confirming
    * event June can rely on (raw `model.switch`/`model.changed` frames classify
    * as `unsupported`). */
-  switchActiveSessionModel(
-    params: SwitchActiveSessionModelParams,
-  ): Promise<unknown>;
+  switchActiveSessionModel(params: SwitchActiveSessionModelParams): Promise<unknown>;
   respondToSudo(params: RespondToSudoParams): Promise<unknown>;
   respondToSecret(params: RespondToSecretParams): Promise<unknown>;
   interruptSubagent(params: InterruptSubagentParams): Promise<unknown>;

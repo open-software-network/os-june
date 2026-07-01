@@ -64,16 +64,7 @@ export function SkillLifecycleActions({
   const valid = availableActions(policy);
   const invalid =
     variant === "detail"
-      ? (
-          [
-            "update",
-            "audit",
-            "uninstall",
-            "delete",
-            "reset",
-            "restore",
-          ] as SkillLifecycleAction[]
-        )
+      ? (["update", "audit", "uninstall", "delete", "reset", "restore"] as SkillLifecycleAction[])
           .map((action) => policy.actions[action])
           .filter((a) => !a.available && a.reason)
       : [];
@@ -82,19 +73,13 @@ export function SkillLifecycleActions({
 
   return (
     <div className="skill-lifecycle" data-variant={variant}>
-      <div
-        className="skill-lifecycle-actions"
-        role="group"
-        aria-label="Skill actions"
-      >
+      <div className="skill-lifecycle-actions" role="group" aria-label="Skill actions">
         {valid.map((availability) => (
           <LifecycleActionButton
             key={availability.action}
             skill={skill}
             availability={availability}
-            actionState={state.actions.get(
-              `${skill.name}::${availability.action}`,
-            )}
+            actionState={state.actions.get(`${skill.name}::${availability.action}`)}
             onRun={(acceptDivergence) =>
               state.run(skill, availability.action, { acceptDivergence })
             }
@@ -106,10 +91,7 @@ export function SkillLifecycleActions({
       {invalid.length > 0 ? (
         <ul className="skill-lifecycle-unavailable">
           {invalid.map((availability) => (
-            <li
-              key={availability.action}
-              className="skill-lifecycle-unavailable-item"
-            >
+            <li key={availability.action} className="skill-lifecycle-unavailable-item">
               <IconCircleInfo size={12} ariaHidden />
               <span>
                 <strong>{lifecycleActionLabel(availability.action)}: </strong>
@@ -141,8 +123,7 @@ function LifecycleActionButton({
   const { action } = availability;
   const phase = actionState?.phase ?? "idle";
   const running = phase === "running";
-  const needsConfirm =
-    availability.destructive || Boolean(availability.divergenceWarning);
+  const needsConfirm = availability.destructive || Boolean(availability.divergenceWarning);
 
   if (phase === "failed") {
     return (
@@ -193,9 +174,7 @@ function LifecycleActionButton({
         }}
       >
         {actionIcon(action)}
-        {running
-          ? runningLabel(action, actionState?.progress)
-          : lifecycleActionLabel(action)}
+        {running ? runningLabel(action, actionState?.progress) : lifecycleActionLabel(action)}
       </button>
 
       {confirming ? (
@@ -243,11 +222,7 @@ function ConfirmAction({
         {message}
       </p>
       <div className="skill-lifecycle-confirm-actions">
-        <button
-          type="button"
-          className="skill-lifecycle-confirm-cancel"
-          onClick={onCancel}
-        >
+        <button type="button" className="skill-lifecycle-confirm-cancel" onClick={onCancel}>
           Cancel
         </button>
         <button
@@ -283,9 +258,7 @@ function runningLabel(action: SkillLifecycleAction, progress?: number): string {
               : action === "reset"
                 ? "Resetting"
                 : "Restoring";
-  return progress !== undefined
-    ? `${verb} ${Math.round(progress)}%`
-    : `${verb}...`;
+  return progress !== undefined ? `${verb} ${Math.round(progress)}%` : `${verb}...`;
 }
 
 /** The terminal "done" label for an action. */

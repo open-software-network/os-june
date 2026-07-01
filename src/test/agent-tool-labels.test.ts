@@ -13,24 +13,16 @@ describe("toolActivityLabel", () => {
         command: "curl https://example.com/docs",
       }),
     ).toBe("Browsing");
-    expect(toolActivityLabel("shell", { command: "rg -n Terminal src" })).toBe(
-      "Searching files",
-    );
+    expect(toolActivityLabel("shell", { command: "rg -n Terminal src" })).toBe("Searching files");
   });
 
   it("labels common web and file tools by intent", () => {
-    expect(
-      toolActivityLabel("web.run", { search_query: [{ q: "June status" }] }),
-    ).toBe("Searching web");
-    expect(toolActivityLabel("fetch_url", { url: "https://example.com" })).toBe(
-      "Browsing",
+    expect(toolActivityLabel("web.run", { search_query: [{ q: "June status" }] })).toBe(
+      "Searching web",
     );
-    expect(toolActivityLabel("read_file", { path: "src/App.tsx" })).toBe(
-      "Reading files",
-    );
-    expect(toolActivityLabel("write_file", { path: "src/App.tsx" })).toBe(
-      "Editing files",
-    );
+    expect(toolActivityLabel("fetch_url", { url: "https://example.com" })).toBe("Browsing");
+    expect(toolActivityLabel("read_file", { path: "src/App.tsx" })).toBe("Reading files");
+    expect(toolActivityLabel("write_file", { path: "src/App.tsx" })).toBe("Editing files");
   });
 
   it("keeps an understandable fallback for unknown tools", () => {

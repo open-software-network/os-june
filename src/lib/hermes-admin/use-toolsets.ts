@@ -30,16 +30,9 @@ import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesSkillInfo, HermesToolsetInfo } from "./schemas";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives one Toolsets page operates on, all bound
  * to the SAME target. Production builds this from a bridge connection (see
@@ -200,10 +193,7 @@ export class ToolsetsController {
       this.recompute();
     } catch (error) {
       if (this.disposed || seq !== this.loadSeq) return;
-      const adminError = HermesAdminError.from(
-        "GET /api/tools/toolsets",
-        error,
-      );
+      const adminError = HermesAdminError.from("GET /api/tools/toolsets", error);
       this.error = adminError.safeMessage;
       this.retryable = adminError.retryable;
       // Keep showing the last good data on a failed refresh; only fall to the
@@ -281,13 +271,8 @@ export class ToolsetsController {
  * yields the "unavailable" state (no runtime to target) without constructing a
  * controller. The controller loads once on mount and tears down on unmount.
  */
-export function useToolsetsController(
-  engine: ToolsetsEngine | null,
-): ToolsetsState {
-  const controller = useMemo(
-    () => (engine ? new ToolsetsController(engine) : null),
-    [engine],
-  );
+export function useToolsetsController(engine: ToolsetsEngine | null): ToolsetsState {
+  const controller = useMemo(() => (engine ? new ToolsetsController(engine) : null), [engine]);
 
   const [snapshot, setSnapshot] = useState<ToolsetsState>(() =>
     controller ? controller.getSnapshot() : UNAVAILABLE_STATE,
@@ -372,10 +357,7 @@ export function useToolsetsEngine(
  * for the given mode, and run the controller. The page calls THIS; tests prefer
  * {@link useToolsetsController} with a harness engine so they need no Tauri mock.
  */
-export function useToolsets(
-  mode: HermesAdminMode = "sandboxed",
-  profile?: string,
-): ToolsetsState {
+export function useToolsets(mode: HermesAdminMode = "sandboxed", profile?: string): ToolsetsState {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
   const loaded = useRef(false);
@@ -391,9 +373,7 @@ export function useToolsets(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

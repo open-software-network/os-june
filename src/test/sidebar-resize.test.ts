@@ -3,10 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { handleSidebarResizeStart } from "../app/sidebar-resize";
 import appCss from "../styles/app.css?raw";
 
-function setupResizeDom(
-  sidebarState: "collapsed" | "expanded",
-  composerAttrs = "",
-) {
+function setupResizeDom(sidebarState: "collapsed" | "expanded", composerAttrs = "") {
   document.body.innerHTML = `
     <main class="app-shell" data-sidebar="${sidebarState}">
       <aside class="sidebar"></aside>
@@ -181,9 +178,7 @@ describe("handleSidebarResizeStart", () => {
     Object.defineProperty(shell, "offsetWidth", {
       configurable: true,
       get() {
-        flushes.push(
-          [shell.style.transition, shell.dataset.sidebarPreview].join("|"),
-        );
+        flushes.push([shell.style.transition, shell.dataset.sidebarPreview].join("|"));
         return 0;
       },
     });
@@ -191,9 +186,7 @@ describe("handleSidebarResizeStart", () => {
     window.dispatchEvent(pointerEvent("pointermove", 170));
 
     expect(flushes).toEqual([
-      ["--sidebar-w-current var(--t-med) var(--ease-out)", "collapsed"].join(
-        "|",
-      ),
+      ["--sidebar-w-current var(--t-med) var(--ease-out)", "collapsed"].join("|"),
     ]);
     expect(shell.dataset.sidebarPreview).toBe("opening");
     expect(shell.style.getPropertyValue("--sidebar-w-current")).toBe("188px");
@@ -202,10 +195,7 @@ describe("handleSidebarResizeStart", () => {
   });
 
   it("does not apply docked composer transitions to the new-session hero composer", () => {
-    const { shell, handle, composer } = setupResizeDom(
-      "expanded",
-      'data-hero="true"',
-    );
+    const { shell, handle, composer } = setupResizeDom("expanded", 'data-hero="true"');
 
     handleSidebarResizeStart(reactPointerEvent(handle, 240), 240, {
       collapseWidth: 160,

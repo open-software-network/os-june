@@ -39,9 +39,7 @@ const NO_TOOL_MODEL: ProfileBuilderModel = {
   capabilities: ["e2ee"],
 };
 
-function ctx(
-  overrides: Partial<ProfileBuilderContext> = {},
-): ProfileBuilderContext {
+function ctx(overrides: Partial<ProfileBuilderContext> = {}): ProfileBuilderContext {
   return {
     existingProfiles: [],
     models: [TOOL_MODEL, NO_TOOL_MODEL],
@@ -49,9 +47,7 @@ function ctx(
   };
 }
 
-function validForm(
-  overrides: Partial<ProfileBuilderForm> = {},
-): ProfileBuilderForm {
+function validForm(overrides: Partial<ProfileBuilderForm> = {}): ProfileBuilderForm {
   return {
     ...emptyProfileForm(),
     name: "Research assistant",
@@ -94,9 +90,7 @@ async function flush(): Promise<void> {
 
 describe("profile builder — slug + name validation", () => {
   it("slugifies a free-text name to a safe slug", () => {
-    expect(slugifyProfileName("Research Assistant!")).toBe(
-      "research-assistant",
-    );
+    expect(slugifyProfileName("Research Assistant!")).toBe("research-assistant");
     expect(slugifyProfileName("  My/Agent 2  ")).toBe("my-agent-2");
     expect(slugifyProfileName("***")).toBe("");
   });
@@ -105,9 +99,9 @@ describe("profile builder — slug + name validation", () => {
     expect(validateProfileName("", [])).toMatch(/enter a profile name/i);
     expect(validateProfileName("***", [])).toMatch(/letters or numbers/i);
     expect(validateProfileName("default", [])).toMatch(/reserved/i);
-    expect(
-      validateProfileName("Research", [{ name: "research", raw: {} }]),
-    ).toMatch(/already exists/i);
+    expect(validateProfileName("Research", [{ name: "research", raw: {} }])).toMatch(
+      /already exists/i,
+    );
   });
 
   it("accepts a valid, non-colliding name", () => {
@@ -174,16 +168,12 @@ describe("profile builder — model tool-calling gate", () => {
 
   it("requires a model to be chosen at all", () => {
     const form = validForm({ provider: "", model: "" });
-    expect(validateStep("model", form, ctx()).error).toMatch(
-      /choose a generation model/i,
-    );
+    expect(validateStep("model", form, ctx()).error).toMatch(/choose a generation model/i);
   });
 
   it("re-runs the gating steps from review so a late bad model is caught", () => {
     const form = validForm({ model: "e2ee-model" });
-    expect(validateStep("review", form, ctx()).error).toMatch(
-      /does not support tool calling/i,
-    );
+    expect(validateStep("review", form, ctx()).error).toMatch(/does not support tool calling/i);
   });
 });
 
@@ -207,9 +197,7 @@ describe("profile builder — create plan + payload", () => {
   });
 
   it("builds a ProfileCreate payload with the slug, model, and clone flags", () => {
-    const payload = buildCreatePayload(
-      validForm({ keepBundledSkills: true, hubSkills: ["foo"] }),
-    );
+    const payload = buildCreatePayload(validForm({ keepBundledSkills: true, hubSkills: ["foo"] }));
     expect(payload.name).toBe("research-assistant");
     expect(payload.provider).toBe("venice");
     expect(payload.model).toBe("tool-model");
@@ -258,9 +246,7 @@ describe("profile builder — create success/failure + rollback", () => {
 
     // The SOUL was written via a separate PUT, not the create body.
     const soulPut = engine.server.requestLog.find(
-      (entry) =>
-        entry.method === "PUT" &&
-        entry.path === "/api/profiles/research-assistant/soul",
+      (entry) => entry.method === "PUT" && entry.path === "/api/profiles/research-assistant/soul",
     );
     expect(soulPut?.body).toMatchObject({ content: "Be terse." });
 
@@ -335,9 +321,7 @@ describe("profile builder — create success/failure + rollback", () => {
     await flush();
 
     const snapshot = controller.getSnapshot();
-    expect(validateProfileName("Research", snapshot.existingProfiles)).toMatch(
-      /already exists/i,
-    );
+    expect(validateProfileName("Research", snapshot.existingProfiles)).toMatch(/already exists/i);
 
     controller.dispose();
   });
@@ -347,9 +331,7 @@ describe("profile builder — create success/failure + rollback", () => {
 // View rendering (render-only, stubbed state)
 // ---------------------------------------------------------------------------
 
-function stubState(
-  overrides: Partial<ProfileBuilderState> = {},
-): ProfileBuilderState {
+function stubState(overrides: Partial<ProfileBuilderState> = {}): ProfileBuilderState {
   return {
     status: "ready",
     mode: "sandboxed",
@@ -386,9 +368,7 @@ function stubState(
 describe("profile builder — view", () => {
   it("surfaces the tool-calling block on the model step", () => {
     render(<ProfileBuilderView state={stubState()} />);
-    expect(
-      screen.getByText(/does not support tool calling/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/does not support tool calling/i)).toBeInTheDocument();
   });
 
   it("shows the created panel with the slug after a successful create", () => {
@@ -405,9 +385,7 @@ describe("profile builder — view", () => {
       />,
     );
     expect(screen.getByText("Profile created")).toBeInTheDocument();
-    expect(
-      screen.getByText(/a test session is running under it/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/a test session is running under it/i)).toBeInTheDocument();
   });
 
   it("renders the empty state when Hermes is not running", () => {

@@ -65,10 +65,7 @@ export function Waveform({ level, active = true }: WaveformProps) {
     // sizes). The cumulative `peak` is a since-start max (frozen), so it's only
     // the empty-history fallback.
     const recent = level.recentPeaks;
-    const raw =
-      recent.length > 0
-        ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS))
-        : level.peak;
+    const raw = recent.length > 0 ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS)) : level.peak;
     meterRef.current.pushLevel(visualPeakScale(raw));
   }, [level]);
 
@@ -85,13 +82,7 @@ export function Waveform({ level, active = true }: WaveformProps) {
         const el = refs.current[i];
         if (!el) continue;
         const value = activeRef.current
-          ? withWaveLayers(
-              meter.displayed[i],
-              i,
-              now,
-              speech,
-              RECORDER_BAR_COUNT,
-            )
+          ? withWaveLayers(meter.displayed[i], i, now, speech, RECORDER_BAR_COUNT)
           : meter.displayed[i];
         el.style.setProperty("--level", value.toFixed(3));
       }

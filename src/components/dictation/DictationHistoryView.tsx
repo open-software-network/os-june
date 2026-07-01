@@ -72,9 +72,7 @@ function readHintDismissed() {
   }
 }
 
-export function DictationHistoryView({
-  onNavigateToSettings,
-}: DictationHistoryViewProps = {}) {
+export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryViewProps = {}) {
   const [allItems, setItems] = useState<DictationHistoryItemDto[]>([]);
   const [retentionDays, setRetentionDays] = useState(7);
   const [query, setQuery] = useState("");
@@ -89,8 +87,7 @@ export function DictationHistoryView({
   const [settings, setSettings] = useState<DictationSettingsDto>();
   const [dictionaryCount, setDictionaryCount] = useState<number | null>(null);
   const [hintDismissed, setHintDismissed] = useState(readHintDismissed);
-  const [pendingDelete, setPendingDelete] =
-    useState<DictationHistoryItemDto | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<DictationHistoryItemDto | null>(null);
   const dictationAvailable = isMacLikePlatform();
 
   const loadHistory = useCallback(async () => {
@@ -146,9 +143,7 @@ export function DictationHistoryView({
     const normalized = query.trim().toLowerCase();
     if (!normalized) return items;
     return items.filter((item) =>
-      `${item.text} ${item.provider} ${item.language ?? ""}`
-        .toLowerCase()
-        .includes(normalized),
+      `${item.text} ${item.provider} ${item.language ?? ""}`.toLowerCase().includes(normalized),
     );
   }, [items, query]);
 
@@ -160,8 +155,7 @@ export function DictationHistoryView({
   // Show each optional feature only while it's still unconfigured, and only
   // once we know its state (avoids the card flashing in then vanishing). The
   // card itself appears only for adopted users who haven't dismissed it.
-  const customizationLoaded =
-    settings !== undefined && dictionaryCount !== null;
+  const customizationLoaded = settings !== undefined && dictionaryCount !== null;
   const styleUnconfigured = settings?.style === DEFAULT_STYLE;
   const dictionaryUnconfigured = (dictionaryCount ?? 0) === 0;
   const showHint =
@@ -201,22 +195,14 @@ export function DictationHistoryView({
         <div className="folders-heading">
           <h1>
             Dictation
-            {items.length > 0 ? (
-              <span className="folders-count">{items.length}</span>
-            ) : null}
+            {items.length > 0 ? <span className="folders-count">{items.length}</span> : null}
           </h1>
-          <p className="folders-subtitle">
-            AI transcriptions from the last {retentionDays} days.
-          </p>
+          <p className="folders-subtitle">AI transcriptions from the last {retentionDays} days.</p>
         </div>
         {/* Shortcuts live in the header whenever there's history; newcomers
             get them in the empty state instead. */}
         {items.length > 0 && dictationAvailable ? (
-          <ShortcutLegend
-            className="dictation-shortcuts"
-            pushToTalk={pushToTalk}
-            toggle={toggle}
-          />
+          <ShortcutLegend className="dictation-shortcuts" pushToTalk={pushToTalk} toggle={toggle} />
         ) : null}
       </header>
 
@@ -252,14 +238,10 @@ export function DictationHistoryView({
         </div>
       ) : items.length === 0 ? (
         <EmptyState
-          label={
-            dictationAvailable ? "Start dictating" : "Dictation unavailable"
-          }
+          label={dictationAvailable ? "Start dictating" : "Dictation unavailable"}
           icon={<IconMicrophoneSparkleFilled size={28} />}
           title={
-            dictationAvailable
-              ? "Start dictating anywhere"
-              : "Dictation is only supported on macOS"
+            dictationAvailable ? "Start dictating anywhere" : "Dictation is only supported on macOS"
           }
           description={
             dictationAvailable
@@ -380,10 +362,7 @@ function DictationHistoryRow({
     : {};
 
   return (
-    <li
-      className="dictation-history-item"
-      data-truncated={truncated || undefined}
-    >
+    <li className="dictation-history-item" data-truncated={truncated || undefined}>
       <span className="dictation-history-icon" aria-hidden>
         <IconMicrophoneSparkle size={14} />
       </span>
@@ -396,9 +375,7 @@ function DictationHistoryRow({
         >
           {item.text}
         </p>
-        {item.language ? (
-          <span className="dictation-history-lang">{item.language}</span>
-        ) : null}
+        {item.language ? <span className="dictation-history-lang">{item.language}</span> : null}
       </div>
       <time
         className="dictation-history-time"
@@ -415,11 +392,7 @@ function DictationHistoryRow({
           aria-label={copied ? "Copied" : "Copy"}
           onClick={onCopy}
         >
-          {copied ? (
-            <IconCheckmark1Small size={14} />
-          ) : (
-            <IconClipboard size={14} />
-          )}
+          {copied ? <IconCheckmark1Small size={14} /> : <IconClipboard size={14} />}
         </button>
         <button
           type="button"
@@ -440,11 +413,7 @@ function DictationHistoryRow({
         className="transcript-dialog"
         footer={
           <button type="button" className="btn btn-secondary" onClick={onCopy}>
-            {copied ? (
-              <IconCheckmark1Small size={14} />
-            ) : (
-              <IconClipboard size={14} />
-            )}
+            {copied ? <IconCheckmark1Small size={14} /> : <IconClipboard size={14} />}
             {copied ? "Copied" : "Copy"}
           </button>
         }
@@ -492,11 +461,7 @@ function GetMoreCard({
       <h2 className="dictation-hint-title">Get more from dictation</h2>
       <div className="dictation-hint-items">
         {showStyles ? (
-          <button
-            type="button"
-            className="dictation-hint-item"
-            onClick={onSetUpStyles}
-          >
+          <button type="button" className="dictation-hint-item" onClick={onSetUpStyles}>
             <span className="dictation-hint-chip" aria-hidden>
               <IconFontStyle size={16} />
             </span>
@@ -512,18 +477,12 @@ function GetMoreCard({
           </button>
         ) : null}
         {showDictionary ? (
-          <button
-            type="button"
-            className="dictation-hint-item"
-            onClick={onSetUpDictionary}
-          >
+          <button type="button" className="dictation-hint-item" onClick={onSetUpDictionary}>
             <span className="dictation-hint-chip" aria-hidden>
               <IconSpeachToText size={16} />
             </span>
             <span className="dictation-hint-item-body">
-              <span className="dictation-hint-item-name">
-                Personal dictionary
-              </span>
+              <span className="dictation-hint-item-name">Personal dictionary</span>
               <span className="dictation-hint-item-desc">
                 Teach it the names and jargon it keeps mishearing.
               </span>

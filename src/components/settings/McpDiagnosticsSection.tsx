@@ -44,9 +44,7 @@ type McpDiagnosticsSectionProps = {
  * never mutates a server beyond running its test probe. Secrets are never
  * surfaced, and the support export is sanitized through the shared redactor.
  */
-export function McpDiagnosticsSection({
-  mode = "sandboxed",
-}: McpDiagnosticsSectionProps) {
+export function McpDiagnosticsSection({ mode = "sandboxed" }: McpDiagnosticsSectionProps) {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
 
@@ -58,9 +56,7 @@ export function McpDiagnosticsSection({
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
         }
       });
     return () => {
@@ -96,35 +92,24 @@ export function McpDiagnosticsView({
   const hasServers = state.servers.length > 0;
 
   return (
-    <section
-      className="settings-group mcp-diagnostics"
-      aria-labelledby="mcp-diagnostics-heading"
-    >
+    <section className="settings-group mcp-diagnostics" aria-labelledby="mcp-diagnostics-heading">
       <h2 id="mcp-diagnostics-heading" className="settings-group-heading">
         MCP diagnostics
       </h2>
       <p className="settings-group-description">
         See exactly why MCP tools are or are not available to your sessions.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       {!isUnavailable && state.restartPending ? (
-        <div
-          className="mcp-diagnostics-stale"
-          data-tone="warning"
-          role="status"
-        >
+        <div className="mcp-diagnostics-stale" data-tone="warning" role="status">
           <span className="mcp-diagnostics-stale-eyebrow">
             <IconCircleInfo size={15} ariaHidden />
             Restart required
           </span>
           <span className="mcp-diagnostics-stale-body">
-            This shows the last known tool inventory. Restart the Hermes gateway
-            to rebuild it with your latest changes.
+            This shows the last known tool inventory. Restart the Hermes gateway to rebuild it with
+            your latest changes.
           </span>
         </div>
       ) : null}
@@ -134,9 +119,7 @@ export function McpDiagnosticsView({
         onDismiss={state.dismissNotification}
       />
 
-      {!isUnavailable && !isErrored && hasServers ? (
-        <SummaryBar state={state} />
-      ) : null}
+      {!isUnavailable && !isErrored && hasServers ? <SummaryBar state={state} /> : null}
 
       <div className="settings-card mcp-diagnostics-card">
         {isUnavailable ? (
@@ -201,20 +184,12 @@ function ModeNote({
 function SummaryBar({ state }: { state: McpDiagnosticsState }) {
   const { summary } = state;
   return (
-    <div
-      className="mcp-diagnostics-summary"
-      role="group"
-      aria-label="MCP health"
-    >
+    <div className="mcp-diagnostics-summary" role="group" aria-label="MCP health">
       <div className="mcp-diagnostics-counts">
         <Count label="Enabled" value={summary.enabled} tone="ok" />
         <Count label="Disabled" value={summary.disabled} tone="neutral" />
         <Count label="Failing" value={summary.failing} tone="error" />
-        <Count
-          label="Auth needed"
-          value={summary.authNeeded}
-          tone="attention"
-        />
+        <Count label="Auth needed" value={summary.authNeeded} tone="attention" />
         {summary.restartPending ? (
           <Count label="Restart pending" value={1} tone="attention" />
         ) : null}
@@ -285,11 +260,7 @@ function ReasonChain({ state }: { state: McpDiagnosticsState }) {
         Why is a tool missing?
       </label>
       <div className="mcp-diagnostics-reason-search">
-        <IconMagnifyingGlass
-          size={15}
-          ariaHidden
-          className="mcp-diagnostics-reason-icon"
-        />
+        <IconMagnifyingGlass size={15} ariaHidden className="mcp-diagnostics-reason-icon" />
         <input
           id="mcp-tool-query"
           type="search"
@@ -312,9 +283,7 @@ function ReasonChain({ state }: { state: McpDiagnosticsState }) {
           ) : (
             <IconExclamationCircle size={14} ariaHidden />
           )}
-          {reason.available
-            ? `${reason.query} is available to your sessions.`
-            : reason.reason}
+          {reason.available ? `${reason.query} is available to your sessions.` : reason.reason}
         </p>
       ) : null}
     </div>
@@ -356,12 +325,7 @@ function DiagnosticsRow({
         <span className="mcp-diagnostics-status" data-tone={status.tone}>
           {status.label}
         </span>
-        <button
-          type="button"
-          className="mcp-diagnostics-test"
-          disabled={testing}
-          onClick={onTest}
-        >
+        <button type="button" className="mcp-diagnostics-test" disabled={testing} onClick={onTest}>
           {testing ? "Testing" : "Test"}
         </button>
       </div>
@@ -369,15 +333,9 @@ function DiagnosticsRow({
       {diagnostics.issues.length > 0 ? (
         <ul className="mcp-diagnostics-issues">
           {diagnostics.issues.map((issue) => (
-            <li
-              key={issue.code}
-              className="mcp-diagnostics-issue"
-              data-tone={issue.tone}
-            >
+            <li key={issue.code} className="mcp-diagnostics-issue" data-tone={issue.tone}>
               <IssueIcon tone={issue.tone} />
-              <span className="mcp-diagnostics-issue-message">
-                {issue.message}
-              </span>
+              <span className="mcp-diagnostics-issue-message">{issue.message}</span>
               <span className="mcp-diagnostics-issue-fix">{issue.fix}</span>
             </li>
           ))}
@@ -395,17 +353,11 @@ function DiagnosticsRow({
             ? (server.command ?? "No command configured.")
             : (server.url ?? "No URL configured.")}
         </Fact>
-        {server.statusMessage ? (
-          <Fact label="Last test">{server.statusMessage}</Fact>
-        ) : null}
+        {server.statusMessage ? <Fact label="Last test">{server.statusMessage}</Fact> : null}
         <Fact label="Discovered tools">
           {diagnostics.discoveredTools.length > 0
-            ? `${diagnostics.discoveredTools
-                .map((tool) => tool.name)
-                .join(", ")} (${
-                diagnostics.discoveredFromTest
-                  ? "from last test"
-                  : "from stored config"
+            ? `${diagnostics.discoveredTools.map((tool) => tool.name).join(", ")} (${
+                diagnostics.discoveredFromTest ? "from last test" : "from stored config"
               })`
             : "None reported. Run a test to discover them."}
         </Fact>
@@ -425,26 +377,17 @@ function DiagnosticsRow({
           </Fact>
         ) : null}
         <Fact label="Resource and prompt utilities">
-          {formatUtilities(
-            diagnostics.resourcesAvailable,
-            diagnostics.promptsAvailable,
-          )}
+          {formatUtilities(diagnostics.resourcesAvailable, diagnostics.promptsAvailable)}
         </Fact>
         {diagnostics.timeoutSeconds !== undefined ||
         diagnostics.connectTimeoutSeconds !== undefined ? (
           <Fact label="Timeouts">
-            {formatTimeouts(
-              diagnostics.timeoutSeconds,
-              diagnostics.connectTimeoutSeconds,
-            )}
+            {formatTimeouts(diagnostics.timeoutSeconds, diagnostics.connectTimeoutSeconds)}
           </Fact>
         ) : null}
-        {diagnostics.missingEnv.length > 0 ||
-        diagnostics.missingHeaders.length > 0 ? (
+        {diagnostics.missingEnv.length > 0 || diagnostics.missingHeaders.length > 0 ? (
           <Fact label="Missing values">
-            {[...diagnostics.missingEnv, ...diagnostics.missingHeaders].join(
-              ", ",
-            )}
+            {[...diagnostics.missingEnv, ...diagnostics.missingHeaders].join(", ")}
           </Fact>
         ) : null}
         {env.length > 0 || headers.length > 0 ? (
@@ -478,13 +421,7 @@ function FilterSummary({ diagnostics }: { diagnostics: ServerDiagnostics }) {
   return <>{parts.join(". ")}.</>;
 }
 
-function Fact({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mcp-diagnostics-fact">
       <dt className="mcp-diagnostics-fact-label">{label}</dt>
@@ -495,17 +432,13 @@ function Fact({
 
 function IssueIcon({ tone }: { tone: "error" | "attention" | "neutral" }) {
   if (tone === "error") return <IconCircleX size={13} ariaHidden />;
-  if (tone === "attention")
-    return <IconExclamationCircle size={13} ariaHidden />;
+  if (tone === "attention") return <IconExclamationCircle size={13} ariaHidden />;
   return <IconCircleInfo size={13} ariaHidden />;
 }
 
 /** Sentence-case rendering of resource/prompt availability, with unknown when
  * upstream is silent (June never guesses). */
-function formatUtilities(
-  resources: boolean | undefined,
-  prompts: boolean | undefined,
-): string {
+function formatUtilities(resources: boolean | undefined, prompts: boolean | undefined): string {
   const resourceLabel =
     resources === undefined
       ? "resources unknown"
@@ -521,10 +454,7 @@ function formatUtilities(
   return `${capitalize(resourceLabel)}, ${promptLabel}.`;
 }
 
-function formatTimeouts(
-  timeout: number | undefined,
-  connect: number | undefined,
-): string {
+function formatTimeouts(timeout: number | undefined, connect: number | undefined): string {
   const parts: string[] = [];
   if (timeout !== undefined) parts.push(`request ${timeout}s`);
   if (connect !== undefined) parts.push(`connect ${connect}s`);
@@ -564,10 +494,7 @@ function Loading() {
   return (
     <ul className="mcp-diagnostics-list" aria-hidden>
       {[0, 1].map((index) => (
-        <li
-          key={index}
-          className="mcp-diagnostics-row mcp-diagnostics-skeleton"
-        >
+        <li key={index} className="mcp-diagnostics-row mcp-diagnostics-skeleton">
           <span className="mcp-diagnostics-skeleton-line mcp-diagnostics-skeleton-title" />
           <span className="mcp-diagnostics-skeleton-line" />
         </li>
@@ -576,13 +503,7 @@ function Loading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="mcp-diagnostics-empty" role="status">
       <span className="mcp-diagnostics-empty-icon" aria-hidden>
@@ -611,11 +532,7 @@ function ErrorState({
       <p className="mcp-diagnostics-empty-title">Couldn't load MCP servers</p>
       <p className="mcp-diagnostics-empty-description">{message}</p>
       {retryable ? (
-        <button
-          type="button"
-          className="mcp-diagnostics-retry"
-          onClick={onRetry}
-        >
+        <button type="button" className="mcp-diagnostics-retry" onClick={onRetry}>
           Try again
         </button>
       ) : null}

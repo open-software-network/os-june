@@ -50,8 +50,7 @@ function inTauri() {
 
 function prefersReducedMotion() {
   return (
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
   );
 }
 
@@ -92,12 +91,8 @@ export function setStoredBrand(id: BrandId) {
 // CSS-only apply: inline style on <html> overrides the :root default in
 // tokens.css and cascades to every var(--brand) consumer. Fixed across
 // light/dark, so a single value covers both themes.
-export function applyBrandVar(
-  id: BrandId,
-  options: { animate?: boolean } = {},
-) {
-  const apply = () =>
-    document.documentElement.style.setProperty("--brand", presetFor(id).value);
+export function applyBrandVar(id: BrandId, options: { animate?: boolean } = {}) {
+  const apply = () => document.documentElement.style.setProperty("--brand", presetFor(id).value);
   if (options.animate) {
     applyWithTransition(apply);
   } else {
@@ -132,8 +127,6 @@ export function subscribeBrand() {
   applyBrandVar(getStoredBrand());
   if (!inTauri()) return;
   void import("@tauri-apps/api/event").then(({ listen }) =>
-    listen<BrandId>(ACCENT_EVENT, (event) =>
-      applyBrandVar(event.payload, { animate: true }),
-    ),
+    listen<BrandId>(ACCENT_EVENT, (event) => applyBrandVar(event.payload, { animate: true })),
   );
 }

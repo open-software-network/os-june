@@ -10,10 +10,7 @@ import {
   isContextOverflowMessage,
   isInsufficientCreditsMessage,
 } from "./errors";
-import {
-  isScheduledRunPreamble,
-  stripScheduledRunPreamble,
-} from "./hermes-adapter";
+import { isScheduledRunPreamble, stripScheduledRunPreamble } from "./hermes-adapter";
 import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
 import { STEER_EVENT_TYPE, steeringPartText } from "./hermes-session-steer";
@@ -172,10 +169,7 @@ export type AgentChatTurn = {
 function sortAgentChatTurns(turns: AgentChatTurn[]) {
   return turns
     .map((turn, index) => ({ turn, index }))
-    .sort(
-      (a, b) =>
-        a.turn.createdAt.localeCompare(b.turn.createdAt) || a.index - b.index,
-    )
+    .sort((a, b) => a.turn.createdAt.localeCompare(b.turn.createdAt) || a.index - b.index)
     .map(({ turn }) => turn);
 }
 
@@ -206,8 +200,7 @@ export function buildHermesSessionChatTurns(
       const id = message.tool_call_id ?? message.id;
       toolResults.set(id, message);
       const turn =
-        lastAssistantTurn(turns) ??
-        createAssistantTurn(turns, messageTimestamp(message));
+        lastAssistantTurn(turns) ?? createAssistantTurn(turns, messageTimestamp(message));
       upsertToolPart(turn.parts, {
         id,
         name: toolActivityLabel(message.tool_name ?? undefined),
@@ -219,9 +212,7 @@ export function buildHermesSessionChatTurns(
     }
 
     const content = displayContentForHermesMessage(message);
-    const contextPart = content
-      ? contextCompactionPartForHermesContent(content)
-      : undefined;
+    const contextPart = content ? contextCompactionPartForHermesContent(content) : undefined;
 
     const turn: AgentChatTurn = {
       id: message.id,
@@ -259,10 +250,7 @@ export function buildHermesSessionChatTurns(
           type: "tool",
           id: call.id,
           name: toolActivityLabel(call.name, call.arguments),
-          text:
-            textFromHermesContent(result?.content) ??
-            stringifyObject(call.arguments) ??
-            "",
+          text: textFromHermesContent(result?.content) ?? stringifyObject(call.arguments) ?? "",
           status: "complete",
         });
       }
@@ -270,8 +258,7 @@ export function buildHermesSessionChatTurns(
       if (content) {
         turn.parts.push(
           (turn.role === "assistant"
-            ? (creditsNoticeFromTurnText(content) ??
-              persistedContextOverflowNotice(content))
+            ? (creditsNoticeFromTurnText(content) ?? persistedContextOverflowNotice(content))
             : undefined) ?? {
             type: "text",
             text: content,
@@ -312,10 +299,8 @@ const CONTRACTION_GLUE = /([A-Za-z])('(?:s|re|ve|ll|m|d|t))(?=[A-Za-z])/gi;
  * Apply only to assistant prose (never code spans, URLs, or user text).
  */
 export function repairContractionSpacing(text: string): string {
-  return text.replace(
-    CONTRACTION_GLUE,
-    (whole, pre: string, enclitic: string) =>
-      pre.toLowerCase() === "s" ? whole : `${pre}${enclitic} `,
+  return text.replace(CONTRACTION_GLUE, (whole, pre: string, enclitic: string) =>
+    pre.toLowerCase() === "s" ? whole : `${pre}${enclitic} `,
   );
 }
 
@@ -336,9 +321,7 @@ export function completedHermesMessageText(events: LiveHermesEvent[]) {
 // assistant's text, or carried by a live error/message.complete event. Surface
 // it as a first-class notice instead of leaking the raw error string.
 function creditsNotice(text: string): AgentChatNoticePart | undefined {
-  return isInsufficientCreditsMessage(text)
-    ? { type: "notice", kind: "credits", text }
-    : undefined;
+  return isInsufficientCreditsMessage(text) ? { type: "notice", kind: "credits", text } : undefined;
 }
 
 // A turn that died because the request outgrew the model's context (or the
@@ -359,9 +342,7 @@ function contextOverflowNotice(text: string): AgentChatNoticePart | undefined {
 // saved answer that discusses "the maximum context length" must stay text, not
 // reload as a notice that drops the real answer (JUN-169). Mirrors the credits
 // path's reliance on the "Error:" text prefix for the same persisted case.
-function persistedContextOverflowNotice(
-  text: string,
-): AgentChatNoticePart | undefined {
+function persistedContextOverflowNotice(text: string): AgentChatNoticePart | undefined {
   return isContextOverflowErrorSentinel(text)
     ? { type: "notice", kind: "context-overflow", text }
     : undefined;
@@ -376,9 +357,7 @@ function turnNotice(text: string): AgentChatNoticePart | undefined {
 // Assistant text only counts as a billing failure when it's the runtime's
 // error sentinel ("Error: <provider error>") — June talking *about* credits in
 // prose must stay ordinary text.
-function creditsNoticeFromTurnText(
-  text: string,
-): AgentChatNoticePart | undefined {
+function creditsNoticeFromTurnText(text: string): AgentChatNoticePart | undefined {
   return /^\s*error\b/i.test(text) ? creditsNotice(text) : undefined;
 }
 
@@ -391,23 +370,14 @@ function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   return {
     id: message.id,
     role:
-      message.role === "assistant"
-        ? "assistant"
-        : message.role === "system"
-          ? "system"
-          : "user",
+      message.role === "assistant" ? "assistant" : message.role === "system" ? "system" : "user",
     createdAt: message.createdAt,
     status: "complete",
-    parts: [
-      notice ?? { type: "text", text: message.content, status: "complete" },
-    ],
+    parts: [notice ?? { type: "text", text: message.content, status: "complete" }],
   };
 }
 
-function appendPersistedToolEvents(
-  turns: AgentChatTurn[],
-  toolEvents: AgentToolEventDto[],
-) {
+function appendPersistedToolEvents(turns: AgentChatTurn[], toolEvents: AgentToolEventDto[]) {
   // A single synthetic turn that collects events newer than every persisted
   // assistant message (an in-flight turn that has not been persisted yet).
   let trailingTurn: AgentChatTurn | undefined;
@@ -439,10 +409,7 @@ function appendPersistedToolEvents(
   }
 }
 
-function assistantTurnForTimestamp(
-  turns: AgentChatTurn[],
-  createdAt: string | undefined,
-) {
+function assistantTurnForTimestamp(turns: AgentChatTurn[], createdAt: string | undefined) {
   if (!createdAt) return undefined;
   for (const turn of turns) {
     if (turn.role !== "assistant") continue;
@@ -451,10 +418,7 @@ function assistantTurnForTimestamp(
   return undefined;
 }
 
-function appendLiveHermesEvents(
-  turns: AgentChatTurn[],
-  events: LiveHermesEvent[],
-) {
+function appendLiveHermesEvents(turns: AgentChatTurn[], events: LiveHermesEvent[]) {
   let currentAssistant: AgentChatTurn | null = null;
   const toolCreatedTurns = new Set<AgentChatTurn>();
 
@@ -489,11 +453,7 @@ function appendLiveHermesEvents(
     if (event.type === "message.delta") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";
-      appendAssistantTextPart(
-        currentAssistant.parts,
-        deltaEventText(event),
-        "running",
-      );
+      appendAssistantTextPart(currentAssistant.parts, deltaEventText(event), "running");
       continue;
     }
 
@@ -505,16 +465,13 @@ function appendLiveHermesEvents(
       // — an ordinary sentence that mentions "context length" stays prose.
       const failed = stringValue(payload?.status)?.toLowerCase() === "error";
       const notice = text
-        ? (creditsNoticeFromTurnText(text) ??
-          (failed ? contextOverflowNotice(text) : undefined))
+        ? (creditsNoticeFromTurnText(text) ?? (failed ? contextOverflowNotice(text) : undefined))
         : undefined;
       if (notice) {
         // The complete text is authoritative for the turn (see
         // completeAssistantTextPart); when it's a billing failure, any
         // partially streamed text is superseded along with it.
-        currentAssistant.parts = currentAssistant.parts.filter(
-          (part) => part.type !== "text",
-        );
+        currentAssistant.parts = currentAssistant.parts.filter((part) => part.type !== "text");
         currentAssistant.parts.push(notice);
       } else if (text) {
         completeAssistantTextPart(currentAssistant.parts, text);
@@ -547,23 +504,18 @@ function appendLiveHermesEvents(
       const payload = event.payload as Record<string, unknown> | undefined;
       const subagentId = stringValue(payload?.subagent_id);
       const taskIndexRaw = payload?.task_index;
-      const taskIndex =
-        typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
-      const key =
-        subagentId ??
-        (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
+      const taskIndex = typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
+      const key = subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
       const partId = `subagent:${key}`;
       const goal = stringValue(payload?.goal);
       const taskCountRaw = payload?.task_count;
-      const taskCount =
-        typeof taskCountRaw === "number" ? taskCountRaw : undefined;
+      const taskCount = typeof taskCountRaw === "number" ? taskCountRaw : undefined;
       // Keep the richest label we have seen for this subagent: progress and
       // tool events often omit the goal, and downgrading to the generic
       // "Subagent" would make the row flicker. Prefer the goal, else the name
       // already shown, else a task-position label.
       const existingName = currentAssistant.parts.find(
-        (part): part is AgentChatToolPart =>
-          part.type === "tool" && part.id === partId,
+        (part): part is AgentChatToolPart => part.type === "tool" && part.id === partId,
       )?.name;
       const label = goal
         ? `Subagent: ${goal}`
@@ -578,8 +530,7 @@ function appendLiveHermesEvents(
       const subtype = event.type.slice("subagent.".length).toLowerCase();
       const reportedStatus = stringValue(payload?.status)?.toLowerCase() ?? "";
       const failurePattern = /fail|error|cancel|timeout|abort|interrupt/;
-      const failed =
-        failurePattern.test(subtype) || failurePattern.test(reportedStatus);
+      const failed = failurePattern.test(subtype) || failurePattern.test(reportedStatus);
       const completed = subtype === "complete" || subtype === "done" || failed;
       const status: AgentChatToolPart["status"] = completed
         ? failed
@@ -609,9 +560,7 @@ function appendLiveHermesEvents(
     if (event.type.startsWith("tool.")) {
       if (isClarifyToolEvent(event)) {
         if (event.type.includes("complete") || event.type.includes("fail")) {
-          completePendingClarifyParts(
-            (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
-          );
+          completePendingClarifyParts((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? []);
         }
         continue;
       }
@@ -653,8 +602,7 @@ function appendLiveHermesEvents(
           `clarify:${event.receivedAt}`,
         sessionId: event.session_id,
         question:
-          stringValue(payload?.question, true) ??
-          "Hermes needs clarification before continuing.",
+          stringValue(payload?.question, true) ?? "Hermes needs clarification before continuing.",
         choices: stringArrayValue(payload?.choices),
         status: "pending",
       });
@@ -663,20 +611,17 @@ function appendLiveHermesEvents(
 
     if (event.type === "clarify.response") {
       const payload = event.payload as Record<string, unknown> | undefined;
-      upsertClarifyPart(
-        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
-        {
-          id:
-            stringValue(payload?.request_id) ??
-            stringValue(payload?.id) ??
-            `clarify:${event.receivedAt}`,
-          sessionId: event.session_id,
-          question: stringValue(payload?.question, true) ?? "",
-          choices: stringArrayValue(payload?.choices),
-          answer: stringValue(payload?.answer, true) ?? "",
-          status: "resolved",
-        },
-      );
+      upsertClarifyPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
+        id:
+          stringValue(payload?.request_id) ??
+          stringValue(payload?.id) ??
+          `clarify:${event.receivedAt}`,
+        sessionId: event.session_id,
+        question: stringValue(payload?.question, true) ?? "",
+        choices: stringArrayValue(payload?.choices),
+        answer: stringValue(payload?.answer, true) ?? "",
+        status: "resolved",
+      });
       continue;
     }
 
@@ -691,8 +636,7 @@ function appendLiveHermesEvents(
           `approval:${event.receivedAt}`,
         command: stringValue(payload?.command, true) ?? "",
         description:
-          stringValue(payload?.description, true) ??
-          "Hermes needs approval before continuing.",
+          stringValue(payload?.description, true) ?? "Hermes needs approval before continuing.",
         sessionId: event.session_id,
         allowPermanent: payload?.allow_permanent !== false,
         status: "pending",
@@ -702,21 +646,18 @@ function appendLiveHermesEvents(
 
     if (event.type === "approval.response") {
       const payload = event.payload as Record<string, unknown> | undefined;
-      upsertApprovalPart(
-        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
-        {
-          id:
-            stringValue(payload?.request_id) ??
-            stringValue(payload?.id) ??
-            `approval:${event.receivedAt}`,
-          command: stringValue(payload?.command, true) ?? "",
-          description: stringValue(payload?.description, true) ?? "",
-          sessionId: event.session_id,
-          allowPermanent: payload?.allow_permanent !== false,
-          choice: approvalChoiceValue(payload?.choice),
-          status: "resolved",
-        },
-      );
+      upsertApprovalPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
+        id:
+          stringValue(payload?.request_id) ??
+          stringValue(payload?.id) ??
+          `approval:${event.receivedAt}`,
+        command: stringValue(payload?.command, true) ?? "",
+        description: stringValue(payload?.description, true) ?? "",
+        sessionId: event.session_id,
+        allowPermanent: payload?.allow_permanent !== false,
+        choice: approvalChoiceValue(payload?.choice),
+        status: "resolved",
+      });
       continue;
     }
 
@@ -748,19 +689,16 @@ function appendLiveHermesEvents(
           : typeof payload?.approved === "boolean"
             ? payload.approved
             : undefined;
-      upsertSudoPart(
-        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
-        {
-          id:
-            stringValue(payload?.request_id) ??
-            stringValue(payload?.id) ??
-            `sudo:${event.receivedAt}`,
-          sessionId: event.session_id,
-          mode: parseHermesMode(payload?.mode),
-          approved: granted,
-          status: "resolved",
-        },
-      );
+      upsertSudoPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
+        id:
+          stringValue(payload?.request_id) ??
+          stringValue(payload?.id) ??
+          `sudo:${event.receivedAt}`,
+        sessionId: event.session_id,
+        mode: parseHermesMode(payload?.mode),
+        approved: granted,
+        status: "resolved",
+      });
       continue;
     }
 
@@ -792,17 +730,14 @@ function appendLiveHermesEvents(
       const payload = event.payload as Record<string, unknown> | undefined;
       // Again metadata only: the response carries a `provided` flag, never the
       // value the user typed.
-      upsertSecretPart(
-        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
-        {
-          id:
-            stringValue(payload?.request_id) ??
-            stringValue(payload?.id) ??
-            `secret:${event.receivedAt}`,
-          sessionId: event.session_id,
-          status: "resolved",
-        },
-      );
+      upsertSecretPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
+        id:
+          stringValue(payload?.request_id) ??
+          stringValue(payload?.id) ??
+          `secret:${event.receivedAt}`,
+        sessionId: event.session_id,
+        status: "resolved",
+      });
       continue;
     }
 
@@ -837,12 +772,10 @@ function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
   // causally follows; the sort's index tiebreak then keeps a same-timestamp
   // user turn first.
   const latestExisting = turns.reduce(
-    (latest, existing) =>
-      existing.createdAt > latest ? existing.createdAt : latest,
+    (latest, existing) => (existing.createdAt > latest ? existing.createdAt : latest),
     "",
   );
-  const orderedCreatedAt =
-    latestExisting > createdAt ? latestExisting : createdAt;
+  const orderedCreatedAt = latestExisting > createdAt ? latestExisting : createdAt;
   // The `turns.length` suffix keeps ids unique when several turns are created
   // within the same millisecond, while staying deterministic across rebuilds
   // of the same event list (these ids are used as React keys).
@@ -884,9 +817,7 @@ function appendAssistantTextPart(
 // than only the last one (a turn can interleave text -> tool -> text).
 function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   if (!text.trim()) return;
-  const textParts = parts.filter(
-    (part): part is AgentChatTextPart => part.type === "text",
-  );
+  const textParts = parts.filter((part): part is AgentChatTextPart => part.type === "text");
   if (textParts.length === 0) {
     parts.push({ type: "text", text, status: "complete" });
     return;
@@ -945,8 +876,7 @@ function whitespaceLossyCopyOf(streamed: string, complete: string) {
 }
 
 function appendReasoningPart(parts: AgentChatPart[], delta: string) {
-  if (!delta || delta === "thinking.delta" || delta === "reasoning.delta")
-    return;
+  if (!delta || delta === "thinking.delta" || delta === "reasoning.delta") return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
     last.text += delta;
@@ -960,16 +890,11 @@ function completeRunningParts(parts: AgentChatPart[]) {
   for (const part of parts) {
     if (part.type === "reasoning") part.status = "complete";
     if (part.type === "text") part.status = "complete";
-    if (part.type === "tool" && part.status === "running")
-      part.status = "complete";
-    if (part.type === "approval" && part.status === "pending")
-      part.status = "resolved";
-    if (part.type === "clarify" && part.status === "pending")
-      part.status = "resolved";
-    if (part.type === "sudo" && part.status === "pending")
-      part.status = "resolved";
-    if (part.type === "secret" && part.status === "pending")
-      part.status = "resolved";
+    if (part.type === "tool" && part.status === "running") part.status = "complete";
+    if (part.type === "approval" && part.status === "pending") part.status = "resolved";
+    if (part.type === "clarify" && part.status === "pending") part.status = "resolved";
+    if (part.type === "sudo" && part.status === "pending") part.status = "resolved";
+    if (part.type === "secret" && part.status === "pending") part.status = "resolved";
   }
 }
 
@@ -980,12 +905,10 @@ function upsertToolPart(
   const existing = parts.find(
     (part): part is AgentChatToolPart =>
       part.type === "tool" &&
-      (part.id === next.id ||
-        (!next.id && part.name === next.name && part.status === "running")),
+      (part.id === next.id || (!next.id && part.name === next.name && part.status === "running")),
   );
   if (existing) {
-    existing.name =
-      next.name && next.name !== "Tool" ? next.name : existing.name;
+    existing.name = next.name && next.name !== "Tool" ? next.name : existing.name;
     existing.status = next.status;
     if (next.text && next.text !== existing.text) {
       existing.text = appendLogText(existing.text, next.text);
@@ -1010,8 +933,7 @@ function upsertApprovalPart(
     Partial<Pick<AgentChatApprovalPart, "choice" | "sessionId">>,
 ) {
   const existing = parts.find(
-    (part): part is AgentChatApprovalPart =>
-      part.type === "approval" && part.id === next.id,
+    (part): part is AgentChatApprovalPart => part.type === "approval" && part.id === next.id,
   );
   if (existing) {
     existing.command = next.command || existing.command;
@@ -1040,8 +962,7 @@ function upsertClarifyPart(
     Partial<Pick<AgentChatClarifyPart, "answer" | "sessionId">>,
 ) {
   const existing = parts.find(
-    (part): part is AgentChatClarifyPart =>
-      part.type === "clarify" && part.id === next.id,
+    (part): part is AgentChatClarifyPart => part.type === "clarify" && part.id === next.id,
   );
   if (existing) {
     existing.question = next.question || existing.question;
@@ -1065,16 +986,10 @@ function upsertClarifyPart(
 function upsertSudoPart(
   parts: AgentChatPart[],
   next: Pick<AgentChatSudoPart, "id" | "status"> &
-    Partial<
-      Pick<
-        AgentChatSudoPart,
-        "command" | "reason" | "mode" | "approved" | "sessionId"
-      >
-    >,
+    Partial<Pick<AgentChatSudoPart, "command" | "reason" | "mode" | "approved" | "sessionId">>,
 ) {
   const existing = parts.find(
-    (part): part is AgentChatSudoPart =>
-      part.type === "sudo" && part.id === next.id,
+    (part): part is AgentChatSudoPart => part.type === "sudo" && part.id === next.id,
   );
   if (existing) {
     existing.command = next.command ?? existing.command;
@@ -1103,8 +1018,7 @@ function upsertSecretPart(
     Partial<Pick<AgentChatSecretPart, "keyName" | "reason" | "sessionId">>,
 ) {
   const existing = parts.find(
-    (part): part is AgentChatSecretPart =>
-      part.type === "secret" && part.id === next.id,
+    (part): part is AgentChatSecretPart => part.type === "secret" && part.id === next.id,
   );
   if (existing) {
     existing.keyName = next.keyName ?? existing.keyName;
@@ -1139,10 +1053,7 @@ function eventText(event: HermesGatewayEvent) {
   ]) {
     const value = stringValue(
       payload[key],
-      key === "text" ||
-        key === "delta" ||
-        key === "message" ||
-        key === "content",
+      key === "text" || key === "delta" || key === "message" || key === "content",
     );
     if (value) return value;
   }
@@ -1214,9 +1125,7 @@ function displayContentForHermesMessage(message: HermesSessionMessage) {
   // Scheduled runs lead with the cron delivery preamble; show the routine's
   // own instructions, not the machine scaffolding.
   return displayedUserPromptText(
-    stripImageAnalysisFailureNotice(
-      stripScheduledRunPreamble(stripHermesContextMarkers(content)),
-    ),
+    stripImageAnalysisFailureNotice(stripScheduledRunPreamble(stripHermesContextMarkers(content))),
   );
 }
 
@@ -1253,15 +1162,10 @@ function stripAttachmentPromptBlock(content: string): string {
 }
 
 function isScheduledRunMessage(message: HermesSessionMessage) {
-  return (
-    message.role === "user" &&
-    isScheduledRunPreamble(resolveHermesMessageText(message))
-  );
+  return message.role === "user" && isScheduledRunPreamble(resolveHermesMessageText(message));
 }
 
-function contextCompactionPartForHermesContent(
-  content: string,
-): AgentChatContextPart | undefined {
+function contextCompactionPartForHermesContent(content: string): AgentChatContextPart | undefined {
   const text = content.trim();
   if (!isHermesContextCompactionSummary(text)) return undefined;
   const detail = stripContextSummaryEndMarker(text);
@@ -1275,10 +1179,7 @@ function contextCompactionPartForHermesContent(
 
 function isHermesContextCompactionSummary(value: string) {
   const text = value.trimStart();
-  return (
-    text.startsWith("[CONTEXT COMPACTION") ||
-    text.startsWith("[CONTEXT SUMMARY]:")
-  );
+  return text.startsWith("[CONTEXT COMPACTION") || text.startsWith("[CONTEXT SUMMARY]:");
 }
 
 function stripContextSummaryEndMarker(value: string) {
@@ -1291,10 +1192,7 @@ function contextCompactionPreview(value: string) {
     : "Earlier turns were compacted into a reference summary.";
 }
 
-export function textFromHermesContent(
-  value: unknown,
-  depth = 0,
-): string | undefined {
+export function textFromHermesContent(value: unknown, depth = 0): string | undefined {
   if (value === null || value === undefined || depth > 4) return undefined;
   if (typeof value === "string") {
     if (!value.trim()) return undefined;
@@ -1305,24 +1203,14 @@ export function textFromHermesContent(
     }
     return value;
   }
-  if (typeof value === "number" || typeof value === "boolean")
-    return String(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
-    const text = value
-      .map((item) => textFromHermesContent(item, depth + 1) ?? "")
-      .join("");
+    const text = value.map((item) => textFromHermesContent(item, depth + 1) ?? "").join("");
     return text.trim() ? text : undefined;
   }
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
-    for (const key of [
-      "text",
-      "output_text",
-      "content",
-      "message",
-      "delta",
-      "summary",
-    ]) {
+    for (const key of ["text", "output_text", "content", "message", "delta", "summary"]) {
       const text = textFromHermesContent(record[key], depth + 1);
       if (text?.trim()) return text;
     }
@@ -1338,13 +1226,9 @@ function parseLikelyJsonContent(value: string) {
 }
 
 function stripHermesContextMarkers(value: string) {
-  const withoutWarnings = value.replace(
-    /\n*--- Context Warnings ---[\s\S]*$/m,
-    "",
-  );
+  const withoutWarnings = value.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
-  const visible =
-    marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
+  const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
   return visible.trim();
 }
 
@@ -1373,9 +1257,7 @@ export function toolEventKey(event: HermesGatewayEvent) {
 function isClarifyToolEvent(event: HermesGatewayEvent) {
   const payload = event.payload as Record<string, unknown> | undefined;
   const name =
-    stringValue(payload?.name) ??
-    stringValue(payload?.tool_name) ??
-    stringValue(payload?.tool);
+    stringValue(payload?.name) ?? stringValue(payload?.tool_name) ?? stringValue(payload?.tool);
   return name?.toLowerCase() === "clarify";
 }
 
@@ -1383,18 +1265,14 @@ function completePendingClarifyParts(parts: AgentChatPart[]) {
   const pending = [...parts]
     .reverse()
     .find(
-      (part): part is AgentChatClarifyPart =>
-        part.type === "clarify" && part.status === "pending",
+      (part): part is AgentChatClarifyPart => part.type === "clarify" && part.status === "pending",
     );
   if (pending) pending.status = "resolved";
 }
 
-function toolEventStatus(
-  event: HermesGatewayEvent,
-): AgentChatToolPart["status"] {
+function toolEventStatus(event: HermesGatewayEvent): AgentChatToolPart["status"] {
   if (event.type.includes("complete")) return "complete";
-  if (event.type.includes("error") || event.type.includes("fail"))
-    return "failed";
+  if (event.type.includes("error") || event.type.includes("fail")) return "failed";
   return "running";
 }
 
@@ -1407,16 +1285,13 @@ function toolStatus(status: AgentToolEventStatus): AgentChatToolPart["status"] {
 function partText(part: AgentChatPart) {
   if (part.type === "tool") return part.text;
   if (part.type === "approval") return part.command || part.description;
-  if (part.type === "clarify")
-    return [part.question, part.answer ?? ""].join(" ");
+  if (part.type === "clarify") return [part.question, part.answer ?? ""].join(" ");
   // A sudo/secret card is meaningful even with no extra text — its presence
   // blocks the turn — so report a non-empty marker so the turn isn't filtered
   // out as empty. The secret value is never part of this (it never reaches a
   // part), so nothing sensitive is reported here.
-  if (part.type === "sudo")
-    return [part.command ?? "", part.reason ?? "", "sudo"].join(" ");
-  if (part.type === "secret")
-    return [part.keyName ?? "", part.reason ?? "", "secret"].join(" ");
+  if (part.type === "sudo") return [part.command ?? "", part.reason ?? "", "sudo"].join(" ");
+  if (part.type === "secret") return [part.keyName ?? "", part.reason ?? "", "secret"].join(" ");
   if (part.type === "context") return part.preview || part.text;
   // A generated image is meaningful even though it has no body text — report the
   // prompt so the turn isn't filtered out as empty and a copy reads sensibly.
@@ -1425,12 +1300,7 @@ function partText(part: AgentChatPart) {
 }
 
 function approvalChoiceValue(value: unknown): AgentApprovalChoice | undefined {
-  if (
-    value === "once" ||
-    value === "session" ||
-    value === "always" ||
-    value === "deny"
-  ) {
+  if (value === "once" || value === "session" || value === "always" || value === "deny") {
     return value;
   }
   return undefined;
@@ -1440,10 +1310,7 @@ function appendLogText(current: string, next: string) {
   if (!next.trim()) return current;
   if (!current) return next;
   if (current.endsWith(next)) return current;
-  const separator =
-    /\n$/.test(current) || /^\s/.test(next) || /^[.,!?;:]/.test(next)
-      ? ""
-      : "\n";
+  const separator = /\n$/.test(current) || /^\s/.test(next) || /^[.,!?;:]/.test(next) ? "" : "\n";
   return `${current}${separator}${next}`;
 }
 
@@ -1458,16 +1325,14 @@ function stringValue(value: unknown, preserveWhitespace = false) {
     if (!value.trim()) return undefined;
     return preserveWhitespace ? value : value.trim();
   }
-  if (typeof value === "number" || typeof value === "boolean")
-    return String(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
   return undefined;
 }
 
 function timestampString(value: unknown) {
   if (typeof value === "string" && value.trim()) return value;
   if (typeof value === "number" && Number.isFinite(value)) {
-    const milliseconds =
-      value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+    const milliseconds = value > 0 && value < 10_000_000_000 ? value * 1000 : value;
     return new Date(milliseconds).toISOString();
   }
   if (value instanceof Date && !Number.isNaN(value.getTime())) {

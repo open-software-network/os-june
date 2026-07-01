@@ -41,8 +41,7 @@ const COMMUNITY_META: TapTrustMeta = Object.freeze({
   level: "community",
   label: "Community",
   tone: "caution",
-  advisory:
-    "From a community source. Review what a skill does before you install it.",
+  advisory: "From a community source. Review what a skill does before you install it.",
 });
 
 /** The trust badge for a tap. Community unless Hermes explicitly marked it

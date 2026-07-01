@@ -52,13 +52,9 @@ describe("Tauri command contracts", () => {
     await startRecording("note-1", "microphonePlusSystem");
     await finishRecording("session-1");
 
-    expect(mocks.invoke).toHaveBeenNthCalledWith(
-      1,
-      "check_recording_source_readiness",
-      {
-        request: { sourceMode: "microphonePlusSystem" },
-      },
-    );
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "check_recording_source_readiness", {
+      request: { sourceMode: "microphonePlusSystem" },
+    });
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "start_recording", {
       request: { noteId: "note-1", sourceMode: "microphonePlusSystem" },
     });

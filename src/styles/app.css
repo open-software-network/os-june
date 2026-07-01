@@ -75,8 +75,7 @@ input:focus-visible,
  * low alpha so it matches our warm-neutral palette. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent)
-    transparent;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent) transparent;
 }
 *::-webkit-scrollbar {
   width: 4px;
@@ -102,10 +101,7 @@ input:focus-visible,
 /* Shell is pinned to the viewport; the two panels each own their scroll. */
 .app-shell {
   display: grid;
-  grid-template-columns: var(--sidebar-w-current, var(--sidebar-w)) minmax(
-      0,
-      1fr
-    );
+  grid-template-columns: var(--sidebar-w-current, var(--sidebar-w)) minmax(0, 1fr);
   position: relative;
   height: 100vh;
   overflow: hidden;
@@ -533,10 +529,7 @@ input:focus-visible,
    * left edge lands exactly where the composer's does on every engine. The
    * scrollbar then eats rightward slack beyond the chat column instead.
    * .agent-main pairs with this via margin:0 below. */
-  padding-left: calc(
-    var(--sp-8) +
-      max(0px, (100% - min(var(--chat-max), var(--content-max))) / 2)
-  );
+  padding-left: calc(var(--sp-8) + max(0px, (100% - min(var(--chat-max), var(--content-max))) / 2));
   /* The global standard props (scrollbar-width/color, top of file) make the
    * engine IGNORE all ::-webkit-scrollbar styling and draw a native overlay
    * scrollbar instead — which offers no way to start the track below the bar.
@@ -1456,8 +1449,7 @@ input:focus-visible,
   display: grid;
   gap: var(--sp-2);
   margin-top: var(--sp-3);
-  border-left: 2px solid
-    color-mix(in oklch, var(--warm-strong) 52%, var(--border));
+  border-left: 2px solid color-mix(in oklch, var(--warm-strong) 52%, var(--border));
   padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
 }
 
@@ -2569,16 +2561,8 @@ input:focus-visible,
 }
 
 .agent-artifact-panel-body:not([data-fade-top])[data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
 }
 
 .agent-artifact-panel-body[data-kind="list"] {
@@ -3808,11 +3792,7 @@ input:focus-visible,
  * The hero composer keeps the base opaque card — nothing scrolls there. */
 .agent-composer:not([data-hero="true"]) .agent-composer-box {
   background: color-mix(in oklch, var(--card) 92%, transparent);
-  --agent-composer-scroll-fade: color-mix(
-    in oklch,
-    var(--card) 92%,
-    transparent
-  );
+  --agent-composer-scroll-fade: color-mix(in oklch, var(--card) 92%, transparent);
   -webkit-backdrop-filter: saturate(140%) blur(36px);
   backdrop-filter: saturate(140%) blur(36px);
 }
@@ -4103,8 +4083,7 @@ input:focus-visible,
   padding: var(--sp-4) var(--sp-5);
   border-top: 1px solid var(--border);
   background: var(--card);
-  box-shadow: 0 -8px 24px
-    color-mix(in oklch, var(--foreground) 12%, transparent);
+  box-shadow: 0 -8px 24px color-mix(in oklch, var(--foreground) 12%, transparent);
 }
 
 .hermes-trace-panel-header {
@@ -4816,11 +4795,7 @@ input:focus-visible,
 .agent-composer-box:focus-within {
   /* A touch firmer than the resting border, not the full focus ring — the
    * docked box is already the obvious locus, a stark outline overshoots. */
-  border-color: color-mix(
-    in oklch,
-    var(--ring-focus) 40%,
-    var(--border-subtle)
-  );
+  border-color: color-mix(in oklch, var(--ring-focus) 40%, var(--border-subtle));
   box-shadow: var(--shadow-md);
 }
 
@@ -4873,20 +4848,12 @@ input:focus-visible,
 
 .agent-composer-editor-root::before {
   top: 0;
-  background: linear-gradient(
-    to bottom,
-    var(--agent-composer-scroll-fade),
-    transparent
-  );
+  background: linear-gradient(to bottom, var(--agent-composer-scroll-fade), transparent);
 }
 
 .agent-composer-editor-root::after {
   bottom: 0;
-  background: linear-gradient(
-    to top,
-    var(--agent-composer-scroll-fade),
-    transparent
-  );
+  background: linear-gradient(to top, var(--agent-composer-scroll-fade), transparent);
 }
 
 .agent-composer-editor-root[data-fade-top="true"]::before,
@@ -4926,11 +4893,7 @@ input:focus-visible,
   white-space: nowrap;
   user-select: none;
   /* Per-category color, defaulting to the brand pill. */
-  background: color-mix(
-    in oklch,
-    var(--category-tint, var(--brand)) 14%,
-    transparent
-  );
+  background: color-mix(in oklch, var(--category-tint, var(--brand)) 14%, transparent);
   color: var(--category-ink, var(--warm-strong));
 }
 
@@ -4960,8 +4923,7 @@ input:focus-visible,
 /* Selected (clicked) — ProseMirror tags the atom with .ProseMirror-selectednode.
  * A soft category-tinted ring signals that a backspace will remove it. */
 .agent-category-chip.ProseMirror-selectednode {
-  outline: 2px solid
-    color-mix(in oklch, var(--category-tint, var(--brand)) 45%, transparent);
+  outline: 2px solid color-mix(in oklch, var(--category-tint, var(--brand)) 45%, transparent);
   outline-offset: 1px;
 }
 
@@ -5431,8 +5393,7 @@ input:focus-visible,
     border-color var(--t-fast) var(--ease-out),
     opacity 460ms var(--ease-out),
     transform 460ms var(--ease-out);
-  transition-delay:
-    0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
+  transition-delay: 0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
 }
 
 .agent-hero-chips[data-phase="out"] .agent-hero-chip {
@@ -5444,8 +5405,7 @@ input:focus-visible,
     border-color var(--t-fast) var(--ease-out),
     opacity 300ms var(--ease-in-out),
     transform 300ms var(--ease-in-out);
-  transition-delay:
-    0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
+  transition-delay: 0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
 }
 
 .agent-hero-chip:hover:not(:disabled) {
@@ -5628,9 +5588,7 @@ input:focus-visible,
   position: fixed;
   /* Vertically centered in the titlebar, then nudged down a hair to sit level
    * with the native traffic lights. */
-  top: calc(
-    (var(--titlebar-h) - var(--control-md)) / 2 + var(--titlebar-controls-nudge)
-  );
+  top: calc((var(--titlebar-h) - var(--control-md)) / 2 + var(--titlebar-controls-nudge));
   /* Anchored just past the green control (see the token notes) rather than a
    * bare pixel offset. */
   left: calc(var(--titlebar-controls-end) + var(--titlebar-controls-gap));
@@ -6293,9 +6251,7 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.sidebar-settings-section
-  .sidebar-nav-item[data-active="true"]
-  .sidebar-nav-icon {
+.sidebar-settings-section .sidebar-nav-item[data-active="true"] .sidebar-nav-icon {
   color: var(--muted-foreground);
 }
 
@@ -6674,8 +6630,7 @@ input:focus-visible,
 
 .agent-sidebar-row:hover .agent-session-meta,
 .agent-sidebar-row[data-menu-open="true"] .agent-session-meta,
-.agent-sidebar-row:has(.agent-session-row-menu:focus-visible)
-  .agent-session-meta {
+.agent-sidebar-row:has(.agent-session-row-menu:focus-visible) .agent-session-meta {
   opacity: 0;
 }
 
@@ -6886,9 +6841,11 @@ input:focus-visible,
   padding-left: max(
     0px,
     calc(
-      var(--titlebar-controls-end) + var(--titlebar-controls-gap) +
-        var(--control-md) + var(--titlebar-tabs-clearance) -
-        var(--sidebar-w-current)
+      var(--titlebar-controls-end) +
+      var(--titlebar-controls-gap) +
+      var(--control-md) +
+      var(--titlebar-tabs-clearance) -
+      var(--sidebar-w-current)
     )
   );
 }
@@ -8620,9 +8577,7 @@ input:focus-visible,
 .record-shell {
   --record-shell-border: 1px;
   --record-shell-inset: 6px;
-  --record-shell-padding: calc(
-    var(--record-shell-inset) - var(--record-shell-border)
-  );
+  --record-shell-padding: calc(var(--record-shell-inset) - var(--record-shell-border));
   --record-idle-width: 86px;
   --record-idle-height: 40px;
   position: relative;
@@ -9370,11 +9325,7 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-md);
   text-decoration: underline;
-  text-decoration-color: color-mix(
-    in oklch,
-    var(--muted-foreground) 30%,
-    transparent
-  );
+  text-decoration-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
   text-underline-offset: 3px;
 }
 
@@ -10462,8 +10413,7 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.installed-skills-lifecycle[data-tone="warning"]
-  .installed-skills-lifecycle-eyebrow {
+.installed-skills-lifecycle[data-tone="warning"] .installed-skills-lifecycle-eyebrow {
   color: var(--warm-strong);
 }
 
@@ -11113,11 +11063,7 @@ input:focus-visible,
 }
 
 .external-dir-status[data-tone="ok"] {
-  background: color-mix(
-    in oklch,
-    var(--success, var(--primary)) 14%,
-    var(--card)
-  );
+  background: color-mix(in oklch, var(--success, var(--primary)) 14%, var(--card));
   color: var(--success, var(--primary));
 }
 
@@ -12822,21 +12768,13 @@ input:focus-visible,
 }
 
 .mcp-server-oauth[data-state="connected"] {
-  border-color: color-mix(
-    in oklch,
-    var(--ring-focus) 30%,
-    var(--border-subtle)
-  );
+  border-color: color-mix(in oklch, var(--ring-focus) 30%, var(--border-subtle));
 }
 
 .mcp-server-oauth[data-state="needs-sign-in"],
 .mcp-server-oauth[data-state="expired"],
 .mcp-server-oauth[data-state="needs-client-credentials"] {
-  border-color: color-mix(
-    in oklch,
-    var(--warm-strong) 30%,
-    var(--border-subtle)
-  );
+  border-color: color-mix(in oklch, var(--warm-strong) 30%, var(--border-subtle));
 }
 
 .mcp-server-oauth-head {
@@ -13525,11 +13463,7 @@ input:focus-visible,
 }
 
 .mcp-catalog-status[data-tone="ok"] {
-  background: color-mix(
-    in oklch,
-    var(--positive, var(--ring-focus)) 18%,
-    transparent
-  );
+  background: color-mix(in oklch, var(--positive, var(--ring-focus)) 18%, transparent);
   color: var(--foreground);
 }
 
@@ -14602,8 +14536,10 @@ input:focus-visible,
 .routines-workspace,
 .routine-detail {
   --routines-describe-clearance: calc(
-    var(--routines-describe-input-max-h) + var(--control-lg) + var(--sp-12) +
-      var(--sp-5)
+    var(--routines-describe-input-max-h) +
+    var(--control-lg) +
+    var(--sp-12) +
+    var(--sp-5)
   );
 }
 
@@ -14828,8 +14764,7 @@ input:focus-visible,
 
 .routines-item[data-has-actions="true"]:hover .routines-item-actions,
 .routines-item[data-has-actions="true"]:focus-within .routines-item-actions,
-.routines-item[data-has-actions="true"][data-menu-open="true"]
-  .routines-item-actions {
+.routines-item[data-has-actions="true"][data-menu-open="true"] .routines-item-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -15075,8 +15010,7 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
-.routine-detail-active-control[data-state="active"]
-  .switch[data-state="checked"] {
+.routine-detail-active-control[data-state="active"] .switch[data-state="checked"] {
   background: var(--warm-strong);
 }
 
@@ -15753,8 +15687,7 @@ input:focus-visible,
 }
 
 .meetings-bulk-bar[data-exit="slide"] {
-  animation: meetings-bulk-bar-out-slide var(--t-med) var(--ease-in-out)
-    forwards;
+  animation: meetings-bulk-bar-out-slide var(--t-med) var(--ease-in-out) forwards;
 }
 
 .meetings-bulk-bar[data-exit="fade"] {
@@ -16680,12 +16613,9 @@ input:focus-visible,
 .folder-note-row[data-has-actions="true"]:hover .folder-note-time,
 .folder-note-row[data-has-actions="true"]:focus-within .folder-note-time,
 .folder-note-row[data-has-actions="true"]:hover .agent-session-list-status,
-.folder-note-row[data-has-actions="true"]:focus-within
-  .agent-session-list-status,
-.folder-note-row[data-has-actions="true"][data-menu-open="true"]
-  .folder-note-time,
-.folder-note-row[data-has-actions="true"][data-menu-open="true"]
-  .agent-session-list-status {
+.folder-note-row[data-has-actions="true"]:focus-within .agent-session-list-status,
+.folder-note-row[data-has-actions="true"][data-menu-open="true"] .folder-note-time,
+.folder-note-row[data-has-actions="true"][data-menu-open="true"] .agent-session-list-status {
   opacity: 0;
 }
 
@@ -16987,16 +16917,8 @@ input:focus-visible,
 }
 
 .transcript-dialog-scroll:not([data-fade-top])[data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
 }
 
 .transcript-dialog-scroll p {
@@ -17148,8 +17070,7 @@ input:focus-visible,
 
 .folder-note-row[data-has-actions="true"]:hover .folder-note-actions,
 .folder-note-row[data-has-actions="true"]:focus-within .folder-note-actions,
-.folder-note-row[data-has-actions="true"][data-menu-open="true"]
-  .folder-note-actions {
+.folder-note-row[data-has-actions="true"][data-menu-open="true"] .folder-note-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -17588,11 +17509,7 @@ input:focus-visible,
       color-mix(in oklch, var(--brand) 82%, white),
       transparent 55%
     ),
-    linear-gradient(
-      152deg,
-      var(--brand) 0%,
-      color-mix(in oklch, var(--brand) 68%, black) 100%
-    );
+    linear-gradient(152deg, var(--brand) 0%, color-mix(in oklch, var(--brand) 68%, black) 100%);
 }
 
 /* The app's signature grain (lifted from .dictation-hint) over the warm
@@ -18288,16 +18205,8 @@ input:focus-visible,
   display: grid;
   place-items: center;
   padding: var(--sp-8);
-  --welcome-bg-start: color-mix(
-    in oklch,
-    var(--background) 78%,
-    var(--warm-soft)
-  );
-  --welcome-bg-end: color-mix(
-    in oklch,
-    var(--background) 92%,
-    var(--warm-soft)
-  );
+  --welcome-bg-start: color-mix(in oklch, var(--background) 78%, var(--warm-soft));
+  --welcome-bg-end: color-mix(in oklch, var(--background) 92%, var(--warm-soft));
   background: linear-gradient(
     180deg,
     var(--welcome-bg-start) 0%,
@@ -18554,16 +18463,8 @@ input:focus-visible,
   inset: 0;
   display: flex;
   flex-direction: column;
-  --welcome-bg-start: color-mix(
-    in oklch,
-    var(--background) 78%,
-    var(--warm-soft)
-  );
-  --welcome-bg-end: color-mix(
-    in oklch,
-    var(--background) 92%,
-    var(--warm-soft)
-  );
+  --welcome-bg-start: color-mix(in oklch, var(--background) 78%, var(--warm-soft));
+  --welcome-bg-end: color-mix(in oklch, var(--background) 92%, var(--warm-soft));
   background: linear-gradient(
     180deg,
     var(--welcome-bg-start) 0%,
@@ -19109,11 +19010,7 @@ input:focus-visible,
 }
 
 .onboarding-practice-composer:focus-within {
-  border-color: color-mix(
-    in oklch,
-    var(--ring-focus) 45%,
-    var(--border-subtle)
-  );
+  border-color: color-mix(in oklch, var(--ring-focus) 45%, var(--border-subtle));
   box-shadow: var(--shadow-md);
 }
 
@@ -19161,8 +19058,7 @@ input:focus-visible,
   background: linear-gradient(
     180deg,
     var(--card) 60%,
-    color-mix(in oklch, var(--warm-soft) 14%, var(--card))
-      calc(100% - var(--r-xl) - var(--sp-4))
+    color-mix(in oklch, var(--warm-soft) 14%, var(--card)) calc(100% - var(--r-xl) - var(--sp-4))
   );
   color: var(--foreground);
   font-size: var(--fs-md);
@@ -19402,11 +19298,7 @@ input:focus-visible,
 }
 
 .skills-hub-trust[data-tone="trusted"] {
-  background: color-mix(
-    in oklch,
-    var(--success, var(--ring-focus)) 16%,
-    transparent
-  );
+  background: color-mix(in oklch, var(--success, var(--ring-focus)) 16%, transparent);
   color: var(--foreground);
 }
 
@@ -20080,11 +19972,7 @@ input:focus-visible,
 }
 
 .team-taps-trust[data-tone="trusted"] {
-  background: color-mix(
-    in oklch,
-    var(--success, var(--ring-focus)) 16%,
-    transparent
-  );
+  background: color-mix(in oklch, var(--success, var(--ring-focus)) 16%, transparent);
   color: var(--foreground);
 }
 
@@ -20136,11 +20024,7 @@ input:focus-visible,
 }
 
 .team-taps-token-callout[data-tone="warning"] {
-  border-color: color-mix(
-    in oklch,
-    var(--warm-strong) 40%,
-    var(--border-subtle)
-  );
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border-subtle));
 }
 
 .team-taps-token-eyebrow {
@@ -20409,11 +20293,7 @@ input:focus-visible,
 }
 
 .skill-review-verdict-pill[data-tone="trusted"] {
-  border-color: color-mix(
-    in oklch,
-    var(--success, var(--ring-focus)) 40%,
-    var(--border)
-  );
+  border-color: color-mix(in oklch, var(--success, var(--ring-focus)) 40%, var(--border));
   color: var(--success, var(--ring-focus));
 }
 
@@ -21413,11 +21293,7 @@ input:focus-visible,
 }
 
 .integrations-health-status[data-tone="ready"] {
-  background: color-mix(
-    in oklch,
-    var(--success, var(--primary)) 14%,
-    var(--card)
-  );
+  background: color-mix(in oklch, var(--success, var(--primary)) 14%, var(--card));
   color: var(--success, var(--primary));
 }
 
@@ -21463,8 +21339,7 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.integrations-health-count[data-tone="attention"]
-  .integrations-health-count-value {
+.integrations-health-count[data-tone="attention"] .integrations-health-count-value {
   color: var(--warm-strong);
 }
 
@@ -21518,19 +21393,11 @@ input:focus-visible,
 }
 
 .integrations-health-issue[data-tone="error"] {
-  border-color: color-mix(
-    in oklch,
-    var(--destructive) 35%,
-    var(--border-subtle)
-  );
+  border-color: color-mix(in oklch, var(--destructive) 35%, var(--border-subtle));
 }
 
 .integrations-health-issue[data-tone="attention"] {
-  border-color: color-mix(
-    in oklch,
-    var(--warm-strong) 35%,
-    var(--border-subtle)
-  );
+  border-color: color-mix(in oklch, var(--warm-strong) 35%, var(--border-subtle));
 }
 
 .integrations-health-issue-body {

@@ -38,9 +38,7 @@ type SetupSnapshotSectionProps = {
  * targeting stays explicit and a change elsewhere stays consistent. Secrets are
  * never read into the export and never imported from a file.
  */
-export function SetupSnapshotSection({
-  mode = "sandboxed",
-}: SetupSnapshotSectionProps) {
+export function SetupSnapshotSection({ mode = "sandboxed" }: SetupSnapshotSectionProps) {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
 
@@ -52,9 +50,7 @@ export function SetupSnapshotSection({
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
         }
       });
     return () => {
@@ -88,22 +84,14 @@ export function SetupSnapshotView({
   const isErrored = state.status === "error";
 
   return (
-    <section
-      className="settings-group setup-snapshot"
-      aria-labelledby="setup-snapshot-heading"
-    >
+    <section className="settings-group setup-snapshot" aria-labelledby="setup-snapshot-heading">
       <h2 id="setup-snapshot-heading" className="settings-group-heading">
         Import / export
       </h2>
       <p className="settings-group-description">
-        Export a sanitized snapshot of your skills, MCP servers, and profile
-        setup to reproduce it on another machine, or import one to apply it
-        here. Secret values are never included.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Export a sanitized snapshot of your skills, MCP servers, and profile setup to reproduce it
+        on another machine, or import one to apply it here. Secret values are never included.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       {isUnavailable ? (
@@ -164,21 +152,17 @@ function ExportCard({ state }: { state: SetupSnapshotState }) {
         Export
       </h3>
       <p className="setup-snapshot-card-body">
-        Saves a JSON snapshot. Profiles, skills, MCP servers, tool filters, and
-        toolset readiness are included. Memory, sessions, and secret values are
-        not.
+        Saves a JSON snapshot. Profiles, skills, MCP servers, tool filters, and toolset readiness
+        are included. Memory, sessions, and secret values are not.
       </p>
       <label className="setup-snapshot-opt">
         <input
           type="checkbox"
           checked={state.includeSkillConfig}
-          onChange={(event) =>
-            state.setIncludeSkillConfig(event.currentTarget.checked)
-          }
+          onChange={(event) => state.setIncludeSkillConfig(event.currentTarget.checked)}
         />
         <span>
-          Include non-secret skill config values. Secret-shaped values are still
-          excluded.
+          Include non-secret skill config values. Secret-shaped values are still excluded.
         </span>
       </label>
       <button
@@ -207,15 +191,11 @@ function ImportCard({ state }: { state: SetupSnapshotState }) {
         Import
       </h3>
       <p className="setup-snapshot-card-body">
-        Paste a snapshot to preview what it would change before applying.
-        Importing never deletes your current skills or servers, and never reads
-        secrets from the file.
+        Paste a snapshot to preview what it would change before applying. Importing never deletes
+        your current skills or servers, and never reads secrets from the file.
       </p>
 
-      <label
-        className="setup-snapshot-paste-label"
-        htmlFor="setup-snapshot-raw"
-      >
+      <label className="setup-snapshot-paste-label" htmlFor="setup-snapshot-raw">
         Snapshot JSON
       </label>
       <textarea
@@ -257,13 +237,9 @@ function ImportCard({ state }: { state: SetupSnapshotState }) {
         </p>
       ) : null}
 
-      {phase === "previewed" || phase === "applying" ? (
-        <ImportPreview state={state} />
-      ) : null}
+      {phase === "previewed" || phase === "applying" ? <ImportPreview state={state} /> : null}
 
-      {phase === "applied" && state.report ? (
-        <ImportReportView report={state.report} />
-      ) : null}
+      {phase === "applied" && state.report ? <ImportReportView report={state.report} /> : null}
     </div>
   );
 }
@@ -300,9 +276,7 @@ function ImportPreview({ state }: { state: SetupSnapshotState }) {
         <SecretPrompts
           secrets={diff.requiredSecrets}
           values={secrets}
-          onChange={(id, value) =>
-            setSecrets((prev) => ({ ...prev, [id]: value }))
-          }
+          onChange={(id, value) => setSecrets((prev) => ({ ...prev, [id]: value }))}
         />
       ) : null}
 
@@ -342,18 +316,15 @@ function SecretPrompts({
   return (
     <div className="setup-snapshot-secrets">
       <p className="setup-snapshot-secrets-note">
-        This snapshot needs secret values it does not carry. Enter the ones you
-        want to apply now. Leave a value blank to configure it later.
+        This snapshot needs secret values it does not carry. Enter the ones you want to apply now.
+        Leave a value blank to configure it later.
       </p>
       <ul className="setup-snapshot-secrets-list">
         {secrets.map((secret) => {
           const id = requiredSecretId(secret);
           return (
             <li key={id} className="setup-snapshot-secret">
-              <label
-                className="setup-snapshot-secret-label"
-                htmlFor={`secret-${id}`}
-              >
+              <label className="setup-snapshot-secret-label" htmlFor={`secret-${id}`}>
                 {secret.owner} · {secret.key}
               </label>
               <input
@@ -382,14 +353,12 @@ function ImportReportView({ report }: { report: ImportReport }) {
         {report.hadFailures ? (
           <>
             <IconExclamationCircle size={14} ariaHidden />
-            Import finished with some failures. Review the steps below and retry
-            the failed ones.
+            Import finished with some failures. Review the steps below and retry the failed ones.
           </>
         ) : (
           <>
             <IconCircleCheck size={14} ariaHidden />
-            Import applied.{" "}
-            {report.restarted ? "The gateway restarted to apply it." : ""}
+            Import applied. {report.restarted ? "The gateway restarted to apply it." : ""}
           </>
         )}
       </p>
@@ -402,10 +371,7 @@ function ImportReportView({ report }: { report: ImportReport }) {
       ) : null}
       <ul className="setup-snapshot-report-steps">
         {report.steps.map((step, index) => (
-          <ReportStepRow
-            key={`${step.category}:${step.name}:${index}`}
-            step={step}
-          />
+          <ReportStepRow key={`${step.category}:${step.name}:${index}`} step={step} />
         ))}
       </ul>
     </div>
@@ -432,13 +398,7 @@ function StepIcon({ status }: { status: ImportStepResult["status"] }) {
 // Shared empty / error surfaces
 // ---------------------------------------------------------------------------
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="setup-snapshot-empty" role="status">
       <span className="setup-snapshot-empty-icon" aria-hidden>
@@ -467,11 +427,7 @@ function ErrorState({
       <p className="setup-snapshot-empty-title">Couldn't load your setup</p>
       <p className="setup-snapshot-empty-description">{message}</p>
       {retryable ? (
-        <button
-          type="button"
-          className="setup-snapshot-retry"
-          onClick={onRetry}
-        >
+        <button type="button" className="setup-snapshot-retry" onClick={onRetry}>
           Try again
         </button>
       ) : null}

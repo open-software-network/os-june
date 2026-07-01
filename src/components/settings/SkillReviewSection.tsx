@@ -45,9 +45,7 @@ type SkillReviewSectionProps = {
  * lives entirely in {@link useSkillReview}; this component is presentation +
  * local expand state.
  */
-export function SkillReviewSection({
-  mode = "sandboxed",
-}: SkillReviewSectionProps) {
+export function SkillReviewSection({ mode = "sandboxed" }: SkillReviewSectionProps) {
   const state = useSkillReview(mode);
   return <SkillReviewView state={state} mode={mode} />;
 }
@@ -71,26 +69,17 @@ export function SkillReviewView({
   const isErrored = state.status === "error";
   const isLoadingFirst = state.status === "loading";
   const hasWrites = state.writes.length > 0;
-  const approvableCount = state.writes.filter((write) =>
-    canApprove(write),
-  ).length;
+  const approvableCount = state.writes.filter((write) => canApprove(write)).length;
 
   return (
-    <section
-      className="settings-group skill-review"
-      aria-labelledby="skill-review-heading"
-    >
+    <section className="settings-group skill-review" aria-labelledby="skill-review-heading">
       <h2 id="skill-review-heading" className="settings-group-heading">
         Pending skill changes
       </h2>
       <p className="settings-group-description">
-        Review the skill changes the agent proposes before they land. This is
-        how June learns new procedures while keeping you in control.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Review the skill changes the agent proposes before they land. This is how June learns new
+        procedures while keeping you in control.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <GateCard state={state} />
@@ -157,9 +146,7 @@ export function SkillReviewView({
             />
           ) : isErrored ? (
             <ErrorState
-              message={
-                state.error ?? "Could not load pending changes from Hermes."
-              }
+              message={state.error ?? "Could not load pending changes from Hermes."}
               retryable={state.retryable}
               onRetry={state.refresh}
             />
@@ -179,9 +166,7 @@ export function SkillReviewView({
                   pending={state.pending.has(write.id)}
                   expanded={openWrite === write.id}
                   onToggleExpand={() =>
-                    setOpenWrite((current) =>
-                      current === write.id ? null : write.id,
-                    )
+                    setOpenWrite((current) => (current === write.id ? null : write.id))
                   }
                   onApprove={() => state.approve(write.id)}
                   onReject={() => state.reject(write.id)}
@@ -212,9 +197,7 @@ function GateCard({ state }: { state: SkillReviewState }) {
             Require approval for agent skill writes
           </h3>
           <p className="skill-review-gate-copy">
-            {known && !enabled
-              ? WRITE_APPROVAL_OFF_COPY
-              : WRITE_APPROVAL_ON_COPY}
+            {known && !enabled ? WRITE_APPROVAL_OFF_COPY : WRITE_APPROVAL_ON_COPY}
           </p>
         </div>
       </div>
@@ -315,19 +298,14 @@ function WriteRow({
       <div className="skill-review-row-main">
         <div className="skill-review-row-headline">
           <span className="skill-review-row-gist">{writeGist(write)}</span>
-          <span
-            className="skill-review-op"
-            data-op={write.op}
-            title={op.effect}
-          >
+          <span className="skill-review-op" data-op={write.op} title={op.effect}>
             {op.label}
           </span>
           <SourcePill source={write.source} label={source.label} />
         </div>
 
         <p className="skill-review-row-effect">
-          <span className="skill-review-skill-name">{write.skill}</span>{" "}
-          {op.effect} {source.blurb}
+          <span className="skill-review-skill-name">{write.skill}</span> {op.effect} {source.blurb}
         </p>
 
         {files.length > 0 ? (
@@ -344,17 +322,16 @@ function WriteRow({
         {!approvable && !redacted ? (
           <p className="skill-review-unreadable">
             <IconWarningSign size={13} ariaHidden />
-            June could not fully read this change, so it cannot be approved
-            here. Reject it, or review it in Hermes.
+            June could not fully read this change, so it cannot be approved here. Reject it, or
+            review it in Hermes.
           </p>
         ) : null}
 
         {redacted ? (
           <p className="skill-review-redacted">
             <IconWarningSign size={13} ariaHidden />
-            Secret looking lines are hidden in the diff below, so this cannot be
-            approved here without saving the hidden copy. Reject it, or approve
-            it in Hermes.
+            Secret looking lines are hidden in the diff below, so this cannot be approved here
+            without saving the hidden copy. Reject it, or approve it in Hermes.
           </p>
         ) : null}
 
@@ -415,16 +392,9 @@ function FileDiff({ file }: { file: PendingSkillWriteFile }) {
     <div className="skill-review-file-diff">
       <div className="skill-review-file-diff-path">{file.relativePath}</div>
       {file.diff ? (
-        <pre
-          className="skill-review-diff-pre"
-          aria-label={`Diff for ${file.relativePath}`}
-        >
+        <pre className="skill-review-diff-pre" aria-label={`Diff for ${file.relativePath}`}>
           {file.diff.split("\n").map((line, index) => (
-            <span
-              key={index}
-              className="skill-review-diff-line"
-              data-line={diffLineKind(line)}
-            >
+            <span key={index} className="skill-review-diff-line" data-line={diffLineKind(line)}>
               {line === "" ? " " : line}
               {"\n"}
             </span>
@@ -438,9 +408,7 @@ function FileDiff({ file }: { file: PendingSkillWriteFile }) {
           {file.content}
         </pre>
       ) : (
-        <p className="skill-review-diff-empty">
-          No content preview. This change removes the file.
-        </p>
+        <p className="skill-review-diff-empty">No content preview. This change removes the file.</p>
       )}
     </div>
   );
@@ -448,11 +416,7 @@ function FileDiff({ file }: { file: PendingSkillWriteFile }) {
 
 /** Classifies a unified-diff line for styling: added / removed / meta / context. */
 function diffLineKind(line: string): "add" | "remove" | "meta" | "context" {
-  if (
-    line.startsWith("+++") ||
-    line.startsWith("---") ||
-    line.startsWith("@@")
-  ) {
+  if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) {
     return "meta";
   }
   if (line.startsWith("+")) return "add";
@@ -493,13 +457,7 @@ function ReviewLoading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="skill-review-empty" role="status">
       <span className="skill-review-empty-icon" aria-hidden>

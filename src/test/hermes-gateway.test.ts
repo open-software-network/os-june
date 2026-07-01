@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  HermesGatewayClient,
-  HermesGatewayError,
-  isSessionBusyError,
-} from "../lib/hermes-gateway";
+import { HermesGatewayClient, HermesGatewayError, isSessionBusyError } from "../lib/hermes-gateway";
 
 type Listener = (event: unknown) => void;
 
@@ -22,11 +18,7 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this);
   }
 
-  addEventListener(
-    type: string,
-    listener: Listener,
-    options?: { once?: boolean },
-  ) {
+  addEventListener(type: string, listener: Listener, options?: { once?: boolean }) {
     const wrapped: Listener = options?.once
       ? (event) => {
           this.removeEventListener(type, wrapped);

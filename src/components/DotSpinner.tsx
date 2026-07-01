@@ -13,10 +13,7 @@ export function DotSpinner({ className }: DotSpinnerProps) {
   // The surrounding status text carries the meaning for assistive tech, so the
   // glyph is decorative.
   return (
-    <span
-      className={["dot-spinner", className].filter(Boolean).join(" ")}
-      aria-hidden
-    >
+    <span className={["dot-spinner", className].filter(Boolean).join(" ")} aria-hidden>
       <span />
       <span />
       <span />

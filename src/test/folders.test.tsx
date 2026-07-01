@@ -1,11 +1,4 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,10 +8,7 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../components/agent/AgentWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
-import {
-  NotesList,
-  type NotesListHandle,
-} from "../components/notes-list/NotesList";
+import { NotesList, type NotesListHandle } from "../components/notes-list/NotesList";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import type { FolderDto, NoteListItemDto } from "../lib/tauri";
 
@@ -60,9 +50,9 @@ const notes: NoteListItemDto[] = [
 describe("folders UI", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (
-      window as unknown as { __sidebarStates?: (show?: boolean) => string }
-    ).__sidebarStates?.(false);
+    (window as unknown as { __sidebarStates?: (show?: boolean) => string }).__sidebarStates?.(
+      false,
+    );
     window.localStorage.removeItem("june:pinned-agent-session-ids");
     hermesMocks.listHermesSessions.mockResolvedValue([]);
     hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
@@ -88,13 +78,9 @@ describe("folders UI", () => {
     );
 
     expect(screen.getByRole("img", { name: "June" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Meeting notes" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Meeting notes" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Folders" })).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Sessions" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Meeting notes" }));
     await user.click(screen.getByRole("button", { name: "New session" }));
@@ -146,14 +132,10 @@ describe("folders UI", () => {
     expect(await screen.findByText("Researching Google")).toBeInTheDocument();
     expect(screen.getByLabelText("Working")).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: "Researching Google" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Researching Google" }));
 
     expect(onChangeView).not.toHaveBeenCalled();
-    expect(onSelectAgentSession).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "session-1" }),
-    );
+    expect(onSelectAgentSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-1" }));
   });
 
   it("marks new session active until an existing agent session is selected", async () => {
@@ -262,31 +244,23 @@ describe("folders UI", () => {
     );
     await user.click(screen.getByRole("menuitem", { name: "Pin session" }));
 
+    expect(screen.getByRole("region", { name: "Pinned agent sessions" })).toBeInTheDocument();
     expect(
-      screen.getByRole("region", { name: "Pinned agent sessions" }),
+      within(screen.getByRole("region", { name: "Pinned agent sessions" })).getByText(
+        "Fetch os platform issues",
+      ),
     ).toBeInTheDocument();
-    expect(
-      within(
-        screen.getByRole("region", { name: "Pinned agent sessions" }),
-      ).getByText("Fetch os platform issues"),
-    ).toBeInTheDocument();
-    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe(
-      '["session-1"]',
-    );
+    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe('["session-1"]');
 
     await user.click(
-      within(
-        screen.getByRole("region", { name: "Pinned agent sessions" }),
-      ).getByRole("button", { name: "Actions for Fetch os platform issues" }),
+      within(screen.getByRole("region", { name: "Pinned agent sessions" })).getByRole("button", {
+        name: "Actions for Fetch os platform issues",
+      }),
     );
     await user.click(screen.getByRole("menuitem", { name: "Unpin session" }));
 
-    expect(
-      screen.queryByRole("region", { name: "Pinned agent sessions" }),
-    ).toBeNull();
-    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe(
-      "[]",
-    );
+    expect(screen.queryByRole("region", { name: "Pinned agent sessions" })).toBeNull();
+    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe("[]");
   });
 
   it("retries initial agent session hydration when the bridge is still starting", async () => {
@@ -395,9 +369,8 @@ describe("folders UI", () => {
       />,
     );
 
-    const sidebarStates = (
-      window as unknown as { __sidebarStates?: (show?: boolean) => string }
-    ).__sidebarStates;
+    const sidebarStates = (window as unknown as { __sidebarStates?: (show?: boolean) => string })
+      .__sidebarStates;
     expect(sidebarStates).toBeTypeOf("function");
 
     act(() => {
@@ -424,9 +397,7 @@ describe("folders UI", () => {
       sidebarStates?.(false);
     });
 
-    await waitFor(() =>
-      expect(screen.getByText("No sessions yet")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("No sessions yet")).toBeInTheDocument());
   });
 
   it("keeps the sidebar agent session list capped after workspace refreshes", async () => {
@@ -507,35 +478,21 @@ describe("folders UI", () => {
 
     expect(await screen.findByText("Researching Google")).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: "Actions for Researching Google" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Actions for Researching Google" }));
     await user.click(screen.getByRole("menuitem", { name: "Delete session" }));
     const dialog = await screen.findByRole("dialog", {
       name: 'Delete "Researching Google"?',
     });
-    expect(
-      within(dialog).getByText("This agent session cannot be restored."),
-    ).toBeInTheDocument();
-    await user.click(
-      within(dialog).getByRole("button", { name: "Delete session" }),
-    );
+    expect(within(dialog).getByText("This agent session cannot be restored.")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Delete session" }));
 
-    await waitFor(() =>
-      expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("session-1"),
-    );
-    await waitFor(() =>
-      expect(screen.queryByText("Researching Google")).toBeNull(),
-    );
+    await waitFor(() => expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("session-1"));
+    await waitFor(() => expect(screen.queryByText("Researching Google")).toBeNull());
     await waitFor(() => expect(onDeleteAgentSession).toHaveBeenCalled());
-    const detail = (onDeleteAgentSession.mock.calls[0][0] as CustomEvent)
-      .detail;
+    const detail = (onDeleteAgentSession.mock.calls[0][0] as CustomEvent).detail;
     expect(detail).toEqual({ sessionId: "session-1" });
 
-    window.removeEventListener(
-      AGENT_DELETE_SESSION_EVENT,
-      onDeleteAgentSession,
-    );
+    window.removeEventListener(AGENT_DELETE_SESSION_EVENT, onDeleteAgentSession);
   });
 
   it("shows notes with placeholders and selects notes", async () => {
@@ -552,9 +509,7 @@ describe("folders UI", () => {
         onDeleteNotes={vi.fn()}
       />,
     );
-    const list = within(
-      container.querySelector(".all-notes-list") as HTMLElement,
-    );
+    const list = within(container.querySelector(".all-notes-list") as HTMLElement);
 
     expect(list.getByRole("button", { name: /^Second/ })).toBeInTheDocument();
     expect(screen.queryByText("Ideas")).not.toBeInTheDocument();
@@ -592,12 +547,8 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("button", { name: /Active take Recording/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Stale take Draft/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Active take Recording/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Stale take Draft/ })).toBeInTheDocument();
     expect(screen.getAllByText("Recording")).toHaveLength(1);
   });
 
@@ -632,9 +583,7 @@ describe("folders UI", () => {
     expect(screen.getAllByRole("menu")).toHaveLength(1);
     expect(secondActions).toHaveAttribute("aria-expanded", "false");
     expect(newMeetingActions).toHaveAttribute("aria-expanded", "true");
-    expect(
-      screen.getAllByRole("menuitem", { name: "Move to project" }),
-    ).toHaveLength(1);
+    expect(screen.getAllByRole("menuitem", { name: "Move to project" })).toHaveLength(1);
   });
 
   it("positions the meeting actions menu inside the viewport", async () => {
@@ -733,9 +682,7 @@ describe("folders UI", () => {
     );
 
     expect(screen.getByText("Capture your first meeting")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Create your first note" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create your first note" })).toBeInTheDocument();
   });
 
   it("bulk deletes selected meetings from the main list", async () => {
@@ -754,9 +701,7 @@ describe("folders UI", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Select" })).toBeNull();
-    expect(
-      screen.getByRole("checkbox", { name: "Select Second" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select Second" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
     await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
@@ -815,9 +760,7 @@ describe("folders UI", () => {
     await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
     await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
 
-    expect(
-      screen.getByRole("toolbar", { name: "Selection" }),
-    ).toHaveTextContent("2 selected");
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
 
     act(() => notesListRef.current?.resetSelection());
 
@@ -881,12 +824,8 @@ describe("folders UI", () => {
 
     expect(screen.queryByRole("toolbar", { name: "Selection" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
-    expect(
-      screen.getByRole("checkbox", { name: "Select Second" }),
-    ).not.toBeChecked();
-    expect(
-      screen.getByRole("checkbox", { name: "Select New note" }),
-    ).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select Second" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select New note" })).not.toBeChecked();
   });
 
   it("slides the bar out and unmounts it after clearing the selection", async () => {
@@ -977,9 +916,7 @@ describe("MoveNoteToFolderDialog", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("heading", { name: "Move 2 meeting notes" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Move 2 meeting notes" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("option", { name: /Beta/ }));
     await user.click(screen.getByRole("button", { name: "Move" }));
@@ -1002,9 +939,7 @@ describe("MoveNoteToFolderDialog", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("heading", { name: "Move meeting note" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Move meeting note" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
     expect(screen.getByRole("option", { name: /Beta/ })).toBeInTheDocument();
   });

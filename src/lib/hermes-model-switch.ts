@@ -21,10 +21,7 @@
  */
 
 /** Which of the three honest states a model switch resolved to. */
-export type ModelSwitchState =
-  | "active-session-switched"
-  | "default-changed"
-  | "switch-failed";
+export type ModelSwitchState = "active-session-switched" | "default-changed" | "switch-failed";
 
 export type ModelSwitchOutcome = {
   state: ModelSwitchState;
@@ -64,9 +61,7 @@ export type ResolveModelSwitchInput = {
  * makes no claim the caller has not proven (an accepted gateway dispatch), so
  * the UI can never tell the user a running session switched when it did not.
  */
-export function resolveModelSwitchOutcome(
-  input: ResolveModelSwitchInput,
-): ModelSwitchOutcome {
+export function resolveModelSwitchOutcome(input: ResolveModelSwitchInput): ModelSwitchOutcome {
   if (!input.hasActiveSession) {
     return {
       state: "default-changed",

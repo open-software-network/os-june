@@ -3,10 +3,7 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import type {
-  AgentSessionStatusDetail,
-  AgentSessionStatusKind,
-} from "./agent-events";
+import type { AgentSessionStatusDetail, AgentSessionStatusKind } from "./agent-events";
 
 type NotificationCopy = {
   title: string;
@@ -37,9 +34,7 @@ function recentNotificationTimes(now: number) {
   return recent;
 }
 
-export async function notifyAgentSessionStatus(
-  detail: AgentSessionStatusDetail,
-) {
+export async function notifyAgentSessionStatus(detail: AgentSessionStatusDetail) {
   if (!NOTIFICATION_STATUSES.has(detail.status)) return false;
 
   const copy = agentNotificationCopy(detail);
@@ -71,11 +66,8 @@ export async function notifyAgentSessionStatus(
   return true;
 }
 
-export function agentNotificationCopy(
-  detail: AgentSessionStatusDetail,
-): NotificationCopy {
-  const subject =
-    detail.title?.trim() || detail.prompt?.trim() || "Agent session";
+export function agentNotificationCopy(detail: AgentSessionStatusDetail): NotificationCopy {
+  const subject = detail.title?.trim() || detail.prompt?.trim() || "Agent session";
   const body = detail.summary?.trim() || subject;
 
   if (detail.status === "waitingForUser") {
@@ -105,8 +97,7 @@ function playAgentNotificationTone(status: AgentSessionStatusKind) {
   if (typeof window === "undefined") return;
   const AudioContextCtor =
     window.AudioContext ??
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-      .webkitAudioContext;
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextCtor) return;
 
   try {

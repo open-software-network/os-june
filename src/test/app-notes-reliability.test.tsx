@@ -158,9 +158,7 @@ function recording(overrides: Partial<RecordingSessionDto> = {}) {
   };
 }
 
-function recovery(
-  overrides: Partial<RecoverableRecordingDto> = {},
-): RecoverableRecordingDto {
+function recovery(overrides: Partial<RecoverableRecordingDto> = {}): RecoverableRecordingDto {
   return {
     sessionId: "rec-1",
     noteId: "note-1",
@@ -289,9 +287,7 @@ describe("notes recording reliability", () => {
 
   async function startRecordingOnFirstNote() {
     render(<App />);
-    await waitFor(() =>
-      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     // The meeting-start listener silently drops events until the effect
     // re-subscribes with bootstrapped=true — and that happens in a passive
@@ -308,10 +304,7 @@ describe("notes recording reliability", () => {
           });
         });
       }
-      expect(mocks.startRecording).toHaveBeenCalledWith(
-        "note-1",
-        "microphonePlusSystem",
-      );
+      expect(mocks.startRecording).toHaveBeenCalledWith("note-1", "microphonePlusSystem");
     });
   }
 
@@ -326,12 +319,8 @@ describe("notes recording reliability", () => {
     await startRecordingOnFirstNote();
 
     // Browse to another note while the recording keeps running on note-1.
-    await userEvent.click(
-      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /Second note Preview/ }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Meeting notes", current: "page" }));
+    await userEvent.click(screen.getByRole("button", { name: /Second note Preview/ }));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-2"));
 
     // Off the recording's note, the sidebar indicator stands in for the
@@ -342,18 +331,12 @@ describe("notes recording reliability", () => {
     await userEvent.click(indicator);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await userEvent.click(await screen.findByRole("button", { name: "Done" }));
-    await waitFor(() =>
-      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"),
-    );
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     // note-2 must not pick up note-1's optimistic "transcribing" lock.
     mocks.getNote.mockClear();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /Second note Preview/ }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Meeting notes", current: "page" }));
+    await userEvent.click(screen.getByRole("button", { name: /Second note Preview/ }));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-2"));
     expect(screen.queryByText(/Transcribing audio/)).not.toBeInTheDocument();
   });
@@ -362,12 +345,8 @@ describe("notes recording reliability", () => {
     await startRecordingOnFirstNote();
 
     // Browse away from the recording note while the take keeps running.
-    await userEvent.click(
-      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /Second note Preview/ }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Meeting notes", current: "page" }));
+    await userEvent.click(screen.getByRole("button", { name: /Second note Preview/ }));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-2"));
 
     // The sidebar indicator stands in for the in-note bar, titled after note-1.
@@ -397,9 +376,7 @@ describe("notes recording reliability", () => {
 
     await startRecordingOnFirstNote();
     await screen.findByRole("button", { name: "Done" });
-    await waitFor(() =>
-      expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(1));
 
     await new Promise((resolve) => window.setTimeout(resolve, 180));
 
@@ -416,9 +393,7 @@ describe("notes recording reliability", () => {
       });
       await pendingStatus.promise;
     });
-    await waitFor(() =>
-      expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(2),
-    );
+    await waitFor(() => expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(2));
     resumedStatus.resolve({
       sessionId: "rec-1",
       state: "recording",
@@ -457,9 +432,7 @@ describe("notes recording reliability", () => {
     mocks.startRecording.mockResolvedValue(recording({ noteId: "fresh-note" }));
 
     render(<App />);
-    await waitFor(() =>
-      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     await waitFor(() => {
@@ -488,10 +461,7 @@ describe("notes recording reliability", () => {
     });
 
     await waitFor(() =>
-      expect(mocks.startRecording).toHaveBeenCalledWith(
-        "fresh-note",
-        "microphonePlusSystem",
-      ),
+      expect(mocks.startRecording).toHaveBeenCalledWith("fresh-note", "microphonePlusSystem"),
     );
     expect(mocks.createNote).toHaveBeenCalledTimes(1);
   });
@@ -522,9 +492,7 @@ describe("notes recording reliability", () => {
     });
 
     render(<App />);
-    await waitFor(() =>
-      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     await waitFor(async () => {
@@ -558,12 +526,8 @@ describe("notes recording reliability", () => {
 
     await startRecordingOnFirstNote();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /Second note Preview/ }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Meeting notes", current: "page" }));
+    await userEvent.click(screen.getByRole("button", { name: /Second note Preview/ }));
     const indicator = await screen.findByRole("button", {
       name: "Open recording: First note",
     });
@@ -572,18 +536,12 @@ describe("notes recording reliability", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Discard" }));
 
-    await waitFor(() =>
-      expect(mocks.recoverRecording).toHaveBeenCalledWith("rec-1", "discard"),
-    );
+    await waitFor(() => expect(mocks.recoverRecording).toHaveBeenCalledWith("rec-1", "discard"));
     expect(screen.getByText("Recording discarded")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Retry/ })).toBeDisabled();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /Second note Preview/ }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Meeting notes", current: "page" }));
+    await userEvent.click(screen.getByRole("button", { name: /Second note Preview/ }));
     expect(
       screen.queryByRole("button", { name: "Open recording: First note" }),
     ).not.toBeInTheDocument();
@@ -621,30 +579,21 @@ describe("notes recording reliability", () => {
       recoveryFailed = true;
       throw {
         code: "transcription_failed",
-        message:
-          "Microphone: The transcription provider could not process this audio.",
+        message: "Microphone: The transcription provider could not process this audio.",
       };
     });
 
     const { container } = render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Meeting notes" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /First note Preview/ }),
-    );
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
 
     await userEvent.click(screen.getByRole("button", { name: "Recover" }));
 
-    await waitFor(() =>
-      expect(mocks.recoverRecording).toHaveBeenCalledWith("rec-1", "validate"),
-    );
+    await waitFor(() => expect(mocks.recoverRecording).toHaveBeenCalledWith("rec-1", "validate"));
     await waitFor(() =>
       expect(
-        screen.getByText(
-          /Microphone: The transcription provider could not process this audio\./,
-        ),
+        screen.getByText(/Microphone: The transcription provider could not process this audio\./),
       ).toBeInTheDocument(),
     );
     expect(container.querySelector(".note-failure-banner")).not.toBeNull();
@@ -688,8 +637,7 @@ describe("notes recording reliability", () => {
       recoveryFailed = true;
       throw {
         code: "transcription_failed",
-        message:
-          "Microphone: The transcription provider could not process this audio.",
+        message: "Microphone: The transcription provider could not process this audio.",
       };
     });
 
@@ -700,15 +648,11 @@ describe("notes recording reliability", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText(
-          /Microphone: The transcription provider could not process this audio\./,
-        ),
+        screen.getByText(/Microphone: The transcription provider could not process this audio\./),
       ).toBeInTheDocument(),
     );
     expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: "Open recording: First note" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open recording: First note" })).toBeNull();
   });
 
   it("applies the finish result even when the note already sat in a terminal status", async () => {
@@ -724,13 +668,9 @@ describe("notes recording reliability", () => {
     // note-1 is "ready" (terminal); stacking another take must still flip it
     // back to transcribing so the shimmer shows and polling resumes.
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
-    await waitFor(() =>
-      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"),
-    );
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
-    await waitFor(() =>
-      expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
   });
 
   it("keeps retry failures scoped to the failed note", async () => {
@@ -761,28 +701,20 @@ describe("notes recording reliability", () => {
 
     // The app launches on the agent view; open the note from the Meetings
     // list so the editor (and its failure banner) is on screen.
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Meeting notes" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /First note Preview/ }),
-    );
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
 
     await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
 
     await waitFor(() =>
       expect(
-        screen.getByText(
-          /The processing service returned an invalid response\./,
-        ),
+        screen.getByText(/The processing service returned an invalid response\./),
       ).toBeInTheDocument(),
     );
     expect(container.querySelector(".note-failure-banner")).not.toBeNull();
     expect(container.querySelector(".error-banner")).toBeNull();
     // The banner releases its busy gate so the user can try again.
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Retry/ })).toBeEnabled(),
-    );
+    await waitFor(() => expect(screen.getByRole("button", { name: /Retry/ })).toBeEnabled());
 
     await userEvent.click(screen.getByRole("button", { name: "Dictation" }));
     expect(container.querySelector(".note-failure-banner")).toBeNull();
@@ -820,23 +752,15 @@ describe("notes recording reliability", () => {
 
     const { container } = render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Meeting notes" }),
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /First note Preview/ }),
-    );
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
 
     await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
     expect(container.querySelector(".note-failure-banner")).toBeNull();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Transcription" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Transcription" }));
     await waitFor(() =>
       expect(mocks.updateNote).toHaveBeenCalledWith({
         noteId: "note-1",

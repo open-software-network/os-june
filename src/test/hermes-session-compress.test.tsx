@@ -74,10 +74,7 @@ function compressVia(request: ReturnType<typeof vi.fn>) {
   const methods = createHermesMethods(request);
   return vi.fn(
     async (sessionId: string): Promise<CompressSessionResult> =>
-      parseCompressSessionResult(
-        sessionId,
-        await methods.compressSession({ sessionId }),
-      ),
+      parseCompressSessionResult(sessionId, await methods.compressSession({ sessionId })),
   );
 }
 
@@ -85,21 +82,12 @@ describe("SessionCompactDialog", () => {
   it("explains compaction honestly before compressing and does not call session.compress on open", () => {
     const request = vi.fn().mockResolvedValue(FULL_RAW);
     const compress = compressVia(request);
-    render(
-      <SessionCompactDialog
-        open
-        sessionId="sess-1"
-        compress={compress}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionCompactDialog open sessionId="sess-1" compress={compress} onClose={() => {}} />);
 
     // Explanatory copy is present and honest: it does not promise the original
     // transcript is preserved.
     expect(screen.getByText(/smaller working memory/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/older messages may be summarized/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/older messages may be summarized/i)).toBeInTheDocument();
 
     // Nothing is compressed merely by opening the confirmation.
     expect(compress).not.toHaveBeenCalled();
@@ -110,14 +98,7 @@ describe("SessionCompactDialog", () => {
     const request = vi.fn().mockResolvedValue(FULL_RAW);
     const compress = compressVia(request);
     const onClose = vi.fn();
-    render(
-      <SessionCompactDialog
-        open
-        sessionId="sess-1"
-        compress={compress}
-        onClose={onClose}
-      />,
-    );
+    render(<SessionCompactDialog open sessionId="sess-1" compress={compress} onClose={onClose} />);
 
     await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(compress).not.toHaveBeenCalled();
@@ -128,18 +109,9 @@ describe("SessionCompactDialog", () => {
   it("confirming calls session.compress exactly once and shows a success item", async () => {
     const request = vi.fn().mockResolvedValue(FULL_RAW);
     const compress = compressVia(request);
-    render(
-      <SessionCompactDialog
-        open
-        sessionId="sess-1"
-        compress={compress}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionCompactDialog open sessionId="sess-1" compress={compress} onClose={() => {}} />);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /compact context/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /compact context/i }));
 
     await waitFor(() => expect(compress).toHaveBeenCalledTimes(1));
     expect(compress).toHaveBeenCalledWith("sess-1");
@@ -156,18 +128,9 @@ describe("SessionCompactDialog", () => {
   it("renders token savings when the result reports before/after tokens", async () => {
     const request = vi.fn().mockResolvedValue(FULL_RAW);
     const compress = compressVia(request);
-    render(
-      <SessionCompactDialog
-        open
-        sessionId="sess-1"
-        compress={compress}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionCompactDialog open sessionId="sess-1" compress={compress} onClose={() => {}} />);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /compact context/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /compact context/i }));
 
     // Both endpoints render (grouped formatting tolerated).
     expect(await screen.findByText(/120,?000/)).toBeInTheDocument();
@@ -177,40 +140,20 @@ describe("SessionCompactDialog", () => {
   it("still shows success when the result has no token metrics", async () => {
     const request = vi.fn().mockResolvedValue({});
     const compress = compressVia(request);
-    render(
-      <SessionCompactDialog
-        open
-        sessionId="sess-1"
-        compress={compress}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionCompactDialog open sessionId="sess-1" compress={compress} onClose={() => {}} />);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /compact context/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /compact context/i }));
 
     // Success is reported even with no savings figures, and no number is faked.
     expect(await screen.findByText(/context compacted/i)).toBeInTheDocument();
   });
 
   it("shows a clear message and does not crash when the session is busy (4009)", async () => {
-    const request = vi
-      .fn()
-      .mockRejectedValue(new HermesGatewayError("session busy", 4009));
+    const request = vi.fn().mockRejectedValue(new HermesGatewayError("session busy", 4009));
     const compress = compressVia(request);
-    render(
-      <SessionCompactDialog
-        open
-        sessionId="sess-1"
-        compress={compress}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionCompactDialog open sessionId="sess-1" compress={compress} onClose={() => {}} />);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /compact context/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /compact context/i }));
 
     // A clear, busy-specific message — no "Context compacted", no throw.
     expect(await screen.findByText(/running/i)).toBeInTheDocument();
@@ -220,22 +163,11 @@ describe("SessionCompactDialog", () => {
   it("shows a clear message on a generic rejection without crashing", async () => {
     const request = vi.fn().mockRejectedValue(new Error("nope"));
     const compress = compressVia(request);
-    render(
-      <SessionCompactDialog
-        open
-        sessionId="sess-1"
-        compress={compress}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionCompactDialog open sessionId="sess-1" compress={compress} onClose={() => {}} />);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /compact context/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /compact context/i }));
 
-    expect(
-      await screen.findByText(/couldn't compact|could not compact/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/couldn't compact|could not compact/i)).toBeInTheDocument();
     expect(screen.queryByText(/context compacted/i)).not.toBeInTheDocument();
   });
 });

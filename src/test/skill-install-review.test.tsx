@@ -14,10 +14,7 @@ import {
   type SkillsHubEngine,
 } from "../lib/hermes-admin";
 import { SkillInstallReviewDialog } from "../components/settings/SkillInstallReviewDialog";
-import {
-  instantSleep,
-  makeAdminHarness,
-} from "./fixtures/hermes-admin-harness";
+import { instantSleep, makeAdminHarness } from "./fixtures/hermes-admin-harness";
 import { skillScanStatesScenario } from "./fixtures/hermes-admin-scenarios";
 
 function hub(raw: Record<string, unknown>): HermesHubSkillResult {
@@ -40,15 +37,9 @@ describe("skill install review — scan parsing", () => {
   });
 
   it("normalizes verdict synonyms", () => {
-    expect(parseSkillScan({ scan: { verdict: "blocked" } })?.verdict).toBe(
-      "dangerous",
-    );
-    expect(parseSkillScan({ scan: { verdict: "warn" } })?.verdict).toBe(
-      "caution",
-    );
-    expect(parseSkillScan({ security: { result: "clean" } })?.verdict).toBe(
-      "trusted",
-    );
+    expect(parseSkillScan({ scan: { verdict: "blocked" } })?.verdict).toBe("dangerous");
+    expect(parseSkillScan({ scan: { verdict: "warn" } })?.verdict).toBe("caution");
+    expect(parseSkillScan({ security: { result: "clean" } })?.verdict).toBe("trusted");
     expect(parseSkillScan({ scan: { findings: [] } })?.verdict).toBe("unknown");
   });
 
@@ -88,9 +79,7 @@ describe("skill install review — scan parsing", () => {
 
 describe("skill install review — verdict + gating", () => {
   const scenario = skillScanStatesScenario().hubResults!;
-  const results = scenario.map((raw) =>
-    hub(raw as unknown as Record<string, unknown>),
-  );
+  const results = scenario.map((raw) => hub(raw as unknown as Record<string, unknown>));
   const [trusted, caution, dangerous, unknown] = results;
 
   it("maps each scan state to the right verdict", () => {
@@ -144,10 +133,7 @@ describe("skill install review — verdict + gating", () => {
 describe("skill install review — model + logging", () => {
   it("builds the full review model from a result", () => {
     const caution = hub(
-      skillScanStatesScenario().hubResults![1] as unknown as Record<
-        string,
-        unknown
-      >,
+      skillScanStatesScenario().hubResults![1] as unknown as Record<string, unknown>,
     );
     const review = buildSkillInstallReview(caution);
     expect(review.verdict.verdict).toBe("caution");
@@ -210,9 +196,7 @@ describe("skill install review — force wiring", () => {
   it("never sends force on a plain (no-decision) install", async () => {
     const { harness, controller } = controllerFor();
     await controller.search("pdf");
-    const trusted = controller
-      .getSnapshot()
-      .results.find((r) => r.identifier === "official/pdf")!;
+    const trusted = controller.getSnapshot().results.find((r) => r.identifier === "official/pdf")!;
     await controller.install(trusted);
     const bodies = installBody(harness);
     expect(bodies).toHaveLength(1);
@@ -256,9 +240,7 @@ describe("skill install review — force wiring", () => {
       .results.find((r) => r.identifier === "skills.sh/scraper")!;
     await controller.install(caution, { confirm: () => ({ proceed: false }) });
     expect(installBody(harness)).toHaveLength(0);
-    expect(
-      controller.getSnapshot().installs.get("skills.sh/scraper")?.phase,
-    ).toBe("idle");
+    expect(controller.getSnapshot().installs.get("skills.sh/scraper")?.phase).toBe("idle");
     controller.dispose();
   });
 });
@@ -268,29 +250,18 @@ describe("skill install review — force wiring", () => {
 // ---------------------------------------------------------------------------
 
 function reviewFor(index: number) {
-  const raw = skillScanStatesScenario().hubResults![index] as unknown as Record<
-    string,
-    unknown
-  >;
+  const raw = skillScanStatesScenario().hubResults![index] as unknown as Record<string, unknown>;
   return buildSkillInstallReview(hub(raw));
 }
 
 describe("skill install review — dialog", () => {
   it("requires the acknowledgement before a force install for a caution skill", () => {
     const onDecide = vi.fn();
-    render(
-      <SkillInstallReviewDialog
-        review={reviewFor(1)}
-        mode="sandboxed"
-        onDecide={onDecide}
-      />,
-    );
+    render(<SkillInstallReviewDialog review={reviewFor(1)} mode="sandboxed" onDecide={onDecide} />);
     const dialog = screen.getByRole("dialog");
     // Findings + affected files + capabilities are surfaced.
     expect(within(dialog).getByText("Network access")).toBeInTheDocument();
-    expect(
-      within(dialog).getByText("scraper/scripts/run.py"),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByText("scraper/scripts/run.py")).toBeInTheDocument();
     // The install button is disabled until the box is ticked.
     const install = within(dialog).getByRole("button", {
       name: /install anyway/i,
@@ -304,45 +275,25 @@ describe("skill install review — dialog", () => {
 
   it("blocks a dangerous skill with no override path", () => {
     const onDecide = vi.fn();
-    render(
-      <SkillInstallReviewDialog
-        review={reviewFor(2)}
-        mode="sandboxed"
-        onDecide={onDecide}
-      />,
-    );
+    render(<SkillInstallReviewDialog review={reviewFor(2)} mode="sandboxed" onDecide={onDecide} />);
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Data exfiltration")).toBeInTheDocument();
     // No install/override button at all — only cancel.
-    expect(
-      within(dialog).queryByRole("button", { name: /install/i }),
-    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(
-      within(dialog).getByRole("button", { name: /cancel/i }),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /cancel/i })).toBeInTheDocument();
   });
 
   it("shows the sandbox/full-mode runtime note for bundled scripts", () => {
     render(
-      <SkillInstallReviewDialog
-        review={reviewFor(1)}
-        mode="unrestricted"
-        onDecide={vi.fn()}
-      />,
+      <SkillInstallReviewDialog review={reviewFor(1)} mode="unrestricted" onDecide={vi.fn()} />,
     );
     expect(screen.getByText(/Full mode runtime/i)).toBeInTheDocument();
   });
 
   it("cancel resolves a non-proceed decision", () => {
     const onDecide = vi.fn();
-    render(
-      <SkillInstallReviewDialog
-        review={reviewFor(3)}
-        mode="sandboxed"
-        onDecide={onDecide}
-      />,
-    );
+    render(<SkillInstallReviewDialog review={reviewFor(3)} mode="sandboxed" onDecide={onDecide} />);
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onDecide).toHaveBeenCalledWith({ proceed: false, force: false });
   });
@@ -351,13 +302,7 @@ describe("skill install review — dialog", () => {
     const onDecide = vi.fn();
     const review = reviewFor(3);
     expect(review.requiresForce).toBe(false);
-    render(
-      <SkillInstallReviewDialog
-        review={review}
-        mode="sandboxed"
-        onDecide={onDecide}
-      />,
-    );
+    render(<SkillInstallReviewDialog review={review} mode="sandboxed" onDecide={onDecide} />);
     fireEvent.click(screen.getByRole("button", { name: /^install$/i }));
     expect(onDecide).toHaveBeenCalledWith({ proceed: true, force: false });
   });

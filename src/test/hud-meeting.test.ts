@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_SESSION_STATUS_EVENT } from "../lib/agent-events";
-import {
-  markOnboardingComplete,
-  resetOnboardingForReplay,
-} from "../lib/onboarding";
+import { markOnboardingComplete, resetOnboardingForReplay } from "../lib/onboarding";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
 
@@ -60,15 +57,9 @@ describe("meeting detection HUD", () => {
     });
 
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(document.querySelector("#hud-meeting-label")).toHaveTextContent(
-      "Meeting detected",
-    );
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
-      "Zoom",
-    );
-    expect(document.querySelector("#hud-meeting-start")).toHaveTextContent(
-      "Record",
-    );
+    expect(document.querySelector("#hud-meeting-label")).toHaveTextContent("Meeting detected");
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom");
+    expect(document.querySelector("#hud-meeting-start")).toHaveTextContent("Record");
     expect(hudShowCalls()).toBe(1);
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_stop_bounds", {
       rect: null,
@@ -100,9 +91,7 @@ describe("meeting detection HUD", () => {
     await Promise.resolve();
 
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
-      "Zoom",
-    );
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom");
     await vi.waitFor(() => expect(hudShowCalls()).toBe(1));
   });
 
@@ -131,14 +120,10 @@ describe("meeting detection HUD", () => {
       type: "meeting_detected",
       payload: { activeProcessCount: 2, appLabels: ["Zoom", "Chrome"] },
     });
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
-      "Zoom, Chrome",
-    );
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom, Chrome");
 
     await emit("meeting-detection-event", { type: "meeting_detected" });
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
-      "Microphone in use",
-    );
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Microphone in use");
   });
 
   it("accepts local window events from the demo driver", async () => {
@@ -155,9 +140,7 @@ describe("meeting detection HUD", () => {
     await Promise.resolve();
 
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
-      "Teams",
-    );
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Teams");
   });
 
   it("emits a start transcription request when the button is clicked", async () => {
@@ -168,17 +151,13 @@ describe("meeting detection HUD", () => {
     document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.click();
 
     await Promise.resolve();
-    expect(mocks.emit).toHaveBeenCalledWith(
-      "june://meeting-start-transcription",
-    );
+    expect(mocks.emit).toHaveBeenCalledWith("june://meeting-start-transcription");
     // A bounded advance, not runAllTimersAsync: jsdom drives rAF off the
     // faked setTimeout while the alpha ramp measures real time, so running
     // "all" timers re-queues the ramp until sinon's 10000-timer abort.
     await vi.advanceTimersByTimeAsync(220);
     expect(mocks.hide).toHaveBeenCalledOnce();
-    expect(
-      document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.disabled,
-    ).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.disabled).toBe(false);
     vi.useRealTimers();
   });
 
@@ -568,9 +547,7 @@ describe("meeting detection HUD", () => {
       "dictation_hud_caption_fits_below",
       expect.anything(),
     );
-    expect(mocks.invoke).toHaveBeenCalledWith(
-      "dictation_hud_preferred_error_placement",
-    );
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_preferred_error_placement");
     // The window is sized to fit the message layer mirrored above/below the
     // pill, plus the shadow gutter (jsdom rects are zero: 2 gaps tall and
     // 2 gutters all round).
@@ -689,21 +666,15 @@ async function emit(event: string, payload: unknown) {
 // The pill shows itself via the dictation_hud_show command (Rust positions
 // the hidden window, then makes it visible) rather than appWindow.show().
 function hudShowCalls() {
-  return mocks.invoke.mock.calls.filter(
-    ([command]) => command === "dictation_hud_show",
-  ).length;
+  return mocks.invoke.mock.calls.filter(([command]) => command === "dictation_hud_show").length;
 }
 
 function sizeCalls() {
-  return mocks.invoke.mock.calls.filter(
-    ([command]) => command === "dictation_hud_set_size",
-  );
+  return mocks.invoke.mock.calls.filter(([command]) => command === "dictation_hud_set_size");
 }
 
 function invokeCallIndex(commandName: string) {
-  return mocks.invoke.mock.calls.findIndex(
-    ([command]) => command === commandName,
-  );
+  return mocks.invoke.mock.calls.findIndex(([command]) => command === commandName);
 }
 
 function chromeCalls() {

@@ -20,14 +20,8 @@ function cssRuleFor(selector: string) {
 describe("approval card styles", () => {
   it("keeps long links inside approval cards", () => {
     expect(cssRuleFor(".agent-approval-card > div")).toContain("min-width: 0;");
-    expect(cssRuleFor(".agent-approval-card p")).toContain(
-      "overflow-wrap: anywhere;",
-    );
-    expect(cssRuleFor(".agent-approval-card pre")).toContain(
-      "max-width: 100%;",
-    );
-    expect(cssRuleFor(".agent-approval-card pre")).toContain(
-      "overflow-wrap: anywhere;",
-    );
+    expect(cssRuleFor(".agent-approval-card p")).toContain("overflow-wrap: anywhere;");
+    expect(cssRuleFor(".agent-approval-card pre")).toContain("max-width: 100%;");
+    expect(cssRuleFor(".agent-approval-card pre")).toContain("overflow-wrap: anywhere;");
   });
 });

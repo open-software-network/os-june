@@ -37,9 +37,7 @@ export function DictionarySettingsSection() {
   const visibleEntries = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return entries;
-    return entries.filter((entry) =>
-      entry.phrase.toLowerCase().includes(normalized),
-    );
+    return entries.filter((entry) => entry.phrase.toLowerCase().includes(normalized));
   }, [entries, query]);
 
   async function refresh() {
@@ -124,11 +122,7 @@ export function DictionarySettingsSection() {
               aria-label="Search dictionary"
             />
           </label>
-          <button
-            type="button"
-            className="primary-action primary-solid"
-            onClick={startCreating}
-          >
+          <button type="button" className="primary-action primary-solid" onClick={startCreating}>
             <IconPlusMedium size={14} />
             Add entry
           </button>
@@ -227,11 +221,7 @@ function DictionaryEntryDialog({
         </>
       }
     >
-      <form
-        id="dictionary-entry-form"
-        className="dialog-body"
-        onSubmit={handleSubmit}
-      >
+      <form id="dictionary-entry-form" className="dialog-body" onSubmit={handleSubmit}>
         <DialogField label="Word or phrase" htmlFor="dictionary-phrase">
           <input
             id="dictionary-phrase"

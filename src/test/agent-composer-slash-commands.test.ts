@@ -17,38 +17,26 @@ describe("agent composer built-in slash commands", () => {
       name: "file",
       argument: "./notes.md",
     });
-    expect(
-      parseBuiltinComposerSlashCommand("/repo-build-pr fix it"),
-    ).toBeNull();
-    expect(
-      parseBuiltinComposerSlashCommand(
-        "/Users/alex/Desktop/report.pdf summarize",
-      ),
-    ).toBeNull();
+    expect(parseBuiltinComposerSlashCommand("/repo-build-pr fix it")).toBeNull();
+    expect(parseBuiltinComposerSlashCommand("/Users/alex/Desktop/report.pdf summarize")).toBeNull();
   });
 
   it("parses quoted file paths", () => {
-    expect(
-      parseSlashFileArguments('"/Users/alex/Desktop/Q2 report.pdf" ./notes.md'),
-    ).toEqual({
+    expect(parseSlashFileArguments('"/Users/alex/Desktop/Q2 report.pdf" ./notes.md')).toEqual({
       status: "ok",
       paths: ["/Users/alex/Desktop/Q2 report.pdf", "./notes.md"],
     });
   });
 
   it("preserves quoted Windows file paths", () => {
-    expect(
-      parseSlashFileArguments('"C:\\Users\\alex\\Desktop\\Q2 report.pdf"'),
-    ).toEqual({
+    expect(parseSlashFileArguments('"C:\\Users\\alex\\Desktop\\Q2 report.pdf"')).toEqual({
       status: "ok",
       paths: ["C:\\Users\\alex\\Desktop\\Q2 report.pdf"],
     });
   });
 
   it("reports unmatched quotes without dropping the command", () => {
-    expect(
-      parseSlashFileArguments('"/Users/alex/Desktop/Q2 report.pdf'),
-    ).toEqual({
+    expect(parseSlashFileArguments('"/Users/alex/Desktop/Q2 report.pdf')).toEqual({
       status: "error",
       message: "Could not parse /file paths. Close the quote and try again.",
     });

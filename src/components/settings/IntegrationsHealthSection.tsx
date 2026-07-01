@@ -46,13 +46,7 @@ export function IntegrationsHealthSection({
   onNavigate,
 }: IntegrationsHealthSectionProps) {
   const health = useIntegrationsHealth(mode);
-  return (
-    <IntegrationsHealthView
-      health={health}
-      mode={mode}
-      onNavigate={onNavigate}
-    />
-  );
+  return <IntegrationsHealthView health={health} mode={mode} onNavigate={onNavigate} />;
 }
 
 /**
@@ -81,8 +75,8 @@ export function IntegrationsHealthView({
         Integrations health
       </h2>
       <p className="settings-group-description">
-        See whether June's agent is ready to work across your model, skills,
-        toolsets, MCP servers, and gateway.{" "}
+        See whether June's agent is ready to work across your model, skills, toolsets, MCP servers,
+        and gateway.{" "}
         <ModeNote
           mode={health.mode === "unrestricted" ? "unrestricted" : mode}
           profile={health.profile}
@@ -102,11 +96,7 @@ export function IntegrationsHealthView({
             {hasIssues ? (
               <ul className="integrations-health-issues">
                 {health.issues.map((issue, index) => (
-                  <IssueRow
-                    key={`${issue.code}-${index}`}
-                    issue={issue}
-                    onNavigate={onNavigate}
-                  />
+                  <IssueRow key={`${issue.code}-${index}`} issue={issue} onNavigate={onNavigate} />
                 ))}
               </ul>
             ) : (
@@ -128,9 +118,7 @@ function Overview({ health }: { health: IntegrationsHealth }) {
     <div className="integrations-health-overview">
       <div className="integrations-health-status" data-tone={health.tone}>
         <IconHeartBeat size={18} ariaHidden />
-        <span className="integrations-health-status-label">
-          {health.statusLabel}
-        </span>
+        <span className="integrations-health-status-label">{health.statusLabel}</span>
       </div>
       <SummaryCounts health={health} />
       <div className="integrations-health-actions">
@@ -144,11 +132,7 @@ function Overview({ health }: { health: IntegrationsHealth }) {
 function SummaryCounts({ health }: { health: IntegrationsHealth }) {
   const { summary, model } = health;
   return (
-    <div
-      className="integrations-health-counts"
-      role="group"
-      aria-label="Readiness summary"
-    >
+    <div className="integrations-health-counts" role="group" aria-label="Readiness summary">
       <Count
         label="Model tools"
         value={
@@ -158,13 +142,7 @@ function SummaryCounts({ health }: { health: IntegrationsHealth }) {
               ? "Supported"
               : "Unsupported"
         }
-        tone={
-          model?.supportsTools === undefined
-            ? "neutral"
-            : model.supportsTools
-              ? "ok"
-              : "error"
-        }
+        tone={model?.supportsTools === undefined ? "neutral" : model.supportsTools ? "ok" : "error"}
       />
       <Count
         label="Skills enabled"
@@ -179,13 +157,7 @@ function SummaryCounts({ health }: { health: IntegrationsHealth }) {
       <Count
         label="MCP enabled"
         value={`${summary.mcp.enabled}/${summary.mcp.total}`}
-        tone={
-          summary.mcp.failing > 0
-            ? "error"
-            : summary.mcp.authNeeded > 0
-              ? "attention"
-              : "ok"
-        }
+        tone={summary.mcp.failing > 0 ? "error" : summary.mcp.authNeeded > 0 ? "attention" : "ok"}
       />
       <Count
         label="Secrets configured"
@@ -193,11 +165,7 @@ function SummaryCounts({ health }: { health: IntegrationsHealth }) {
         tone={summary.secrets.missing > 0 ? "attention" : "ok"}
       />
       {summary.secrets.missing > 0 ? (
-        <Count
-          label="Secrets missing"
-          value={String(summary.secrets.missing)}
-          tone="attention"
-        />
+        <Count label="Secrets missing" value={String(summary.secrets.missing)} tone="attention" />
       ) : null}
       {summary.pendingSkillWrites > 0 ? (
         <Count
@@ -207,21 +175,14 @@ function SummaryCounts({ health }: { health: IntegrationsHealth }) {
         />
       ) : null}
       {summary.highRiskMcp > 0 ? (
-        <Count
-          label="High risk MCP"
-          value={String(summary.highRiskMcp)}
-          tone="error"
-        />
+        <Count label="High risk MCP" value={String(summary.highRiskMcp)} tone="error" />
       ) : null}
       {summary.externalDirs.total > 0 ? (
         <Count
           label="External dirs"
           value={String(summary.externalDirs.total)}
           tone={
-            summary.externalDirs.missing > 0 ||
-            summary.externalDirs.unreadable > 0
-              ? "error"
-              : "ok"
+            summary.externalDirs.missing > 0 || summary.externalDirs.unreadable > 0 ? "error" : "ok"
           }
         />
       ) : null}
@@ -258,9 +219,7 @@ function IssueRow({
     <li className="integrations-health-issue" data-tone={issue.tone}>
       <IssueIcon tone={issue.tone} />
       <div className="integrations-health-issue-body">
-        <span className="integrations-health-issue-message">
-          {issue.message}
-        </span>
+        <span className="integrations-health-issue-message">{issue.message}</span>
         <span className="integrations-health-issue-action">{issue.action}</span>
       </div>
       <button
@@ -293,18 +252,11 @@ function ExportButton({ health }: { health: IntegrationsHealth }) {
     const now = new Date();
     const report = buildIntegrationsHealthReport(health, { now });
     const text = serializeIntegrationsHealthReport(report);
-    const filename = integrationsHealthReportFilename(
-      health.profile ?? "default",
-      now,
-    );
+    const filename = integrationsHealthReportFilename(health.profile ?? "default", now);
     downloadText(filename, text);
   }
   return (
-    <button
-      type="button"
-      className="integrations-health-export"
-      onClick={handleExport}
-    >
+    <button type="button" className="integrations-health-export" onClick={handleExport}>
       <IconArrowInbox size={14} ariaHidden />
       Export health report
     </button>
@@ -333,18 +285,11 @@ function ModeNote({
 
 function IssueIcon({ tone }: { tone: HealthTone }) {
   if (tone === "error") return <IconCircleX size={14} ariaHidden />;
-  if (tone === "attention")
-    return <IconExclamationCircle size={14} ariaHidden />;
+  if (tone === "attention") return <IconExclamationCircle size={14} ariaHidden />;
   return <IconCircleInfo size={14} ariaHidden />;
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="integrations-health-empty" role="status">
       <span className="integrations-health-empty-icon" aria-hidden>

@@ -93,9 +93,7 @@ function McpToolsForm({
   onClose: () => void;
   onSave: (draft: ToolPolicyDraft) => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState<ToolPolicyDraft>(() =>
-    draftFromServer(server),
-  );
+  const [draft, setDraft] = useState<ToolPolicyDraft>(() => draftFromServer(server));
   const [saved, setSaved] = useState(false);
   const headingId = useId();
 
@@ -127,18 +125,14 @@ function McpToolsForm({
         const present = d.include.includes(name);
         return {
           ...d,
-          include: present
-            ? d.include.filter((n) => n !== name)
-            : [...d.include, name],
+          include: present ? d.include.filter((n) => n !== name) : [...d.include, name],
         };
       }
       if (d.mode === "blocklist") {
         const present = d.exclude.includes(name);
         return {
           ...d,
-          exclude: present
-            ? d.exclude.filter((n) => n !== name)
-            : [...d.exclude, name],
+          exclude: present ? d.exclude.filter((n) => n !== name) : [...d.exclude, name],
         };
       }
       return d;
@@ -157,8 +151,8 @@ function McpToolsForm({
       {comparison.empty ? (
         <p className="mcp-tools-discovery-note" role="note">
           <IconCircleInfo size={13} ariaHidden />
-          No tools discovered yet. Test the server first to list the tools it
-          exposes, then choose which to allow.
+          No tools discovered yet. Test the server first to list the tools it exposes, then choose
+          which to allow.
         </p>
       ) : (
         <p className="mcp-tools-discovery-note" role="note">
@@ -171,11 +165,7 @@ function McpToolsForm({
 
       <fieldset className="mcp-tools-mode">
         <legend className="mcp-tools-legend">Filter mode</legend>
-        <div
-          className="mcp-tools-mode-options"
-          role="radiogroup"
-          aria-label="Filter mode"
-        >
+        <div className="mcp-tools-mode-options" role="radiogroup" aria-label="Filter mode">
           <ModeOption
             label="Allowlist"
             hint="Expose only chosen tools. Safest for sensitive servers."
@@ -197,11 +187,7 @@ function McpToolsForm({
         </div>
       </fieldset>
 
-      <p
-        className="mcp-tools-precedence"
-        data-code={precedence.code}
-        role="note"
-      >
+      <p className="mcp-tools-precedence" data-code={precedence.code} role="note">
         <IconShield size={13} ariaHidden />
         {precedence.message}
       </p>
@@ -209,18 +195,13 @@ function McpToolsForm({
       {recommendAllowlist && draft.mode !== "allowlist" ? (
         <p className="mcp-tools-allowlist-rec" role="note">
           <IconExclamationCircle size={13} ariaHidden />
-          This server exposes destructive-looking tools that the current setting
-          would expose. Consider an allowlist that includes only the tools you
-          need.
+          This server exposes destructive-looking tools that the current setting would expose.
+          Consider an allowlist that includes only the tools you need.
         </p>
       ) : null}
 
       {draft.mode !== "none" && comparison.tools.length > 0 ? (
-        <ToolList
-          mode={draft.mode}
-          tools={comparison.tools}
-          onToggle={toggleToolInList}
-        />
+        <ToolList mode={draft.mode} tools={comparison.tools} onToggle={toggleToolInList} />
       ) : null}
 
       {draft.mode === "allowlist" ? (
@@ -228,9 +209,7 @@ function McpToolsForm({
           label="Allowlist (one tool per line)"
           inert={false}
           value={includeText}
-          onChange={(text) =>
-            setDraft((d) => ({ ...d, include: splitNames(text) }))
-          }
+          onChange={(text) => setDraft((d) => ({ ...d, include: splitNames(text) }))}
         />
       ) : null}
 
@@ -239,9 +218,7 @@ function McpToolsForm({
           label="Blocklist (one tool per line)"
           inert={false}
           value={excludeText}
-          onChange={(text) =>
-            setDraft((d) => ({ ...d, exclude: splitNames(text) }))
-          }
+          onChange={(text) => setDraft((d) => ({ ...d, exclude: splitNames(text) }))}
         />
       ) : null}
 
@@ -249,8 +226,8 @@ function McpToolsForm({
           it greyed as inert so the user sees include wins. */}
       {precedence.excludeInert ? (
         <p className="mcp-tools-inert-note" role="note">
-          <IconCircleInfo size={13} ariaHidden />A blocklist is set but ignored
-          while an allowlist is active. Include wins.
+          <IconCircleInfo size={13} ariaHidden />A blocklist is set but ignored while an allowlist
+          is active. Include wins.
         </p>
       ) : null}
 
@@ -274,23 +251,17 @@ function McpToolsForm({
         <legend className="mcp-tools-legend">Advanced</legend>
         <ParallelRow
           value={draft.supportsParallelToolCalls}
-          onChange={(value) =>
-            setDraft((d) => ({ ...d, supportsParallelToolCalls: value }))
-          }
+          onChange={(value) => setDraft((d) => ({ ...d, supportsParallelToolCalls: value }))}
         />
         <SecondsRow
           label="Request timeout (seconds)"
           value={draft.timeoutSeconds}
-          onChange={(value) =>
-            setDraft((d) => ({ ...d, timeoutSeconds: value }))
-          }
+          onChange={(value) => setDraft((d) => ({ ...d, timeoutSeconds: value }))}
         />
         <SecondsRow
           label="Connect timeout (seconds)"
           value={draft.connectTimeoutSeconds}
-          onChange={(value) =>
-            setDraft((d) => ({ ...d, connectTimeoutSeconds: value }))
-          }
+          onChange={(value) => setDraft((d) => ({ ...d, connectTimeoutSeconds: value }))}
         />
       </fieldset>
 
@@ -309,12 +280,7 @@ function McpToolsForm({
       ) : null}
 
       <div className="mcp-tools-actions">
-        <button
-          type="button"
-          className="primary-action"
-          onClick={onClose}
-          disabled={saving}
-        >
+        <button type="button" className="primary-action" onClick={onClose} disabled={saving}>
           Close
         </button>
         <button
@@ -331,23 +297,15 @@ function McpToolsForm({
           reviewer can see the scoped block. Tool names are not secret. */}
       <details className="mcp-tools-preview">
         <summary>What gets saved</summary>
-        <p className="mcp-tools-preview-path">
-          mcp_servers.{server.name}.tools
-        </p>
-        <pre className="mcp-tools-preview-block">
-          {JSON.stringify(block, null, 2)}
-        </pre>
+        <p className="mcp-tools-preview-path">mcp_servers.{server.name}.tools</p>
+        <pre className="mcp-tools-preview-block">{JSON.stringify(block, null, 2)}</pre>
       </details>
     </div>
   );
 }
 
 /** The "Server exposes / June will expose / Blocked/destructive" compare. */
-function CompareCounts({
-  comparison,
-}: {
-  comparison: ReturnType<typeof compareToolPolicy>;
-}) {
+function CompareCounts({ comparison }: { comparison: ReturnType<typeof compareToolPolicy> }) {
   return (
     <dl className="mcp-tools-compare" aria-label="Tool exposure summary">
       <div className="mcp-tools-compare-item">
@@ -431,11 +389,7 @@ function ToolList({
             onClick={() => onToggle(tool.name)}
           >
             <span className="mcp-tools-row-state" aria-hidden>
-              {tool.allowed ? (
-                <IconCircleCheck size={13} />
-              ) : (
-                <IconCircleX size={13} />
-              )}
+              {tool.allowed ? <IconCircleCheck size={13} /> : <IconCircleX size={13} />}
             </span>
             <span className="mcp-tools-row-name">{tool.name}</span>
             {tool.destructive ? (
@@ -445,9 +399,7 @@ function ToolList({
               </span>
             ) : null}
           </button>
-          {tool.description ? (
-            <p className="mcp-tools-row-desc">{tool.description}</p>
-          ) : null}
+          {tool.description ? <p className="mcp-tools-row-desc">{tool.description}</p> : null}
         </li>
       ))}
     </ul>
@@ -506,9 +458,7 @@ function UtilityRow({
           id={id}
           className="mcp-tools-select"
           value={value}
-          onChange={(event) =>
-            onChange(event.currentTarget.value as UtilityToggle)
-          }
+          onChange={(event) => onChange(event.currentTarget.value as UtilityToggle)}
         >
           <option value="default">Default</option>
           <option value="on">On</option>

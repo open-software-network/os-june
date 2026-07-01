@@ -33,14 +33,11 @@ export function userFacingFailureMessage(message?: string) {
 
 function friendlyFailureSegment(message: string) {
   const source = message.match(/^(Microphone|System):\s*/i)?.[1];
-  const body = source
-    ? message.replace(/^(Microphone|System):\s*/i, "")
-    : message;
+  const body = source ? message.replace(/^(Microphone|System):\s*/i, "") : message;
   const normalized = body.toLowerCase();
   let friendly = body;
   if (normalized.includes("no_speech") || normalized.includes("no speech")) {
-    friendly =
-      "No speech detected. Try speaking louder or moving closer to the microphone.";
+    friendly = "No speech detected. Try speaking louder or moving closer to the microphone.";
   } else if (isInvalidJuneResponseMessage(body)) {
     friendly = "The processing service returned an invalid response.";
   } else if (normalized.includes("metering_provider_failed")) {
@@ -107,12 +104,7 @@ export function NoteFailureBanner({
       </p>
       <div className="note-failure-actions">
         {isBalanceIssue ? (
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={onTopUp}
-            disabled={retrying}
-          >
+          <button type="button" className="btn btn-secondary" onClick={onTopUp} disabled={retrying}>
             {topUpLabel}
           </button>
         ) : null}

@@ -68,10 +68,10 @@ type FixtureCase = {
   expected: FrameExpectation[];
 };
 
-const k = (
-  kind: JuneHermesEventKind,
-  action?: PendingHermesAction["kind"],
-): FrameExpectation => ({ kind, action });
+const k = (kind: JuneHermesEventKind, action?: PendingHermesAction["kind"]): FrameExpectation => ({
+  kind,
+  action,
+});
 
 // The expectation registry. Every fixture is listed with its per-frame expected
 // kinds, derived from the MERGED feature-01 classifier's actual behavior (probed,
@@ -186,21 +186,16 @@ describe("hermes replay — fixture corpus integrity", () => {
     expect(ALL_CASES.length).toBeGreaterThan(0);
     for (const [name, { fixture, expected }] of ALL_CASES) {
       expect(fixture.frames.length, `${name} has no frames`).toBeGreaterThan(0);
-      expect(
-        expected.length,
-        `${name}: expectation count must match frame count`,
-      ).toBe(fixture.frames.length);
+      expect(expected.length, `${name}: expectation count must match frame count`).toBe(
+        fixture.frames.length,
+      );
     }
   });
 
   it("records provenance metadata on every fixture (version, source, sanitized)", () => {
     for (const [name, { fixture }] of ALL_CASES) {
-      expect(fixture.hermesVersion, `${name} missing hermesVersion`).toBe(
-        "v2026.6.19",
-      );
-      expect(fixture.recordedFrom, `${name} missing recordedFrom`).toBe(
-        "tui-gateway",
-      );
+      expect(fixture.hermesVersion, `${name} missing hermesVersion`).toBe("v2026.6.19");
+      expect(fixture.recordedFrom, `${name} missing recordedFrom`).toBe("tui-gateway");
       expect(fixture.sanitized, `${name} not marked sanitized`).toBe(true);
     }
   });
@@ -259,8 +254,7 @@ describe("hermes replay — family-specific expectations", () => {
   it("preserves the streamed transcript text from the normal-message fixture", () => {
     const events = replayFixture(normalMessage as HermesReplayFixture);
     const transcripts = events.filter(
-      (e): e is Extract<JuneHermesEvent, { kind: "transcript" }> =>
-        e.kind === "transcript",
+      (e): e is Extract<JuneHermesEvent, { kind: "transcript" }> => e.kind === "transcript",
     );
     expect(transcripts.map((t) => t.delta).filter(Boolean)).toEqual([
       "Sure, here is the plan: ",
@@ -271,14 +265,9 @@ describe("hermes replay — family-specific expectations", () => {
   });
 
   it("carries approval metadata and a request id through the approval fixture", () => {
-    const [request] = replayFixture(
-      approvalRequestResponse as HermesReplayFixture,
-    );
+    const [request] = replayFixture(approvalRequestResponse as HermesReplayFixture);
     expect(request.kind).toBe("pending_action");
-    if (
-      request.kind === "pending_action" &&
-      request.action.kind === "approval"
-    ) {
+    if (request.kind === "pending_action" && request.action.kind === "approval") {
       expect(request.action.requestId).toBe("ap-1");
       expect(request.action.toolName).toBe("shell");
       expect(request.action.description).toBe("Delete the build directory");
@@ -294,9 +283,7 @@ describe("hermes replay — family-specific expectations", () => {
   });
 
   it("correlates a background subagent by handle and parent session", () => {
-    const events = replayFixture(
-      subagentBackgroundCompletion as HermesReplayFixture,
-    );
+    const events = replayFixture(subagentBackgroundCompletion as HermesReplayFixture);
     for (const event of events) {
       expect(event.kind).toBe("background_activity");
       if (event.kind === "background_activity") {
@@ -316,9 +303,7 @@ describe("hermes replay — family-specific expectations", () => {
       expect(busy.message).toBe("session busy");
       expect(busy.recoverable).toBe(true);
     }
-    const [providerErr] = replayFixture(
-      providerAccountError as HermesReplayFixture,
-    );
+    const [providerErr] = replayFixture(providerAccountError as HermesReplayFixture);
     if (providerErr.kind === "error") {
       expect(providerErr.code).toBe(401);
       expect(providerErr.message).toContain("401 Unauthorized");
@@ -328,15 +313,11 @@ describe("hermes replay — family-specific expectations", () => {
 
 describe("hermes replay — unknown/future events are visible, never dropped", () => {
   it("classifies every unknown frame as unsupported with rawType set", () => {
-    const events = replayFixtureFrames(
-      futureUnknownEvent as HermesReplayFixture,
-    );
+    const events = replayFixtureFrames(futureUnknownEvent as HermesReplayFixture);
     for (const { raw, event } of events) {
       expect(event.kind).toBe("unsupported");
       if (event.kind === "unsupported") {
-        expect(event.rawType, "rawType must be preserved for visibility").toBe(
-          raw.type,
-        );
+        expect(event.rawType, "rawType must be preserved for visibility").toBe(raw.type);
       }
     }
   });
@@ -359,9 +340,7 @@ describe("hermes replay — SECURITY: secrets never survive classification", () 
   const SECRET_VALUE = "sk-FAKE-PLACEHOLDER-secret-value-do-not-use-0000000000";
 
   it("classifies secret.request as a redacted secret pending action", () => {
-    const [request] = replayFixture(
-      secretRequestResponse as HermesReplayFixture,
-    );
+    const [request] = replayFixture(secretRequestResponse as HermesReplayFixture);
     expect(request.kind).toBe("pending_action");
     if (request.kind === "pending_action") {
       expect(request.action.kind).toBe("secret");
@@ -375,15 +354,11 @@ describe("hermes replay — SECURITY: secrets never survive classification", () 
   it("never serializes the secret value anywhere in the classified secret event", () => {
     // Sanity: the value really is present in the raw fixture (so the test can't
     // pass vacuously).
-    const rawSerialized = JSON.stringify(
-      (secretRequestResponse as HermesReplayFixture).frames,
-    );
+    const rawSerialized = JSON.stringify((secretRequestResponse as HermesReplayFixture).frames);
     expect(rawSerialized).toContain(SECRET_VALUE);
 
     // After classification it must be gone from every frame's output.
-    for (const event of replayFixture(
-      secretRequestResponse as HermesReplayFixture,
-    )) {
+    for (const event of replayFixture(secretRequestResponse as HermesReplayFixture)) {
       expect(JSON.stringify(event)).not.toContain(SECRET_VALUE);
     }
   });
@@ -404,9 +379,7 @@ describe("hermes replay — SECURITY: secrets never survive classification", () 
       .map((event) => JSON.stringify(event))
       .join("\n");
     for (const canary of canaries) {
-      expect(serialized, `leaked credential canary: ${canary}`).not.toContain(
-        canary,
-      );
+      expect(serialized, `leaked credential canary: ${canary}`).not.toContain(canary);
     }
   });
 
@@ -418,10 +391,7 @@ describe("hermes replay — SECURITY: secrets never survive classification", () 
     for (const [name, { fixture }] of ALL_CASES) {
       for (const { index, event } of replayFixtureFrames(fixture)) {
         const serialized = JSON.stringify(event);
-        expect(
-          bearer.test(serialized),
-          `${name}#${index} serialized a bearer token`,
-        ).toBe(false);
+        expect(bearer.test(serialized), `${name}#${index} serialized a bearer token`).toBe(false);
       }
     }
   });

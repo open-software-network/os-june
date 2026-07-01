@@ -2,12 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
-import type {
-  AccountStatus,
-  BootstrapResponse,
-  NoteDto,
-  RecordingSessionDto,
-} from "../lib/tauri";
+import type { AccountStatus, BootstrapResponse, NoteDto, RecordingSessionDto } from "../lib/tauri";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
 
@@ -228,10 +223,7 @@ describe("meeting start transcription event", () => {
         });
       }
       expect(mocks.createNote).toHaveBeenCalledWith(undefined);
-      expect(mocks.startRecording).toHaveBeenCalledWith(
-        "note-2",
-        "microphonePlusSystem",
-      );
+      expect(mocks.startRecording).toHaveBeenCalledWith("note-2", "microphonePlusSystem");
     });
   }
 
@@ -247,9 +239,7 @@ describe("meeting start transcription event", () => {
 
     render(<App />);
 
-    await waitFor(() =>
-      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     await fireMeetingStartUntilRecording();
@@ -266,15 +256,11 @@ describe("meeting start transcription event", () => {
     });
     mocks.createNote.mockResolvedValue(fresh);
     mocks.startRecording.mockResolvedValue(recording({ noteId: "note-2" }));
-    mocks.getNote.mockImplementation(async (id: string) =>
-      id === "note-2" ? fresh : note(),
-    );
+    mocks.getNote.mockImplementation(async (id: string) => (id === "note-2" ? fresh : note()));
 
     render(<App />);
 
-    await waitFor(() =>
-      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     await fireMeetingStartUntilRecording();
@@ -287,24 +273,18 @@ describe("meeting start transcription event", () => {
       });
     });
 
-    await waitFor(() =>
-      expect(screen.getByLabelText("Note title")).toHaveValue("New meeting"),
-    );
+    await waitFor(() => expect(screen.getByLabelText("Note title")).toHaveValue("New meeting"));
   });
 
   it("cleans up Tauri listeners that resolve after unmount", async () => {
     const cleanups: Array<ReturnType<typeof vi.fn>> = [];
-    const pendingListeners: Array<
-      (cleanup: (typeof cleanups)[number]) => void
-    > = [];
-    mocks.listen.mockImplementation(
-      (event: string, listener: TauriListener) => {
-        mocks.listeners.set(event, listener);
-        return new Promise((resolve) => {
-          pendingListeners.push(resolve);
-        });
-      },
-    );
+    const pendingListeners: Array<(cleanup: (typeof cleanups)[number]) => void> = [];
+    mocks.listen.mockImplementation((event: string, listener: TauriListener) => {
+      mocks.listeners.set(event, listener);
+      return new Promise((resolve) => {
+        pendingListeners.push(resolve);
+      });
+    });
 
     const { unmount } = render(<App />);
 

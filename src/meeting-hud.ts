@@ -55,10 +55,7 @@ function applyStatus(status: RecordingStatusDto) {
   // status.level is mic-only; status.sources carries mic+system when present.
   const level = meterLevelForSources(status.level, status.sources);
   const recent = level.recentPeaks;
-  const raw =
-    recent.length > 0
-      ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS))
-      : level.peak;
+  const raw = recent.length > 0 ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS)) : level.peak;
   meter.pushLevel(visualPeakScale(raw));
 }
 
@@ -158,12 +155,9 @@ void listen<RecordingStatusDto>("meeting-hud-status", (event) => {
   if (event.payload) applyStatus(event.payload);
 });
 
-void listen<{ vertical: boolean; animate: boolean }>(
-  "meeting-hud-zone",
-  (event) => {
-    if (event.payload) applyZone(event.payload);
-  },
-);
+void listen<{ vertical: boolean; animate: boolean }>("meeting-hud-zone", (event) => {
+  if (event.payload) applyZone(event.payload);
+});
 
 // Local mirrors of the Tauri listeners, same as the dictation HUD page:
 // only the dev-only demo driver dispatches these window events (standalone
@@ -175,9 +169,7 @@ if (import.meta.env.DEV) {
   });
 
   window.addEventListener("meeting-hud-zone", (event) => {
-    const payload = (
-      event as CustomEvent<{ vertical: boolean; animate: boolean }>
-    ).detail;
+    const payload = (event as CustomEvent<{ vertical: boolean; animate: boolean }>).detail;
     if (payload) applyZone(payload);
   });
 }

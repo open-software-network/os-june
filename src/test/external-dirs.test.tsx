@@ -19,9 +19,7 @@ import type { ExternalDirStatus } from "../lib/tauri";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
 /** A wire-shaped external dir status with sensible defaults a test can override. */
-function status(
-  overrides: Partial<ExternalDirStatus> & { rawPath: string },
-): ExternalDirStatus {
+function status(overrides: Partial<ExternalDirStatus> & { rawPath: string }): ExternalDirStatus {
   return {
     resolvedPath: overrides.rawPath,
     unresolvedVar: null,
@@ -36,10 +34,7 @@ function status(
 }
 
 /** A minimal HermesSkillInfo for shadowing tests. */
-function skill(
-  name: string,
-  source: HermesSkillInfo["source"],
-): HermesSkillInfo {
+function skill(name: string, source: HermesSkillInfo["source"]): HermesSkillInfo {
   return { name, enabled: true, source, raw: {} };
 }
 
@@ -58,12 +53,8 @@ describe("external dirs — config read", () => {
 
   it("tolerates a missing key, a bare string, and non-string entries", () => {
     expect(readExternalDirs({})).toEqual([]);
-    expect(readExternalDirs({ skills: { external_dirs: "~/one" } })).toEqual([
-      "~/one",
-    ]);
-    expect(
-      readExternalDirs({ skills: { external_dirs: ["ok", 42, "", null] } }),
-    ).toEqual(["ok"]);
+    expect(readExternalDirs({ skills: { external_dirs: "~/one" } })).toEqual(["~/one"]);
+    expect(readExternalDirs({ skills: { external_dirs: ["ok", 42, "", null] } })).toEqual(["ok"]);
   });
 });
 
@@ -241,26 +232,22 @@ function engineFor(
   const harness = makeAdminHarness({ config, skills: skills as never });
   const engine: ExternalDirsEngine = {
     ...harness,
-    inspect:
-      inspect ?? (async (dirs) => dirs.map((rawPath) => status({ rawPath }))),
+    inspect: inspect ?? (async (dirs) => dirs.map((rawPath) => status({ rawPath }))),
   };
   return { engine, server: harness.server };
 }
 
 describe("external dirs — config write", () => {
   it("loads the configured dirs and joins them with filesystem status", async () => {
-    const { engine } = engineFor(
-      { skills: { external_dirs: ["~/team"] } },
-      [],
-      async (dirs) =>
-        dirs.map((rawPath) =>
-          status({
-            rawPath,
-            resolvedPath: "/Users/me/team",
-            skillCount: 1,
-            skillNames: ["caveman"],
-          }),
-        ),
+    const { engine } = engineFor({ skills: { external_dirs: ["~/team"] } }, [], async (dirs) =>
+      dirs.map((rawPath) =>
+        status({
+          rawPath,
+          resolvedPath: "/Users/me/team",
+          skillCount: 1,
+          skillNames: ["caveman"],
+        }),
+      ),
     );
     const controller = new ExternalDirsController(engine);
     await controller.load();
@@ -325,9 +312,7 @@ describe("external dirs — config write", () => {
       { skills: { external_dirs: ["~/team"] } },
       [{ name: "pdf", enabled: true, source: "bundled" }],
       async (dirs) =>
-        dirs.map((rawPath) =>
-          status({ rawPath, skillCount: 1, skillNames: ["pdf"] }),
-        ),
+        dirs.map((rawPath) => status({ rawPath, skillCount: 1, skillNames: ["pdf"] })),
     );
     const controller = new ExternalDirsController(engine);
     await controller.load();
@@ -341,9 +326,7 @@ describe("external dirs — config write", () => {
 // View rendering — labels and the warning copy.
 // ---------------------------------------------------------------------------
 
-function viewState(
-  overrides: Partial<ExternalDirsState> = {},
-): ExternalDirsState {
+function viewState(overrides: Partial<ExternalDirsState> = {}): ExternalDirsState {
   return {
     status: "ready",
     rows: [],
@@ -368,12 +351,8 @@ function viewState(
 describe("external dirs — view", () => {
   it("shows the sandbox-accurate shared-directory warning copy", () => {
     render(<ExternalDirsView state={viewState()} />);
-    expect(
-      screen.getByText(/External directories are shared skill sources/),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/sandboxed runtime blocks writes/),
-    ).toBeTruthy();
+    expect(screen.getByText(/External directories are shared skill sources/)).toBeTruthy();
+    expect(screen.getByText(/sandboxed runtime blocks writes/)).toBeTruthy();
   });
 
   it("renders a row with resolved path, status labels, and read-only note", () => {
@@ -390,13 +369,9 @@ describe("external dirs — view", () => {
       ],
       [],
     );
-    render(
-      <ExternalDirsView state={viewState({ rows, rawDirs: ["~/team"] })} />,
-    );
+    render(<ExternalDirsView state={viewState({ rows, rawDirs: ["~/team"] })} />);
     const list = screen.getByRole("list");
-    expect(
-      within(list).getByText(/Resolves to \/Users\/me\/team/),
-    ).toBeTruthy();
+    expect(within(list).getByText(/Resolves to \/Users\/me\/team/)).toBeTruthy();
     expect(within(list).getByText("Writable on disk")).toBeTruthy();
     expect(within(list).getByText("Read only in June")).toBeTruthy();
     expect(within(list).getByText("2 skills found")).toBeTruthy();
@@ -404,16 +379,8 @@ describe("external dirs — view", () => {
 
   it("calls remove with the raw configured path", () => {
     const onRemove = vi.fn();
-    const rows = buildExternalDirRows(
-      ["~/team"],
-      [status({ rawPath: "~/team" })],
-      [],
-    );
-    render(
-      <ExternalDirsView
-        state={viewState({ rows, rawDirs: ["~/team"], remove: onRemove })}
-      />,
-    );
+    const rows = buildExternalDirRows(["~/team"], [status({ rawPath: "~/team" })], []);
+    render(<ExternalDirsView state={viewState({ rows, rawDirs: ["~/team"], remove: onRemove })} />);
     fireEvent.click(screen.getByRole("button", { name: "Remove ~/team" }));
     expect(onRemove).toHaveBeenCalledWith("~/team");
   });

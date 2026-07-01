@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  AGENT_SESSIONS_CHANGED_EVENT,
-  AGENT_SESSION_STATUS_EVENT,
-} from "../lib/agent-events";
+import { AGENT_SESSIONS_CHANGED_EVENT, AGENT_SESSION_STATUS_EVENT } from "../lib/agent-events";
 import { AGENT_HUD_VISIBILITY_CHANGED_EVENT } from "../lib/agent-hud-settings";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
@@ -108,10 +105,7 @@ describe("agent HUD", () => {
 
     expect(hudElement().dataset.expanded).toBe("false");
     expect(stackElement()).toHaveAttribute("aria-hidden", "true");
-    expect(mocks.invoke).not.toHaveBeenCalledWith(
-      "agent_hud_set_layout",
-      expect.anything(),
-    );
+    expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_set_layout", expect.anything());
 
     hudElement().dispatchEvent(new Event("pointerleave"));
     await flushPromises();
@@ -129,17 +123,13 @@ describe("agent HUD", () => {
     });
     await flushPromises();
 
-    pillElement().dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-    );
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("true");
     expect(localStorage.getItem("june:agent-hud:expanded")).toBe("true");
 
-    pillElement().dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-    );
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("false");
@@ -159,9 +149,7 @@ describe("agent HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
     mocks.invoke.mockClear();
 
-    pillElement().dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-    );
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
@@ -203,9 +191,7 @@ describe("agent HUD", () => {
 
     // Clicking the pill to collapse must stick even though the session is
     // still waiting for the user.
-    pillElement().dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-    );
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("false");
@@ -235,9 +221,7 @@ describe("agent HUD", () => {
     });
     await flushPromises();
 
-    pillElement().dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-    );
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await flushPromises();
     expect(hudElement().dataset.expanded).toBe("false");
 
@@ -273,9 +257,7 @@ describe("agent HUD", () => {
       bubbles: true,
       cancelable: true,
     });
-    document
-      .querySelector<HTMLElement>(".agent-hud-row-body")
-      ?.dispatchEvent(rowEvent);
+    document.querySelector<HTMLElement>(".agent-hud-row-body")?.dispatchEvent(rowEvent);
     await flushPromises();
 
     expect(rowEvent.defaultPrevented).toBe(true);
@@ -303,9 +285,7 @@ describe("agent HUD", () => {
 
     // The native panel swallows the right-/ctrl-click and emits this event;
     // the webview never sees a contextmenu event in the real app.
-    const openMenuFromNative = mocks.listeners.get(
-      "june:agent-hud:context-menu",
-    );
+    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
     expect(openMenuFromNative).toBeDefined();
     openMenuFromNative?.({ payload: undefined });
     await flushPromises();
@@ -364,9 +344,7 @@ describe("agent HUD", () => {
     });
     await flushPromises();
 
-    pillElement().dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-    );
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await flushPromises();
 
     expect(pillLabelElement()).toHaveTextContent("1 running");
@@ -571,9 +549,7 @@ describe("agent HUD", () => {
     });
     await flushPromises();
 
-    pillElement().dispatchEvent(
-      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
-    );
+    pillElement().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     await flushPromises();
 
     expect(menuElement().hidden).toBe(false);
@@ -585,12 +561,9 @@ describe("agent HUD", () => {
 
     expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
-    expect(mocks.emit).toHaveBeenCalledWith(
-      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
-      {
-        enabled: false,
-      },
-    );
+    expect(mocks.emit).toHaveBeenCalledWith(AGENT_HUD_VISIBILITY_CHANGED_EVENT, {
+      enabled: false,
+    });
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
 
@@ -637,9 +610,7 @@ function emitSessionsChanged(detail: {
   workingSessionIds: string[];
   waitingSessionIds: string[];
 }) {
-  window.dispatchEvent(
-    new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, { detail }),
-  );
+  window.dispatchEvent(new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, { detail }));
 }
 
 function sessionFixture(id: string, title: string) {

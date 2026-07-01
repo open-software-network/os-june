@@ -13,15 +13,7 @@ type CronField =
   | { kind: "step"; step: number }
   | { kind: "values"; values: number[] };
 
-const DAY_NAMES = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const DAY_TOKENS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const MONTH_NAMES = [
   "Jan",
@@ -64,8 +56,7 @@ const MACROS: Record<string, string> = {
 
 export function humanizeSchedule(schedule: string): string {
   const trimmed = schedule.trim();
-  const source =
-    MACROS[trimmed.toLowerCase()] ?? trimmed.replace(/^cron:?\s+/i, "");
+  const source = MACROS[trimmed.toLowerCase()] ?? trimmed.replace(/^cron:?\s+/i, "");
   const fields = source.split(/\s+/);
   if (fields.length !== 5) return schedule;
 
@@ -76,22 +67,14 @@ export function humanizeSchedule(schedule: string): string {
   const dayOfWeek = parseField(fields[4], 0, 7, DAY_TOKENS);
   if (!minute || !hour || !dayOfMonth || !month || !dayOfWeek) return schedule;
 
-  return (
-    phrase(minute, hour, dayOfMonth, month, normalizeDayOfWeek(dayOfWeek)) ??
-    schedule
-  );
+  return phrase(minute, hour, dayOfMonth, month, normalizeDayOfWeek(dayOfWeek)) ?? schedule;
 }
 
 export function compactScheduleLabel(schedule: string): string {
   return humanizeSchedule(schedule).replace(/\bat (?=\d{1,2}:\d{2}\b)/, "");
 }
 
-function parseField(
-  raw: string,
-  min: number,
-  max: number,
-  names?: string[],
-): CronField | null {
+function parseField(raw: string, min: number, max: number, names?: string[]): CronField | null {
   if (raw === "*") return { kind: "any" };
 
   const step = raw.match(/^\*\/(\d+)$/);
@@ -119,12 +102,7 @@ function parseField(
   return { kind: "values", values: [...new Set(values)].sort((a, b) => a - b) };
 }
 
-function tokenValue(
-  token: string,
-  min: number,
-  max: number,
-  names?: string[],
-): number | null {
+function tokenValue(token: string, min: number, max: number, names?: string[]): number | null {
   if (names) {
     const index = names.indexOf(token.slice(0, 3).toLowerCase());
     if (index !== -1) return index + Math.min(min, 1);
@@ -137,9 +115,9 @@ function tokenValue(
 /** Cron accepts both 0 and 7 for Sunday; a full 0-6 list is just "any day". */
 function normalizeDayOfWeek(field: CronField): CronField {
   if (field.kind !== "values") return field;
-  const values = [
-    ...new Set(field.values.map((value) => (value === 7 ? 0 : value))),
-  ].sort((a, b) => a - b);
+  const values = [...new Set(field.values.map((value) => (value === 7 ? 0 : value)))].sort(
+    (a, b) => a - b,
+  );
   if (values.length === 7) return { kind: "any" };
   return { kind: "values", values };
 }
@@ -152,21 +130,17 @@ function phrase(
   dayOfWeek: CronField,
 ): string | null {
   const unrestrictedDate =
-    dayOfMonth.kind === "any" &&
-    month.kind === "any" &&
-    dayOfWeek.kind === "any";
+    dayOfMonth.kind === "any" && month.kind === "any" && dayOfWeek.kind === "any";
 
   if (unrestrictedDate) {
     if (minute.kind === "any" && hour.kind === "any") return "Every minute";
-    if (minute.kind === "step" && hour.kind === "any")
-      return `Every ${minute.step} minutes`;
+    if (minute.kind === "step" && hour.kind === "any") return `Every ${minute.step} minutes`;
     const fixedMinute = singleValue(minute);
     if (fixedMinute !== null && hour.kind === "any")
       return fixedMinute === 0
         ? "Every hour"
         : `Every hour at :${String(fixedMinute).padStart(2, "0")}`;
-    if (fixedMinute === 0 && hour.kind === "step")
-      return `Every ${hour.step} hours`;
+    if (fixedMinute === 0 && hour.kind === "step") return `Every ${hour.step} hours`;
     const time = timeText(minute, hour);
     return time ? `Every day at ${time}` : null;
   }
@@ -174,18 +148,10 @@ function phrase(
   const time = timeText(minute, hour);
   if (!time) return null;
 
-  if (
-    dayOfWeek.kind === "values" &&
-    dayOfMonth.kind === "any" &&
-    month.kind === "any"
-  )
+  if (dayOfWeek.kind === "values" && dayOfMonth.kind === "any" && month.kind === "any")
     return `${dayPhrase(dayOfWeek.values)} at ${time}`;
 
-  if (
-    dayOfMonth.kind === "values" &&
-    dayOfWeek.kind === "any" &&
-    month.kind === "any"
-  )
+  if (dayOfMonth.kind === "values" && dayOfWeek.kind === "any" && month.kind === "any")
     return `Monthly on the ${joinAnd(dayOfMonth.values.map(ordinal))} at ${time}`;
 
   if (
@@ -214,9 +180,7 @@ function dayPhrase(days: number[]): string {
   if (sameValues(days, [1, 2, 3, 4, 5])) return "Weekdays";
   if (sameValues(days, [0, 6])) return "Weekends";
   if (days.length === 1) return `Every ${DAY_NAMES[days[0]]}`;
-  const contiguous = days.every(
-    (value, index) => index === 0 || value === days[index - 1] + 1,
-  );
+  const contiguous = days.every((value, index) => index === 0 || value === days[index - 1] + 1);
   if (contiguous && days.length >= 3)
     return `Every ${DAY_NAMES[days[0]]} to ${DAY_NAMES[days[days.length - 1]]}`;
   return `Every ${joinAnd(days.map((day) => DAY_NAMES[day]))}`;
@@ -230,16 +194,11 @@ function formatClockTime(hourOfDay: number, minute: number): string {
 }
 
 function singleValue(field: CronField): number | null {
-  return field.kind === "values" && field.values.length === 1
-    ? field.values[0]
-    : null;
+  return field.kind === "values" && field.values.length === 1 ? field.values[0] : null;
 }
 
 function sameValues(left: number[], right: number[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
-  );
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function joinAnd(parts: string[]): string {
@@ -271,9 +230,7 @@ export function scheduleFromDraft(draft: ScheduleDraft): string {
     case "weekly":
       return `${cronTime(draft.time)} * * ${draft.day}`;
     case "interval":
-      return draft.minutes % 60 === 0
-        ? `every ${draft.minutes / 60}h`
-        : `every ${draft.minutes}m`;
+      return draft.minutes % 60 === 0 ? `every ${draft.minutes / 60}h` : `every ${draft.minutes}m`;
     case "custom":
       return draft.expression.trim();
   }
@@ -291,14 +248,10 @@ function cronTime(time: string): string {
 export function draftFromSchedule(schedule: string): ScheduleDraft {
   const trimmed = schedule.trim();
 
-  const interval = trimmed.match(
-    /^every\s+(\d+)\s*(m|h|min|minutes?|hours?)$/i,
-  );
+  const interval = trimmed.match(/^every\s+(\d+)\s*(m|h|min|minutes?|hours?)$/i);
   if (interval) {
     const amount = Number(interval[1]);
-    const minutes = interval[2].toLowerCase().startsWith("h")
-      ? amount * 60
-      : amount;
+    const minutes = interval[2].toLowerCase().startsWith("h") ? amount * 60 : amount;
     if (minutes > 0) return { kind: "interval", minutes };
   }
 

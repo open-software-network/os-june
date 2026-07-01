@@ -12,18 +12,14 @@ const record = "\x1e";
 
 describe("parsePreviousReleaseLine", () => {
   it("extracts the release commit and version from the latest release subject", () => {
-    expect(
-      parsePreviousReleaseLine(`64be701${field}release: v0.0.22 (#508)`),
-    ).toEqual({
+    expect(parsePreviousReleaseLine(`64be701${field}release: v0.0.22 (#508)`)).toEqual({
       hash: "64be701",
       version: "0.0.22",
     });
   });
 
   it("ignores unrelated commits", () => {
-    expect(
-      parsePreviousReleaseLine(`b1fc9eb${field}Fix system audio (#511)`),
-    ).toBeUndefined();
+    expect(parsePreviousReleaseLine(`b1fc9eb${field}Fix system audio (#511)`)).toBeUndefined();
   });
 });
 

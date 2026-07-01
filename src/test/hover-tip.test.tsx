@@ -14,9 +14,7 @@ describe("HoverTip", () => {
     fireEvent.focus(anchor);
 
     const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).toHaveTextContent(
-      "Private model with zero data retention.",
-    );
+    expect(tooltip).toHaveTextContent("Private model with zero data retention.");
     expect(anchor).toHaveAttribute("aria-describedby", tooltip.id);
   });
 
@@ -24,11 +22,7 @@ describe("HoverTip", () => {
     render(
       <>
         <span id="existing-help">Existing help</span>
-        <HoverTip
-          tip="Extra tooltip help."
-          tabIndex={0}
-          aria-describedby="existing-help"
-        >
+        <HoverTip tip="Extra tooltip help." tabIndex={0} aria-describedby="existing-help">
           Unrestricted
         </HoverTip>
       </>,

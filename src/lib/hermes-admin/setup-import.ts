@@ -161,8 +161,7 @@ export async function applySnapshot(
   // 1. Install hub skills first (so a later enable has something to enable).
   for (const skill of snapshot.skills.filter((s) => s.hubInstalled)) {
     try {
-      const { action, requiresRestart: needsRestart } =
-        await client.skills.hubInstall(skill.name);
+      const { action, requiresRestart: needsRestart } = await client.skills.hubInstall(skill.name);
       const status = await settleAction(client, action, options);
       if (status && status.state === "failed") {
         record({
@@ -198,12 +197,11 @@ export async function applySnapshot(
         const value = secrets[`catalog-env:${install.installName}:${key}`];
         if (value) env[key] = value;
       }
-      const { action, requiresRestart: needsRestart } =
-        await client.mcp.installCatalogEntry({
-          name: install.installName,
-          enable: install.enabled,
-          ...(Object.keys(env).length > 0 ? { env } : {}),
-        });
+      const { action, requiresRestart: needsRestart } = await client.mcp.installCatalogEntry({
+        name: install.installName,
+        enable: install.enabled,
+        ...(Object.keys(env).length > 0 ? { env } : {}),
+      });
       const status = await settleAction(client, action, options);
       if (status && status.state === "failed") {
         record({
@@ -232,12 +230,8 @@ export async function applySnapshot(
   }
 
   // 3. Add MCP servers that are not catalog installs.
-  const catalogNames = new Set(
-    snapshot.catalogInstalls.map((c) => c.installName),
-  );
-  for (const server of snapshot.mcpServers.filter(
-    (s) => !catalogNames.has(s.name),
-  )) {
+  const catalogNames = new Set(snapshot.catalogInstalls.map((c) => c.installName));
+  for (const server of snapshot.mcpServers.filter((s) => !catalogNames.has(s.name))) {
     try {
       const { requiresRestart: needsRestart } = await client.mcp.addServer(
         buildAddPayload(server, secrets),
@@ -245,17 +239,14 @@ export async function applySnapshot(
       if (needsRestart) requiresRestart = true;
       const missing = [...server.envKeys, ...server.headerKeys].filter(
         (key) =>
-          !secrets[`mcp-env:${server.name}:${key}`] &&
-          !secrets[`mcp-header:${server.name}:${key}`],
+          !secrets[`mcp-env:${server.name}:${key}`] && !secrets[`mcp-header:${server.name}:${key}`],
       );
       record({
         category: "mcp-add",
         name: server.name,
         status: "applied",
         detail:
-          missing.length > 0
-            ? `Added. Still needs values for ${missing.join(", ")}.`
-            : "Added.",
+          missing.length > 0 ? `Added. Still needs values for ${missing.join(", ")}.` : "Added.",
       });
       // Tool filters cannot be set through v2026.6.19's contract.
       if (server.includeTools.length > 0 || server.excludeTools.length > 0) {
@@ -280,8 +271,7 @@ export async function applySnapshot(
   // 4. Apply enable/disable state for skills and servers (now that they exist).
   await applySkillToggles(client, snapshot.skills, record);
   requiresRestart =
-    (await applyServerToggles(client, snapshot.mcpServers, record)) ||
-    requiresRestart;
+    (await applyServerToggles(client, snapshot.mcpServers, record)) || requiresRestart;
 
   // 5. Restart the gateway if any applied mutation requires it.
   let restarted = false;
@@ -387,8 +377,10 @@ async function applyServerToggles(
   let requiresRestart = false;
   for (const server of servers) {
     try {
-      const { result, requiresRestart: needsRestart } =
-        await client.mcp.setEnabled(server.name, server.enabled);
+      const { result, requiresRestart: needsRestart } = await client.mcp.setEnabled(
+        server.name,
+        server.enabled,
+      );
       if (needsRestart) requiresRestart = true;
       record({
         category: "mcp-toggle",

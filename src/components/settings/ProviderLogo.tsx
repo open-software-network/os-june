@@ -17,12 +17,7 @@ type ProviderLogoProps = {
   size?: number;
 };
 
-export function ProviderLogo({
-  provider,
-  id,
-  name = "",
-  size = 18,
-}: ProviderLogoProps) {
+export function ProviderLogo({ provider, id, name = "", size = 18 }: ProviderLogoProps) {
   const kind = classifyProvider(provider, id, name);
   switch (kind) {
     case "openai":
@@ -76,11 +71,7 @@ type ProviderKind =
   | "fal"
   | "unknown";
 
-function classifyProvider(
-  provider: string,
-  id: string,
-  name: string,
-): ProviderKind {
+function classifyProvider(provider: string, id: string, name: string): ProviderKind {
   // Model family takes precedence over hosting platform (e.g. Venice-hosted
   // GPT-4o still reads as OpenAI). Hosting providers (venice, fal) only win
   // when nothing more specific matched.
@@ -116,11 +107,7 @@ function classifyProvider(
     return "perplexity";
   }
   if (haystack.includes("ollama")) return "ollama";
-  if (
-    normalizedProvider === "xai" ||
-    haystack.includes("grok") ||
-    haystack.includes("xai/")
-  ) {
+  if (normalizedProvider === "xai" || haystack.includes("grok") || haystack.includes("xai/")) {
     return "xai";
   }
   if (haystack.includes("nvidia") || haystack.includes("parakeet")) {

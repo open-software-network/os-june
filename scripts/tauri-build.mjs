@@ -24,9 +24,7 @@ const config = platformConfigs[buildPlatform];
 const hasBundleOverride = userArgs.some(
   (arg) => arg === "--bundles" || arg.startsWith("--bundles="),
 );
-const hasConfigOverride = userArgs.some(
-  (arg) => arg === "--config" || arg.startsWith("--config="),
-);
+const hasConfigOverride = userArgs.some((arg) => arg === "--config" || arg.startsWith("--config="));
 const args = ["build"];
 if (config && !hasConfigOverride) {
   args.push("--config", config);

@@ -1,10 +1,4 @@
-import {
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
@@ -174,9 +168,7 @@ describe("Sidebar primary navigation", () => {
     const search = within(palette).getByRole("searchbox", { name: "Search" });
     await waitFor(() => expect(search).toHaveFocus());
     expect(
-      within(palette).getByPlaceholderText(
-        "Search meeting notes, sessions, or jump to...",
-      ),
+      within(palette).getByPlaceholderText("Search meeting notes, sessions, or jump to..."),
     ).toBeInTheDocument();
     expect(within(palette).getByText("Recents")).toBeInTheDocument();
     expect(within(palette).getByText("Roadmap")).toBeInTheDocument();
@@ -240,9 +232,7 @@ describe("Sidebar primary navigation", () => {
 
     const palette = screen.getByRole("dialog", { name: "Search" });
     await waitFor(() =>
-      expect(
-        within(palette).getByRole("searchbox", { name: "Search" }),
-      ).toHaveFocus(),
+      expect(within(palette).getByRole("searchbox", { name: "Search" })).toHaveFocus(),
     );
   });
 
@@ -322,28 +312,20 @@ describe("Sidebar primary navigation", () => {
     await user.click(screen.getByRole("button", { name: "Back to app" }));
     expect(onExitSettings).toHaveBeenCalledTimes(1);
 
-    expect(
-      screen.getByRole("navigation", { name: "Personal settings" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("navigation", { name: "Audio settings" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("navigation", { name: "AI settings" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Personal settings" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Audio settings" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "AI settings" })).toBeInTheDocument();
 
     const billingButton = screen.getByRole("button", { name: "Billing" });
     expect(billingButton).toHaveAttribute("data-active", "true");
-    expect(
-      screen.getByRole("button", { name: "Shortcuts" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Shortcuts" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Permissions" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Shortcuts" }));
     expect(onSettingsTabChange).toHaveBeenCalledWith("shortcuts");
 
-    expect(
-      screen.getByRole("button", { name: /account menu/i }),
-    ).not.toHaveAttribute("data-active");
+    expect(screen.getByRole("button", { name: /account menu/i })).not.toHaveAttribute(
+      "data-active",
+    );
   });
 
   it("hides billing and invite actions in local dev mode", async () => {
@@ -374,9 +356,7 @@ describe("Sidebar primary navigation", () => {
     expect(screen.getByRole("button", { name: "General" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /account menu/i }));
-    expect(
-      screen.queryByRole("menuitem", { name: "Invite friends" }),
-    ).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Invite friends" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull();
   });
 
@@ -414,9 +394,7 @@ describe("Sidebar primary navigation", () => {
       "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
     );
     expect(screen.getByText("Friends referred")).toBeInTheDocument();
-    expect(
-      screen.getByText("1 invited friend is waiting to subscribe."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("1 invited friend is waiting to subscribe.")).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
     await waitFor(() =>
@@ -456,9 +434,7 @@ describe("Sidebar primary navigation", () => {
     await user.click(screen.getByRole("menuitem", { name: "Invite friends" }));
 
     expect(
-      await screen.findByText(
-        "Invite links aren't available yet. Check back soon.",
-      ),
+      await screen.findByText("Invite links aren't available yet. Check back soon."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
@@ -468,9 +444,7 @@ describe("FoldersWorkspace — list view", () => {
   it("renders folder cards without a virtual all-notes folder", () => {
     render(<FoldersWorkspace {...baseProps()} />);
 
-    expect(
-      screen.getByRole("heading", { name: "Projects" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument();
     expect(screen.queryByText("All notes")).toBeNull();
     // No virtual "Notes" card — the side nav already lists all notes.
     expect(screen.queryByRole("button", { name: /^Notes/ })).toBeNull();
@@ -484,9 +458,7 @@ describe("FoldersWorkspace — list view", () => {
       within(workCard as HTMLElement).getByText("Client projects in flight"),
     ).toBeInTheDocument();
     const ideasCard = screen.getByText("Ideas").closest("article");
-    expect(
-      within(ideasCard as HTMLElement).getByText(/0 meeting notes/),
-    ).toBeInTheDocument();
+    expect(within(ideasCard as HTMLElement).getByText(/0 meeting notes/)).toBeInTheDocument();
   });
 
   it("opens the create dialog and submits name + description", async () => {
@@ -495,18 +467,13 @@ describe("FoldersWorkspace — list view", () => {
     render(<FoldersWorkspace {...props} />);
 
     await user.click(screen.getByRole("button", { name: /New project/ }));
-    expect(
-      screen.getByRole("dialog", { name: /Create project/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /Create project/ })).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Name"), "Personal");
     await user.type(screen.getByLabelText("Description"), "Side projects");
     await user.click(screen.getByRole("button", { name: /Create project/ }));
 
-    expect(props.onCreateFolder).toHaveBeenCalledWith(
-      "Personal",
-      "Side projects",
-    );
+    expect(props.onCreateFolder).toHaveBeenCalledWith("Personal", "Side projects");
   });
 
   it("filters folders by search query", async () => {
@@ -544,10 +511,7 @@ describe("FoldersWorkspace — list view", () => {
       },
     });
 
-    expect(props.onAssignNoteToFolder).toHaveBeenCalledWith(
-      "note-1",
-      "folder-1",
-    );
+    expect(props.onAssignNoteToFolder).toHaveBeenCalledWith("note-1", "folder-1");
   });
 
   it("clears drop highlight when a drag is cancelled", async () => {
@@ -584,16 +548,12 @@ describe("FoldersWorkspace — list view", () => {
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     await user.click(screen.getByRole("button", { name: "Delete project" }));
 
-    expect(
-      screen.getByRole("dialog", { name: /Delete "Ideas"/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /Delete "Ideas"/ })).toBeInTheDocument();
 
     resolveDelete?.();
 
     await waitFor(() =>
-      expect(
-        screen.queryByRole("dialog", { name: /Delete "Ideas"/ }),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByRole("dialog", { name: /Delete "Ideas"/ })).not.toBeInTheDocument(),
     );
   });
 
@@ -609,9 +569,7 @@ describe("FoldersWorkspace — list view", () => {
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     await user.click(screen.getByRole("button", { name: "Delete project" }));
 
-    expect(
-      screen.getByRole("dialog", { name: /Delete "Ideas"/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /Delete "Ideas"/ })).toBeInTheDocument();
   });
 });
 
@@ -620,9 +578,7 @@ describe("FoldersWorkspace — detail view", () => {
     render(<FoldersWorkspace {...baseProps()} selectedFolderId="folder-2" />);
 
     // Folder name shows as the editable title.
-    expect(
-      screen.getByRole("button", { name: /Rename project/ }),
-    ).toHaveTextContent("Work");
+    expect(screen.getByRole("button", { name: /Rename project/ })).toHaveTextContent("Work");
     expect(screen.getByText("Client projects in flight")).toBeInTheDocument();
     expect(screen.getByText("Roadmap")).toBeInTheDocument();
   });
@@ -669,9 +625,7 @@ describe("FoldersWorkspace — detail view", () => {
 
     // The empty surface is visual-only — no helper text — just the
     // primary action and "Add existing note" when other notes exist.
-    await user.click(
-      screen.getByRole("button", { name: /^New meeting note$/ }),
-    );
+    await user.click(screen.getByRole("button", { name: /^New meeting note$/ }));
     expect(props.onCreateNote).toHaveBeenCalledWith("folder-1");
   });
 
@@ -685,9 +639,7 @@ describe("FoldersWorkspace — detail view", () => {
     expect(props.onCreateSession).toHaveBeenCalledWith("folder-2");
 
     await user.click(screen.getByRole("button", { name: "Add to project" }));
-    await user.click(
-      screen.getByRole("menuitem", { name: "New meeting note" }),
-    );
+    await user.click(screen.getByRole("menuitem", { name: "New meeting note" }));
     expect(props.onCreateNote).toHaveBeenCalledWith("folder-2");
   });
 
@@ -696,15 +648,8 @@ describe("FoldersWorkspace — detail view", () => {
     const props = baseProps();
     render(<FoldersWorkspace {...props} selectedFolderId="folder-2" />);
 
-    await user.click(
-      screen.getByRole("button", { name: /Actions for Roadmap/ }),
-    );
-    await user.click(
-      screen.getByRole("menuitem", { name: /Remove from project/ }),
-    );
-    expect(props.onRemoveNoteFromFolder).toHaveBeenCalledWith(
-      "note-1",
-      "folder-2",
-    );
+    await user.click(screen.getByRole("button", { name: /Actions for Roadmap/ }));
+    await user.click(screen.getByRole("menuitem", { name: /Remove from project/ }));
+    expect(props.onRemoveNoteFromFolder).toHaveBeenCalledWith("note-1", "folder-2");
   });
 });

@@ -60,8 +60,7 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
     },
     {
       id: "openai/whisper-large-v3",
-      reason:
-        "Best multilingual accuracy at the same low price, with zero data retention.",
+      reason: "Best multilingual accuracy at the same low price, with zero data retention.",
     },
   ],
   // Image models are a curated local list (see lib/image-models.ts), not a
@@ -84,9 +83,7 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
  * derived entirely from live catalog capabilities: no model id is hardcoded,
  * so a retired model can never become the fallback.
  */
-export function preferredVisionFallbackModel(
-  models: VeniceModelDto[],
-): VeniceModelDto | undefined {
+export function preferredVisionFallbackModel(models: VeniceModelDto[]): VeniceModelDto | undefined {
   const eligible = models.filter(
     (model) => modelSupportsImageInput(model) && modelSupportsTools(model),
   );

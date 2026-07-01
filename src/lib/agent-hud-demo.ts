@@ -27,15 +27,7 @@ type AgentHudDemoOptions = {
   local: boolean;
 };
 
-type DemoState =
-  | "running"
-  | "waiting"
-  | "mixed"
-  | "done"
-  | "failed"
-  | "stopped"
-  | "demo"
-  | "clear";
+type DemoState = "running" | "waiting" | "mixed" | "done" | "failed" | "stopped" | "demo" | "clear";
 
 const HELP = [
   "Agent HUD demo states:",
@@ -91,10 +83,7 @@ export function registerAgentHudDemo({ local }: AgentHudDemoOptions) {
   function emitSessions(detail: AgentSessionsChangedDetail) {
     if (local) {
       window.dispatchEvent(
-        new CustomEvent<AgentSessionsChangedDetail>(
-          AGENT_SESSIONS_CHANGED_EVENT,
-          { detail },
-        ),
+        new CustomEvent<AgentSessionsChangedDetail>(AGENT_SESSIONS_CHANGED_EVENT, { detail }),
       );
       return;
     }
@@ -135,12 +124,10 @@ export function registerAgentHudDemo({ local }: AgentHudDemoOptions) {
 
   function park(runningCount: number, waitingCount: number) {
     cancelTimers();
-    const running = SESSION_BLUEPRINTS.slice(0, runningCount).map(
-      (blueprint, index) => ({
-        ...blueprint,
-        session: session(index + 1, blueprint.title),
-      }),
-    );
+    const running = SESSION_BLUEPRINTS.slice(0, runningCount).map((blueprint, index) => ({
+      ...blueprint,
+      session: session(index + 1, blueprint.title),
+    }));
     const waiting = waitingCount
       ? [
           {
@@ -177,8 +164,7 @@ export function registerAgentHudDemo({ local }: AgentHudDemoOptions) {
     emitStatus({
       status,
       title: SESSION_BLUEPRINTS[0].title,
-      summary:
-        status === "failed" ? "Tests failed on the second run." : undefined,
+      summary: status === "failed" ? "Tests failed on the second run." : undefined,
       activeCount: 0,
     });
   }
@@ -217,10 +203,7 @@ export function registerAgentHudDemo({ local }: AgentHudDemoOptions) {
     return "Lifecycle running (~18s): start, 2 running, needs input, done, fade out.";
   }
 
-  (window as unknown as Record<string, unknown>).__agentHud = (
-    state?: DemoState,
-    count = 1,
-  ) => {
+  (window as unknown as Record<string, unknown>).__agentHud = (state?: DemoState, count = 1) => {
     switch (state) {
       case "running":
         park(Math.max(1, Math.min(count, SESSION_BLUEPRINTS.length)), 0);

@@ -87,9 +87,7 @@ export function parseSkill(raw: unknown): HermesSkillInfo | undefined {
   if (!record) return undefined;
   const name = pickString([record], ["name", "id", "skill", "slug"]);
   if (!name) return undefined;
-  const source = parseSkillSource(
-    record.source ?? record.origin ?? record.kind,
-  );
+  const source = parseSkillSource(record.source ?? record.origin ?? record.kind);
   return {
     name,
     description: pickString([record], ["description", "summary", "desc"]),
@@ -106,9 +104,7 @@ export function parseSkill(raw: unknown): HermesSkillInfo | undefined {
 /** Hermes returns either a bare array or `{ skills: [...] }`; tolerate both. */
 export function parseSkillList(raw: unknown): HermesSkillInfo[] {
   const items = listFrom(raw, ["skills", "items", "data"]);
-  return items
-    .map(parseSkill)
-    .filter((skill): skill is HermesSkillInfo => skill !== undefined);
+  return items.map(parseSkill).filter((skill): skill is HermesSkillInfo => skill !== undefined);
 }
 
 // ----------------------------------------------------------------------------
@@ -137,15 +133,10 @@ export function parseSkillContent(raw: unknown): HermesSkillContent {
   if (typeof raw === "string") return { content: raw };
   const record = asRecord(raw);
   if (!record) return { content: "" };
-  const content =
-    pickString([record], ["content", "text", "body", "skill_md", "skillMd"]) ??
-    "";
+  const content = pickString([record], ["content", "text", "body", "skill_md", "skillMd"]) ?? "";
   return {
     content,
-    relativePath: pickString(
-      [record],
-      ["relative_path", "relativePath", "path", "file"],
-    ),
+    relativePath: pickString([record], ["relative_path", "relativePath", "path", "file"]),
   };
 }
 
@@ -204,9 +195,7 @@ function parseRequirement(raw: unknown): HermesToolsetRequirement | undefined {
   };
 }
 
-function parseRequirements(
-  value: unknown,
-): HermesToolsetRequirement[] | undefined {
+function parseRequirements(value: unknown): HermesToolsetRequirement[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out: HermesToolsetRequirement[] = [];
   for (const entry of value) {
@@ -225,9 +214,7 @@ function parseModeAllowance(
 ): HermesToolsetModeAllowance | undefined {
   const nested = asRecord(record.modes ?? record.allowed_modes ?? record.allow);
   // Array form: ["sandboxed", "unrestricted"] / ["full"].
-  const list = pickStringArray(
-    record.modes ?? record.allowed_modes ?? record.sandbox_modes,
-  );
+  const list = pickStringArray(record.modes ?? record.allowed_modes ?? record.sandbox_modes);
   let sandboxed = pickBool(
     [nested, record],
     ["sandboxed", "sandbox", "allow_sandboxed", "sandbox_allowed"],
@@ -242,8 +229,7 @@ function parseModeAllowance(
       sandboxed = lowered.includes("sandboxed") || lowered.includes("sandbox");
     }
     if (unrestricted === undefined) {
-      unrestricted =
-        lowered.includes("unrestricted") || lowered.includes("full");
+      unrestricted = lowered.includes("unrestricted") || lowered.includes("full");
     }
   }
   if (sandboxed === undefined && unrestricted === undefined) return undefined;
@@ -265,9 +251,7 @@ export function parseToolset(raw: unknown): HermesToolsetInfo | undefined {
       ["configured", "is_configured", "ready", "available", "satisfied"],
     ),
     tools: pickStringArray(record.tools ?? record.tool_names),
-    requirements: parseRequirements(
-      record.requirements ?? record.requires ?? record.prerequisites,
-    ),
+    requirements: parseRequirements(record.requirements ?? record.requires ?? record.prerequisites),
     modes: parseModeAllowance(record),
     raw,
   };
@@ -324,12 +308,8 @@ export type HermesMcpServerInfo = {
   raw: unknown;
 };
 
-function parseMcpTransport(
-  record: Record<string, unknown>,
-): HermesMcpTransport {
-  const explicit = nonEmptyString(
-    record.transport ?? record.type ?? record.kind,
-  )?.toLowerCase();
+function parseMcpTransport(record: Record<string, unknown>): HermesMcpTransport {
+  const explicit = nonEmptyString(record.transport ?? record.type ?? record.kind)?.toLowerCase();
   if (explicit === "stdio") return "stdio";
   if (explicit === "http-oauth" || explicit === "oauth") return "http-oauth";
   if (explicit === "http" || explicit === "sse" || explicit === "streamable") {
@@ -351,11 +331,7 @@ function parseMcpAuth(record: Record<string, unknown>): HermesMcpAuthStatus {
     return "authenticated";
   }
   if (status === "expired") return "expired";
-  if (
-    status === "unauthenticated" ||
-    status === "unauthorized" ||
-    status === "missing"
-  ) {
+  if (status === "unauthenticated" || status === "unauthorized" || status === "missing") {
     return "unauthenticated";
   }
   const authed = pickBool([record], ["authenticated", "authorized"]);
@@ -364,9 +340,7 @@ function parseMcpAuth(record: Record<string, unknown>): HermesMcpAuthStatus {
   return "unknown";
 }
 
-function parseMcpStatus(
-  record: Record<string, unknown>,
-): HermesMcpServerInfo["status"] {
+function parseMcpStatus(record: Record<string, unknown>): HermesMcpServerInfo["status"] {
   const status = nonEmptyString(record.status ?? record.health)?.toLowerCase();
   if (status === "connected" || status === "ok" || status === "ready") {
     return "connected";
@@ -423,12 +397,8 @@ export function parseMcpServer(raw: unknown): HermesMcpServerInfo | undefined {
       ["status_message", "statusMessage", "message", "detail", "error"],
     ),
     tools: parseMcpTools(record.tools),
-    includeTools: pickStringArray(
-      filters.include ?? filters.include_tools ?? record.include_tools,
-    ),
-    excludeTools: pickStringArray(
-      filters.exclude ?? filters.exclude_tools ?? record.exclude_tools,
-    ),
+    includeTools: pickStringArray(filters.include ?? filters.include_tools ?? record.include_tools),
+    excludeTools: pickStringArray(filters.exclude ?? filters.exclude_tools ?? record.exclude_tools),
     raw,
   };
 }
@@ -450,20 +420,13 @@ export type HermesMcpTestResult = {
   raw: unknown;
 };
 
-export function parseMcpTestResult(
-  name: string,
-  raw: unknown,
-): HermesMcpTestResult {
+export function parseMcpTestResult(name: string, raw: unknown): HermesMcpTestResult {
   const record = asRecord(raw);
-  const ok =
-    pickBool([record], ["ok", "success", "connected", "healthy"]) ?? false;
+  const ok = pickBool([record], ["ok", "success", "connected", "healthy"]) ?? false;
   return {
     name,
     ok,
-    message: pickString(
-      [record],
-      ["message", "detail", "error", "status_message"],
-    ),
+    message: pickString([record], ["message", "detail", "error", "status_message"]),
     tools: parseMcpTools(record?.tools),
     raw,
   };
@@ -477,12 +440,7 @@ export function parseMcpTestResult(
  * `api-key` needs one or more env values (an API key / token), `oauth` runs a
  * browser sign-in after install, `third-party` needs the user to authorize in an
  * external system, `none` needs nothing, `unknown` when the wire is silent. */
-export type HermesMcpCatalogAuthKind =
-  | "api-key"
-  | "oauth"
-  | "third-party"
-  | "none"
-  | "unknown";
+export type HermesMcpCatalogAuthKind = "api-key" | "oauth" | "third-party" | "none" | "unknown";
 
 /** One env value a catalog entry requires before it can connect. The KEY is not
  * secret (it is an env var name like `GITHUB_TOKEN`); the VALUE the user supplies
@@ -560,10 +518,7 @@ function parseMcpCatalogAuth(
   }
   if (explicit === "none" || explicit === "not-required") return "none";
   // Infer when not explicit.
-  const oauth = pickBool(
-    [record],
-    ["requires_oauth", "requiresOauth", "oauth"],
-  );
+  const oauth = pickBool([record], ["requires_oauth", "requiresOauth", "oauth"]);
   if (oauth === true || transport === "http-oauth") return "oauth";
   if (hasEnv) return "api-key";
   return "unknown";
@@ -572,9 +527,7 @@ function parseMcpCatalogAuth(
 /** Reads the env requirements a catalog entry declares. Tolerates an array of
  * `{ key, label, required, secret }` / strings, or a `{ KEY: meta }` map. Reads
  * KEY NAMES and metadata only — never any value. */
-function parseCatalogEnvRequirements(
-  value: unknown,
-): HermesMcpCatalogEnvRequirement[] | undefined {
+function parseCatalogEnvRequirements(value: unknown): HermesMcpCatalogEnvRequirement[] | undefined {
   const out: HermesMcpCatalogEnvRequirement[] = [];
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -605,12 +558,8 @@ function parseCatalogEnvRequirements(
           label: metaRecord
             ? pickString([metaRecord], ["label", "description", "help"])
             : undefined,
-          required: metaRecord
-            ? pickBool([metaRecord], ["required", "is_required"])
-            : undefined,
-          secret: metaRecord
-            ? pickBool([metaRecord], ["secret", "is_secret"])
-            : undefined,
+          required: metaRecord ? pickBool([metaRecord], ["required", "is_required"]) : undefined,
+          secret: metaRecord ? pickBool([metaRecord], ["secret", "is_secret"]) : undefined,
         });
       }
     }
@@ -618,15 +567,12 @@ function parseCatalogEnvRequirements(
   return out.length > 0 ? out : undefined;
 }
 
-export function parseMcpCatalogEntry(
-  raw: unknown,
-): HermesMcpCatalogEntry | undefined {
+export function parseMcpCatalogEntry(raw: unknown): HermesMcpCatalogEntry | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
   // The install identifier is `name` (MCPCatalogInstall); an `id`/`slug` is for
   // display only. Require at least one of them.
-  const installName =
-    pickString([record], ["name", "id", "slug", "key"]) ?? undefined;
+  const installName = pickString([record], ["name", "id", "slug", "key"]) ?? undefined;
   if (!installName) return undefined;
   const id = pickString([record], ["id", "slug", "name", "key"]) ?? installName;
   const transport = parseMcpTransport(record);
@@ -651,13 +597,9 @@ export function parseMcpCatalogEntry(
       pickBool([record], ["requires_oauth", "requiresOauth", "oauth"]) ??
       (transport === "http-oauth" ? true : undefined),
     requiresSubprocess:
-      pickBool(
-        [record],
-        ["requires_subprocess", "requiresSubprocess", "local"],
-      ) ?? (transport === "stdio" ? true : undefined),
-    defaultTools: pickStringArray(
-      record.default_tools ?? record.defaultTools ?? record.tools,
-    ),
+      pickBool([record], ["requires_subprocess", "requiresSubprocess", "local"]) ??
+      (transport === "stdio" ? true : undefined),
+    defaultTools: pickStringArray(record.default_tools ?? record.defaultTools ?? record.tools),
     source: pickString([record], ["source", "publisher", "origin", "vendor"]),
     raw,
   };
@@ -678,21 +620,13 @@ export function parseMcpCatalog(raw: unknown): HermesMcpCatalogEntry[] {
  * lower-trust install. `official` ships from Hermes, `verified` is a vetted tap,
  * `community` is unvetted, `unknown` when the wire did not say. Higher trust is
  * lower risk; the UI maps these to a friendly badge + advisory copy. */
-export type HermesHubTrustLevel =
-  | "official"
-  | "verified"
-  | "community"
-  | "unknown";
+export type HermesHubTrustLevel = "official" | "verified" | "community" | "unknown";
 
 /** The verdict Hermes' install-time scan returns for a skill. Higher risk is
  * later in the list. `trusted` needs no review; `caution` may install only after
  * explicit review; `dangerous` is blocked and June never overrides it; `unknown`
  * is an unscanned/unverifiable skill that needs an explicit advanced opt-in. */
-export type HermesSkillScanVerdict =
-  | "trusted"
-  | "caution"
-  | "dangerous"
-  | "unknown";
+export type HermesSkillScanVerdict = "trusted" | "caution" | "dangerous" | "unknown";
 
 /** One scan finding: a category, a severity, and a human-readable detail. The
  * detail is treated as untrusted text (rendered, never executed) and is run
@@ -807,16 +741,9 @@ function parseScanVerdict(value: unknown): HermesSkillScanVerdict {
 
 /** Normalizes a finding severity. `danger`/`critical`/`high` -> `danger`;
  * `warn`/`warning`/`medium` -> `warn`; everything else -> `info`. */
-function parseFindingSeverity(
-  value: unknown,
-): HermesSkillScanFinding["severity"] {
+function parseFindingSeverity(value: unknown): HermesSkillScanFinding["severity"] {
   const str = nonEmptyString(value)?.toLowerCase();
-  if (
-    str === "danger" ||
-    str === "critical" ||
-    str === "high" ||
-    str === "severe"
-  ) {
+  if (str === "danger" || str === "critical" || str === "high" || str === "severe") {
     return "danger";
   }
   if (str === "warn" || str === "warning" || str === "medium") return "warn";
@@ -828,23 +755,16 @@ function parseScanFinding(raw: unknown): HermesSkillScanFinding | undefined {
   if (str) return { severity: "warn", detail: str };
   const record = asRecord(raw);
   if (!record) return undefined;
-  const detail = pickString(
-    [record],
-    ["detail", "message", "description", "text", "title"],
-  );
+  const detail = pickString([record], ["detail", "message", "description", "text", "title"]);
   if (!detail) return undefined;
   return {
     category: pickString([record], ["category", "kind", "type", "rule"]),
-    severity: parseFindingSeverity(
-      record.severity ?? record.level ?? record.tone,
-    ),
+    severity: parseFindingSeverity(record.severity ?? record.level ?? record.tone),
     detail,
   };
 }
 
-function parseScanFindings(
-  value: unknown,
-): HermesSkillScanFinding[] | undefined {
+function parseScanFindings(value: unknown): HermesSkillScanFinding[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out: HermesSkillScanFinding[] = [];
   for (const entry of value) {
@@ -857,18 +777,14 @@ function parseScanFindings(
 function parseScanBundle(value: unknown): HermesSkillBundle | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
-  const scriptCount = finiteNumber(
-    record.scripts ?? record.script_count ?? record.scriptCount,
-  );
+  const scriptCount = finiteNumber(record.scripts ?? record.script_count ?? record.scriptCount);
   const templateCount = finiteNumber(
     record.templates ?? record.template_count ?? record.templateCount,
   );
   const referenceCount = finiteNumber(
     record.references ?? record.reference_count ?? record.referenceCount,
   );
-  const assetCount = finiteNumber(
-    record.assets ?? record.asset_count ?? record.assetCount,
-  );
+  const assetCount = finiteNumber(record.assets ?? record.asset_count ?? record.assetCount);
   const hasScripts =
     pickBool([record], ["has_scripts", "hasScripts", "scripts"]) ??
     (scriptCount !== undefined ? scriptCount > 0 : undefined);
@@ -891,17 +807,12 @@ function parseScanBundle(value: unknown): HermesSkillBundle | undefined {
 export function parseSkillScan(raw: unknown): HermesSkillScan | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
-  const scan = asRecord(
-    record.scan ?? record.security ?? record.review ?? record.audit,
-  );
+  const scan = asRecord(record.scan ?? record.security ?? record.review ?? record.audit);
   // Some payloads put the verdict/findings at the top level of the install
   // response rather than under a `scan` key; tolerate both.
   const source = scan ?? record;
-  const verdictValue =
-    source.verdict ?? source.result ?? source.status ?? source.outcome;
-  const findings = parseScanFindings(
-    source.findings ?? source.issues ?? source.warnings,
-  );
+  const verdictValue = source.verdict ?? source.result ?? source.status ?? source.outcome;
+  const findings = parseScanFindings(source.findings ?? source.issues ?? source.warnings);
   const affectedFiles = pickStringArray(
     source.affected_files ?? source.affectedFiles ?? source.files,
   );
@@ -958,15 +869,10 @@ function parseHubTrust(value: unknown): HermesHubTrustLevel {
   return "unknown";
 }
 
-export function parseHubSkillResult(
-  raw: unknown,
-): HermesHubSkillResult | undefined {
+export function parseHubSkillResult(raw: unknown): HermesHubSkillResult | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
-  const identifier = pickString(
-    [record],
-    ["identifier", "id", "slug", "name", "ref"],
-  );
+  const identifier = pickString([record], ["identifier", "id", "slug", "name", "ref"]);
   if (!identifier) return undefined;
   return {
     identifier,
@@ -978,20 +884,14 @@ export function parseHubSkillResult(
       [record],
       ["update_available", "updateAvailable", "has_update", "outdated"],
     ),
-    trust: parseHubTrust(
-      record.trust ?? record.trust_level ?? record.trustLevel,
-    ),
+    trust: parseHubTrust(record.trust ?? record.trust_level ?? record.trustLevel),
     category: pickString([record], ["category", "group", "collection"]),
     tags: pickStringArray(record.tags ?? record.keywords ?? record.labels),
     version: pickString([record], ["version", "ver"]),
     upstreamUrls:
-      pickStringArray(
-        record.urls ?? record.upstream_urls ?? record.upstreamUrls,
-      ) ?? collectUrls(record),
-    author: pickString(
-      [record],
-      ["author", "publisher", "owner", "maintainer"],
-    ),
+      pickStringArray(record.urls ?? record.upstream_urls ?? record.upstreamUrls) ??
+      collectUrls(record),
+    author: pickString([record], ["author", "publisher", "owner", "maintainer"]),
     scan: parseSkillScan(record),
     raw,
   };
@@ -1023,12 +923,7 @@ export function parseHubSearch(raw: unknown): HermesHubSkillResult[] {
 /** Lifecycle state of a backgrounded admin action (hub install, gateway
  * restart, ...). `unknown` when the wire state is unrecognized — callers keep
  * polling rather than assuming success. */
-export type HermesActionState =
-  | "queued"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "unknown";
+export type HermesActionState = "queued" | "running" | "succeeded" | "failed" | "unknown";
 
 export type HermesActionStatus = {
   /** The action name/id to poll on `/api/actions/{name}/status`. */
@@ -1057,20 +952,10 @@ function parseActionState(value: unknown): HermesActionState {
   if (str === "running" || str === "in_progress" || str === "active") {
     return "running";
   }
-  if (
-    str === "succeeded" ||
-    str === "success" ||
-    str === "completed" ||
-    str === "done"
-  ) {
+  if (str === "succeeded" || str === "success" || str === "completed" || str === "done") {
     return "succeeded";
   }
-  if (
-    str === "failed" ||
-    str === "error" ||
-    str === "cancelled" ||
-    str === "canceled"
-  ) {
+  if (str === "failed" || str === "error" || str === "cancelled" || str === "canceled") {
     return "failed";
   }
   return "unknown";
@@ -1088,10 +973,7 @@ export function parseActionHandle(raw: unknown): string | undefined {
   );
 }
 
-export function parseActionStatus(
-  action: string,
-  raw: unknown,
-): HermesActionStatus {
+export function parseActionStatus(action: string, raw: unknown): HermesActionStatus {
   const record = asRecord(raw);
   // A bare `{ done: true }` or `{ status: "..." }` are both tolerated.
   const explicitDone = pickBool([record], ["done", "finished", "complete"]);
@@ -1103,9 +985,7 @@ export function parseActionStatus(
     action,
     state,
     done,
-    progress: clampProgress(
-      pickNumber([record], ["progress", "percent", "pct"]),
-    ),
+    progress: clampProgress(pickNumber([record], ["progress", "percent", "pct"])),
     message: pickString([record], ["message", "detail", "status_message"]),
     error:
       state === "failed"
@@ -1138,10 +1018,7 @@ export type HermesGatewayStatus = {
 export function parseGatewayStatus(raw: unknown): HermesGatewayStatus {
   const record = asRecord(raw);
   return {
-    gatewayRunning: pickBool(
-      [record],
-      ["gateway_running", "gatewayRunning", "running"],
-    ),
+    gatewayRunning: pickBool([record], ["gateway_running", "gatewayRunning", "running"]),
     version: pickString([record], ["version", "hermes_version"]),
     action: parseActionHandle(raw),
     raw,
@@ -1214,15 +1091,12 @@ export function parseEnvListing(raw: unknown): HermesEnvListing {
   const record = asRecord(raw);
   if (!record) return { vars: [], raw };
   // Wrapped form: { vars: {...} | [...] } / { env: ... } / { variables: ... }.
-  const inner =
-    record.vars ?? record.env ?? record.variables ?? record.values ?? record;
+  const inner = record.vars ?? record.env ?? record.variables ?? record.values ?? record;
   if (Array.isArray(inner)) {
     return parseEnvListing(inner);
   }
   const innerRecord = asRecord(inner) ?? record;
-  const vars = Object.entries(innerRecord).map(([key, value]) =>
-    parseEnvVar(key, value),
-  );
+  const vars = Object.entries(innerRecord).map(([key, value]) => parseEnvVar(key, value));
   return { vars, raw };
 }
 
@@ -1238,10 +1112,7 @@ export type HermesEnvRevealResult = {
 
 /** Parses `POST /api/env/reveal`. The dashboard returns an opaque object; read
  * the value from common field names, tolerating a bare string body. */
-export function parseEnvRevealResult(
-  key: string,
-  raw: unknown,
-): HermesEnvRevealResult {
+export function parseEnvRevealResult(key: string, raw: unknown): HermesEnvRevealResult {
   if (typeof raw === "string") {
     return { key, value: raw.length > 0 ? raw : undefined, raw };
   }
@@ -1266,10 +1137,7 @@ export type HermesEnvWriteResult = {
   raw: unknown;
 };
 
-export function parseEnvWriteResult(
-  key: string,
-  raw: unknown,
-): HermesEnvWriteResult {
+export function parseEnvWriteResult(key: string, raw: unknown): HermesEnvWriteResult {
   const record = asRecord(raw);
   const ok =
     pickBool([record], ["ok", "success", "saved", "updated"]) ??
@@ -1349,10 +1217,7 @@ export type HermesSkillSetupRequirements = {
 
 /** A truthy-but-not-explicitly-false read of a `required` flag, defaulting to
  * `fallback` when the field is absent or malformed. */
-function readRequiredFlag(
-  record: Record<string, unknown>,
-  fallback: boolean,
-): boolean {
+function readRequiredFlag(record: Record<string, unknown>, fallback: boolean): boolean {
   const explicit =
     pickBool([record], ["required", "is_required"]) ??
     // `optional: true` inverts to `required: false`.
@@ -1376,9 +1241,7 @@ function stringifyDefault(value: unknown): string | undefined {
   }
 }
 
-function parseEnvRequirement(
-  raw: unknown,
-): HermesSkillEnvRequirement | undefined {
+function parseEnvRequirement(raw: unknown): HermesSkillEnvRequirement | undefined {
   // A bare string is just the name (required by default).
   const bare = nonEmptyString(raw);
   if (bare) return { name: bare, required: true };
@@ -1390,10 +1253,7 @@ function parseEnvRequirement(
     name,
     prompt: pickString([record], ["prompt", "label", "title"]),
     help: pickString([record], ["help", "description", "desc", "hint"]),
-    requiredFor: pickString(
-      [record],
-      ["required_for", "requiredFor", "for", "purpose"],
-    ),
+    requiredFor: pickString([record], ["required_for", "requiredFor", "for", "purpose"]),
     required: readRequiredFlag(record, true),
   };
 }
@@ -1412,16 +1272,13 @@ function parseConfigRequirement(
       required: false,
     };
   }
-  const resolvedKey =
-    pickString([record], ["key", "name"]) ?? (key && key.length > 0 ? key : "");
+  const resolvedKey = pickString([record], ["key", "name"]) ?? (key && key.length > 0 ? key : "");
   if (!resolvedKey) return undefined;
   return {
     key: resolvedKey,
     prompt: pickString([record], ["prompt", "label", "title"]),
     description: pickString([record], ["description", "desc", "help", "hint"]),
-    default: stringifyDefault(
-      record.default ?? record.fallback ?? record.value,
-    ),
+    default: stringifyDefault(record.default ?? record.fallback ?? record.value),
     required: readRequiredFlag(record, false),
   };
 }
@@ -1429,9 +1286,7 @@ function parseConfigRequirement(
 /** Reads the config requirement list from either an array of entries or a
  * `key -> default|meta` map (the common YAML shape `metadata.hermes.config`
  * uses). */
-function parseConfigRequirements(
-  value: unknown,
-): HermesSkillConfigRequirement[] {
+function parseConfigRequirements(value: unknown): HermesSkillConfigRequirement[] {
   if (Array.isArray(value)) {
     return value
       .map((entry) => parseConfigRequirement(undefined, entry))
@@ -1452,14 +1307,11 @@ function parseConfigRequirements(
  * Returns empty lists when nothing is declared. Never throws; never reads a
  * value.
  */
-export function parseSkillSetupRequirements(
-  raw: unknown,
-): HermesSkillSetupRequirements {
+export function parseSkillSetupRequirements(raw: unknown): HermesSkillSetupRequirements {
   const record = asRecord(raw);
   if (!record) return { env: [], config: [] };
   const metadata = asRecord(record.metadata);
-  const hermes =
-    asRecord(metadata?.hermes) ?? asRecord(record.hermes) ?? undefined;
+  const hermes = asRecord(metadata?.hermes) ?? asRecord(record.hermes) ?? undefined;
 
   // Env requirements may sit at the top level, under metadata, or under
   // metadata.hermes — check each in priority order, first hit wins.
@@ -1471,13 +1323,10 @@ export function parseSkillSetupRequirements(
     hermes?.env ??
     metadata?.env;
   const env = Array.isArray(envRaw)
-    ? envRaw
-        .map(parseEnvRequirement)
-        .filter((e): e is HermesSkillEnvRequirement => e !== undefined)
+    ? envRaw.map(parseEnvRequirement).filter((e): e is HermesSkillEnvRequirement => e !== undefined)
     : [];
 
-  const configRaw =
-    hermes?.config ?? metadata?.config ?? record.config ?? undefined;
+  const configRaw = hermes?.config ?? metadata?.config ?? record.config ?? undefined;
   const config = parseConfigRequirements(configRaw);
 
   return { env, config };
@@ -1517,10 +1366,7 @@ export type HermesConfigWriteResult = {
   raw: unknown;
 };
 
-export function parseConfigWriteResult(
-  path: string,
-  raw: unknown,
-): HermesConfigWriteResult {
+export function parseConfigWriteResult(path: string, raw: unknown): HermesConfigWriteResult {
   const record = asRecord(raw);
   const ok = pickBool([record], ["ok", "success", "saved", "updated"]) ?? true;
   const timing = nonEmptyString(
@@ -1623,10 +1469,7 @@ export function parseProfile(raw: unknown): HermesProfileSummary | undefined {
     name,
     description: pickString([record], ["description", "summary", "desc"]),
     provider: pickString([record], ["provider"]),
-    model: pickString(
-      [record],
-      ["model", "generation_model", "generationModel"],
-    ),
+    model: pickString([record], ["model", "generation_model", "generationModel"]),
     active: pickBool([record], ["active", "is_active", "current"]),
     raw,
   };
@@ -1635,9 +1478,7 @@ export function parseProfile(raw: unknown): HermesProfileSummary | undefined {
 /** `GET /api/profiles` returns either a bare array or `{ profiles: [...] }`. */
 export function parseProfileList(raw: unknown): HermesProfileSummary[] {
   const items = listFrom(raw, ["profiles", "items", "data"]);
-  return items
-    .map(parseProfile)
-    .filter((p): p is HermesProfileSummary => p !== undefined);
+  return items.map(parseProfile).filter((p): p is HermesProfileSummary => p !== undefined);
 }
 
 /** A live/recent session row from `GET /api/profiles/sessions`. June reads it to
@@ -1652,9 +1493,7 @@ export type HermesProfileSession = {
   raw: unknown;
 };
 
-export function parseProfileSession(
-  raw: unknown,
-): HermesProfileSession | undefined {
+export function parseProfileSession(raw: unknown): HermesProfileSession | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
   return {
@@ -1667,9 +1506,7 @@ export function parseProfileSession(
 
 export function parseProfileSessionList(raw: unknown): HermesProfileSession[] {
   const items = listFrom(raw, ["sessions", "items", "data"]);
-  return items
-    .map(parseProfileSession)
-    .filter((s): s is HermesProfileSession => s !== undefined);
+  return items.map(parseProfileSession).filter((s): s is HermesProfileSession => s !== undefined);
 }
 
 /** The result of `POST /api/profiles`. The contract documents only a 2xx, so
@@ -1689,9 +1526,7 @@ export function parseProfileCreateResult(
   const nested = record ? asRecord(record.profile) : undefined;
   return {
     ok: pickBool([record], ["ok", "success", "created"]) ?? true,
-    name:
-      pickString([record, nested], ["name", "id", "slug", "profile"]) ??
-      requestedName,
+    name: pickString([record, nested], ["name", "id", "slug", "profile"]) ?? requestedName,
     raw,
   };
 }

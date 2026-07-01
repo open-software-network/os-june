@@ -4,11 +4,7 @@ import { IconLock } from "central-icons/IconLock";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
 import { isMacLikePlatform } from "../../../lib/platform";
-import {
-  juneOpenCommunityPage,
-  osAccountsCancelLogin,
-  osAccountsLogin,
-} from "../../../lib/tauri";
+import { juneOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
@@ -25,8 +21,7 @@ const JUNE_POINTS = [
   {
     icon: IconMicrophone,
     title: "Speak instead of type",
-    detail:
-      "June turns your voice into polished writing in any app on your computer.",
+    detail: "June turns your voice into polished writing in any app on your computer.",
   },
   {
     icon: IconCalendar1,
@@ -36,8 +31,7 @@ const JUNE_POINTS = [
   {
     icon: IconLock,
     title: "Private by default",
-    detail:
-      "Prompts leverage private, zero-retention Venice AI models by default.",
+    detail: "Prompts leverage private, zero-retention Venice AI models by default.",
   },
 ];
 
@@ -174,19 +168,11 @@ export function SignInStep({
       {status ? <p className="welcome-status">{status}</p> : null}
       <p className="welcome-terms">
         By continuing, you agree to the{" "}
-        <a
-          href="https://accounts.opensoftware.co/terms"
-          target="_blank"
-          rel="noreferrer"
-        >
+        <a href="https://accounts.opensoftware.co/terms" target="_blank" rel="noreferrer">
           Terms
         </a>{" "}
         and{" "}
-        <a
-          href="https://accounts.opensoftware.co/privacy"
-          target="_blank"
-          rel="noreferrer"
-        >
+        <a href="https://accounts.opensoftware.co/privacy" target="_blank" rel="noreferrer">
           Privacy Policy
         </a>
         .

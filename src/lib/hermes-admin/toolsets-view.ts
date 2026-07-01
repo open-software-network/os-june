@@ -45,18 +45,12 @@ export type ToolsetStatusView = {
  * `satisfied` flag is treated as not-yet-known (it does not, by itself, mark the
  * toolset as missing setup) so June does not over-claim a broken state. */
 export function hasUnmetRequirement(toolset: HermesToolsetInfo): boolean {
-  return (toolset.requirements ?? []).some(
-    (requirement) => requirement.satisfied === false,
-  );
+  return (toolset.requirements ?? []).some((requirement) => requirement.satisfied === false);
 }
 
 /** The unmet requirements only (the ones a user must act on). */
-export function unmetRequirements(
-  toolset: HermesToolsetInfo,
-): HermesToolsetRequirement[] {
-  return (toolset.requirements ?? []).filter(
-    (requirement) => requirement.satisfied === false,
-  );
+export function unmetRequirements(toolset: HermesToolsetInfo): HermesToolsetRequirement[] {
+  return (toolset.requirements ?? []).filter((requirement) => requirement.satisfied === false);
 }
 
 /** Derives the user-facing status from the parsed toolset. Honest by
@@ -95,17 +89,11 @@ export type ToolsetModeView = {
 /** Turns a toolset's reported mode allowance into display copy. When neither
  * flag is reported the result is explicitly unknown rather than a default of
  * "both", honoring the spec's "do not invent state". */
-export function toolsetMode(
-  modes: HermesToolsetModeAllowance | undefined,
-): ToolsetModeView {
-  if (
-    !modes ||
-    (modes.sandboxed === undefined && modes.unrestricted === undefined)
-  ) {
+export function toolsetMode(modes: HermesToolsetModeAllowance | undefined): ToolsetModeView {
+  if (!modes || (modes.sandboxed === undefined && modes.unrestricted === undefined)) {
     return {
       label: "Mode unknown",
-      detail:
-        "Hermes did not report which runtime mode this toolset is allowed in.",
+      detail: "Hermes did not report which runtime mode this toolset is allowed in.",
       unknown: true,
     };
   }
@@ -121,8 +109,7 @@ export function toolsetMode(
   if (unrestricted && !sandboxed) {
     return {
       label: "Full mode only",
-      detail:
-        "Available only in the Full mode runtime. The sandboxed runtime does not allow it.",
+      detail: "Available only in the Full mode runtime. The sandboxed runtime does not allow it.",
       unknown: false,
     };
   }
@@ -136,8 +123,7 @@ export function toolsetMode(
   // Both reported as false — explicitly not allowed in either.
   return {
     label: "Not allowed in either mode",
-    detail:
-      "Hermes reports this toolset is not allowed in the current runtimes.",
+    detail: "Hermes reports this toolset is not allowed in the current runtimes.",
     unknown: false,
   };
 }
@@ -174,9 +160,7 @@ export function filterToolsets(
 ): HermesToolsetInfo[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [...toolsets];
-  return toolsets.filter((toolset) =>
-    toolsetHaystack(toolset).includes(needle),
-  );
+  return toolsets.filter((toolset) => toolsetHaystack(toolset).includes(needle));
 }
 
 // ----------------------------------------------------------------------------
@@ -196,9 +180,7 @@ export type SkillRequirements = {
 /** Reads a skill's requires/fallback declarations from its raw payload,
  * tolerating snake_case and camelCase and an optional nested `activation`
  * object. Returns undefined when the skill declares none of them. */
-export function skillRequirements(
-  skill: HermesSkillInfo,
-): SkillRequirements | undefined {
+export function skillRequirements(skill: HermesSkillInfo): SkillRequirements | undefined {
   const record = asRecord(skill.raw);
   if (!record) return undefined;
   const activation = asRecord(record.activation) ?? record;
@@ -218,16 +200,9 @@ export function skillRequirements(
     record.requires_tools ?? record.requiresTools ?? activation.requires_tools,
   );
   const fallbackForTools = toStringList(
-    record.fallback_for_tools ??
-      record.fallbackForTools ??
-      activation.fallback_for_tools,
+    record.fallback_for_tools ?? record.fallbackForTools ?? activation.fallback_for_tools,
   );
-  if (
-    !requiresToolsets &&
-    !fallbackForToolsets &&
-    !requiresTools &&
-    !fallbackForTools
-  ) {
+  if (!requiresToolsets && !fallbackForToolsets && !requiresTools && !fallbackForTools) {
     return undefined;
   }
   return {
@@ -254,9 +229,7 @@ export type SkillExplanation = {
 /** A toolset is "available" for the purpose of skill activation when it is
  * present, enabled, and has no unmet requirement. A toolset June has never heard
  * of is not available. */
-export function availableToolsetNames(
-  toolsets: readonly HermesToolsetInfo[],
-): Set<string> {
+export function availableToolsetNames(toolsets: readonly HermesToolsetInfo[]): Set<string> {
   const names = new Set<string>();
   for (const toolset of toolsets) {
     if (toolset.enabled && !hasUnmetRequirement(toolset)) {
@@ -268,9 +241,7 @@ export function availableToolsetNames(
 
 /** The tool names exposed by every available toolset, for `requires_tools` /
  * `fallback_for_tools` resolution. */
-export function availableToolNames(
-  toolsets: readonly HermesToolsetInfo[],
-): Set<string> {
+export function availableToolNames(toolsets: readonly HermesToolsetInfo[]): Set<string> {
   const names = new Set<string>();
   for (const toolset of toolsets) {
     if (!toolset.enabled || hasUnmetRequirement(toolset)) continue;
@@ -279,17 +250,11 @@ export function availableToolNames(
   return names;
 }
 
-function firstPresent(
-  needed: string[] | undefined,
-  available: Set<string>,
-): string | undefined {
+function firstPresent(needed: string[] | undefined, available: Set<string>): string | undefined {
   return needed?.find((name) => available.has(name));
 }
 
-function firstMissing(
-  needed: string[] | undefined,
-  available: Set<string>,
-): string | undefined {
+function firstMissing(needed: string[] | undefined, available: Set<string>): string | undefined {
   return needed?.find((name) => !available.has(name));
 }
 
@@ -320,10 +285,7 @@ export function explainSkill(
   const toolsAvailable = availableToolNames(toolsets);
 
   // 1. A required dependency that is unavailable blocks the skill.
-  const missingToolset = firstMissing(
-    requirements.requiresToolsets,
-    toolsetsAvailable,
-  );
+  const missingToolset = firstMissing(requirements.requiresToolsets, toolsetsAvailable);
   if (missingToolset) {
     return {
       status: "missing-setup",
@@ -339,20 +301,14 @@ export function explainSkill(
   }
 
   // 2. A fallback skill is hidden when its better alternative is available.
-  const supersedingToolset = firstPresent(
-    requirements.fallbackForToolsets,
-    toolsetsAvailable,
-  );
+  const supersedingToolset = firstPresent(requirements.fallbackForToolsets, toolsetsAvailable);
   if (supersedingToolset) {
     return {
       status: "hidden",
       message: `Hidden because ${supersedingToolset} is available and this is a fallback skill.`,
     };
   }
-  const supersedingTool = firstPresent(
-    requirements.fallbackForTools,
-    toolsAvailable,
-  );
+  const supersedingTool = firstPresent(requirements.fallbackForTools, toolsAvailable);
   if (supersedingTool) {
     return {
       status: "hidden",
@@ -361,10 +317,7 @@ export function explainSkill(
   }
 
   // 3. A required dependency is satisfied → visible.
-  const presentToolset = firstPresent(
-    requirements.requiresToolsets,
-    toolsetsAvailable,
-  );
+  const presentToolset = firstPresent(requirements.requiresToolsets, toolsetsAvailable);
   if (presentToolset) {
     return {
       status: "visible",
@@ -394,10 +347,7 @@ export function explainSkill(
 /** A relative "last refreshed" label from an epoch-ms timestamp. Coarse on
  * purpose (the inventory does not change second to second). `now` is injectable
  * for tests. */
-export function lastRefreshedLabel(
-  at: number | undefined,
-  now: number = Date.now(),
-): string {
+export function lastRefreshedLabel(at: number | undefined, now: number = Date.now()): string {
   if (at === undefined) return "Not refreshed yet";
   const seconds = Math.max(0, Math.round((now - at) / 1000));
   if (seconds < 5) return "Refreshed just now";

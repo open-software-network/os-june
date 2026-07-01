@@ -20,11 +20,7 @@
  */
 
 import type { HermesAddMcpServerPayload } from "./client";
-import type {
-  HermesMcpAuthStatus,
-  HermesMcpServerInfo,
-  HermesMcpTransport,
-} from "./schemas";
+import type { HermesMcpAuthStatus, HermesMcpServerInfo, HermesMcpTransport } from "./schemas";
 
 // ---------------------------------------------------------------------------
 // Transport / risk labels
@@ -46,40 +42,37 @@ export type McpTransportMeta = {
   blurb: string;
 };
 
-const TRANSPORT_META: Readonly<Record<HermesMcpTransport, McpTransportMeta>> =
-  Object.freeze({
-    stdio: {
-      transport: "stdio",
-      label: "Local (stdio)",
-      risk: "local-subprocess",
-      riskLabel: "Local subprocess",
-      blurb:
-        "Runs as a local subprocess and inherits June and Hermes sandbox constraints.",
-    },
-    http: {
-      transport: "http",
-      label: "Remote (HTTP)",
-      risk: "remote-http",
-      riskLabel: "Remote HTTP",
-      blurb:
-        "Connects to a remote HTTP server. Tools run outside this machine.",
-    },
-    "http-oauth": {
-      transport: "http-oauth",
-      label: "Remote (OAuth)",
-      risk: "remote-http",
-      riskLabel: "Remote HTTP",
-      blurb:
-        "Connects to a remote HTTP server behind an OAuth login. Tools run outside this machine.",
-    },
-    unknown: {
-      transport: "unknown",
-      label: "Server",
-      risk: "unknown",
-      riskLabel: "Unknown",
-      blurb: "Transport not reported by Hermes.",
-    },
-  });
+const TRANSPORT_META: Readonly<Record<HermesMcpTransport, McpTransportMeta>> = Object.freeze({
+  stdio: {
+    transport: "stdio",
+    label: "Local (stdio)",
+    risk: "local-subprocess",
+    riskLabel: "Local subprocess",
+    blurb: "Runs as a local subprocess and inherits June and Hermes sandbox constraints.",
+  },
+  http: {
+    transport: "http",
+    label: "Remote (HTTP)",
+    risk: "remote-http",
+    riskLabel: "Remote HTTP",
+    blurb: "Connects to a remote HTTP server. Tools run outside this machine.",
+  },
+  "http-oauth": {
+    transport: "http-oauth",
+    label: "Remote (OAuth)",
+    risk: "remote-http",
+    riskLabel: "Remote HTTP",
+    blurb:
+      "Connects to a remote HTTP server behind an OAuth login. Tools run outside this machine.",
+  },
+  unknown: {
+    transport: "unknown",
+    label: "Server",
+    risk: "unknown",
+    riskLabel: "Unknown",
+    blurb: "Transport not reported by Hermes.",
+  },
+});
 
 /** The display metadata for a server's transport. */
 export function transportMeta(transport: HermesMcpTransport): McpTransportMeta {
@@ -125,9 +118,7 @@ export type McpStatusMeta = {
   tone: "ok" | "error" | "neutral";
 };
 
-export function statusMeta(
-  status: HermesMcpServerInfo["status"],
-): McpStatusMeta {
+export function statusMeta(status: HermesMcpServerInfo["status"]): McpStatusMeta {
   switch (status) {
     case "connected":
       return { label: "Connected", tone: "ok" };
@@ -162,24 +153,17 @@ export const REDACTED_PLACEHOLDER = "Hidden";
 /** Reads the configured env KEY NAMES from a server's raw payload (the listing
  * does not return values). Returns redacted fields, never values. Tolerant of an
  * `env` map or an array of `{ key }` entries. */
-export function redactedEnv(
-  server: HermesMcpServerInfo,
-): RedactedSecretField[] {
+export function redactedEnv(server: HermesMcpServerInfo): RedactedSecretField[] {
   return redactKeysFrom(server, ["env", "environment", "env_vars"]);
 }
 
 /** Reads the configured HTTP header KEY NAMES from a server's raw payload. Same
  * redaction contract as {@link redactedEnv}. */
-export function redactedHeaders(
-  server: HermesMcpServerInfo,
-): RedactedSecretField[] {
+export function redactedHeaders(server: HermesMcpServerInfo): RedactedSecretField[] {
   return redactKeysFrom(server, ["headers", "http_headers"]);
 }
 
-function redactKeysFrom(
-  server: HermesMcpServerInfo,
-  keys: string[],
-): RedactedSecretField[] {
+function redactKeysFrom(server: HermesMcpServerInfo, keys: string[]): RedactedSecretField[] {
   const record = asRecord(server.raw);
   if (!record) return [];
   for (const key of keys) {
@@ -206,8 +190,7 @@ function keyNamesOf(value: unknown): string[] {
     const names: string[] = [];
     for (const entry of value) {
       const entryRecord = asRecord(entry);
-      const name =
-        entryRecord && pickString(entryRecord, ["key", "name", "header"]);
+      const name = entryRecord && pickString(entryRecord, ["key", "name", "header"]);
       if (name) names.push(name);
     }
     return names;
@@ -251,9 +234,7 @@ export type McpServerDraft = {
 };
 
 /** A blank draft for a fresh add-server form. */
-export function emptyDraft(
-  transport: McpDraftTransport = "stdio",
-): McpServerDraft {
+export function emptyDraft(transport: McpDraftTransport = "stdio"): McpServerDraft {
   return {
     name: "",
     transport,
@@ -301,8 +282,7 @@ export function validateDraft(draft: McpServerDraft): McpDraftValidation {
   if (!name) {
     errors.name = "Enter a name for this server.";
   } else if (!NAME_PATTERN.test(name)) {
-    errors.name =
-      "Use letters, numbers, dot, underscore, or hyphen (max 64 characters).";
+    errors.name = "Use letters, numbers, dot, underscore, or hyphen (max 64 characters).";
   }
 
   if (draft.transport === "stdio") {
@@ -322,8 +302,7 @@ export function validateDraft(draft: McpServerDraft): McpDraftValidation {
       const key = pair.key.trim();
       if (!key && !pair.value.trim()) continue; // skip a wholly blank row
       if (!ENV_KEY_PATTERN.test(key)) {
-        errors[`env.${index}`] =
-          "Use an environment variable name (letters, numbers, underscore).";
+        errors[`env.${index}`] = "Use an environment variable name (letters, numbers, underscore).";
       }
     }
   } else {
@@ -337,8 +316,7 @@ export function validateDraft(draft: McpServerDraft): McpDraftValidation {
       const key = pair.key.trim();
       if (!key && !pair.value.trim()) continue;
       if (!HEADER_KEY_PATTERN.test(key)) {
-        errors[`headers.${index}`] =
-          "Use a valid header name (letters, numbers, hyphen).";
+        errors[`headers.${index}`] = "Use a valid header name (letters, numbers, hyphen).";
       }
     }
   }
@@ -351,10 +329,7 @@ export function validateDraft(draft: McpServerDraft): McpDraftValidation {
 
 /** Builds the create payload from an already-validated draft. Blank rows are
  * dropped; empty collections are omitted entirely so the body stays minimal. */
-function buildPayload(
-  draft: McpServerDraft,
-  name: string,
-): HermesAddMcpServerPayload {
+function buildPayload(draft: McpServerDraft, name: string): HermesAddMcpServerPayload {
   if (draft.transport === "stdio") {
     const args = draft.args.map((arg) => arg.trim()).filter((arg) => arg);
     const env = pairsToMap(draft.env);
@@ -379,9 +354,7 @@ function buildPayload(
 /** Collapses key/value pairs into a map, trimming keys and dropping blank-key
  * rows. Values are kept verbatim (a secret may legitimately have leading or
  * trailing characters). */
-function pairsToMap(
-  pairs: Array<{ key: string; value: string }>,
-): Record<string, string> {
+function pairsToMap(pairs: Array<{ key: string; value: string }>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const pair of pairs) {
     const key = pair.key.trim();
@@ -428,9 +401,7 @@ export function filterServers(
 ): HermesMcpServerInfo[] {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return [...servers];
-  return servers.filter((server) =>
-    serverHaystack(server).includes(normalized),
-  );
+  return servers.filter((server) => serverHaystack(server).includes(normalized));
 }
 
 /** True when a server currently exposes tools to the agent, so delete / disable
@@ -453,10 +424,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function pickString(
-  record: Record<string, unknown>,
-  keys: string[],
-): string | undefined {
+function pickString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0) {

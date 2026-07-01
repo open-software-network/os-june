@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  SkillBundlesController,
-  type SkillBundlesIo,
-} from "../lib/hermes-admin/use-skill-bundles";
+import { SkillBundlesController, type SkillBundlesIo } from "../lib/hermes-admin/use-skill-bundles";
 import type { HermesSkillBundleDto } from "../lib/tauri";
 import type { HermesSkillInfo } from "../lib/hermes-admin/schemas";
 
@@ -76,12 +73,8 @@ describe("SkillBundlesController", () => {
     await controller.save({ slug: "data", skills: ["database"] });
     await flush();
     expect(store.map((b) => b.slug)).toContain("data");
-    expect(
-      controller.getSnapshot().bundles.map((b) => b.bundle.slug),
-    ).toContain("data");
-    expect(controller.getSnapshot().notifications.at(-1)?.message).toContain(
-      "/data",
-    );
+    expect(controller.getSnapshot().bundles.map((b) => b.bundle.slug)).toContain("data");
+    expect(controller.getSnapshot().notifications.at(-1)?.message).toContain("/data");
   });
 
   it("renames a bundle by removing the previous slug", async () => {
@@ -117,9 +110,7 @@ describe("SkillBundlesController", () => {
   });
 
   it("starts a chat with the bundle slash command", async () => {
-    const { io, startChat } = makeIo([
-      { slug: "backend-dev", skills: ["backend-dev"] },
-    ]);
+    const { io, startChat } = makeIo([{ slug: "backend-dev", skills: ["backend-dev"] }]);
     const controller = new SkillBundlesController(io, "sandboxed");
     await controller.load();
     controller.startChat("backend-dev");
@@ -133,9 +124,7 @@ describe("SkillBundlesController", () => {
     };
     const controller = new SkillBundlesController(io, "sandboxed");
     await controller.load();
-    await expect(controller.save({ slug: "x", skills: ["y"] })).rejects.toThrow(
-      "disk full",
-    );
+    await expect(controller.save({ slug: "x", skills: ["y"] })).rejects.toThrow("disk full");
     const note = controller.getSnapshot().notifications.at(-1);
     expect(note?.isError).toBe(true);
     expect(note?.message).toContain("disk full");
@@ -152,10 +141,7 @@ describe("SkillBundlesController", () => {
     const controller = new SkillBundlesController(io, "sandboxed");
     await controller.load();
     // Renaming alpha -> beta collides.
-    const collide = controller.validate(
-      { slug: "beta", skills: ["x"] },
-      "alpha",
-    );
+    const collide = controller.validate({ slug: "beta", skills: ["x"] }, "alpha");
     expect(collide.canSave).toBe(false);
     // Editing beta in place does not collide with itself.
     const ok = controller.validate({ slug: "beta", skills: ["x"] }, "beta");

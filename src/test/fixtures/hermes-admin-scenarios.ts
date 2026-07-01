@@ -621,9 +621,7 @@ export function mcpCatalogBrowseScenario(): FakeHermesScenario {
         description: "Issues, pull requests, and repository tools",
         transport: "http",
         auth: "api-key",
-        required_env: [
-          { key: "GITHUB_TOKEN", label: "GitHub personal access token" },
-        ],
+        required_env: [{ key: "GITHUB_TOKEN", label: "GitHub personal access token" }],
         installed: false,
         url: "https://api.githubcopilot.com/mcp",
       },

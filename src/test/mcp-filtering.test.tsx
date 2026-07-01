@@ -53,10 +53,7 @@ describe("mcp filtering — discovered tools", () => {
       testResult("linear", [{ name: "create_issue" }, { name: "list_issues" }]),
     );
     expect(discovered.fromTest).toBe(true);
-    expect(discovered.tools.map((t) => t.name)).toEqual([
-      "create_issue",
-      "list_issues",
-    ]);
+    expect(discovered.tools.map((t) => t.name)).toEqual(["create_issue", "list_issues"]);
   });
 
   it("falls back to the stored inventory when there is no test", () => {
@@ -170,9 +167,7 @@ describe("mcp filtering — include wins over exclude", () => {
     const comparison = compareToolPolicy(server, draft, tools);
     expect(comparison.exposed).toBe(3);
     expect(comparison.willExpose).toBe(1);
-    const allowed = comparison.tools
-      .filter((t) => t.allowed)
-      .map((t) => t.name);
+    const allowed = comparison.tools.filter((t) => t.allowed).map((t) => t.name);
     expect(allowed).toEqual(["create_issue"]);
   });
 });
@@ -287,10 +282,7 @@ describe("mcp filtering — scoped config write", () => {
 
     const after = await engine.client.config.get();
     const tree = after.config as Record<string, Record<string, never>>;
-    const servers = tree.mcp_servers as unknown as Record<
-      string,
-      Record<string, unknown>
-    >;
+    const servers = tree.mcp_servers as unknown as Record<string, Record<string, unknown>>;
     // The tools block landed.
     expect(servers.linear.tools).toEqual({ include: ["create_issue"] });
     // Unrelated fields on the SAME server survived.
@@ -318,15 +310,13 @@ describe("mcp filtering — scoped config write", () => {
     engine.lifecycle.noteMutation("mcp.setTools");
 
     const after = await engine.client.config.get();
-    const servers = (after.config as Record<string, unknown>)
-      .mcp_servers as Record<string, Record<string, unknown>>;
+    const servers = (after.config as Record<string, unknown>).mcp_servers as Record<
+      string,
+      Record<string, unknown>
+    >;
     expect(servers.linear.tools).toEqual({ exclude: ["delete_issue"] });
-    expect(engine.lifecycle.getSnapshot().state).toBe(
-      "gateway-restart-required",
-    );
-    const note = engine.cache
-      .getNotifications()
-      .find((n) => n.mutation === "mcp.setTools");
+    expect(engine.lifecycle.getSnapshot().state).toBe("gateway-restart-required");
+    const note = engine.cache.getNotifications().find((n) => n.mutation === "mcp.setTools");
     expect(note?.message).toContain("Restart Hermes gateway");
     controller.dispose();
   });
@@ -375,8 +365,10 @@ describe("mcp filtering — controller save action", () => {
     expect(ok).toBe(true);
 
     const after = await engine.client.config.get();
-    const servers = (after.config as Record<string, unknown>)
-      .mcp_servers as Record<string, Record<string, unknown>>;
+    const servers = (after.config as Record<string, unknown>).mcp_servers as Record<
+      string,
+      Record<string, unknown>
+    >;
     expect(servers.linear.tools).toEqual({ exclude: ["delete_issue"] });
     // The sibling field survived the scoped write.
     expect(servers.linear.url).toBe("https://mcp.linear.app");
@@ -430,9 +422,7 @@ describe("mcp filtering — dialog", () => {
         onSave={() => Promise.resolve(true)}
       />,
     );
-    expect(
-      screen.getByText(/come from the last test of this server/i),
-    ).toBeTruthy();
+    expect(screen.getByText(/come from the last test of this server/i)).toBeTruthy();
   });
 
   it("shows the restart-required saved notice after a successful save", async () => {

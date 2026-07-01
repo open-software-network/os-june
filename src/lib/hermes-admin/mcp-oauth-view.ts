@@ -82,60 +82,56 @@ export type McpOauthStatusMeta = {
   actionLabel?: string;
 };
 
-const STATE_META: Readonly<Record<McpOauthStatus, McpOauthStatusMeta>> =
-  Object.freeze({
-    connected: {
-      state: "connected",
-      label: "Signed in",
-      blurb: "A valid token is stored. Tools load after the gateway restarts.",
-      tone: "ok",
-      action: "re-auth",
-      actionLabel: "Sign in again",
-    },
-    "needs-sign-in": {
-      state: "needs-sign-in",
-      label: "Sign in to finish",
-      blurb:
-        "This server needs you to sign in through your browser before its tools work.",
-      tone: "attention",
-      action: "sign-in",
-      actionLabel: "Sign in",
-    },
-    expired: {
-      state: "expired",
-      label: "Sign in expired",
-      blurb:
-        "The stored token expired or could not refresh. Sign in again to restore access.",
-      tone: "attention",
-      action: "re-auth",
-      actionLabel: "Sign in again",
-    },
-    "signing-in": {
-      state: "signing-in",
-      label: "Waiting for browser",
-      blurb:
-        "Finish the sign-in in your browser. June is waiting for it to complete.",
-      tone: "neutral",
-      action: "none",
-    },
-    "needs-client-credentials": {
-      state: "needs-client-credentials",
-      label: "Needs client setup",
-      blurb:
-        "This provider does not register clients automatically. Add a client id and secret before signing in.",
-      tone: "attention",
-      action: "configure",
-      actionLabel: "Add client details",
-    },
-    unknown: {
-      state: "unknown",
-      label: "Sign-in status unknown",
-      blurb: "Hermes did not report this server's sign-in status.",
-      tone: "neutral",
-      action: "sign-in",
-      actionLabel: "Sign in",
-    },
-  });
+const STATE_META: Readonly<Record<McpOauthStatus, McpOauthStatusMeta>> = Object.freeze({
+  connected: {
+    state: "connected",
+    label: "Signed in",
+    blurb: "A valid token is stored. Tools load after the gateway restarts.",
+    tone: "ok",
+    action: "re-auth",
+    actionLabel: "Sign in again",
+  },
+  "needs-sign-in": {
+    state: "needs-sign-in",
+    label: "Sign in to finish",
+    blurb: "This server needs you to sign in through your browser before its tools work.",
+    tone: "attention",
+    action: "sign-in",
+    actionLabel: "Sign in",
+  },
+  expired: {
+    state: "expired",
+    label: "Sign in expired",
+    blurb: "The stored token expired or could not refresh. Sign in again to restore access.",
+    tone: "attention",
+    action: "re-auth",
+    actionLabel: "Sign in again",
+  },
+  "signing-in": {
+    state: "signing-in",
+    label: "Waiting for browser",
+    blurb: "Finish the sign-in in your browser. June is waiting for it to complete.",
+    tone: "neutral",
+    action: "none",
+  },
+  "needs-client-credentials": {
+    state: "needs-client-credentials",
+    label: "Needs client setup",
+    blurb:
+      "This provider does not register clients automatically. Add a client id and secret before signing in.",
+    tone: "attention",
+    action: "configure",
+    actionLabel: "Add client details",
+  },
+  unknown: {
+    state: "unknown",
+    label: "Sign-in status unknown",
+    blurb: "Hermes did not report this server's sign-in status.",
+    tone: "neutral",
+    action: "sign-in",
+    actionLabel: "Sign in",
+  },
+});
 
 /** The display metadata for an OAuth state. */
 export function oauthStatusMeta(state: McpOauthStatus): McpOauthStatusMeta {
@@ -166,10 +162,7 @@ function stateFromAuth(auth: HermesMcpAuthStatus): McpOauthStatus {
  * token is already present (connected) — a connected server does not need its
  * credentials re-entered. The remaining cases map straight from the auth status.
  */
-export function oauthStateFor(
-  server: HermesMcpServerInfo,
-  signingIn = false,
-): McpOauthStatus {
+export function oauthStateFor(server: HermesMcpServerInfo, signingIn = false): McpOauthStatus {
   if (signingIn) return "signing-in";
   const base = stateFromAuth(server.auth);
   if (base === "connected") return "connected";
@@ -199,9 +192,7 @@ export type McpOauthClientConfig = {
  * the documented `oauth` config block (`{ client_id, client_secret,
  * dynamic_registration }`) plus a top-level form, reading only presence /
  * non-secret flags, never a secret value. */
-export function oauthClientConfig(
-  server: HermesMcpServerInfo,
-): McpOauthClientConfig {
+export function oauthClientConfig(server: HermesMcpServerInfo): McpOauthClientConfig {
   const record = asRecord(server.raw);
   const oauth = asRecord(record?.oauth) ?? asRecord(record?.oauth_config);
   // `dynamic_registration: false` (or `dynamic_client_registration: false`)
@@ -209,10 +200,7 @@ export function oauthClientConfig(
   // required. An explicit `requires_client_credentials: true` says so directly.
   const dynamic =
     pickBool(oauth, ["dynamic_registration", "dynamic_client_registration"]) ??
-    pickBool(record, [
-      "oauth_dynamic_registration",
-      "dynamic_client_registration",
-    ]);
+    pickBool(record, ["oauth_dynamic_registration", "dynamic_client_registration"]);
   const explicitRequired = pickBool(oauth, [
     "requires_client_credentials",
     "requires_client_id",
@@ -254,9 +242,7 @@ export const OAUTH_GENERIC_MESSAGE = "Sign-in finished.";
  * uses so nothing secret-shaped reaches the screen. Returns `undefined` for an
  * empty/whitespace message so the caller can fall back to a generic line.
  */
-export function safeOauthMessage(
-  message: string | undefined,
-): string | undefined {
+export function safeOauthMessage(message: string | undefined): string | undefined {
   if (!message) return undefined;
   const redacted = redactBodyPreview(message).trim();
   return redacted.length > 0 ? redacted : undefined;
@@ -267,9 +253,7 @@ export function safeOauthMessage(
  * the user can open it manually if the browser did not launch. The URL itself is
  * not a secret, but it is run through {@link redactUrl} before display so a
  * provider that puts a `token=` on the query cannot leak it. */
-export function safeAuthorizationUrl(
-  url: string | undefined,
-): string | undefined {
+export function safeAuthorizationUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
   const trimmed = url.trim();
   if (!isHttpUrl(trimmed)) return undefined;
@@ -309,10 +293,7 @@ function pickBool(
 
 /** True when any of `keys` holds a non-empty string OR a `true` boolean presence
  * flag. Reads presence only, never the value itself. */
-function presentString(
-  record: Record<string, unknown> | undefined,
-  keys: string[],
-): boolean {
+function presentString(record: Record<string, unknown> | undefined, keys: string[]): boolean {
   if (!record) return false;
   for (const key of keys) {
     const value = record[key];

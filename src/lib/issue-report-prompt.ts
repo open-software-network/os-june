@@ -51,13 +51,7 @@ const PREAMBLES: Record<ReportCategory, string[]> = {
 /** Frames the user's report for June based on its category: investigate and
  * write something for the team rather than treating it as a normal request. */
 export function categoryPrompt(category: ReportCategory, report: string) {
-  return [
-    ...PREAMBLES[category],
-    "",
-    USER_REPORT_START,
-    report,
-    USER_REPORT_END,
-  ].join("\n");
+  return [...PREAMBLES[category], "", USER_REPORT_START, report, USER_REPORT_END].join("\n");
 }
 
 /** Bug-category wrapper, kept as a named export for the original report flow. */

@@ -79,8 +79,7 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     kind: "unsupported",
     sessionId,
     rawType: type || undefined,
-    sanitizedPayload:
-      payload === undefined ? undefined : sanitizePayload(payload),
+    sanitizedPayload: payload === undefined ? undefined : sanitizePayload(payload),
   };
 }
 
@@ -99,8 +98,7 @@ function classifyTranscript(
   return {
     kind: "transcript",
     sessionId: sessionId ?? "",
-    messageId:
-      stringValue(payload?.message_id) ?? stringValue(payload?.messageId),
+    messageId: stringValue(payload?.message_id) ?? stringValue(payload?.messageId),
     delta,
     complete,
     role: messageRole(payload),
@@ -113,11 +111,7 @@ function classifyTool(
   payload: RawHermesPayload | undefined,
 ): JuneHermesEvent {
   const phase =
-    type === "tool.start"
-      ? "start"
-      : type === "tool.progress"
-        ? "progress"
-        : "complete";
+    type === "tool.start" ? "start" : type === "tool.progress" ? "progress" : "complete";
   return {
     kind: "tool",
     sessionId: sessionId ?? "",
@@ -128,9 +122,7 @@ function classifyTool(
       stringValue(payload?.id),
     phase,
     name:
-      stringValue(payload?.name) ??
-      stringValue(payload?.tool_name) ??
-      stringValue(payload?.tool),
+      stringValue(payload?.name) ?? stringValue(payload?.tool_name) ?? stringValue(payload?.tool),
     // Tool cards render arguments/output, so keep the payload — sanitized, in
     // case a tool's args happen to embed a secret.
     payload: payload === undefined ? undefined : sanitizePayload(payload),
@@ -152,9 +144,7 @@ function classifyPendingAction(
           stringValue(payload?.tool_name) ??
           stringValue(payload?.tool) ??
           stringValue(payload?.name),
-        description:
-          stringValue(payload?.description, true) ??
-          stringValue(payload?.command, true),
+        description: stringValue(payload?.description, true) ?? stringValue(payload?.command, true),
         // Approval cards may show structured details; sanitize defensively.
         payload: payload === undefined ? undefined : sanitizePayload(payload),
       };
@@ -186,8 +176,7 @@ function classifyPendingAction(
         kind: "clarify",
         requestId,
         question:
-          stringValue(payload?.question, true) ??
-          "Hermes needs clarification before continuing.",
+          stringValue(payload?.question, true) ?? "Hermes needs clarification before continuing.",
         choices: optionalStringArray(payload?.choices),
       };
   }
@@ -209,15 +198,11 @@ function classifyBackgroundActivity(
     subagentId,
     handle: stringValue(payload?.handle),
     parentSessionId:
-      stringValue(payload?.parent_session_id) ??
-      stringValue(payload?.parentSessionId) ??
-      sessionId,
+      stringValue(payload?.parent_session_id) ?? stringValue(payload?.parentSessionId) ?? sessionId,
     phase: subagentPhase(type),
     goal: stringValue(payload?.goal, true),
     currentTool:
-      stringValue(payload?.tool_name) ??
-      stringValue(payload?.tool) ??
-      stringValue(payload?.name),
+      stringValue(payload?.tool_name) ?? stringValue(payload?.tool) ?? stringValue(payload?.name),
     resultPreview:
       stringValue(payload?.summary, true) ??
       stringValue(payload?.tool_preview, true) ??
@@ -245,10 +230,7 @@ function classifyError(
       stringValue(payload?.text, true) ??
       "The agent reported an error.",
     code: numberValue(payload?.code),
-    recoverable:
-      typeof payload?.recoverable === "boolean"
-        ? payload.recoverable
-        : undefined,
+    recoverable: typeof payload?.recoverable === "boolean" ? payload.recoverable : undefined,
   };
 }
 
@@ -285,10 +267,7 @@ function isLifecycleType(type: string): boolean {
   return LIFECYCLE_TYPES.has(type) || type.startsWith("lifecycle.");
 }
 
-function lifecycleStatus(
-  type: string,
-  payload: RawHermesPayload | undefined,
-): string {
+function lifecycleStatus(type: string, payload: RawHermesPayload | undefined): string {
   return stringValue(payload?.status, true) ?? type;
 }
 
@@ -324,9 +303,7 @@ function rawDeltaText(payload: RawHermesPayload | undefined): string {
   return "";
 }
 
-function rawCompleteText(
-  payload: RawHermesPayload | undefined,
-): string | undefined {
+function rawCompleteText(payload: RawHermesPayload | undefined): string | undefined {
   for (const key of ["text", "message", "content", "delta"] as const) {
     const value = payload?.[key];
     if (typeof value === "string" && value) return value;
@@ -342,16 +319,11 @@ function receivedAtOf(raw: HermesGatewayEvent): string {
 
 function optionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const items = value.filter(
-    (item): item is string => typeof item === "string",
-  );
+  const items = value.filter((item): item is string => typeof item === "string");
   return items.length ? items : undefined;
 }
 
-function stringValue(
-  value: unknown,
-  preserveWhitespace = false,
-): string | undefined {
+function stringValue(value: unknown, preserveWhitespace = false): string | undefined {
   if (typeof value === "string") {
     if (!value.trim()) return undefined;
     return preserveWhitespace ? value : value.trim();

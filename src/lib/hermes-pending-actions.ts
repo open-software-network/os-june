@@ -29,11 +29,7 @@
  * Feature 11's activity drawer reads the same instance for its pending counts.
  */
 
-import type {
-  HermesMode,
-  JuneHermesEvent,
-  PendingHermesAction,
-} from "./hermes-control-plane";
+import type { HermesMode, JuneHermesEvent, PendingHermesAction } from "./hermes-control-plane";
 import { nonEmpty } from "./hermes-control-plane";
 
 /** The `pending_action` variant of the classifier union — the store's input. */
@@ -69,11 +65,7 @@ export type PendingActionRecord = {
 };
 
 /** Statuses that still demand the user's attention (and so show in the tray). */
-const OPEN_STATUSES: ReadonlySet<PendingActionStatus> = new Set([
-  "open",
-  "submitting",
-  "stale",
-]);
+const OPEN_STATUSES: ReadonlySet<PendingActionStatus> = new Set(["open", "submitting", "stale"]);
 
 export type PendingActionStore = {
   /**
@@ -134,11 +126,7 @@ export function createPendingActionStore(): PendingActionStore {
     for (const listener of listeners) listener();
   }
 
-  function keyFor(
-    mode: HermesMode,
-    sessionId: string,
-    requestId: string,
-  ): PendingActionKey {
+  function keyFor(mode: HermesMode, sessionId: string, requestId: string): PendingActionKey {
     return `${mode}:${sessionId}:${requestId}`;
   }
 
@@ -189,11 +177,7 @@ export function createPendingActionStore(): PendingActionStore {
     if (!sid || !rid) return;
     let changed = false;
     for (const record of byKey.values()) {
-      if (
-        record.sessionId === sid &&
-        record.requestId === rid &&
-        record.status !== "resolved"
-      ) {
+      if (record.sessionId === sid && record.requestId === rid && record.status !== "resolved") {
         record.status = "resolved";
         record.lastSeenAt = Date.now();
         changed = true;
@@ -234,9 +218,7 @@ export function createPendingActionStore(): PendingActionStore {
 
   function getRecords(): PendingActionRecord[] {
     // Newest-first by last activity.
-    return [...byKey.values()]
-      .map(cloneRecord)
-      .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+    return [...byKey.values()].map(cloneRecord).sort((a, b) => b.lastSeenAt - a.lastSeenAt);
   }
 
   function openRecords(): PendingActionRecord[] {

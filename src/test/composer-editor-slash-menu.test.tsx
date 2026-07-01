@@ -33,17 +33,13 @@ describe("composer slash menu", () => {
       name: "Message June",
     });
     await user.type(textbox, "/");
-    await waitFor(() =>
-      expect(document.querySelector(".agent-category-menu-host")).toBeTruthy(),
-    );
+    await waitFor(() => expect(document.querySelector(".agent-category-menu-host")).toBeTruthy());
     expect(screen.getByRole("option", { name: "Model" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "File" })).toBeInTheDocument();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Outside" }));
 
-    await waitFor(() =>
-      expect(document.querySelector(".agent-category-menu-host")).toBeNull(),
-    );
+    await waitFor(() => expect(document.querySelector(".agent-category-menu-host")).toBeNull());
     expect(textbox).toHaveTextContent("/");
 
     await user.click(textbox);

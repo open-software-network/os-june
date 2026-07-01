@@ -16,9 +16,7 @@ export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 export type UpdaterUpdate = {
   version: string;
   body?: string;
-  downloadAndInstall: (
-    onEvent?: (event: DownloadEvent) => void,
-  ) => Promise<void>;
+  downloadAndInstall: (onEvent?: (event: DownloadEvent) => void) => Promise<void>;
 };
 
 export type UpdateCheckDeps<TUpdate extends UpdaterUpdate> = {
@@ -72,10 +70,7 @@ export function startPeriodicJuneUpdateChecks(
   runUpdateCheck: (mode: UpdateCheckMode) => void,
   intervalMs = UPDATE_CHECK_INTERVAL_MS,
 ) {
-  const timer = window.setInterval(
-    () => runUpdateCheck("periodic"),
-    intervalMs,
-  );
+  const timer = window.setInterval(() => runUpdateCheck("periodic"), intervalMs);
   return () => window.clearInterval(timer);
 }
 

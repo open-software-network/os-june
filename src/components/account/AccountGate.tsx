@@ -78,10 +78,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
                 </button>
               </div>
             ) : (
-              <BrandPrimaryButton
-                disabled={loading}
-                onClick={() => void handleSignIn()}
-              >
+              <BrandPrimaryButton disabled={loading} onClick={() => void handleSignIn()}>
                 <OsMark />
                 <span>Continue with OpenSoftware</span>
               </BrandPrimaryButton>
@@ -100,19 +97,11 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
           {/* opensoftware.network serves nothing; the accounts portal is the
               live domain we control, so legal pages can be published there
               without shipping a new desktop build. */}
-          <a
-            href="https://accounts.opensoftware.co/terms"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a href="https://accounts.opensoftware.co/terms" target="_blank" rel="noreferrer">
             Terms
           </a>{" "}
           and{" "}
-          <a
-            href="https://accounts.opensoftware.co/privacy"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a href="https://accounts.opensoftware.co/privacy" target="_blank" rel="noreferrer">
             Privacy Policy
           </a>
           .
@@ -124,13 +113,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
 
 export function JuneMark() {
   return (
-    <svg
-      width="24"
-      height="28"
-      viewBox="0 0 12 14"
-      fill="currentColor"
-      aria-hidden
-    >
+    <svg width="24" height="28" viewBox="0 0 12 14" fill="currentColor" aria-hidden>
       <JuneMarkPaths />
     </svg>
   );
@@ -140,25 +123,10 @@ export function JuneGradientMark() {
   const gradientId = `june-gradient-${useId().replace(/:/g, "")}`;
 
   return (
-    <svg
-      width="40"
-      height="46"
-      viewBox="0 0 12 14"
-      fill="none"
-      aria-hidden
-    >
+    <svg width="40" height="46" viewBox="0 0 12 14" fill="none" aria-hidden>
       <defs>
-        <linearGradient
-          id={gradientId}
-          x1="6"
-          y1="0"
-          x2="6"
-          y2="14"
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop
-            style={{ stopColor: "color-mix(in oklch, var(--brand) 55%, white)" }}
-          />
+        <linearGradient id={gradientId} x1="6" y1="0" x2="6" y2="14" gradientUnits="userSpaceOnUse">
+          <stop style={{ stopColor: "color-mix(in oklch, var(--brand) 55%, white)" }} />
           <stop offset="1" style={{ stopColor: "var(--brand)" }} />
         </linearGradient>
       </defs>
@@ -185,13 +153,7 @@ function JuneMarkPaths({ fill }: { fill?: string }) {
 // The "OS" wordmark, drawn in currentColor for the sign-in button.
 export function OsMark() {
   return (
-    <svg
-      width="28"
-      height="16"
-      viewBox="-1 -1 30 18"
-      fill="currentColor"
-      aria-hidden
-    >
+    <svg width="28" height="16" viewBox="-1 -1 30 18" fill="currentColor" aria-hidden>
       <path
         fillRule="evenodd"
         clipRule="evenodd"

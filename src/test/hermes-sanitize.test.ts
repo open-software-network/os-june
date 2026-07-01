@@ -45,8 +45,7 @@ describe("sanitizePayload — key-based redaction", () => {
 
 describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
   it("preserves a long absolute file path under a benign key (not redacted)", () => {
-    const path =
-      "/Users/x/code/project/src/components/agent/VeryLongFileName.tsx";
+    const path = "/Users/x/code/project/src/components/agent/VeryLongFileName.tsx";
     // Sanity: this is exactly the shape the old backstop would have masked
     // (single token, >31 chars) — the fix must let it through.
     expect(path.length).toBeGreaterThan(31);
@@ -56,8 +55,7 @@ describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
   });
 
   it("preserves a long https URL under a benign key", () => {
-    const url =
-      "https://example.com/very/long/url/path/that/exceeds/thirty/one/characters";
+    const url = "https://example.com/very/long/url/path/that/exceeds/thirty/one/characters";
     const out = sanitizePayload({ url }) as Record<string, unknown>;
     expect(out.url).toBe(url);
   });
@@ -68,9 +66,7 @@ describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
       win: "C:\\Users\\me\\code\\project\\src\\components\\Agent.tsx",
     }) as Record<string, unknown>;
     expect(out.home).toBe("~/code/project/src/components/AgentWorkspace.tsx");
-    expect(out.win).toBe(
-      "C:\\Users\\me\\code\\project\\src\\components\\Agent.tsx",
-    );
+    expect(out.win).toBe("C:\\Users\\me\\code\\project\\src\\components\\Agent.tsx");
   });
 
   it("STILL redacts a long opaque token (no separators) under a benign key", () => {
@@ -102,10 +98,7 @@ describe("sanitizePayload — cycle detection", () => {
     // A shared (but acyclic) child reached from two siblings. The DAG must be
     // rendered in full on BOTH paths — its second occurrence is not a cycle.
     const shared = { label: "shared", n: 1 };
-    const out = sanitizePayload({ a: shared, b: shared }) as Record<
-      string,
-      unknown
-    >;
+    const out = sanitizePayload({ a: shared, b: shared }) as Record<string, unknown>;
     expect(out.a).toEqual({ label: "shared", n: 1 });
     expect(out.b).toEqual({ label: "shared", n: 1 });
     expect(JSON.stringify(out)).not.toContain("[circular]");

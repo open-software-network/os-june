@@ -20,8 +20,7 @@
  * in `random_token()`. */
 export const HERMES_TOKEN_LENGTH = 43;
 
-const TOKEN_ALPHABET =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /**
  * A 43-character alphanumeric token, matching `random_token()`. June sets it on
@@ -42,8 +41,7 @@ export function generateSessionToken(length = HERMES_TOKEN_LENGTH): string {
     }
   } else {
     for (let i = 0; i < length; i += 1) {
-      out[i] =
-        TOKEN_ALPHABET[Math.floor(Math.random() * TOKEN_ALPHABET.length)];
+      out[i] = TOKEN_ALPHABET[Math.floor(Math.random() * TOKEN_ALPHABET.length)];
     }
   }
   return out.join("");
@@ -227,9 +225,7 @@ export function resolveHermesCommand(
 ): ResolvedHermesCommand | null {
   const override = options.env.JUNE_HERMES_COMMAND?.trim();
   if (override) {
-    return options.fileExists(override)
-      ? { command: override, source: "env_override" }
-      : null;
+    return options.fileExists(override) ? { command: override, source: "env_override" } : null;
   }
   for (const candidate of options.candidates ?? []) {
     if (options.fileExists(candidate)) {

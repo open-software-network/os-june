@@ -53,9 +53,7 @@ describe("classifyHermesEvent — totality", () => {
   });
 
   it("classifies an unknown event name as unsupported, never undefined", () => {
-    const result = classifyHermesEvent(
-      event("some.future.event", { foo: "bar" }),
-    );
+    const result = classifyHermesEvent(event("some.future.event", { foo: "bar" }));
     expect(result).toBeDefined();
     expect(result.kind).toBe("unsupported");
     if (result.kind === "unsupported") {
@@ -75,9 +73,7 @@ describe("classifyHermesEvent — totality", () => {
 
 describe("classifyHermesEvent — transcript", () => {
   it("maps message.start/delta/complete to transcript with the right flags", () => {
-    const start = classifyHermesEvent(
-      event("message.start", { message_id: "m1" }),
-    );
+    const start = classifyHermesEvent(event("message.start", { message_id: "m1" }));
     expect(start).toMatchObject({
       kind: "transcript",
       sessionId: "sess-1",
@@ -85,9 +81,7 @@ describe("classifyHermesEvent — transcript", () => {
       complete: false,
     });
 
-    const delta = classifyHermesEvent(
-      event("message.delta", { message_id: "m1", delta: "Hel" }),
-    );
+    const delta = classifyHermesEvent(event("message.delta", { message_id: "m1", delta: "Hel" }));
     expect(delta).toMatchObject({
       kind: "transcript",
       delta: "Hel",
@@ -160,9 +154,7 @@ describe("classifyHermesEvent — tools", () => {
   });
 
   it("falls back across tool_name / tool field aliases", () => {
-    const byToolName = classifyHermesEvent(
-      event("tool.start", { tool_name: "shell" }),
-    );
+    const byToolName = classifyHermesEvent(event("tool.start", { tool_name: "shell" }));
     if (byToolName.kind === "tool") expect(byToolName.name).toBe("shell");
     const byTool = classifyHermesEvent(event("tool.start", { tool: "grep" }));
     if (byTool.kind === "tool") expect(byTool.name).toBe("grep");
@@ -281,41 +273,35 @@ describe("classifyHermesEvent — background activity", () => {
       expect(activity.lastEventAt).toBeTruthy();
     }
 
-    expect(
-      classifyHermesEvent(event("subagent.tool", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
-    expect(
-      classifyHermesEvent(event("subagent.progress", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
-    expect(
-      classifyHermesEvent(event("subagent.thinking", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
-    expect(
-      classifyHermesEvent(event("subagent.complete", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
+    expect(classifyHermesEvent(event("subagent.tool", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
+    expect(classifyHermesEvent(event("subagent.progress", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
+    expect(classifyHermesEvent(event("subagent.thinking", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
+    expect(classifyHermesEvent(event("subagent.complete", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
   });
 
   it("maps subagent.error and subagent.blocked to their phases", () => {
-    const err = classifyHermesEvent(
-      event("subagent.error", { subagent_id: "s" }),
-    );
+    const err = classifyHermesEvent(event("subagent.error", { subagent_id: "s" }));
     if (err.kind === "background_activity") {
       expect(err.activity.phase).toBe("error");
     } else {
       throw new Error("expected background_activity");
     }
-    const blocked = classifyHermesEvent(
-      event("subagent.blocked", { subagent_id: "s" }),
-    );
+    const blocked = classifyHermesEvent(event("subagent.blocked", { subagent_id: "s" }));
     if (blocked.kind === "background_activity") {
       expect(blocked.activity.phase).toBe("blocked");
     }
   });
 
   it("accepts handle as an alias for subagent id", () => {
-    const result = classifyHermesEvent(
-      event("subagent.progress", { handle: "h-9", tool: "grep" }),
-    );
+    const result = classifyHermesEvent(event("subagent.progress", { handle: "h-9", tool: "grep" }));
     if (result.kind === "background_activity") {
       expect(result.activity.subagentId).toBe("h-9");
       expect(result.activity.handle).toBe("h-9");
@@ -420,12 +406,8 @@ describe("sanitizePayload", () => {
     ]) {
       expect(out[key], `${key} should be redacted`).toBe("[redacted]");
     }
-    expect(
-      (out.nested as Record<string, Record<string, unknown>>).deep.secret,
-    ).toBe("[redacted]");
-    expect((out.list as Record<string, unknown>[])[0].password).toBe(
-      "[redacted]",
-    );
+    expect((out.nested as Record<string, Record<string, unknown>>).deep.secret).toBe("[redacted]");
+    expect((out.list as Record<string, unknown>[])[0].password).toBe("[redacted]");
     expect(out.keep).toBe("ok");
   });
 

@@ -8,10 +8,7 @@ const notificationMocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/plugin-notification", () => notificationMocks);
 
-import {
-  agentNotificationCopy,
-  notifyAgentSessionStatus,
-} from "../lib/agent-notifications";
+import { agentNotificationCopy, notifyAgentSessionStatus } from "../lib/agent-notifications";
 
 describe("agent notifications", () => {
   afterEach(() => {

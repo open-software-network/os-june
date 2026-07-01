@@ -54,9 +54,7 @@ type SkillsHubSectionProps = {
  * friendly source label and a trust badge, with the exact install identifier
  * kept in the detail drawer's advanced section for debugging.
  */
-export function SkillsHubSection({
-  mode = "sandboxed",
-}: SkillsHubSectionProps) {
+export function SkillsHubSection({ mode = "sandboxed" }: SkillsHubSectionProps) {
   const state = useSkillsHub(mode);
   return <SkillsHubView state={state} mode={mode} />;
 }
@@ -90,25 +88,18 @@ export function SkillsHubView({
     setQuery(state.query);
   }, [state.query]);
 
-  const sourceKinds = useMemo(
-    () => sourceKindsOf(state.results),
-    [state.results],
-  );
+  const sourceKinds = useMemo(() => sourceKindsOf(state.results), [state.results]);
   const visible = useMemo(
     () =>
       filterHubResults(state.results, {
-        sourceKind:
-          sourceKind === ALL_SOURCES
-            ? undefined
-            : (sourceKind as HubSourceKind),
+        sourceKind: sourceKind === ALL_SOURCES ? undefined : (sourceKind as HubSourceKind),
       }),
     [state.results, sourceKind],
   );
 
   // A source filter that vanished after a new search should not strand the row.
   const activeSource =
-    sourceKind !== ALL_SOURCES &&
-    !sourceKinds.includes(sourceKind as HubSourceKind)
+    sourceKind !== ALL_SOURCES && !sourceKinds.includes(sourceKind as HubSourceKind)
       ? ALL_SOURCES
       : sourceKind;
 
@@ -155,21 +146,14 @@ export function SkillsHubView({
   }, []);
 
   return (
-    <section
-      className="settings-group skills-hub"
-      aria-labelledby="skills-hub-heading"
-    >
+    <section className="settings-group skills-hub" aria-labelledby="skills-hub-heading">
       <h2 id="skills-hub-heading" className="settings-group-heading">
         Skills hub
       </h2>
       <p className="settings-group-description">
-        Find and install skills for your sessions without leaving June. Installs
-        apply to new sessions.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Find and install skills for your sessions without leaving June. Installs apply to new
+        sessions.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
@@ -180,16 +164,8 @@ export function SkillsHubView({
 
       <div className="settings-card skills-hub-card">
         <div className="skills-hub-toolbar">
-          <form
-            className="skills-hub-search"
-            onSubmit={runSearch}
-            role="search"
-          >
-            <IconMagnifyingGlass
-              size={15}
-              ariaHidden
-              className="skills-hub-search-icon"
-            />
+          <form className="skills-hub-search" onSubmit={runSearch} role="search">
+            <IconMagnifyingGlass size={15} ariaHidden className="skills-hub-search-icon" />
             <input
               type="search"
               value={query}
@@ -211,11 +187,7 @@ export function SkillsHubView({
         </div>
 
         {sourceKinds.length > 1 && !isUnavailable ? (
-          <div
-            className="skills-hub-filters"
-            role="group"
-            aria-label="Filter by source"
-          >
+          <div className="skills-hub-filters" role="group" aria-label="Filter by source">
             <SourceChip
               label="All"
               count={state.results.length}
@@ -226,11 +198,7 @@ export function SkillsHubView({
               <SourceChip
                 key={kind}
                 label={sourceKindMeta(kind).label}
-                count={
-                  state.results.filter(
-                    (result) => sourceKindFor(result) === kind,
-                  ).length
-                }
+                count={state.results.filter((result) => sourceKindFor(result) === kind).length}
                 active={activeSource === kind}
                 onSelect={() => setSourceKind(kind)}
               />
@@ -362,12 +330,7 @@ function SourceChip({
   onSelect: () => void;
 }) {
   return (
-    <button
-      type="button"
-      className="skills-hub-chip"
-      aria-pressed={active}
-      onClick={onSelect}
-    >
+    <button type="button" className="skills-hub-chip" aria-pressed={active} onClick={onSelect}>
       {label}
       <span className="skills-hub-chip-count">{count}</span>
     </button>
@@ -397,19 +360,12 @@ function HubResultCard({
     <li className="skills-hub-row">
       <div className="skills-hub-main">
         <div className="skills-hub-headline">
-          <button
-            type="button"
-            className="skills-hub-name"
-            id={labelId}
-            onClick={onInspect}
-          >
+          <button type="button" className="skills-hub-name" id={labelId} onClick={onInspect}>
             {result.name}
           </button>
           <SourcePill kind={source.kind} label={source.label} />
           <TrustPill trust={result.trust} />
-          {result.version ? (
-            <span className="skills-hub-version">v{result.version}</span>
-          ) : null}
+          {result.version ? <span className="skills-hub-version">v{result.version}</span> : null}
           {result.installed ? (
             <span className="skills-hub-installed-tag">
               <IconCircleCheck size={12} ariaHidden />
@@ -421,9 +377,7 @@ function HubResultCard({
         {result.description ? (
           <p className="skills-hub-description">{result.description}</p>
         ) : (
-          <p className="skills-hub-description skills-hub-description-muted">
-            {source.blurb}
-          </p>
+          <p className="skills-hub-description skills-hub-description-muted">{source.blurb}</p>
         )}
 
         {result.tags && result.tags.length > 0 ? (
@@ -506,11 +460,7 @@ function InstallControl({
           <IconExclamationCircle size={13} ariaHidden />
           {install?.error ?? "Install failed."}
         </span>
-        <button
-          type="button"
-          className="skills-hub-install-retry"
-          onClick={onInstall}
-        >
+        <button type="button" className="skills-hub-install-retry" onClick={onInstall}>
           Try again
         </button>
         <button
@@ -528,11 +478,7 @@ function InstallControl({
   return (
     <button type="button" className="skills-hub-install" onClick={onInstall}>
       <IconArrowInbox size={14} ariaHidden />
-      {result.installed
-        ? result.updateAvailable
-          ? "Update"
-          : "Reinstall"
-        : "Install"}
+      {result.installed ? (result.updateAvailable ? "Update" : "Reinstall") : "Install"}
     </button>
   );
 }
@@ -567,11 +513,7 @@ function InspectDrawer({
   }, [onClose]);
 
   return (
-    <div
-      className="skills-hub-drawer-backdrop"
-      role="presentation"
-      onClick={onClose}
-    >
+    <div className="skills-hub-drawer-backdrop" role="presentation" onClick={onClose}>
       <aside
         className="skills-hub-drawer"
         role="dialog"
@@ -581,10 +523,7 @@ function InspectDrawer({
       >
         <header className="skills-hub-drawer-header">
           <div className="skills-hub-drawer-title-row">
-            <h3
-              id="skills-hub-drawer-title"
-              className="skills-hub-drawer-title"
-            >
+            <h3 id="skills-hub-drawer-title" className="skills-hub-drawer-title">
               {result.name}
             </h3>
             <button
@@ -599,9 +538,7 @@ function InspectDrawer({
           <div className="skills-hub-drawer-badges">
             <SourcePill kind={source.kind} label={source.label} />
             <TrustPill trust={result.trust} />
-            {result.version ? (
-              <span className="skills-hub-version">v{result.version}</span>
-            ) : null}
+            {result.version ? <span className="skills-hub-version">v{result.version}</span> : null}
             {result.installed ? (
               <span className="skills-hub-installed-tag">
                 <IconCircleCheck size={12} ariaHidden />
@@ -613,16 +550,10 @@ function InspectDrawer({
 
         <div className="skills-hub-drawer-body">
           {result.description ? (
-            <p className="skills-hub-drawer-description">
-              {result.description}
-            </p>
+            <p className="skills-hub-drawer-description">{result.description}</p>
           ) : null}
 
-          <div
-            className="skills-hub-drawer-trust"
-            data-tone={trust.tone}
-            role="note"
-          >
+          <div className="skills-hub-drawer-trust" data-tone={trust.tone} role="note">
             <span className="skills-hub-drawer-trust-eyebrow">
               {trust.tone === "trusted" ? (
                 <IconShieldCheck size={15} ariaHidden />
@@ -631,33 +562,23 @@ function InspectDrawer({
               )}
               {trust.label}
             </span>
-            <span className="skills-hub-drawer-trust-body">
-              {trust.advisory}
-            </span>
+            <span className="skills-hub-drawer-trust-body">{trust.advisory}</span>
           </div>
 
           {directUrl ? (
             <p className="skills-hub-drawer-note">
-              This installs a single SKILL.md file directly from a URL. June
-              asks you to confirm before installing it because it has not been
-              reviewed.
+              This installs a single SKILL.md file directly from a URL. June asks you to confirm
+              before installing it because it has not been reviewed.
             </p>
           ) : null}
 
-          {result.author ? (
-            <p className="skills-hub-drawer-meta">By {result.author}</p>
-          ) : null}
+          {result.author ? <p className="skills-hub-drawer-meta">By {result.author}</p> : null}
 
           {result.upstreamUrls && result.upstreamUrls.length > 0 ? (
             <ul className="skills-hub-drawer-links">
               {result.upstreamUrls.map((url) => (
                 <li key={url}>
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="skills-hub-drawer-link"
-                  >
+                  <a href={url} target="_blank" rel="noreferrer" className="skills-hub-drawer-link">
                     <IconArrowUpRight size={13} ariaHidden />
                     {url}
                   </a>
@@ -707,11 +628,7 @@ function SourcePill({ kind, label }: { kind: HubSourceKind; label: string }) {
 function TrustPill({ trust }: { trust: HermesHubSkillResult["trust"] }) {
   const meta = trustMeta(trust);
   return (
-    <span
-      className="skills-hub-trust"
-      data-tone={meta.tone}
-      title={meta.advisory}
-    >
+    <span className="skills-hub-trust" data-tone={meta.tone} title={meta.advisory}>
       {meta.tone === "trusted" ? (
         <IconShieldCheck size={11} ariaHidden />
       ) : meta.tone === "caution" ? (
@@ -742,13 +659,7 @@ function HubLoading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="skills-hub-empty" role="status">
       <span className="skills-hub-empty-icon" aria-hidden>

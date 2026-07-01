@@ -9,9 +9,7 @@ import {
 
 describe("classifyFailure", () => {
   it("treats June's low-balance message as a balance issue", () => {
-    expect(
-      classifyFailure("Your balance is too low. Upgrade to continue."),
-    ).toBe("balance_low");
+    expect(classifyFailure("Your balance is too low. Upgrade to continue.")).toBe("balance_low");
   });
 
   it("also matches the structured error code if it leaks through", () => {
@@ -26,11 +24,7 @@ describe("classifyFailure", () => {
 
 describe("userFacingFailureMessage", () => {
   it("turns no-speech provider codes into useful guidance", () => {
-    expect(
-      userFacingFailureMessage(
-        "Microphone: upstream_provider_failed; no_speech",
-      ),
-    ).toBe(
+    expect(userFacingFailureMessage("Microphone: upstream_provider_failed; no_speech")).toBe(
       "Microphone: No speech detected. Try speaking louder or moving closer to the microphone.",
     );
   });
@@ -39,9 +33,9 @@ describe("userFacingFailureMessage", () => {
     expect(userFacingFailureMessage("expected value at line 1 column 1")).toBe(
       "The processing service returned an invalid response.",
     );
-    expect(
-      userFacingFailureMessage("Microphone: expected value at line 1 column 1"),
-    ).toBe("Microphone: The processing service returned an invalid response.");
+    expect(userFacingFailureMessage("Microphone: expected value at line 1 column 1")).toBe(
+      "Microphone: The processing service returned an invalid response.",
+    );
   });
 });
 
@@ -59,9 +53,7 @@ describe("NoteFailureBanner", () => {
     );
     // No title — one sentence carries the failure and the reassurance.
     expect(
-      screen.getByText(
-        /Your balance ran out\. Your recording is saved locally/i,
-      ),
+      screen.getByText(/Your balance ran out\. Your recording is saved locally/i),
     ).toBeInTheDocument();
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();
 
@@ -84,14 +76,10 @@ describe("NoteFailureBanner", () => {
       />,
     );
 
-    expect(
-      screen.getByText(/so top up credits and retry/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/so top up credits and retry/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Upgrade/i })).toBeNull();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Top up credits" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Top up credits" }));
     expect(onTopUp).toHaveBeenCalledOnce();
   });
 
@@ -105,13 +93,9 @@ describe("NoteFailureBanner", () => {
       />,
     );
     expect(screen.getByText(/Network unreachable/i)).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /Upgrade/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Retry/i })).toBeEnabled();
-    expect(
-      screen.getByText(/Your recording is saved locally/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Your recording is saved locally/i)).toBeInTheDocument();
   });
 
   it("shows a friendly message for no-speech transcription failures", () => {
@@ -125,9 +109,7 @@ describe("NoteFailureBanner", () => {
     );
 
     expect(screen.getByText(/No speech detected/i)).toBeInTheDocument();
-    expect(
-      screen.queryByText(/upstream_provider_failed/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/upstream_provider_failed/i)).not.toBeInTheDocument();
   });
 
   it("shows a billing message for metering provider failures", () => {
@@ -140,12 +122,8 @@ describe("NoteFailureBanner", () => {
       />,
     );
 
-    expect(
-      screen.getByText(/Billing is temporarily unavailable/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText(/metering_provider_failed/i),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Billing is temporarily unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/metering_provider_failed/i)).not.toBeInTheDocument();
   });
 
   it("guards against double-click while a retry is in flight", async () => {

@@ -3,9 +3,7 @@ import { useLayoutEffect, useRef, type TextareaHTMLAttributes } from "react";
 /** A textarea that starts at one line and grows with its content, the way
  * the chat composer does. CSS max-height caps the growth; past the cap the
  * field scrolls instead. */
-export function GrowingTextarea(
-  props: TextareaHTMLAttributes<HTMLTextAreaElement>,
-) {
+export function GrowingTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useLayoutEffect(() => {

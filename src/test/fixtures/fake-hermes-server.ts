@@ -107,11 +107,7 @@ export type FakeMcpServer = {
   transport: "stdio" | "http" | "http-oauth";
   command?: string;
   url?: string;
-  auth_status?:
-    | "authenticated"
-    | "unauthenticated"
-    | "expired"
-    | "not-required";
+  auth_status?: "authenticated" | "unauthenticated" | "expired" | "not-required";
   status?: "connected" | "error" | "untested";
   status_message?: string;
   tools?: Array<{ name: string; description?: string; enabled?: boolean }>;
@@ -334,13 +330,9 @@ export class FakeHermesServer {
       gateway_running: scenario.gateway?.gateway_running ?? false,
       version: scenario.gateway?.version ?? PINNED_HERMES_VERSION,
     };
-    this.profiles = clone(
-      scenario.profiles ?? [{ name: "default", active: true }],
-    );
+    this.profiles = clone(scenario.profiles ?? [{ name: "default", active: true }]);
     this.activeProfile =
-      this.profiles.find((p) => p.active)?.name ??
-      this.profiles[0]?.name ??
-      "default";
+      this.profiles.find((p) => p.active)?.name ?? this.profiles[0]?.name ?? "default";
     this.profileCreateError = scenario.profileCreateError;
     this.profileSoulError = scenario.profileSoulError;
     this.profileActivateNotOk = scenario.profileActivateNotOk ?? false;
@@ -351,10 +343,7 @@ export class FakeHermesServer {
   }
 
   /** A `fetch`-compatible bound method to hand to the admin client. */
-  readonly fetch = async (
-    input: string,
-    init?: RequestInit,
-  ): Promise<Response> => {
+  readonly fetch = async (input: string, init?: RequestInit): Promise<Response> => {
     const url = new URL(input);
     const method = (init?.method ?? "GET").toUpperCase();
     const path = url.pathname;
@@ -441,8 +430,7 @@ export class FakeHermesServer {
       const results = q
         ? this.hubResults.filter(
             (r) =>
-              r.identifier.toLowerCase().includes(q) ||
-              (r.name ?? "").toLowerCase().includes(q),
+              r.identifier.toLowerCase().includes(q) || (r.name ?? "").toLowerCase().includes(q),
           )
         : [];
       return json(200, { results });
@@ -466,9 +454,7 @@ export class FakeHermesServer {
       return json(200, { toolsets: this.toolsets });
     }
     if (method === "PUT" && path.startsWith("/api/tools/toolsets/")) {
-      const name = decodeURIComponent(
-        path.slice("/api/tools/toolsets/".length),
-      );
+      const name = decodeURIComponent(path.slice("/api/tools/toolsets/".length));
       const toolset = this.toolsets.find((t) => t.name === name);
       if (!toolset) throw new HttpError(404, { code: "not_found" });
       toolset.enabled = Boolean((body as { enabled?: boolean })?.enabled);
@@ -501,9 +487,7 @@ export class FakeHermesServer {
     const removeMatch = matchPath(path, "/api/mcp/servers/:name");
     if (method === "DELETE" && removeMatch) {
       const before = this.mcpServers.length;
-      this.mcpServers = this.mcpServers.filter(
-        (s) => s.name !== removeMatch.name,
-      );
+      this.mcpServers = this.mcpServers.filter((s) => s.name !== removeMatch.name);
       if (this.mcpServers.length === before) {
         throw new HttpError(404, { code: "not_found" });
       }
@@ -530,11 +514,7 @@ export class FakeHermesServer {
           error: "field required: name",
         });
       }
-      this.installCatalogEntry(
-        installName,
-        installBody.env,
-        installBody.enable,
-      );
+      this.installCatalogEntry(installName, installBody.env, installBody.enable);
       return this.startOrComplete("catalog-install");
     }
 
@@ -765,13 +745,9 @@ export class FakeHermesServer {
         name,
         enabled,
         transport,
-        command:
-          entry?.command ?? (transport === "stdio" ? `mcp-${name}` : undefined),
-        url:
-          entry?.url ??
-          (transport !== "stdio" ? `https://mcp.test/${name}` : undefined),
-        auth_status:
-          transport === "http-oauth" ? "unauthenticated" : "not-required",
+        command: entry?.command ?? (transport === "stdio" ? `mcp-${name}` : undefined),
+        url: entry?.url ?? (transport !== "stdio" ? `https://mcp.test/${name}` : undefined),
+        auth_status: transport === "http-oauth" ? "unauthenticated" : "not-required",
         status: "untested",
         env,
       });
@@ -855,11 +831,7 @@ function json(status: number, payload: unknown): Response {
 }
 
 /** Sets a dotted path inside a config tree, creating intermediate objects. */
-function setConfigPath(
-  root: Record<string, unknown>,
-  segments: string[],
-  value: unknown,
-): void {
+function setConfigPath(root: Record<string, unknown>, segments: string[], value: unknown): void {
   let cursor = root;
   for (let i = 0; i < segments.length - 1; i += 1) {
     const key = segments[i];
@@ -873,10 +845,7 @@ function setConfigPath(
 }
 
 /** Deletes a dotted path from a config tree, if present. */
-function deleteConfigPath(
-  root: Record<string, unknown>,
-  segments: string[],
-): void {
+function deleteConfigPath(root: Record<string, unknown>, segments: string[]): void {
   let cursor: Record<string, unknown> | undefined = root;
   for (let i = 0; i < segments.length - 1; i += 1) {
     const next = cursor?.[segments[i]];
@@ -911,10 +880,7 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function headerValue(
-  headers: HeadersInit | undefined,
-  name: string,
-): string | undefined {
+function headerValue(headers: HeadersInit | undefined, name: string): string | undefined {
   if (!headers) return undefined;
   const lower = name.toLowerCase();
   if (headers instanceof Headers) return headers.get(name) ?? undefined;
@@ -939,20 +905,14 @@ function parseBody(body: BodyInit | null | undefined): unknown {
 
 function requireToggleBody(body: unknown): { name: string; enabled: boolean } {
   const record = body as { name?: unknown; enabled?: unknown };
-  if (
-    typeof record?.name !== "string" ||
-    typeof record?.enabled !== "boolean"
-  ) {
+  if (typeof record?.name !== "string" || typeof record?.enabled !== "boolean") {
     throw new HttpError(400, { code: "bad_request" });
   }
   return { name: record.name, enabled: record.enabled };
 }
 
 /** Matches a single-segment `:name` template, returning the decoded param. */
-function matchPath(
-  path: string,
-  template: string,
-): { name: string } | undefined {
+function matchPath(path: string, template: string): { name: string } | undefined {
   const templateParts = template.split("/");
   const pathParts = path.split("/");
   if (templateParts.length !== pathParts.length) return undefined;

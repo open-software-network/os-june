@@ -101,16 +101,10 @@ export function withWaveLayers(
     const pos = ((IDLE_PULSE_SPEED * t) % 1) * span;
     const d = index - pos;
     const bump = Math.exp(-(d * d) / (2 * IDLE_PULSE_WIDTH * IDLE_PULSE_WIDTH));
-    lvl = clamp(
-      lvl + IDLE_PULSE_AMP * bump * (1 - lvl * IDLE_PULSE_DUCKING),
-      0,
-      1,
-    );
+    lvl = clamp(lvl + IDLE_PULSE_AMP * bump * (1 - lvl * IDLE_PULSE_DUCKING), 0, 1);
   }
   if (SPEECH_WAVE_AMP > 0) {
-    const crest = Math.sin(
-      2 * Math.PI * SPEECH_WAVE_SPEED * t - index * SPEECH_WAVE_SPREAD,
-    );
+    const crest = Math.sin(2 * Math.PI * SPEECH_WAVE_SPEED * t - index * SPEECH_WAVE_SPREAD);
     const drive = Math.pow(speech, SPEECH_WAVE_CURVE);
     lvl = clamp(lvl + SPEECH_WAVE_AMP * drive * crest, 0, 1);
   }
@@ -141,13 +135,11 @@ export function clamp(value: number, min: number, max: number) {
 
 export function scaleLiveInputPeak(peak: number) {
   const normalized = clamp(peak, 0, 1);
-  const gated =
-    (normalized - LIVE_INPUT_NOISE_FLOOR) / (1 - LIVE_INPUT_NOISE_FLOOR);
+  const gated = (normalized - LIVE_INPUT_NOISE_FLOOR) / (1 - LIVE_INPUT_NOISE_FLOOR);
   if (gated <= 0) {
     return 0;
   }
-  const shaped =
-    1 - Math.exp(-LIVE_INPUT_KNEE * Math.pow(gated, LIVE_INPUT_LOW_LIFT));
+  const shaped = 1 - Math.exp(-LIVE_INPUT_KNEE * Math.pow(gated, LIVE_INPUT_LOW_LIFT));
   return clamp(shaped, 0, 1);
 }
 
@@ -197,9 +189,7 @@ export function createBarMeter(
         // Original path: a fixed [1,0,1,0,…] one-push offset shimmer.
         const offset = historyOffsets[i] ?? 0;
         const historyIndex = (((head - offset) % len) + len) % len;
-        sample =
-          history[head] * liveLevelMix +
-          history[historyIndex] * (1 - liveLevelMix);
+        sample = history[head] * liveLevelMix + history[historyIndex] * (1 - liveLevelMix);
       }
       raw[i] = (weights[i] ?? 0.5) * sample;
     }
@@ -223,12 +213,7 @@ export function createBarMeter(
     for (let i = 0; i < barCount; i++) {
       const diff = targets[i] - displayed[i];
       const goingSilent = targets[i] <= SILENCE_TARGET;
-      const alpha =
-        diff > 0
-          ? ATTACK_ALPHA
-          : goingSilent
-            ? SILENCE_RELEASE_ALPHA
-            : RELEASE_ALPHA;
+      const alpha = diff > 0 ? ATTACK_ALPHA : goingSilent ? SILENCE_RELEASE_ALPHA : RELEASE_ALPHA;
       let next = clamp(displayed[i] + diff * alpha, 0, 1);
       if (
         targets[i] <= IDLE_LEVEL + IDLE_SNAP_DELTA &&
