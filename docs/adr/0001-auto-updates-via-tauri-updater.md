@@ -49,5 +49,5 @@ accepted
 
 Builds are now **universal** (x86_64 + arm64), so the `aarch64`-only consequence
 above no longer applies: Intel Macs receive a matching `platforms` entry and
-auto-update. A follow-up ADR will record the rc/stable release-channel switching
-once PR #529 (`jakub/rc-channel-for-june`) lands.
+auto-update. The rc/stable release-channel switching is recorded in
+[ADR-0003](0003-release-candidate-channel-and-promotion.md).

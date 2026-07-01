@@ -40,6 +40,6 @@ rename is the durability commit point.
 - Recovery, validation, and the WAV writer are **coupled around the
   atomic-rename contract**; changing the finalize/rename flow means updating all
   three.
-- See [ADR-0003](0003-out-of-process-system-audio-helper.md) for how the system
+- See [ADR-0004](0004-out-of-process-system-audio-helper.md) for how the system
   source is captured and [docs/audio-pipeline.md](../audio-pipeline.md) for the
   turn-detection algorithm.

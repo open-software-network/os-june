@@ -89,7 +89,7 @@ _Avoid_: realtime transcription, live captions, streaming.
 **System audio helper**:
 The out-of-process macOS `.app` (`june-system-audio-recorder`) that captures
 system audio via CoreAudio process taps and reports over a `status.json` file
-(see [ADR-0003](docs/adr/0003-out-of-process-system-audio-helper.md)).
+(see [ADR-0004](docs/adr/0004-out-of-process-system-audio-helper.md)).
 _Avoid_: system driver, in-process capture.
 
 ### Agent runtime (Hermes)
@@ -142,7 +142,7 @@ _Avoid_: gateway command.
 An authoritative boolean flag from the live Venice catalog `capabilities`
 (`supportsFunctionCalling` → tools, `supportsVision` → image input), never
 inferred from marketing `traits` (see
-[ADR-0006](docs/adr/0006-model-capability-source-of-truth.md)).
+[ADR-0007](docs/adr/0007-model-capability-source-of-truth.md)).
 _Avoid_: trait (`traits` is a separate, non-authoritative Venice field).
 
 **Attachment**:

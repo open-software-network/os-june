@@ -61,5 +61,5 @@ Non-secret (usually left to `config.toml`): `JUNE__SERVER__HOST` / `PORT`,
 - **Web tools:** `web_search_credits` 20, `web_fetch_credits` 20 (flat).
 - **Preview cap:** `note_transcribe_preview_max_audio_secs` 30.
 - **OS Accounts token contract:** `iss` `https://accounts.opensoftware.co`, `aud` `open-software-apps`, `jwks_refresh_secs` 300, `jwks_miss_min_backoff_secs` 5.
-- **Pricing:** one `[pricing."<model_id>"]` table per priced model (unit, credits, provider, model_type, capabilities, ...). A model with no pricing entry is rejected at the boundary; the live Venice catalog extends this at boot (see [ADR-0006](adr/0006-model-capability-source-of-truth.md)).
+- **Pricing:** one `[pricing."<model_id>"]` table per priced model (unit, credits, provider, model_type, capabilities, ...). A model with no pricing entry is rejected at the boundary; the live Venice catalog extends this at boot (see [ADR-0007](adr/0007-model-capability-source-of-truth.md)).
 - **Attestation / issue reports:** the TEE trust-center URL + the fixed os-platform destination (`open-software` / `june`).

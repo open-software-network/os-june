@@ -3,8 +3,8 @@
 How June records meeting audio, separates sources, detects conversation turns,
 and transcribes into a note. It is **saved-audio-first**: the local WAV is the
 source of truth, provider speed is secondary. See
-[ADR-0004](adr/0004-source-separated-audio-capture.md) (one WAV per source),
-[ADR-0003](adr/0003-out-of-process-system-audio-helper.md) (system-audio
+[ADR-0005](adr/0005-source-separated-audio-capture.md) (one WAV per source),
+[ADR-0004](adr/0004-out-of-process-system-audio-helper.md) (system-audio
 helper), and [ADR-0002](adr/0002-live-transcript-preview-strategy.md) (live
 preview).
 
@@ -47,7 +47,7 @@ Tauri commands: `start_recording`, `pause_recording`, `resume_recording`,
 
 ## System-audio helper IPC contract
 
-The helper is controlled and observed out-of-process (see ADR-0003):
+The helper is controlled and observed out-of-process (see ADR-0004):
 
 - **Control:** Unix signals — `SIGUSR1` / `SIGUSR2` = pause / resume,
   `SIGTERM` / `SIGKILL` = stop. Launched via `/usr/bin/open -n`.

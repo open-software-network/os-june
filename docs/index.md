@@ -12,10 +12,11 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 
 - [adr/0001](adr/0001-auto-updates-via-tauri-updater.md) — auto-updates via the Tauri updater on a separate public releases repo
 - [adr/0002](adr/0002-live-transcript-preview-strategy.md) — live transcript preview as an ephemeral companion, not the source of truth
-- [adr/0003](adr/0003-out-of-process-system-audio-helper.md) — macOS system audio via an out-of-process helper (file IPC + Unix signals)
-- [adr/0004](adr/0004-source-separated-audio-capture.md) — one WAV per source, re-interleaved as turns
-- [adr/0005](adr/0005-embed-hermes-sandboxed-runtime.md) — embed the pinned Hermes runtime as sandboxed child processes
-- [adr/0006](adr/0006-model-capability-source-of-truth.md) — model capabilities come from the live Venice catalog, not marketing traits
+- [adr/0003](adr/0003-release-candidate-channel-and-promotion.md) — rc channel + promote-to-stable (every stable release starts as an RC)
+- [adr/0004](adr/0004-out-of-process-system-audio-helper.md) — macOS system audio via an out-of-process helper (file IPC + Unix signals)
+- [adr/0005](adr/0005-source-separated-audio-capture.md) — one WAV per source, re-interleaved as turns
+- [adr/0006](adr/0006-embed-hermes-sandboxed-runtime.md) — embed the pinned Hermes runtime as sandboxed child processes
+- [adr/0007](adr/0007-model-capability-source-of-truth.md) — model capabilities come from the live Venice catalog, not marketing traits
 
 ## Enforceable rules (spec/)
 
@@ -66,8 +67,7 @@ tasks / contracts / checklists`.
 
 ## Gaps (no doc yet — candidates for new docs/ADRs)
 
-- **Roadmap / MVP scope** — no single sequenced source of truth across the active tracks (admin surfaces, release channels JUN-132, reliability).
-- **Release-channel ADR** — to be written once PR #529 (rc/stable switching) merges.
+- **Roadmap / MVP scope** — no single sequenced source of truth across the active tracks (admin surfaces, reliability).
 - **Dictation ADR** — the low-latency request shape + charge timing (flagged in CONTEXT.md).
 
 ## Security

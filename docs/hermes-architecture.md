@@ -2,7 +2,7 @@
 
 How June embeds and drives the Hermes agent runtime as its chat/agent brain.
 For *why* it is embedded and sandboxed, see
-[ADR-0005](adr/0005-embed-hermes-sandboxed-runtime.md). For the code-level
+[ADR-0006](adr/0006-embed-hermes-sandboxed-runtime.md). For the code-level
 contract of the typed event seam, `src/lib/hermes-control-plane/README.md` is
 the best entry point. For bumping the pinned runtime, see
 [hermes-upgrade-checklist.md](hermes-upgrade-checklist.md).
@@ -66,7 +66,7 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
   (`active-session-switched` / `default-changed` / `switch-failed`); it never
   claims a running session moved unless the dispatch acked.
 - **Model capabilities come from the live Venice catalog, never traits** — see
-  [ADR-0006](adr/0006-model-capability-source-of-truth.md). The model catalog is
+  [ADR-0007](adr/0007-model-capability-source-of-truth.md). The model catalog is
   Rust-side (`src-tauri/src/providers/mod.rs`, backed by June API's Venice
   catalog).
 - **Identity override.** June rewrites the runtime's persona at prompt-build time
