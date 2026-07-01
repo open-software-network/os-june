@@ -3,7 +3,17 @@
 ## Status
 
 proposed - grill-with-docs design for JUN-129 follow-on; implementation phased
-(Phase A first)
+(Phase A first).
+
+Landed ahead of the phases: **image generation is now metered** (this PR). It
+runs through a `june_services::ImageService` (authorize hold -> generate ->
+charge, mirroring the web tools), priced per model by a dedicated `image_pricing`
+map in `june-config` kept separate from the text/ASR catalog so image models
+never leak into the served pickers. An unpriced model is rejected
+`model_not_priced` (422); an out-of-credits user gets 402 before Venice is
+called. Prices (Venice per-image cost x ~2, `$1 = 1000 credits`):
+`venice-sd35` 20, `flux-dev` 20, `qwen-image` 60, `hidream` 40. **Editing**
+metering ships with the `/image/edit` endpoint in Phase C.
 
 ## Context
 
@@ -91,8 +101,10 @@ Phased so each phase ships value on its own:
 Trade-offs and risks:
 
 - Two generation paths (fast + tool) must stay consistent in render, model
-  selection, and billing. Both are **unmetered** until image metering lands
-  (tracked separately, as for `/image/generate` today).
+  selection, and billing. **Generation is metered** as of this PR (see Status);
+  the tool path (Phase B) reuses the same `/v1/image/generate` and so is metered
+  for free. **Editing** (Phase C) meters when its `/v1/image/edit` endpoint lands
+  — edit models are a separate price catalog.
 - The model must correctly thread a returned `filename` back into `edit_image`;
   the tool descriptions must make this contract explicit.
 - **Non-vision chat models** can't "see" an attached image; the existing
