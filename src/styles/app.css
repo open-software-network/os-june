@@ -9975,8 +9975,7 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-.settings-more-options-trigger[aria-expanded="true"]
-  .settings-more-options-chevron {
+.settings-more-options-trigger[aria-expanded="true"] .settings-more-options-chevron {
   transform: rotate(180deg);
 }
 

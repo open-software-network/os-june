@@ -90,6 +90,24 @@ describe("FundingGate", () => {
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
+  it("opens the account portal for subscribed users below zero credits", async () => {
+    const user = userEvent.setup();
+    renderFundingGate({
+      ...baseAccount,
+      balance: { credits: -1, usdMillis: -1 },
+      subscription: { subscribed: true, status: "active" },
+    });
+
+    expect(screen.getByRole("heading", { name: "Top up credits" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Your credit balance is below zero. Top up credits to keep using June."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Top up credits" }));
+    expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+  });
+
   it("lets a waiting account update be checked or reopened", async () => {
     const user = userEvent.setup();
     const onRefresh = vi.fn(async () => baseAccount);

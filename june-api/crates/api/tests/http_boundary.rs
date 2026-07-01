@@ -914,11 +914,11 @@ struct FakeOsAccounts;
 
 #[async_trait]
 impl OsAccountsClient for FakeOsAccounts {
-    async fn authorize(&self, _request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+    async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
         Ok(Authorization {
             allowed: true,
             action_token: Some("agt_test".to_string()),
-            cap_credits: None,
+            cap_credits: Some(request.estimate),
             reason: None,
         })
     }

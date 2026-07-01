@@ -1302,9 +1302,7 @@ export function AppSettings({
                   >
                     <span className="settings-row-info">
                       <span className="settings-row-title">More options</span>
-                      <span className="settings-row-description">
-                        Advanced model settings.
-                      </span>
+                      <span className="settings-row-description">Advanced model settings.</span>
                     </span>
                     <IconChevronDownSmall
                       className="settings-more-options-chevron"
@@ -1783,13 +1781,10 @@ function VeniceApiKeyRow({
       <div className="settings-row-info">
         <h3 className="settings-row-title">Venice API key</h3>
         <p className="settings-row-description">
-          Use your own key for Venice models. Stored locally and sent only for
-          Venice requests.
+          Use your own key for Venice models. Stored locally and sent only for Venice requests.
         </p>
         {configured ? (
-          <p className="settings-row-description settings-row-substatus">
-            Key saved.
-          </p>
+          <p className="settings-row-description settings-row-substatus">Key saved.</p>
         ) : null}
       </div>
       <div className="settings-row-control settings-secret-control">
@@ -1806,20 +1801,11 @@ function VeniceApiKeyRow({
             if (event.key === "Enter" && canSave) onSave();
           }}
         />
-        <button
-          type="button"
-          className="btn btn-secondary"
-          disabled={!canSave}
-          onClick={onSave}
-        >
+        <button type="button" className="btn btn-secondary" disabled={!canSave} onClick={onSave}>
           Save
         </button>
         {configured ? (
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={onRemove}
-          >
+          <button type="button" className="btn btn-secondary" onClick={onRemove}>
             Remove
           </button>
         ) : null}
