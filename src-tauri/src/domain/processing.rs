@@ -1819,6 +1819,46 @@ mod tests {
         assert!(covered.iter().all(|turn| turn.end_ms > turn.start_ms));
     }
 
+    #[test]
+    fn empty_detection_gets_full_source_fallback_for_every_source() {
+        let mic_path = PathBuf::from("microphone.wav");
+        let system_path = PathBuf::from("system.wav");
+        let sources = vec![
+            (
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            ),
+            (
+                "system-artifact".to_string(),
+                "system".to_string(),
+                system_path.clone(),
+            ),
+        ];
+
+        let covered = add_full_source_turns_for_missing_sources(&sources, Vec::new());
+        let covered = coalesce_turns_for_transcription(covered);
+
+        assert_eq!(covered.len(), 2);
+        let microphone = covered
+            .iter()
+            .find(|turn| turn.artifact_id == "mic-artifact")
+            .expect("microphone source should receive a fallback turn");
+        assert_eq!(microphone.source, "microphone");
+        assert_eq!(microphone.source_path, mic_path);
+        assert_eq!(microphone.start_ms, 0);
+        assert_eq!(microphone.end_ms, 0);
+
+        let system = covered
+            .iter()
+            .find(|turn| turn.artifact_id == "system-artifact")
+            .expect("system source should receive a fallback turn");
+        assert_eq!(system.source, "system");
+        assert_eq!(system.source_path, system_path);
+        assert_eq!(system.start_ms, 0);
+        assert_eq!(system.end_ms, 0);
+    }
+
     #[tokio::test]
     async fn transcribes_source_lanes_concurrently_and_keeps_turn_order() {
         let active = Arc::new(AtomicUsize::new(0));
