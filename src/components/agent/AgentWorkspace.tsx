@@ -9317,11 +9317,15 @@ function AgentChatTurnRow({
               onSecret={onSecret}
             />
           ) : part.type === "notice" ? (
-            <CreditsNoticePart
-              key={`${turn.id}:notice:${index}`}
-              onTopUp={onTopUp}
-              topUpLabel={topUpLabel}
-            />
+            part.kind === "context-overflow" ? (
+              <ContextOverflowNoticePart key={`${turn.id}:notice:${index}`} />
+            ) : (
+              <CreditsNoticePart
+                key={`${turn.id}:notice:${index}`}
+                onTopUp={onTopUp}
+                topUpLabel={topUpLabel}
+              />
+            )
           ) : part.type === "steering" ? (
             <SteeringPart
               key={`${turn.id}:steering:${index}`}
@@ -9663,6 +9667,24 @@ function CreditsNoticePart({
           </button>
         ) : undefined
       }
+    />
+  );
+}
+
+// A turn that died because the request outgrew the model's context (or the
+// agent request-size limit) folds into this card instead of a raw "Cannot
+// compress further." error with only Copy/Branch (JUN-169). On a single
+// oversized turn there is nothing to compress, so the honest recovery is to
+// shrink the input or start fresh, not to retry as-is. No wired action yet —
+// the guidance points at the composer / branch controls already on the turn.
+function ContextOverflowNoticePart() {
+  return (
+    <InlineNotice
+      className="agent-context-overflow-notice"
+      tone="warning"
+      role="alert"
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
+      body="This message is too large for the model's context. Try attaching a smaller file, splitting it into parts, or starting a new session."
     />
   );
 }

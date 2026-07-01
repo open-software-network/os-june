@@ -15,8 +15,19 @@ pub(crate) const MAX_ISSUE_DESCRIPTION_CHARS: usize = 20_000;
 pub(crate) const MAX_ISSUE_DIAGNOSIS_CHARS: usize = 50_000;
 pub(crate) const MAX_ISSUE_ATTACHMENTS: usize = 20;
 pub(crate) const MAX_ISSUE_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
-pub(crate) const MAX_AGENT_STRING_CHARS: usize = 100_000;
-pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 240_000;
+// Abuse ceilings for an agent request body, NOT the model's context window.
+// The model enforces its own window; these only stop a runaway/malicious
+// request from reaching it. They must sit ABOVE real model capacity so a
+// legitimate large input isn't rejected here before the model ever sees it.
+// Text models in the catalog top out at 256k tokens (~1M chars at ~4
+// chars/token), so the aggregate cap tracks that; the per-string cap allows a
+// single large tool-result/file-read within a 200k-token model. JUN-169: the
+// old 240k aggregate (~60-68k tokens) rejected a single ~67k-token upload that
+// GLM 5.2's 200k window holds easily, and the proxy rebranded that rejection as
+// a "maximum context length" overflow, dead-ending the session on turn one.
+// Tune with cost/abuse in mind — a larger cap allows larger (costlier) requests.
+pub(crate) const MAX_AGENT_STRING_CHARS: usize = 400_000;
+pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 1_000_000;
 pub(crate) const MAX_AGENT_JSON_DEPTH: usize = 16;
 pub(crate) const MAX_AGENT_OUTPUT_TOKENS: u64 = 32_768;
 /// Venice caps a search query at 400 characters.

@@ -5,7 +5,10 @@ import type {
   HermesSessionMessage,
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
-import { isInsufficientCreditsMessage } from "./errors";
+import {
+  isContextOverflowMessage,
+  isInsufficientCreditsMessage,
+} from "./errors";
 import {
   isScheduledRunPreamble,
   stripScheduledRunPreamble,
@@ -100,11 +103,13 @@ export type AgentChatSecretPart = {
   status: "pending" | "resolved";
 };
 
-/** A turn-level condition the user can act on (today: the turn died because
- * the balance ran out), rendered as a notice card instead of raw error text. */
+/** A turn-level condition the user can act on, rendered as a notice card
+ * instead of raw error text: `credits` (the balance ran out) or
+ * `context-overflow` (the request outgrew the model's context / the agent
+ * request-size limit and cannot be retried as-is — JUN-169). */
 export type AgentChatNoticePart = {
   type: "notice";
-  kind: "credits";
+  kind: "credits" | "context-overflow";
   text: string;
 };
 
@@ -241,7 +246,8 @@ export function buildHermesSessionChatTurns(
       if (content) {
         turn.parts.push(
           (turn.role === "assistant"
-            ? creditsNoticeFromTurnText(content)
+            ? (creditsNoticeFromTurnText(content) ??
+              contextOverflowNotice(content))
             : undefined) ?? {
             type: "text",
             text: content,
@@ -311,6 +317,25 @@ function creditsNotice(text: string): AgentChatNoticePart | undefined {
     : undefined;
 }
 
+// A turn that died because the request outgrew the model's context (or the
+// agent request-size limit) reaches us as a raw provider/gateway error
+// ("Context length exceeded (…). Cannot compress further.", "prompt_too_long
+// …maximum context length"). Surface it as a first-class notice — on a single
+// oversized turn there is nothing to compress, so retrying as-is only loops
+// (JUN-169). Unlike a billing failure the wording never starts with "Error:",
+// so this matches the overflow phrases anywhere in the text.
+function contextOverflowNotice(text: string): AgentChatNoticePart | undefined {
+  return isContextOverflowMessage(text)
+    ? { type: "notice", kind: "context-overflow", text }
+    : undefined;
+}
+
+// Resolve the most specific actionable notice for a failed turn's text: a
+// billing failure first (most specific), then a context overflow.
+function turnNotice(text: string): AgentChatNoticePart | undefined {
+  return creditsNotice(text) ?? contextOverflowNotice(text);
+}
+
 // Assistant text only counts as a billing failure when it's the runtime's
 // error sentinel ("Error: <provider error>") — June talking *about* credits in
 // prose must stay ordinary text.
@@ -323,7 +348,8 @@ function creditsNoticeFromTurnText(
 function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   const notice =
     message.role === "assistant"
-      ? creditsNoticeFromTurnText(message.content)
+      ? (creditsNoticeFromTurnText(message.content) ??
+        contextOverflowNotice(message.content))
       : undefined;
   return {
     id: message.id,
@@ -436,7 +462,15 @@ function appendLiveHermesEvents(
 
     if (event.type === "message.complete") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const notice = text ? creditsNoticeFromTurnText(text) : undefined;
+      const payload = event.payload as Record<string, unknown> | undefined;
+      // A billing failure is recognizable from its "Error:" text prefix; a
+      // context overflow is not, so only fold it when the turn actually failed
+      // — an ordinary sentence that mentions "context length" stays prose.
+      const failed = stringValue(payload?.status)?.toLowerCase() === "error";
+      const notice = text
+        ? (creditsNoticeFromTurnText(text) ??
+          (failed ? contextOverflowNotice(text) : undefined))
+        : undefined;
       if (notice) {
         // The complete text is authoritative for the turn (see
         // completeAssistantTextPart); when it's a billing failure, any
@@ -737,7 +771,7 @@ function appendLiveHermesEvents(
 
     if (event.type === "error") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const notice = text ? creditsNotice(text) : undefined;
+      const notice = text ? turnNotice(text) : undefined;
       if (notice) {
         currentAssistant.parts.push(notice);
       } else {

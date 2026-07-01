@@ -1340,6 +1340,80 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  // The terminal error Hermes surfaces when a single oversized turn cannot be
+  // compressed below the window (JUN-169) — reaches us as a live error event,
+  // a failed message.complete, and persisted assistant text.
+  const OVERFLOW_ERROR =
+    "Context length exceeded (66,919 tokens). Cannot compress further.";
+
+  it("folds a live context-overflow error event into a context-overflow notice", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "error",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { message: OVERFLOW_ERROR },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
+    ]);
+  });
+
+  it("folds a failed context-overflow message.complete into a context-overflow notice", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: OVERFLOW_ERROR, status: "error" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
+    ]);
+  });
+
+  it("folds a persisted context-overflow assistant turn into a context-overflow notice", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: OVERFLOW_ERROR,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
+    ]);
+  });
+
+  it("keeps a successful message.complete that mentions context length as prose", () => {
+    const prose = "The maximum context length for GLM 5.2 is 200k tokens.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: prose, status: "complete" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: prose, status: "complete" },
+    ]);
+  });
+
   it("renders delegated subagents as live tool rows (regression: silently dropped)", () => {
     const turns = buildAgentChatTurns(
       [],

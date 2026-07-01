@@ -6408,6 +6408,18 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
 /// ("context length", "maximum context"); everything else in the envelope
 /// passes through untouched. Returns `None` for every other body, including
 /// non-JSON.
+///
+/// JUN-169 note — do NOT try to "fix" the single-turn dead-end here by dropping
+/// the trigger phrases for one-message requests: a bare `prompt_too_long` is
+/// exactly what re-wedges the session (the agent retries the same oversized
+/// prompt forever), which is the bug this rewrite exists to prevent. When a
+/// single oversized turn genuinely exceeds the window there is nothing to
+/// compress, so the agent legitimately ends with a terminal "Cannot compress
+/// further." That terminal error is owned by the frontend, which folds it into
+/// a context-overflow notice (see `isContextOverflowMessage` /
+/// `contextOverflowNotice`) instead of leaving a raw dead-end. Prevention lives
+/// upstream (the raised request-size cap in june-api's `validation.rs` so an
+/// in-window input is never rejected in the first place), not in this rewrite.
 fn translate_context_overflow_error(body: &[u8]) -> Option<serde_json::Value> {
     let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let message = value.get("message")?.as_str()?;

@@ -9041,6 +9041,23 @@ input:focus-visible,
   display: inline;
 }
 
+/* The context-overflow notice (JUN-169) carries a longer sentence than the
+ * credits card, so it needs the same inline flow: warning glyph + text
+ * wrapping like a paragraph instead of the base flex layout dropping the whole
+ * sentence onto its own line. */
+.agent-context-overflow-notice .inline-notice-message {
+  display: block;
+}
+
+.agent-context-overflow-notice .inline-notice-eyebrow {
+  margin-right: var(--sp-2);
+  vertical-align: -2px;
+}
+
+.agent-context-overflow-notice .inline-notice-body {
+  display: inline;
+}
+
 /* Inline notice — shared shape used by NoteRecoveryPrompt and the
  * mic-blocked banner. Tone-aware via the [data-tone] attribute so the
  * eyebrow color reflects the severity without changing the surrounding

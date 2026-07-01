@@ -36,3 +36,19 @@ export function isInsufficientCreditsMessage(message?: string) {
     message,
   );
 }
+
+/** Whether an error message means the request outgrew the model's context (or
+ * the agent request-size limit) — a hard size failure the user must act on
+ * (trim the input, attach a smaller file, start a fresh session), NOT something
+ * to retry as-is. Like {@link isInsufficientCreditsMessage}, string matching is
+ * a known weakness: the same condition reaches us as plain text from several
+ * layers — the June API's `prompt_too_long`/`request_too_large`, the provider
+ * proxy's rewritten "maximum context length" wording, and Hermes' terminal
+ * "Cannot compress further." when it cannot shrink a single oversized turn
+ * (JUN-169). */
+export function isContextOverflowMessage(message?: string) {
+  if (!message) return false;
+  return /cannot compress further|context length exceeded|context_length_exceeded|maximum context length|prompt_too_long|request_too_large/i.test(
+    message,
+  );
+}
