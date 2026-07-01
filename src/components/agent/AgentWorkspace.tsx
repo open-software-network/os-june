@@ -209,7 +209,10 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
-import { suggestedModelsForMode } from "../../lib/suggested-models";
+import {
+  preferredVisionFallbackModel,
+  suggestedModelsForMode,
+} from "../../lib/suggested-models";
 import {
   contextLabel,
   modelOptions,
@@ -2012,14 +2015,11 @@ export function AgentWorkspace({
   const generationPrivacyBadge = generationModel
     ? modelPrivacyBadge(generationModel)
     : undefined;
-  // The agent can only switch to a model that reads images AND runs tools —
-  // a vision model without function calling would brick the agent the same way
-  // modelSupportsTools guards the picker, so it can't be an escape hatch here.
-  const visionModelOptions = useMemo(
-    () =>
-      generationModels.filter(
-        (model) => modelSupportsImageInput(model) && modelSupportsTools(model),
-      ),
+  // The model the image-attach banner offers to switch to: a vision + tool
+  // capable model, preferring a curated suggested pick (Kimi K2.6) over the
+  // alphabetically-first vision model. See preferredVisionFallbackModel.
+  const preferredVisionModel = useMemo(
+    () => preferredVisionFallbackModel(generationModels),
     [generationModels],
   );
   // Mirror the send-time fallback trigger (pendingImageAttachments +
@@ -6311,23 +6311,23 @@ export function AgentWorkspace({
                 {resolvedGenerationModel?.name ?? "This model"} can't read
                 images.
               </span>
-              {visionModelOptions.length ? (
+              {preferredVisionModel ? (
                 <button
                   type="button"
                   className="agent-composer-notice-button agent-composer-image-warning-action"
                   onClick={() =>
-                    // Switch straight to the first image-capable model. The
+                    // Switch straight to the preferred image-capable model. The
                     // label promises a one-tap fix, and the generic model picker
                     // isn't vision-scoped — opening it for the multi-candidate
                     // case would drop the user into an unfiltered list that
-                    // doesn't surface the eligible models. visionModelOptions is
-                    // pre-filtered to image + tool support;
-                    // handleSelectGenerationModel routes the global default vs
-                    // per-chat override.
-                    void handleSelectGenerationModel(visionModelOptions[0].id)
+                    // doesn't surface the eligible models. preferredVisionModel
+                    // is pre-filtered to image + tool support and prefers a
+                    // suggested pick; handleSelectGenerationModel routes the
+                    // global default vs per-chat override.
+                    void handleSelectGenerationModel(preferredVisionModel.id)
                   }
                 >
-                  Switch to a vision model
+                  Switch to {preferredVisionModel.name}
                 </button>
               ) : null}
             </div>
