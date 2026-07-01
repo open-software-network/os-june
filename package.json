@@ -22,8 +22,10 @@
     "test:hermes-smoke": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/hermes-smoke.ts",
     "hermes:upgrade-check": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/hermes-upgrade-check.ts",
     "version:bump": "node scripts/bump-version.mjs",
-    "lint": "tsc --noEmit",
-    "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"src-tauri/tauri*.conf.json\" \"package.json\" \"tsconfig.json\" \"vite.config.ts\" \"index.html\" \"README.md\""
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
@@ -50,6 +52,7 @@
     "@tauri-apps/cli": "^2.11.3",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
+    "@biomejs/biome": "2.4.16",
     "@testing-library/user-event": "^14.5.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -57,7 +60,6 @@
     "@vitest/coverage-v8": "^2.1.8",
     "agentation": "^3.0.2",
     "jsdom": "^25.0.1",
-    "prettier": "^3.8.4",
     "typescript": "^5.6.3",
     "vite": "^6.0.3",
     "vitest": "^2.1.8"
