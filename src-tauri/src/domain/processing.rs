@@ -1,7 +1,7 @@
 use crate::{
     audio::turns::{
         coalesce_turns_for_transcription, detect_turns, normalize_wav_for_transcription,
-        split_wav_for_transcription, write_turn_wav, DetectionSource,
+        split_wav_for_transcription, write_turn_wav, AudioTurn, DetectionSource,
     },
     db::repositories::Repositories,
     domain::types::{
@@ -407,24 +407,7 @@ pub async fn process_saved_source_audio(
             })
             .collect::<Vec<_>>(),
     )?;
-    let turns = if turns.is_empty() {
-        sources
-            .iter()
-            .enumerate()
-            .map(
-                |(index, (artifact_id, source, audio_path))| crate::audio::turns::AudioTurn {
-                    artifact_id: artifact_id.clone(),
-                    source: source.clone(),
-                    source_path: audio_path.clone(),
-                    start_ms: 0,
-                    end_ms: 0,
-                    turn_index: index as i64,
-                },
-            )
-            .collect::<Vec<_>>()
-    } else {
-        turns
-    };
+    let turns = add_full_source_turns_for_missing_sources(&sources, turns);
     let turns = coalesce_turns_for_transcription(turns);
     repos
         .add_checkpoint(
@@ -1503,6 +1486,29 @@ fn drop_silent_system_sources(
         .collect()
 }
 
+fn add_full_source_turns_for_missing_sources(
+    sources: &[(String, String, PathBuf)],
+    mut turns: Vec<AudioTurn>,
+) -> Vec<AudioTurn> {
+    for (artifact_id, source, audio_path) in sources {
+        let has_source_turn = turns
+            .iter()
+            .any(|turn| turn.artifact_id == *artifact_id && turn.source == *source);
+        if has_source_turn {
+            continue;
+        }
+        turns.push(AudioTurn {
+            artifact_id: artifact_id.clone(),
+            source: source.clone(),
+            source_path: audio_path.clone(),
+            start_ms: 0,
+            end_ms: 0,
+            turn_index: turns.len() as i64,
+        });
+    }
+    turns
+}
+
 /// Whether a failed source should be persisted as a visible per-source error.
 /// A silent system-audio track (no_speech) is expected when the user only
 /// speaks into the mic, so we drop it once any source produced a usable
@@ -1729,6 +1735,128 @@ mod tests {
         assert!(!temp_dir
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir)));
+    }
+
+    #[test]
+    fn missing_system_turn_gets_full_source_fallback() {
+        let mic_path = PathBuf::from("microphone.wav");
+        let system_path = PathBuf::from("system.wav");
+        let sources = vec![
+            (
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            ),
+            (
+                "system-artifact".to_string(),
+                "system".to_string(),
+                system_path.clone(),
+            ),
+        ];
+        let detected_mic_turn = AudioTurn {
+            artifact_id: "mic-artifact".to_string(),
+            source: "microphone".to_string(),
+            source_path: mic_path,
+            start_ms: 7_020,
+            end_ms: 9_180,
+            turn_index: 0,
+        };
+
+        let covered = add_full_source_turns_for_missing_sources(&sources, vec![detected_mic_turn]);
+
+        assert_eq!(covered.len(), 2);
+        assert!(covered.iter().any(|turn| {
+            turn.artifact_id == "mic-artifact" && turn.start_ms == 7_020 && turn.end_ms == 9_180
+        }));
+        let system_fallback = covered
+            .iter()
+            .find(|turn| turn.artifact_id == "system-artifact")
+            .expect("system source should receive a fallback turn");
+        assert_eq!(system_fallback.source, "system");
+        assert_eq!(system_fallback.source_path, system_path);
+        assert_eq!(system_fallback.start_ms, 0);
+        assert_eq!(system_fallback.end_ms, 0);
+    }
+
+    #[test]
+    fn source_coverage_does_not_duplicate_existing_turns() {
+        let mic_path = PathBuf::from("microphone.wav");
+        let system_path = PathBuf::from("system.wav");
+        let sources = vec![
+            (
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            ),
+            (
+                "system-artifact".to_string(),
+                "system".to_string(),
+                system_path.clone(),
+            ),
+        ];
+        let turns = vec![
+            AudioTurn {
+                artifact_id: "mic-artifact".to_string(),
+                source: "microphone".to_string(),
+                source_path: mic_path,
+                start_ms: 1_000,
+                end_ms: 2_000,
+                turn_index: 0,
+            },
+            AudioTurn {
+                artifact_id: "system-artifact".to_string(),
+                source: "system".to_string(),
+                source_path: system_path,
+                start_ms: 3_000,
+                end_ms: 4_000,
+                turn_index: 1,
+            },
+        ];
+
+        let covered = add_full_source_turns_for_missing_sources(&sources, turns);
+
+        assert_eq!(covered.len(), 2);
+        assert!(covered.iter().all(|turn| turn.end_ms > turn.start_ms));
+    }
+
+    #[test]
+    fn empty_detection_gets_full_source_fallback_for_every_source() {
+        let mic_path = PathBuf::from("microphone.wav");
+        let system_path = PathBuf::from("system.wav");
+        let sources = vec![
+            (
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            ),
+            (
+                "system-artifact".to_string(),
+                "system".to_string(),
+                system_path.clone(),
+            ),
+        ];
+
+        let covered = add_full_source_turns_for_missing_sources(&sources, Vec::new());
+        let covered = coalesce_turns_for_transcription(covered);
+
+        assert_eq!(covered.len(), 2);
+        let microphone = covered
+            .iter()
+            .find(|turn| turn.artifact_id == "mic-artifact")
+            .expect("microphone source should receive a fallback turn");
+        assert_eq!(microphone.source, "microphone");
+        assert_eq!(microphone.source_path, mic_path);
+        assert_eq!(microphone.start_ms, 0);
+        assert_eq!(microphone.end_ms, 0);
+
+        let system = covered
+            .iter()
+            .find(|turn| turn.artifact_id == "system-artifact")
+            .expect("system source should receive a fallback turn");
+        assert_eq!(system.source, "system");
+        assert_eq!(system.source_path, system_path);
+        assert_eq!(system.start_ms, 0);
+        assert_eq!(system.end_ms, 0);
     }
 
     #[tokio::test]
