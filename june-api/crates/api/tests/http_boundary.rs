@@ -15,10 +15,10 @@ use june_domain::{
     WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use june_services::{
-    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageService,
-    ImageServiceDeps, NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService, NoteGenerateServiceDeps,
-    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
-    WebAugmentServiceDeps,
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
+    ImageService, ImageServiceDeps, NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService,
+    NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
+    WebAugmentService, WebAugmentServiceDeps,
 };
 use pretty_assertions::assert_eq;
 use std::{
@@ -628,7 +628,7 @@ fn test_state_with_sinks(
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
         generator: Arc::new(FakeImageGenerator),
-        pricing: BTreeMap::from([("venice-sd35".to_string(), 20_u64)]),
+        pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
         hold_ttl_seconds: 30,
     }));
 
@@ -914,11 +914,11 @@ struct FakeOsAccounts;
 
 #[async_trait]
 impl OsAccountsClient for FakeOsAccounts {
-    async fn authorize(&self, _request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+    async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
         Ok(Authorization {
             allowed: true,
             action_token: Some("agt_test".to_string()),
-            cap_credits: None,
+            cap_credits: Some(request.estimate),
             reason: None,
         })
     }

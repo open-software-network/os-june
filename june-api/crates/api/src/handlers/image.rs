@@ -1,5 +1,9 @@
 use crate::{
-    auth::authenticated_user, envelope::ApiResponse, error::ApiError, state::ApiState, validation,
+    auth::{authenticated_user, provider_credentials},
+    envelope::ApiResponse,
+    error::ApiError,
+    state::ApiState,
+    validation,
 };
 use axum::{Json, extract::State, http::HeaderMap};
 use june_domain::GeneratedImage;
@@ -45,16 +49,18 @@ impl From<GeneratedImage> for ImageGenerateResponse {
     }
 }
 
-/// Generates an image from a text prompt via Venice. Metered: the service holds
-/// a wallet estimate, generates, then charges the model's flat per-image price
-/// (see `ImageService`). An unpriced model is rejected `model_not_priced`; an
-/// out-of-credits user gets 402 before Venice is called.
+/// Generates an image from a text prompt via Venice. Without a user Venice key,
+/// the service holds a wallet estimate, generates, then charges the model's
+/// flat per-image price (see `ImageService`). A user Venice key skips June
+/// credit metering. An unpriced model is rejected `model_not_priced`; an
+/// out-of-credits user without BYOK gets 402 before Venice is called.
 pub(crate) async fn generate(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<ImageGenerateRequest>,
 ) -> Result<Json<ApiResponse<ImageGenerateResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
 
     let prompt = request.prompt.trim().to_string();
     if prompt.is_empty() {
@@ -79,6 +85,7 @@ pub(crate) async fn generate(
             model,
             width,
             height,
+            provider_credentials,
         })
         .await?;
 

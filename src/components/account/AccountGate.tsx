@@ -114,6 +114,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
 export function JuneMark() {
   return (
     <svg width="24" height="28" viewBox="0 0 12 14" fill="currentColor" aria-hidden>
+      <title>June</title>
       <JuneMarkPaths />
     </svg>
   );
@@ -124,6 +125,7 @@ export function JuneGradientMark() {
 
   return (
     <svg width="40" height="46" viewBox="0 0 12 14" fill="none" aria-hidden>
+      <title>June</title>
       <defs>
         <linearGradient id={gradientId} x1="6" y1="0" x2="6" y2="14" gradientUnits="userSpaceOnUse">
           <stop style={{ stopColor: "color-mix(in oklch, var(--brand) 55%, white)" }} />
@@ -154,6 +156,7 @@ function JuneMarkPaths({ fill }: { fill?: string }) {
 export function OsMark() {
   return (
     <svg width="28" height="16" viewBox="-1 -1 30 18" fill="currentColor" aria-hidden>
+      <title>Open Software</title>
       <path
         fillRule="evenodd"
         clipRule="evenodd"

@@ -11,9 +11,10 @@ use june_providers::{
     VeniceModelCatalog, client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
-    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageService,
-    ImageServiceDeps, NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService,
-    NoteTranscribeServiceDeps, PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
+    ImageService, ImageServiceDeps, NoteGenerateService, NoteGenerateServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
+    WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -165,7 +166,11 @@ fn build_router(
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
         generator: build_image_generator(upstream_http, &config.upstreams.venice),
-        pricing: config.image_pricing.clone(),
+        pricing: config
+            .image_pricing
+            .iter()
+            .map(|(model, credits)| (model.clone(), ImageModelPrice::venice(*credits)))
+            .collect(),
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_image_secs,
     }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
