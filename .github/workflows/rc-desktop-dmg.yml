@@ -399,13 +399,13 @@ jobs:
           if gh release view rc --repo open-software-network/os-june-releases >/dev/null 2>&1; then
             gh release edit rc \
               --repo open-software-network/os-june-releases \
-              --title "June $VERSION (rc)" \
+              --title "June v$VERSION (rc)" \
               --prerelease \
               --notes-file "$notes_file"
           else
             gh release create rc \
               --repo open-software-network/os-june-releases \
-              --title "June $VERSION (rc)" \
+              --title "June v$VERSION (rc)" \
               --prerelease \
               --notes-file "$notes_file" \
               --target main
