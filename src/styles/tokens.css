@@ -247,8 +247,8 @@
    * mixes into the card (not alpha fades of the accent, which composite into
    * a muddy grey veil on light surfaces) so the line stays a clean pastel of
    * the accent. Adapts to dark mode through var(--card). */
-  --brand-line: color-mix(in oklch, var(--brand) 22%, var(--card));
-  --brand-line-strong: color-mix(in oklch, var(--brand) 35%, var(--card));
+  --brand-line: color-mix(in oklch, var(--brand) 14%, var(--card));
+  --brand-line-strong: color-mix(in oklch, var(--brand) 30%, var(--card));
   /* Warm-accent set for the record button hover state — a soft peach
    * surface and a deeper terracotta foreground. Reusable for any
    * "live/recording" primary action that wants a warmer feel. */
