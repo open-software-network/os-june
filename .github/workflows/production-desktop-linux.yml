@@ -198,6 +198,16 @@ jobs:
       - name: Bundle Hermes runtime into app resources
         run: ./scripts/bundle-hermes-runtime-linux.sh
 
+      - name: Help linuxdeploy resolve bundled Hermes libraries
+        run: |
+          # linuxdeploy dependency-walks every ELF in the AppDir but resolves
+          # DT_NEEDED names only through standard paths and LD_LIBRARY_PATH,
+          # not each library's own $ORIGIN rpath. manylinux wheels (Pillow et
+          # al) vendor hash-named deps in *.libs dirs next to the extension,
+          # so expose those dirs (and the bundled CPython's lib/) for the walk.
+          hermes_lib_path="$(find "$PWD/.tauri-hermes/hermes" -type d \( -name '*.libs' -o -path '*/python/current/lib' \) | paste -sd: -)"
+          echo "LD_LIBRARY_PATH=$hermes_lib_path" >> "$GITHUB_ENV"
+
       - name: Build production Linux bundle
         env:
           OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
