@@ -1,8 +1,9 @@
 # Local command layer mirroring CI (see .github/workflows/). `make verify`
 # runs the same gates as the desktop + june-api workflows, so a green
-# `make verify` locally should mean green CI. The app itself is built with
-# `pnpm tauri:dev` / `pnpm tauri:build`, not from here.
+# `make verify` locally should mean green CI. Use `make dev` to run june-api
+# and the desktop app together locally; production builds use `pnpm tauri:build`.
 .PHONY: help install \
+	dev dev-api \
 	check format typecheck test-web \
 	tauri-fmt tauri-fmt-check tauri-lint tauri-test \
 	june-api-fmt june-api-fmt-check june-api-lint june-api-test \
@@ -19,6 +20,18 @@ help:  ## Show this help
 # --- Install ---
 install:  ## Install frontend deps (Rust builds via cargo)
 	pnpm install --frozen-lockfile
+
+# --- Run (local dev) ---
+# `pnpm tauri:dev` (via scripts/tauri-before-dev.mjs) already boots june-api on
+# :8080 and Vite alongside the native app, and tears them all down on exit. The
+# desktop app reads JUNE_API_URL from .env and june-api reads its keys from
+# june-api/.env (both auto-load their .env), so this is the whole local stack in
+# one command.
+dev:  ## Run the desktop app + june-api together (Ctrl-C stops both)
+	pnpm tauri:dev
+
+dev-api:  ## Run only june-api locally on :8080 (loads june-api/.env)
+	cd june-api && cargo run
 
 # --- Frontend (src/, scripts/) ---
 check:  ## Biome check (format + lint, incl. the lucide ban)
