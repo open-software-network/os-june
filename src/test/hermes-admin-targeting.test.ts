@@ -15,9 +15,7 @@ import type { HermesBridgeConnection, HermesBridgeStatus } from "../lib/tauri";
 import { FakeHermesServer } from "./fixtures/fake-hermes-server";
 import { connectionForFake } from "./fixtures/hermes-admin-harness";
 
-function connection(
-  overrides: Partial<HermesBridgeConnection>,
-): HermesBridgeConnection {
+function connection(overrides: Partial<HermesBridgeConnection>): HermesBridgeConnection {
   return {
     baseUrl: "http://127.0.0.1:1000",
     wsUrl: "ws://127.0.0.1:1000/api/ws",
@@ -36,12 +34,8 @@ function connection(
 
 describe("admin targeting — profile/mode must be explicit", () => {
   it("derives mode from the connection's fullMode flag", () => {
-    expect(modeForConnection(connection({ fullMode: false }))).toBe(
-      "sandboxed",
-    );
-    expect(modeForConnection(connection({ fullMode: true }))).toBe(
-      "unrestricted",
-    );
+    expect(modeForConnection(connection({ fullMode: false }))).toBe("sandboxed");
+    expect(modeForConnection(connection({ fullMode: true }))).toBe("unrestricted");
   });
 
   it("selects the matching mode from a multi-connection status", () => {
@@ -56,12 +50,8 @@ describe("admin targeting — profile/mode must be explicit", () => {
         }),
       ],
     };
-    expect(adminTargetForMode(status, "sandboxed")?.baseUrl).toBe(
-      "http://127.0.0.1:1000",
-    );
-    expect(adminTargetForMode(status, "unrestricted")?.baseUrl).toBe(
-      "http://127.0.0.1:2000",
-    );
+    expect(adminTargetForMode(status, "sandboxed")?.baseUrl).toBe("http://127.0.0.1:1000");
+    expect(adminTargetForMode(status, "unrestricted")?.baseUrl).toBe("http://127.0.0.1:2000");
   });
 
   it("returns undefined (does NOT fall back to the other runtime) when the requested mode is not running", () => {
@@ -92,24 +82,16 @@ describe("admin targeting — profile/mode must be explicit", () => {
         connection({ baseUrl: "http://127.0.0.1:8000", fullMode: false }),
       ],
     };
-    expect(adminTargetForMode(status, "sandboxed")?.baseUrl).toBe(
-      "http://127.0.0.1:8000",
-    );
+    expect(adminTargetForMode(status, "sandboxed")?.baseUrl).toBe("http://127.0.0.1:8000");
   });
 
   it("targetKey is profile- and mode-scoped, so two targets cannot collide", () => {
-    const sandboxed = adminTargetFromConnection(
-      connection({ fullMode: false }),
-      "default",
-    );
+    const sandboxed = adminTargetFromConnection(connection({ fullMode: false }), "default");
     const unrestricted = adminTargetFromConnection(
       connection({ fullMode: true, sandboxed: false }),
       "default",
     );
-    const otherProfile = adminTargetFromConnection(
-      connection({ fullMode: false }),
-      "work",
-    );
+    const otherProfile = adminTargetFromConnection(connection({ fullMode: false }), "work");
     expect(targetKey(sandboxed)).not.toBe(targetKey(unrestricted));
     expect(targetKey(sandboxed)).not.toBe(targetKey(otherProfile));
   });
@@ -127,18 +109,14 @@ describe("admin targeting — profile/mode must be explicit", () => {
     });
 
     const sandboxedClient = createHermesAdminClient(
-      adminTargetFromConnection(
-        connectionForFake(sandboxedServer, { mode: "sandboxed" }),
-      ),
+      adminTargetFromConnection(connectionForFake(sandboxedServer, { mode: "sandboxed" })),
       { fetch: sandboxedServer.fetch },
     );
 
     await sandboxedClient.skills.toggle("x", true);
 
     // Only the sandboxed server saw the write.
-    expect(
-      sandboxedServer.requestLog.some((e) => e.path === "/api/skills/toggle"),
-    ).toBe(true);
+    expect(sandboxedServer.requestLog.some((e) => e.path === "/api/skills/toggle")).toBe(true);
     expect(unrestrictedServer.requestLog).toHaveLength(0);
   });
 });

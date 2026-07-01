@@ -2,9 +2,25 @@
 
 -
 
+## Root cause
+
+<!-- Bug fixes only: what actually caused the bug (not just the symptom).
+     Delete this section for non-bug PRs. -->
+
 ## Validation
 
 -
+
+- [ ] Tested visually where it matters (UI changes: attach a screenshot or recording).
+- [ ] Needs a June API (backend) deploy before it works end to end. <!-- check if yes; say which change -->
+
+## Out of scope
+
+<!-- What this PR deliberately does NOT do (related work left untouched, on purpose). -->
+
+## Followups
+
+<!-- Follow-up work this PR sets up or defers; link issues where possible. -->
 
 ## Security and release checklist
 

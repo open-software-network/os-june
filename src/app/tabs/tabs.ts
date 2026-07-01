@@ -2,9 +2,7 @@ import type { SidebarView } from "../../components/sidebar/Sidebar";
 
 // Where an agent session was drilled into from — mirrors the live `agentOrigin`
 // state in App so a restored agent tab rebuilds the same breadcrumb chrome.
-export type AgentOrigin =
-  | { kind: "project"; folderId: string }
-  | { kind: "routines" };
+export type AgentOrigin = { kind: "project"; folderId: string } | { kind: "routines" };
 
 // A navigation snapshot: everything needed to re-render a view exactly as the
 // user left it. Each open tab owns one of these. Fields are gated by `view`
@@ -70,8 +68,7 @@ export function navEquals(a: TabNav, b: TabNav): boolean {
       return a.folderId === b.folderId;
     case "agent":
       return (
-        a.agentSessionId === b.agentSessionId &&
-        agentOriginEquals(a.agentOrigin, b.agentOrigin)
+        a.agentSessionId === b.agentSessionId && agentOriginEquals(a.agentOrigin, b.agentOrigin)
       );
     default:
       return true;

@@ -40,14 +40,9 @@ type SkillBundlesSectionProps = {
  * bundle". Data and validation live in {@link useSkillBundles}; this component
  * is presentation + the editor form's local state.
  */
-export function SkillBundlesSection({
-  mode = "sandboxed",
-  onStartChat,
-}: SkillBundlesSectionProps) {
+export function SkillBundlesSection({ mode = "sandboxed", onStartChat }: SkillBundlesSectionProps) {
   const state = useSkillBundles(mode, onStartChat);
-  return (
-    <SkillBundlesView state={state} mode={mode} canStartChat={!!onStartChat} />
-  );
+  return <SkillBundlesView state={state} mode={mode} canStartChat={!!onStartChat} />;
 }
 
 /** The editor target: a new bundle, or an existing one being edited. */
@@ -86,21 +81,14 @@ export function SkillBundlesView({
   }
 
   return (
-    <section
-      className="settings-group skill-bundles"
-      aria-labelledby="skill-bundles-heading"
-    >
+    <section className="settings-group skill-bundles" aria-labelledby="skill-bundles-heading">
       <h2 id="skill-bundles-heading" className="settings-group-heading">
         Bundles
       </h2>
       <p className="settings-group-description">
-        Group several skills under one slash command, like /backend-dev, so you
-        can start a focused chat in one step. Changes apply to new sessions.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Group several skills under one slash command, like /backend-dev, so you can start a focused
+        chat in one step. Changes apply to new sessions.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <AdminNotifications
@@ -166,9 +154,7 @@ export function SkillBundlesView({
                   bundle={bundle}
                   pending={state.pending.has(bundle.bundle.slug)}
                   canStartChat={canStartChat}
-                  onEdit={() =>
-                    setEditor({ kind: "edit", bundle: bundle.bundle })
-                  }
+                  onEdit={() => setEditor({ kind: "edit", bundle: bundle.bundle })}
                   onDuplicate={() => void state.duplicate(bundle.bundle.slug)}
                   onDelete={() => void state.remove(bundle.bundle.slug)}
                   onStartChat={() => state.startChat(bundle.bundle.slug)}
@@ -233,9 +219,7 @@ function BundleRow({
           <code className="skill-bundle-slash">{bundle.slashCommand}</code>
         </div>
         {bundle.bundle.description ? (
-          <p className="skill-bundle-description">
-            {bundle.bundle.description}
-          </p>
+          <p className="skill-bundle-description">{bundle.bundle.description}</p>
         ) : null}
 
         <ul className="skill-bundle-members" aria-label="Skills in this bundle">
@@ -245,9 +229,7 @@ function BundleRow({
               className="skill-bundle-member"
               data-missing={member.missing}
             >
-              <span className="skill-bundle-member-name">
-                {member.identifier}
-              </span>
+              <span className="skill-bundle-member-name">{member.identifier}</span>
               {member.missing ? (
                 <span className="skill-bundle-member-missing">
                   <IconWarningSign size={11} ariaHidden />
@@ -268,9 +250,8 @@ function BundleRow({
         ) : null}
         {bundle.collidesWithSkill ? (
           <p className="skill-bundle-note skill-bundle-note-warning">
-            <IconCircleInfo size={13} ariaHidden />A skill named{" "}
-            {bundle.slashCommand} is installed. This bundle takes precedence and
-            runs instead.
+            <IconCircleInfo size={13} ariaHidden />A skill named {bundle.slashCommand} is installed.
+            This bundle takes precedence and runs instead.
           </p>
         ) : null}
       </div>
@@ -346,16 +327,12 @@ function BundleEditor({
   // the name so the common case needs no extra typing.
   const [slugTouched, setSlugTouched] = useState(target.kind === "edit");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [skillsInput, setSkillsInput] = useState(
-    (initial?.skills ?? []).join("\n"),
-  );
+  const [skillsInput, setSkillsInput] = useState((initial?.skills ?? []).join("\n"));
   const [instructions, setInstructions] = useState(initial?.instructions ?? "");
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string>();
 
-  const effectiveSlug = slugTouched
-    ? normalizeBundleSlug(slug)
-    : normalizeBundleSlug(name);
+  const effectiveSlug = slugTouched ? normalizeBundleSlug(slug) : normalizeBundleSlug(name);
 
   const draft: SkillBundle = useMemo(
     () => ({
@@ -377,15 +354,10 @@ function BundleEditor({
     if (!validation.canSave) return;
     setSaving(true);
     try {
-      await state.save(
-        draft,
-        editingSlug && editingSlug !== draft.slug ? editingSlug : undefined,
-      );
+      await state.save(draft, editingSlug && editingSlug !== draft.slug ? editingSlug : undefined);
       onClose();
     } catch (error) {
-      setSubmitError(
-        error instanceof Error ? error.message : "Could not save the bundle.",
-      );
+      setSubmitError(error instanceof Error ? error.message : "Could not save the bundle.");
     } finally {
       setSaving(false);
     }
@@ -396,11 +368,7 @@ function BundleEditor({
       className="settings-group skill-bundle-editor"
       aria-labelledby="skill-bundle-editor-heading"
     >
-      <button
-        type="button"
-        className="skill-bundle-editor-back"
-        onClick={onClose}
-      >
+      <button type="button" className="skill-bundle-editor-back" onClick={onClose}>
         <IconChevronLeftSmall size={14} ariaHidden />
         Back to bundles
       </button>
@@ -463,8 +431,8 @@ function BundleEditor({
             onChange={(event) => setSkillsInput(event.currentTarget.value)}
           />
           <span className="skill-bundle-field-hint">
-            One skill identifier per line. Missing skills are allowed and
-            skipped when the bundle runs.
+            One skill identifier per line. Missing skills are allowed and skipped when the bundle
+            runs.
           </span>
           {skillsIssues.map((issue, index) => (
             <IssueLine key={index} issue={issue} />
@@ -474,18 +442,14 @@ function BundleEditor({
             selected={draft.skills}
             onAdd={(identifier) =>
               setSkillsInput((current) =>
-                current.trim()
-                  ? `${current.trim()}\n${identifier}`
-                  : identifier,
+                current.trim() ? `${current.trim()}\n${identifier}` : identifier,
               )
             }
           />
         </label>
 
         <label className="skill-bundle-field">
-          <span className="skill-bundle-field-label">
-            Instructions (optional)
-          </span>
+          <span className="skill-bundle-field-label">Instructions (optional)</span>
           <textarea
             value={instructions}
             rows={3}
@@ -502,11 +466,7 @@ function BundleEditor({
         ) : null}
 
         <div className="skill-bundle-editor-actions">
-          <button
-            type="button"
-            className="skill-bundle-editor-cancel"
-            onClick={onClose}
-          >
+          <button type="button" className="skill-bundle-editor-cancel" onClick={onClose}>
             Cancel
           </button>
           <button
@@ -525,11 +485,7 @@ function BundleEditor({
 }
 
 /** A single validation issue line, styled by severity. */
-function IssueLine({
-  issue,
-}: {
-  issue: { severity: "error" | "warning"; message: string };
-}) {
+function IssueLine({ issue }: { issue: { severity: "error" | "warning"; message: string } }) {
   return (
     <span
       className="skill-bundle-issue"
@@ -562,10 +518,7 @@ function SkillPicker({
     [selected],
   );
   const available = useMemo(
-    () =>
-      skills
-        .filter((skill) => !selectedSet.has(skill.name.trim().toLowerCase()))
-        .slice(0, 12),
+    () => skills.filter((skill) => !selectedSet.has(skill.name.trim().toLowerCase())).slice(0, 12),
     [skills, selectedSet],
   );
   if (available.length === 0) return null;
@@ -586,13 +539,7 @@ function SkillPicker({
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="skill-bundles-empty" role="status">
       <span className="skill-bundles-empty-icon" aria-hidden>

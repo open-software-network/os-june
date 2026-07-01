@@ -15,10 +15,7 @@ import {
   type SkillLifecycleState,
 } from "../lib/hermes-admin";
 import { SkillLifecycleActions } from "../components/settings/SkillLifecycleActions";
-import {
-  makeAdminHarness,
-  instantSleep,
-} from "./fixtures/hermes-admin-harness";
+import { makeAdminHarness, instantSleep } from "./fixtures/hermes-admin-harness";
 import type { FakeHermesScenario } from "./fixtures/fake-hermes-server";
 
 /** Parses a wire-shaped skill into a HermesSkillInfo, asserting it parsed. */
@@ -97,9 +94,7 @@ describe("skill lifecycle — action matrix", () => {
       identifier: "github:acme/scrape",
     });
     const verbs = availableVerbs(s);
-    expect(verbs).toEqual(
-      expect.arrayContaining(["check", "update", "audit", "uninstall"]),
-    );
+    expect(verbs).toEqual(expect.arrayContaining(["check", "update", "audit", "uninstall"]));
     expect(verbs).not.toContain("reset");
     expect(verbs).not.toContain("delete");
   });
@@ -112,9 +107,7 @@ describe("skill lifecycle — action matrix", () => {
       provenance: "official",
       identifier: "official/deploy",
     });
-    expect(availableVerbs(s)).toEqual(
-      expect.arrayContaining(["update", "audit", "uninstall"]),
-    );
+    expect(availableVerbs(s)).toEqual(expect.arrayContaining(["update", "audit", "uninstall"]));
   });
 
   it("local custom: delete only, with a strong-confirmation flag", () => {
@@ -151,9 +144,7 @@ describe("skill lifecycle — action matrix", () => {
 
   it("reads the hub identifier off the raw payload", () => {
     expect(
-      hubIdentifierOf(
-        skill({ name: "x", enabled: true, source: "hub", identifier: "a/b" }),
-      ),
+      hubIdentifierOf(skill({ name: "x", enabled: true, source: "hub", identifier: "a/b" })),
     ).toBe("a/b");
   });
 });
@@ -191,25 +182,20 @@ const COMMUNITY = {
 
 function controllerFor(
   scenario: FakeHermesScenario = { backgroundActions: true },
-  options: Partial<
-    ConstructorParameters<typeof SkillLifecycleController>[1]
-  > = {},
+  options: Partial<ConstructorParameters<typeof SkillLifecycleController>[1]> = {},
 ) {
   const harness = makeAdminHarness(scenario);
-  const controller = new SkillLifecycleController(
-    harness as unknown as SkillLifecycleEngine,
-    { sleep: instantSleep, ...options },
-  );
+  const controller = new SkillLifecycleController(harness as unknown as SkillLifecycleEngine, {
+    sleep: instantSleep,
+    ...options,
+  });
   return { harness, controller };
 }
 
 describe("skill lifecycle — controller actions", () => {
   it("drives a background update to done, with progress, and invalidates skills", async () => {
     const onMutated = vi.fn();
-    const { harness, controller } = controllerFor(
-      { backgroundActions: true },
-      { onMutated },
-    );
+    const { harness, controller } = controllerFor({ backgroundActions: true }, { onMutated });
     const s = skill(COMMUNITY);
 
     const progresses: Array<number | undefined> = [];
@@ -227,11 +213,9 @@ describe("skill lifecycle — controller actions", () => {
     expect(harness.cache.isStale("skills")).toBe(true);
     expect(onMutated).toHaveBeenCalled();
     // The update request reached the hub update endpoint.
-    expect(
-      harness.server.requestLog.some((r) =>
-        r.path.includes("/api/skills/hub/update"),
-      ),
-    ).toBe(true);
+    expect(harness.server.requestLog.some((r) => r.path.includes("/api/skills/hub/update"))).toBe(
+      true,
+    );
     controller.dispose();
   });
 
@@ -251,12 +235,8 @@ describe("skill lifecycle — controller actions", () => {
     const { harness, controller } = controllerFor();
     const s = skill(COMMUNITY);
     await controller.run(s, "uninstall");
-    expect(
-      controller.getSnapshot().actions.get("scrape::uninstall")?.phase,
-    ).toBe("done");
-    const req = harness.server.requestLog.find((r) =>
-      r.path.includes("/api/skills/hub/uninstall"),
-    );
+    expect(controller.getSnapshot().actions.get("scrape::uninstall")?.phase).toBe("done");
+    const req = harness.server.requestLog.find((r) => r.path.includes("/api/skills/hub/uninstall"));
     expect((req?.body as { name?: string })?.name).toBe("github:acme/scrape");
     controller.dispose();
   });
@@ -277,9 +257,7 @@ describe("skill lifecycle — controller actions", () => {
     expect(st?.phase).toBe("done");
     expect(st?.scan?.verdict).toBe("caution");
     expect(st?.message).toBe("Ships a helper script.");
-    const scan = harness.server.requestLog.find((r) =>
-      r.path.includes("/api/skills/hub/scan"),
-    );
+    const scan = harness.server.requestLog.find((r) => r.path.includes("/api/skills/hub/scan"));
     expect(scan?.query.identifier).toBe("github:acme/scrape");
     controller.dispose();
   });
@@ -290,21 +268,15 @@ describe("skill lifecycle — controller actions", () => {
 
     // First attempt without accepting: refused, no request sent.
     await controller.run(s, "update");
-    expect(controller.getSnapshot().actions.get("scrape::update")?.phase).toBe(
-      "failed",
+    expect(controller.getSnapshot().actions.get("scrape::update")?.phase).toBe("failed");
+    expect(harness.server.requestLog.some((r) => r.path.includes("/api/skills/hub/update"))).toBe(
+      false,
     );
-    expect(
-      harness.server.requestLog.some((r) =>
-        r.path.includes("/api/skills/hub/update"),
-      ),
-    ).toBe(false);
 
     // Second attempt accepting the divergence: proceeds.
     controller.clearAction("scrape", "update");
     await controller.run(s, "update", { acceptDivergence: true });
-    expect(controller.getSnapshot().actions.get("scrape::update")?.phase).toBe(
-      "done",
-    );
+    expect(controller.getSnapshot().actions.get("scrape::update")?.phase).toBe("done");
     controller.dispose();
   });
 
@@ -313,12 +285,8 @@ describe("skill lifecycle — controller actions", () => {
     const bundled = skill({ name: "pdf", enabled: true, source: "bundled" });
     // Bundled cannot be uninstalled: the controller is a no-op, no request.
     await controller.run(bundled, "uninstall");
-    expect(
-      controller.getSnapshot().actions.get("pdf::uninstall"),
-    ).toBeUndefined();
-    expect(
-      harness.server.requestLog.some((r) => r.path.includes("/uninstall")),
-    ).toBe(false);
+    expect(controller.getSnapshot().actions.get("pdf::uninstall")).toBeUndefined();
+    expect(harness.server.requestLog.some((r) => r.path.includes("/uninstall"))).toBe(false);
     controller.dispose();
   });
 });
@@ -349,22 +317,15 @@ describe("skill lifecycle — reset CLI fallback", () => {
       profile: "default",
       restore: false,
     });
-    expect(controller.getSnapshot().actions.get("pdf::reset")?.phase).toBe(
-      "done",
-    );
+    expect(controller.getSnapshot().actions.get("pdf::reset")?.phase).toBe("done");
     expect(harness.cache.isStale("skills")).toBe(true);
     expect(onMutated).toHaveBeenCalled();
     controller.dispose();
   });
 
   it("passes restore: true for a restore-from-upstream", async () => {
-    const resetBundled = vi
-      .fn()
-      .mockResolvedValue({ ok: true, message: null, timedOut: false });
-    const { controller } = controllerFor(
-      { backgroundActions: false },
-      { resetBundled },
-    );
+    const resetBundled = vi.fn().mockResolvedValue({ ok: true, message: null, timedOut: false });
+    const { controller } = controllerFor({ backgroundActions: false }, { resetBundled });
     const bundled = skill({ name: "pdf", enabled: true, source: "bundled" });
     await controller.run(bundled, "restore");
     expect(resetBundled.mock.calls[0][0].restore).toBe(true);
@@ -373,10 +334,7 @@ describe("skill lifecycle — reset CLI fallback", () => {
 
   it("never invokes the CLI for an unsafe skill name", async () => {
     const resetBundled = vi.fn();
-    const { controller } = controllerFor(
-      { backgroundActions: false },
-      { resetBundled },
-    );
+    const { controller } = controllerFor({ backgroundActions: false }, { resetBundled });
     // A bundled skill whose name is not slug-safe: reset is refused before the
     // bridge call so the unsafe name never reaches the CLI.
     const bundled = skill({
@@ -386,9 +344,7 @@ describe("skill lifecycle — reset CLI fallback", () => {
     });
     await controller.run(bundled, "reset");
     expect(resetBundled).not.toHaveBeenCalled();
-    expect(controller.getSnapshot().actions.get("../evil::reset")?.phase).toBe(
-      "failed",
-    );
+    expect(controller.getSnapshot().actions.get("../evil::reset")?.phase).toBe("failed");
     controller.dispose();
   });
 
@@ -399,10 +355,7 @@ describe("skill lifecycle — reset CLI fallback", () => {
       timedOut: false,
     });
     const onMutated = vi.fn();
-    const { controller } = controllerFor(
-      { backgroundActions: false },
-      { resetBundled, onMutated },
-    );
+    const { controller } = controllerFor({ backgroundActions: false }, { resetBundled, onMutated });
     const bundled = skill({ name: "pdf", enabled: true, source: "bundled" });
     await controller.run(bundled, "reset");
     const st = controller.getSnapshot().actions.get("pdf::reset");
@@ -417,9 +370,7 @@ describe("skill lifecycle — reset CLI fallback", () => {
 // View: only valid actions render; disabled actions explain themselves.
 // ---------------------------------------------------------------------------
 
-function lifecycleState(
-  overrides: Partial<SkillLifecycleState> = {},
-): SkillLifecycleState {
+function lifecycleState(overrides: Partial<SkillLifecycleState> = {}): SkillLifecycleState {
   return {
     mode: "sandboxed",
     profile: "default",
@@ -447,13 +398,9 @@ describe("skill lifecycle — view", () => {
     );
     expect(screen.getByRole("button", { name: "Update" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Audit" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Uninstall" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Uninstall" })).toBeInTheDocument();
     // No reset for a hub skill.
-    expect(
-      screen.queryByRole("button", { name: /reset/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reset/i })).not.toBeInTheDocument();
   });
 
   it("offers reset/restore for a bundled skill, never uninstall", () => {
@@ -466,12 +413,8 @@ describe("skill lifecycle — view", () => {
         variant="detail"
       />,
     );
-    expect(
-      screen.getByRole("button", { name: /reset to shipped version/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Uninstall" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reset to shipped version/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Uninstall" })).not.toBeInTheDocument();
     // The detail variant explains why uninstall is unavailable.
     expect(screen.getByText(/ships with Hermes/i)).toBeInTheDocument();
   });

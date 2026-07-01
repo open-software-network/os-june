@@ -26,10 +26,7 @@ import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import {
   diffSkillContent,
   skillEditPolicy,
@@ -137,11 +134,7 @@ export class SkillDetailController {
   private unsubscribers: Array<() => void> = [];
   private snapshot: SkillDetailState;
 
-  constructor(
-    engine: SkillDetailEngine,
-    skill: string,
-    info?: HermesSkillInfo,
-  ) {
+  constructor(engine: SkillDetailEngine, skill: string, info?: HermesSkillInfo) {
     this.engine = engine;
     this.skill = skill;
     this.info = info;
@@ -207,10 +200,7 @@ export class SkillDetailController {
       this.recompute();
     } catch (error) {
       if (this.disposed || seq !== this.loadSeq) return;
-      const adminError = HermesAdminError.from(
-        "GET /api/skills/content",
-        error,
-      );
+      const adminError = HermesAdminError.from("GET /api/skills/content", error);
       this.error = adminError.safeMessage;
       this.retryable = adminError.retryable;
       // Keep any already-loaded content on screen; only hard-fail when empty.
@@ -252,10 +242,7 @@ export class SkillDetailController {
     this.error = undefined;
     this.recompute();
     try {
-      const outcome = await this.engine.client.skills.updateContent(
-        this.skill,
-        this.draft,
-      );
+      const outcome = await this.engine.client.skills.updateContent(this.skill, this.draft);
       if (this.disposed) return;
       this.engine.cache.afterMutation(outcome.mutation, this.skill);
       this.engine.lifecycle.noteMutation(outcome.mutation);
@@ -269,10 +256,7 @@ export class SkillDetailController {
     } catch (error) {
       if (this.disposed) return;
       this.saving = false;
-      const adminError = HermesAdminError.from(
-        "PUT /api/skills/content",
-        error,
-      );
+      const adminError = HermesAdminError.from("PUT /api/skills/content", error);
       this.error = adminError.safeMessage;
       this.recompute();
     }
@@ -302,9 +286,7 @@ export class SkillDetailController {
       source: this.source,
       readOnly: this.hardReadOnly,
     });
-    const parts = this.original
-      ? splitSkillDocument(this.original)
-      : EMPTY_PARTS;
+    const parts = this.original ? splitSkillDocument(this.original) : EMPTY_PARTS;
     const validation = this.validate();
     const diff = diffSkillContent(this.original, this.draft);
     return {
@@ -315,9 +297,7 @@ export class SkillDetailController {
       original: this.original,
       draft: this.draft,
       parts,
-      supportingFiles: this.info
-        ? skillSupportingFiles(this.info)
-        : EMPTY_SUPPORTING,
+      supportingFiles: this.info ? skillSupportingFiles(this.info) : EMPTY_SUPPORTING,
       policy,
       validation,
       diff,
@@ -424,10 +404,7 @@ export function useSkillDetailController(
 }
 
 /** The state shown when there is no runtime to talk to. */
-function unavailableState(
-  skill: string,
-  info?: HermesSkillInfo,
-): SkillDetailState {
+function unavailableState(skill: string, info?: HermesSkillInfo): SkillDetailState {
   const policy = skillEditPolicy({
     source: info?.source ?? "unknown",
     readOnly: Boolean(info?.readOnly),

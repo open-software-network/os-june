@@ -4,13 +4,7 @@ import { IconPlay } from "central-icons/IconPlay";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPause } from "central-icons/IconPause";
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   routineUnrestricted,
   type RoutineJob,
@@ -66,13 +60,9 @@ export function RoutineDetail({
   onOpenRun,
 }: RoutineDetailProps) {
   const [name, setName] = useState(routine.name);
-  const [draft, setDraft] = useState<ScheduleDraft>(() =>
-    draftFromSchedule(routine.schedule),
-  );
+  const [draft, setDraft] = useState<ScheduleDraft>(() => draftFromSchedule(routine.schedule));
   const [prompt, setPrompt] = useState(routine.prompt);
-  const [unrestricted, setUnrestricted] = useState(() =>
-    routineUnrestricted(routine),
-  );
+  const [unrestricted, setUnrestricted] = useState(() => routineUnrestricted(routine));
   const [activeTab, setActiveTab] = useState<"details" | "history">("details");
   // "Run now" only queues the job for the scheduler's next tick, so the
   // confirmation is a short-lived label swap rather than a new run row.
@@ -116,8 +106,7 @@ export function RoutineDetail({
 
   useLayoutEffect(() => {
     function updateIndicator() {
-      const tab =
-        activeTab === "details" ? detailsTabRef.current : historyTabRef.current;
+      const tab = activeTab === "details" ? detailsTabRef.current : historyTabRef.current;
       if (!tab) return;
       setTabIndicator({ x: tab.offsetLeft, width: tab.offsetWidth });
     }
@@ -131,8 +120,7 @@ export function RoutineDetail({
 
   const nameChanged = name.trim().length > 0 && name.trim() !== routine.name;
   const scheduleChanged =
-    JSON.stringify(draft) !==
-    JSON.stringify(draftFromSchedule(routine.schedule));
+    JSON.stringify(draft) !== JSON.stringify(draftFromSchedule(routine.schedule));
   const promptChanged = prompt !== routine.prompt;
   const modeChanged = unrestricted !== routineUnrestricted(routine);
   const dirty = nameChanged || scheduleChanged || promptChanged || modeChanged;
@@ -155,9 +143,7 @@ export function RoutineDetail({
 
   const failure =
     routine.last_status === "error"
-      ? userFacingFailureMessage(
-          routine.last_error || routine.last_delivery_error || undefined,
-        )
+      ? userFacingFailureMessage(routine.last_error || routine.last_delivery_error || undefined)
       : null;
 
   return (
@@ -165,10 +151,7 @@ export function RoutineDetail({
       <BreadcrumbBar
         backLabel="Back to routines"
         onBack={onBack}
-        items={[
-          { label: "Routines", onClick: onBack },
-          { label: name.trim() || routine.name },
-        ]}
+        items={[{ label: "Routines", onClick: onBack }, { label: name.trim() || routine.name }]}
         actions={
           <div className="routine-detail-actions">
             <div className="agent-session-menu-wrap" ref={menuWrapRef}>
@@ -183,10 +166,7 @@ export function RoutineDetail({
                 <IconDotGrid1x3Horizontal size={16} />
               </button>
               {menuOpen ? (
-                <div
-                  className="sidebar-identity-menu agent-session-menu"
-                  role="menu"
-                >
+                <div className="sidebar-identity-menu agent-session-menu" role="menu">
                   <button
                     type="button"
                     role="menuitem"
@@ -250,9 +230,7 @@ export function RoutineDetail({
 
         <div className="routine-detail-meta">
           {routine.state === "scheduled" ? (
-            <span className="routine-meta-pill routine-meta-pill-warm">
-              Active
-            </span>
+            <span className="routine-meta-pill routine-meta-pill-warm">Active</span>
           ) : null}
           {routineUnrestricted(routine) ? (
             <HoverTip
@@ -270,17 +248,13 @@ export function RoutineDetail({
               Paused
             </span>
           ) : null}
-          {completed ? (
-            <span className="routine-meta-pill">Completed</span>
-          ) : null}
+          {completed ? <span className="routine-meta-pill">Completed</span> : null}
           <span className="routine-meta-pill">
             <IconCalendarRepeat size={12} aria-hidden />
             {compactScheduleLabel(routine.schedule)}
           </span>
           {completed && routine.last_run_at ? (
-            <span className="routine-meta-pill">
-              Last ran {formatRunTime(routine.last_run_at)}
-            </span>
+            <span className="routine-meta-pill">Last ran {formatRunTime(routine.last_run_at)}</span>
           ) : null}
         </div>
 
@@ -333,10 +307,7 @@ export function RoutineDetail({
             role="tabpanel"
             aria-labelledby="routine-details-tab"
           >
-            <section
-              className="settings-group"
-              aria-labelledby="routine-schedule"
-            >
+            <section className="settings-group" aria-labelledby="routine-schedule">
               <h2 id="routine-schedule" className="settings-group-heading">
                 Schedule
               </h2>
@@ -345,10 +316,7 @@ export function RoutineDetail({
               </div>
             </section>
 
-            <section
-              className="settings-group"
-              aria-labelledby="routine-instructions"
-            >
+            <section className="settings-group" aria-labelledby="routine-instructions">
               <h2 id="routine-instructions" className="settings-group-heading">
                 Instructions
               </h2>
@@ -360,23 +328,17 @@ export function RoutineDetail({
               />
             </section>
 
-            <section
-              className="settings-group"
-              aria-labelledby="routine-access"
-            >
+            <section className="settings-group" aria-labelledby="routine-access">
               <h2 id="routine-access" className="settings-group-heading">
                 Access
               </h2>
               <div className="settings-card">
-                <RoutineModePicker
-                  unrestricted={unrestricted}
-                  onChange={setUnrestricted}
-                />
+                <RoutineModePicker unrestricted={unrestricted} onChange={setUnrestricted} />
                 {routine.script ? (
                   <p className="routine-detail-script-note">
-                    This routine has an attached script ({routine.script}) that
-                    runs outside the sandbox, so it always has full access.
-                    Switching it to Sandboxed removes the script when you save.
+                    This routine has an attached script ({routine.script}) that runs outside the
+                    sandbox, so it always has full access. Switching it to Sandboxed removes the
+                    script when you save.
                   </p>
                 ) : null}
               </div>
@@ -392,11 +354,7 @@ export function RoutineDetail({
           >
             {runs.length > 0 ? (
               <div className="settings-card routines-runs-card">
-                <RoutineRunList
-                  runs={runs}
-                  label={() => routine.name}
-                  onOpen={onOpenRun}
-                />
+                <RoutineRunList runs={runs} label={() => routine.name} onOpen={onOpenRun} />
               </div>
             ) : (
               <p className="routines-runs-empty">

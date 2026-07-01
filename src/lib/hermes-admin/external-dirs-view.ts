@@ -121,9 +121,7 @@ function buildRow(
 /** The set of local (non-external) skill names, lowercased for case-insensitive
  * shadowing comparison. External skills are excluded: an external skill cannot
  * shadow another external skill in June's precedence model. */
-function localSkillNameSet(
-  localSkills: readonly HermesSkillInfo[],
-): ReadonlySet<string> {
+function localSkillNameSet(localSkills: readonly HermesSkillInfo[]): ReadonlySet<string> {
   const set = new Set<string>();
   for (const skill of localSkills) {
     if (skill.source === "external") continue;
@@ -132,9 +130,7 @@ function localSkillNameSet(
   return set;
 }
 
-function presenceOf(
-  status: ExternalDirStatus | undefined,
-): ExternalDirPresence {
+function presenceOf(status: ExternalDirStatus | undefined): ExternalDirPresence {
   if (!status) return "missing";
   if (status.unresolvedVar) return "unresolved";
   if (!status.exists) return "missing";
@@ -143,9 +139,7 @@ function presenceOf(
   return "ok";
 }
 
-function writabilityOf(
-  status: ExternalDirStatus | undefined,
-): ExternalDirWritability {
+function writabilityOf(status: ExternalDirStatus | undefined): ExternalDirWritability {
   if (!status || status.writable === null || status.writable === undefined) {
     return "unknown";
   }
@@ -208,8 +202,7 @@ export function shadowingExplanation(row: ExternalDirRow): string | undefined {
   if (shadowed.length === 0) return undefined;
   const names = shadowed.slice(0, 3).join(", ");
   const more = shadowed.length > 3 ? ` and ${shadowed.length - 3} more` : "";
-  const subject =
-    shadowed.length === 1 ? "A local skill" : "Local skills of the same name";
+  const subject = shadowed.length === 1 ? "A local skill" : "Local skills of the same name";
   const verb = shadowed.length === 1 ? "shadows" : "shadow";
   return `${subject} ${verb} ${names}${more} from this directory. Local skills take precedence, so these are not loaded.`;
 }
@@ -220,9 +213,7 @@ export function shadowingExplanation(row: ExternalDirRow): string | undefined {
 // ----------------------------------------------------------------------------
 
 /** The outcome of validating a path the user typed/picked before adding it. */
-export type AddDirValidation =
-  | { ok: true; value: string }
-  | { ok: false; reason: string };
+export type AddDirValidation = { ok: true; value: string } | { ok: false; reason: string };
 
 /** Validates a candidate external directory path against the existing list:
  * non-empty after trim, and not already configured (case-sensitive on the raw
@@ -230,10 +221,7 @@ export type AddDirValidation =
  * Resolution/existence is NOT required here: a path may legitimately be added
  * before it exists (it is created later, or lives on a not-yet-mounted volume),
  * and missing dirs are non-fatal. */
-export function validateNewDir(
-  candidate: string,
-  existing: readonly string[],
-): AddDirValidation {
+export function validateNewDir(candidate: string, existing: readonly string[]): AddDirValidation {
   const value = candidate.trim();
   if (!value) {
     return { ok: false, reason: "Enter a directory path." };
@@ -253,9 +241,6 @@ export function addDir(existing: readonly string[], value: string): string[] {
 /** Removes a directory from the list by its raw configured path, preserving the
  * order of the rest. Returns a NEW array. A path not present is a no-op (the
  * same array contents), so a double-remove can't throw. */
-export function removeDir(
-  existing: readonly string[],
-  rawPath: string,
-): string[] {
+export function removeDir(existing: readonly string[], rawPath: string): string[] {
   return existing.filter((dir) => dir !== rawPath);
 }

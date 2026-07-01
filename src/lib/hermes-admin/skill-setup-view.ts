@@ -86,13 +86,12 @@ const BADGE_LABEL: Readonly<Record<SkillSetupStatus, string>> = Object.freeze({
   "optional-skipped": "Optional setup skipped",
 });
 
-const BADGE_TONE: Readonly<Record<SkillSetupStatus, SkillSetupBadge["tone"]>> =
-  Object.freeze({
-    ready: "ready",
-    "missing-api-key": "attention",
-    "missing-config": "attention",
-    "optional-skipped": "neutral",
-  });
+const BADGE_TONE: Readonly<Record<SkillSetupStatus, SkillSetupBadge["tone"]>> = Object.freeze({
+  ready: "ready",
+  "missing-api-key": "attention",
+  "missing-config": "attention",
+  "optional-skipped": "neutral",
+});
 
 /** The badge metadata for a status. */
 export function setupBadge(status: SkillSetupStatus): SkillSetupBadge {
@@ -119,10 +118,7 @@ export function envConfiguredIndex(
  * sits under a sensitive-looking key, so a user who pasted a secret into a
  * "config" field does not see it echoed back in plaintext. Uses the one shared
  * redactor (`sanitizePayload`), which masks credential-shaped strings. */
-function safeConfigDisplay(
-  key: string,
-  value: string | undefined,
-): string | undefined {
+function safeConfigDisplay(key: string, value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (isSensitiveKey(key)) return "[redacted]";
   const masked = sanitizePayload(value);
@@ -157,37 +153,28 @@ export function buildSkillSetupModel(
     };
   });
 
-  const config: SkillConfigSetupRow[] = requirements.config.map(
-    (requirement) => {
-      const raw = configValues.get(requirement.key);
-      const display = safeConfigDisplay(requirement.key, raw);
-      return {
-        requirement,
-        current: display,
-        // Masked if the display-safe value differs from the raw stored value.
-        redacted: raw !== undefined && display !== raw,
-        modified:
-          raw !== undefined && raw.length > 0 && raw !== requirement.default,
-      };
-    },
-  );
+  const config: SkillConfigSetupRow[] = requirements.config.map((requirement) => {
+    const raw = configValues.get(requirement.key);
+    const display = safeConfigDisplay(requirement.key, raw);
+    return {
+      requirement,
+      current: display,
+      // Masked if the display-safe value differs from the raw stored value.
+      redacted: raw !== undefined && display !== raw,
+      modified: raw !== undefined && raw.length > 0 && raw !== requirement.default,
+    };
+  });
 
   const hasAnySetup = env.length > 0 || config.length > 0;
 
-  const missingRequiredEnv = env.some(
-    (row) => row.requirement.required && !row.configured,
-  );
+  const missingRequiredEnv = env.some((row) => row.requirement.required && !row.configured);
   const missingRequiredConfig = config.some(
-    (row) =>
-      row.requirement.required &&
-      (row.current === undefined || row.current.length === 0),
+    (row) => row.requirement.required && (row.current === undefined || row.current.length === 0),
   );
   const missingOptional =
     env.some((row) => !row.requirement.required && !row.configured) ||
     config.some(
-      (row) =>
-        !row.requirement.required &&
-        (row.current === undefined || row.current.length === 0),
+      (row) => !row.requirement.required && (row.current === undefined || row.current.length === 0),
     );
 
   const status: SkillSetupStatus = missingRequiredEnv
@@ -231,8 +218,8 @@ export function validateConfigValue(
   if (looksLikePathKey(requirement.key) && trimmed.length > 0) {
     // A path setting should not contain a newline or a null byte; otherwise we
     // accept it (Hermes validates existence on its side).
-    if (/[\n\r ]/.test(trimmed)) {
-      return { ok: false, message: "A path cannot contain line breaks." };
+    if (trimmed.includes("\n") || trimmed.includes("\r") || trimmed.includes("\0")) {
+      return { ok: false, message: "A path cannot contain line breaks or null bytes." };
     }
   }
   return { ok: true };

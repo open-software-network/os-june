@@ -235,20 +235,14 @@ export function validateBundleDraft(
         "The slash command can use lowercase letters, numbers, dots, hyphens, and underscores only.",
     });
   } else if (
-    options.existingSlugs.some(
-      (existing) => skillIdentity(existing) === skillIdentity(slug),
-    )
+    options.existingSlugs.some((existing) => skillIdentity(existing) === skillIdentity(slug))
   ) {
     issues.push({
       severity: "error",
       field: "slug",
       message: `A bundle named /${slug} already exists. Choose a different name.`,
     });
-  } else if (
-    options.skills.some(
-      (skill) => skillIdentity(skill.name) === skillIdentity(slug),
-    )
-  ) {
+  } else if (options.skills.some((skill) => skillIdentity(skill.name) === skillIdentity(slug))) {
     issues.push({
       severity: "warning",
       field: "slug",

@@ -351,10 +351,7 @@ export function buildSetupSnapshot(input: SnapshotInput): SetupSnapshot {
     });
 
   const toolFilters = mcpServers
-    .filter(
-      (server) =>
-        server.includeTools.length > 0 || server.excludeTools.length > 0,
-    )
+    .filter((server) => server.includeTools.length > 0 || server.excludeTools.length > 0)
     .map((server) => ({
       server: server.name,
       includeTools: server.includeTools,
@@ -431,10 +428,7 @@ export function serializeSetupSnapshot(snapshot: SetupSnapshot): string {
 }
 
 /** A stable, filesystem-safe filename for a downloaded snapshot. */
-export function setupSnapshotFilename(
-  profile: string,
-  now: Date = new Date(),
-): string {
+export function setupSnapshotFilename(profile: string, now: Date = new Date()): string {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   const safeProfile = profile.replace(/[^a-zA-Z0-9_-]/g, "-");
   return `june-setup-${safeProfile}-${stamp}.json`;
@@ -485,8 +479,7 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
     return { ok: false, error: "This file is not a setup snapshot." };
   }
 
-  const schemaVersion =
-    typeof record.schemaVersion === "number" ? record.schemaVersion : 0;
+  const schemaVersion = typeof record.schemaVersion === "number" ? record.schemaVersion : 0;
   if (schemaVersion > SETUP_SNAPSHOT_VERSION) {
     return {
       ok: false,
@@ -538,8 +531,7 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
           return {
             name,
             enabled: boolOr(r?.enabled, false),
-            transport:
-              (transport as HermesMcpServerInfo["transport"]) ?? "unknown",
+            transport: (transport as HermesMcpServerInfo["transport"]) ?? "unknown",
             command: r ? nonEmptyString(r.command) : undefined,
             url: r ? nonEmptyString(r.url) : undefined,
             envKeys: stringList(r?.envKeys),
@@ -590,9 +582,7 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
       typeof readinessRecord?.gatewayRunning === "boolean"
         ? readinessRecord.gatewayRunning
         : undefined,
-    gatewayVersion: readinessRecord
-      ? nonEmptyString(readinessRecord.gatewayVersion)
-      : undefined,
+    gatewayVersion: readinessRecord ? nonEmptyString(readinessRecord.gatewayVersion) : undefined,
     toolsets: Array.isArray(readinessRecord?.toolsets)
       ? readinessRecord.toolsets
           .map((entry): SnapshotReadiness["toolsets"][number] | undefined => {
@@ -602,20 +592,16 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
             return {
               name,
               enabled: boolOr(r?.enabled, false),
-              configured:
-                typeof r?.configured === "boolean" ? r.configured : undefined,
+              configured: typeof r?.configured === "boolean" ? r.configured : undefined,
             };
           })
-          .filter(
-            (t): t is SnapshotReadiness["toolsets"][number] => t !== undefined,
-          )
+          .filter((t): t is SnapshotReadiness["toolsets"][number] => t !== undefined)
       : [],
   };
 
   const snapshot: SetupSnapshot = {
     schemaVersion: schemaVersion || SETUP_SNAPSHOT_VERSION,
-    generatedAt:
-      nonEmptyString(record.generatedAt) ?? new Date(0).toISOString(),
+    generatedAt: nonEmptyString(record.generatedAt) ?? new Date(0).toISOString(),
     hermesVersion: nonEmptyString(record.hermesVersion),
     profile: nonEmptyString(record.profile) ?? "default",
     mode: nonEmptyString(record.mode) ?? "sandboxed",
@@ -625,10 +611,7 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
     mcpServers,
     catalogInstalls,
     toolFilters: mcpServers
-      .filter(
-        (server) =>
-          server.includeTools.length > 0 || server.excludeTools.length > 0,
-      )
+      .filter((server) => server.includeTools.length > 0 || server.excludeTools.length > 0)
       .map((server) => ({
         server: server.name,
         includeTools: server.includeTools,
@@ -689,10 +672,7 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
  * live setup has; June reports it but never deletes on import (an import is
  * additive and re-configuring, never destructive), so removals are advisory.
  */
-export function diffSnapshot(
-  snapshot: SetupSnapshot,
-  live: LiveSetup,
-): SnapshotDiff {
+export function diffSnapshot(snapshot: SetupSnapshot, live: LiveSetup): SnapshotDiff {
   const entries: DiffEntry[] = [];
 
   // Skills.
@@ -736,9 +716,7 @@ export function diffSnapshot(
   }
 
   // MCP servers.
-  const liveServers = new Map(
-    live.mcpServers.map((server) => [server.name, server]),
-  );
+  const liveServers = new Map(live.mcpServers.map((server) => [server.name, server]));
   for (const server of snapshot.mcpServers) {
     const current = liveServers.get(server.name);
     if (!current) {
@@ -801,9 +779,7 @@ export function diffSnapshot(
         name: install.installName,
         status: "added",
         detail: `Will be installed from the catalog${
-          install.requiredEnvKeys.length > 0
-            ? ". Requires secrets you must re-enter."
-            : "."
+          install.requiredEnvKeys.length > 0 ? ". Requires secrets you must re-enter." : "."
         }`,
       });
     } else {

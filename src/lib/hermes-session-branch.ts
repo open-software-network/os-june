@@ -54,15 +54,11 @@ export function parseBranchSessionResult(
   if (!sessionId || sessionId === fallback.sourceSessionId) return undefined;
 
   const sourceSessionId =
-    pickString(
-      [root],
-      ["source_session_id", "sourceSessionId", "from_session_id"],
-    ) ?? fallback.sourceSessionId;
+    pickString([root], ["source_session_id", "sourceSessionId", "from_session_id"]) ??
+    fallback.sourceSessionId;
   const sourceMessageId =
-    pickString(
-      [root],
-      ["from_message_id", "fromMessageId", "source_message_id"],
-    ) ?? fallback.sourceMessageId;
+    pickString([root], ["from_message_id", "fromMessageId", "source_message_id"]) ??
+    fallback.sourceMessageId;
 
   return { sessionId, sourceSessionId, sourceMessageId };
 }
@@ -86,7 +82,5 @@ const SYNTHETIC_TURN_ID_PREFIXES = ["assistant:", "error:", "pending:"];
 export function isBranchableMessageId(id: string | undefined): boolean {
   const trimmed = nonEmptyString(id);
   if (!trimmed) return false;
-  return !SYNTHETIC_TURN_ID_PREFIXES.some((prefix) =>
-    trimmed.startsWith(prefix),
-  );
+  return !SYNTHETIC_TURN_ID_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }

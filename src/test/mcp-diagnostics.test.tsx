@@ -1,10 +1,4 @@
-import {
-  act,
-  render,
-  renderHook,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   buildDiagnosticBundle,
@@ -40,9 +34,7 @@ function serverFromWire(raw: Record<string, unknown>): HermesMcpServerInfo {
 
 describe("mcp diagnostics — tool policy", () => {
   it("derives the mcp_<server>_<tool> registered name", () => {
-    expect(registeredToolName("linear", "delete_workspace")).toBe(
-      "mcp_linear_delete_workspace",
-    );
+    expect(registeredToolName("linear", "delete_workspace")).toBe("mcp_linear_delete_workspace");
   });
 
   it("resolves an exclude filter as the reason a tool is filtered", () => {
@@ -60,9 +52,7 @@ describe("mcp diagnostics — tool policy", () => {
     const policy = resolveToolPolicy(server);
     expect(policy.allowed).toEqual(["create_issue"]);
     expect(policy.filtered).toEqual(["delete_workspace"]);
-    expect(
-      policy.tools.find((t) => t.name === "delete_workspace")?.reason,
-    ).toBe("excluded");
+    expect(policy.tools.find((t) => t.name === "delete_workspace")?.reason).toBe("excluded");
   });
 
   it("treats an include list as an allowlist", () => {
@@ -80,9 +70,7 @@ describe("mcp diagnostics — tool policy", () => {
     const policy = resolveToolPolicy(server);
     expect(policy.hasInclude).toBe(true);
     expect(policy.allowed).toEqual(["list_issues"]);
-    expect(policy.tools.find((t) => t.name === "delete_repo")?.reason).toBe(
-      "not-in-include",
-    );
+    expect(policy.tools.find((t) => t.name === "delete_repo")?.reason).toBe("not-in-include");
   });
 
   it("includes extra discovered tool names not in the stored list", () => {
@@ -161,9 +149,7 @@ describe("mcp diagnostics — diagnoseServer", () => {
       exclude_tools: ["read", "write"],
     });
     const diagnostics = diagnoseServer(server);
-    expect(diagnostics.issues.map((i) => i.code)).toContain(
-      "filter-excludes-all",
-    );
+    expect(diagnostics.issues.map((i) => i.code)).toContain("filter-excludes-all");
     expect(diagnostics.derivedRegisteredTools).toHaveLength(0);
   });
 
@@ -196,10 +182,7 @@ describe("mcp diagnostics — diagnoseServer", () => {
     };
     const diagnostics = diagnoseServer(server, { testResult });
     expect(diagnostics.discoveredFromTest).toBe(true);
-    expect(diagnostics.discoveredTools.map((t) => t.name)).toEqual([
-      "query",
-      "schema",
-    ]);
+    expect(diagnostics.discoveredTools.map((t) => t.name)).toEqual(["query", "schema"]);
   });
 
   it("reads timeouts and resource/prompt utility availability from raw", () => {
@@ -356,8 +339,7 @@ describe("mcp diagnostics — sanitized export", () => {
         url: "https://api.githubcopilot.com/mcp",
         status: "connected",
         // A status message that leaked a secret-shaped token must be redacted.
-        status_message:
-          "Last auth used token sk0123456789abcdef0123456789abcdef",
+        status_message: "Last auth used token sk0123456789abcdef0123456789abcdef",
         headers: { Authorization: "Bearer sk-super-secret-value-do-not-leak" },
         env: { GITHUB_TOKEN: "ghp_secret_value_should_never_export" },
         include_tools: ["list_issues"],
@@ -385,10 +367,7 @@ describe("mcp diagnostics — sanitized export", () => {
   });
 
   it("builds a filesystem-safe filename", () => {
-    const name = diagnosticBundleFilename(
-      "default",
-      new Date("2026-06-26T12:30:45.000Z"),
-    );
+    const name = diagnosticBundleFilename("default", new Date("2026-06-26T12:30:45.000Z"));
     expect(name).toMatch(/^mcp-diagnostics-default-.*\.json$/);
     expect(name).not.toContain(":");
   });
@@ -401,9 +380,7 @@ describe("mcp diagnostics — sanitized export", () => {
 describe("mcp diagnostics — controller", () => {
   it("derives diagnostics and summary from the loaded server list", async () => {
     const harness = makeAdminHarness(mcpDiagnosticsScenario());
-    const { result } = renderHook(() =>
-      useMcpDiagnosticsController(harness as McpServersEngine),
-    );
+    const { result } = renderHook(() => useMcpDiagnosticsController(harness as McpServersEngine));
 
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
@@ -412,19 +389,13 @@ describe("mcp diagnostics — controller", () => {
     expect(result.current.summary.failing).toBeGreaterThanOrEqual(1);
     expect(result.current.summary.authNeeded).toBe(1);
 
-    const filtered = result.current.servers.find(
-      (d) => d.server.name === "filtered",
-    );
-    expect(filtered?.issues.map((i) => i.code)).toContain(
-      "filter-excludes-all",
-    );
+    const filtered = result.current.servers.find((d) => d.server.name === "filtered");
+    expect(filtered?.issues.map((i) => i.code)).toContain("filter-excludes-all");
   });
 
   it("runs all MCP tests and surfaces the per-server outcomes", async () => {
     const harness = makeAdminHarness(mcpDiagnosticsScenario());
-    const { result } = renderHook(() =>
-      useMcpDiagnosticsController(harness as McpServersEngine),
-    );
+    const { result } = renderHook(() => useMcpDiagnosticsController(harness as McpServersEngine));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     await act(async () => {
@@ -432,18 +403,14 @@ describe("mcp diagnostics — controller", () => {
     });
 
     // The bad-command server's probe reported ok: false with a safe message.
-    const broken = result.current.servers.find(
-      (d) => d.server.name === "broken",
-    );
+    const broken = result.current.servers.find((d) => d.server.name === "broken");
     expect(broken?.server.status).toBe("error");
     expect(result.current.runningAll).toBe(false);
   });
 
   it("answers a missing-tool query through the controller", async () => {
     const harness = makeAdminHarness(mcpDiagnosticsScenario());
-    const { result } = renderHook(() =>
-      useMcpDiagnosticsController(harness as McpServersEngine),
-    );
+    const { result } = renderHook(() => useMcpDiagnosticsController(harness as McpServersEngine));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     act(() => {
@@ -461,9 +428,7 @@ describe("mcp diagnostics — controller", () => {
 // View rendering with a stubbed state (no Tauri, no network).
 // ---------------------------------------------------------------------------
 
-function stubState(
-  overrides: Partial<McpDiagnosticsState> = {},
-): McpDiagnosticsState {
+function stubState(overrides: Partial<McpDiagnosticsState> = {}): McpDiagnosticsState {
   const server = serverFromWire({
     name: "linear",
     enabled: true,
@@ -509,23 +474,15 @@ function stubState(
 describe("mcp diagnostics — view", () => {
   it("renders the summary, the restart-pending warning, and a per-server reason", () => {
     render(<McpDiagnosticsView state={stubState()} />);
-    expect(
-      screen.getByRole("heading", { name: "MCP diagnostics" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "MCP diagnostics" })).toBeInTheDocument();
     expect(screen.getByText(/Restart required/)).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /run all mcp tests/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /run all mcp tests/i })).toBeInTheDocument();
     // The server's auth issue reason is shown.
     expect(screen.getByText(/is not signed in/i)).toBeInTheDocument();
   });
 
   it("shows the empty state when Hermes is not running", () => {
-    render(
-      <McpDiagnosticsView
-        state={stubState({ status: "unavailable", servers: [] })}
-      />,
-    );
+    render(<McpDiagnosticsView state={stubState({ status: "unavailable", servers: [] })} />);
     expect(screen.getByText("Hermes is not running")).toBeInTheDocument();
   });
 

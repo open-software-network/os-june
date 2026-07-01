@@ -10,22 +10,15 @@ export function upsertLiveTranscriptEvent(
     .filter((event) => !isSameLiveSegment(event, next))
     .concat(next)
     .sort(compareLiveTranscriptEvents);
-  return coalesceAdjacentLiveTranscriptEvents(events).slice(
-    -LIVE_TRANSCRIPT_EVENT_LIMIT,
-  );
+  return coalesceAdjacentLiveTranscriptEvents(events).slice(-LIVE_TRANSCRIPT_EVENT_LIMIT);
 }
 
-function coalesceAdjacentLiveTranscriptEvents(
-  events: LiveTranscriptEventDto[],
-) {
+function coalesceAdjacentLiveTranscriptEvents(events: LiveTranscriptEventDto[]) {
   const coalesced: LiveTranscriptEventDto[] = [];
   for (const event of events) {
     const previous = coalesced.at(-1);
     if (previous && isSameLiveTurn(previous, event)) {
-      coalesced[coalesced.length - 1] = mergeLiveTranscriptEvents(
-        previous,
-        event,
-      );
+      coalesced[coalesced.length - 1] = mergeLiveTranscriptEvents(previous, event);
     } else {
       coalesced.push(event);
     }
@@ -33,10 +26,7 @@ function coalesceAdjacentLiveTranscriptEvents(
   return coalesced;
 }
 
-function isSameLiveSegment(
-  left: LiveTranscriptEventDto,
-  right: LiveTranscriptEventDto,
-) {
+function isSameLiveSegment(left: LiveTranscriptEventDto, right: LiveTranscriptEventDto) {
   return (
     left.noteId === right.noteId &&
     left.sessionId === right.sessionId &&
@@ -45,10 +35,7 @@ function isSameLiveSegment(
   );
 }
 
-function isSameLiveTurn(
-  left: LiveTranscriptEventDto,
-  right: LiveTranscriptEventDto,
-) {
+function isSameLiveTurn(left: LiveTranscriptEventDto, right: LiveTranscriptEventDto) {
   return (
     left.noteId === right.noteId &&
     left.sessionId === right.sessionId &&
@@ -79,10 +66,7 @@ function appendLiveTranscriptText(left: string, right: string) {
   return `${leftText} ${rightText}`;
 }
 
-function compareLiveTranscriptEvents(
-  left: LiveTranscriptEventDto,
-  right: LiveTranscriptEventDto,
-) {
+function compareLiveTranscriptEvents(left: LiveTranscriptEventDto, right: LiveTranscriptEventDto) {
   return (
     left.startMs - right.startMs ||
     left.endMs - right.endMs ||

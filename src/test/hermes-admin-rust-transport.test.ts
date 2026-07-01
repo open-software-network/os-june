@@ -89,9 +89,7 @@ describe("createRustAdminFetch — routes through invoke, not webview fetch", ()
   });
 
   it("surfaces a rejected invoke as a thrown error (transport normalizes to a network error)", async () => {
-    const invoke = vi
-      .fn()
-      .mockRejectedValue(new Error("Hermes bridge is not running."));
+    const invoke = vi.fn().mockRejectedValue(new Error("Hermes bridge is not running."));
     const client = createHermesAdminClient(target("sandboxed"), {
       fetch: createRustAdminFetch("sandboxed", invoke),
     });
@@ -107,9 +105,7 @@ describe("createRustAdminFetch — routes through invoke, not webview fetch", ()
     const invoke = vi
       .fn()
       .mockRejectedValue(
-        new Error(
-          'Hermes API returned 422 Unprocessable Entity: {"detail":"bad env"}',
-        ),
+        new Error('Hermes API returned 422 Unprocessable Entity: {"detail":"bad env"}'),
       );
     const client = createHermesAdminClient(target("sandboxed"), {
       fetch: createRustAdminFetch("sandboxed", invoke),

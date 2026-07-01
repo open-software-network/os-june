@@ -9,15 +9,16 @@ use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
-    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
+    GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageGenerationRequest,
+    ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient, Receipt, TokenUsage,
+    Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest, WebFetchResult,
+    WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use june_services::{
-    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
-    NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService, NoteGenerateServiceDeps,
-    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
-    WebAugmentServiceDeps,
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
+    ImageService, ImageServiceDeps, NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService,
+    NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
+    WebAugmentService, WebAugmentServiceDeps,
 };
 use pretty_assertions::assert_eq;
 use std::{
@@ -76,6 +77,32 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
     assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
     assert_eq!(body["data"]["creditsCharged"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_forwards_venice_api_key_header() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "model": "text-model"
+        }),
+        "vc_user_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(
+        body["data"]["content"],
+        "Generated note body with user Venice key"
+    );
+    assert!(!body.to_string().contains("vc_user_key"));
     Ok(())
 }
 
@@ -420,6 +447,91 @@ async fn integration_web_fetch_rejects_private_network_url() -> Result<(), Box<d
 }
 
 #[tokio::test]
+async fn integration_image_generate_returns_enveloped_image() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "a red bicycle", "model": "venice-sd35" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["imageBase64"], "aGVsbG8=");
+    assert_eq!(body["data"]["mimeType"], "image/png");
+    assert_eq!(body["data"]["model"], "venice-sd35");
+    assert_eq!(body["data"]["provider"], "fake-image");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_requires_auth() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "a red bicycle", "model": "venice-sd35" }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error_code"], 3001);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_rejects_blank_prompt() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "   ", "model": "venice-sd35" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "prompt_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_maps_upstream_failure_to_502() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "boom", "model": "venice-sd35" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "upstream_provider_failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_rejects_unpriced_model() -> Result<(), Box<dyn Error>> {
+    // A model with no configured image price is rejected at the metering
+    // boundary (before Venice is called) rather than generating for free.
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "a red bicycle", "model": "unpriced-image-model" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "model_not_priced");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> {
     let response = send(get_request("/verify")?).await;
 
@@ -513,6 +625,12 @@ fn test_state_with_sinks(
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
     let chat_completer = Arc::new(FakeChatCompleter);
+    let image = Arc::new(ImageService::new(ImageServiceDeps {
+        os_accounts: os_accounts.clone(),
+        generator: Arc::new(FakeImageGenerator),
+        pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
+        hold_ttl_seconds: 30,
+    }));
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
@@ -558,6 +676,7 @@ fn test_state_with_sinks(
             fetch_credits: 20,
             hold_ttl_seconds: 30,
         })),
+        image,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
@@ -632,6 +751,20 @@ fn json_request(
         builder = builder.header(header::AUTHORIZATION, authorization);
     }
     builder.body(Body::from(value.to_string()))
+}
+
+fn json_request_with_venice_api_key(
+    uri: &str,
+    value: &serde_json::Value,
+    venice_api_key: &str,
+) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .header("x-venice-api-key", venice_api_key)
+        .body(Body::from(value.to_string()))
 }
 
 fn get_request(uri: &str) -> Result<Request<Body>, axum::http::Error> {
@@ -781,11 +914,11 @@ struct FakeOsAccounts;
 
 #[async_trait]
 impl OsAccountsClient for FakeOsAccounts {
-    async fn authorize(&self, _request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+    async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
         Ok(Authorization {
             allowed: true,
             action_token: Some("agt_test".to_string()),
-            cap_credits: None,
+            cap_credits: Some(request.estimate),
             reason: None,
         })
     }
@@ -823,9 +956,15 @@ struct FakeGenerator;
 
 #[async_trait]
 impl Generator for FakeGenerator {
-    async fn generate(&self, _request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+    async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+        let content =
+            if request.provider_credentials.venice_api_key.as_deref() == Some("vc_user_key") {
+                "Generated note body with user Venice key"
+            } else {
+                "Generated note body"
+            };
         Ok(GeneratedNote {
-            content: "Generated note body".to_string(),
+            content: content.to_string(),
             title_suggestion: Some("Generated title".to_string()),
             provider: "fake-generator".to_string(),
             usage: TokenUsage {
@@ -868,6 +1007,26 @@ impl AgentChatCompleter for FakeChatCompleter {
                 prompt_tokens: 100,
                 completion_tokens: 100,
             },
+        })
+    }
+}
+
+struct FakeImageGenerator;
+
+#[async_trait]
+impl ImageGenerator for FakeImageGenerator {
+    async fn generate(
+        &self,
+        request: ImageGenerationRequest,
+    ) -> Result<GeneratedImage, DomainError> {
+        if request.prompt.contains("boom") {
+            return Err(DomainError::UpstreamProvider);
+        }
+        Ok(GeneratedImage {
+            image_base64: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+            model: request.model.0,
+            provider: "fake-image".to_string(),
         })
     }
 }

@@ -26,11 +26,7 @@
  */
 
 import { redactForLog } from "./redact";
-import type {
-  HermesMcpServerInfo,
-  HermesMcpTestResult,
-  HermesMcpToolInfo,
-} from "./schemas";
+import type { HermesMcpServerInfo, HermesMcpTestResult, HermesMcpToolInfo } from "./schemas";
 import { oauthStateFor, type McpOauthStatus } from "./mcp-oauth-view";
 
 // ---------------------------------------------------------------------------
@@ -49,9 +45,7 @@ export function registeredToolName(server: string, tool: string): string {
  * this server's prefix (so a bare native name is tolerated). */
 export function nativeToolName(server: string, registered: string): string {
   const prefix = `mcp_${server}_`;
-  return registered.startsWith(prefix)
-    ? registered.slice(prefix.length)
-    : registered;
+  return registered.startsWith(prefix) ? registered.slice(prefix.length) : registered;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,11 +53,7 @@ export function nativeToolName(server: string, registered: string): string {
 // ---------------------------------------------------------------------------
 
 /** Why a single native tool is or is not in the allowed set, after filters. */
-export type ToolAllowReason =
-  | "allowed"
-  | "excluded"
-  | "not-in-include"
-  | "server-flagged-off";
+export type ToolAllowReason = "allowed" | "excluded" | "not-in-include" | "server-flagged-off";
 
 /** One native tool's resolution against a server's include/exclude policy and
  * its own reported `enabled` flag. */
@@ -246,18 +236,14 @@ export function diagnoseServer(
 ): ServerDiagnostics {
   const { testResult, restartPending = false } = options;
   const discoveredFromTest = Boolean(testResult && testResult.ok);
-  const discoveredTools = discoveredFromTest
-    ? (testResult?.tools ?? [])
-    : (server.tools ?? []);
+  const discoveredTools = discoveredFromTest ? (testResult?.tools ?? []) : (server.tools ?? []);
 
   const policy = resolveToolPolicy(
     server,
     discoveredTools.map((tool) => tool.name),
   );
 
-  const oauthState = serverUsesOauth(server)
-    ? oauthStateFor(server)
-    : undefined;
+  const oauthState = serverUsesOauth(server) ? oauthStateFor(server) : undefined;
 
   // A server only registers tools when it is enabled, signed in (if it uses
   // OAuth), and not in a failed connection. Otherwise NOTHING registers, so the
@@ -343,8 +329,7 @@ function collectIssues(
     issues.push({
       code: "connection-error",
       tone: "error",
-      message:
-        server.statusMessage ?? `${server.name} failed its last connection.`,
+      message: server.statusMessage ?? `${server.name} failed its last connection.`,
       fix: "Fix the connection, then test the server again.",
     });
   } else if (server.status === undefined || server.status === "untested") {
@@ -442,9 +427,7 @@ export function explainMissingTool(
   const server = resolved.server;
   const tool = resolved.tool ?? trimmed;
   const registered = registeredToolName(server.name, tool);
-  const oauthState = serverUsesOauth(server)
-    ? oauthStateFor(server)
-    : undefined;
+  const oauthState = serverUsesOauth(server) ? oauthStateFor(server) : undefined;
 
   if (!server.enabled) {
     return {
@@ -486,8 +469,7 @@ export function explainMissingTool(
   }
 
   const testResult = options.testResults?.get(server.name);
-  const discovered =
-    testResult && testResult.ok ? (testResult.tools ?? []) : undefined;
+  const discovered = testResult && testResult.ok ? (testResult.tools ?? []) : undefined;
   const policy = resolveToolPolicy(
     server,
     (discovered ?? []).map((entry) => entry.name),
@@ -621,11 +603,7 @@ export function summarizeHealth(
     if (server.enabled && server.status === "error") failing += 1;
     if (server.enabled && serverUsesOauth(server)) {
       const state = oauthStateFor(server);
-      if (
-        state === "needs-sign-in" ||
-        state === "expired" ||
-        state === "unknown"
-      ) {
+      if (state === "needs-sign-in" || state === "expired" || state === "unknown") {
         authNeeded += 1;
       }
     }
@@ -704,13 +682,7 @@ export function buildDiagnosticBundle(
     now?: Date;
   },
 ): McpDiagnosticBundle {
-  const {
-    profile,
-    mode,
-    restartPending,
-    testResults,
-    now = new Date(),
-  } = options;
+  const { profile, mode, restartPending, testResults, now = new Date() } = options;
   const summary = summarizeHealth(servers, restartPending);
   const serverEntries = servers.map((server) => {
     const diagnostics = diagnoseServer(server, {
@@ -772,10 +744,7 @@ export function serializeDiagnosticBundle(bundle: McpDiagnosticBundle): string {
 }
 
 /** A stable, filesystem-safe filename for a downloaded bundle. */
-export function diagnosticBundleFilename(
-  profile: string,
-  now: Date = new Date(),
-): string {
+export function diagnosticBundleFilename(profile: string, now: Date = new Date()): string {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   const safeProfile = profile.replace(/[^a-zA-Z0-9_-]/g, "-");
   return `mcp-diagnostics-${safeProfile}-${stamp}.json`;
@@ -808,9 +777,7 @@ function readUtilityAvailability(record: Record<string, unknown> | undefined): {
 } {
   if (!record) return {};
   const caps =
-    asRecord(record.capabilities) ??
-    asRecord(record.utilities) ??
-    asRecord(record.features);
+    asRecord(record.capabilities) ?? asRecord(record.utilities) ?? asRecord(record.features);
   const resources =
     pickBool(caps, ["resources", "resource"]) ??
     pickBool(record, ["resources", "supports_resources", "has_resources"]);
@@ -833,11 +800,7 @@ function readTimeouts(record: Record<string, unknown> | undefined): {
     pickNumber(record, ["timeout", "timeout_seconds", "timeoutSeconds"]);
   const connect =
     pickNumber(nested, ["connect", "connect_timeout", "connect_seconds"]) ??
-    pickNumber(record, [
-      "connect_timeout",
-      "connect_timeout_seconds",
-      "connectTimeout",
-    ]);
+    pickNumber(record, ["connect_timeout", "connect_timeout_seconds", "connectTimeout"]);
   return { timeout, connect };
 }
 
@@ -850,12 +813,8 @@ function readMissingConfig(record: Record<string, unknown> | undefined): {
 } {
   if (!record) return { env: [], headers: [] };
   const missing = asRecord(record.missing);
-  const env = stringList(
-    record.missing_env ?? record.missingEnv ?? missing?.env,
-  );
-  const headers = stringList(
-    record.missing_headers ?? record.missingHeaders ?? missing?.headers,
-  );
+  const env = stringList(record.missing_env ?? record.missingEnv ?? missing?.env);
+  const headers = stringList(record.missing_headers ?? record.missingHeaders ?? missing?.headers);
   return { env, headers };
 }
 
@@ -881,8 +840,7 @@ function keyNamesOf(value: unknown): string[] {
     const out: string[] = [];
     for (const entry of value) {
       const entryRecord = asRecord(entry);
-      const name =
-        entryRecord && pickString(entryRecord, ["key", "name", "header"]);
+      const name = entryRecord && pickString(entryRecord, ["key", "name", "header"]);
       if (name) out.push(name);
     }
     return out;
@@ -918,9 +876,7 @@ function scrubFreeText(value: string | undefined): string | undefined {
       return token;
     }
     const isLongCredential =
-      token.length >= 20 &&
-      /[A-Za-z0-9_-]/.test(token) &&
-      /^[A-Za-z0-9_-]+$/.test(token);
+      token.length >= 20 && /[A-Za-z0-9_-]/.test(token) && /^[A-Za-z0-9_-]+$/.test(token);
     return isLongCredential ? "[redacted]" : token;
   });
 }
@@ -955,10 +911,7 @@ function pickNumber(
   return undefined;
 }
 
-function pickString(
-  record: Record<string, unknown>,
-  keys: string[],
-): string | undefined {
+function pickString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0) {

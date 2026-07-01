@@ -46,16 +46,12 @@ export function dispatchAgentSessionStatus(detail: AgentSessionStatusDetail) {
   );
   void import("@tauri-apps/api/event")
     .then((api) =>
-      typeof api.emit === "function"
-        ? api.emit(AGENT_SESSION_STATUS_EVENT, detail)
-        : undefined,
+      typeof api.emit === "function" ? api.emit(AGENT_SESSION_STATUS_EVENT, detail) : undefined,
     )
     .catch(() => {});
 }
 
-export function dispatchAgentSessionsChanged(
-  detail: AgentSessionsChangedDetail,
-) {
+export function dispatchAgentSessionsChanged(detail: AgentSessionsChangedDetail) {
   window.dispatchEvent(
     new CustomEvent<AgentSessionsChangedDetail>(AGENT_SESSIONS_CHANGED_EVENT, {
       detail,
@@ -67,9 +63,7 @@ export function dispatchAgentSessionsChanged(
 export function emitAgentSessionsChanged(detail: AgentSessionsChangedDetail) {
   void import("@tauri-apps/api/event")
     .then((api) =>
-      typeof api.emit === "function"
-        ? api.emit(AGENT_SESSIONS_CHANGED_EVENT, detail)
-        : undefined,
+      typeof api.emit === "function" ? api.emit(AGENT_SESSIONS_CHANGED_EVENT, detail) : undefined,
     )
     .catch(() => {});
 }

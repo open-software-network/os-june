@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Telegram community
+    url: https://t.me/osjune
+    about: Questions, ideas, and help from the team and other June users.
+  - name: Report a security vulnerability
+    url: https://github.com/open-software-network/os-june/security/policy
+    about: Please report vulnerabilities privately, never through a public issue.

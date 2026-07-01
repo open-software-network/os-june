@@ -23,14 +23,7 @@ type DictationHudDemoOptions = {
   local: boolean;
 };
 
-type DemoState =
-  | "listening"
-  | "transcribing"
-  | "pasting"
-  | "error"
-  | "silent"
-  | "demo"
-  | "clear";
+type DemoState = "listening" | "transcribing" | "pasting" | "error" | "silent" | "demo" | "clear";
 
 const DICTATION_EVENT = "dictation-event";
 
@@ -60,9 +53,7 @@ export function registerDictationHudDemo({ local }: DictationHudDemoOptions) {
   function emitDictation(type: string, payload?: Record<string, unknown>) {
     const envelope = { type, payload };
     if (local) {
-      window.dispatchEvent(
-        new CustomEvent(DICTATION_EVENT, { detail: envelope }),
-      );
+      window.dispatchEvent(new CustomEvent(DICTATION_EVENT, { detail: envelope }));
       return;
     }
     void import("@tauri-apps/api/event")
@@ -149,9 +140,7 @@ export function registerDictationHudDemo({ local }: DictationHudDemoOptions) {
     return "Lifecycle running (~7s): listen with live levels, transcribe, paste, done.";
   }
 
-  (window as unknown as Record<string, unknown>).__dictationHud = (
-    state?: DemoState,
-  ) => {
+  (window as unknown as Record<string, unknown>).__dictationHud = (state?: DemoState) => {
     switch (state) {
       case "listening":
         listening();

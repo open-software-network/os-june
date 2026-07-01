@@ -24,6 +24,7 @@ const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
 // validation error that it misclassifies as prompt context overflow.
 const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 const AGENT_TITLE_MAX_CHARS: usize = 48;
+const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_JUNE_RESPONSE_MESSAGE: &str = "The processing service returned an invalid response.";
@@ -219,10 +220,12 @@ pub async fn transcribe_saved_audio(
 ) -> Result<TranscriptionProviderResult, AppError> {
     let audio = read_audio(&request.audio_path).await?;
     let filename = filename_for_audio(&request.audio_path, "recording.wav");
+    let model = crate::providers::transcription_model();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let mut form = Form::new()
         .text("noteId", request.operation_id())
         .text("title", title_or_placeholder(&request.title))
-        .text("model", crate::providers::transcription_model())
+        .text("model", model)
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
     if request.preview {
         form = form.text("preview", "true");
@@ -238,7 +241,8 @@ pub async fn transcribe_saved_audio(
     if let Some(language) = normalized_language(request.language.as_deref()) {
         form = form.text("language", language.to_string());
     }
-    let response: TranscribeResponse = post_multipart("/v1/notes/transcribe", form).await?;
+    let response: TranscribeResponse =
+        post_multipart("/v1/notes/transcribe", form, send_venice_api_key).await?;
     Ok(TranscriptionProviderResult {
         text: response.text,
         language: response.language,
@@ -256,6 +260,8 @@ pub async fn generate_note_from_transcript(
             "Transcript is empty, so a note cannot be generated.",
         ));
     }
+    let model = crate::providers::generation_model();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let body = GenerateBody {
         note_id: request.operation_id(),
         prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
@@ -265,9 +271,10 @@ pub async fn generate_note_from_transcript(
         manual_notes: request.manual_notes,
         language: request.language,
         existing_generated_note: request.existing_generated_note,
-        model: crate::providers::generation_model(),
+        model,
     };
-    let response: GenerateResponse = post_json("/v1/notes/generate", &body).await?;
+    let response: GenerateResponse =
+        post_json("/v1/notes/generate", &body, send_venice_api_key).await?;
     Ok(GenerationProviderResult {
         content: response.content,
         title_suggestion: response.title_suggestion,
@@ -283,10 +290,12 @@ pub async fn dictate_transcribe(
 ) -> Result<TranscriptionProviderResult, AppError> {
     let audio = read_audio(&request.audio_path).await?;
     let filename = filename_for_audio(&request.audio_path, "dictation.wav");
+    let model = crate::providers::transcription_model();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let form = Form::new()
         .text("sessionId", request.session_id)
         .text("utteranceId", request.utterance_id)
-        .text("model", crate::providers::transcription_model())
+        .text("model", model)
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
     let mut form = form;
     if let Some(context) = request
@@ -300,7 +309,8 @@ pub async fn dictate_transcribe(
     if let Some(language) = normalized_language(request.language.as_deref()) {
         form = form.text("language", language.to_string());
     }
-    let response: TranscribeResponse = post_multipart("/v1/dictate", form).await?;
+    let response: TranscribeResponse =
+        post_multipart("/v1/dictate", form, send_venice_api_key).await?;
     Ok(TranscriptionProviderResult {
         text: response.text,
         language: response.language,
@@ -318,15 +328,18 @@ fn normalized_language(language: Option<&str>) -> Option<&str> {
 }
 
 pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String, AppError> {
+    let model = DEFAULT_DICTATION_CLEANUP_MODEL.to_string();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let body = DictateCleanupBody {
         session_id: params.session_id,
         utterance_id: params.utterance_id,
         text: params.text,
         dictionary_context: params.dictionary_context,
         style: params.style,
-        model: DEFAULT_DICTATION_CLEANUP_MODEL.to_string(),
+        model,
     };
-    let response: CleanupResponse = post_json("/v1/dictate/cleanup", &body).await?;
+    let response: CleanupResponse =
+        post_json("/v1/dictate/cleanup", &body, send_venice_api_key).await?;
     Ok(response.text)
 }
 
@@ -341,17 +354,50 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
     parse_response("/v1/models", response).await
 }
 
+/// One generated image from the June API `/v1/image/generate` endpoint. The
+/// bytes arrive base64-encoded so the frontend can wrap them in a data URL for
+/// the existing inline image display path.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImageDto {
+    pub image_base64: String,
+    pub mime_type: String,
+    pub model: String,
+    pub provider: String,
+}
+
+#[derive(Serialize)]
+struct ImageGenerateBody {
+    prompt: String,
+    model: String,
+}
+
+/// Forwards a prompt to June API image generation with the user's access token.
+/// Image generation is not metered yet, but the endpoint is still authenticated
+/// like every other call, so the token attaches the same way.
+pub async fn generate_image(prompt: String, model: String) -> Result<GeneratedImageDto, AppError> {
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
+    post_json(
+        "/v1/image/generate",
+        &ImageGenerateBody { prompt, model },
+        send_venice_api_key,
+    )
+    .await
+}
+
 pub async fn proxy_agent_chat_completions(
     mut body: serde_json::Value,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
     normalize_agent_chat_request_for_proxy(&mut body);
+    let send_venice_api_key = body_model_accepts_venice_api_key(&body);
     let url = format!("{}/v1/chat/completions", june_api_url());
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
-        let response = agent_http_client()
+        let request = agent_http_client()
             .post(&url)
             .bearer_auth(&token)
-            .json(&body)
+            .json(&body);
+        let response = with_venice_api_key("/v1/chat/completions", request, send_venice_api_key)
             .send()
             .await
             .map_err(network_error)?;
@@ -391,7 +437,7 @@ pub async fn forward_web_request(
     path: &str,
     body: &serde_json::Value,
 ) -> Result<WebProxyResponse, AppError> {
-    let response = authed_send(path, |client, url, token| {
+    let response = authed_send(path, true, |client, url, token| {
         client.post(url).bearer_auth(token).json(body)
     })
     .await?;
@@ -698,7 +744,7 @@ pub async fn submit_issue_report(
             .map_err(|error| AppError::new("issue_report_attachment_invalid", error.to_string()))?;
         form = form.part("attachment", part);
     }
-    post_multipart("/v1/issue-reports", form).await
+    post_multipart("/v1/issue-reports", form, false).await
 }
 
 fn issue_attachment_mime(path: &str) -> &'static str {
@@ -890,7 +936,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ")
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
-        .trim_end_matches(|ch: char| matches!(ch, '.' | ':' | '-'))
+        .trim_end_matches(['.', ':', '-'])
         .trim()
         .to_string();
     if title.is_empty() {
@@ -903,19 +949,19 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
     Some(title)
 }
 
-async fn post_json<T, B>(path: &str, body: &B) -> Result<T, AppError>
+async fn post_json<T, B>(path: &str, body: &B, send_venice_api_key: bool) -> Result<T, AppError>
 where
     T: for<'de> Deserialize<'de>,
     B: Serialize,
 {
-    let response = authed_send(path, |client, url, token| {
+    let response = authed_send(path, send_venice_api_key, |client, url, token| {
         client.post(url).bearer_auth(token).json(body)
     })
     .await?;
     parse_response(path, response).await
 }
 
-async fn post_multipart<T>(path: &str, form: Form) -> Result<T, AppError>
+async fn post_multipart<T>(path: &str, form: Form, send_venice_api_key: bool) -> Result<T, AppError>
 where
     T: for<'de> Deserialize<'de>,
 {
@@ -925,17 +971,19 @@ where
     // possible here anyway.
     let url = format!("{}{}", june_api_url(), path);
     let token = crate::os_accounts::access_token().await?;
-    let response = http_client()
-        .post(&url)
-        .bearer_auth(token)
-        .multipart(form)
+    let request = http_client().post(&url).bearer_auth(token).multipart(form);
+    let response = with_venice_api_key(path, request, send_venice_api_key)
         .send()
         .await
         .map_err(network_error)?;
     parse_response(path, response).await
 }
 
-async fn authed_send<F>(path: &str, build: F) -> Result<reqwest::Response, AppError>
+async fn authed_send<F>(
+    path: &str,
+    send_venice_api_key: bool,
+    build: F,
+) -> Result<reqwest::Response, AppError>
 where
     F: Fn(&reqwest::Client, String, String) -> reqwest::RequestBuilder,
 {
@@ -943,7 +991,8 @@ where
     let url = format!("{}{}", june_api_url(), path);
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
-        let response = build(client, url.clone(), token.clone())
+        let request = build(client, url.clone(), token.clone());
+        let response = with_venice_api_key(path, request, send_venice_api_key)
             .send()
             .await
             .map_err(network_error)?;
@@ -1022,6 +1071,49 @@ fn response_retry_after_ms(response: &reqwest::Response) -> Option<u64> {
         .map(|seconds| seconds.saturating_mul(1_000))
 }
 
+fn with_venice_api_key(
+    path: &str,
+    request: reqwest::RequestBuilder,
+    model_accepts_venice_api_key: bool,
+) -> reqwest::RequestBuilder {
+    if !request_accepts_venice_api_key(path, model_accepts_venice_api_key) {
+        return request;
+    }
+    match crate::providers::venice_api_key() {
+        Some(api_key) => request.header(VENICE_API_KEY_HEADER, api_key),
+        None => request,
+    }
+}
+
+fn path_accepts_venice_api_key(path: &str) -> bool {
+    matches!(
+        path,
+        "/v1/notes/transcribe"
+            | "/v1/notes/generate"
+            | "/v1/dictate"
+            | "/v1/dictate/cleanup"
+            | "/v1/chat/completions"
+            | "/v1/image/generate"
+            | "/v1/web/search"
+            | "/v1/web/fetch"
+    )
+}
+
+fn request_accepts_venice_api_key(path: &str, model_accepts_venice_api_key: bool) -> bool {
+    model_accepts_venice_api_key && path_accepts_venice_api_key(path)
+}
+
+fn model_accepts_venice_api_key(model: &str) -> bool {
+    crate::providers::transcription_provider_for_model(model.trim())
+        == crate::providers::PROVIDER_VENICE
+}
+
+fn body_model_accepts_venice_api_key(body: &serde_json::Value) -> bool {
+    body.get("model")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(model_accepts_venice_api_key)
+}
+
 fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -1076,6 +1168,49 @@ fn june_api_url() -> String {
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or_else(|| DEFAULT_JUNE_API_URL.to_string())
+}
+
+async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {
+    if !path.exists() {
+        return Err(AppError::new(
+            "audio_artifact_missing",
+            "Saved audio is missing and cannot be transcribed.",
+        ));
+    }
+    tokio::fs::read(path)
+        .await
+        .map_err(|error| AppError::new("audio_artifact_missing", error.to_string()))
+}
+
+fn filename_for_audio(path: &Path, fallback: &str) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn audio_part(audio: Vec<u8>, filename: &str, path: &Path) -> Result<Part, AppError> {
+    Part::bytes(audio)
+        .file_name(filename.to_string())
+        .mime_str(audio_mime(path))
+        .map_err(|error| AppError::new("june_request_failed", error.to_string()))
+}
+
+fn audio_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("m4a") | Some("mp4") => "audio/mp4",
+        _ => "audio/wav",
+    }
+}
+
+fn network_error(error: reqwest::Error) -> AppError {
+    let _ = PROVIDER_OPENAI;
+    AppError::new("june_request_failed", error.to_string())
 }
 
 #[cfg(test)]
@@ -1236,6 +1371,43 @@ mod tests {
             body["model"],
             serde_json::json!(crate::providers::generation_model())
         );
+    }
+
+    #[test]
+    fn venice_key_gate_rejects_openai_transcription_models() {
+        assert!(request_accepts_venice_api_key(
+            "/v1/notes/transcribe",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_TRANSCRIPTION_MODEL)
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/notes/transcribe",
+            model_accepts_venice_api_key("gpt-4o-mini-transcribe")
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/dictate",
+            model_accepts_venice_api_key("whisper-1")
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/issue-reports",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_TRANSCRIPTION_MODEL)
+        ));
+        assert!(request_accepts_venice_api_key(
+            "/v1/image/generate",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_IMAGE_MODEL)
+        ));
+    }
+
+    #[test]
+    fn agent_proxy_venice_key_gate_uses_normalized_model() {
+        let mut body = serde_json::json!({
+            "messages": [{ "role": "user", "content": "hello" }],
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert!(body_model_accepts_venice_api_key(&body));
+        body["model"] = serde_json::json!("gpt-4o-mini-transcribe");
+        assert!(!body_model_accepts_venice_api_key(&body));
     }
 
     #[test]
@@ -1401,47 +1573,4 @@ mod tests {
         assert_eq!(messages[2]["role"], "tool");
         assert_eq!(messages[7]["content"], "result 5");
     }
-}
-
-async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {
-    if !path.exists() {
-        return Err(AppError::new(
-            "audio_artifact_missing",
-            "Saved audio is missing and cannot be transcribed.",
-        ));
-    }
-    tokio::fs::read(path)
-        .await
-        .map_err(|error| AppError::new("audio_artifact_missing", error.to_string()))
-}
-
-fn filename_for_audio(path: &Path, fallback: &str) -> String {
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(fallback)
-        .to_string()
-}
-
-fn audio_part(audio: Vec<u8>, filename: &str, path: &Path) -> Result<Part, AppError> {
-    Part::bytes(audio)
-        .file_name(filename.to_string())
-        .mime_str(audio_mime(path))
-        .map_err(|error| AppError::new("june_request_failed", error.to_string()))
-}
-
-fn audio_mime(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("m4a") | Some("mp4") => "audio/mp4",
-        _ => "audio/wav",
-    }
-}
-
-fn network_error(error: reqwest::Error) -> AppError {
-    let _ = PROVIDER_OPENAI;
-    AppError::new("june_request_failed", error.to_string())
 }

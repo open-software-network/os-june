@@ -15,12 +15,7 @@
  * as a tab.
  */
 
-import {
-  asRecord,
-  finiteNumber,
-  pickNumber,
-  pickString,
-} from "./hermes-control-plane";
+import { asRecord, pickNumber, pickString } from "./hermes-control-plane";
 
 /** A single tool or subagent cost line, when the gateway breaks costs down. */
 export type SessionToolCost = {
@@ -52,8 +47,7 @@ function parseToolCosts(value: unknown): SessionToolCost[] | undefined {
   for (const entry of value) {
     const record = asRecord(entry);
     if (!record) continue;
-    const name =
-      pickString([record], ["name", "tool", "tool_name", "label"]) ?? undefined;
+    const name = pickString([record], ["name", "tool", "tool_name", "label"]) ?? undefined;
     if (!name) continue;
     costs.push({
       name,
@@ -72,10 +66,7 @@ function parseToolCosts(value: unknown): SessionToolCost[] | undefined {
  * `undefined`. `sessionId` is always carried through from the caller so the
  * panel can label which session it describes even when the payload omits it.
  */
-export function parseSessionUsage(
-  sessionId: string,
-  raw: unknown,
-): SessionUsage {
+export function parseSessionUsage(sessionId: string, raw: unknown): SessionUsage {
   const root = asRecord(raw);
   // Tokens may live at the root or under a `usage` / `tokens` sub-object.
   const usage = asRecord(root?.usage) ?? asRecord(root?.tokens);
@@ -106,11 +97,7 @@ export function parseSessionUsage(
       "outputTokens",
       "output",
     ]),
-    totalTokens: pickNumber(tokenContainers, [
-      "total_tokens",
-      "totalTokens",
-      "total",
-    ]),
+    totalTokens: pickNumber(tokenContainers, ["total_tokens", "totalTokens", "total"]),
     contextUsed: pickNumber(contextContainers, [
       "used",
       "context_used",
@@ -130,9 +117,7 @@ export function parseSessionUsage(
       [root],
       ["estimated_cost_usd", "estimatedCostUsd", "cost_usd", "costUsd"],
     ),
-    toolCosts: parseToolCosts(
-      root?.tool_costs ?? root?.toolCosts ?? root?.tools,
-    ),
+    toolCosts: parseToolCosts(root?.tool_costs ?? root?.toolCosts ?? root?.tools),
     raw,
   };
 }

@@ -16,14 +16,8 @@ import {
   type SkillsHubState,
 } from "../lib/hermes-admin";
 import { SkillsHubView } from "../components/settings/SkillsHubSection";
-import {
-  makeAdminHarness,
-  instantSleep,
-} from "./fixtures/hermes-admin-harness";
-import {
-  hubBrowseScenario,
-  skillSecurityWarningScenario,
-} from "./fixtures/hermes-admin-scenarios";
+import { makeAdminHarness, instantSleep } from "./fixtures/hermes-admin-harness";
+import { hubBrowseScenario, skillSecurityWarningScenario } from "./fixtures/hermes-admin-scenarios";
 
 /** Parses a wire-shaped object into a HermesHubSkillResult. */
 function hubFromWire(raw: Record<string, unknown>): HermesHubSkillResult {
@@ -67,9 +61,7 @@ describe("skills hub — schema", () => {
 
   it("defaults trust to unknown and collapses url source to community", () => {
     expect(hubFromWire({ identifier: "x" }).trust).toBe("unknown");
-    expect(hubFromWire({ identifier: "x", trust: "url" }).trust).toBe(
-      "community",
-    );
+    expect(hubFromWire({ identifier: "x", trust: "url" }).trust).toBe("community");
   });
 
   it("parses a hub search list from results/skills/items wrappers and bare array", () => {
@@ -119,23 +111,15 @@ describe("skills hub — view logic", () => {
   });
 
   it("infers the source kind from the identifier when source is absent", () => {
-    expect(sourceKindFor(hubFromWire({ identifier: "github:foo/bar" }))).toBe(
-      "github",
-    );
-    expect(
-      sourceKindFor(hubFromWire({ identifier: "https://x.test/SKILL.md" })),
-    ).toBe("url");
-    expect(sourceKindFor(hubFromWire({ identifier: "skills.sh/thing" }))).toBe(
-      "skills-sh",
-    );
+    expect(sourceKindFor(hubFromWire({ identifier: "github:foo/bar" }))).toBe("github");
+    expect(sourceKindFor(hubFromWire({ identifier: "https://x.test/SKILL.md" }))).toBe("url");
+    expect(sourceKindFor(hubFromWire({ identifier: "skills.sh/thing" }))).toBe("skills-sh");
   });
 
   it("flags direct-URL single-file installs", () => {
     expect(isDirectUrlInstall(results[3])).toBe(true);
     expect(isDirectUrlInstall(results[0])).toBe(false);
-    expect(
-      isDirectUrlInstall(hubFromWire({ identifier: "http://x.test/SKILL.md" })),
-    ).toBe(true);
+    expect(isDirectUrlInstall(hubFromWire({ identifier: "http://x.test/SKILL.md" }))).toBe(true);
   });
 
   it("maps trust levels to a label, tone, and advisory", () => {
@@ -155,12 +139,7 @@ describe("skills hub — view logic", () => {
   });
 
   it("lists present source kinds in a stable display order", () => {
-    expect(sourceKindsOf(results)).toEqual([
-      "official",
-      "skills-sh",
-      "github",
-      "url",
-    ]);
+    expect(sourceKindsOf(results)).toEqual(["official", "skills-sh", "github", "url"]);
   });
 });
 
@@ -185,27 +164,21 @@ describe("skills hub — search", () => {
     await controller.search("data");
     const snapshot = controller.getSnapshot();
     expect(snapshot.status).toBe("ready");
-    expect(
-      snapshot.results.some((r) => r.identifier === "skills.sh/data-science"),
-    ).toBe(true);
+    expect(snapshot.results.some((r) => r.identifier === "skills.sh/data-science")).toBe(true);
     controller.dispose();
   });
 
   it("passes the query through to the hub search endpoint", async () => {
     const { harness, controller } = controllerFor();
     await controller.search("data");
-    const search = harness.server.requestLog.find((r) =>
-      r.path.includes("/api/skills/hub/search"),
-    );
+    const search = harness.server.requestLog.find((r) => r.path.includes("/api/skills/hub/search"));
     expect(search?.query.q).toBe("data");
     controller.dispose();
   });
 
   it("surfaces a retryable error on search failure", async () => {
     const { harness, controller } = controllerFor();
-    vi.spyOn(harness.client.skills, "hubSearch").mockRejectedValueOnce(
-      new Error("boom"),
-    );
+    vi.spyOn(harness.client.skills, "hubSearch").mockRejectedValueOnce(new Error("boom"));
     await controller.search("");
     const snapshot = controller.getSnapshot();
     expect(snapshot.status).toBe("error");
@@ -218,9 +191,7 @@ describe("skills hub — install", () => {
   it("drives a background install to done, with progress, and invalidates skills", async () => {
     const { harness, controller } = controllerFor();
     await controller.search("pdf");
-    const result = controller
-      .getSnapshot()
-      .results.find((r) => r.identifier === "official/pdf")!;
+    const result = controller.getSnapshot().results.find((r) => r.identifier === "official/pdf")!;
 
     const progresses: Array<number | undefined> = [];
     const unsub = controller.subscribe(() => {
@@ -242,14 +213,10 @@ describe("skills hub — install", () => {
     expect(note?.timing).toBe("next-session");
     expect(note?.message).toContain("New sessions");
     // Lifecycle banner advanced to next-session, never "applied now".
-    expect(controller.getSnapshot().lifecycle.state).toBe(
-      "changes-apply-next-session",
-    );
+    expect(controller.getSnapshot().lifecycle.state).toBe("changes-apply-next-session");
     // The card reflects installed locally without a re-search.
     expect(
-      controller
-        .getSnapshot()
-        .results.find((r) => r.identifier === "official/pdf")?.installed,
+      controller.getSnapshot().results.find((r) => r.identifier === "official/pdf")?.installed,
     ).toBe(true);
 
     controller.dispose();
@@ -264,9 +231,7 @@ describe("skills hub — install", () => {
     await controller.search("sync");
     const result = controller.getSnapshot().results[0];
     await controller.install(result);
-    expect(controller.getSnapshot().installs.get("skills.sh/sync")?.phase).toBe(
-      "done",
-    );
+    expect(controller.getSnapshot().installs.get("skills.sh/sync")?.phase).toBe("done");
     expect(harness.cache.isStale("skills")).toBe(true);
     controller.dispose();
   });
@@ -287,21 +252,15 @@ describe("skills hub — install", () => {
   it("requires confirmation for a direct-URL install and is a no-op when declined", async () => {
     const { harness, controller } = controllerFor();
     await controller.search("example");
-    const urlResult = controller
-      .getSnapshot()
-      .results.find((r) => isDirectUrlInstall(r))!;
+    const urlResult = controller.getSnapshot().results.find((r) => isDirectUrlInstall(r))!;
     const confirm = vi.fn().mockResolvedValue(false);
     await controller.install(urlResult, { confirm });
     expect(confirm).toHaveBeenCalledOnce();
-    expect(
-      controller.getSnapshot().installs.get(urlResult.identifier)?.phase,
-    ).toBe("idle");
+    expect(controller.getSnapshot().installs.get(urlResult.identifier)?.phase).toBe("idle");
     // No install request reached the server.
-    expect(
-      harness.server.requestLog.some((r) =>
-        r.path.includes("/api/skills/hub/install"),
-      ),
-    ).toBe(false);
+    expect(harness.server.requestLog.some((r) => r.path.includes("/api/skills/hub/install"))).toBe(
+      false,
+    );
     controller.dispose();
   });
 
@@ -310,13 +269,9 @@ describe("skills hub — install", () => {
     await controller.search("pdf");
     const result = controller.getSnapshot().results[0];
     await controller.install(result);
-    expect(
-      controller.getSnapshot().installs.get(result.identifier)?.phase,
-    ).toBe("done");
+    expect(controller.getSnapshot().installs.get(result.identifier)?.phase).toBe("done");
     controller.clearInstall(result.identifier);
-    expect(
-      controller.getSnapshot().installs.get(result.identifier),
-    ).toBeUndefined();
+    expect(controller.getSnapshot().installs.get(result.identifier)).toBeUndefined();
     controller.dispose();
   });
 
@@ -411,9 +366,7 @@ describe("skills hub — view", () => {
   it("installs a non-URL skill directly, no confirm", () => {
     const install = vi.fn();
     render(<SkillsHubView state={baseState({ install })} />);
-    const pdfCard = screen
-      .getByRole("button", { name: "PDF" })
-      .closest("li") as HTMLElement;
+    const pdfCard = screen.getByRole("button", { name: "PDF" }).closest("li") as HTMLElement;
     fireEvent.click(within(pdfCard).getByRole("button", { name: "Install" }));
     expect(install).toHaveBeenCalledTimes(1);
     expect(install.mock.calls[0][1]).toBeUndefined();
@@ -422,9 +375,7 @@ describe("skills hub — view", () => {
   it("routes a non-trusted install through the security review", () => {
     const install = vi.fn();
     render(<SkillsHubView state={baseState({ install })} />);
-    const urlCard = screen
-      .getByRole("button", { name: "URL skill" })
-      .closest("li") as HTMLElement;
+    const urlCard = screen.getByRole("button", { name: "URL skill" }).closest("li") as HTMLElement;
     fireEvent.click(within(urlCard).getByRole("button", { name: "Install" }));
     // Install was invoked with a confirm hook (the security-review slot). The
     // hook opens the review dialog rather than a window.confirm.
@@ -440,17 +391,13 @@ describe("skills hub — view", () => {
       });
     });
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(
-      screen.getByText(/skills are instructions and helper files/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/skills are instructions and helper files/i)).toBeInTheDocument();
   });
 
   it("installs a trusted skill without opening the review", () => {
     const install = vi.fn();
     render(<SkillsHubView state={baseState({ install })} />);
-    const pdfCard = screen
-      .getByRole("button", { name: "PDF" })
-      .closest("li") as HTMLElement;
+    const pdfCard = screen.getByRole("button", { name: "PDF" }).closest("li") as HTMLElement;
     fireEvent.click(within(pdfCard).getByRole("button", { name: "Install" }));
     // Trusted (official) install: no confirm hook, no dialog.
     expect(install.mock.calls[0][1]).toBeUndefined();
@@ -468,10 +415,7 @@ describe("skills hub — view", () => {
   it("shows install progress while installing", () => {
     const state = baseState({
       installs: new Map([
-        [
-          "official/pdf",
-          { identifier: "official/pdf", phase: "installing", progress: 60 },
-        ],
+        ["official/pdf", { identifier: "official/pdf", phase: "installing", progress: 60 }],
       ]),
     });
     render(<SkillsHubView state={state} />);

@@ -50,11 +50,9 @@ export function playRecordingSound(sound: RecordingSound) {
   playbackAudio.volume = 0.7;
   playbackAudio.currentTime = 0;
   activeAudioElements.add(playbackAudio);
-  playbackAudio.addEventListener(
-    "ended",
-    () => activeAudioElements.delete(playbackAudio),
-    { once: true },
-  );
+  playbackAudio.addEventListener("ended", () => activeAudioElements.delete(playbackAudio), {
+    once: true,
+  });
 
   void playbackAudio
     .play()

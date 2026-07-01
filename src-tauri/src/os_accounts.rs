@@ -194,6 +194,13 @@ pub struct AccountStatus {
     pub portal_url: Option<String>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountsLogoutRequest {
+    #[serde(default)]
+    pub clear_browser_session: bool,
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -520,7 +527,7 @@ pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn os_accounts_logout() -> Result<(), AppError> {
+pub async fn os_accounts_logout(request: Option<AccountsLogoutRequest>) -> Result<(), AppError> {
     if local_dev_enabled() {
         set_cached_signed_in(true);
         return Ok(());
@@ -535,7 +542,28 @@ pub async fn os_accounts_logout() -> Result<(), AppError> {
     }
     clear_tokens().await;
     set_cached_signed_in(false);
+    if request
+        .map(|request| request.clear_browser_session)
+        .unwrap_or(false)
+    {
+        let _ = open_accounts_browser_logout(&cfg);
+    }
     Ok(())
+}
+
+fn open_accounts_browser_logout(cfg: &Config) -> Result<(), AppError> {
+    let Some(url) = accounts_browser_logout_url(cfg) else {
+        return Ok(());
+    };
+    open_in_browser(&url)
+}
+
+fn accounts_browser_logout_url(cfg: &Config) -> Option<String> {
+    let accounts_url = cfg.accounts_url.trim().trim_end_matches('/');
+    if accounts_url.is_empty() {
+        return None;
+    }
+    Some(format!("{accounts_url}/login?signed-out=1"))
 }
 
 #[tauri::command]
@@ -550,8 +578,12 @@ pub async fn os_accounts_upgrade() -> Result<(), AppError> {
             "OS Accounts is not configured for this build.",
         ));
     }
-    let session: CheckoutSessionWire =
-        authed_post(&cfg, "/billing/subscription", serde_json::json!({})).await?;
+    let session: CheckoutSessionWire = authed_post(
+        &cfg,
+        "/billing/subscription",
+        subscription_checkout_request(),
+    )
+    .await?;
     let url = session.url.trim();
     if url.is_empty() {
         return Err(AppError::new(
@@ -560,6 +592,12 @@ pub async fn os_accounts_upgrade() -> Result<(), AppError> {
         ));
     }
     open_in_browser(url)
+}
+
+fn subscription_checkout_request() -> serde_json::Value {
+    serde_json::json!({
+        "allow_promotion_codes": true,
+    })
 }
 
 /// Opens the accounts portal in the default browser. The webview swallows
@@ -1479,5 +1517,40 @@ mod tests {
     fn oauth_scope_allows_checkout_and_credit_spend() {
         assert!(OAUTH_SCOPES.contains("billing:write"));
         assert!(OAUTH_SCOPES.contains("credits:spend"));
+    }
+
+    #[test]
+    fn subscription_checkout_request_allows_promotion_codes() {
+        assert_eq!(
+            subscription_checkout_request(),
+            serde_json::json!({ "allow_promotion_codes": true })
+        );
+    }
+
+    #[test]
+    fn browser_logout_url_points_at_signed_out_login() {
+        let cfg = Config {
+            accounts_url: "https://accounts.opensoftware.co/".to_string(),
+            api_url: "https://api.accounts.opensoftware.co".to_string(),
+            client_id: "ocl_test".to_string(),
+            loopback_port: DEFAULT_LOOPBACK_PORT,
+        };
+
+        assert_eq!(
+            accounts_browser_logout_url(&cfg).as_deref(),
+            Some("https://accounts.opensoftware.co/login?signed-out=1")
+        );
+    }
+
+    #[test]
+    fn browser_logout_url_is_absent_without_accounts_origin() {
+        let cfg = Config {
+            accounts_url: "   ".to_string(),
+            api_url: "https://api.accounts.opensoftware.co".to_string(),
+            client_id: "ocl_test".to_string(),
+            loopback_port: DEFAULT_LOOPBACK_PORT,
+        };
+
+        assert_eq!(accounts_browser_logout_url(&cfg), None);
     }
 }

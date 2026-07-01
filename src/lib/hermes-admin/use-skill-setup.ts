@@ -27,10 +27,7 @@ import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import {
   parseSkillSetupRequirements,
   readConfigPath,
@@ -47,11 +44,7 @@ import {
   type SkillSetupBadge,
   type SkillSetupModel,
 } from "./skill-setup-view";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives one setup panel operates on, all bound to
  * the SAME target. Production builds this from a bridge connection; tests build
@@ -125,10 +118,7 @@ export class SkillSetupController {
   private status: SkillSetupStatusKind = "loading";
   private error?: string;
   private retryable = false;
-  private envConfigured = new Map<
-    string,
-    { configured: boolean; preview?: string }
-  >();
+  private envConfigured = new Map<string, { configured: boolean; preview?: string }>();
   private configValues = new Map<string, string | undefined>();
   private readonly pending = new Set<string>();
   private notifications: readonly AdminNotification[] = [];
@@ -207,8 +197,7 @@ export class SkillSetupController {
   async load(): Promise<void> {
     const seq = ++this.loadSeq;
     const cachedEnv = this.engine.cache.get<HermesEnvListing>("envConfig");
-    const cachedConfig =
-      this.engine.cache.get<HermesConfigResult>("configTree");
+    const cachedConfig = this.engine.cache.get<HermesConfigResult>("configTree");
     if (cachedEnv || cachedConfig) {
       if (cachedEnv) this.applyEnv(cachedEnv);
       if (cachedConfig) this.applyConfig(cachedConfig);
@@ -239,10 +228,7 @@ export class SkillSetupController {
       this.error = adminError.safeMessage;
       this.retryable = adminError.retryable;
       // Keep any cached state on screen; only flip to a hard error with nothing.
-      this.status =
-        this.envConfigured.size > 0 || this.configValues.size > 0
-          ? "ready"
-          : "error";
+      this.status = this.envConfigured.size > 0 || this.configValues.size > 0 ? "ready" : "error";
       this.recompute();
     }
   }
@@ -379,21 +365,14 @@ export class SkillSetupController {
     for (const requirement of this.requirements.config) {
       next.set(
         requirement.key,
-        readConfigPath(
-          result.config,
-          skillConfigPathSegments(this.skill, requirement.key),
-        ),
+        readConfigPath(result.config, skillConfigPathSegments(this.skill, requirement.key)),
       );
     }
     this.configValues = next;
   }
 
   private buildSnapshot(): SkillSetupState {
-    const model = buildSkillSetupModel(
-      this.requirements,
-      this.envConfigured,
-      this.configValues,
-    );
+    const model = buildSkillSetupModel(this.requirements, this.envConfigured, this.configValues);
     return {
       status: this.status,
       skill: this.skill,
@@ -430,9 +409,8 @@ export class SkillSetupController {
   private readonly deleteSecretAction = (name: string): void => {
     void this.deleteSecret(name);
   };
-  private readonly revealSecretAction = (
-    name: string,
-  ): Promise<string | undefined> => this.revealSecret(name);
+  private readonly revealSecretAction = (name: string): Promise<string | undefined> =>
+    this.revealSecret(name);
   private readonly setConfigAction = (key: string, value: string): void => {
     void this.setConfig(key, value);
   };
@@ -613,14 +591,10 @@ function makeBadgeResolver(
     for (const requirement of requirements.config) {
       configValues.set(
         requirement.key,
-        readConfigPath(
-          config,
-          skillConfigPathSegments(skill.name, requirement.key),
-        ),
+        readConfigPath(config, skillConfigPathSegments(skill.name, requirement.key)),
       );
     }
-    return buildSkillSetupModel(requirements, envConfigured, configValues)
-      .badge;
+    return buildSkillSetupModel(requirements, envConfigured, configValues).badge;
   };
 }
 
@@ -695,10 +669,7 @@ export function useSkillsSetupOverview(
     };
   }, [engine, refreshKey]);
 
-  const badgeFor = useMemo(
-    () => makeBadgeResolver(data.env, data.config),
-    [data],
-  );
+  const badgeFor = useMemo(() => makeBadgeResolver(data.env, data.config), [data]);
 
   const refresh = useCallback(() => setRefreshKey((key) => key + 1), []);
 

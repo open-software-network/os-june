@@ -9,7 +9,7 @@ const NORMALIZE_MIN_GAIN: f32 = 1.25;
 const NORMALIZE_MAX_GAIN: f32 = 32.0;
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
 const TRANSCRIPTION_CHANNELS: u16 = 1;
-const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 8 * 60 * 1000;
+pub const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 30 * 1000;
 /// Loudest-window RMS below which a track carries no transcribable speech.
 /// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
 /// activity `min_rms`, so we only ever skip clearly-silent audio.
@@ -83,8 +83,13 @@ pub fn coalesce_turns_for_transcription(mut turns: Vec<AudioTurn>) -> Vec<AudioT
     for turn in turns {
         if let Some(last) = coalesced.last_mut() {
             let gap_ms = turn.start_ms - last.end_ms;
-            if last.source == turn.source && gap_ms <= TRANSCRIPTION_COHERENCE_GAP_MS {
-                last.end_ms = last.end_ms.max(turn.end_ms);
+            let merged_end_ms = last.end_ms.max(turn.end_ms);
+            let merged_duration_ms = merged_end_ms - last.start_ms;
+            if last.source == turn.source
+                && gap_ms <= TRANSCRIPTION_COHERENCE_GAP_MS
+                && merged_duration_ms <= MAX_TRANSCRIPTION_CHUNK_MS
+            {
+                last.end_ms = merged_end_ms;
                 continue;
             }
         }

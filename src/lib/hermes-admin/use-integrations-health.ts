@@ -20,11 +20,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  listVeniceModels,
-  providerModelSettings,
-  type VeniceModelDto,
-} from "../tauri";
+import { listVeniceModels, providerModelSettings, type VeniceModelDto } from "../tauri";
 import { modelSupportsTools } from "../model-privacy";
 import { useInstalledSkills } from "./use-installed-skills";
 import { useToolsets } from "./use-toolsets";

@@ -32,10 +32,7 @@ export function CreateFolderDialog({
     if (!trimmed || submitting) return;
     setSubmitting(true);
     try {
-      await onCreate(
-        trimmed,
-        description.trim() ? description.trim() : undefined,
-      );
+      await onCreate(trimmed, description.trim() ? description.trim() : undefined);
       onClose();
     } finally {
       setSubmitting(false);
@@ -54,12 +51,7 @@ export function CreateFolderDialog({
       initialFocusSelector='input[name="folder-name"]'
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
           <button
@@ -73,11 +65,7 @@ export function CreateFolderDialog({
         </>
       }
     >
-      <form
-        id="create-folder-form"
-        className="dialog-body"
-        onSubmit={handleSubmit}
-      >
+      <form id="create-folder-form" className="dialog-body" onSubmit={handleSubmit}>
         <DialogField label="Name" htmlFor="folder-name">
           <input
             id="folder-name"

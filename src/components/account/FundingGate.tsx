@@ -19,29 +19,36 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const [portalError, setPortalError] = useState<string>();
   const handle = account.user?.handle;
   const status = account.subscription?.status;
+  const subscribed = account.subscription?.subscribed === true;
+  const credits = account.balance?.credits;
+  const negativeBalance = typeof credits === "number" && credits < 0;
   const billingRecovery =
-    account.subscription?.subscribed === true &&
-    typeof status === "string" &&
-    status.length > 0 &&
-    !hasLiveSubscription(account);
+    subscribed && typeof status === "string" && status.length > 0 && !hasLiveSubscription(account);
+  const topUpRequired = subscribed && !billingRecovery && negativeBalance;
 
   const copy = billingRecovery
     ? {
         title: "Update billing",
-        subtitle:
-          "Your payment needs attention. Update billing to keep using June.",
+        subtitle: "Your payment needs attention. Update billing to keep using June.",
         cta: "Manage billing",
         waiting: "Waiting for your billing update",
         reopen: "Reopen billing",
       }
-    : {
-        title: "Upgrade to continue",
-        subtitle:
-          "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
-        cta: "Upgrade",
-        waiting: "Waiting for your upgrade",
-        reopen: "Reopen checkout",
-      };
+    : topUpRequired
+      ? {
+          title: "Top up credits",
+          subtitle: "Your credit balance is below zero. Top up credits to keep using June.",
+          cta: "Top up credits",
+          waiting: "Waiting for your top-up",
+          reopen: "Reopen account portal",
+        }
+      : {
+          title: "Upgrade to continue",
+          subtitle: "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
+          cta: "Upgrade",
+          waiting: "Waiting for your upgrade",
+          reopen: "Reopen checkout",
+        };
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -53,7 +60,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   async function handleOpenPortal() {
     setPortalError(undefined);
     try {
-      if (billingRecovery) {
+      if (billingRecovery || topUpRequired) {
         await osAccountsOpenPortal();
       } else {
         await osAccountsUpgrade();
@@ -85,11 +92,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
         <div className="welcome-providers">
           {openedPortal ? (
             <>
-              <div
-                className="welcome-auth-progress"
-                role="status"
-                aria-live="polite"
-              >
+              <div className="welcome-auth-progress" role="status" aria-live="polite">
                 <span className="welcome-progress-label">
                   <Spinner className="welcome-spinner" aria-hidden />
                   <span>{copy.waiting}</span>
@@ -129,11 +132,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
 
         <p className="welcome-terms">
           {handle ? <>Signed in as @{handle}. </> : null}
-          <button
-            type="button"
-            className="funding-gate-link"
-            onClick={onSignOut}
-          >
+          <button type="button" className="funding-gate-link" onClick={onSignOut}>
             Sign out
           </button>
         </p>

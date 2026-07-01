@@ -1,11 +1,4 @@
-import {
-  type HTMLAttributes,
-  type ReactNode,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
+import { type HTMLAttributes, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 const DEFAULT_TIP_WIDTH = 300;
@@ -66,9 +59,7 @@ export function HoverTip({
   const hoverTimerRef = useRef<number | null>(null);
   const tooltipId = useId();
   const [position, setPosition] = useState<TipPosition>();
-  const describedBy = [ariaDescribedBy, position ? tooltipId : null]
-    .filter(Boolean)
-    .join(" ");
+  const describedBy = [ariaDescribedBy, position ? tooltipId : null].filter(Boolean).join(" ");
 
   function cancelHoverIntent() {
     if (hoverTimerRef.current !== null) {
@@ -84,8 +75,7 @@ export function HoverTip({
       Math.max(rect.left + rect.width / 2 - width / 2, VIEWPORT_MARGIN),
       window.innerWidth - width - VIEWPORT_MARGIN,
     );
-    const side =
-      window.innerHeight - rect.bottom < MIN_SPACE_BELOW ? "top" : "bottom";
+    const side = window.innerHeight - rect.bottom < MIN_SPACE_BELOW ? "top" : "bottom";
     setPosition({
       side,
       left,

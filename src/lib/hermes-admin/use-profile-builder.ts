@@ -18,18 +18,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  hermesBridgeStatus,
-  listVeniceModels,
-  type HermesBridgeStatus,
-} from "../tauri";
+import { hermesBridgeStatus, listVeniceModels, type HermesBridgeStatus } from "../tauri";
 import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import {
   buildCreatePayload,
   canAdvance,
@@ -50,11 +43,7 @@ import type {
   HermesProfileSummary,
   HermesSkillInfo,
 } from "./schemas";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** Loads the generation model catalog. Injected so tests drive the model gate
  * without a Tauri runtime; production uses `listVeniceModels("generation")`. */
@@ -72,11 +61,7 @@ export type ProfileBuilderEngine = {
   loadModels: LoadProfileBuilderModels;
 };
 
-export type ProfileBuilderStatus =
-  | "unavailable"
-  | "loading"
-  | "ready"
-  | "error";
+export type ProfileBuilderStatus = "unavailable" | "loading" | "ready" | "error";
 
 /** Where the create flow is. `creating` runs the create + soul + session calls;
  * `created` is the terminal success; `failed` carries a rolled-back message. */
@@ -225,11 +210,7 @@ export class ProfileBuilderController {
 
     // The remaining inputs are enrichment for individual steps; a failure on any
     // leaves that step's choices empty rather than failing the whole builder.
-    await Promise.all([
-      this.loadModels(seq),
-      this.loadSkills(seq),
-      this.loadMcp(seq),
-    ]);
+    await Promise.all([this.loadModels(seq), this.loadSkills(seq), this.loadMcp(seq)]);
 
     if (this.disposed || seq !== this.loadSeq) return;
     this.inputsLoading = false;
@@ -310,9 +291,7 @@ export class ProfileBuilderController {
    * it from the profile's settings, rather than implying a clean rollback that
    * did not happen.
    */
-  async createProfile(
-    options: { startTestSession?: boolean } = {},
-  ): Promise<void> {
+  async createProfile(options: { startTestSession?: boolean } = {}): Promise<void> {
     if (this.create.phase === "creating") return;
     if (!canCreateProfile(this.form, this.context())) {
       this.create = {
@@ -353,10 +332,7 @@ export class ProfileBuilderController {
         await this.engine.client.profiles.setSoul(slug, this.form.soul.trim());
       } catch (error) {
         if (this.disposed) return;
-        const adminError = HermesAdminError.from(
-          `PUT /api/profiles/${slug}/soul`,
-          error,
-        );
+        const adminError = HermesAdminError.from(`PUT /api/profiles/${slug}/soul`, error);
         this.create = {
           phase: "failed",
           createdSlug: slug,
@@ -377,10 +353,7 @@ export class ProfileBuilderController {
         testSessionStarted = true;
       } catch (error) {
         if (this.disposed) return;
-        const adminError = HermesAdminError.from(
-          `POST /api/profiles/${slug}/open-terminal`,
-          error,
-        );
+        const adminError = HermesAdminError.from(`POST /api/profiles/${slug}/open-terminal`, error);
         this.create = {
           phase: "created",
           createdSlug: slug,
@@ -455,9 +428,7 @@ export class ProfileBuilderController {
   private readonly goBackAction = (): void => {
     this.setStep(previousStep(this.step));
   };
-  private readonly updateAction = (
-    patch: Partial<ProfileBuilderForm>,
-  ): void => {
+  private readonly updateAction = (patch: Partial<ProfileBuilderForm>): void => {
     this.update(patch);
   };
   private readonly resetAction = (): void => {
@@ -466,9 +437,7 @@ export class ProfileBuilderController {
   private readonly refreshAction = (): void => {
     void this.load();
   };
-  private readonly createProfileAction = (options?: {
-    startTestSession?: boolean;
-  }): void => {
+  private readonly createProfileAction = (options?: { startTestSession?: boolean }): void => {
     void this.createProfile(options);
   };
   private readonly dismissNotificationAction = (id: string): void => {
@@ -604,9 +573,7 @@ export function useProfileBuilder(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

@@ -7,13 +7,14 @@ use june_config::{
 use june_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
     MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceModelCatalog,
-    client_with_timeout, default_client, jwks_client,
+    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceImageGenerator,
+    VeniceModelCatalog, client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
-    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
-    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
+    ImageService, ImageServiceDeps, NoteGenerateService, NoteGenerateServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
+    WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -79,6 +80,11 @@ async fn load_pricing(
     pricing
 }
 
+// The dependency-injection composition root: it wires every provider and
+// service into the router, so its length grows by a line or two with each new
+// capability (image generation is the latest). Splitting it further would scatter
+// the wiring without making it clearer.
+#[allow(clippy::too_many_lines)]
 fn build_router(
     config: &AppConfig,
     http: &reqwest::Client,
@@ -157,6 +163,16 @@ fn build_router(
         fetch_credits: config.os_accounts.web_fetch_credits,
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_web_secs,
     }));
+    let image = Arc::new(ImageService::new(ImageServiceDeps {
+        os_accounts: os_accounts.clone(),
+        generator: build_image_generator(upstream_http, &config.upstreams.venice),
+        pricing: config
+            .image_pricing
+            .iter()
+            .map(|(model, credits)| (model.clone(), ImageModelPrice::venice(*credits)))
+            .collect(),
+        hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_image_secs,
+    }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
         pricing: pricing.clone(),
         os_accounts,
@@ -178,6 +194,7 @@ fn build_router(
         agent_chat,
         dictate,
         web,
+        image,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
@@ -192,6 +209,16 @@ fn build_router(
         },
     });
     june_api::router(state)
+}
+
+fn build_image_generator(
+    upstream_http: &reqwest::Client,
+    venice: &june_config::UpstreamConfig,
+) -> Arc<dyn june_domain::ImageGenerator> {
+    Arc::new(VeniceImageGenerator::from_config(
+        upstream_http.clone(),
+        venice,
+    ))
 }
 
 fn build_os_accounts_client(

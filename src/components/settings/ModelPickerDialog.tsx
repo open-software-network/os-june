@@ -6,11 +6,7 @@ import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import {
-  modelPrivacyBadge,
-  modelPrivacyFlags,
-  modelSupportsTools,
-} from "../../lib/model-privacy";
+import { modelPrivacyBadge, modelPrivacyFlags, modelSupportsTools } from "../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
@@ -109,10 +105,7 @@ export function ModelPickerDialog({
   useEffect(() => {
     if (open) setTab("suggested");
   }, [open, mode]);
-  const suggested = useMemo(
-    () => suggestedModelsForMode(mode, options),
-    [mode, options],
-  );
+  const suggested = useMemo(() => suggestedModelsForMode(mode, options), [mode, options]);
   const query = search.trim().toLowerCase();
   const searching = query.length > 0;
   const reasonsById = useMemo(
@@ -122,13 +115,7 @@ export function ModelPickerDialog({
   const filteredOptions = useMemo(() => {
     if (searching) {
       return options.filter((model) =>
-        [
-          model.name,
-          model.id,
-          model.description,
-          model.privacy,
-          ...model.traits,
-        ]
+        [model.name, model.id, model.description, model.privacy, ...model.traits]
           .filter(Boolean)
           .join(" ")
           .toLowerCase()
@@ -143,7 +130,12 @@ export function ModelPickerDialog({
     return options;
   }, [options, query, searching, suggested, tab]);
   const showReasons = !searching && tab === "suggested" && suggested.length > 0;
-  const title = mode === "transcription" ? "Transcription model" : "Text model";
+  const title =
+    mode === "transcription"
+      ? "Transcription model"
+      : mode === "image"
+        ? "Image model"
+        : "Text model";
 
   return (
     <Dialog
@@ -165,11 +157,7 @@ export function ModelPickerDialog({
         />
       </label>
       {!searching && suggested.length > 0 ? (
-        <div
-          className="model-picker-tabs"
-          role="tablist"
-          aria-label="Model groups"
-        >
+        <div className="model-picker-tabs" role="tablist" aria-label="Model groups">
           <button
             type="button"
             role="tab"
@@ -198,9 +186,7 @@ export function ModelPickerDialog({
           // are judged: the synthesized placeholder for a selection the
           // catalog hasn't loaded yet has no capability data to judge by.
           const noTools =
-            mode === "generation" &&
-            Boolean(model.provider) &&
-            !modelSupportsTools(model);
+            mode === "generation" && Boolean(model.provider) && !modelSupportsTools(model);
           return (
             <button
               key={model.id}
@@ -217,11 +203,7 @@ export function ModelPickerDialog({
               }}
             >
               <span className="model-picker-logo" aria-hidden>
-                <ProviderLogo
-                  provider={model.provider}
-                  id={model.id}
-                  name={model.name}
-                />
+                <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
               </span>
               <span className="model-picker-name" title={model.description}>
                 {model.name}
@@ -230,14 +212,10 @@ export function ModelPickerDialog({
                 {selected ? <IconCheckmark2Small size={14} /> : null}
               </span>
               <span className="model-picker-meta">
-                {noTools ? (
-                  <span className="model-picker-no-tools">No tools</span>
-                ) : null}
+                {noTools ? <span className="model-picker-no-tools">No tools</span> : null}
                 <ModelMeta model={model} />
               </span>
-              {reason ? (
-                <span className="model-picker-reason">{reason}</span>
-              ) : null}
+              {reason ? <span className="model-picker-reason">{reason}</span> : null}
             </button>
           );
         })}
@@ -274,16 +252,11 @@ export function pricingLabel(model: VeniceModelDto) {
     if (usdValues.length > 1) {
       const min = Math.min(...usdValues);
       const max = Math.max(...usdValues);
-      return min === max
-        ? `$${formatUsd(min)}`
-        : `$${formatUsd(min)}-$${formatUsd(max)}`;
+      return min === max ? `$${formatUsd(min)}` : `$${formatUsd(min)}-$${formatUsd(max)}`;
     }
   }
   if (model.priceDescription?.trim()) return model.priceDescription.trim();
-  if (
-    model.priceUnit === "seconds" &&
-    typeof model.creditsPerMillionSeconds === "number"
-  ) {
+  if (model.priceUnit === "seconds" && typeof model.creditsPerMillionSeconds === "number") {
     return `${formatCreditsAsUsdPerUnit(model.creditsPerMillionSeconds, 1_000_000)} per second audio`;
   }
   if (
@@ -309,12 +282,10 @@ function priceForPath(value: unknown, path: string[]) {
 
 function collectUsdValues(value: unknown): number[] {
   if (!value || typeof value !== "object") return [];
-  return Object.entries(value as Record<string, unknown>).flatMap(
-    ([key, nested]) => {
-      if (key === "usd" && typeof nested === "number") return [nested];
-      return collectUsdValues(nested);
-    },
-  );
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, nested]) => {
+    if (key === "usd" && typeof nested === "number") return [nested];
+    return collectUsdValues(nested);
+  });
 }
 
 function formatUsd(value: number) {

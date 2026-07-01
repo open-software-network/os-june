@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HermesAdminError } from "../lib/hermes-admin";
 import type { HermesActionStatus } from "../lib/hermes-admin";
-import {
-  instantSleep,
-  makeAdminHarness,
-} from "./fixtures/hermes-admin-harness";
+import { instantSleep, makeAdminHarness } from "./fixtures/hermes-admin-harness";
 import {
   pendingSkillWritesScenario,
   skillSecurityWarningScenario,
@@ -31,11 +28,7 @@ describe("background action polling", () => {
     });
 
     // The scripted progression is queued -> running -> succeeded.
-    expect(seen.map((s) => s.state)).toEqual([
-      "queued",
-      "running",
-      "succeeded",
-    ]);
+    expect(seen.map((s) => s.state)).toEqual(["queued", "running", "succeeded"]);
     expect(final.state).toBe("succeeded");
     expect(final.done).toBe(true);
     expect(final.progress).toBe(100);
@@ -44,9 +37,7 @@ describe("background action polling", () => {
   it("returns the failed status (does not throw) when an action fails", async () => {
     // The security scenario's install action fails.
     const { client } = makeAdminHarness(skillSecurityWarningScenario());
-    const { action } = await client.skills.hubInstall(
-      "https://example.test/raw/SKILL.md",
-    );
+    const { action } = await client.skills.hubInstall("https://example.test/raw/SKILL.md");
     const final = await client.pollAction(action!, { sleep: instantSleep });
     expect(final.state).toBe("failed");
     expect(final.done).toBe(true);

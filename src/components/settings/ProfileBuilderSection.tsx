@@ -46,9 +46,7 @@ type ProfileBuilderSectionProps = {
  * presentation. The render-only {@link ProfileBuilderView} is split out so tests
  * drive it with a stubbed state (no Tauri, no network).
  */
-export function ProfileBuilderSection({
-  mode = "sandboxed",
-}: ProfileBuilderSectionProps) {
+export function ProfileBuilderSection({ mode = "sandboxed" }: ProfileBuilderSectionProps) {
   const state = useProfileBuilder(mode);
   return <ProfileBuilderView state={state} mode={mode} />;
 }
@@ -75,11 +73,7 @@ export function ProfileBuilderView({
 
   if (isUnavailable) {
     return (
-      <BuilderShell
-        mode={state.mode ?? mode}
-        profile={state.profile}
-        show={false}
-      >
+      <BuilderShell mode={state.mode ?? mode} profile={state.profile} show={false}>
         <EmptyState
           title="Hermes is not running"
           description="Start Hermes to create a profile. A profile gives a task its own model, skills, MCP servers, and instructions."
@@ -90,11 +84,7 @@ export function ProfileBuilderView({
 
   if (isErrored) {
     return (
-      <BuilderShell
-        mode={state.mode ?? mode}
-        profile={state.profile}
-        show={false}
-      >
+      <BuilderShell mode={state.mode ?? mode} profile={state.profile} show={false}>
         <ErrorState
           message={state.error ?? "Could not load profiles from Hermes."}
           retryable={state.retryable}
@@ -120,22 +110,14 @@ export function ProfileBuilderView({
           <Stepper current={state.step} state={state} context={context} />
           <div className="settings-card profile-builder-card">
             <header className="profile-builder-step-header">
-              <h3 className="profile-builder-step-title">
-                {STEP_META[state.step].title}
-              </h3>
-              <p className="profile-builder-step-hint">
-                {STEP_META[state.step].hint}
-              </p>
+              <h3 className="profile-builder-step-title">{STEP_META[state.step].title}</h3>
+              <p className="profile-builder-step-hint">{STEP_META[state.step].hint}</p>
             </header>
 
             <StepBody state={state} />
 
             {stepValidation.warnings.map((warning) => (
-              <p
-                key={warning}
-                className="profile-builder-warning"
-                role="status"
-              >
+              <p key={warning} className="profile-builder-warning" role="status">
                 <IconExclamationTriangle size={14} ariaHidden />
                 {warning}
               </p>
@@ -153,11 +135,7 @@ export function ProfileBuilderView({
               </p>
             ) : null}
 
-            <Footer
-              state={state}
-              validation={stepValidation}
-              context={context}
-            />
+            <Footer state={state} validation={stepValidation} context={context} />
           </div>
         </>
       )}
@@ -182,17 +160,13 @@ function BuilderShell({
 }) {
   const modeLabel = mode === "unrestricted" ? "Full mode" : "Sandboxed";
   return (
-    <section
-      className="settings-group profile-builder"
-      aria-labelledby="profile-builder-heading"
-    >
+    <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
       <h2 id="profile-builder-heading" className="settings-group-heading">
         Profile builder
       </h2>
       <p className="settings-group-description">
-        Create a specialized profile with its own model, skills, MCP servers,
-        and instructions. A profile keeps June's identity unless you give it its
-        own.{" "}
+        Create a specialized profile with its own model, skills, MCP servers, and instructions. A
+        profile keeps June's identity unless you give it its own.{" "}
         {show ? (
           <span className="profile-builder-mode-note">
             New profiles target the {modeLabel} runtime
@@ -227,8 +201,7 @@ function Stepper({
         const reachable =
           index <= currentIndex ||
           PROFILE_BUILDER_STEPS.slice(0, index).every(
-            (prior) =>
-              validateStep(prior, state.form, context).error === undefined,
+            (prior) => validateStep(prior, state.form, context).error === undefined,
           );
         return (
           <li
@@ -247,9 +220,7 @@ function Stepper({
               <span className="profile-builder-stepper-index" aria-hidden>
                 {done ? <IconCheckmark2Small size={13} /> : index + 1}
               </span>
-              <span className="profile-builder-stepper-label">
-                {STEP_META[step].title}
-              </span>
+              <span className="profile-builder-stepper-label">{STEP_META[step].title}</span>
             </button>
           </li>
         );
@@ -294,9 +265,7 @@ function Footer({
             disabled={!canCreate || creating}
             onClick={() => state.createProfile()}
           >
-            {creating
-              ? (state.create.message ?? "Creating...")
-              : "Create profile"}
+            {creating ? (state.create.message ?? "Creating...") : "Create profile"}
           </button>
           <button
             type="button"
@@ -304,9 +273,7 @@ function Footer({
             disabled={!canCreate || creating}
             onClick={() => state.createProfile({ startTestSession: true })}
           >
-            {creating
-              ? (state.create.message ?? "Creating...")
-              : "Create and start test session"}
+            {creating ? (state.create.message ?? "Creating...") : "Create and start test session"}
           </button>
         </div>
       ) : (
@@ -359,13 +326,9 @@ function IdentityStep({ state }: { state: ProfileBuilderState }) {
           placeholder="Research assistant"
           aria-label="Profile name"
           aria-invalid={Boolean(form.name && nameError) || undefined}
-          onChange={(event) =>
-            state.update({ name: event.currentTarget.value })
-          }
+          onChange={(event) => state.update({ name: event.currentTarget.value })}
         />
-        {slug ? (
-          <span className="profile-builder-field-meta">Slug: {slug}</span>
-        ) : null}
+        {slug ? <span className="profile-builder-field-meta">Slug: {slug}</span> : null}
       </label>
 
       <label className="profile-builder-field">
@@ -375,9 +338,7 @@ function IdentityStep({ state }: { state: ProfileBuilderState }) {
           value={form.description}
           placeholder="What this profile is for"
           aria-label="Description"
-          onChange={(event) =>
-            state.update({ description: event.currentTarget.value })
-          }
+          onChange={(event) => state.update({ description: event.currentTarget.value })}
         />
       </label>
 
@@ -393,8 +354,7 @@ function IdentityStep({ state }: { state: ProfileBuilderState }) {
           <span>
             <span className="profile-builder-radio-title">June (default)</span>
             <span className="profile-builder-radio-detail">
-              Specializes June for this task. The agent still identifies as
-              June.
+              Specializes June for this task. The agent still identifies as June.
             </span>
           </span>
         </label>
@@ -406,9 +366,7 @@ function IdentityStep({ state }: { state: ProfileBuilderState }) {
             onChange={() => state.update({ identity: "specialized" })}
           />
           <span>
-            <span className="profile-builder-radio-title">
-              Specialized role
-            </span>
+            <span className="profile-builder-radio-title">Specialized role</span>
             <span className="profile-builder-radio-detail">
               A distinct named agent. Give it its own instructions below.
             </span>
@@ -417,17 +375,13 @@ function IdentityStep({ state }: { state: ProfileBuilderState }) {
       </fieldset>
 
       <label className="profile-builder-field">
-        <span className="profile-builder-field-label">
-          Custom instructions (SOUL)
-        </span>
+        <span className="profile-builder-field-label">Custom instructions (SOUL)</span>
         <textarea
           value={form.soul}
           rows={4}
           placeholder="Optional. Leave empty to keep June's instructions."
           aria-label="Custom instructions"
-          onChange={(event) =>
-            state.update({ soul: event.currentTarget.value })
-          }
+          onChange={(event) => state.update({ soul: event.currentTarget.value })}
         />
       </label>
     </div>
@@ -444,21 +398,12 @@ function ModelStep({ state }: { state: ProfileBuilderState }) {
           No models were reported. Check your provider key in the Models tab.
         </p>
       ) : (
-        <ul
-          className="profile-builder-model-list"
-          aria-label="Generation models"
-        >
+        <ul className="profile-builder-model-list" aria-label="Generation models">
           {models.map((model) => {
-            const selected =
-              model.id === form.model && model.provider === form.provider;
+            const selected = model.id === form.model && model.provider === form.provider;
             const supportsTools = model.capabilities.some((capability) => {
-              const normalized = capability
-                .toLowerCase()
-                .replace(/[^a-z]/g, "");
-              return (
-                normalized.includes("functioncalling") ||
-                normalized.includes("toolcalling")
-              );
+              const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
+              return normalized.includes("functioncalling") || normalized.includes("toolcalling");
             });
             return (
               <li key={`${model.provider}:${model.id}`}>
@@ -467,9 +412,7 @@ function ModelStep({ state }: { state: ProfileBuilderState }) {
                   className="profile-builder-model-row"
                   data-selected={selected || undefined}
                   aria-pressed={selected}
-                  onClick={() =>
-                    state.update({ provider: model.provider, model: model.id })
-                  }
+                  onClick={() => state.update({ provider: model.provider, model: model.id })}
                 >
                   <ProviderLogo
                     provider={model.provider}
@@ -477,9 +420,7 @@ function ModelStep({ state }: { state: ProfileBuilderState }) {
                     name={model.name}
                     size={18}
                   />
-                  <span className="profile-builder-model-name">
-                    {model.name}
-                  </span>
+                  <span className="profile-builder-model-name">{model.name}</span>
                   {supportsTools ? (
                     <span
                       className="profile-builder-model-tag"
@@ -497,9 +438,7 @@ function ModelStep({ state }: { state: ProfileBuilderState }) {
                       No tools
                     </span>
                   )}
-                  {selected ? (
-                    <IconCheckmark2Small size={15} ariaHidden />
-                  ) : null}
+                  {selected ? <IconCheckmark2Small size={15} ariaHidden /> : null}
                 </button>
               </li>
             );
@@ -508,8 +447,8 @@ function ModelStep({ state }: { state: ProfileBuilderState }) {
       )}
       {support && !support.supportsTools ? (
         <p className="profile-builder-field-meta">
-          Provider: {support.model.provider}. June needs tool calling, so this
-          model cannot be used for an agent profile.
+          Provider: {support.model.provider}. June needs tool calling, so this model cannot be used
+          for an agent profile.
         </p>
       ) : null}
     </div>
@@ -533,8 +472,8 @@ function ToolsetsStep({ state }: { state: ProfileBuilderState }) {
             <IconShield size={13} ariaHidden /> Sandboxed (default)
           </span>
           <span className="profile-builder-radio-detail">
-            Local subprocesses, scripts, and external directories stay jailed.
-            The safe default for most profiles.
+            Local subprocesses, scripts, and external directories stay jailed. The safe default for
+            most profiles.
           </span>
         </span>
       </label>
@@ -565,9 +504,7 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
         <input
           type="checkbox"
           checked={form.keepBundledSkills}
-          onChange={(event) =>
-            state.update({ keepBundledSkills: event.currentTarget.checked })
-          }
+          onChange={(event) => state.update({ keepBundledSkills: event.currentTarget.checked })}
         />
         <span>
           Keep June's bundled skills
@@ -590,9 +527,7 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
                   onChange={(event) => {
                     // Empty keepSkills means "keep all"; the first narrowing
                     // materializes the full set minus/plus this one.
-                    const base = keptAll
-                      ? bundled.map((s) => s.name)
-                      : form.keepSkills;
+                    const base = keptAll ? bundled.map((s) => s.name) : form.keepSkills;
                     const next = event.currentTarget.checked
                       ? Array.from(new Set([...base, skill.name]))
                       : base.filter((name) => name !== skill.name);
@@ -607,8 +542,7 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
       ) : null}
 
       <p className="profile-builder-field-meta">
-        Hub skills can be installed from the Skills hub after the profile is
-        created.
+        Hub skills can be installed from the Skills hub after the profile is created.
       </p>
     </div>
   );
@@ -649,28 +583,19 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
 
       {installable.length > 0 ? (
         <>
-          <span className="profile-builder-field-label">
-            Install from catalog
-          </span>
+          <span className="profile-builder-field-label">Install from catalog</span>
           <div className="profile-builder-mcp-list" aria-label="MCP catalog">
             {installable.map((entry) => {
-              const checked = form.mcpCatalogInstalls.includes(
-                entry.installName,
-              );
+              const checked = form.mcpCatalogInstalls.includes(entry.installName);
               return (
-                <label
-                  key={entry.installName}
-                  className="profile-builder-checkbox"
-                >
+                <label key={entry.installName} className="profile-builder-checkbox">
                   <input
                     type="checkbox"
                     checked={checked}
                     onChange={(event) => {
                       const next = event.currentTarget.checked
                         ? [...form.mcpCatalogInstalls, entry.installName]
-                        : form.mcpCatalogInstalls.filter(
-                            (name) => name !== entry.installName,
-                          );
+                        : form.mcpCatalogInstalls.filter((name) => name !== entry.installName);
                       state.update({ mcpCatalogInstalls: next });
                     }}
                   />
@@ -690,8 +615,7 @@ function ReviewStep({ state }: { state: ProfileBuilderState }) {
   return (
     <div className="profile-builder-review">
       <p className="profile-builder-field-meta">
-        Creating this profile makes these changes. Nothing runs until you start
-        a session under it.
+        Creating this profile makes these changes. Nothing runs until you start a session under it.
       </p>
       <ul className="profile-builder-plan" aria-label="Planned changes">
         {plan.map((change, index) => (
@@ -702,12 +626,8 @@ function ReviewStep({ state }: { state: ProfileBuilderState }) {
           >
             <RiskBadge risk={change.risk} />
             <div className="profile-builder-plan-text">
-              <code className="profile-builder-plan-target">
-                {change.target}
-              </code>
-              <span className="profile-builder-plan-detail">
-                {change.detail}
-              </span>
+              <code className="profile-builder-plan-target">{change.target}</code>
+              <span className="profile-builder-plan-detail">{change.detail}</span>
             </div>
           </li>
         ))}
@@ -717,10 +637,8 @@ function ReviewStep({ state }: { state: ProfileBuilderState }) {
 }
 
 function RiskBadge({ risk }: { risk: ChangeRisk }) {
-  const label =
-    risk === "danger" ? "High" : risk === "caution" ? "Review" : "Safe";
-  const tone =
-    risk === "danger" ? "destructive" : risk === "caution" ? "warning" : "info";
+  const label = risk === "danger" ? "High" : risk === "caution" ? "Review" : "Safe";
+  const tone = risk === "danger" ? "destructive" : risk === "caution" ? "warning" : "info";
   return (
     <span className="profile-builder-risk" data-tone={tone}>
       {label}
@@ -742,11 +660,7 @@ function CreatedPanel({ state }: { state: ProfileBuilderState }) {
           ? "A test session is running under it."
           : "Start a session under it to use it."}
       </p>
-      <button
-        type="button"
-        className="profile-builder-create"
-        onClick={state.reset}
-      >
+      <button type="button" className="profile-builder-create" onClick={state.reset}>
         Create another profile
       </button>
     </div>
@@ -757,13 +671,7 @@ function CreatedPanel({ state }: { state: ProfileBuilderState }) {
 // Shared empty/error states
 // ---------------------------------------------------------------------------
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="settings-card profile-builder-empty" role="status">
       <span className="profile-builder-empty-icon" aria-hidden>
@@ -792,11 +700,7 @@ function ErrorState({
       <p className="profile-builder-empty-title">Couldn't load profiles</p>
       <p className="profile-builder-empty-description">{message}</p>
       {retryable ? (
-        <button
-          type="button"
-          className="profile-builder-create"
-          onClick={onRetry}
-        >
+        <button type="button" className="profile-builder-create" onClick={onRetry}>
           <IconArrowRotateClockwise size={14} ariaHidden />
           Try again
         </button>

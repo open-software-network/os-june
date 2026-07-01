@@ -1,9 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import {
-  parseSessionUsage,
-  type SessionUsage,
-} from "../lib/hermes-session-usage";
+import { parseSessionUsage, type SessionUsage } from "../lib/hermes-session-usage";
 import { SessionUsagePanel } from "../components/agent/SessionUsagePanel";
 
 // A full usage payload as the gateway might return it. Mixes snake_case and a
@@ -123,21 +120,14 @@ describe("parseSessionUsage", () => {
 
 function fetchUsageFor(raw: unknown) {
   return vi.fn(
-    async (sessionId: string): Promise<SessionUsage> =>
-      parseSessionUsage(sessionId, raw),
+    async (sessionId: string): Promise<SessionUsage> => parseSessionUsage(sessionId, raw),
   );
 }
 
 describe("SessionUsagePanel", () => {
   it("renders all metrics from a full payload", async () => {
     const fetchUsage = fetchUsageFor(FULL_RAW);
-    render(
-      <SessionUsagePanel
-        sessionId="sess-1"
-        fetchUsage={fetchUsage}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionUsagePanel sessionId="sess-1" fetchUsage={fetchUsage} onClose={() => {}} />);
 
     // Resolves once on mount.
     await waitFor(() => expect(fetchUsage).toHaveBeenCalledTimes(1));
@@ -156,13 +146,7 @@ describe("SessionUsagePanel", () => {
 
   it("labels cost as an estimate, never as exact", async () => {
     const fetchUsage = fetchUsageFor(FULL_RAW);
-    render(
-      <SessionUsagePanel
-        sessionId="sess-1"
-        fetchUsage={fetchUsage}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionUsagePanel sessionId="sess-1" fetchUsage={fetchUsage} onClose={() => {}} />);
     // The dollar value is present...
     expect(await screen.findByText(/\$0\.42/)).toBeInTheDocument();
     // ...and clearly framed as an estimate (case-insensitive).
@@ -171,13 +155,7 @@ describe("SessionUsagePanel", () => {
 
   it("shows Unavailable for missing fields instead of crashing", async () => {
     const fetchUsage = fetchUsageFor({ usage: { prompt_tokens: 5 } });
-    render(
-      <SessionUsagePanel
-        sessionId="sess-3"
-        fetchUsage={fetchUsage}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionUsagePanel sessionId="sess-3" fetchUsage={fetchUsage} onClose={() => {}} />);
     await waitFor(() => expect(fetchUsage).toHaveBeenCalledTimes(1));
     // Prompt tokens still shown.
     expect(await screen.findByText(/^5$/)).toBeInTheDocument();
@@ -187,13 +165,7 @@ describe("SessionUsagePanel", () => {
 
   it("refresh calls session.usage exactly once per click", async () => {
     const fetchUsage = fetchUsageFor(FULL_RAW);
-    render(
-      <SessionUsagePanel
-        sessionId="sess-1"
-        fetchUsage={fetchUsage}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionUsagePanel sessionId="sess-1" fetchUsage={fetchUsage} onClose={() => {}} />);
     // One fetch on mount.
     await waitFor(() => expect(fetchUsage).toHaveBeenCalledTimes(1));
 
@@ -205,13 +177,7 @@ describe("SessionUsagePanel", () => {
 
   it("shows model and provider when present", async () => {
     const fetchUsage = fetchUsageFor({ provider: "anthropic", model: "opus" });
-    render(
-      <SessionUsagePanel
-        sessionId="sess-1"
-        fetchUsage={fetchUsage}
-        onClose={() => {}}
-      />,
-    );
+    render(<SessionUsagePanel sessionId="sess-1" fetchUsage={fetchUsage} onClose={() => {}} />);
     expect(await screen.findByText("opus")).toBeInTheDocument();
     expect(screen.getByText("anthropic")).toBeInTheDocument();
   });

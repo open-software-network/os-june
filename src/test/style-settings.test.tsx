@@ -60,8 +60,6 @@ describe("StyleSettingsSection", () => {
 
     await user.click(screen.getByRole("button", { name: "Formal" }));
 
-    await waitFor(() =>
-      expect(mocks.setDictationStyle).toHaveBeenCalledWith("formal"),
-    );
+    await waitFor(() => expect(mocks.setDictationStyle).toHaveBeenCalledWith("formal"));
   });
 });

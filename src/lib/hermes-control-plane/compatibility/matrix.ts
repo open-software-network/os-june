@@ -60,10 +60,7 @@ export type HermesCompatibilityEntry = {
 };
 
 /** A keyed group of entries (methods, events, or features). */
-export type HermesCompatibilitySection = Record<
-  string,
-  HermesCompatibilityEntry
->;
+export type HermesCompatibilitySection = Record<string, HermesCompatibilityEntry>;
 
 /** The whole matrix for one Hermes pin. */
 export type HermesCompatibilityMatrix = {
@@ -199,8 +196,7 @@ const events: HermesCompatibilitySection = {
   },
   tool: {
     status: "supported",
-    rationale:
-      "tool.start/progress/complete classify to tool events and render as tool cards.",
+    rationale: "tool.start/progress/complete classify to tool events and render as tool cards.",
     since: PIN,
   },
   approval: {
@@ -285,34 +281,27 @@ const features: HermesCompatibilitySection = {
  * consumer cannot accidentally mutate shared state; flips happen by editing the
  * source above, not at runtime.
  */
-export const hermesCompatibilityMatrix: HermesCompatibilityMatrix =
-  Object.freeze({
-    hermesVersion: PIN,
-    methods: Object.freeze(methods) as HermesCompatibilitySection,
-    events: Object.freeze(events) as HermesCompatibilitySection,
-    features: Object.freeze(features) as HermesCompatibilitySection,
-  });
+export const hermesCompatibilityMatrix: HermesCompatibilityMatrix = Object.freeze({
+  hermesVersion: PIN,
+  methods: Object.freeze(methods) as HermesCompatibilitySection,
+  events: Object.freeze(events) as HermesCompatibilitySection,
+  features: Object.freeze(features) as HermesCompatibilitySection,
+});
 
 /**
  * Which downstream feature must flip which matrix keys to `supported` once it
  * ships UI + tests. Kept as data (not just prose) so the relationship is
  * greppable and testable. Feature numbers match the pack plan.
  */
-export const OWNERSHIP: Readonly<Record<string, readonly string[]>> =
-  Object.freeze({
-    "03": [
-      "events.sudo",
-      "events.secret",
-      "methods.sudo.respond",
-      "methods.secret.respond",
-    ],
-    "06": ["methods.session.steer"],
-    "07": ["methods.session.branch"],
-    "08": ["methods.session.compress"],
-    "09": ["methods.session.usage"],
-    "10": ["methods.command.dispatch"],
-    "11": ["events.subagent"],
-    "12": ["events.subagent", "features.backgroundSubagentWatch"],
-    "13": ["methods.subagent.interrupt"],
-    "19": ["methods.image.attach_bytes", "features.imageEditing"],
-  });
+export const OWNERSHIP: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "03": ["events.sudo", "events.secret", "methods.sudo.respond", "methods.secret.respond"],
+  "06": ["methods.session.steer"],
+  "07": ["methods.session.branch"],
+  "08": ["methods.session.compress"],
+  "09": ["methods.session.usage"],
+  "10": ["methods.command.dispatch"],
+  "11": ["events.subagent"],
+  "12": ["events.subagent", "features.backgroundSubagentWatch"],
+  "13": ["methods.subagent.interrupt"],
+  "19": ["methods.image.attach_bytes", "features.imageEditing"],
+});

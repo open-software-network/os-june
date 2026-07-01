@@ -10,22 +10,12 @@ const GENERIC_TOOL_NAMES = new Set([
   "terminal",
 ]);
 
-export function toolActivityLabel(
-  toolName: string | undefined,
-  payload?: unknown,
-) {
+export function toolActivityLabel(toolName: string | undefined, payload?: unknown) {
   const records = payloadRecords(payload);
   const rawName =
-    nonEmptyString(toolName) ??
-    firstString(records, ["name", "tool_name", "tool"]) ??
-    "tool";
+    nonEmptyString(toolName) ?? firstString(records, ["name", "tool_name", "tool"]) ?? "tool";
   const normalized = normalizeToolName(rawName);
-  const command = firstString(records, [
-    "command",
-    "cmd",
-    "script",
-    "shell_command",
-  ]);
+  const command = firstString(records, ["command", "cmd", "script", "shell_command"]);
   const commandLabel = command ? labelFromCommand(command) : undefined;
   if (commandLabel) return commandLabel;
 
@@ -38,10 +28,7 @@ export function toolActivityLabel(
   return humanizeToolName(rawName);
 }
 
-export function toolActivitySentence(
-  toolName: string | undefined,
-  payload?: unknown,
-) {
+export function toolActivitySentence(toolName: string | undefined, payload?: unknown) {
   const label = toolActivityLabel(toolName, payload);
   return label === "Tool" ? "Using a tool." : `${label}.`;
 }
@@ -62,18 +49,10 @@ function labelFromPayload(records: ToolPayload[], normalizedName: string) {
   if (records.some((record) => hasAnyKey(record, ["url", "href", "uri"]))) {
     return "Browsing";
   }
-  if (
-    records.some((record) =>
-      hasAnyKey(record, ["search_query", "web_query", "url_query"]),
-    )
-  ) {
+  if (records.some((record) => hasAnyKey(record, ["search_query", "web_query", "url_query"]))) {
     return "Searching web";
   }
-  if (
-    records.some((record) =>
-      hasAnyKey(record, ["image_query", "image_search_query"]),
-    )
-  ) {
+  if (records.some((record) => hasAnyKey(record, ["image_query", "image_search_query"]))) {
     return "Searching images";
   }
   if (records.some((record) => hasAnyKey(record, ["query", "q"]))) {
@@ -95,9 +74,7 @@ function labelFromCommand(command: string) {
     return "Browsing";
   }
   if (/\bgh\s+/.test(lower)) return "Using GitHub";
-  if (
-    /\bgit\s+(status|diff|show|log|grep|ls-files|branch|fetch)\b/.test(lower)
-  ) {
+  if (/\bgit\s+(status|diff|show|log|grep|ls-files|branch|fetch)\b/.test(lower)) {
     return "Inspecting repository";
   }
   if (/\b(rg|grep|fd|find)\b/.test(lower)) return "Searching files";
@@ -173,9 +150,7 @@ function isImageToolName(value: string) {
 }
 
 function isFileToolName(value: string) {
-  return (
-    isReadToolName(value) || isEditToolName(value) || isSearchToolName(value)
-  );
+  return isReadToolName(value) || isEditToolName(value) || isSearchToolName(value);
 }
 
 function isReadToolName(value: string) {
@@ -187,16 +162,8 @@ function isReadToolName(value: string) {
 
 function isEditToolName(value: string) {
   return (
-    hasSegment(value, [
-      "write",
-      "edit",
-      "patch",
-      "create",
-      "delete",
-      "remove",
-      "move",
-      "copy",
-    ]) || hasPhrase(value, ["apply_patch"])
+    hasSegment(value, ["write", "edit", "patch", "create", "delete", "remove", "move", "copy"]) ||
+    hasPhrase(value, ["apply_patch"])
   );
 }
 

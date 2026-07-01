@@ -63,23 +63,17 @@ describe("hermes parse utils", () => {
     it("returns the first finite number across containers and keys, in order", () => {
       const nested = { prompt_tokens: 10 };
       const hoisted = { promptTokens: 20 };
-      expect(
-        pickNumber([nested, hoisted], ["promptTokens", "prompt_tokens"]),
-      ).toBe(10);
+      expect(pickNumber([nested, hoisted], ["promptTokens", "prompt_tokens"])).toBe(10);
     });
 
     it("skips undefined containers and bad values, returns undefined when none match", () => {
-      expect(
-        pickNumber([undefined, { x: "nope" }], ["x", "y"]),
-      ).toBeUndefined();
+      expect(pickNumber([undefined, { x: "nope" }], ["x", "y"])).toBeUndefined();
     });
   });
 
   describe("pickString", () => {
     it("returns the first non-empty string across containers and keys", () => {
-      expect(
-        pickString([{ name: "  " }, { label: "found" }], ["name", "label"]),
-      ).toBe("found");
+      expect(pickString([{ name: "  " }, { label: "found" }], ["name", "label"])).toBe("found");
     });
 
     it("returns undefined when no key holds a usable string", () => {

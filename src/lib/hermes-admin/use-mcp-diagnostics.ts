@@ -41,9 +41,7 @@ import {
 
 /** True when the gateway has a pending restart, so the shown tool inventory is
  * stale until the gateway rebuilds it. */
-export function restartPendingFromLifecycle(
-  snapshot: GatewayLifecycleSnapshot,
-): boolean {
+export function restartPendingFromLifecycle(snapshot: GatewayLifecycleSnapshot): boolean {
   return (
     snapshot.state === "gateway-restart-required" ||
     snapshot.state === "active-session-should-restart" ||
@@ -139,9 +137,7 @@ const UNAVAILABLE_STATE: McpDiagnosticsState = Object.freeze({
  * {@link useMcpDiagnostics}; tests call this with a harness-built engine so they
  * need no Tauri mock.
  */
-export function useMcpDiagnosticsController(
-  engine: McpServersEngine | null,
-): McpDiagnosticsState {
+export function useMcpDiagnosticsController(engine: McpServersEngine | null): McpDiagnosticsState {
   const servers = useMcpServersController(engine);
   const [runningAll, setRunningAll] = useState(false);
   const [toolQuery, setToolQueryState] = useState("");
@@ -207,13 +203,7 @@ export function useMcpDiagnosticsController(
         testResults,
         now,
       }),
-    [
-      servers.servers,
-      servers.profile,
-      servers.mode,
-      restartPending,
-      testResults,
-    ],
+    [servers.servers, servers.profile, servers.mode, restartPending, testResults],
   );
 
   const setToolQuery = useCallback((query: string) => {
@@ -271,9 +261,7 @@ export function useMcpDiagnostics(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

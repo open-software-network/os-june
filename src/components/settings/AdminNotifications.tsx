@@ -31,16 +31,14 @@ export function AdminNotifications({
   useEffect(() => {
     const timers = notifications
       .filter((note) => !note.isError)
-      .map((note) =>
-        window.setTimeout(() => onDismiss(note.id), NOTIFICATION_TOAST_MS),
-      );
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
+      .map((note) => window.setTimeout(() => onDismiss(note.id), NOTIFICATION_TOAST_MS));
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer);
+    };
   }, [notifications, onDismiss]);
 
   if (notifications.length === 0) return null;
-  const visible = [...notifications]
-    .reverse()
-    .slice(0, MAX_VISIBLE_NOTIFICATIONS);
+  const visible = [...notifications].reverse().slice(0, MAX_VISIBLE_NOTIFICATIONS);
   return (
     <ul className="admin-notifications" aria-label="Recent changes">
       {visible.map((note) => (

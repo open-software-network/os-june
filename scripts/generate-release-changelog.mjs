@@ -25,8 +25,7 @@ export function parseGitLogRecords(log) {
     .map((record) => record.trim())
     .filter(Boolean)
     .map((record) => {
-      const [hash = "", subject = "", body = ""] =
-        record.split(FIELD_SEPARATOR);
+      const [hash = "", subject = "", body = ""] = record.split(FIELD_SEPARATOR);
       return {
         hash: hash.trim(),
         subject: subject.trim(),
@@ -84,12 +83,7 @@ function git(args) {
 }
 
 function previousRelease() {
-  const output = git([
-    "log",
-    "--first-parent",
-    `--format=%H${FIELD_SEPARATOR}%s`,
-    "HEAD",
-  ]);
+  const output = git(["log", "--first-parent", `--format=%H${FIELD_SEPARATOR}%s`, "HEAD"]);
   return findPreviousRelease(output);
 }
 
@@ -109,9 +103,7 @@ async function main() {
   const version = process.argv[2];
   const outputPath = process.argv[3];
   if (!version || !outputPath) {
-    throw new Error(
-      "Usage: node scripts/generate-release-changelog.mjs <version> <output-path>",
-    );
+    throw new Error("Usage: node scripts/generate-release-changelog.mjs <version> <output-path>");
   }
 
   const release = previousRelease();

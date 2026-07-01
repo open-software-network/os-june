@@ -1,11 +1,4 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -39,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
+  generateImage: vi.fn(),
   getAgentTask: vi.fn(),
   getHermesBridgeSkill: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
@@ -78,15 +72,9 @@ const mocks = vi.hoisted(() => ({
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   }>,
-  eventHandlers: new Map<
-    string,
-    (event: { payload?: { paths?: string[] } }) => void
-  >(),
+  eventHandlers: new Map<string, (event: { payload?: { paths?: string[] } }) => void>(),
   listen: vi.fn(
-    async (
-      eventName: string,
-      handler: (event: { payload?: { paths?: string[] } }) => void,
-    ) => {
+    async (eventName: string, handler: (event: { payload?: { paths?: string[] } }) => void) => {
       mocks.eventHandlers.set(eventName, handler);
       return () => mocks.eventHandlers.delete(eventName);
     },
@@ -100,6 +88,7 @@ vi.mock("../lib/tauri", () => ({
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
+  generateImage: mocks.generateImage,
   getAgentTask: mocks.getAgentTask,
   getHermesBridgeSkill: mocks.getHermesBridgeSkill,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
@@ -129,8 +118,7 @@ vi.mock("../lib/tauri", () => ({
   explainAgentApproval: mocks.explainAgentApproval,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
-  updateHermesBridgeMessagingPlatform:
-    mocks.updateHermesBridgeMessagingPlatform,
+  updateHermesBridgeMessagingPlatform: mocks.updateHermesBridgeMessagingPlatform,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -155,9 +143,7 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
   HermesGatewayClient: class {
     constructor() {
-      mocks.gatewayInstances.push(
-        this as unknown as (typeof mocks.gatewayInstances)[number],
-      );
+      mocks.gatewayInstances.push(this as unknown as (typeof mocks.gatewayInstances)[number]);
     }
     connect = vi.fn();
     close = vi.fn();
@@ -229,13 +215,13 @@ describe("AgentWorkspace", () => {
     // Feature 14: the artifact store is a process-wide singleton; drop the
     // session rows these tests touch so one test's artifacts don't leak into
     // the next.
-    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+    for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       hermesArtifactStore.clearSession(id);
     }
     // Feature 04: the pending-action store is the same kind of process-wide
     // singleton. Clear these tests' session ids so a prior test's "Needs you"
     // rows (now keyed by the durable stored id) don't leak into the next.
-    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+    for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       pendingActionStore.resolveSession(id);
     }
     window.sessionStorage.clear();
@@ -280,16 +266,14 @@ describe("AgentWorkspace", () => {
     });
     // Mirrors the backend: starting a mode yields a status that contains
     // that mode's connection (alongside any other live mode).
-    mocks.startHermesBridge.mockImplementation(
-      async (_cwd?: string, fullMode?: boolean) => {
-        const connection = {
-          port: 61234,
-          wsUrl: "ws://127.0.0.1:61234",
-          fullMode: Boolean(fullMode),
-        };
-        return { running: true, connection, connections: [connection] };
-      },
-    );
+    mocks.startHermesBridge.mockImplementation(async (_cwd?: string, fullMode?: boolean) => {
+      const connection = {
+        port: 61234,
+        wsUrl: "ws://127.0.0.1:61234",
+        fullMode: Boolean(fullMode),
+      };
+      return { running: true, connection, connections: [connection] };
+    });
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
@@ -304,9 +288,7 @@ describe("AgentWorkspace", () => {
     // data url, anything else null. Feature 19's structured image attach reads
     // the bytes through this command at attach time.
     mocks.hermesBridgeFilePreview.mockImplementation(async (path: string) =>
-      /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path)
-        ? "data:image/png;base64,cHJldmlldw=="
-        : null,
+      /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path) ? "data:image/png;base64,cHJldmlldw==" : null,
     );
     mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
@@ -314,30 +296,23 @@ describe("AgentWorkspace", () => {
       path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
       rootLabel: "Workspace",
       size: 1234,
-      previewDataUrl: path.endsWith(".png")
-        ? "data:image/png;base64,preview"
-        : null,
+      previewDataUrl: path.endsWith(".png") ? "data:image/png;base64,preview" : null,
     }));
-    mocks.importHermesBridgeFileBytes.mockImplementation(
-      async (name: string) => ({
-        name,
-        path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/${name}`,
-        rootLabel: "Workspace",
-        size: 5,
-        previewDataUrl: null,
-      }),
-    );
-    mocks.downloadHermesBridgeFile.mockResolvedValue(
-      "/Users/alex/Downloads/sample.pdf",
-    );
+    mocks.importHermesBridgeFileBytes.mockImplementation(async (name: string) => ({
+      name,
+      path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/${name}`,
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: null,
+    }));
+    mocks.downloadHermesBridgeFile.mockResolvedValue("/Users/alex/Downloads/sample.pdf");
     mocks.ensureHermesBridgeSession.mockResolvedValue({});
     mocks.deleteHermesSession.mockResolvedValue(undefined);
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
     });
     mocks.explainAgentApproval.mockResolvedValue({
-      explanation:
-        "This deletes the build folder, then rebuilds the project from scratch.",
+      explanation: "This deletes the build folder, then rebuilds the project from scratch.",
     });
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
@@ -398,9 +373,7 @@ describe("AgentWorkspace", () => {
         name: "editing-skill skill Markdown",
       }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("region", { name: "Skills and tools" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Skills and tools" })).toBeInTheDocument();
   });
 
   it("keeps skill editor cancel disabled while the document loads", async () => {
@@ -431,9 +404,7 @@ describe("AgentWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: /editing-skill/i }));
 
-    expect(
-      await screen.findByRole("button", { name: "Cancel" }),
-    ).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Cancel" })).toBeDisabled();
   });
 
   it("confirms before canceling dirty skill edits", async () => {
@@ -483,9 +454,7 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(
-      screen.queryByRole("dialog", { name: "Discard skill edits?" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Discard skill edits?" })).not.toBeInTheDocument();
     expect(
       screen.getByRole("textbox", {
         name: "editing-skill skill Markdown",
@@ -496,9 +465,7 @@ describe("AgentWorkspace", () => {
     const confirmDialog = await screen.findByRole("dialog", {
       name: "Discard skill edits?",
     });
-    await user.click(
-      within(confirmDialog).getByRole("button", { name: "Discard" }),
-    );
+    await user.click(within(confirmDialog).getByRole("button", { name: "Discard" }));
 
     await waitFor(() =>
       expect(
@@ -521,9 +488,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
     expect(screen.queryByText("Existing session")).toBeNull();
     expect(screen.queryByText("Existing task")).toBeNull();
-    expect(
-      window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
-    ).toBeNull();
+    expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
   it("keeps retrying startup session loads until the API is ready", async () => {
@@ -644,9 +609,7 @@ describe("AgentWorkspace", () => {
     );
     const sessionDetails: AgentSessionsChangedDetail[] = [];
     const onSessionsChanged = (event: Event) =>
-      sessionDetails.push(
-        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
-      );
+      sessionDetails.push((event as CustomEvent<AgentSessionsChangedDetail>).detail);
     window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
 
     try {
@@ -656,14 +619,9 @@ describe("AgentWorkspace", () => {
       // The broadcast lands a few microtasks after the fetch resolves, so
       // wait for the event itself rather than just the fetch call.
       await waitFor(() => expect(sessionDetails.length).toBeGreaterThan(0));
-      expect(
-        sessionDetails.every((detail) => detail.selectedSessionId == null),
-      ).toBe(true);
+      expect(sessionDetails.every((detail) => detail.selectedSessionId == null)).toBe(true);
     } finally {
-      window.removeEventListener(
-        AGENT_SESSIONS_CHANGED_EVENT,
-        onSessionsChanged,
-      );
+      window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     }
   });
 
@@ -678,13 +636,8 @@ describe("AgentWorkspace", () => {
     // The composer opens tagged with a Bug report chip instead of
     // auto-submitting; the user types their report after it.
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
-      "session.create",
-      expect.anything(),
-    );
-    expect(
-      window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
-    ).toBeNull();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
   it("clears a stale new-session draft before seeding a report chip", async () => {
@@ -708,9 +661,7 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    expect(screen.getByRole("textbox")).not.toHaveTextContent(
-      "stale hero draft",
-    );
+    expect(screen.getByRole("textbox")).not.toHaveTextContent("stale hero draft");
   });
 
   it("seeds a report chip immediately when the composer is already open", async () => {
@@ -732,10 +683,46 @@ describe("AgentWorkspace", () => {
     });
 
     expect(screen.getByText("Bug report")).toBeInTheDocument();
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
-      "session.create",
-      expect.anything(),
-    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+  });
+
+  it("seeds a report chip while the current session is still running", async () => {
+    const user = userEvent.setup();
+    let resolveSubmit: (() => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return new Promise((resolve) => {
+          resolveSubmit = () => resolve({});
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "keep working");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByRole("button", { name: "Stop June" })).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { category: "feedback" },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Feedback")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+
+    await act(async () => {
+      resolveSubmit?.();
+    });
   });
 
   it("wraps a submitted issue report for June and waits for explicit send", async () => {
@@ -772,21 +759,15 @@ describe("AgentWorkspace", () => {
     const submitted = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
     )?.[1] as { text: string };
-    expect(submitted.text).toContain(
-      "The recorder crashes after long meetings",
-    );
-    expect(submitted.text).toContain(
-      "Attached files copied into the June workspace:",
-    );
+    expect(submitted.text).toContain("The recorder crashes after long meetings");
+    expect(submitted.text).toContain("Attached files copied into the June workspace:");
     expect(submitted.text).toContain(
       "Use these file paths when inspecting or operating on the files.",
     );
     expect(submitted.text).not.toContain("June Hermes");
     // The transcript shows the user's words only — the investigation
     // framing is plumbing between June and the runtime, never UI.
-    expect(
-      await screen.findByText(/The recorder crashes after long meetings/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/The recorder crashes after long meetings/)).toBeInTheDocument();
     expect(screen.queryByText(/in-app reporting flow/)).toBeNull();
     expect(screen.queryByText(/---USER REPORT---/)).toBeNull();
     // The report waits for June's diagnosis; nothing is filed yet.
@@ -831,9 +812,7 @@ describe("AgentWorkspace", () => {
         sessionId: "session-2",
       }),
     );
-    expect(
-      await screen.findByText(/Your report was sent to the June team/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Your report was sent to the June team/)).toBeInTheDocument();
     // Drain the post-terminal refresh timer before the test ends so its
     // session refetch cannot land inside a later test's render.
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
@@ -864,9 +843,7 @@ describe("AgentWorkspace", () => {
         name: "Attach files or tag this message",
       }),
     );
-    await user.click(
-      await screen.findByRole("menuitem", { name: "Bug report" }),
-    );
+    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
     await user.type(
       await screen.findByRole("textbox"),
@@ -921,9 +898,7 @@ describe("AgentWorkspace", () => {
         name: "Attach files or tag this message",
       }),
     );
-    await user.click(
-      await screen.findByRole("menuitem", { name: "Bug report" }),
-    );
+    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
     await user.type(
       await screen.findByRole("textbox"),
       "The recorder crashes from this existing chat",
@@ -984,13 +959,8 @@ describe("AgentWorkspace", () => {
         name: "Attach files or tag this message",
       }),
     );
-    await user.click(
-      await screen.findByRole("menuitem", { name: "Bug report" }),
-    );
-    await user.type(
-      await screen.findByRole("textbox"),
-      "Agent response text is losing spaces",
-    );
+    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
+    await user.type(await screen.findByRole("textbox"), "Agent response text is losing spaces");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
@@ -1102,10 +1072,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1162,10 +1129,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1183,13 +1147,8 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
 
-    await user.type(
-      await screen.findByRole("textbox"),
-      "It also loses the transcript",
-    );
-    expect(
-      screen.getByRole("button", { name: "Send message first" }),
-    ).toBeDisabled();
+    await user.type(await screen.findByRole("textbox"), "It also loses the transcript");
+    expect(screen.getByRole("button", { name: "Send message first" })).toBeDisabled();
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -1236,9 +1195,7 @@ describe("AgentWorkspace", () => {
         sessionId: "session-2",
       }),
     );
-    expect(
-      await screen.findByText(/Your report was sent to the June team/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Your report was sent to the June team/)).toBeInTheDocument();
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
@@ -1252,10 +1209,7 @@ describe("AgentWorkspace", () => {
     const first = render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1307,10 +1261,7 @@ describe("AgentWorkspace", () => {
     const first = render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     const form = document.querySelector(".agent-composer");
     expect(form).not.toBeNull();
     fireEvent.drop(form as HTMLFormElement, {
@@ -1383,10 +1334,7 @@ describe("AgentWorkspace", () => {
     const first = render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1477,10 +1425,7 @@ describe("AgentWorkspace", () => {
     const first = render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1498,23 +1443,18 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1));
 
     first.unmount();
     await act(async () => {
       resolveDelivery?.({ received: true });
       await Promise.resolve();
     });
-    const sessionLoadsBeforeRemount =
-      mocks.listHermesSessions.mock.calls.length;
+    const sessionLoadsBeforeRemount = mocks.listHermesSessions.mock.calls.length;
     render(<AgentWorkspace />);
 
     await waitFor(() =>
-      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
-        sessionLoadsBeforeRemount,
-      ),
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(sessionLoadsBeforeRemount),
     );
     expect(screen.queryByText(/Report ready/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Send report" })).toBeNull();
@@ -1545,10 +1485,7 @@ describe("AgentWorkspace", () => {
     const first = render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1566,23 +1503,18 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1));
 
     first.unmount();
     await act(async () => {
       rejectDelivery?.(new Error("network down"));
       await Promise.resolve();
     });
-    const sessionLoadsBeforeRemount =
-      mocks.listHermesSessions.mock.calls.length;
+    const sessionLoadsBeforeRemount = mocks.listHermesSessions.mock.calls.length;
     render(<AgentWorkspace />);
 
     await waitFor(() =>
-      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
-        sessionLoadsBeforeRemount,
-      ),
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(sessionLoadsBeforeRemount),
     );
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send report" })).toBeEnabled();
@@ -1595,9 +1527,7 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
-    let resolveFirstDelivery:
-      | ((value: { received: boolean }) => void)
-      | undefined;
+    let resolveFirstDelivery: ((value: { received: boolean }) => void) | undefined;
     mocks.submitIssueReport
       .mockImplementationOnce(
         () =>
@@ -1618,10 +1548,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1639,9 +1566,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1));
 
     await user.type(await screen.findByRole("textbox"), "It also drops audio");
     await user.click(screen.getByRole("button", { name: "Send message" }));
@@ -1724,10 +1649,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1745,9 +1667,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1));
 
     await user.type(await screen.findByRole("textbox"), "It also drops audio");
     await user.click(screen.getByRole("button", { name: "Send message" }));
@@ -1803,9 +1723,7 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
-    let resolveFirstDelivery:
-      | ((value: { received: boolean }) => void)
-      | undefined;
+    let resolveFirstDelivery: ((value: { received: boolean }) => void) | undefined;
     let rejectFollowUp: ((error: Error) => void) | undefined;
     mocks.submitIssueReport.mockImplementationOnce(
       () =>
@@ -1813,31 +1731,29 @@ describe("AgentWorkspace", () => {
           resolveFirstDelivery = resolve;
         }),
     );
-    mocks.gatewayRequest.mockImplementation(
-      (method: string, args?: unknown) => {
-        if (method === "session.create") {
-          return Promise.resolve({
-            session_id: "runtime-session-2",
-            stored_session_id: "session-2",
-          });
-        }
-        if (method === "session.resume") {
-          return Promise.resolve({ session_id: "runtime-session-1" });
-        }
-        if (
-          method === "prompt.submit" &&
-          typeof args === "object" &&
-          args &&
-          "text" in args &&
-          args.text === "It also drops audio"
-        ) {
-          return new Promise((_resolve, reject) => {
-            rejectFollowUp = reject;
-          });
-        }
-        return Promise.resolve({});
-      },
-    );
+    mocks.gatewayRequest.mockImplementation((method: string, args?: unknown) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (
+        method === "prompt.submit" &&
+        typeof args === "object" &&
+        args &&
+        "text" in args &&
+        args.text === "It also drops audio"
+      ) {
+        return new Promise((_resolve, reject) => {
+          rejectFollowUp = reject;
+        });
+      }
+      return Promise.resolve({});
+    });
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "m1",
@@ -1850,10 +1766,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1871,9 +1784,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1));
 
     await user.type(await screen.findByRole("textbox"), "It also drops audio");
     await user.click(screen.getByRole("button", { name: "Send message" }));
@@ -1894,9 +1805,7 @@ describe("AgentWorkspace", () => {
       await Promise.resolve();
     });
 
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Send report" })).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Send report" })).toBeNull());
     expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1);
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
@@ -1915,31 +1824,29 @@ describe("AgentWorkspace", () => {
           rejectFirstDelivery = reject;
         }),
     );
-    mocks.gatewayRequest.mockImplementation(
-      (method: string, args?: unknown) => {
-        if (method === "session.create") {
-          return Promise.resolve({
-            session_id: "runtime-session-2",
-            stored_session_id: "session-2",
-          });
-        }
-        if (method === "session.resume") {
-          return Promise.resolve({ session_id: "runtime-session-1" });
-        }
-        if (
-          method === "prompt.submit" &&
-          typeof args === "object" &&
-          args &&
-          "text" in args &&
-          args.text === "It also drops audio"
-        ) {
-          return new Promise((_resolve, reject) => {
-            rejectFollowUp = reject;
-          });
-        }
-        return Promise.resolve({});
-      },
-    );
+    mocks.gatewayRequest.mockImplementation((method: string, args?: unknown) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (
+        method === "prompt.submit" &&
+        typeof args === "object" &&
+        args &&
+        "text" in args &&
+        args.text === "It also drops audio"
+      ) {
+        return new Promise((_resolve, reject) => {
+          rejectFollowUp = reject;
+        });
+      }
+      return Promise.resolve({});
+    });
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "m1",
@@ -1952,10 +1859,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -1973,9 +1877,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1));
 
     await user.type(await screen.findByRole("textbox"), "It also drops audio");
     await user.click(screen.getByRole("button", { name: "Send message" }));
@@ -1998,9 +1900,7 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Send message first" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message first" })).toBeDisabled();
     expect(mocks.submitIssueReport).toHaveBeenCalledTimes(1);
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
@@ -2011,37 +1911,32 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
-    mocks.gatewayRequest.mockImplementation(
-      (method: string, args?: unknown) => {
-        if (method === "session.create") {
-          return Promise.resolve({
-            session_id: "runtime-session-2",
-            stored_session_id: "session-2",
-          });
-        }
-        if (method === "session.resume") {
-          return Promise.resolve({ session_id: "runtime-session-1" });
-        }
-        if (
-          method === "prompt.submit" &&
-          typeof args === "object" &&
-          args &&
-          "text" in args &&
-          args.text === "It also drops audio"
-        ) {
-          return Promise.reject(new Error("gateway down"));
-        }
-        return Promise.resolve({});
-      },
-    );
+    mocks.gatewayRequest.mockImplementation((method: string, args?: unknown) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (
+        method === "prompt.submit" &&
+        typeof args === "object" &&
+        args &&
+        "text" in args &&
+        args.text === "It also drops audio"
+      ) {
+        return Promise.reject(new Error("gateway down"));
+      }
+      return Promise.resolve({});
+    });
 
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -2067,9 +1962,7 @@ describe("AgentWorkspace", () => {
       });
     });
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Send message first" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message first" })).toBeDisabled();
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
@@ -2081,39 +1974,34 @@ describe("AgentWorkspace", () => {
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
     let rejectFollowUp: ((error: Error) => void) | undefined;
-    mocks.gatewayRequest.mockImplementation(
-      (method: string, args?: unknown) => {
-        if (method === "session.create") {
-          return Promise.resolve({
-            session_id: "runtime-session-2",
-            stored_session_id: "session-2",
-          });
-        }
-        if (method === "session.resume") {
-          return Promise.resolve({ session_id: "runtime-session-1" });
-        }
-        if (
-          method === "prompt.submit" &&
-          typeof args === "object" &&
-          args &&
-          "text" in args &&
-          args.text === "It also drops audio"
-        ) {
-          return new Promise((_resolve, reject) => {
-            rejectFollowUp = reject;
-          });
-        }
-        return Promise.resolve({});
-      },
-    );
+    mocks.gatewayRequest.mockImplementation((method: string, args?: unknown) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (
+        method === "prompt.submit" &&
+        typeof args === "object" &&
+        args &&
+        "text" in args &&
+        args.text === "It also drops audio"
+      ) {
+        return new Promise((_resolve, reject) => {
+          rejectFollowUp = reject;
+        });
+      }
+      return Promise.resolve({});
+    });
 
     const first = render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -2145,20 +2033,15 @@ describe("AgentWorkspace", () => {
       await Promise.resolve();
     });
 
-    const sessionLoadsBeforeRemount =
-      mocks.listHermesSessions.mock.calls.length;
+    const sessionLoadsBeforeRemount = mocks.listHermesSessions.mock.calls.length;
     render(<AgentWorkspace />);
     await waitFor(() =>
-      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
-        sessionLoadsBeforeRemount,
-      ),
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(sessionLoadsBeforeRemount),
     );
 
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     expect(screen.queryByText(/Follow-up added/)).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Send message first" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message first" })).toBeDisabled();
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
@@ -2187,9 +2070,7 @@ describe("AgentWorkspace", () => {
       },
     ]);
 
-    const { unmount } = render(
-      <AgentWorkspace initialSession={existingSession} />,
-    );
+    const { unmount } = render(<AgentWorkspace initialSession={existingSession} />);
 
     await screen.findByRole("textbox");
     act(() => {
@@ -2221,8 +2102,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     expect(screen.queryByText(/Follow-up added/)).toBeNull();
 
-    const messageFetchesBeforeRemount =
-      mocks.listHermesSessionMessages.mock.calls.length;
+    const messageFetchesBeforeRemount = mocks.listHermesSessionMessages.mock.calls.length;
     unmount();
     render(<AgentWorkspace initialSession={existingSession} />);
     await waitFor(() =>
@@ -2234,9 +2114,7 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     expect(screen.queryByText(/Follow-up added/)).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Send message first" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message first" })).toBeDisabled();
   });
 
   it("does not show a failed issue report banner after switching away", async () => {
@@ -2256,10 +2134,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -2287,9 +2162,7 @@ describe("AgentWorkspace", () => {
         handler({ type: "turn.completed", session_id: "runtime-session-2" });
       }
     });
-    await user.click(
-      await screen.findByRole("button", { name: "Send report" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Send report" }));
     await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalled());
 
     act(() => {
@@ -2328,10 +2201,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -2349,16 +2219,12 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
-    expect(
-      await screen.findByText(/The issue report could not be sent/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/The issue report could not be sent/)).toBeInTheDocument();
     expect(screen.getByText(/upstream_provider_failed/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Send report" }));
 
-    expect(
-      await screen.findByText(/Your report was sent to the June team/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Your report was sent to the June team/)).toBeInTheDocument();
     expect(screen.queryByText(/The issue report could not be sent/)).toBeNull();
     expect(screen.queryByText(/upstream_provider_failed/)).toBeNull();
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
@@ -2395,10 +2261,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
-      "The recorder crashes after long meetings",
-    );
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes after long meetings");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -2430,9 +2293,7 @@ describe("AgentWorkspace", () => {
         expect.any(Uint8Array),
       ),
     );
-    expect(
-      screen.getByRole("button", { name: "Attaching files" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Attaching files" })).toBeDisabled();
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -2447,9 +2308,7 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("logs.txt")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Send message first" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message first" })).toBeDisabled();
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
@@ -2485,13 +2344,9 @@ describe("AgentWorkspace", () => {
     // The session bar badge carries the privacy mode alone; the model name
     // lives on the composer's model trigger. The badge's accessible name
     // carries the mode description.
+    expect(screen.getByRole("button", { name: "Model: Anonymous Only" })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Model: Anonymous Only" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByLabelText(
-        new RegExp(`^Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`),
-      ),
+      screen.getByLabelText(new RegExp(`^Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`)),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
@@ -2530,13 +2385,9 @@ describe("AgentWorkspace", () => {
     // The hover callout replaces the native title tooltip.
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     await user.hover(badge);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      E2EE_MODEL_DESCRIPTION,
-    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(E2EE_MODEL_DESCRIPTION);
     await user.unhover(badge);
-    await waitFor(() =>
-      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
   });
 
   it("opens the model picker from the composer's model trigger", async () => {
@@ -2545,16 +2396,12 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     // The session composer carries the same model trigger as the hero.
-    await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
 
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    expect(
-      within(dialog).getByRole("option", { name: /GLM 5\.2/ }),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
   });
 
   it("switches the text model only for the active chat", async () => {
@@ -2599,24 +2446,18 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
 
     // The popover opens on the suggested picks (GLM 5.2 is curated); the
     // switch target only exists in the full catalog behind All models.
-    await user.click(
-      within(dialog).getByRole("button", { name: "All models" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
     const panel = await screen.findByRole("group", {
       name: "All text models",
     });
-    await user.click(
-      within(panel).getByRole("option", { name: /Anonymous Only/ }),
-    );
+    await user.click(within(panel).getByRole("option", { name: /Anonymous Only/ }));
 
     expect(mocks.setVeniceModel).not.toHaveBeenCalled();
     // The composer trigger reflects the new model and the session bar badge
@@ -2670,10 +2511,7 @@ describe("AgentWorkspace", () => {
       last_active: "2026-06-04T12:05:00Z",
       model: "kimi-k2-6",
     };
-    mocks.listHermesSessions.mockResolvedValue([
-      existingSession,
-      secondSession,
-    ]);
+    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
@@ -2682,25 +2520,17 @@ describe("AgentWorkspace", () => {
     });
     const user = userEvent.setup();
 
-    const { rerender } = render(
-      <AgentWorkspace initialSession={existingSession} />,
-    );
+    const { rerender } = render(<AgentWorkspace initialSession={existingSession} />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    await user.click(
-      within(dialog).getByRole("button", { name: "All models" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
     const panel = await screen.findByRole("group", {
       name: "All text models",
     });
-    await user.click(
-      within(panel).getByRole("option", { name: /Anonymous Only/ }),
-    );
+    await user.click(within(panel).getByRole("option", { name: /Anonymous Only/ }));
 
     expect(
       await screen.findByRole("button", { name: "Model: Anonymous Only" }),
@@ -2708,12 +2538,8 @@ describe("AgentWorkspace", () => {
 
     rerender(<AgentWorkspace initialSession={secondSession} />);
 
-    expect(
-      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Model: Anonymous Only" }),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Model: Kimi K2.6" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Model: Anonymous Only" })).not.toBeInTheDocument();
   });
 
   it("keeps an existing chat model when generation model settings change", async () => {
@@ -2787,9 +2613,7 @@ describe("AgentWorkspace", () => {
         capabilities: ["functionCalling"],
       },
     ];
-    const sessionResolvers: Array<
-      (sessions: (typeof existingSession)[]) => void
-    > = [];
+    const sessionResolvers: Array<(sessions: (typeof existingSession)[]) => void> = [];
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
@@ -2806,9 +2630,7 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    expect(
-      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Model: GLM 5.2" })).toBeInTheDocument();
     await waitFor(() => expect(sessionResolvers.length).toBeGreaterThan(0));
 
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
@@ -2843,18 +2665,12 @@ describe("AgentWorkspace", () => {
     });
 
     await waitFor(() =>
-      expect(mocks.providerModelSettings.mock.calls.length).toBeGreaterThan(
-        settingsCalls,
-      ),
+      expect(mocks.providerModelSettings.mock.calls.length).toBeGreaterThan(settingsCalls),
     );
     await waitFor(() =>
-      expect(mocks.listVeniceModels.mock.calls.length).toBeGreaterThan(
-        modelListCalls,
-      ),
+      expect(mocks.listVeniceModels.mock.calls.length).toBeGreaterThan(modelListCalls),
     );
-    expect(
-      screen.getByRole("button", { name: "Model: GLM 5.2" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Model: GLM 5.2" })).toBeInTheDocument();
     expect(screen.queryByText("Anonymous mode")).not.toBeInTheDocument();
   });
 
@@ -2889,42 +2705,30 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    await user.click(
-      within(dialog).getByRole("button", { name: "All models" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
     const panel = await screen.findByRole("group", {
       name: "All text models",
     });
-    await user.click(
-      within(panel).getByRole("option", { name: /Anonymous Only/ }),
-    );
+    await user.click(within(panel).getByRole("option", { name: /Anonymous Only/ }));
     expect(
       await screen.findByRole("button", { name: "Model: Anonymous Only" }),
     ).toBeInTheDocument();
 
     const sessionListCalls = mocks.listHermesSessions.mock.calls.length;
-    mocks.listHermesSessions.mockResolvedValue([
-      { ...existingSession, model: "zai-org-glm-5-2" },
-    ]);
+    mocks.listHermesSessions.mockResolvedValue([{ ...existingSession, model: "zai-org-glm-5-2" }]);
 
     await user.type(screen.getByRole("textbox"), "continue");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
-        sessionListCalls,
-      ),
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(sessionListCalls),
     );
     await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Model: Anonymous Only" }),
-      ).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "Model: Anonymous Only" })).toBeInTheDocument(),
     );
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
@@ -2962,27 +2766,18 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    await user.click(
-      within(dialog).getByRole("button", { name: "All models" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
     const panel = await screen.findByRole("group", {
       name: "All text models",
     });
-    await user.click(
-      within(panel).getByRole("option", { name: /Anonymous Only/ }),
-    );
+    await user.click(within(panel).getByRole("option", { name: /Anonymous Only/ }));
 
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-        "generation",
-        "anonymous-only",
-      ),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "anonymous-only"),
     );
     expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
       sessionId: expect.any(String),
@@ -3002,9 +2797,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    expect(
-      window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
-    ).toBeNull();
+    expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
       "prompt.submit",
       expect.objectContaining({ text: "stale prompt from before the reload" }),
@@ -3064,12 +2857,8 @@ describe("AgentWorkspace", () => {
     // (session-2); the persisted id must win — the restored session's title
     // is the one in the session bar and its messages are the ones fetched.
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"),
-    );
-    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
-      "session-2",
-    );
+    await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"));
+    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith("session-2");
     expect(screen.queryByText("Newer session")).toBeNull();
   });
 
@@ -3087,12 +2876,8 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSessionId="session-1" />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"),
-    );
-    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
-      "session-2",
-    );
+    await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"));
+    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith("session-2");
     expect(screen.queryByText("Newer session")).toBeNull();
   });
 
@@ -3115,24 +2900,18 @@ describe("AgentWorkspace", () => {
       }),
     );
     expect(await screen.findByText("audit the repo")).toBeInTheDocument();
-    expect(
-      await screen.findByText("Summarize Current Page"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
 
     first.unmount();
     render(<AgentWorkspace />);
 
     // The sent message and the session title survive the round trip.
     expect(await screen.findByText("audit the repo")).toBeInTheDocument();
-    expect(
-      await screen.findByText("Summarize Current Page"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
     // The run is still treated as working, so the reconcile poll can pick it
     // up: the composer offers the stop control instead of an idle send.
-    expect(
-      await screen.findByRole("button", { name: "Stop June" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Stop June" })).toBeInTheDocument();
   });
 
   it("renames prompt-like existing session titles after messages load", async () => {
@@ -3203,8 +2982,7 @@ describe("AgentWorkspace", () => {
       {
         id: "a1",
         role: "assistant",
-        content:
-          "The sandbox blocks Codex's state folders.\n\n[REQUEST:AGENT_CLI_ACCESS]",
+        content: "The sandbox blocks Codex's state folders.\n\n[REQUEST:AGENT_CLI_ACCESS]",
         timestamp: "2026-06-12T10:00:05Z",
       },
     ]);
@@ -3213,22 +2991,14 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(
-      await screen.findByText("Agent CLI access requested"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Agent CLI access requested")).toBeInTheDocument();
     // The token renders as the card, never as literal text.
     expect(screen.queryByText(/REQUEST:AGENT_CLI_ACCESS/)).toBeNull();
-    expect(
-      screen.getByText(/sandbox blocks Codex's state folders/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/sandbox blocks Codex's state folders/)).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: "Enable Agent CLI access" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Enable Agent CLI access" }));
 
-    await waitFor(() =>
-      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true),
-    );
+    await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true));
     // June is told the grant is live, so it retries on the restarted runtime.
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -3236,9 +3006,7 @@ describe("AgentWorkspace", () => {
         text: expect.stringContaining("I enabled Agent CLI access"),
       }),
     );
-    expect(
-      await screen.findByText("Agent CLI access enabled"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Agent CLI access enabled")).toBeInTheDocument();
   });
 
   it("shows the CLI access request as already granted when the setting is on", async () => {
@@ -3254,15 +3022,9 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(
-      await screen.findByText("Agent CLI access requested"),
-    ).toBeInTheDocument();
-    expect(
-      await screen.findByText("Agent CLI access enabled"),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Enable Agent CLI access" }),
-    ).toBeNull();
+    expect(await screen.findByText("Agent CLI access requested")).toBeInTheDocument();
+    expect(await screen.findByText("Agent CLI access enabled")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Enable Agent CLI access" })).toBeNull();
   });
 
   it("dismisses the CLI access request without changing the setting", async () => {
@@ -3283,20 +3045,13 @@ describe("AgentWorkspace", () => {
     expect(mocks.setHermesAgentCliAccess).not.toHaveBeenCalled();
     // The card resolves quietly; nothing is sent into the session.
     expect(await screen.findByText("Not now")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Enable Agent CLI access" }),
-    ).toBeNull();
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
-      "prompt.submit",
-      expect.anything(),
-    );
+    expect(screen.queryByRole("button", { name: "Enable Agent CLI access" })).toBeNull();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
   });
 
   it("copies visible user and assistant messages", async () => {
     const user = userEvent.setup();
-    const writeText = vi
-      .spyOn(navigator.clipboard, "writeText")
-      .mockResolvedValue(undefined);
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "u1",
@@ -3315,12 +3070,10 @@ describe("AgentWorkspace", () => {
     try {
       render(<AgentWorkspace initialSession={existingSession} />);
 
-      const userTurn = (
-        await screen.findByText("Draft the launch plan")
-      ).closest("article");
-      const assistantTurn = (
-        await screen.findByText("Here is the launch plan.")
-      ).closest("article");
+      const userTurn = (await screen.findByText("Draft the launch plan")).closest("article");
+      const assistantTurn = (await screen.findByText("Here is the launch plan.")).closest(
+        "article",
+      );
       expect(userTurn).not.toBeNull();
       expect(assistantTurn).not.toBeNull();
 
@@ -3361,9 +3114,7 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    const userTurn = (await screen.findByText("Draft the launch plan")).closest(
-      "article",
-    );
+    const userTurn = (await screen.findByText("Draft the launch plan")).closest("article");
     expect(userTurn).not.toBeNull();
     await user.click(
       within(userTurn as HTMLElement).getByRole("button", {
@@ -3436,9 +3187,7 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText(generatedTitle)).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith(
-        "session-generated",
-      ),
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-generated"),
     );
     expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
   });
@@ -3455,9 +3204,7 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(window.localStorage.getItem("june:agent:last-open-session")).toBe(
-        "session-1",
-      ),
+      expect(window.localStorage.getItem("june:agent:last-open-session")).toBe("session-1"),
     );
 
     act(() => {
@@ -3469,13 +3216,9 @@ describe("AgentWorkspace", () => {
     });
 
     await waitFor(() =>
-      expect(
-        window.localStorage.getItem("june:agent:last-open-session"),
-      ).toBeNull(),
+      expect(window.localStorage.getItem("june:agent:last-open-session")).toBeNull(),
     );
-    expect(
-      window.localStorage.getItem("june.agent.unrestrictedSessions"),
-    ).toBeNull();
+    expect(window.localStorage.getItem("june.agent.unrestrictedSessions")).toBeNull();
   });
 
   it("keeps the blank composer after a New Session event during refresh", async () => {
@@ -3502,12 +3245,8 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("textbox").textContent).toBe(""),
-    );
-    expect(
-      screen.getByRole("button", { name: "Start session" }),
-    ).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("textbox").textContent).toBe(""));
+    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
       "prompt.submit",
       expect.objectContaining({ text: "stale draft" }),
@@ -3527,9 +3266,7 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("textbox")).toHaveTextContent(
-        "carry this thought",
-      ),
+      expect(screen.getByRole("textbox")).toHaveTextContent("carry this thought"),
     );
   });
 
@@ -3539,17 +3276,12 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
@@ -3562,9 +3294,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("textbox")).toHaveTextContent(
-        "what is in this image?",
-      ),
+      expect(screen.getByRole("textbox")).toHaveTextContent("what is in this image?"),
     );
 
     await user.click(screen.getByRole("button", { name: "Send message" }));
@@ -3589,19 +3319,68 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("textbox").textContent).toBe(""),
-    );
+    await waitFor(() => expect(screen.getByRole("textbox").textContent).toBe(""));
 
     first.unmount();
     render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("textbox")).toHaveTextContent(
-        "come back to this",
-      ),
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("come back to this"));
+  });
+
+  it("restores a new-session draft instead of reopening the last session", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
     );
+
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "draft a launch plan");
+    expect(screen.getByRole("textbox")).toHaveTextContent("draft a launch plan");
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent("draft a launch plan"),
+    );
+  });
+
+  it("keeps a new-session draft when a blank New Session event returns to chat", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "do not drop this");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("do not drop this"));
+  });
+
+  it("restores a stored new-session draft instead of reopening the last session", async () => {
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
+    window.sessionStorage.setItem(
+      "june:agent:new-session-draft",
+      JSON.stringify({ text: "stored hero draft", category: null }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("stored hero draft"));
   });
 
   it("restores drafts when switching sessions without remounting", async () => {
@@ -3613,13 +3392,8 @@ describe("AgentWorkspace", () => {
       preview: "Second preview",
       last_active: "2026-06-04T12:05:00Z",
     };
-    mocks.listHermesSessions.mockResolvedValue([
-      existingSession,
-      secondSession,
-    ]);
-    const { rerender } = render(
-      <AgentWorkspace initialSession={existingSession} />,
-    );
+    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
+    const { rerender } = render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await user.type(screen.getByRole("textbox"), "first session draft");
@@ -3627,18 +3401,14 @@ describe("AgentWorkspace", () => {
     rerender(<AgentWorkspace initialSession={secondSession} />);
 
     expect(await screen.findByText("Second session")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("textbox").textContent).toBe(""),
-    );
+    await waitFor(() => expect(screen.getByRole("textbox").textContent).toBe(""));
     await user.type(screen.getByRole("textbox"), "second session draft");
 
     rerender(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("textbox")).toHaveTextContent(
-        "first session draft",
-      ),
+      expect(screen.getByRole("textbox")).toHaveTextContent("first session draft"),
     );
   });
 
@@ -3665,9 +3435,7 @@ describe("AgentWorkspace", () => {
     // session also renders the feature 06 steer input (another textbox), so a
     // bare textbox query would be ambiguous here.
     await waitFor(() =>
-      expect(
-        screen.getByRole("textbox", { name: "Message June" }).textContent,
-      ).toBe(""),
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe(""),
     );
   });
 
@@ -3704,13 +3472,9 @@ describe("AgentWorkspace", () => {
       sessionId: "session-2",
       title: "Summarize Current Page",
     });
-    expect(
-      await screen.findByText("Summarize Current Page"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
-    expect(
-      window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
-    ).toBeNull();
+    expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
   it("stops a working session from the composer", async () => {
@@ -3752,9 +3516,7 @@ describe("AgentWorkspace", () => {
     );
     // The working flag clears even before any gateway event arrives, so the
     // stop control goes away and the session no longer reads as thinking.
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull());
     // Stopping also tears down the per-session gateway listener, so a
     // straggler "running" event can't flip the session back to working.
     expect(mocks.gatewayEventHandlers.size).toBe(0);
@@ -3816,9 +3578,7 @@ describe("AgentWorkspace", () => {
     );
     // ...yet the Stop control is already gone and the listener torn down,
     // proving the stop did not block on the RPC.
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull());
     expect(mocks.gatewayEventHandlers.size).toBe(0);
   });
 
@@ -3867,12 +3627,8 @@ describe("AgentWorkspace", () => {
       }
     });
 
-    expect(
-      await screen.findByText(/Reading one more file/),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Thinking").closest("details")).toHaveAttribute(
-      "open",
-    );
+    expect(await screen.findByText(/Reading one more file/)).toBeInTheDocument();
+    expect(screen.getByText("Thinking").closest("details")).toHaveAttribute("open");
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
@@ -3885,9 +3641,7 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("Thought")).toBeInTheDocument();
-    expect(screen.getByText("Thought").closest("details")).toHaveAttribute(
-      "open",
-    );
+    expect(screen.getByText("Thought").closest("details")).toHaveAttribute("open");
 
     await user.type(screen.getByRole("textbox"), "next request");
     await user.click(screen.getByRole("button", { name: "Send message" }));
@@ -3908,9 +3662,7 @@ describe("AgentWorkspace", () => {
       }
     });
     expect(await screen.findByText("Thinking")).toBeInTheDocument();
-    expect(screen.getByText("Thinking").closest("details")).not.toHaveAttribute(
-      "open",
-    );
+    expect(screen.getByText("Thinking").closest("details")).not.toHaveAttribute("open");
   });
 
   it("keeps tool rows visible outside the thinking disclosure", async () => {
@@ -3950,14 +3702,10 @@ describe("AgentWorkspace", () => {
       }
     });
 
-    const thinkingDetails = (await screen.findByText("Thinking")).closest(
-      "details",
-    );
+    const thinkingDetails = (await screen.findByText("Thinking")).closest("details");
     expect(thinkingDetails).toHaveClass("agent-reasoning");
     expect(
-      within(thinkingDetails as HTMLElement).getByText(
-        "Checking the project state.",
-      ),
+      within(thinkingDetails as HTMLElement).getByText("Checking the project state."),
     ).toBeInTheDocument();
 
     const toolLabel = await screen.findByText("Reading files");
@@ -3974,9 +3722,7 @@ describe("AgentWorkspace", () => {
       }
     });
 
-    const thoughtDetails = (await screen.findByText("Thought")).closest(
-      "details",
-    );
+    const thoughtDetails = (await screen.findByText("Thought")).closest("details");
     expect(thoughtDetails).toHaveClass("agent-reasoning");
     expect(thoughtDetails).not.toContainElement(toolLabel);
     expect(await screen.findByText("Done.")).toBeInTheDocument();
@@ -3999,9 +3745,7 @@ describe("AgentWorkspace", () => {
         text: "browse the web for recent launch details",
       }),
     );
-    expect(
-      await screen.findByText("browse the web for recent launch details"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("browse the web for recent launch details")).toBeInTheDocument();
 
     const scroller = document.querySelector(".agent-scroll") as HTMLElement;
     const scrollTo = vi.fn();
@@ -4038,9 +3782,7 @@ describe("AgentWorkspace", () => {
       }
     });
 
-    expect(
-      await screen.findByText("Subagent: Browse source pages"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Subagent: Browse source pages")).toBeInTheDocument();
     expect(scrollTo).not.toHaveBeenCalled();
   });
 
@@ -4247,22 +3989,15 @@ describe("AgentWorkspace", () => {
         "This deletes the build folder, then rebuilds the project from scratch.",
       ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Approve once allows only this request/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Approve once allows only this request/)).toBeInTheDocument();
     expect(
       screen.getByText(/Always allows matching requests in future sessions/),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Hide explanation" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide explanation" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve once" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Always" })).toBeEnabled();
     // Asking for an explanation never answers the approval.
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
-      "approval.respond",
-      expect.anything(),
-    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
 
     // Reopening reuses the cached answer instead of paying for another call.
     await user.click(screen.getByRole("button", { name: "Hide explanation" }));
@@ -4295,9 +4030,7 @@ describe("AgentWorkspace", () => {
       }
       if (method === "approval.respond") {
         return Promise.reject(
-          new Error(
-            'Hermes API returned 404 Not Found: {"detail":"Session not found"}',
-          ),
+          new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}'),
         );
       }
       return Promise.resolve({});
@@ -4329,9 +4062,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Approval required")).toBeInTheDocument();
     // The event registered a "Needs you" row for this request.
     expect(
-      pendingActionStore
-        .openRecords()
-        .some((record) => record.requestId === "approval-gone"),
+      pendingActionStore.openRecords().some((record) => record.requestId === "approval-gone"),
     ).toBe(true);
 
     await user.click(screen.getByRole("button", { name: "Approve once" }));
@@ -4341,9 +4072,7 @@ describe("AgentWorkspace", () => {
     // that 404s. Before the fix this record lingered after the failed respond.
     await waitFor(() =>
       expect(
-        pendingActionStore
-          .openRecords()
-          .some((record) => record.requestId === "approval-gone"),
+        pendingActionStore.openRecords().some((record) => record.requestId === "approval-gone"),
       ).toBe(false),
     );
     // The raw "Hermes API returned 404 ... Session not found" wire error is
@@ -4354,29 +4083,27 @@ describe("AgentWorkspace", () => {
   it("resumes the runtime to load usage when the cached session is gone", async () => {
     const user = userEvent.setup();
     let resumeCount = 0;
-    mocks.gatewayRequest.mockImplementation(
-      (method: string, params?: { session_id?: string }) => {
-        if (method === "session.resume") {
-          resumeCount += 1;
-          // First resume serves the send flow; the second is the usage retry
-          // after the cached runtime reports "session not found".
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { session_id?: string }) => {
+      if (method === "session.resume") {
+        resumeCount += 1;
+        // First resume serves the send flow; the second is the usage retry
+        // after the cached runtime reports "session not found".
+        return Promise.resolve({
+          session_id: resumeCount === 1 ? "runtime-stale" : "runtime-fresh",
+        });
+      }
+      if (method === "session.usage") {
+        if (params?.session_id === "runtime-fresh") {
           return Promise.resolve({
-            session_id: resumeCount === 1 ? "runtime-stale" : "runtime-fresh",
+            model: "zai-org-glm-5-2",
+            context_used: 100,
+            context_max: 1000,
           });
         }
-        if (method === "session.usage") {
-          if (params?.session_id === "runtime-fresh") {
-            return Promise.resolve({
-              model: "zai-org-glm-5-2",
-              context_used: 100,
-              context_max: 1000,
-            });
-          }
-          return Promise.reject(new Error("session not found"));
-        }
-        return Promise.resolve({});
-      },
-    );
+        return Promise.reject(new Error("session not found"));
+      }
+      return Promise.resolve({});
+    });
 
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
@@ -4443,9 +4170,7 @@ describe("AgentWorkspace", () => {
         "June is paused because this request needs your explicit permission before it can continue.",
       ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Approve once allows only this request/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Approve once allows only this request/)).toBeInTheDocument();
   });
 
   it("omits the permanent approval explanation when Always is unavailable", async () => {
@@ -4484,9 +4209,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Approval required")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Explain first" }));
 
-    expect(
-      screen.getByText(/Approve once allows only this request/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Approve once allows only this request/)).toBeInTheDocument();
     expect(
       screen.queryByText(/Always allows matching requests in future sessions/),
     ).not.toBeInTheDocument();
@@ -4540,9 +4263,7 @@ describe("AgentWorkspace", () => {
       }),
     );
 
-    expect(
-      await screen.findByText("Summarize Current Page"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.getByText("open the release notes")).toBeInTheDocument();
   });
 
@@ -4585,10 +4306,7 @@ describe("AgentWorkspace", () => {
         await vi.advanceTimersByTimeAsync(2500);
       });
 
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
-        "session.active_list",
-        {},
-      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {});
       expect(screen.queryByText("Thinking…")).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -4634,10 +4352,7 @@ describe("AgentWorkspace", () => {
         await vi.advanceTimersByTimeAsync(2500);
       });
 
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
-        "session.active_list",
-        {},
-      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {});
       expect(screen.getByText("Thinking…")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -4702,11 +4417,8 @@ describe("AgentWorkspace", () => {
         text: "follow up while pending",
       });
       expect(screen.getByText("Thinking…")).toBeInTheDocument();
-      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(
-        initialSessionListCalls + 1,
-      );
-      const sessionListCallsAfterSubmit =
-        mocks.listHermesSessions.mock.calls.length;
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(initialSessionListCalls + 1);
+      const sessionListCallsAfterSubmit = mocks.listHermesSessions.mock.calls.length;
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2500);
@@ -4714,9 +4426,7 @@ describe("AgentWorkspace", () => {
 
       expect(screen.getByText("follow up while pending")).toBeInTheDocument();
       expect(screen.getByText("Thinking…")).toBeInTheDocument();
-      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(
-        sessionListCallsAfterSubmit + 1,
-      );
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(sessionListCallsAfterSubmit + 1);
     } finally {
       vi.useRealTimers();
     }
@@ -4746,9 +4456,7 @@ describe("AgentWorkspace", () => {
     );
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() =>
-      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"),
-    );
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"));
     expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("os-platform");
 
     await waitFor(() =>
@@ -4767,9 +4475,7 @@ describe("AgentWorkspace", () => {
     expect(submittedText).toContain("Skill: repo-build-pr");
     expect(submittedText).toContain("Skill: os-platform");
     expect(submittedText).toContain("implement issue JUN-46");
-    expect(submittedText).not.toContain(
-      "/repo-build-pr /os-platform implement issue JUN-46",
-    );
+    expect(submittedText).not.toContain("/repo-build-pr /os-platform implement issue JUN-46");
     expect(screen.getByText("implement issue JUN-46")).toBeInTheDocument();
     expect(screen.queryByText("---EXPLICIT SKILLS---")).toBeNull();
   });
@@ -4787,16 +4493,11 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    await user.type(
-      screen.getByRole("textbox"),
-      "/tools/gh-address-comments review PR feedback",
-    );
+    await user.type(screen.getByRole("textbox"), "/tools/gh-address-comments review PR feedback");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith(
-        "gh-address-comments",
-      ),
+      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("gh-address-comments"),
     );
     const submitCall = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
@@ -4862,9 +4563,7 @@ describe("AgentWorkspace", () => {
     const textbox = screen.getByRole("textbox");
     await user.type(textbox, "/repo-build-pr implement issue JUN-46");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-    await waitFor(() =>
-      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"),
-    );
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"));
 
     await user.click(textbox);
     await user.type(textbox, " and keep this draft edit");
@@ -4875,11 +4574,9 @@ describe("AgentWorkspace", () => {
     });
 
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(
-          ([method]) => method === "prompt.submit",
-        ),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
     );
     expect(textbox).toHaveTextContent(
       "/repo-build-pr implement issue JUN-46 and keep this draft edit",
@@ -4899,26 +4596,17 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    await user.type(
-      screen.getByRole("textbox"),
-      "/repo-build implement issue JUN-46",
-    );
+    await user.type(screen.getByRole("textbox"), "/repo-build implement issue JUN-46");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(
-      await screen.findByText(
-        "Could not find skill /repo-build. Try /repo-build-pr.",
-      ),
+      await screen.findByText("Could not find skill /repo-build. Try /repo-build-pr."),
     ).toBeInTheDocument();
-    expect(screen.getByRole("textbox")).toHaveTextContent(
-      "/repo-build implement issue JUN-46",
-    );
+    expect(screen.getByRole("textbox")).toHaveTextContent("/repo-build implement issue JUN-46");
     expect(mocks.getHermesBridgeSkill).not.toHaveBeenCalled();
-    expect(
-      mocks.gatewayRequest.mock.calls.some(
-        ([method]) => method === "prompt.submit",
-      ),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
   });
 
   it("rejects disabled skill slash commands", async () => {
@@ -4934,26 +4622,17 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    await user.type(
-      screen.getByRole("textbox"),
-      "/repo-build-pr implement issue JUN-46",
-    );
+    await user.type(screen.getByRole("textbox"), "/repo-build-pr implement issue JUN-46");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(
-      await screen.findByText(
-        "/repo-build-pr is disabled. Enable it in Agent settings to use it.",
-      ),
+      await screen.findByText("/repo-build-pr is disabled. Enable it in Agent settings to use it."),
     ).toBeInTheDocument();
-    expect(screen.getByRole("textbox")).toHaveTextContent(
-      "/repo-build-pr implement issue JUN-46",
-    );
+    expect(screen.getByRole("textbox")).toHaveTextContent("/repo-build-pr implement issue JUN-46");
     expect(mocks.getHermesBridgeSkill).not.toHaveBeenCalled();
-    expect(
-      mocks.gatewayRequest.mock.calls.some(
-        ([method]) => method === "prompt.submit",
-      ),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
   });
 
   it("retries skill loading on submit after a silent slash-prefetch failure", async () => {
@@ -4974,15 +4653,10 @@ describe("AgentWorkspace", () => {
     await user.type(screen.getByRole("textbox"), "/");
     await waitFor(() => expect(mocks.hermesBridgeSkills).toHaveBeenCalled());
 
-    await user.type(
-      screen.getByRole("textbox"),
-      "repo-build-pr implement issue JUN-46",
-    );
+    await user.type(screen.getByRole("textbox"), "repo-build-pr implement issue JUN-46");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() =>
-      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"),
-    );
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"));
     expect(
       mocks.gatewayRequest.mock.calls.some(
         ([method, params]) =>
@@ -5012,14 +4686,9 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await user.type(screen.getByRole("textbox"), "/");
-    await waitFor(() =>
-      expect(mocks.hermesBridgeSkills).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(mocks.hermesBridgeSkills).toHaveBeenCalledTimes(1));
 
-    await user.type(
-      screen.getByRole("textbox"),
-      "repo-build-pr implement issue JUN-46",
-    );
+    await user.type(screen.getByRole("textbox"), "repo-build-pr implement issue JUN-46");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     expect(mocks.hermesBridgeSkills).toHaveBeenCalledTimes(1);
 
@@ -5031,9 +4700,7 @@ describe("AgentWorkspace", () => {
       },
     ]);
 
-    await waitFor(() =>
-      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"),
-    );
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"));
     expect(mocks.hermesBridgeSkills).toHaveBeenCalledTimes(1);
   });
 
@@ -5074,9 +4741,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
     expect(screen.getAllByText("sample.pdf").length).toBeGreaterThan(0);
 
-    await user.click(
-      screen.getByRole("button", { name: "Download sample.pdf" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Download sample.pdf" }));
 
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
   });
@@ -5126,9 +4791,7 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
     expect(screen.getAllByLabelText("Generated files")).toHaveLength(1);
-    expect(
-      screen.getAllByRole("button", { name: "Download report.md" }),
-    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Download report.md" })).toHaveLength(1);
   });
 
   it("opens a markdown artifact in the viewer panel with rendered content", async () => {
@@ -5162,15 +4825,11 @@ describe("AgentWorkspace", () => {
         timestamp: "2026-06-04T18:39:00Z",
       },
     ]);
-    mocks.hermesBridgeFileText.mockResolvedValue(
-      "# Quarterly summary\n\nRevenue grew.",
-    );
+    mocks.hermesBridgeFileText.mockResolvedValue("# Quarterly summary\n\nRevenue grew.");
 
     render(<AgentWorkspace />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "Open report.md" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Open report.md" }));
 
     const panel = await screen.findByRole("complementary", { name: "Files" });
     expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath);
@@ -5180,14 +4839,10 @@ describe("AgentWorkspace", () => {
     expect(within(panel).getByText("Revenue grew.")).toBeInTheDocument();
 
     // Find-in-file highlights matches inside the rendered document.
-    await user.click(
-      within(panel).getByRole("button", { name: "Find in file" }),
-    );
+    await user.click(within(panel).getByRole("button", { name: "Find in file" }));
     await user.type(within(panel).getByLabelText("Find in file"), "revenue");
     // Highlighting trails typing by a short debounce.
-    await waitFor(() =>
-      expect(panel.querySelectorAll("mark").length).toBeGreaterThan(0),
-    );
+    await waitFor(() => expect(panel.querySelectorAll("mark").length).toBeGreaterThan(0));
     expect(panel.querySelectorAll("mark")[0]).toHaveTextContent(/revenue/i);
     await user.keyboard("{Escape}"); // clear
     await user.keyboard("{Escape}"); // collapse
@@ -5197,12 +4852,8 @@ describe("AgentWorkspace", () => {
     await user.click(within(panel).getByRole("button", { name: "Source" }));
     expect(within(panel).getByText(/# Quarterly summary/)).toBeInTheDocument();
 
-    await user.click(
-      within(panel).getByRole("button", { name: "Close files" }),
-    );
-    expect(
-      screen.queryByRole("complementary", { name: "Files" }),
-    ).not.toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Close files" }));
+    expect(screen.queryByRole("complementary", { name: "Files" })).not.toBeInTheDocument();
   });
 
   // SKIPPED while the Agent activity drawer's entry point is hidden
@@ -5232,9 +4883,7 @@ describe("AgentWorkspace", () => {
     });
 
     // Open the activity drawer; its Artifacts section lists the file.
-    await user.click(
-      screen.getByRole("button", { name: "Show agent activity" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Show agent activity" }));
     const artifacts = await screen.findByRole("region", { name: "Artifacts" });
     expect(within(artifacts).getByText("timeline.md")).toBeInTheDocument();
     // Sandboxed session => the path-safety label reads "sandboxed".
@@ -5242,12 +4891,8 @@ describe("AgentWorkspace", () => {
 
     // Clicking the artifact routes into the EXISTING preview flow, which
     // fetches the file text via the bridge command.
-    await user.click(
-      within(artifacts).getByRole("button", { name: /timeline\.md/i }),
-    );
-    await waitFor(() =>
-      expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath),
-    );
+    await user.click(within(artifacts).getByRole("button", { name: /timeline\.md/i }));
+    await waitFor(() => expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath));
   });
 
   // SKIPPED: see the note above. Reaches the artifacts timeline through the
@@ -5270,9 +4915,7 @@ describe("AgentWorkspace", () => {
       hermesArtifactStore.record(event, "unrestricted");
     });
 
-    await user.click(
-      screen.getByRole("button", { name: "Show agent activity" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Show agent activity" }));
     const artifacts = await screen.findByRole("region", { name: "Artifacts" });
     const row = within(artifacts).getByRole("listitem");
     expect(row).toHaveAttribute("data-action", "failed");
@@ -5323,30 +4966,22 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "View files (2)" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "View files (2)" }));
 
     const panel = await screen.findByRole("complementary", { name: "Files" });
     expect(within(panel).getByText("report.md")).toBeInTheDocument();
 
     // Opening a non-markdown file from the list shows its raw text.
     await user.click(within(panel).getByText("notes.txt"));
-    expect(
-      await within(panel).findByText("plain text body"),
-    ).toBeInTheDocument();
-    expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(
-      `${workspaceRoot}/notes.txt`,
-    );
+    expect(await within(panel).findByText("plain text body")).toBeInTheDocument();
+    expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(`${workspaceRoot}/notes.txt`);
 
     // Back returns to the list of every surfaced file.
     await user.click(within(panel).getByRole("button", { name: "All files" }));
     expect(within(panel).getByText("report.md")).toBeInTheDocument();
 
     // The header magnifier expands into the filter; typing narrows the list.
-    await user.click(
-      within(panel).getByRole("button", { name: "Filter files" }),
-    );
+    await user.click(within(panel).getByRole("button", { name: "Filter files" }));
     const filter = within(panel).getByLabelText("Filter files");
     await user.type(filter, "notes");
     expect(within(panel).queryByText("report.md")).not.toBeInTheDocument();
@@ -5358,9 +4993,7 @@ describe("AgentWorkspace", () => {
     await user.keyboard("{Escape}");
     expect(within(panel).queryByRole("searchbox")).not.toBeInTheDocument();
     await user.keyboard("{Escape}");
-    expect(
-      screen.queryByRole("complementary", { name: "Files" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Files" })).not.toBeInTheDocument();
   });
 
   it("does not surface files only mentioned inside tool output", async () => {
@@ -5429,9 +5062,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Download sample.pdf" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download sample.pdf" })).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Download screenshot.png" }),
     ).not.toBeInTheDocument();
@@ -5439,16 +5070,12 @@ describe("AgentWorkspace", () => {
       screen.queryByRole("button", { name: "Download generate_pdf.py" }),
     ).not.toBeInTheDocument();
 
-    await user.click(
-      await screen.findByRole("button", { name: "View files (1)" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "View files (1)" }));
 
     const panel = await screen.findByRole("complementary", { name: "Files" });
     expect(within(panel).getByText("sample.pdf")).toBeInTheDocument();
     expect(within(panel).queryByText("screenshot.png")).not.toBeInTheDocument();
-    expect(
-      within(panel).queryByText("generate_pdf.py"),
-    ).not.toBeInTheDocument();
+    expect(within(panel).queryByText("generate_pdf.py")).not.toBeInTheDocument();
   });
 
   it("does not render download cards for files the user attached", async () => {
@@ -5547,9 +5174,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
-    expect(
-      screen.getAllByRole("button", { name: "Download notes.md" }),
-    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Download notes.md" })).toHaveLength(1);
   });
 
   it("renders generated workspace images as file cards without previews", async () => {
@@ -5590,12 +5215,8 @@ describe("AgentWorkspace", () => {
     expect(
       await screen.findByRole("button", { name: "Download screenshot.png" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("img", { name: "screenshot.png" }),
-    ).not.toBeInTheDocument();
-    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalledWith(
-      screenshotPath,
-    );
+    expect(screen.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalledWith(screenshotPath);
   });
 
   it("imports dropped files into the Hermes workspace before submitting", async () => {
@@ -5604,24 +5225,20 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
-    expect(
-      document.querySelector(".agent-attachment-chip img"),
-    ).toHaveAttribute("src", "data:image/png;base64,preview");
+    expect(document.querySelector(".agent-attachment-chip img")).toHaveAttribute(
+      "src",
+      "data:image/png;base64,preview",
+    );
     await user.type(screen.getByRole("textbox"), "what is in this image?");
     const sendButton = screen.getByRole("button", { name: "Send message" });
     await waitFor(() => expect(sendButton).not.toBeDisabled());
@@ -5636,9 +5253,7 @@ describe("AgentWorkspace", () => {
     const submitted = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
     )?.[1] as { text: string };
-    expect(submitted.text).toContain(
-      "Attached files copied into the June workspace:",
-    );
+    expect(submitted.text).toContain("Attached files copied into the June workspace:");
     expect(submitted.text).toContain(
       "Use these file paths when inspecting or operating on the files.",
     );
@@ -5665,11 +5280,9 @@ describe("AgentWorkspace", () => {
     );
     expect(await screen.findByText("Q2 report.pdf")).toBeInTheDocument();
     expect(composer.textContent).toBe("");
-    expect(
-      mocks.gatewayRequest.mock.calls.some(
-        ([method]) => method === "prompt.submit",
-      ),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
   });
 
   it("uses a text fallback when the selected model cannot read image attachments", async () => {
@@ -5677,17 +5290,12 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
@@ -5698,28 +5306,20 @@ describe("AgentWorkspace", () => {
     await user.click(sendButton);
 
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(
-          ([method]) => method === "prompt.submit",
-        ),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
     );
     expect(
-      mocks.gatewayRequest.mock.calls.some(
-        ([method]) => method === "image.attach_bytes",
-      ),
+      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
     ).toBe(false);
 
     const submitted = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
     )?.[1] as { text: string };
-    expect(submitted.text).toContain(
-      "Attached files copied into the June workspace:",
-    );
+    expect(submitted.text).toContain("Attached files copied into the June workspace:");
     expect(submitted.text).toContain("--- Attached Context ---");
-    expect(submitted.text).toContain(
-      "GLM 5.2 does not support image input in June.",
-    );
+    expect(submitted.text).toContain("GLM 5.2 does not support image input in June.");
     expect(submitted.text).toContain("Do not call vision_analyze");
     expect(submitted.text).toContain(
       "ask the user to describe the image or paste the relevant text",
@@ -5760,40 +5360,254 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
-    expect(
-      await screen.findByText("GLM 5.2 can't read images."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("GLM 5.2 can't read images.")).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: "Switch to a vision model" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Switch to Qwen VL" }));
 
-    await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
-    );
+    await waitFor(() => expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"));
     // The switch picks the image-capable model and keeps the dropped image.
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
   });
 
-  it("switches to the first eligible vision model when several qualify", async () => {
-    // The banner action is a one-tap fix: with several image-capable models it
-    // switches straight to the first eligible one rather than opening the
-    // generic (non-vision-scoped) picker.
+  it("warns before sending composer text that exceeds the active model context", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 16,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "long-context",
+          name: "Long context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 256,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await screen.findByRole("button", { name: "Model: Short context" });
+    await user.type(screen.getByRole("textbox"), "a".repeat(100));
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 16 token context window.",
+    );
+    expect(screen.getByRole("button", { name: "Proceed" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit message" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to Long context" })).toBeInTheDocument();
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Proceed" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
+    );
+  });
+
+  it("switches to a larger-context model from the oversize composer warning", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 16,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "long-context",
+          name: "Long context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 256,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await screen.findByRole("button", { name: "Model: Short context" });
+    await user.type(screen.getByRole("textbox"), "a".repeat(100));
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await user.click(await screen.findByRole("button", { name: "Switch to Long context" }));
+
+    expect(await screen.findByRole("button", { name: "Model: Long context" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText(/This message is about/)).not.toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
+    );
+  });
+
+  it("estimates skill-expanded composer prompts before sending", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 64,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "large-skill",
+        description: "Adds a large instruction block.",
+        category: "Testing",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockResolvedValue({
+      name: "large-skill",
+      relativePath: "large-skill/SKILL.md",
+      content: `# Large skill\n\n${"Follow this instruction. ".repeat(80)}`,
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await screen.findByRole("button", { name: "Model: Short context" });
+    await user.type(screen.getByRole("textbox"), "/large-skill summarize");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 64 token context window.",
+    );
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+  });
+
+  it("counts pending attachment size in the oversize composer estimate", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 100,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: ["/Users/alex/Desktop/large-notes.txt"],
+      },
+    });
+
+    expect(await screen.findByText("large-notes.txt")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 100 token context window.",
+    );
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+  });
+
+  it("prefers the suggested vision model over the first eligible one (JUN-165)", async () => {
+    // The banner action is a one-tap fix, and with several image-capable models
+    // it prefers a curated suggested pick (Kimi K2.6) rather than the
+    // alphabetically-first vision model — otherwise it lands on an arbitrary
+    // model like Claude Fable 5. Qwen VL is listed first here to prove the
+    // preference overrides list order; no non-vision-scoped picker is opened.
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessions.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
@@ -5821,8 +5635,8 @@ describe("AgentWorkspace", () => {
         },
         {
           provider: "venice",
-          id: "gpt-vision",
-          name: "GPT Vision",
+          id: "kimi-k2-6",
+          name: "Kimi K2.6",
           modelType: "text",
           privacy: "private",
           traits: [],
@@ -5834,29 +5648,21 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Switch to a vision model" }),
-    );
-    // Lands on the first eligible vision model (Qwen VL), no picker dialog.
+    await user.click(screen.getByRole("button", { name: "Switch to Kimi K2.6" }));
+    // Lands on the suggested vision model (Kimi), not first-listed Qwen VL, and
+    // no picker dialog opens.
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "qwen-vl"),
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "kimi-k2-6"),
     );
-    expect(
-      screen.queryByRole("dialog", { name: "Choose text model" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
   });
 
   it("attaches the image when the active model id is unresolved", async () => {
@@ -5883,17 +5689,12 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
@@ -5905,9 +5706,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() =>
       expect(
-        mocks.gatewayRequest.mock.calls.some(
-          ([method]) => method === "image.attach_bytes",
-        ),
+        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
       ).toBe(true),
     );
     const submitted = mocks.gatewayRequest.mock.calls.find(
@@ -5921,24 +5720,17 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Switch to a vision model" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Switch to / })).not.toBeInTheDocument();
   });
 
   it("attaches a dropped image to the session via image.attach_bytes and marks it attached", async () => {
@@ -5951,17 +5743,12 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
@@ -5993,16 +5780,12 @@ describe("AgentWorkspace", () => {
     await waitFor(() => {
       const records = hermesArtifactStore.getRecordsForSession("session-1");
       expect(
-        records.some(
-          (record) => record.action === "attached" && record.kind === "image",
-        ),
+        records.some((record) => record.action === "attached" && record.kind === "image"),
       ).toBe(true);
     });
 
     // The sanitized trace export records the attach but NEVER the base64.
-    const trace = JSON.stringify(
-      hermesTraceBuffer.exportSanitizedTrace("session-1"),
-    );
+    const trace = JSON.stringify(hermesTraceBuffer.exportSanitizedTrace("session-1"));
     expect(trace).toContain("image.attach_bytes");
     expect(trace).not.toContain("cHJldmlldw==");
     expect(trace).not.toContain("content_base64");
@@ -6032,17 +5815,12 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "tauri://drag-drop",
-        expect.any(Function),
-      ),
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
     );
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: [
-          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
-        ],
+        paths: ["/Users/alex/Library/Application Support/CleanShot/media/screenshot.png"],
       },
     });
 
@@ -6055,16 +5833,12 @@ describe("AgentWorkspace", () => {
     // The attach was attempted and rejected; prompt.submit must NOT have run.
     await waitFor(() =>
       expect(
-        mocks.gatewayRequest.mock.calls.some(
-          ([method]) => method === "image.attach_bytes",
-        ),
+        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
       ).toBe(true),
     );
-    expect(
-      mocks.gatewayRequest.mock.calls.some(
-        ([method]) => method === "prompt.submit",
-      ),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
     // The chip is restored with the failure visible.
     expect(await screen.findByText("Couldn't attach")).toBeInTheDocument();
   });
@@ -6120,14 +5894,34 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("pasted-image.png")).toBeInTheDocument();
-    expect(
-      document.querySelector(".agent-attachment-chip img"),
-    ).toHaveAttribute("src", "data:image/png;base64,preview");
+    expect(document.querySelector(".agent-attachment-chip img")).toHaveAttribute(
+      "src",
+      "data:image/png;base64,preview",
+    );
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
       "pasted-image.png",
       expect.any(Uint8Array),
     );
     expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+  });
+
+  it("does not intercept /image while image generation is hidden", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "/image a red bicycle");
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Image generation is not available.",
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(mocks.importHermesBridgeFileBytes).not.toHaveBeenCalled();
   });
 
   it("chooses one preferred image when paste exposes multiple representations", async () => {
@@ -6234,13 +6028,12 @@ describe("AgentWorkspace", () => {
     // Let the working-gated poll (2.5s) refresh against the same old
     // history: the new pending "continue" must survive and the run must not
     // be marked finished against the old answer.
-    const refreshCallsBefore =
-      mocks.listHermesSessionMessages.mock.calls.length;
+    const refreshCallsBefore = mocks.listHermesSessionMessages.mock.calls.length;
     await waitFor(
       () =>
-        expect(
-          mocks.listHermesSessionMessages.mock.calls.length,
-        ).toBeGreaterThan(refreshCallsBefore),
+        expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+          refreshCallsBefore,
+        ),
       { timeout: 4000 },
     );
     // Give the refresh's state updates time to land before asserting.
@@ -6307,26 +6100,21 @@ describe("AgentWorkspace", () => {
     // first-render closure would no-op loadHermesSessions (bridge not yet
     // running) and the sidebar would never refresh.
     await waitFor(() =>
-      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
-        callsBefore,
-      ),
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(callsBefore),
     );
   });
 
   it("holds session broadcasts until the first fetch lands", async () => {
     const sessionDetails: AgentSessionsChangedDetail[] = [];
     const onSessionsChanged = (event: Event) =>
-      sessionDetails.push(
-        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
-      );
+      sessionDetails.push((event as CustomEvent<AgentSessionsChangedDetail>).detail);
     window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
 
     // First click after app launch: the workspace mounts seeded with only the
     // clicked session while listHermesSessions is still in flight. The sidebar
     // replaces its list wholesale with each broadcast, so a pre-fetch
     // broadcast would collapse it to one row and flicker it back.
-    let resolveSessions: (sessions: (typeof existingSession)[]) => void = () =>
-      undefined;
+    let resolveSessions: (sessions: (typeof existingSession)[]) => void = () => undefined;
     mocks.listHermesSessions.mockImplementation(
       () =>
         new Promise<(typeof existingSession)[]>((resolve) => {
@@ -6357,10 +6145,7 @@ describe("AgentWorkspace", () => {
       ]);
       expect(sessionDetails[0].selectedSessionId).toBe("session-2");
     } finally {
-      window.removeEventListener(
-        AGENT_SESSIONS_CHANGED_EVENT,
-        onSessionsChanged,
-      );
+      window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     }
   });
 
@@ -6368,9 +6153,7 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     const sessionDetails: AgentSessionsChangedDetail[] = [];
     const onSessionsChanged = (event: Event) =>
-      sessionDetails.push(
-        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
-      );
+      sessionDetails.push((event as CustomEvent<AgentSessionsChangedDetail>).detail);
     window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
 
     try {
@@ -6379,31 +6162,20 @@ describe("AgentWorkspace", () => {
 
       await user.type(screen.getByRole("textbox"), "do something long");
       await user.click(screen.getByRole("button", { name: "Send message" }));
-      await waitFor(() =>
-        expect(sessionDetails.at(-1)?.workingSessionIds).toContain("session-1"),
-      );
+      await waitFor(() => expect(sessionDetails.at(-1)?.workingSessionIds).toContain("session-1"));
 
       mocks.listHermesSessions.mockResolvedValue([]);
       await user.click(screen.getByRole("button", { name: "Session actions" }));
-      await user.click(
-        screen.getByRole("menuitem", { name: "Delete session" }),
-      );
+      await user.click(screen.getByRole("menuitem", { name: "Delete session" }));
 
-      await waitFor(() =>
-        expect(mocks.deleteHermesSession).toHaveBeenCalledWith("session-1"),
-      );
+      await waitFor(() => expect(mocks.deleteHermesSession).toHaveBeenCalledWith("session-1"));
       await waitFor(() => {
         const last = sessionDetails.at(-1);
         expect(last?.workingSessionIds).toEqual([]);
-        expect(last?.sessions.map((session) => session.id)).not.toContain(
-          "session-1",
-        );
+        expect(last?.sessions.map((session) => session.id)).not.toContain("session-1");
       });
     } finally {
-      window.removeEventListener(
-        AGENT_SESSIONS_CHANGED_EVENT,
-        onSessionsChanged,
-      );
+      window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     }
   });
 
@@ -6419,9 +6191,7 @@ describe("AgentWorkspace", () => {
       render(<AgentWorkspace />);
       const user = userEvent.setup();
 
-      await user.click(
-        await screen.findByRole("button", { name: /Catch up on recent files/ }),
-      );
+      await user.click(await screen.findByRole("button", { name: /Catch up on recent files/ }));
 
       await waitFor(() =>
         expect(mocks.gatewayRequest).toHaveBeenCalledWith(
@@ -6467,9 +6237,7 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Start session" }));
 
     await waitFor(() => expect(releaseCreate).toBeDefined());
-    await waitFor(() =>
-      expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument());
     expect(screen.getAllByText("first task").length).toBeGreaterThan(0);
     expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
       expect.stringMatching(/^pending:new-session:/),
@@ -6505,16 +6273,12 @@ describe("AgentWorkspace", () => {
           };
         }),
     );
-    mocks.listHermesSessionMessages.mockImplementation(
-      async (sessionId: string) => {
-        if (sessionId === "session-2" && !bridgeSessionPersisted) {
-          throw new Error(
-            'Hermes API returned 404 Not Found: {"detail":"Session not found"}',
-          );
-        }
-        return [];
-      },
-    );
+    mocks.listHermesSessionMessages.mockImplementation(async (sessionId: string) => {
+      if (sessionId === "session-2" && !bridgeSessionPersisted) {
+        throw new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}');
+      }
+      return [];
+    });
 
     const user = userEvent.setup();
     render(<AgentWorkspace />);
@@ -6536,9 +6300,7 @@ describe("AgentWorkspace", () => {
         await Promise.resolve();
       });
 
-      expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
-        "session-2",
-      );
+      expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith("session-2");
       expect(screen.queryByText(/Hermes API returned 404/)).toBeNull();
 
       act(() => releaseEnsure?.());
@@ -6552,9 +6314,7 @@ describe("AgentWorkspace", () => {
         text: "first task",
       }),
     );
-    await waitFor(() =>
-      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-2"),
-    );
+    await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-2"));
     expect(screen.queryByText(/Hermes API returned 404/)).toBeNull();
   });
 
@@ -6565,9 +6325,7 @@ describe("AgentWorkspace", () => {
     );
     const sessionDetails: AgentSessionsChangedDetail[] = [];
     const onSessionsChanged = (event: Event) =>
-      sessionDetails.push(
-        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
-      );
+      sessionDetails.push((event as CustomEvent<AgentSessionsChangedDetail>).detail);
     window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
 
     let rejectCreate: (() => void) | undefined;
@@ -6588,9 +6346,7 @@ describe("AgentWorkspace", () => {
       await user.click(screen.getByRole("button", { name: "Start session" }));
 
       await waitFor(() => expect(rejectCreate).toBeDefined());
-      await waitFor(() =>
-        expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument());
       expect(screen.getAllByText("first task").length).toBeGreaterThan(0);
 
       act(() => rejectCreate?.());
@@ -6598,9 +6354,7 @@ describe("AgentWorkspace", () => {
       expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
       expect(screen.getByText(/create failed/)).toBeInTheDocument();
       await waitFor(() =>
-        expect(screen.getByRole("textbox").textContent ?? "").toContain(
-          "first task",
-        ),
+        expect(screen.getByRole("textbox").textContent ?? "").toContain("first task"),
       );
       expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
         expect.stringMatching(/^pending:new-session:/),
@@ -6609,16 +6363,11 @@ describe("AgentWorkspace", () => {
         sessionDetails.some(
           (detail) =>
             detail.selectedSessionId?.startsWith("pending:new-session:") ||
-            detail.sessions.some((session) =>
-              session.id.startsWith("pending:new-session:"),
-            ),
+            detail.sessions.some((session) => session.id.startsWith("pending:new-session:")),
         ),
       ).toBe(false);
     } finally {
-      window.removeEventListener(
-        AGENT_SESSIONS_CHANGED_EVENT,
-        onSessionsChanged,
-      );
+      window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     }
   });
 
@@ -6632,18 +6381,11 @@ describe("AgentWorkspace", () => {
       render(<AgentWorkspace />);
       const user = userEvent.setup();
 
-      await user.click(
-        await screen.findByRole("button", { name: /Research a topic/ }),
-      );
+      await user.click(await screen.findByRole("button", { name: /Research a topic/ }));
 
       const composer = screen.getByRole("textbox");
-      await waitFor(() =>
-        expect(composer.textContent ?? "").toContain("Research <topic>"),
-      );
-      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
-        "prompt.submit",
-        expect.anything(),
-      );
+      await waitFor(() => expect(composer.textContent ?? "").toContain("Research <topic>"));
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
     } finally {
       randomSpy.mockRestore();
     }
@@ -6700,24 +6442,16 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    await user.click(
-      within(dialog).getByRole("button", { name: "All models" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
 
     const panel = await screen.findByRole("group", { name: "All text models" });
     expect(panel.firstElementChild).toHaveClass("agent-composer-model-surface");
-    expect(
-      within(panel).getByRole("textbox", { name: "Search models" }),
-    ).toBeInTheDocument();
-    expect(
-      within(panel).getByRole("option", { name: /GLM 5.1/ }),
-    ).toBeInTheDocument();
+    expect(within(panel).getByRole("textbox", { name: "Search models" })).toBeInTheDocument();
+    expect(within(panel).getByRole("option", { name: /GLM 5.1/ })).toBeInTheDocument();
     expect(
       within(panel).queryByRole("option", { name: /Tool-less model/ }),
     ).not.toBeInTheDocument();
@@ -6755,29 +6489,17 @@ describe("AgentWorkspace", () => {
     });
     const rearmed = await screen.findByRole("button", { name: "Sandboxed" });
     await user.click(rearmed);
-    await user.click(
-      screen.getByRole("menuitemradio", { name: /^Unrestricted/ }),
-    );
-    expect(
-      screen.queryByRole("menu", { name: "What can June change?" }),
-    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("menuitemradio", { name: /^Unrestricted/ }));
+    expect(screen.queryByRole("menu", { name: "What can June change?" })).not.toBeInTheDocument();
     // Not armed until the dialog confirms.
-    expect(
-      screen.getByRole("button", { name: "Sandboxed" }),
-    ).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Turn on Unrestricted" }),
-    );
-    expect(
-      screen.getByRole("button", { name: "Unrestricted" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sandboxed" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Turn on Unrestricted" }));
+    expect(screen.getByRole("button", { name: "Unrestricted" })).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox"), "risky task");
     await user.click(screen.getByRole("button", { name: "Start session" }));
 
-    await waitFor(() =>
-      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true),
-    );
+    await waitFor(() => expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true));
 
     // The confirm is once per app session: with the acknowledgment stored,
     // the next arm goes straight through without the dialog.
@@ -6785,15 +6507,9 @@ describe("AgentWorkspace", () => {
       window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
     });
     await user.click(await screen.findByRole("button", { name: "Sandboxed" }));
-    await user.click(
-      screen.getByRole("menuitemradio", { name: /^Unrestricted/ }),
-    );
-    expect(
-      screen.queryByRole("button", { name: "Turn on Unrestricted" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Unrestricted" }),
-    ).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitemradio", { name: /^Unrestricted/ }));
+    expect(screen.queryByRole("button", { name: "Turn on Unrestricted" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unrestricted" })).toBeInTheDocument();
   });
 
   it("moves focus into the sandbox menu and restores it on close", async () => {
@@ -6815,9 +6531,7 @@ describe("AgentWorkspace", () => {
     await user.keyboard("{Escape}");
 
     await waitFor(() =>
-      expect(
-        screen.queryByRole("menu", { name: "What can June change?" }),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByRole("menu", { name: "What can June change?" })).not.toBeInTheDocument(),
     );
     expect(trigger).toHaveFocus();
   });
@@ -6831,9 +6545,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Unrestricted")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText(/Unrestricted - This session runs without/),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Unrestricted - This session runs without/)).toBeInTheDocument();
   });
 
   it("keeps the badge off a sandboxed session even while the runtime is unsandboxed", async () => {
@@ -6874,9 +6586,7 @@ describe("AgentWorkspace", () => {
 
     // The send brings up the sandboxed process for this session — the
     // unrestricted one (and its in-flight work) is left alone.
-    await waitFor(() =>
-      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, false),
-    );
+    await waitFor(() => expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, false));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith(
         "prompt.submit",
@@ -6904,9 +6614,7 @@ describe("AgentWorkspace", () => {
     await user.type(screen.getByRole("textbox"), "continue");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() =>
-      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true),
-    );
+    await waitFor(() => expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true));
   });
 
   it("serves both modes concurrently — neither runtime is torn down", async () => {
@@ -7029,14 +6737,10 @@ describe("AgentWorkspace", () => {
     await user.type(screen.getByRole("textbox"), "hello");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    expect(
-      await screen.findByText("Hermes gateway is not connected."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Hermes gateway is not connected.")).toBeInTheDocument();
     // Connection-shaped failures are the retryable ones — reconnecting can fix
     // them, unlike one-off action failures which only offer dismiss.
-    expect(
-      screen.getByRole("button", { name: "Try again" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
@@ -7104,41 +6808,28 @@ describe("AgentWorkspace", () => {
   });
 
   it("shows every error surface via the __agentErrors() dev handle", async () => {
-    const agentErrors = (
-      window as unknown as { __agentErrors: (show?: boolean) => string }
-    ).__agentErrors;
+    const agentErrors = (window as unknown as { __agentErrors: (show?: boolean) => string })
+      .__agentErrors;
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
 
     act(() => void agentErrors());
 
     try {
-      expect(
-        await screen.findByText("Agent error gallery"),
-      ).toBeInTheDocument();
+      expect(await screen.findByText("Agent error gallery")).toBeInTheDocument();
       // Turn-level samples from the catalog (section label + the card itself)…
       expect(screen.getAllByText("Out of credits").length).toBeGreaterThan(0);
-      expect(
-        screen.getByRole("button", { name: "Upgrade" }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Upgrade" })).toBeInTheDocument();
       // …plus the forced chrome samples the turn gallery can't represent.
-      expect(
-        screen.getByText("Could not connect to Hermes gateway."),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Try again" }),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(/June is still working on the previous message/),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Could not connect to Hermes gateway.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+      expect(screen.getByText(/June is still working on the previous message/)).toBeInTheDocument();
     } finally {
       // Always reset the module-level desired state — a failure here must not
       // leave the gallery on and cascade into later workspace mounts.
       act(() => void agentErrors(false));
     }
-    await waitFor(() =>
-      expect(screen.queryByText("Agent error gallery")).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByText("Agent error gallery")).toBeNull());
   });
 
   it("does not let a stale message fetch erase a newer follow-up", async () => {
@@ -7205,9 +6896,7 @@ describe("AgentWorkspace", () => {
 
     await user.type(screen.getByRole("textbox"), "follow up while racing");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-    await waitFor(() =>
-      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(mocks.ensureHermesBridgeSession).toHaveBeenCalled());
 
     vi.useFakeTimers();
     try {
@@ -7308,15 +6997,11 @@ describe("AgentWorkspace", () => {
 
       render(<AgentWorkspace initialSession={existingSession} />);
 
-      await user.click(
-        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-      );
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
       const dialog = await screen.findByRole("dialog", {
         name: "Choose text model",
       });
-      await user.click(
-        within(dialog).getByRole("option", { name: /Kimi K2\.6/ }),
-      );
+      await user.click(within(dialog).getByRole("option", { name: /Kimi K2\.6/ }));
 
       // The model is overridden for this chat only. The bridge session ensure
       // path is title-only, so model changes are not persisted through REST.
@@ -7333,9 +7018,7 @@ describe("AgentWorkspace", () => {
           command: "/model kimi-k2-6",
         }),
       );
-      expect(
-        await screen.findByText("Switched this session to Kimi K2.6."),
-      ).toBeInTheDocument();
+      expect(await screen.findByText("Switched this session to Kimi K2.6.")).toBeInTheDocument();
     });
 
     it("dispatches /model from the composer slash command", async () => {
@@ -7365,15 +7048,11 @@ describe("AgentWorkspace", () => {
         sessionId: "session-1",
         model: "kimi-k2-6",
       });
-      expect(
-        mocks.gatewayRequest.mock.calls.some(
-          ([method]) => method === "prompt.submit",
-        ),
-      ).toBe(false);
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        false,
+      );
       expect(composer.textContent).toBe("");
-      expect(
-        await screen.findByText("Switched this session to Kimi K2.6."),
-      ).toBeInTheDocument();
+      expect(await screen.findByText("Switched this session to Kimi K2.6.")).toBeInTheDocument();
     });
 
     it("changes only the default when no session is active and does not dispatch", async () => {
@@ -7395,32 +7074,20 @@ describe("AgentWorkspace", () => {
       render(<AgentWorkspace />);
 
       // Hero (no open session): the composer still carries the model trigger.
-      await user.click(
-        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-      );
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
       const dialog = await screen.findByRole("dialog", {
         name: "Choose text model",
       });
-      await user.click(
-        within(dialog).getByRole("option", { name: /Kimi K2\.6/ }),
-      );
+      await user.click(within(dialog).getByRole("option", { name: /Kimi K2\.6/ }));
 
       await waitFor(() =>
-        expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-          "generation",
-          "kimi-k2-6",
-        ),
+        expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "kimi-k2-6"),
       );
       expect(
-        await screen.findByText(
-          "Default model updated. It applies to new sessions.",
-        ),
+        await screen.findByText("Default model updated. It applies to new sessions."),
       ).toBeInTheDocument();
       // No live session, so nothing is dispatched to the gateway.
-      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
-        "command.dispatch",
-        expect.anything(),
-      );
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("command.dispatch", expect.anything());
     });
 
     it("shows a failure notice and does not claim success when the dispatch is rejected", async () => {
@@ -7444,15 +7111,11 @@ describe("AgentWorkspace", () => {
 
       render(<AgentWorkspace initialSession={existingSession} />);
 
-      await user.click(
-        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-      );
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
       const dialog = await screen.findByRole("dialog", {
         name: "Choose text model",
       });
-      await user.click(
-        within(dialog).getByRole("option", { name: /Kimi K2\.6/ }),
-      );
+      await user.click(within(dialog).getByRole("option", { name: /Kimi K2\.6/ }));
 
       expect(
         await screen.findByText(
@@ -7460,9 +7123,7 @@ describe("AgentWorkspace", () => {
         ),
       ).toBeInTheDocument();
       // Never the success copy when Hermes rejected the switch.
-      expect(
-        screen.queryByText("Switched this session to Kimi K2.6."),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Switched this session to Kimi K2.6.")).not.toBeInTheDocument();
     });
 
     it("keeps tool-incapable models out of the picker for the agent", async () => {
@@ -7487,23 +7148,17 @@ describe("AgentWorkspace", () => {
 
       render(<AgentWorkspace initialSession={existingSession} />);
 
-      await user.click(
-        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
-      );
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
       const dialog = await screen.findByRole("dialog", {
         name: "Choose text model",
       });
       // The tool-less model is filtered out everywhere, including the full
       // catalog behind All models — the agent can never pick it.
-      await user.click(
-        within(dialog).getByRole("button", { name: "All models" }),
-      );
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
       const panel = await screen.findByRole("group", {
         name: "All text models",
       });
-      expect(
-        within(panel).queryByRole("option", { name: /Enclave Mini/ }),
-      ).not.toBeInTheDocument();
+      expect(within(panel).queryByRole("option", { name: /Enclave Mini/ })).not.toBeInTheDocument();
     });
   });
 });

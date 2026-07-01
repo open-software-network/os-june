@@ -104,9 +104,7 @@ const ALL_ACTIONS: readonly SkillLifecycleAction[] = [
  * optional is detected the same way. A `hub` skill with no special hint is
  * `community`; an `external` skill is `external`; an explicit local/custom hint
  * (or a writable skill with no hub provenance) is `local`. */
-export function skillLifecycleClass(
-  skill: HermesSkillInfo,
-): SkillLifecycleClass {
+export function skillLifecycleClass(skill: HermesSkillInfo): SkillLifecycleClass {
   if (skill.readOnly || skill.source === "external") return "external";
 
   const provenance = readProvenance(skill);
@@ -153,11 +151,8 @@ function readProvenance(skill: HermesSkillInfo): SkillProvenance {
   ])?.toLowerCase();
   if (!hint) {
     // A boolean `official`/`builtin` flag, or a `custom`/`local` flag.
-    if (pickBool(record, ["official", "is_official"]) === true)
-      return "official";
-    if (
-      pickBool(record, ["custom", "is_custom", "local", "is_local"]) === true
-    ) {
+    if (pickBool(record, ["official", "is_official"]) === true) return "official";
+    if (pickBool(record, ["custom", "is_custom", "local", "is_local"]) === true) {
       return "local";
     }
     return undefined;
@@ -219,12 +214,7 @@ export function hasUpdateAvailable(skill: HermesSkillInfo): boolean {
   const record = asRecord(skill.raw);
   if (!record) return false;
   return (
-    pickBool(record, [
-      "update_available",
-      "updateAvailable",
-      "has_update",
-      "outdated",
-    ]) === true
+    pickBool(record, ["update_available", "updateAvailable", "has_update", "outdated"]) === true
   );
 }
 
@@ -262,9 +252,7 @@ const DIVERGENCE = Object.freeze({
  * divergence state, and every action's availability with an honest reason. This
  * is the single source of truth the row/detail UI and the controller both read,
  * so a disabled action and a refused action can never disagree. */
-export function skillLifecyclePolicy(
-  skill: HermesSkillInfo,
-): SkillLifecyclePolicy {
+export function skillLifecyclePolicy(skill: HermesSkillInfo): SkillLifecyclePolicy {
   const lifecycleClass = skillLifecycleClass(skill);
   const hubIdentifier =
     lifecycleClass === "community" || lifecycleClass === "official-optional"
@@ -273,8 +261,7 @@ export function skillLifecyclePolicy(
   const updateAvailable = hasUpdateAvailable(skill);
   const locallyModified = isLocallyModified(skill);
 
-  const isHubManaged =
-    lifecycleClass === "community" || lifecycleClass === "official-optional";
+  const isHubManaged = lifecycleClass === "community" || lifecycleClass === "official-optional";
 
   const actions = {} as Record<SkillLifecycleAction, SkillActionAvailability>;
   for (const action of ALL_ACTIONS) {
@@ -349,10 +336,7 @@ function availabilityFor(
       }
       return {
         ...base,
-        reason:
-          lifecycleClass === "external"
-            ? REASON.externalReadOnly
-            : REASON.noLocalDelete,
+        reason: lifecycleClass === "external" ? REASON.externalReadOnly : REASON.noLocalDelete,
       };
     }
     case "reset": {
@@ -375,12 +359,8 @@ function availabilityFor(
 /** The lifecycle actions that are AVAILABLE for a policy, in display order. Lets
  * a row render only valid actions inline while the detail surface can still list
  * the disabled ones with their reasons. */
-export function availableActions(
-  policy: SkillLifecyclePolicy,
-): SkillActionAvailability[] {
-  return ALL_ACTIONS.map((action) => policy.actions[action]).filter(
-    (a) => a.available,
-  );
+export function availableActions(policy: SkillLifecyclePolicy): SkillActionAvailability[] {
+  return ALL_ACTIONS.map((action) => policy.actions[action]).filter((a) => a.available);
 }
 
 /** A short, sentence-case label for a lifecycle action, for buttons. */
@@ -424,20 +404,17 @@ export function lifecycleClassMeta(lifecycleClass: SkillLifecycleClass): {
     case "bundled":
       return {
         label: "Bundled",
-        blurb:
-          "Ships with Hermes. Reset or restore, but cannot be uninstalled.",
+        blurb: "Ships with Hermes. Reset or restore, but cannot be uninstalled.",
       };
     case "official-optional":
       return {
         label: "Official",
-        blurb:
-          "Installed from the official source. Update, audit, or uninstall.",
+        blurb: "Installed from the official source. Update, audit, or uninstall.",
       };
     case "community":
       return {
         label: "Community",
-        blurb:
-          "Installed from the Skills Hub. Update, audit, or uninstall it any time.",
+        blurb: "Installed from the Skills Hub. Update, audit, or uninstall it any time.",
       };
     case "local":
       return {
@@ -447,8 +424,7 @@ export function lifecycleClassMeta(lifecycleClass: SkillLifecycleClass): {
     case "external":
       return {
         label: "External",
-        blurb:
-          "Loaded from an external directory. Read-only in June; manage it on disk.",
+        blurb: "Loaded from an external directory. Read-only in June; manage it on disk.",
       };
     case "unknown":
       return {
@@ -468,10 +444,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function pickString(
-  record: Record<string, unknown>,
-  keys: string[],
-): string | undefined {
+function pickString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0) {
@@ -481,10 +454,7 @@ function pickString(
   return undefined;
 }
 
-function pickBool(
-  record: Record<string, unknown>,
-  keys: string[],
-): boolean | undefined {
+function pickBool(record: Record<string, unknown>, keys: string[]): boolean | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "boolean") return value;

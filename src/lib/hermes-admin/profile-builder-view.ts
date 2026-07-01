@@ -51,34 +51,33 @@ export const PROFILE_BUILDER_STEPS = [
 export type ProfileBuilderStep = (typeof PROFILE_BUILDER_STEPS)[number];
 
 /** Per-step title + one-line helper, sentence case, no dashes. */
-export const STEP_META: Readonly<
-  Record<ProfileBuilderStep, { title: string; hint: string }>
-> = Object.freeze({
-  identity: {
-    title: "Identity",
-    hint: "Name the profile and decide if it specializes June or is a new agent.",
-  },
-  model: {
-    title: "Model",
-    hint: "Pick the generation model. It must support tool calling.",
-  },
-  toolsets: {
-    title: "Toolsets",
-    hint: "Choose the sandbox policy for this profile.",
-  },
-  skills: {
-    title: "Skills",
-    hint: "Keep bundled skills and add optional skills from the hub.",
-  },
-  mcps: {
-    title: "MCP servers",
-    hint: "Attach MCP servers this profile can use.",
-  },
-  review: {
-    title: "Review",
-    hint: "Confirm what will be created, then create the profile.",
-  },
-});
+export const STEP_META: Readonly<Record<ProfileBuilderStep, { title: string; hint: string }>> =
+  Object.freeze({
+    identity: {
+      title: "Identity",
+      hint: "Name the profile and decide if it specializes June or is a new agent.",
+    },
+    model: {
+      title: "Model",
+      hint: "Pick the generation model. It must support tool calling.",
+    },
+    toolsets: {
+      title: "Toolsets",
+      hint: "Choose the sandbox policy for this profile.",
+    },
+    skills: {
+      title: "Skills",
+      hint: "Keep bundled skills and add optional skills from the hub.",
+    },
+    mcps: {
+      title: "MCP servers",
+      hint: "Attach MCP servers this profile can use.",
+    },
+    review: {
+      title: "Review",
+      hint: "Confirm what will be created, then create the profile.",
+    },
+  });
 
 /** Whether the profile keeps June's default identity or becomes a distinct
  * specialized role. The default preserves June's identity even when skills/MCPs
@@ -152,11 +151,7 @@ export function slugifyProfileName(name: string): string {
 }
 
 /** Reserved profile names June must never let a user create or collide with. */
-const RESERVED_PROFILE_SLUGS: ReadonlySet<string> = new Set([
-  "default",
-  "active",
-  "sessions",
-]);
+const RESERVED_PROFILE_SLUGS: ReadonlySet<string> = new Set(["default", "active", "sessions"]);
 
 /** Validates the profile name/slug against emptiness, the slug charset,
  * reserved names, and collision with an existing profile. Returns an error
@@ -175,9 +170,7 @@ export function validateProfileName(
   if (RESERVED_PROFILE_SLUGS.has(slug)) {
     return `"${slug}" is reserved. Choose another name.`;
   }
-  const clash = existing.some(
-    (profile) => slugifyProfileName(profile.name) === slug,
-  );
+  const clash = existing.some((profile) => slugifyProfileName(profile.name) === slug);
   if (clash) return `A profile named "${slug}" already exists.`;
   return undefined;
 }
@@ -193,10 +186,7 @@ export function validateProfileName(
 export function modelSupportsToolCalling(model: ProfileBuilderModel): boolean {
   return model.capabilities.some((capability) => {
     const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
-    return (
-      normalized.includes("functioncalling") ||
-      normalized.includes("toolcalling")
-    );
+    return normalized.includes("functioncalling") || normalized.includes("toolcalling");
   });
 }
 
@@ -208,8 +198,7 @@ export function selectedModelToolSupport(
 ): { model: ProfileBuilderModel; supportsTools: boolean } | undefined {
   if (!form.model) return undefined;
   const model = models.find(
-    (candidate) =>
-      candidate.id === form.model && candidate.provider === form.provider,
+    (candidate) => candidate.id === form.model && candidate.provider === form.provider,
   );
   if (!model) return undefined;
   return { model, supportsTools: modelSupportsToolCalling(model) };
@@ -321,9 +310,7 @@ export function canCreateProfile(
   form: ProfileBuilderForm,
   context: ProfileBuilderContext,
 ): boolean {
-  return (
-    canAdvance("identity", form, context) && canAdvance("model", form, context)
-  );
+  return canAdvance("identity", form, context) && canAdvance("model", form, context);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,9 +323,7 @@ export function stepIndex(step: ProfileBuilderStep): number {
 
 export function nextStep(step: ProfileBuilderStep): ProfileBuilderStep {
   const index = stepIndex(step);
-  return PROFILE_BUILDER_STEPS[
-    Math.min(index + 1, PROFILE_BUILDER_STEPS.length - 1)
-  ];
+  return PROFILE_BUILDER_STEPS[Math.min(index + 1, PROFILE_BUILDER_STEPS.length - 1)];
 }
 
 export function previousStep(step: ProfileBuilderStep): ProfileBuilderStep {
@@ -376,8 +361,7 @@ export function buildCreatePlan(form: ProfileBuilderForm): PlannedChange[] {
 
   changes.push({
     target: `${root}/`,
-    detail:
-      "New isolated profile directory (its own config, env, memory, sessions, and state).",
+    detail: "New isolated profile directory (its own config, env, memory, sessions, and state).",
     risk: "info",
   });
 
@@ -452,9 +436,7 @@ export function buildCreatePlan(form: ProfileBuilderForm): PlannedChange[] {
  * profile name (the create endpoint scopes everything by this id). The SOUL is
  * NOT in this body — it is written by a follow-up `setSoul` call so an empty
  * SOUL never overwrites the inherited June identity. */
-export function buildCreatePayload(
-  form: ProfileBuilderForm,
-): HermesCreateProfilePayload {
+export function buildCreatePayload(form: ProfileBuilderForm): HermesCreateProfilePayload {
   const slug = slugifyProfileName(form.name);
   const payload: HermesCreateProfilePayload = {
     name: slug,
@@ -486,9 +468,7 @@ export function buildCreatePayload(
 
 /** The bundled skills a profile can keep — only `bundled` source skills are
  * offered, since hub/external skills are handled separately. */
-export function bundledSkillOptions(
-  skills: readonly HermesSkillInfo[],
-): HermesSkillInfo[] {
+export function bundledSkillOptions(skills: readonly HermesSkillInfo[]): HermesSkillInfo[] {
   return skills.filter((skill) => skill.source === "bundled");
 }
 

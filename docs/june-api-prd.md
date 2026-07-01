@@ -47,7 +47,8 @@ call is billed against the signed-in user's OS Accounts wallet at the
 configured **credit price** for the chosen **upstream model**, and the
 existing "Top up credits" affordance in the Account settings becomes the only
 way to fund usage. Users see "Insufficient credits → Top up" instead of a
-generic provider error when they run dry.
+generic provider error when they run dry. Usage credit prices are retail
+prices; June's current policy is a 1.2x multiplier over upstream cost.
 
 ## User Stories
 
@@ -133,7 +134,8 @@ generic provider error when they run dry.
     swap or add a provider without changing the orchestration code.
 23. As a **June API maintainer**, I want a typed pricing table loaded from
     config, so that adding or repricing an upstream model is a config diff
-    not a code change.
+    not a code change. Usage prices include the chosen 1.2x retail
+    multiplier over upstream cost.
 24. As a **June API maintainer**, I want unknown models (no credit price)
     to be rejected at the API boundary with a clear error code, so that we
     never silently charge $0 or absorb a margin we didn't choose.
@@ -303,9 +305,10 @@ defaults + `config.toml` + env, no `std::env::var` calls outside):
 - `[upstreams.openai]` — `api_key` (env-only), `base_url`.
 - `[upstreams.venice]` — `api_key` (env-only), `base_url`.
 - `[pricing]` — table keyed by `model_id`, each entry `{ unit: "seconds" |
-  "tokens", credits_per_unit: u64 }`. Loaded from `config.toml` baked
-  into the image; `JUNE__PRICING__…` env overrides supported via
-  figment for per-env tweaking.
+  "tokens", credits_per_unit: u64 }`. Values are retail credit prices,
+  currently 1.2x upstream cost for usage-priced models. Loaded from
+  `config.toml` baked into the image; `JUNE__PRICING__…` env overrides
+  supported via figment for per-env tweaking.
 
 June (Tauri client):
 

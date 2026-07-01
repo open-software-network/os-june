@@ -171,12 +171,21 @@ export type DictationHelperEvent = {
   };
 };
 
-export type ProviderModelMode = "transcription" | "generation";
+export type ProviderModelMode = "transcription" | "generation" | "image";
 
 export type ProviderModelSettingsDto = {
   transcriptionProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  imageModel: string;
+  veniceApiKeyConfigured: boolean;
+};
+
+export type GeneratedImageDto = {
+  imageBase64: string;
+  mimeType: string;
+  model: string;
+  provider: string;
 };
 
 export type ProviderModelSettingsResponse = {
@@ -331,12 +340,7 @@ export type AgentTaskStatus =
 
 export type AgentMessageRole = "system" | "assistant" | "user";
 
-export type AgentToolEventStatus =
-  | "proposed"
-  | "running"
-  | "completed"
-  | "failed"
-  | "blocked";
+export type AgentToolEventStatus = "proposed" | "running" | "completed" | "failed" | "blocked";
 
 export type AgentMessageDto = {
   id: string;
@@ -627,12 +631,7 @@ export type SourceReadinessDto = {
   source: RecordingSource;
   required: boolean;
   ready: boolean;
-  permissionState:
-    | "unknown"
-    | "granted"
-    | "denied"
-    | "restricted"
-    | "unsupported";
+  permissionState: "unknown" | "granted" | "denied" | "restricted" | "unsupported";
   deviceAvailable: boolean;
   captureAvailable: boolean;
   recoveryAction?:
@@ -685,11 +684,7 @@ export async function deleteFolder(folderId: string, deleteNotes: boolean) {
   });
 }
 
-export async function renameFolder(
-  folderId: string,
-  name: string,
-  description?: string,
-) {
+export async function renameFolder(folderId: string, name: string, description?: string) {
   return invoke<FolderDto>("rename_folder", {
     request: { folderId, name, description },
   });
@@ -715,19 +710,13 @@ export async function listSessionFolders() {
   return invoke<SessionFolderDto[]>("list_session_folders");
 }
 
-export async function assignSessionToFolder(
-  sessionId: string,
-  folderId: string,
-) {
+export async function assignSessionToFolder(sessionId: string, folderId: string) {
   return invoke<void>("assign_session_to_folder", {
     request: { sessionId, folderId },
   });
 }
 
-export async function removeSessionFromFolder(
-  sessionId: string,
-  folderId: string,
-) {
+export async function removeSessionFromFolder(sessionId: string, folderId: string) {
   return invoke<void>("remove_session_from_folder", {
     request: { sessionId, folderId },
   });
@@ -743,10 +732,7 @@ export async function createDictionaryEntry(input: { phrase: string }) {
   });
 }
 
-export async function updateDictionaryEntry(input: {
-  entryId: string;
-  phrase: string;
-}) {
+export async function updateDictionaryEntry(input: { entryId: string; phrase: string }) {
   return invoke<DictionaryEntryDto>("update_dictionary_entry", {
     request: input,
   });
@@ -803,31 +789,22 @@ export async function sendAgentMessage(input: {
   return invoke<AgentTaskDto>("send_agent_message", { request: input });
 }
 
-export async function saveAgentAssistantMessage(input: {
-  taskId: string;
-  content: string;
-}) {
+export async function saveAgentAssistantMessage(input: { taskId: string; content: string }) {
   return invoke<AgentTaskDto>("save_agent_assistant_message", {
     request: input,
   });
 }
 
-export async function saveAgentHermesSession(input: {
-  taskId: string;
-  hermesSessionId: string;
-}) {
+export async function saveAgentHermesSession(input: { taskId: string; hermesSessionId: string }) {
   return invoke<AgentTaskDto>("save_agent_hermes_session", {
     request: input,
   });
 }
 
 export async function suggestAgentSessionTitle(prompt: string) {
-  return invoke<SuggestAgentSessionTitleResponse>(
-    "suggest_agent_session_title",
-    {
-      request: { prompt },
-    },
-  );
+  return invoke<SuggestAgentSessionTitleResponse>("suggest_agent_session_title", {
+    request: { prompt },
+  });
 }
 
 export type SubmitIssueReportRequest = {
@@ -859,10 +836,7 @@ export type ExplainAgentApprovalResponse = {
 
 /** One-shot generation call that explains a pending approval request in
  * plain language — the agent runtime stays parked on the approval. */
-export async function explainAgentApproval(input: {
-  description: string;
-  command?: string;
-}) {
+export async function explainAgentApproval(input: { description: string; command?: string }) {
   return invoke<ExplainAgentApprovalResponse>("explain_agent_approval", {
     request: input,
   });
@@ -900,37 +874,26 @@ export async function getHermesBridgeSkill(name: string) {
   });
 }
 
-export async function updateHermesBridgeSkill(input: {
-  name: string;
-  content: string;
-}) {
+export async function updateHermesBridgeSkill(input: { name: string; content: string }) {
   return invoke<HermesSkillDocument>("update_hermes_bridge_skill", {
     request: input,
   });
 }
 
-export async function toggleHermesBridgeSkill(input: {
-  name: string;
-  enabled: boolean;
-}) {
-  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
-    "toggle_hermes_bridge_skill",
-    { request: input },
-  );
+export async function toggleHermesBridgeSkill(input: { name: string; enabled: boolean }) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>("toggle_hermes_bridge_skill", {
+    request: input,
+  });
 }
 
 export async function hermesBridgeToolsets() {
   return invoke<HermesToolsetInfo[]>("hermes_bridge_toolsets");
 }
 
-export async function toggleHermesBridgeToolset(input: {
-  name: string;
-  enabled: boolean;
-}) {
-  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
-    "toggle_hermes_bridge_toolset",
-    { request: input },
-  );
+export async function toggleHermesBridgeToolset(input: { name: string; enabled: boolean }) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>("toggle_hermes_bridge_toolset", {
+    request: input,
+  });
 }
 
 export type AgentCliAccessStatus = {
@@ -952,9 +915,7 @@ export async function setHermesAgentCliAccess(enabled: boolean) {
 }
 
 export async function hermesBridgeMessagingPlatforms() {
-  return invoke<HermesMessagingPlatformsResponse>(
-    "hermes_bridge_messaging_platforms",
-  );
+  return invoke<HermesMessagingPlatformsResponse>("hermes_bridge_messaging_platforms");
 }
 
 export async function hermesBridgeFilesystemSnapshot() {
@@ -988,10 +949,7 @@ export async function importHermesBridgeFile(path: string) {
 // DOM drops in WKWebView carry no filesystem path, so the file's contents go
 // over as the raw invoke payload with the name in a header (URI-encoded:
 // header values must be ASCII).
-export async function importHermesBridgeFileBytes(
-  name: string,
-  bytes: Uint8Array,
-) {
+export async function importHermesBridgeFileBytes(name: string, bytes: Uint8Array) {
   return invoke<ImportedHermesFile>("import_hermes_bridge_file_bytes", bytes, {
     headers: { "x-file-name": encodeURIComponent(name) },
   });
@@ -1013,10 +971,9 @@ export async function hermesBridgeSessions(
 }
 
 export async function hermesBridgeSessionMessages(sessionId: string) {
-  return invoke<HermesSessionMessagesResponse>(
-    "hermes_bridge_session_messages",
-    { request: { sessionId } },
-  );
+  return invoke<HermesSessionMessagesResponse>("hermes_bridge_session_messages", {
+    request: { sessionId },
+  });
 }
 
 export async function deleteHermesBridgeSession(sessionId: string) {
@@ -1076,10 +1033,7 @@ export async function createHermesBridgeCronJob(input: {
   });
 }
 
-export async function updateHermesBridgeCronJob(
-  jobId: string,
-  updates: Record<string, unknown>,
-) {
+export async function updateHermesBridgeCronJob(jobId: string, updates: Record<string, unknown>) {
   return invoke<HermesCronJobRecord>("update_hermes_bridge_cron_job", {
     request: { jobId, updates },
   });
@@ -1105,10 +1059,9 @@ export async function updateHermesBridgeMessagingPlatform(input: {
   enabled?: boolean;
   env?: Record<string, string>;
 }) {
-  return invoke<{ ok: boolean; platform: string }>(
-    "update_hermes_bridge_messaging_platform",
-    { request: input },
-  );
+  return invoke<{ ok: boolean; platform: string }>("update_hermes_bridge_messaging_platform", {
+    request: input,
+  });
 }
 
 /** `fullMode` is an explicit mode choice: passing it restarts a running
@@ -1372,10 +1325,7 @@ export async function hermesDeleteSkillBundle(input: {
 /** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
  * window. `unrestricted` mirrors the session's mode so the debug session runs
  * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */
-export async function openHermesTuiDebug(input: {
-  sessionId: string;
-  unrestricted: boolean;
-}) {
+export async function openHermesTuiDebug(input: { sessionId: string; unrestricted: boolean }) {
   return invoke<void>("open_hermes_tui_debug", { request: input });
 }
 
@@ -1404,20 +1354,13 @@ export async function updateNote(input: {
   return invoke<NoteDto>("update_note", { request: input });
 }
 
-export async function checkRecordingSourceReadiness(
-  sourceMode: RecordingSourceMode,
-) {
-  return invoke<RecordingSourceReadinessDto>(
-    "check_recording_source_readiness",
-    {
-      request: { sourceMode },
-    },
-  );
+export async function checkRecordingSourceReadiness(sourceMode: RecordingSourceMode) {
+  return invoke<RecordingSourceReadinessDto>("check_recording_source_readiness", {
+    request: { sourceMode },
+  });
 }
 
-export async function openPrivacySettings(
-  pane: "microphone" | "accessibility" | "systemAudio",
-) {
+export async function openPrivacySettings(pane: "microphone" | "accessibility" | "systemAudio") {
   return invoke<void>("open_privacy_settings", { request: { pane } });
 }
 
@@ -1469,10 +1412,7 @@ export async function retryProcessing(noteId: string) {
   });
 }
 
-export async function recoverRecording(
-  sessionId: string,
-  action: "validate" | "discard",
-) {
+export async function recoverRecording(sessionId: string, action: "validate" | "discard") {
   return invoke<NoteDto>("recover_recording", {
     request: { sessionId, action },
   });
@@ -1545,8 +1485,14 @@ export async function osAccountsCancelLogin() {
   return invoke<void>("os_accounts_cancel_login");
 }
 
-export async function osAccountsLogout() {
-  return invoke<void>("os_accounts_logout");
+export type AccountsLogoutOptions = {
+  clearBrowserSession?: boolean;
+};
+
+export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
+  return invoke<void>("os_accounts_logout", {
+    request: { clearBrowserSession: options.clearBrowserSession ?? false },
+  });
 }
 
 export async function osAccountsUpgrade() {
@@ -1591,12 +1537,27 @@ export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
   });
 }
 
+export async function setVeniceApiKey(apiKey: string) {
+  return invoke<ProviderModelSettingsDto>("set_venice_api_key", {
+    request: { apiKey },
+  });
+}
+
+export async function clearVeniceApiKey() {
+  return invoke<ProviderModelSettingsDto>("clear_venice_api_key");
+}
+
+// Generates an image from a prompt via the June API. `model` is optional; the
+// backend falls back to the saved default image model when it is omitted.
+export async function generateImage(prompt: string, model?: string) {
+  return invoke<GeneratedImageDto>("generate_image", {
+    request: { prompt, model },
+  });
+}
+
 export async function setDictationShortcut(
   kind: DictationShortcutKind,
-  shortcut: Pick<
-    DictationShortcutSetting,
-    "code" | "modifiers" | "label" | "pressCount"
-  >,
+  shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label" | "pressCount">,
 ) {
   return invoke<DictationSettingsDto>("set_dictation_shortcut", {
     kind,

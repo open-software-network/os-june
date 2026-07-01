@@ -44,9 +44,7 @@ const EXPLAINED_LABELS: readonly McpSecurityLabelCode[] = [
  * client, the shared cache, and the gateway lifecycle, so the apply-timing copy
  * is honest: a config change applies next session.
  */
-export function McpSecuritySection({
-  mode = "sandboxed",
-}: McpSecuritySectionProps) {
+export function McpSecuritySection({ mode = "sandboxed" }: McpSecuritySectionProps) {
   const state = useMcpSecurity(mode);
   return <McpSecurityView state={state} mode={mode} />;
 }
@@ -69,21 +67,14 @@ export function McpSecurityView({
   const disabled = isUnavailable || isLoadingFirst || state.busy;
 
   return (
-    <section
-      className="settings-group mcp-security"
-      aria-labelledby="mcp-security-heading"
-    >
+    <section className="settings-group mcp-security" aria-labelledby="mcp-security-heading">
       <h2 id="mcp-security-heading" className="settings-group-heading">
         MCP security
       </h2>
       <p className="settings-group-description">
-        Control how much new MCP servers can do by default, and learn what each
-        security label on the MCP pages means. Changes apply next session.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Control how much new MCP servers can do by default, and learn what each security label on
+        the MCP pages means. Changes apply next session.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
@@ -96,8 +87,8 @@ export function McpSecurityView({
         <div className="mcp-security-policy-head">
           <h3 className="settings-row-title">Default exposure policy</h3>
           <p className="settings-row-description">
-            How a newly installed MCP server is exposed to your sessions. The
-            most conservative option is recommended.
+            How a newly installed MCP server is exposed to your sessions. The most conservative
+            option is recommended.
           </p>
         </div>
 
@@ -112,11 +103,7 @@ export function McpSecurityView({
               {state.error ?? "Could not load the MCP exposure policy."}
             </p>
             {state.retryable ? (
-              <button
-                type="button"
-                className="mcp-servers-retry"
-                onClick={state.refresh}
-              >
+              <button type="button" className="mcp-servers-retry" onClick={state.refresh}>
                 Try again
               </button>
             ) : null}
@@ -154,8 +141,8 @@ export function McpSecurityView({
         <div className="mcp-security-policy-head">
           <h3 className="settings-row-title">What the labels mean</h3>
           <p className="settings-row-description">
-            Every MCP server shows these labels so where code runs, what secrets
-            it sees, and what the sandbox protects are explicit.
+            Every MCP server shows these labels so where code runs, what secrets it sees, and what
+            the sandbox protects are explicit.
           </p>
         </div>
         <ul className="mcp-security-legend">
@@ -163,10 +150,7 @@ export function McpSecurityView({
             const meta = securityLabel(code);
             return (
               <li key={code} className="mcp-security-legend-item">
-                <span
-                  className="mcp-server-risk mcp-security-legend-badge"
-                  data-tone={meta.tone}
-                >
+                <span className="mcp-server-risk mcp-security-legend-badge" data-tone={meta.tone}>
                   <IconShield size={12} ariaHidden />
                   {meta.label}
                 </span>
@@ -177,9 +161,9 @@ export function McpSecurityView({
         </ul>
         <p className="mcp-security-note">
           <IconShieldCheck size={14} ariaHidden />
-          High-risk servers (file, shell, browser, database, or cloud admin
-          tools) ask for confirmation before they turn on. None of these checks
-          block a server. They make the risk explicit so you decide.
+          High-risk servers (file, shell, browser, database, or cloud admin tools) ask for
+          confirmation before they turn on. None of these checks block a server. They make the risk
+          explicit so you decide.
         </p>
       </div>
     </section>
@@ -217,13 +201,9 @@ function PolicyOption({
     >
       <span className="mcp-security-policy-option-head">
         <span className="mcp-security-policy-option-label">{label}</span>
-        {recommended ? (
-          <span className="mcp-security-policy-recommended">Recommended</span>
-        ) : null}
+        {recommended ? <span className="mcp-security-policy-recommended">Recommended</span> : null}
       </span>
-      <span className="mcp-security-policy-option-description">
-        {description}
-      </span>
+      <span className="mcp-security-policy-option-description">{description}</span>
     </button>
   );
 }

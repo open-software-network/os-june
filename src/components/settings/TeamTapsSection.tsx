@@ -54,13 +54,7 @@ export function TeamTapsSection({
   onConfigureGithubToken,
 }: TeamTapsSectionProps) {
   const state = useSkillTaps(mode);
-  return (
-    <TeamTapsView
-      state={state}
-      mode={mode}
-      onConfigureGithubToken={onConfigureGithubToken}
-    />
-  );
+  return <TeamTapsView state={state} mode={mode} onConfigureGithubToken={onConfigureGithubToken} />;
 }
 
 /**
@@ -106,20 +100,13 @@ export function TeamTapsView({
   }
 
   return (
-    <section
-      className="settings-group team-taps"
-      aria-labelledby="team-taps-heading"
-    >
+    <section className="settings-group team-taps" aria-labelledby="team-taps-heading">
       <h2 id="team-taps-heading" className="settings-group-heading">
         Team skill taps
       </h2>
       <p className="settings-group-description">
         {TAP_EXPLAINER}{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
@@ -128,9 +115,7 @@ export function TeamTapsView({
         onDismiss={state.dismissNotification}
       />
 
-      {state.needsGithubToken ? (
-        <GithubTokenCallout onConfigure={onConfigureGithubToken} />
-      ) : null}
+      {state.needsGithubToken ? <GithubTokenCallout onConfigure={onConfigureGithubToken} /> : null}
 
       <div className="settings-card team-taps-card">
         <form className="team-taps-add" onSubmit={submitAdd}>
@@ -138,11 +123,7 @@ export function TeamTapsView({
             <label className="team-taps-field">
               <span className="team-taps-field-label">Repository</span>
               <span className="team-taps-input-wrap">
-                <IconGithub
-                  size={15}
-                  ariaHidden
-                  className="team-taps-input-icon"
-                />
+                <IconGithub size={15} ariaHidden className="team-taps-input-icon" />
                 <input
                   type="text"
                   value={repo}
@@ -178,11 +159,7 @@ export function TeamTapsView({
                 }}
               />
             </label>
-            <button
-              type="submit"
-              className="team-taps-add-button"
-              disabled={!canSubmit}
-            >
+            <button type="submit" className="team-taps-add-button" disabled={!canSubmit}>
               <IconPlusMedium size={14} ariaHidden />
               Add tap
             </button>
@@ -198,9 +175,8 @@ export function TeamTapsView({
             </p>
           ) : null}
           <p className="team-taps-add-hint">
-            Skills are read from {DEFAULT_TAP_PATH} unless you set a path.
-            Private taps and higher GitHub rate limits use a{" "}
-            {TAP_GITHUB_TOKEN_ENV}.
+            Skills are read from {DEFAULT_TAP_PATH} unless you set a path. Private taps and higher
+            GitHub rate limits use a {TAP_GITHUB_TOKEN_ENV}.
           </p>
         </form>
 
@@ -256,10 +232,7 @@ export function TeamTapsView({
       </div>
 
       {state.search.repo ? (
-        <TapSearchPanel
-          state={state}
-          onConfigureGithubToken={onConfigureGithubToken}
-        />
+        <TapSearchPanel state={state} onConfigureGithubToken={onConfigureGithubToken} />
       ) : null}
     </section>
   );
@@ -318,16 +291,12 @@ function GithubTokenCallout({ onConfigure }: { onConfigure?: () => void }) {
         GitHub access needed
       </span>
       <p className="team-taps-token-body">
-        This tap is private or GitHub rate-limited the request. Add a{" "}
-        {TAP_GITHUB_TOKEN_ENV} to reach private repositories and raise the rate
-        limit. Your token is stored as a secret and never shown again.
+        This tap is private or GitHub rate-limited the request. Add a {TAP_GITHUB_TOKEN_ENV} to
+        reach private repositories and raise the rate limit. Your token is stored as a secret and
+        never shown again.
       </p>
       {onConfigure ? (
-        <button
-          type="button"
-          className="team-taps-token-button"
-          onClick={onConfigure}
-        >
+        <button type="button" className="team-taps-token-button" onClick={onConfigure}>
           Configure {TAP_GITHUB_TOKEN_ENV}
         </button>
       ) : null}
@@ -358,9 +327,7 @@ function TapRow({
           <span className="team-taps-row-repo">{tap.repo}</span>
           <TrustPill trust={trust} />
         </div>
-        <span className="team-taps-row-path">
-          Reads from {tapPathLabel(tap)}
-        </span>
+        <span className="team-taps-row-path">Reads from {tapPathLabel(tap)}</span>
       </div>
       <div className="team-taps-row-actions">
         <button
@@ -429,16 +396,8 @@ function TapSearchPanel({
         </button>
       </div>
 
-      <form
-        className="team-taps-search-form"
-        onSubmit={runSearch}
-        role="search"
-      >
-        <IconMagnifyingGlass
-          size={15}
-          ariaHidden
-          className="team-taps-search-icon"
-        />
+      <form className="team-taps-search-form" onSubmit={runSearch} role="search">
+        <IconMagnifyingGlass size={15} ariaHidden className="team-taps-search-icon" />
         <input
           type="search"
           value={query}
@@ -534,11 +493,7 @@ function TapSkillRow({
               <IconExclamationCircle size={13} ariaHidden />
               {install?.error ?? "Install failed."}
             </span>
-            <button
-              type="button"
-              className="team-taps-skill-retry"
-              onClick={onInstall}
-            >
+            <button type="button" className="team-taps-skill-retry" onClick={onInstall}>
               Try again
             </button>
             <button
@@ -551,11 +506,7 @@ function TapSkillRow({
             </button>
           </span>
         ) : (
-          <button
-            type="button"
-            className="team-taps-skill-install"
-            onClick={onInstall}
-          >
+          <button type="button" className="team-taps-skill-install" onClick={onInstall}>
             <IconArrowInbox size={13} ariaHidden />
             {result.installed ? "Reinstall" : "Install"}
           </button>
@@ -568,11 +519,7 @@ function TapSkillRow({
 /** The community/trusted badge for a tap. */
 function TrustPill({ trust }: { trust: ReturnType<typeof tapTrustMeta> }) {
   return (
-    <span
-      className="team-taps-trust"
-      data-tone={trust.tone}
-      title={trust.advisory}
-    >
+    <span className="team-taps-trust" data-tone={trust.tone} title={trust.advisory}>
       {trust.tone === "trusted" ? (
         <IconShieldCheck size={11} ariaHidden />
       ) : (
@@ -583,13 +530,7 @@ function TrustPill({ trust }: { trust: ReturnType<typeof tapTrustMeta> }) {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="team-taps-empty" role="status">
       <span className="team-taps-empty-icon" aria-hidden>

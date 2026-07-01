@@ -35,11 +35,7 @@ import {
   type ResolvedToolPolicy,
 } from "./mcp-diagnostics-view";
 import { isDestructiveToolName } from "./mcp-security-view";
-import type {
-  HermesMcpServerInfo,
-  HermesMcpTestResult,
-  HermesMcpToolInfo,
-} from "./schemas";
+import type { HermesMcpServerInfo, HermesMcpTestResult, HermesMcpToolInfo } from "./schemas";
 
 // ---------------------------------------------------------------------------
 // Config path — the one scoped location the policy is written to.
@@ -148,19 +144,13 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 /** Reads the existing `mcp_servers.<name>.tools` block out of a server's raw
  * payload, tolerating a top-level `tools` config object distinct from the
  * discovered tool LIST. Returns undefined when no policy block is present. */
-function readToolsBlock(
-  server: HermesMcpServerInfo,
-): Record<string, unknown> | undefined {
+function readToolsBlock(server: HermesMcpServerInfo): Record<string, unknown> | undefined {
   const record = asRecord(server.raw);
   if (!record) return undefined;
   // The discovered tool inventory is an ARRAY under `tools`; the policy block is
   // an OBJECT. Prefer an explicit `tool_filters`/`filters` object, then a
   // `tools` value only when it is an object (not the discovered array).
-  return (
-    asRecord(record.tool_filters) ??
-    asRecord(record.filters) ??
-    asRecord(record.tools)
-  );
+  return asRecord(record.tool_filters) ?? asRecord(record.filters) ?? asRecord(record.tools);
 }
 
 /**
@@ -175,20 +165,12 @@ export function draftFromServer(server: HermesMcpServerInfo): ToolPolicyDraft {
   const exclude = server.excludeTools ?? [];
   const block = readToolsBlock(server);
   const mode: ToolFilterMode =
-    include.length > 0
-      ? "allowlist"
-      : exclude.length > 0
-        ? "blocklist"
-        : "none";
+    include.length > 0 ? "allowlist" : exclude.length > 0 ? "blocklist" : "none";
   return {
     mode,
     include: [...include],
     exclude: [...exclude],
-    resources: readUtilityToggle(block, [
-      "resources",
-      "resource",
-      "resource_tools",
-    ]),
+    resources: readUtilityToggle(block, ["resources", "resource", "resource_tools"]),
     prompts: readUtilityToggle(block, ["prompts", "prompt", "prompt_tools"]),
     supportsParallelToolCalls: readBoolean(block, [
       "supports_parallel_tool_calls",
@@ -196,10 +178,7 @@ export function draftFromServer(server: HermesMcpServerInfo): ToolPolicyDraft {
       "parallel_tool_calls",
     ]),
     timeoutSeconds: readSeconds(block, ["timeout", "timeout_seconds"]),
-    connectTimeoutSeconds: readSeconds(block, [
-      "connect_timeout",
-      "connect_timeout_seconds",
-    ]),
+    connectTimeoutSeconds: readSeconds(block, ["connect_timeout", "connect_timeout_seconds"]),
   };
 }
 
@@ -431,12 +410,8 @@ export function compareToolPolicy(
   const exposed = tools.length;
   const willExpose = tools.filter((tool) => tool.allowed).length;
   const destructiveTotal = tools.filter((tool) => tool.destructive).length;
-  const destructiveBlocked = tools.filter(
-    (tool) => tool.destructive && !tool.allowed,
-  ).length;
-  const destructiveExposed = tools.filter(
-    (tool) => tool.destructive && tool.allowed,
-  ).length;
+  const destructiveBlocked = tools.filter((tool) => tool.destructive && !tool.allowed).length;
+  const destructiveExposed = tools.filter((tool) => tool.destructive && tool.allowed).length;
 
   return {
     exposed,

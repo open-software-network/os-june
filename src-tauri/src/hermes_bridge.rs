@@ -44,7 +44,16 @@ const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
-const JUNE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+// Must sit ABOVE june-api's aggregate request-string cap
+// (`MAX_AGENT_TOTAL_STRING_CHARS`, 1.5M chars) counted in BYTES, or this proxy
+// rejects an in-window upload before june-api's larger cap can allow it (JUN-169
+// review). Chars vs bytes: 1.5M chars is up to ~3M bytes for 2-byte UTF-8, so
+// 3 MiB keeps the proxy from becoming the stricter gate. This is a 127.0.0.1
+// loopback proxy for a single-user desktop, so the memory/DoS surface of the
+// larger buffer is minimal. A body over this cap is genuinely beyond any model
+// window and degrades to the context-overflow notice (recognizable wording in
+// `read_http_request`).
+const JUNE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 3 * 1024 * 1024;
 const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
@@ -1347,7 +1356,10 @@ fn parse_pending_skill_write(id: &str, path: &Path) -> PendingSkillWrite {
         _ => PendingSkillWriteSource::Unknown,
     };
 
-    let gist = json_str(&value, &["gist", "summary", "title", "description", "message"]);
+    let gist = json_str(
+        &value,
+        &["gist", "summary", "title", "description", "message"],
+    );
     let staged_at = value
         .get("stagedAt")
         .or_else(|| value.get("staged_at"))
@@ -1429,8 +1441,16 @@ fn redact_pending_content(text: &str) -> String {
 fn redact_pending_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let sensitive = [
-        "api_key", "apikey", "secret", "password", "passphrase", "token",
-        "private_key", "credential", "authorization", "bearer",
+        "api_key",
+        "apikey",
+        "secret",
+        "password",
+        "passphrase",
+        "token",
+        "private_key",
+        "credential",
+        "authorization",
+        "bearer",
     ]
     .iter()
     .any(|needle| lower.contains(needle));
@@ -1530,9 +1550,12 @@ fn apply_pending_skill_write(
 fn resolve_pending_target(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
     let rel = Path::new(relative);
     if rel.is_absolute()
-        || rel
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::Prefix(_)))
+        || rel.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        })
     {
         return Err(AppError::new(
             "hermes_pending_skill_path_invalid",
@@ -2034,7 +2057,7 @@ pub async fn ensure_hermes_bridge_session(
     )
     .await
     {
-        Ok(value) => return Ok(value),
+        Ok(value) => Ok(value),
         Err(error) if hermes_api_status(&error, 404) || hermes_api_status(&error, 405) => {
             let mut legacy_body = serde_json::json!({ "id": session_id, "title": title });
             if let Some(model) = model {
@@ -2425,7 +2448,7 @@ fn validate_dropped_file_name(raw: &str) -> Result<String, AppError> {
 }
 
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
-    let hermes_home = resolve_june_hermes_home(&app)?;
+    let hermes_home = resolve_june_hermes_home(app)?;
     let requested = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
@@ -2852,7 +2875,9 @@ fn redact_cli_word(word: &str) -> String {
     if word.len() >= 32
         && !word.contains('/')
         && !word.contains('\\')
-        && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         && word.chars().any(|c| c.is_ascii_alphanumeric())
     {
         return "[redacted]".to_string();
@@ -3059,8 +3084,7 @@ pub async fn hermes_reset_bundled_skill(
     let name = request.name.clone();
     let profile = request.profile.clone();
     let restore = request.restore;
-    let mut cmd =
-        build_hermes_skill_reset_command(&connection, &name, restore, profile.as_deref());
+    let mut cmd = build_hermes_skill_reset_command(&connection, &name, restore, profile.as_deref());
 
     let join = tauri::async_runtime::spawn_blocking(move || {
         let child = cmd.spawn().map_err(|error| {
@@ -3256,7 +3280,7 @@ fn extract_tap_path_hint(line: &str) -> Option<String> {
     let marker = lower.find("path")?;
     let after = &line[marker + "path".len()..];
     let candidate = after
-        .trim_start_matches(|c: char| matches!(c, '=' | ':' | ' ' | '(' | '\t'))
+        .trim_start_matches(['=', ':', ' ', '(', '\t'])
         .split_whitespace()
         .next()?
         .trim_matches(|c: char| matches!(c, ')' | ',' | ';'));
@@ -3783,7 +3807,10 @@ fn read_bundles_in_dir(bundles_dir: &Path) -> Result<Vec<HermesSkillBundle>, App
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(bundles),
         Err(error) => {
-            return Err(AppError::new("hermes_bundle_read_failed", error.to_string()));
+            return Err(AppError::new(
+                "hermes_bundle_read_failed",
+                error.to_string(),
+            ));
         }
     };
     for entry in entries.flatten() {
@@ -3925,7 +3952,10 @@ pub async fn hermes_delete_skill_bundle(
     match fs::remove_file(&file) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AppError::new("hermes_bundle_delete_failed", error.to_string())),
+        Err(error) => Err(AppError::new(
+            "hermes_bundle_delete_failed",
+            error.to_string(),
+        )),
     }
 }
 
@@ -3982,7 +4012,10 @@ fn write_bundle_file(bundles_dir: &Path, path: &Path, content: &str) -> Result<(
     })();
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temp_path);
-        return Err(AppError::new("hermes_bundle_write_failed", error.to_string()));
+        return Err(AppError::new(
+            "hermes_bundle_write_failed",
+            error.to_string(),
+        ));
     }
     Ok(())
 }
@@ -6373,9 +6406,16 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         })
         .unwrap_or(0);
     if content_length > JUNE_PROVIDER_PROXY_MAX_BODY_BYTES {
+        // The handler turns this into a 400 for the client. Phrase it as a
+        // context overflow (JUN-169): the wording carries the tokens Hermes'
+        // overflow patterns match ("maximum context length") and the frontend
+        // classifier keys on (`prompt_too_long`), so an over-cap body degrades
+        // into the recoverable context-overflow notice instead of a raw
+        // transport error that re-wedges or dead-ends the session.
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "HTTP body is too large",
+            "prompt_too_long: the request body exceeds the model's maximum \
+             context length. Reduce the length of the messages and retry.",
         ));
     }
     let mut body = buffer[header_end..].to_vec();
@@ -6408,10 +6448,26 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
 /// ("context length", "maximum context"); everything else in the envelope
 /// passes through untouched. Returns `None` for every other body, including
 /// non-JSON.
+///
+/// JUN-169 note — do NOT try to "fix" the single-turn dead-end here by dropping
+/// the trigger phrases for one-message requests: a bare `prompt_too_long` is
+/// exactly what re-wedges the session (the agent retries the same oversized
+/// prompt forever), which is the bug this rewrite exists to prevent. When a
+/// single oversized turn genuinely exceeds the window there is nothing to
+/// compress, so the agent legitimately ends with a terminal "Cannot compress
+/// further." That terminal error is owned by the frontend, which folds it into
+/// a context-overflow notice (see `isContextOverflowMessage` /
+/// `contextOverflowNotice`) instead of leaving a raw dead-end. Prevention lives
+/// upstream (the raised request-size cap in june-api's `validation.rs` so an
+/// in-window input is never rejected in the first place), not in this rewrite.
 fn translate_context_overflow_error(body: &[u8]) -> Option<serde_json::Value> {
     let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let message = value.get("message")?.as_str()?;
-    if !message.contains("prompt_too_long") {
+    // Both of june-api's size rejections are hard "too big" limits the agent
+    // must not retry as-is: `prompt_too_long` (aggregate string cap) and
+    // `string_too_long` (a single oversized string). Normalize both to the
+    // recognized-overflow wording so neither re-wedges the session (JUN-169).
+    if !message.contains("prompt_too_long") && !message.contains("string_too_long") {
         return None;
     }
     value["message"] = serde_json::Value::String(
@@ -6654,8 +6710,7 @@ mod tests {
     #[test]
     fn mcp_login_command_passes_server_as_discrete_argument() {
         let connection = oauth_test_connection();
-        let cmd =
-            build_hermes_mcp_login_command(&connection, "linear", Some("work"));
+        let cmd = build_hermes_mcp_login_command(&connection, "linear", Some("work"));
         let program = cmd.get_program().to_string_lossy().to_string();
         let args: Vec<String> = cmd
             .get_args()
@@ -6690,8 +6745,7 @@ mod tests {
     #[test]
     fn skill_reset_command_passes_name_as_discrete_argument() {
         let connection = oauth_test_connection();
-        let cmd =
-            build_hermes_skill_reset_command(&connection, "pdf", false, Some("work"));
+        let cmd = build_hermes_skill_reset_command(&connection, "pdf", false, Some("work"));
         let program = cmd.get_program().to_string_lossy().to_string();
         let args: Vec<String> = cmd
             .get_args()
@@ -6726,8 +6780,7 @@ mod tests {
     #[test]
     fn skill_tap_list_command_passes_profile_as_discrete_argument() {
         let connection = oauth_test_connection();
-        let cmd =
-            build_hermes_skill_tap_command(&connection, "list", None, None, Some("work"));
+        let cmd = build_hermes_skill_tap_command(&connection, "list", None, None, Some("work"));
         let program = cmd.get_program().to_string_lossy().to_string();
         let args: Vec<String> = cmd
             .get_args()
@@ -6753,7 +6806,14 @@ mod tests {
             .collect();
         assert_eq!(
             args,
-            vec!["skills", "tap", "add", "acme/runbooks", "--path", "skills/ops"]
+            vec![
+                "skills",
+                "tap",
+                "add",
+                "acme/runbooks",
+                "--path",
+                "skills/ops"
+            ]
         );
     }
 
@@ -6827,17 +6887,15 @@ mod tests {
 
     #[test]
     fn redacts_tokens_and_bearer_from_cli_output() {
-        let message = redact_cli_message(
-            "Authorized. token=sk-super-secret-token-value access granted",
-        )
-        .unwrap();
+        let message =
+            redact_cli_message("Authorized. token=sk-super-secret-token-value access granted")
+                .unwrap();
         assert!(!message.contains("sk-super-secret-token-value"));
         assert!(message.contains("[redacted]"));
 
         // A long credential-shaped bare run is masked regardless of surrounding.
         let masked =
-            redact_cli_message("saved AKIAIOSFODNN7EXAMPLEKEY1234567890abcd done")
-                .unwrap();
+            redact_cli_message("saved AKIAIOSFODNN7EXAMPLEKEY1234567890abcd done").unwrap();
         assert!(!masked.contains("AKIAIOSFODNN7EXAMPLEKEY1234567890abcd"));
     }
 
@@ -6931,10 +6989,25 @@ mod tests {
     }
 
     #[test]
+    fn string_too_long_rejection_translates_to_a_recognized_overflow() {
+        // A single oversized string is a hard size limit too (JUN-169 review):
+        // left bare, `string_too_long` is unrecognized by the agent and wedges
+        // the session, so it must normalize to the same overflow wording.
+        let body =
+            br#"{"data":null,"success":false,"error_code":2001,"message":"string_too_long"}"#;
+
+        let rewritten = translate_context_overflow_error(body).expect("translated");
+
+        let message = rewritten["message"].as_str().expect("message");
+        assert!(message.contains("maximum context"));
+        assert!(message.contains("context length"));
+        assert!(message.starts_with("prompt_too_long"));
+        assert_eq!(rewritten["error_code"], 2001);
+    }
+
+    #[test]
     fn unrelated_error_bodies_pass_through_untranslated() {
         for body in [
-            br#"{"data":null,"success":false,"error_code":2001,"message":"string_too_long"}"#
-                .as_slice(),
             br#"{"error":{"message":"rate limited"}}"#.as_slice(),
             b"not json at all".as_slice(),
             br#"{"message":42}"#.as_slice(),
@@ -7362,7 +7435,7 @@ mod tests {
         std::env::set_var("HERMES_ENVIRONMENT_HINT", "stale-from-shell");
         apply_isolated_hermes_env(&mut bare, Path::new("/tmp/hermes-home"), "token", None);
         std::env::remove_var("HERMES_ENVIRONMENT_HINT");
-        assert!(envs_of(&bare).get("HERMES_ENVIRONMENT_HINT").is_none());
+        assert!(!envs_of(&bare).contains_key("HERMES_ENVIRONMENT_HINT"));
     }
 
     #[test]
@@ -7965,7 +8038,10 @@ mod tests {
         assert_eq!(parsed.skill, "research");
         assert_eq!(parsed.op, PendingSkillWriteOp::Edit);
         assert_eq!(parsed.source, PendingSkillWriteSource::Background);
-        assert_eq!(parsed.gist.as_deref(), Some("Tighten the research checklist"));
+        assert_eq!(
+            parsed.gist.as_deref(),
+            Some("Tighten the research checklist")
+        );
         assert_eq!(parsed.files.len(), 1);
         assert_eq!(parsed.files[0].relative_path, "research/SKILL.md");
         assert_eq!(parsed.files[0].content.as_deref(), Some("new body"));
@@ -7984,7 +8060,10 @@ mod tests {
         .expect("write manifest");
 
         let parsed = parse_pending_skill_write("future", &path);
-        assert!(!parsed.readable, "an unknown version must not be approvable");
+        assert!(
+            !parsed.readable,
+            "an unknown version must not be approvable"
+        );
     }
 
     #[test]
@@ -8232,7 +8311,10 @@ mod tests {
         // canonically so the macOS /var -> /private/var symlink does not trip it).
         let canon_root = bundles.canonicalize().expect("canon");
         assert_eq!(
-            ok.parent().expect("parent").canonicalize().expect("parent canon"),
+            ok.parent()
+                .expect("parent")
+                .canonicalize()
+                .expect("parent canon"),
             canon_root
         );
         assert_eq!(
@@ -8252,7 +8334,10 @@ mod tests {
         let named = resolve_bundles_dir(dir.path(), Some("team")).expect("named");
         assert_eq!(
             named,
-            dir.path().join("profiles").join("team").join("skill-bundles")
+            dir.path()
+                .join("profiles")
+                .join("team")
+                .join("skill-bundles")
         );
     }
 

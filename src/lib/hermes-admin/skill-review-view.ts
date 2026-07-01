@@ -130,29 +130,26 @@ export type WriteSourceMeta = {
   blurb: string;
 };
 
-const SOURCE_META: Readonly<Record<PendingSkillWriteSource, WriteSourceMeta>> =
-  Object.freeze({
-    foreground: {
-      source: "foreground",
-      label: "From a task",
-      blurb: "Proposed while the agent was working on something you asked for.",
-    },
-    background: {
-      source: "background",
-      label: "Self-improvement",
-      blurb: "Proposed by the agent's background self-improvement review.",
-    },
-    unknown: {
-      source: "unknown",
-      label: "Source unknown",
-      blurb: "Hermes did not report where this change came from.",
-    },
-  });
+const SOURCE_META: Readonly<Record<PendingSkillWriteSource, WriteSourceMeta>> = Object.freeze({
+  foreground: {
+    source: "foreground",
+    label: "From a task",
+    blurb: "Proposed while the agent was working on something you asked for.",
+  },
+  background: {
+    source: "background",
+    label: "Self-improvement",
+    blurb: "Proposed by the agent's background self-improvement review.",
+  },
+  unknown: {
+    source: "unknown",
+    label: "Source unknown",
+    blurb: "Hermes did not report where this change came from.",
+  },
+});
 
 /** The display metadata for a write's source. */
-export function writeSourceMeta(
-  source: PendingSkillWriteSource,
-): WriteSourceMeta {
+export function writeSourceMeta(source: PendingSkillWriteSource): WriteSourceMeta {
   return SOURCE_META[source];
 }
 
@@ -220,9 +217,7 @@ export function readWriteApproval(config: Record<string, unknown>): boolean {
   if (typeof value === "number") return value !== 0;
   if (typeof value === "string") {
     const lower = value.trim().toLowerCase();
-    return (
-      lower === "true" || lower === "1" || lower === "yes" || lower === "on"
-    );
+    return lower === "true" || lower === "1" || lower === "yes" || lower === "on";
   }
   return false;
 }
@@ -261,11 +256,7 @@ function parseFiles(value: unknown): PendingSkillWriteFile[] {
   for (const entry of value) {
     const record = asRecord(entry);
     if (!record) continue;
-    const relativePath = pickString(record, [
-      "relativePath",
-      "relative_path",
-      "path",
-    ]);
+    const relativePath = pickString(record, ["relativePath", "relative_path", "path"]);
     if (!relativePath) continue;
     out.push({
       relativePath,
@@ -283,10 +274,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function pickString(
-  record: Record<string, unknown>,
-  keys: string[],
-): string | undefined {
+function pickString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0) {
@@ -296,10 +284,7 @@ function pickString(
   return undefined;
 }
 
-function pickNumber(
-  record: Record<string, unknown>,
-  keys: string[],
-): number | undefined {
+function pickNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "number" && Number.isFinite(value)) return value;

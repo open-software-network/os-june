@@ -38,12 +38,7 @@ describe("HermesTracePanel", () => {
     vi.stubEnv("DEV", false);
     const buffer = seedBuffer();
     const { container } = render(
-      <HermesTracePanel
-        buffer={buffer}
-        open
-        sessionId="s1"
-        onClose={vi.fn()}
-      />,
+      <HermesTracePanel buffer={buffer} open sessionId="s1" onClose={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
@@ -51,26 +46,14 @@ describe("HermesTracePanel", () => {
   it("renders nothing when closed", () => {
     const buffer = seedBuffer();
     const { container } = render(
-      <HermesTracePanel
-        buffer={buffer}
-        open={false}
-        sessionId="s1"
-        onClose={vi.fn()}
-      />,
+      <HermesTracePanel buffer={buffer} open={false} sessionId="s1" onClose={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
 
   it("filters to the initially selected session", () => {
     const buffer = seedBuffer();
-    render(
-      <HermesTracePanel
-        buffer={buffer}
-        open
-        sessionId="s1"
-        onClose={vi.fn()}
-      />,
-    );
+    render(<HermesTracePanel buffer={buffer} open sessionId="s1" onClose={vi.fn()} />);
     // s1 has the two inbound frames; s2's outbound steer must not show.
     expect(screen.getByText("message.delta")).toBeInTheDocument();
     expect(screen.getByText("future.unknown")).toBeInTheDocument();
@@ -80,14 +63,7 @@ describe("HermesTracePanel", () => {
   it("filters by session when the session selector changes", async () => {
     const user = userEvent.setup();
     const buffer = seedBuffer();
-    render(
-      <HermesTracePanel
-        buffer={buffer}
-        open
-        sessionId="s1"
-        onClose={vi.fn()}
-      />,
-    );
+    render(<HermesTracePanel buffer={buffer} open sessionId="s1" onClose={vi.fn()} />);
     await user.selectOptions(screen.getByLabelText("Filter by session"), "s2");
     expect(screen.getByText("session.steer")).toBeInTheDocument();
     expect(screen.queryByText("message.delta")).not.toBeInTheDocument();
@@ -96,18 +72,8 @@ describe("HermesTracePanel", () => {
   it("filters by event kind", async () => {
     const user = userEvent.setup();
     const buffer = seedBuffer();
-    render(
-      <HermesTracePanel
-        buffer={buffer}
-        open
-        sessionId="s1"
-        onClose={vi.fn()}
-      />,
-    );
-    await user.selectOptions(
-      screen.getByLabelText("Filter by kind"),
-      "unsupported",
-    );
+    render(<HermesTracePanel buffer={buffer} open sessionId="s1" onClose={vi.fn()} />);
+    await user.selectOptions(screen.getByLabelText("Filter by kind"), "unsupported");
     // Only the unsupported inbound frame remains.
     expect(screen.getByText("future.unknown")).toBeInTheDocument();
     expect(screen.queryByText("message.delta")).not.toBeInTheDocument();
@@ -116,35 +82,19 @@ describe("HermesTracePanel", () => {
   it("highlights unsupported entries", () => {
     const buffer = seedBuffer();
     const { container } = render(
-      <HermesTracePanel
-        buffer={buffer}
-        open
-        sessionId="s1"
-        onClose={vi.fn()}
-      />,
+      <HermesTracePanel buffer={buffer} open sessionId="s1" onClose={vi.fn()} />,
     );
     const flagged = container.querySelector('[data-unsupported="true"]');
     expect(flagged).not.toBeNull();
-    expect(
-      within(flagged as HTMLElement).getByText("future.unknown"),
-    ).toBeInTheDocument();
+    expect(within(flagged as HTMLElement).getByText("future.unknown")).toBeInTheDocument();
   });
 
   it("copies a sanitized export to the clipboard with NO secret values", async () => {
     const user = userEvent.setup();
-    const writeText = vi
-      .spyOn(navigator.clipboard, "writeText")
-      .mockResolvedValue(undefined);
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
     const buffer = seedBuffer();
-    render(
-      <HermesTracePanel
-        buffer={buffer}
-        open
-        sessionId="s1"
-        onClose={vi.fn()}
-      />,
-    );
+    render(<HermesTracePanel buffer={buffer} open sessionId="s1" onClose={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Copy trace" }));
     expect(writeText).toHaveBeenCalledTimes(1);
     const copied = writeText.mock.calls[0][0] as string;
@@ -160,14 +110,7 @@ describe("HermesTracePanel", () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     const buffer = seedBuffer();
-    render(
-      <HermesTracePanel
-        buffer={buffer}
-        open
-        sessionId="s1"
-        onClose={onClose}
-      />,
-    );
+    render(<HermesTracePanel buffer={buffer} open sessionId="s1" onClose={onClose} />);
     await user.click(screen.getByRole("button", { name: "Close raw trace" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });

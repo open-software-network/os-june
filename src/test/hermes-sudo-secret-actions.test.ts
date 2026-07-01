@@ -18,11 +18,7 @@ function liveFrame(
 describe("Hermes sudo pending action — runtime", () => {
   it("renders a live sudo.request as a pending sudo chat part", () => {
     const [request] = sudoFixture.frames;
-    const turns = buildAgentChatTurns(
-      [],
-      [],
-      [liveFrame(request, "2026-06-04T10:00:00.000Z")],
-    );
+    const turns = buildAgentChatTurns([], [], [liveFrame(request, "2026-06-04T10:00:00.000Z")]);
 
     expect(turns[0]?.parts).toEqual([
       {
@@ -84,11 +80,7 @@ describe("Hermes sudo pending action — runtime", () => {
 describe("Hermes secret pending action — runtime", () => {
   it("renders a live secret.request as a pending secret chat part with metadata only", () => {
     const [request] = secretFixture.frames;
-    const turns = buildAgentChatTurns(
-      [],
-      [],
-      [liveFrame(request, "2026-06-04T10:00:00.000Z")],
-    );
+    const turns = buildAgentChatTurns([], [], [liveFrame(request, "2026-06-04T10:00:00.000Z")]);
 
     expect(turns[0]?.parts).toEqual([
       {
@@ -104,11 +96,7 @@ describe("Hermes secret pending action — runtime", () => {
 
   it("never carries the secret value onto the part even when the gateway leaks it", () => {
     const [request] = secretFixture.frames;
-    const turns = buildAgentChatTurns(
-      [],
-      [],
-      [liveFrame(request, "2026-06-04T10:00:00.000Z")],
-    );
+    const turns = buildAgentChatTurns([], [], [liveFrame(request, "2026-06-04T10:00:00.000Z")]);
 
     // The whole serialized turn tree must be free of the leaked value.
     const serialized = JSON.stringify(turns);

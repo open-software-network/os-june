@@ -46,10 +46,7 @@ export function registerGlobalRecorderDemo({
   let phase = 0;
   let elapsedMs = 0;
 
-  function buildStatus(
-    state: RecordingStatusDto["state"],
-    level: number,
-  ): RecordingStatusDto {
+  function buildStatus(state: RecordingStatusDto["state"], level: number): RecordingStatusDto {
     // recentPeaks feeds the waveform's coalescing tail; a slight per-entry
     // falloff reads as a freshest-first window like the real poll.
     const recentPeaks = Array.from({ length: 6 }, (_, i) =>

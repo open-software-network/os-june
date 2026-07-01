@@ -26,11 +26,7 @@ export function KeycapShortcut({
   capturing?: boolean;
 }) {
   if (capturing) {
-    return (
-      <span className="keycap-frame keycap-frame-capturing">
-        Press shortcut...
-      </span>
-    );
+    return <span className="keycap-frame keycap-frame-capturing">Press shortcut...</span>;
   }
   const keys = label.split("+").filter(Boolean);
   return (

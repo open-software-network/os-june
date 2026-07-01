@@ -20,7 +20,7 @@
  * with no Tauri and no rendering. The hook is a thin binding over it.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   hermesBridgeStatus,
   hermesSkillTapAdd,
@@ -35,10 +35,7 @@ import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesActionStatus, HermesHubSkillResult } from "./schemas";
 import {
   hubResultMatchesTap,
@@ -49,11 +46,7 @@ import {
   validateTapPath,
   validateTapRepo,
 } from "./taps-view";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The bridge + hub I/O the controller needs, injectable so a test can drive it
  * with fakes and assert the add/remove + search/install wiring without a Tauri
@@ -208,8 +201,7 @@ export class SkillTapsController {
     this.profile = options.profile;
     this.lifecycle = options.lifecycle;
     this.cache = options.cache;
-    this.lifecycleSnapshot =
-      options.lifecycle?.getSnapshot() ?? CLEAN_LIFECYCLE;
+    this.lifecycleSnapshot = options.lifecycle?.getSnapshot() ?? CLEAN_LIFECYCLE;
     if (options.cache) {
       this.notifications = [...options.cache.getNotifications()];
       this.unsubscribers.push(
@@ -317,10 +309,7 @@ export class SkillTapsController {
         const message = result.message ?? `Could not add ${value}.`;
         this.error = message;
         this.needsGithubToken = looksLikeGithubAuthError(result.message);
-        this.notifications = [
-          ...this.notifications,
-          tapNotification(message, true),
-        ];
+        this.notifications = [...this.notifications, tapNotification(message, true)];
         this.recompute();
         return;
       }
@@ -338,10 +327,7 @@ export class SkillTapsController {
       this.pending.delete(value);
       const message = safeMessage(error, `Could not add ${value}.`);
       this.error = message;
-      this.notifications = [
-        ...this.notifications,
-        tapNotification(message, true),
-      ];
+      this.notifications = [...this.notifications, tapNotification(message, true)];
       this.recompute();
     }
   }
@@ -360,10 +346,7 @@ export class SkillTapsController {
       if (!result.ok) {
         const message = result.message ?? `Could not remove ${value}.`;
         this.error = message;
-        this.notifications = [
-          ...this.notifications,
-          tapNotification(message, true),
-        ];
+        this.notifications = [...this.notifications, tapNotification(message, true)];
         this.recompute();
         return;
       }
@@ -387,10 +370,7 @@ export class SkillTapsController {
       this.pending.delete(value);
       const message = safeMessage(error, `Could not remove ${value}.`);
       this.error = message;
-      this.notifications = [
-        ...this.notifications,
-        tapNotification(message, true),
-      ];
+      this.notifications = [...this.notifications, tapNotification(message, true)];
       this.recompute();
     }
   }
@@ -413,9 +393,7 @@ export class SkillTapsController {
     try {
       const all = await this.io.hubSearch(query.trim(), tapSearchSource(value));
       if (this.disposed || seq !== this.searchSeq) return;
-      const results = all.filter((result) =>
-        hubResultMatchesTap(result, value),
-      );
+      const results = all.filter((result) => hubResultMatchesTap(result, value));
       this.search = {
         repo: value,
         status: "ready",
@@ -426,10 +404,7 @@ export class SkillTapsController {
       this.recompute();
     } catch (error) {
       if (this.disposed || seq !== this.searchSeq) return;
-      const adminError = HermesAdminError.from(
-        "GET /api/skills/hub/search",
-        error,
-      );
+      const adminError = HermesAdminError.from("GET /api/skills/hub/search", error);
       this.search = {
         repo: value,
         status: "error",
@@ -443,8 +418,7 @@ export class SkillTapsController {
   }
 
   refreshSearch(): void {
-    if (this.search.repo)
-      void this.searchTap(this.search.repo, this.search.query);
+    if (this.search.repo) void this.searchTap(this.search.repo, this.search.query);
   }
 
   clearSearch(): void {
@@ -480,17 +454,12 @@ export class SkillTapsController {
       this.lifecycle?.noteMutation("skill.hubInstall");
       this.notifications = [
         ...this.notifications,
-        tapNotification(
-          `Installed ${result.name || identifier}. New sessions can use it.`,
-        ),
+        tapNotification(`Installed ${result.name || identifier}. New sessions can use it.`),
       ];
       this.setInstall(identifier, { phase: "done" });
     } catch (error) {
       if (this.disposed) return;
-      const adminError = HermesAdminError.from(
-        "POST /api/skills/hub/install",
-        error,
-      );
+      const adminError = HermesAdminError.from("POST /api/skills/hub/install", error);
       this.setInstall(identifier, {
         phase: "failed",
         error: adminError.safeMessage,
@@ -511,10 +480,7 @@ export class SkillTapsController {
     this.recompute();
   }
 
-  private setInstall(
-    identifier: string,
-    next: Omit<TapInstallState, "identifier">,
-  ): void {
+  private setInstall(identifier: string, next: Omit<TapInstallState, "identifier">): void {
     this.installs.set(identifier, { identifier, ...next });
     this.recompute();
   }
@@ -556,8 +522,7 @@ export class SkillTapsController {
   private readonly refreshAction = (): void => {
     void this.load();
   };
-  private readonly addTapAction = (repo: string, path?: string) =>
-    this.addTap(repo, path);
+  private readonly addTapAction = (repo: string, path?: string) => this.addTap(repo, path);
   private readonly removeTapAction = (repo: string) => this.removeTap(repo);
   private readonly searchTapAction = (repo: string, query?: string): void => {
     void this.searchTap(repo, query);
@@ -568,9 +533,7 @@ export class SkillTapsController {
   private readonly clearSearchAction = (): void => {
     this.clearSearch();
   };
-  private readonly installSkillAction = (
-    result: HermesHubSkillResult,
-  ): void => {
+  private readonly installSkillAction = (result: HermesHubSkillResult): void => {
     void this.installSkill(result);
   };
   private readonly clearInstallAction = (identifier: string): void => {
@@ -601,10 +564,7 @@ export function useSkillTapsController(
 ): SkillTapsState {
   const { profile, lifecycle, cache } = options;
   const controller = useMemo(
-    () =>
-      io
-        ? new SkillTapsController(io, mode, { profile, lifecycle, cache })
-        : null,
+    () => (io ? new SkillTapsController(io, mode, { profile, lifecycle, cache }) : null),
     [io, mode, profile, lifecycle, cache],
   );
 
@@ -679,9 +639,7 @@ export function useSkillTaps(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });
@@ -705,17 +663,14 @@ export function useSkillTaps(
   } | null>(() => {
     if (!target) return null;
     const requestProfile =
-      target.profile && target.profile !== "default"
-        ? target.profile
-        : undefined;
+      target.profile && target.profile !== "default" ? target.profile : undefined;
     const client: HermesAdminClient = createHermesAdminClient(target, {
       fetch: createRustAdminFetch(target.mode),
     });
     const cache = new AdminStateCache(target);
     const lifecycle = new GatewayLifecycle(client, cache);
     const io: SkillTapsIo = {
-      list: () =>
-        hermesSkillTapList({ mode: target.mode, profile: requestProfile }),
+      list: () => hermesSkillTapList({ mode: target.mode, profile: requestProfile }),
       add: (repo, path) =>
         hermesSkillTapAdd({
           mode: target.mode,

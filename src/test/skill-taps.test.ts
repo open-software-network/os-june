@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  SkillTapsController,
-  type SkillTapsIo,
-} from "../lib/hermes-admin/use-skill-taps";
+import { SkillTapsController, type SkillTapsIo } from "../lib/hermes-admin/use-skill-taps";
 import {
   isSafeTapRepo,
   looksLikeGithubAuthError,
@@ -20,10 +17,7 @@ import type {
 } from "../lib/tauri";
 import type { HermesHubSkillResult } from "../lib/hermes-admin/schemas";
 
-function tap(
-  repo: string,
-  extra: Partial<HermesSkillTapDto> = {},
-): HermesSkillTapDto {
+function tap(repo: string, extra: Partial<HermesSkillTapDto> = {}): HermesSkillTapDto {
   return { repo, trusted: false, ...extra };
 }
 
@@ -145,9 +139,7 @@ describe("taps-view validation", () => {
   it("recognizes GitHub rate-limit / auth errors", () => {
     expect(looksLikeGithubAuthError("API rate limit exceeded")).toBe(true);
     expect(looksLikeGithubAuthError("HTTP 403 Forbidden")).toBe(true);
-    expect(looksLikeGithubAuthError("repository not found (private?)")).toBe(
-      true,
-    );
+    expect(looksLikeGithubAuthError("repository not found (private?)")).toBe(true);
     expect(looksLikeGithubAuthError("network unreachable")).toBe(false);
     expect(looksLikeGithubAuthError(null)).toBe(false);
   });
@@ -173,15 +165,9 @@ describe("SkillTapsController", () => {
     await controller.load();
     await controller.addTap("acme/runbooks", "skills/ops/");
     await flush();
-    expect(fake.addCalls).toEqual([
-      { repo: "acme/runbooks", path: "skills/ops" },
-    ]);
-    expect(controller.getSnapshot().taps.map((t) => t.repo)).toContain(
-      "acme/runbooks",
-    );
-    expect(controller.getSnapshot().notifications.at(-1)?.message).toContain(
-      "acme/runbooks",
-    );
+    expect(fake.addCalls).toEqual([{ repo: "acme/runbooks", path: "skills/ops" }]);
+    expect(controller.getSnapshot().taps.map((t) => t.repo)).toContain("acme/runbooks");
+    expect(controller.getSnapshot().notifications.at(-1)?.message).toContain("acme/runbooks");
   });
 
   it("rejects an unsafe repo before it reaches the bridge", async () => {
@@ -267,9 +253,7 @@ describe("SkillTapsController", () => {
     await controller.load();
     await controller.searchTap("acme/runbooks", "dep");
     await flush();
-    expect(fake.searchCalls).toEqual([
-      { query: "dep", source: "acme/runbooks" },
-    ]);
+    expect(fake.searchCalls).toEqual([{ query: "dep", source: "acme/runbooks" }]);
     const results = controller.getSnapshot().search.results.map((r) => r.name);
     expect(results).toEqual(["Deploy"]);
   });
@@ -288,12 +272,8 @@ describe("SkillTapsController", () => {
     await controller.installSkill(result);
     await flush();
     expect(installSpy).toHaveBeenCalledWith("acme/runbooks/deploy");
-    expect(
-      controller.getSnapshot().installs.get("acme/runbooks/deploy")?.phase,
-    ).toBe("done");
-    expect(controller.getSnapshot().notifications.at(-1)?.message).toContain(
-      "Deploy",
-    );
+    expect(controller.getSnapshot().installs.get("acme/runbooks/deploy")?.phase).toBe("done");
+    expect(controller.getSnapshot().notifications.at(-1)?.message).toContain("Deploy");
   });
 
   it("surfaces an install failure inline", async () => {
@@ -316,9 +296,7 @@ describe("SkillTapsController", () => {
     const result = controller.getSnapshot().search.results[0];
     await controller.installSkill(result);
     await flush();
-    const install = controller
-      .getSnapshot()
-      .installs.get("acme/runbooks/deploy");
+    const install = controller.getSnapshot().installs.get("acme/runbooks/deploy");
     expect(install?.phase).toBe("failed");
     expect(install?.error).toContain("scan blocked");
   });

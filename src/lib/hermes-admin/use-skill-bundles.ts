@@ -42,11 +42,7 @@ import {
   type SkillBundle,
   type ResolvedSkillBundle,
 } from "./skill-bundles-view";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The bridge I/O the controller needs, injectable so a test can drive it with
  * fakes and assert the create/edit/delete/duplicate/start-chat wiring without a
@@ -54,10 +50,7 @@ import {
 export type SkillBundlesIo = {
   list: () => Promise<HermesSkillBundleDto[]>;
   loadSkills: () => Promise<HermesSkillInfo[]>;
-  save: (
-    bundle: SkillBundle,
-    previousSlug: string | undefined,
-  ) => Promise<HermesSkillBundleDto>;
+  save: (bundle: SkillBundle, previousSlug: string | undefined) => Promise<HermesSkillBundleDto>;
   remove: (slug: string) => Promise<void>;
   /** Submits the bundle's slash command as a new chat. Provided by the host so
    * the hook stays decoupled from the chat workspace. */
@@ -87,10 +80,7 @@ export type SkillBundlesState = {
   refresh: () => void;
   /** Creates or updates a bundle. `previousSlug` (when renaming) removes the old
    * file. Resolves to the saved bundle on success, or throws a safe message. */
-  save: (
-    draft: SkillBundle,
-    previousSlug?: string,
-  ) => Promise<HermesSkillBundleDto>;
+  save: (draft: SkillBundle, previousSlug?: string) => Promise<HermesSkillBundleDto>;
   /** Deletes a bundle by slug. */
   remove: (slug: string) => Promise<void>;
   /** Duplicates a bundle (fresh slug) and saves the copy. */
@@ -98,10 +88,7 @@ export type SkillBundlesState = {
   /** Starts a chat that runs the bundle's slash command. */
   startChat: (slug: string) => void;
   /** Validates a draft against the loaded skills + other bundle slugs. */
-  validate: (
-    draft: SkillBundle,
-    editingSlug?: string,
-  ) => ReturnType<typeof validateBundleDraft>;
+  validate: (draft: SkillBundle, editingSlug?: string) => ReturnType<typeof validateBundleDraft>;
   dismissNotification: (id: string) => void;
 };
 
@@ -110,10 +97,7 @@ let bundleNotificationSeq = 0;
 /** Builds a durable, sentence-case change notice for the toast surface. Bundles
  * apply to new sessions (Hermes reads the bundle index at session start), so the
  * timing copy says so. */
-function bundleNotification(
-  message: string,
-  isError = false,
-): AdminNotification {
+function bundleNotification(message: string, isError = false): AdminNotification {
   bundleNotificationSeq += 1;
   return {
     id: `bundle-${Date.now()}-${bundleNotificationSeq}`,
@@ -202,10 +186,7 @@ export class SkillBundlesController {
     }
   }
 
-  async save(
-    draft: SkillBundle,
-    previousSlug?: string,
-  ): Promise<HermesSkillBundleDto> {
+  async save(draft: SkillBundle, previousSlug?: string): Promise<HermesSkillBundleDto> {
     const slug = draft.slug.trim();
     this.pending.add(slug);
     this.error = undefined;
@@ -216,9 +197,7 @@ export class SkillBundlesController {
       this.pending.delete(slug);
       this.notifications = [
         ...this.notifications,
-        bundleNotification(
-          `Saved /${saved.slug}. New sessions can use this bundle.`,
-        ),
+        bundleNotification(`Saved /${saved.slug}. New sessions can use this bundle.`),
       ];
       await this.load();
       return saved;
@@ -227,10 +206,7 @@ export class SkillBundlesController {
         this.pending.delete(slug);
         const message = safeMessage(error, "Could not save the bundle.");
         this.error = message;
-        this.notifications = [
-          ...this.notifications,
-          bundleNotification(message, true),
-        ];
+        this.notifications = [...this.notifications, bundleNotification(message, true)];
         this.recompute();
       }
       throw error;
@@ -256,10 +232,7 @@ export class SkillBundlesController {
         this.pending.delete(key);
         const message = safeMessage(error, "Could not delete the bundle.");
         this.error = message;
-        this.notifications = [
-          ...this.notifications,
-          bundleNotification(message, true),
-        ];
+        this.notifications = [...this.notifications, bundleNotification(message, true)];
         this.recompute();
       }
       throw error;
@@ -298,9 +271,7 @@ export class SkillBundlesController {
   }
 
   private buildSnapshot(): SkillBundlesState {
-    const resolved = this.bundles.map((bundle) =>
-      resolveBundle(toBundle(bundle), this.skills),
-    );
+    const resolved = this.bundles.map((bundle) => resolveBundle(toBundle(bundle), this.skills));
     return {
       status: this.status,
       bundles: resolved,
@@ -334,14 +305,10 @@ export class SkillBundlesController {
     this.save(draft, previousSlug);
   private readonly removeAction = (slug: string) => this.remove(slug);
   private readonly duplicateAction = (slug: string) => this.duplicate(slug);
-  private readonly startChatAction = (slug: string): void =>
-    this.startChat(slug);
-  private readonly validateAction = (
-    draft: SkillBundle,
-    editingSlug?: string,
-  ) => this.validate(draft, editingSlug);
-  private readonly dismissNotificationAction = (id: string): void =>
-    this.dismissNotification(id);
+  private readonly startChatAction = (slug: string): void => this.startChat(slug);
+  private readonly validateAction = (draft: SkillBundle, editingSlug?: string) =>
+    this.validate(draft, editingSlug);
+  private readonly dismissNotificationAction = (id: string): void => this.dismissNotification(id);
 }
 
 /** Binds a {@link SkillBundlesController} to React. A null io yields the
@@ -394,8 +361,7 @@ const UNAVAILABLE_STATE: SkillBundlesState = Object.freeze({
   remove: async () => {},
   duplicate: async () => {},
   startChat: () => {},
-  validate: (draft: SkillBundle) =>
-    validateBundleDraft(draft, { skills: [], existingSlugs: [] }),
+  validate: (draft: SkillBundle) => validateBundleDraft(draft, { skills: [], existingSlugs: [] }),
   dismissNotification: () => {},
 }) as SkillBundlesState;
 
@@ -425,9 +391,7 @@ export function useSkillBundles(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });
@@ -446,9 +410,7 @@ export function useSkillBundles(
   const io = useMemo<SkillBundlesIo | null>(() => {
     if (!target) return null;
     const requestProfile =
-      target.profile && target.profile !== "default"
-        ? target.profile
-        : undefined;
+      target.profile && target.profile !== "default" ? target.profile : undefined;
     // Bundles are written through the narrow Tauri bridge commands; the
     // installed-skill list (for member resolution / warnings) comes through the
     // same admin client every other surface uses, routed through Rust so the
@@ -457,8 +419,7 @@ export function useSkillBundles(
       fetch: createRustAdminFetch(target.mode),
     });
     return {
-      list: () =>
-        hermesListSkillBundles({ mode: target.mode, profile: requestProfile }),
+      list: () => hermesListSkillBundles({ mode: target.mode, profile: requestProfile }),
       loadSkills: () => adminClient.skills.list(),
       save: (bundle, previousSlug) =>
         hermesSaveSkillBundle({
@@ -488,9 +449,7 @@ export function useSkillBundles(
 
 /** Keeps a stable identity for the host's start-chat callback so the io memo
  * does not churn when the parent re-renders with a new closure. */
-function useStableStartChat(
-  onStartChat?: (prompt: string) => void,
-): (prompt: string) => void {
+function useStableStartChat(onStartChat?: (prompt: string) => void): (prompt: string) => void {
   const ref = useRef(onStartChat);
   ref.current = onStartChat;
   return useCallback((prompt: string) => {

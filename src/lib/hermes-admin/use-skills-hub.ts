@@ -36,16 +36,9 @@ import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesActionStatus, HermesHubSkillResult } from "./schemas";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives one Skills Hub page operates on, all bound
  * to the SAME target. Production builds this from a bridge connection (see
@@ -88,9 +81,7 @@ export type HubInstallState = {
  * lets the spec-07 security review say "proceed, and send force" after the user
  * confirmed an override. `force` is NEVER assumed: it is sent only when the
  * decision explicitly sets it true. */
-export type HubInstallDecision =
-  | boolean
-  | { proceed: boolean; force?: boolean };
+export type HubInstallDecision = boolean | { proceed: boolean; force?: boolean };
 
 /** Options for an install request. The `confirm` hook is where the spec-07
  * security review plugs in: install is declined if it resolves to a falsy
@@ -99,9 +90,7 @@ export type HubInstallRequest = {
   /** Asked before installing; resolve a {@link HubInstallDecision}. The security
    * review flow returns `{ proceed, force }`; a simple confirmation can return a
    * bare boolean. */
-  confirm?: (
-    result: HermesHubSkillResult,
-  ) => HubInstallDecision | Promise<HubInstallDecision>;
+  confirm?: (result: HermesHubSkillResult) => HubInstallDecision | Promise<HubInstallDecision>;
 };
 
 /** Normalizes a {@link HubInstallDecision} to `{ proceed, force }`. A bare
@@ -191,10 +180,7 @@ export class SkillsHubController {
   private unsubscribers: Array<() => void> = [];
   private snapshot: SkillsHubState;
 
-  constructor(
-    engine: SkillsHubEngine,
-    options: SkillsHubControllerOptions = {},
-  ) {
+  constructor(engine: SkillsHubEngine, options: SkillsHubControllerOptions = {}) {
     this.engine = engine;
     this.pollOptions = options;
     this.lifecycleSnapshot = engine.lifecycle.getSnapshot();
@@ -251,10 +237,7 @@ export class SkillsHubController {
     this.recompute();
 
     try {
-      const results = await this.engine.client.skills.hubSearch(
-        query.trim(),
-        this.source,
-      );
+      const results = await this.engine.client.skills.hubSearch(query.trim(), this.source);
       if (this.disposed || seq !== this.searchSeq) return;
       this.engine.cache.set("hubSearch", results);
       this.results = results;
@@ -264,10 +247,7 @@ export class SkillsHubController {
       this.recompute();
     } catch (error) {
       if (this.disposed || seq !== this.searchSeq) return;
-      const adminError = HermesAdminError.from(
-        "GET /api/skills/hub/search",
-        error,
-      );
+      const adminError = HermesAdminError.from("GET /api/skills/hub/search", error);
       this.error = adminError.safeMessage;
       this.retryable = adminError.retryable;
       this.status = "error";
@@ -291,10 +271,7 @@ export class SkillsHubController {
    * If the install completes synchronously (no action handle), it is treated as
    * an immediate success.
    */
-  async install(
-    result: HermesHubSkillResult,
-    request: HubInstallRequest = {},
-  ): Promise<void> {
+  async install(result: HermesHubSkillResult, request: HubInstallRequest = {}): Promise<void> {
     const { identifier } = result;
     // Never re-enter an install that is already running for this identifier.
     if (this.installs.get(identifier)?.phase === "installing") return;
@@ -349,11 +326,7 @@ export class SkillsHubController {
       if (status && status.state === "failed") {
         // Reconcile the failure into the cache (raises an error notification)
         // and surface it inline on the row.
-        this.engine.cache.afterAction(
-          "skill.hubInstall",
-          friendlyName(result),
-          status,
-        );
+        this.engine.cache.afterAction("skill.hubInstall", friendlyName(result), status);
         this.setInstall(identifier, {
           phase: "failed",
           error: status.error ?? `Could not install ${friendlyName(result)}.`,
@@ -374,10 +347,7 @@ export class SkillsHubController {
       });
     } catch (error) {
       if (this.disposed) return;
-      const adminError = HermesAdminError.from(
-        "POST /api/skills/hub/install",
-        error,
-      );
+      const adminError = HermesAdminError.from("POST /api/skills/hub/install", error);
       // A poll timeout on an install almost always means the source is slow or
       // rate-limited (commonly GitHub's 60/hr unauthenticated cap), not that
       // Hermes is down. The sandboxed runtime can't read your gh-keyring login
@@ -414,10 +384,7 @@ export class SkillsHubController {
     );
   }
 
-  private setInstall(
-    identifier: string,
-    next: Omit<HubInstallState, "identifier">,
-  ): void {
+  private setInstall(identifier: string, next: Omit<HubInstallState, "identifier">): void {
     this.installs.set(identifier, { identifier, ...next });
     this.recompute();
   }
@@ -480,13 +447,8 @@ function friendlyName(result: HermesHubSkillResult): string {
  * Binds a {@link SkillsHubController} to React for one engine. A null engine
  * yields the "unavailable" state without constructing a controller.
  */
-export function useSkillsHubController(
-  engine: SkillsHubEngine | null,
-): SkillsHubState {
-  const controller = useMemo(
-    () => (engine ? new SkillsHubController(engine) : null),
-    [engine],
-  );
+export function useSkillsHubController(engine: SkillsHubEngine | null): SkillsHubState {
+  const controller = useMemo(() => (engine ? new SkillsHubController(engine) : null), [engine]);
 
   const [snapshot, setSnapshot] = useState<SkillsHubState>(() =>
     controller ? controller.getSnapshot() : UNAVAILABLE_STATE,
@@ -594,9 +556,7 @@ export function useSkillsHub(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

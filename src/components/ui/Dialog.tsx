@@ -1,11 +1,5 @@
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
-import {
-  type ReactNode,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-} from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 type DialogProps = {
@@ -73,9 +67,7 @@ export function Dialog({
         return;
       }
       if (event.key !== "Tab" || !cardRef.current) return;
-      const focusables = Array.from(
-        cardRef.current.querySelectorAll<HTMLElement>(FOCUSABLE),
-      );
+      const focusables = Array.from(cardRef.current.querySelectorAll<HTMLElement>(FOCUSABLE));
       if (focusables.length === 0) return;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
@@ -130,12 +122,7 @@ export function Dialog({
           <h2 id={titleId} className="dialog-title">
             {title}
           </h2>
-          <button
-            type="button"
-            className="dialog-close"
-            aria-label="Close"
-            onClick={onClose}
-          >
+          <button type="button" className="dialog-close" aria-label="Close" onClick={onClose}>
             <IconCrossMedium size={14} />
           </button>
         </header>

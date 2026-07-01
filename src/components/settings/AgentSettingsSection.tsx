@@ -1,8 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  FilesystemPanel,
-  MessagingPanel,
-} from "../agent/AgentWorkspace";
+import { FilesystemPanel, MessagingPanel } from "../agent/AgentWorkspace";
 import {
   hermesAgentCliAccess,
   hermesBridgeFilesystemSnapshot,
@@ -35,21 +32,16 @@ export function AgentSettingsSection() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [platforms, setPlatforms] = useState<
-    HermesMessagingPlatformInfo[] | null
-  >(null);
-  const [filesystemSnapshot, setFilesystemSnapshot] =
-    useState<HermesFilesystemSnapshot | null>(null);
-  const [selectedPlatformId, setSelectedPlatformId] = useState<string>();
-  const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
-  const [agentHudEnabled, setAgentHudEnabledState] = useState(() =>
-    getAgentHudEnabled(),
-  );
-  // null until the stored value loads, so the switch never flashes a wrong
-  // default for a setting with security weight.
-  const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(
+  const [platforms, setPlatforms] = useState<HermesMessagingPlatformInfo[] | null>(null);
+  const [filesystemSnapshot, setFilesystemSnapshot] = useState<HermesFilesystemSnapshot | null>(
     null,
   );
+  const [selectedPlatformId, setSelectedPlatformId] = useState<string>();
+  const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
+  const [agentHudEnabled, setAgentHudEnabledState] = useState(() => getAgentHudEnabled());
+  // null until the stored value loads, so the switch never flashes a wrong
+  // default for a setting with security weight.
+  const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(null);
   const [cliAccessSaving, setCliAccessSaving] = useState(false);
 
   useEffect(() => {
@@ -90,20 +82,13 @@ export function AgentSettingsSection() {
 
   useEffect(() => {
     function handleVisibilityChanged(event: Event) {
-      const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>)
-        .detail;
+      const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>).detail;
       if (detail) setAgentHudEnabledState(detail.enabled);
     }
 
-    window.addEventListener(
-      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
-      handleVisibilityChanged,
-    );
+    window.addEventListener(AGENT_HUD_VISIBILITY_CHANGED_EVENT, handleVisibilityChanged);
     return () => {
-      window.removeEventListener(
-        AGENT_HUD_VISIBILITY_CHANGED_EVENT,
-        handleVisibilityChanged,
-      );
+      window.removeEventListener(AGENT_HUD_VISIBILITY_CHANGED_EVENT, handleVisibilityChanged);
     };
   }, []);
 
@@ -151,9 +136,7 @@ export function AgentSettingsSection() {
     try {
       const snapshot = await hermesBridgeFilesystemSnapshot();
       setFilesystemSnapshot({
-        roots: snapshot.roots.filter(
-          (root) => root.id === "workspace" || root.id === "memory",
-        ),
+        roots: snapshot.roots.filter((root) => root.id === "workspace" || root.id === "memory"),
       });
       setError(null);
     } catch (err) {
@@ -175,9 +158,8 @@ export function AgentSettingsSection() {
       });
       setPlatforms(
         (current) =>
-          current?.map((item) =>
-            item.id === platform.id ? { ...item, enabled } : item,
-          ) ?? current,
+          current?.map((item) => (item.id === platform.id ? { ...item, enabled } : item)) ??
+          current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -186,9 +168,7 @@ export function AgentSettingsSection() {
     }
   }
 
-  async function saveMessagingPlatformEnv(
-    platform: HermesMessagingPlatformInfo,
-  ) {
+  async function saveMessagingPlatformEnv(platform: HermesMessagingPlatformInfo) {
     const env = Object.fromEntries(
       Object.entries(envEdits)
         .map(([key, value]) => [key, value.trim()])
@@ -224,16 +204,13 @@ export function AgentSettingsSection() {
             <div className="settings-row-info">
               <h3 className="settings-row-title">Sessions HUD</h3>
               <p className="settings-row-description">
-                Show a small pill at the top right of your screen with live
-                session status.
+                Show a small pill at the top right of your screen with live session status.
               </p>
             </div>
             <div className="settings-row-control">
               <Switch
                 checked={agentHudEnabled}
-                onCheckedChange={(enabled) =>
-                  void handleAgentHudEnabledChange(enabled)
-                }
+                onCheckedChange={(enabled) => void handleAgentHudEnabledChange(enabled)}
                 aria-label="Show sessions HUD"
               />
             </div>
@@ -242,22 +219,19 @@ export function AgentSettingsSection() {
             <div className="settings-row-info">
               <h3 className="settings-row-title">Agent CLI access</h3>
               <p className="settings-row-description">
-                Let June drive the coding CLIs you already use (Claude Code,
-                Codex, Gemini, opencode). Sandboxed sessions gain write access
-                to those tools' own settings and session folders. Some CLIs
-                (Codex among them) will not even start without it; others lose
-                their login. Those folders configure software that also runs
-                outside June's sandbox, so leave this off unless you want June
-                operating your CLIs. Applies to new sessions.
+                Let June drive the coding CLIs you already use (Claude Code, Codex, Gemini,
+                opencode). Sandboxed sessions gain write access to those tools' own settings and
+                session folders. Some CLIs (Codex among them) will not even start without it; others
+                lose their login. Those folders configure software that also runs outside June's
+                sandbox, so leave this off unless you want June operating your CLIs. Applies to new
+                sessions.
               </p>
             </div>
             <div className="settings-row-control">
               <Switch
                 checked={cliAccessEnabled === true}
                 disabled={cliAccessEnabled === null || cliAccessSaving}
-                onCheckedChange={(enabled) =>
-                  void handleCliAccessChange(enabled)
-                }
+                onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
                 aria-label="Allow agent CLI access"
               />
             </div>
@@ -265,11 +239,7 @@ export function AgentSettingsSection() {
         </div>
       </div>
       <div className="settings-card settings-agent-card">
-        <div
-          className="settings-section-tabs"
-          role="tablist"
-          aria-label="Agent settings"
-        >
+        <div className="settings-section-tabs" role="tablist" aria-label="Agent settings">
           <button
             type="button"
             aria-selected={panel === "messaging"}
@@ -306,13 +276,9 @@ export function AgentSettingsSection() {
               setSelectedPlatformId(platform.id);
               setEnvEdits({});
             }}
-            onEditEnv={(key, value) =>
-              setEnvEdits((current) => ({ ...current, [key]: value }))
-            }
+            onEditEnv={(key, value) => setEnvEdits((current) => ({ ...current, [key]: value }))}
             onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
-            onToggle={(platform, enabled) =>
-              void setMessagingPlatformEnabled(platform, enabled)
-            }
+            onToggle={(platform, enabled) => void setMessagingPlatformEnabled(platform, enabled)}
           />
         ) : (
           <FilesystemPanel

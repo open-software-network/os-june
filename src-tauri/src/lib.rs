@@ -14,6 +14,7 @@ pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
 pub mod theme_icon;
+pub mod updates;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -249,6 +250,9 @@ pub fn run() {
             providers::provider_model_settings,
             providers::list_venice_models,
             providers::set_venice_model,
+            providers::set_venice_api_key,
+            providers::clear_venice_api_key,
+            providers::generate_image,
             os_accounts::os_accounts_status,
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
@@ -256,6 +260,10 @@ pub fn run() {
             os_accounts::os_accounts_upgrade,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
+            updates::get_release_channel,
+            updates::set_release_channel,
+            updates::fetch_update,
+            updates::install_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
@@ -264,6 +272,7 @@ pub fn run() {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
+            updates::setup(app);
             dictation::setup(app);
             agent_hud::setup(app);
             meeting_detection::setup(app);

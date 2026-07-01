@@ -1,11 +1,4 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
@@ -22,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   providerModelSettings: vi.fn(),
   listVeniceModels: vi.fn(),
   setVeniceModel: vi.fn(),
+  setVeniceApiKey: vi.fn(),
+  clearVeniceApiKey: vi.fn(),
   openPrivacySettings: vi.fn(),
   setDictationShortcut: vi.fn(),
   setDictationMicrophone: vi.fn(),
@@ -48,8 +43,24 @@ const mocks = vi.hoisted(() => ({
   deleteDictionaryEntry: vi.fn(),
   juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
+  getReleaseChannel: vi.fn(),
+  setReleaseChannel: vi.fn(),
+  reconcileToStable: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
+}));
+
+vi.mock("../lib/updater", () => ({
+  getReleaseChannel: mocks.getReleaseChannel,
+  setReleaseChannel: mocks.setReleaseChannel,
+  reconcileToStable: mocks.reconcileToStable,
+}));
+
+// Pin a prerelease build so the leave-rc reconcile offer can be exercised; the
+// About meta rows read these same mocked constants.
+vi.mock("../app/build-info", () => ({
+  APP_VERSION: "9.9.9-rc.2",
+  APP_COMMIT_HASH: "abc1234",
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -60,6 +71,8 @@ vi.mock("../lib/tauri", () => ({
   providerModelSettings: mocks.providerModelSettings,
   listVeniceModels: mocks.listVeniceModels,
   setVeniceModel: mocks.setVeniceModel,
+  setVeniceApiKey: mocks.setVeniceApiKey,
+  clearVeniceApiKey: mocks.clearVeniceApiKey,
   openPrivacySettings: mocks.openPrivacySettings,
   setDictationShortcut: mocks.setDictationShortcut,
   setDictationMicrophone: mocks.setDictationMicrophone,
@@ -75,8 +88,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
-  updateHermesBridgeMessagingPlatform:
-    mocks.updateHermesBridgeMessagingPlatform,
+  updateHermesBridgeMessagingPlatform: mocks.updateHermesBridgeMessagingPlatform,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
@@ -176,20 +188,22 @@ describe("AppSettings", () => {
     mocks.listDictionaryEntries.mockResolvedValue([]);
     mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
     mocks.juneOpenVerifyPage.mockResolvedValue(undefined);
+    mocks.getReleaseChannel.mockResolvedValue("stable");
+    mocks.setReleaseChannel.mockResolvedValue(undefined);
+    mocks.reconcileToStable.mockResolvedValue(null);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
         generationModel: "zai-org-glm-5-2",
+        imageModel: "venice-sd35",
+        veniceApiKeyConfigured: false,
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
-      selectedModel:
-        mode === "transcription"
-          ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5-2",
+      selectedModel: mode === "transcription" ? "nvidia/parakeet-tdt-0.6b-v3" : "zai-org-glm-5-2",
       models:
         mode === "transcription"
           ? [
@@ -251,8 +265,7 @@ describe("AppSettings", () => {
                 id: "kimi-k2-6",
                 name: "Kimi K2.6",
                 modelType: "text",
-                description:
-                  "Open-weights model built for long tool-driven tasks.",
+                description: "Open-weights model built for long tool-driven tasks.",
                 privacy: "private",
                 priceUnit: "tokens",
                 inputCreditsPerMillionTokens: 850,
@@ -315,13 +328,26 @@ describe("AppSettings", () => {
     }));
     mocks.setVeniceModel.mockImplementation(async (mode, modelId) => ({
       transcriptionProvider:
-        mode === "transcription" && modelId.startsWith("gpt-")
-          ? "openai"
-          : "venice",
-      transcriptionModel:
-        mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
+        mode === "transcription" && modelId.startsWith("gpt-") ? "openai" : "venice",
+      transcriptionModel: mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
+      imageModel: mode === "image" ? modelId : "venice-sd35",
+      veniceApiKeyConfigured: false,
     }));
+    mocks.setVeniceApiKey.mockResolvedValue({
+      transcriptionProvider: "venice",
+      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+      generationModel: "zai-org-glm-5-2",
+      imageModel: "venice-sd35",
+      veniceApiKeyConfigured: true,
+    });
+    mocks.clearVeniceApiKey.mockResolvedValue({
+      transcriptionProvider: "venice",
+      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+      generationModel: "zai-org-glm-5-2",
+      imageModel: "venice-sd35",
+      veniceApiKeyConfigured: false,
+    });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsLogin.mockResolvedValue(signedInAccount);
@@ -332,14 +358,10 @@ describe("AppSettings", () => {
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
-    mocks.setHermesAgentCliAccess.mockImplementation(
-      async (enabled: boolean) => ({ enabled }),
-    );
+    mocks.setHermesAgentCliAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
-      ...(kind === "toggle"
-        ? { toggleShortcut: shortcut }
-        : { pushToTalkShortcut: shortcut }),
+      ...(kind === "toggle" ? { toggleShortcut: shortcut } : { pushToTalkShortcut: shortcut }),
     }));
     mocks.setDictationMicrophone.mockImplementation(async (id, name) => ({
       ...baseSettings,
@@ -439,17 +461,14 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(
-      screen.getByRole("heading", { name: "Billing" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Billing" })).toBeInTheDocument();
     expect(screen.getByText("64%")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Free plan" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Free plan" })).toBeInTheDocument();
     expect(screen.getByText("Usage remaining")).toBeInTheDocument();
-    expect(
-      screen.getByRole("progressbar", { name: "Usage remaining" }),
-    ).toHaveAttribute("aria-valuenow", "64");
+    expect(screen.getByRole("progressbar", { name: "Usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "64",
+    );
     expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
   });
 
@@ -469,8 +488,7 @@ describe("AppSettings", () => {
         />,
       );
 
-      const trigger = () =>
-        screen.getByRole("button", { name: "Accent color" });
+      const trigger = () => screen.getByRole("button", { name: "Accent color" });
       expect(trigger()).toHaveTextContent("Clay");
 
       // Pick a non-default accent from the shared select popover.
@@ -527,12 +545,11 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
     expect(screen.getByText("23%")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Pro plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("progressbar", { name: "Usage remaining" }),
-    ).toHaveAttribute("aria-valuenow", "23");
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "23",
+    );
   });
 
   it("falls back to the free grant for unsubscribed accounts without usage percentage", async () => {
@@ -564,12 +581,11 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
     expect(screen.getByText("97%")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Free plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("progressbar", { name: "Usage remaining" }),
-    ).toHaveAttribute("aria-valuenow", "97");
+    expect(screen.getByRole("heading", { name: "Free plan" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "97",
+    );
   });
 
   it("runs sign-in, cancel, and sign-out actions from account settings", async () => {
@@ -588,9 +604,7 @@ describe("AppSettings", () => {
       />,
     );
 
-    await user.click(
-      screen.getByRole("button", { name: "Sign in with OpenSoftware" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Sign in with OpenSoftware" }));
     await waitFor(() => expect(mocks.osAccountsLogin).toHaveBeenCalledOnce());
     expect(onAccountChanged).toHaveBeenCalledWith(signedInAccount);
     expect(await screen.findByText("Signed in as Alex.")).toBeInTheDocument();
@@ -603,16 +617,12 @@ describe("AppSettings", () => {
           rejectLogin = reject;
         }),
     );
-    await user.click(
-      screen.getByRole("button", { name: "Sign in with OpenSoftware" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Sign in with OpenSoftware" }));
     expect(await screen.findByRole("button", { name: "Cancel" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mocks.osAccountsCancelLogin).toHaveBeenCalledOnce();
     rejectLogin(new Error("Login canceled"));
-    expect(
-      await screen.findByRole("button", { name: "Sign in with OpenSoftware" }),
-    ).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Sign in with OpenSoftware" })).toBeEnabled();
 
     const signedOut = vi.fn();
     render(
@@ -629,7 +639,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
-    expect(mocks.osAccountsLogout).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsLogout).toHaveBeenCalledWith({ clearBrowserSession: true });
     expect(signedOut).toHaveBeenCalledWith({
       signedIn: false,
       configured: signedInAccount.configured,
@@ -699,12 +709,8 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(
-      screen.getByRole("heading", { name: "Pro plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Update billing in your account portal."),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.getByText("Update billing in your account portal.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Manage billing" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
     expect(
@@ -737,15 +743,9 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(
-      screen.getByRole("heading", { name: "Pro plan" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Manage billing" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Upgrade" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upgrade" })).not.toBeInTheDocument();
   });
 
   it("hides billing and sign-out controls in local mode", () => {
@@ -767,16 +767,10 @@ describe("AppSettings", () => {
     );
 
     expect(
-      screen.getByText(
-        "Requests use your local June API. No OpenSoftware account is used.",
-      ),
+      screen.getByText("Requests use your local June API. No OpenSoftware account is used."),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("tab", { name: "Billing" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Sign out" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Billing" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
   });
 
   it("updates dictation microphone and note recording source", async () => {
@@ -811,24 +805,16 @@ describe("AppSettings", () => {
     });
 
     await user.click(screen.getByRole("tab", { name: "Audio" }));
-    expect(
-      screen.getByText("Auto-detect uses MacBook Pro Microphone."),
-    ).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
-    );
+    expect(screen.getByText("Auto-detect uses MacBook Pro Microphone.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Auto-detect|USB Mic/ }));
     await user.click(await screen.findByRole("option", { name: "USB Mic" }));
 
     expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
     await waitFor(() =>
-      expect(
-        screen.getByText("Input device used for dictation."),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("Input device used for dictation.")).toBeInTheDocument(),
     );
 
-    await user.click(
-      screen.getByRole("switch", { name: "Capture system audio for notes" }),
-    );
+    await user.click(screen.getByRole("switch", { name: "Capture system audio for notes" }));
     expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
   });
 
@@ -863,9 +849,10 @@ describe("AppSettings", () => {
       }),
     });
     await waitFor(() =>
-      expect(
-        screen.getByRole("progressbar", { name: "Microphone test level" }),
-      ).toHaveAttribute("aria-valuenow", "72"),
+      expect(screen.getByRole("progressbar", { name: "Microphone test level" })).toHaveAttribute(
+        "aria-valuenow",
+        "72",
+      ),
     );
 
     mocks.eventHandler?.({
@@ -879,25 +866,17 @@ describe("AppSettings", () => {
       }),
     });
 
-    expect(
-      await screen.findByText("Sample ready. Check volume."),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Play microphone test sample" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Start over" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Sample ready. Check volume.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play microphone test sample" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start over" })).toBeInTheDocument();
 
-    const play = vi
-      .spyOn(window.HTMLMediaElement.prototype, "play")
-      .mockImplementation(function (this: HTMLMediaElement) {
-        this.dispatchEvent(new Event("play"));
-        return Promise.resolve();
-      });
-    await user.click(
-      screen.getByRole("button", { name: "Play microphone test sample" }),
-    );
+    const play = vi.spyOn(window.HTMLMediaElement.prototype, "play").mockImplementation(function (
+      this: HTMLMediaElement,
+    ) {
+      this.dispatchEvent(new Event("play"));
+      return Promise.resolve();
+    });
+    await user.click(screen.getByRole("button", { name: "Play microphone test sample" }));
 
     expect(play).toHaveBeenCalledTimes(1);
     expect(
@@ -987,21 +966,15 @@ describe("AppSettings", () => {
       }),
     ).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
-    );
+    await user.click(screen.getByRole("button", { name: /Auto-detect|USB Mic/ }));
     await user.click(await screen.findByRole("option", { name: "USB Mic" }));
 
     expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
       type: "discard_mic_test",
     });
     expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
-    expect(
-      screen.getByRole("button", { name: "Start test" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Play microphone test sample" }),
-    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Start test" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Play microphone test sample" })).toBeNull();
   });
 
   it("resets microphone test state when leaving audio settings", async () => {
@@ -1045,12 +1018,8 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Audio" }));
-    expect(
-      screen.getByRole("button", { name: "Start test" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Play microphone test sample" }),
-    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Start test" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Play microphone test sample" })).toBeNull();
   });
 
   it("saves the default transcription language", async () => {
@@ -1131,28 +1100,18 @@ describe("AppSettings", () => {
       />,
     );
 
-    const microphoneRow = screen
-      .getByText("Microphone")
-      .closest(".settings-row");
-    const accessibilityRow = screen
-      .getByText("Accessibility")
-      .closest(".settings-row");
-    const systemAudioRow = screen
-      .getByText("System audio")
-      .closest(".settings-row");
+    const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
+    const accessibilityRow = screen.getByText("Accessibility").closest(".settings-row");
+    const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
 
     expect(microphoneRow).not.toBeNull();
     expect(accessibilityRow).not.toBeNull();
     expect(systemAudioRow).not.toBeNull();
-    expect(
-      within(microphoneRow as HTMLElement).getByLabelText("Blocked"),
-    ).toBeInTheDocument();
+    expect(within(microphoneRow as HTMLElement).getByLabelText("Blocked")).toBeInTheDocument();
     expect(
       within(accessibilityRow as HTMLElement).getByLabelText("Needs access"),
     ).toBeInTheDocument();
-    expect(
-      within(systemAudioRow as HTMLElement).getByLabelText("Blocked"),
-    ).toBeInTheDocument();
+    expect(within(systemAudioRow as HTMLElement).getByLabelText("Blocked")).toBeInTheDocument();
 
     await user.click(
       within(microphoneRow as HTMLElement).getByRole("button", {
@@ -1227,16 +1186,12 @@ describe("AppSettings", () => {
         />,
       );
 
-      expect(
-        screen.getByText("Access used for recording audio."),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
       expect(screen.queryByText("System audio")).not.toBeInTheDocument();
 
-      const microphoneRow = screen
-        .getByText("Microphone")
-        .closest(".settings-row");
+      const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
       expect(microphoneRow).not.toBeNull();
       await userEvent.click(
         within(microphoneRow as HTMLElement).getByRole("button", {
@@ -1261,9 +1216,7 @@ describe("AppSettings", () => {
       ).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
-      expect(
-        screen.getByText("Dictation shortcuts unavailable"),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     } finally {
       restoreNavigator();
@@ -1288,9 +1241,7 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Shortcuts" }));
     expect(await screen.findByText("Push to talk")).toBeInTheDocument();
     expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
-    expect(
-      screen.queryByLabelText("Dictation activation mode"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Dictation activation mode")).not.toBeInTheDocument();
 
     const changeButtons = await screen.findAllByRole("button", {
       name: "Change",
@@ -1337,9 +1288,7 @@ describe("AppSettings", () => {
       }),
     );
 
-    await user.click(
-      (await screen.findAllByRole("button", { name: "Change" }))[0],
-    );
+    await user.click((await screen.findAllByRole("button", { name: "Change" }))[0]);
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
@@ -1381,9 +1330,7 @@ describe("AppSettings", () => {
       }),
     );
 
-    await user.click(
-      (await screen.findAllByRole("button", { name: "Change" }))[1],
-    );
+    await user.click((await screen.findAllByRole("button", { name: "Change" }))[1]);
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
@@ -1563,10 +1510,8 @@ describe("AppSettings", () => {
 
   it("does not show reset for legacy default shortcuts without key codes", async () => {
     const user = userEvent.setup();
-    const { keyCode: _pushKeyCode, ...legacyPushToTalkShortcut } =
-      baseSettings.pushToTalkShortcut;
-    const { keyCode: _toggleKeyCode, ...legacyToggleShortcut } =
-      baseSettings.toggleShortcut;
+    const { keyCode: _pushKeyCode, ...legacyPushToTalkShortcut } = baseSettings.pushToTalkShortcut;
+    const { keyCode: _toggleKeyCode, ...legacyToggleShortcut } = baseSettings.toggleShortcut;
 
     mocks.dictationSettings.mockResolvedValue({
       settings: {
@@ -1608,10 +1553,7 @@ describe("AppSettings", () => {
   it("loads Venice model options and saves selected models", async () => {
     const user = userEvent.setup();
     const modelChanged = vi.fn();
-    window.addEventListener(
-      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
-      modelChanged,
-    );
+    window.addEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
 
     try {
       render(
@@ -1627,31 +1569,20 @@ describe("AppSettings", () => {
         />,
       );
 
-      await waitFor(() =>
-        expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
-      );
+      await waitFor(() => expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"));
       await user.click(screen.getByRole("tab", { name: "Models" }));
       await user.click(
         await screen.findByRole("button", {
           name: "Change transcription model",
         }),
       );
-      expect(
-        await screen.findByRole("option", { name: /Parakeet/ }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole("option", { name: /Parakeet/ })).toBeInTheDocument();
       // The non-suggested catalog lives under the All tab.
       await user.click(screen.getByRole("tab", { name: "All" }));
-      expect(
-        screen.getAllByText("$0.0001 per second audio").length,
-      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("$0.0001 per second audio").length).toBeGreaterThan(0);
       expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
-      await user.click(
-        await screen.findByRole("option", { name: /GPT-4o Transcribe/ }),
-      );
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-        "transcription",
-        "gpt-4o-transcribe",
-      );
+      await user.click(await screen.findByRole("option", { name: /GPT-4o Transcribe/ }));
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("transcription", "gpt-4o-transcribe");
       expect(modelChanged).toHaveBeenCalledWith(
         expect.objectContaining({
           detail: {
@@ -1673,13 +1604,8 @@ describe("AppSettings", () => {
       expect(screen.getAllByText("Private mode").length).toBeGreaterThan(0);
       expect(screen.getByText("Anonymous mode")).toBeInTheDocument();
       expect(screen.queryByText("Anon")).not.toBeInTheDocument();
-      await user.click(
-        await screen.findByRole("option", { name: /Venice Uncensored/ }),
-      );
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-        "generation",
-        "venice-uncensored",
-      );
+      await user.click(await screen.findByRole("option", { name: /Venice Uncensored/ }));
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
       expect(modelChanged).toHaveBeenCalledWith(
         expect.objectContaining({
           detail: {
@@ -1689,11 +1615,44 @@ describe("AppSettings", () => {
         }),
       );
     } finally {
-      window.removeEventListener(
-        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
-        modelChanged,
-      );
+      window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
     }
+  });
+
+  it("saves and removes a Venice API key without displaying it", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    // The Venice API key lives behind "More options" so the average user never
+    // has to reason about it. It should be hidden until the row is expanded.
+    expect(screen.queryByLabelText("Venice API key")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /More options/ }));
+
+    const input = await screen.findByLabelText("Venice API key");
+    await user.type(input, "  vc_test_key  ");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mocks.setVeniceApiKey).toHaveBeenCalledWith("vc_test_key");
+    expect(await screen.findByText("Key saved.")).toBeInTheDocument();
+    expect(input).toHaveValue("");
+    expect(screen.queryByDisplayValue("vc_test_key")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(mocks.clearVeniceApiKey).toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText("Key saved.")).not.toBeInTheDocument());
   });
 
   it("defaults the model picker to curated suggestions", async () => {
@@ -1712,46 +1671,52 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Change text model" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
 
     // Suggested is the default view: only the curated picks present in the
     // catalog show, each with its recommendation reason.
-    expect(
-      await screen.findByRole("option", { name: /GLM 5\.2/ }),
-    ).toBeInTheDocument();
-    expect(
-      await screen.findByRole("option", { name: /GLM 5\.1/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: /Kimi K2\.6/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("option", { name: /Venice Uncensored/ }),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Venice Uncensored/ })).not.toBeInTheDocument();
     expect(screen.getByText(/Default pick/)).toBeInTheDocument();
 
     // All shows the full catalog, without recommendation copy.
     await user.click(screen.getByRole("tab", { name: "All" }));
-    expect(
-      screen.getByRole("option", { name: /Venice Uncensored/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
     expect(screen.queryByText(/Default pick/)).not.toBeInTheDocument();
 
     // Searching looks across the whole catalog even from Suggested, and a
     // suggested pick stays selectable.
     await user.click(screen.getByRole("tab", { name: "Suggested" }));
     await user.type(screen.getByLabelText("Search models"), "uncensored");
-    expect(
-      screen.getByRole("option", { name: /Venice Uncensored/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
     await user.clear(screen.getByLabelText("Search models"));
     await user.click(screen.getByRole("option", { name: /GLM 5\.1/ }));
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-      "generation",
-      "zai-org-glm-5-1",
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-1");
+  });
+
+  it("hides the image generation model settings while image generation is disabled", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
     );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    expect(screen.queryByRole("heading", { name: "Image generation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change image model" })).not.toBeInTheDocument();
+    expect(mocks.listVeniceModels).not.toHaveBeenCalledWith("image");
+    expect(mocks.setVeniceModel).not.toHaveBeenCalledWith("image", expect.any(String));
   });
 
   it("blocks selecting a text model that cannot use tools", async () => {
@@ -1772,9 +1737,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Change text model" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
     // Tool-less models are not suggested, so judge them on the All tab.
     await user.click(await screen.findByRole("tab", { name: "All" }));
 
@@ -1789,10 +1752,7 @@ describe("AppSettings", () => {
 
     // Tool-capable models stay selectable.
     await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-      "generation",
-      "venice-uncensored",
-    );
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
   });
 
   it("shows app build metadata", async () => {
@@ -1843,6 +1803,100 @@ describe("AppSettings", () => {
     expect(onCheckForUpdates).toHaveBeenCalledOnce();
   });
 
+  it("switches the release channel from About", async () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    // The control loads the persisted channel before becoming interactive.
+    const rcOption = await screen.findByRole("button", {
+      name: "Release candidate",
+    });
+    await user.click(rcOption);
+
+    expect(mocks.setReleaseChannel).toHaveBeenCalledWith("rc");
+  });
+
+  it("offers a stable reconcile when leaving rc on a prerelease build", async () => {
+    mocks.getReleaseChannel.mockResolvedValue("rc");
+    mocks.reconcileToStable.mockResolvedValue({ version: "9.9.8" });
+    const onReconcileToStable = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+        onReconcileToStable={onReconcileToStable}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    const stableOption = await screen.findByRole("button", { name: "Stable" });
+    await user.click(stableOption);
+
+    expect(mocks.setReleaseChannel).toHaveBeenCalledWith("stable");
+    // The bespoke in-context confirm names the exact stable on offer plus the
+    // base the rc will reach once promoted (9.9.9-rc.2 -> 9.9.9).
+    const confirm = await screen.findByText(/Installs 9\.9\.8/);
+    expect(confirm).toHaveTextContent("9.9.9");
+
+    await user.click(screen.getByRole("button", { name: "Switch to stable" }));
+    expect(onReconcileToStable).toHaveBeenCalledOnce();
+  });
+
+  it("skips the reconcile offer when stable has nothing to install", async () => {
+    mocks.getReleaseChannel.mockResolvedValue("rc");
+    mocks.reconcileToStable.mockResolvedValue(null);
+    const onReconcileToStable = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+        onReconcileToStable={onReconcileToStable}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    const stableOption = await screen.findByRole("button", { name: "Stable" });
+    await user.click(stableOption);
+
+    await waitFor(() => expect(mocks.reconcileToStable).toHaveBeenCalled());
+    expect(screen.queryByText(/Switch to stable now/)).not.toBeInTheDocument();
+    expect(onReconcileToStable).not.toHaveBeenCalled();
+  });
+
   it("opens the server attestation page from About through Rust", async () => {
     // Not an anchor: the webview drops target="_blank" navigations, so the
     // button must invoke the june_open_verify_page command instead.
@@ -1861,9 +1915,7 @@ describe("AppSettings", () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("tab", { name: "About" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Verify server" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Verify server" }));
     expect(mocks.juneOpenVerifyPage).toHaveBeenCalledOnce();
   });
 
@@ -1916,14 +1968,10 @@ describe("AppSettings", () => {
 
       const user = userEvent.setup();
       await user.click(screen.getByRole("tab", { name: "About" }));
-      await user.click(
-        await screen.findByRole("button", { name: "Replay onboarding" }),
-      );
+      await user.click(await screen.findByRole("button", { name: "Replay onboarding" }));
 
       // The completion flag is gone and the app reloads into the wizard.
-      expect(
-        window.localStorage.getItem("june.onboarding.completedVersion"),
-      ).toBeNull();
+      expect(window.localStorage.getItem("june.onboarding.completedVersion")).toBeNull();
       expect(reload).toHaveBeenCalledOnce();
     } finally {
       Object.defineProperty(window, "location", {
@@ -1961,9 +2009,7 @@ describe("AppSettings", () => {
   it("shows a refreshable messaging state when platform loading hangs", async () => {
     vi.useFakeTimers();
     try {
-      mocks.hermesBridgeMessagingPlatforms.mockReturnValue(
-        new Promise(() => {}),
-      );
+      mocks.hermesBridgeMessagingPlatforms.mockReturnValue(new Promise(() => {}));
       render(
         <AppSettings
           account={signedInAccount}
@@ -1987,9 +2033,7 @@ describe("AppSettings", () => {
 
       expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
       expect(screen.getByText("No matching platforms")).toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Refresh" }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -2052,15 +2096,11 @@ describe("AppSettings", () => {
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
 
     await user.click(cliSwitch);
-    await waitFor(() =>
-      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true),
-    );
+    await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true));
     expect(cliSwitch).toHaveAttribute("aria-checked", "true");
 
     await user.click(cliSwitch);
-    await waitFor(() =>
-      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false),
-    );
+    await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false));
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
   });
 });

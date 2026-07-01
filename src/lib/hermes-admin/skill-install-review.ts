@@ -27,11 +27,7 @@ import type {
   HermesSkillScanFinding,
   HermesSkillScanVerdict,
 } from "./schemas";
-import {
-  isDirectUrlInstall,
-  sourceKindFor,
-  sourceKindMeta,
-} from "./hub-search-view";
+import { isDirectUrlInstall, sourceKindFor, sourceKindMeta } from "./hub-search-view";
 
 /** The shared copy line the review surfaces, explaining the trust model. */
 export const SKILL_TRUST_MODEL_COPY =
@@ -59,38 +55,36 @@ export type VerdictMeta = {
   gate: SkillInstallGate;
 };
 
-const VERDICT_META: Readonly<Record<HermesSkillScanVerdict, VerdictMeta>> =
-  Object.freeze({
-    trusted: {
-      verdict: "trusted",
-      label: "Trusted",
-      tone: "trusted",
-      headline: "This skill is from a trusted source.",
-      gate: "allow",
-    },
-    caution: {
-      verdict: "caution",
-      label: "Review before installing",
-      tone: "caution",
-      headline: "Review this community skill before installing it.",
-      gate: "review",
-    },
-    dangerous: {
-      verdict: "dangerous",
-      label: "Blocked",
-      tone: "danger",
-      headline: "Hermes blocked this skill. It cannot be installed from June.",
-      gate: "blocked",
-    },
-    unknown: {
-      verdict: "unknown",
-      label: "Unverified",
-      tone: "neutral",
-      headline:
-        "This skill has not been verified. Review it before installing.",
-      gate: "review",
-    },
-  });
+const VERDICT_META: Readonly<Record<HermesSkillScanVerdict, VerdictMeta>> = Object.freeze({
+  trusted: {
+    verdict: "trusted",
+    label: "Trusted",
+    tone: "trusted",
+    headline: "This skill is from a trusted source.",
+    gate: "allow",
+  },
+  caution: {
+    verdict: "caution",
+    label: "Review before installing",
+    tone: "caution",
+    headline: "Review this community skill before installing it.",
+    gate: "review",
+  },
+  dangerous: {
+    verdict: "dangerous",
+    label: "Blocked",
+    tone: "danger",
+    headline: "Hermes blocked this skill. It cannot be installed from June.",
+    gate: "blocked",
+  },
+  unknown: {
+    verdict: "unknown",
+    label: "Unverified",
+    tone: "neutral",
+    headline: "This skill has not been verified. Review it before installing.",
+    gate: "review",
+  },
+});
 
 /** The display metadata for a verdict. */
 export function verdictMeta(verdict: HermesSkillScanVerdict): VerdictMeta {
@@ -108,9 +102,7 @@ export function verdictMeta(verdict: HermesSkillScanVerdict): VerdictMeta {
  *   is `unknown` (lowest trust, needs an advanced opt-in), a community result is
  *   `caution`, and an unverified result is `unknown`.
  */
-export function skillInstallVerdict(
-  result: HermesHubSkillResult,
-): HermesSkillScanVerdict {
+export function skillInstallVerdict(result: HermesHubSkillResult): HermesSkillScanVerdict {
   const scan = result.scan;
   if (scan?.verdict === "dangerous") return "dangerous";
   if (scan && scan.verdict !== "unknown") return scan.verdict;
@@ -149,9 +141,7 @@ export function allowsForceOverride(result: HermesHubSkillResult): boolean {
  * rather than "ships nothing". */
 export type BundleLine = { label: string; detail: string };
 
-export function bundleLines(
-  bundle: HermesSkillBundle | undefined,
-): BundleLine[] {
+export function bundleLines(bundle: HermesSkillBundle | undefined): BundleLine[] {
   if (!bundle) return [];
   const lines: BundleLine[] = [];
   const scripts = bundle.scriptCount;
@@ -170,11 +160,7 @@ export function bundleLines(
   return lines;
 }
 
-function pushCount(
-  lines: BundleLine[],
-  label: string,
-  count: number | undefined,
-): void {
+function pushCount(lines: BundleLine[], label: string, count: number | undefined): void {
   if (count === undefined || count <= 0) return;
   lines.push({ label, detail: `${count} ${plural(count, "file", "files")}` });
 }
@@ -184,9 +170,7 @@ function plural(n: number, one: string, many: string): string {
 }
 
 /** A finding's severity tone for styling. */
-export function findingTone(
-  finding: HermesSkillScanFinding,
-): "danger" | "caution" | "neutral" {
+export function findingTone(finding: HermesSkillScanFinding): "danger" | "caution" | "neutral" {
   if (finding.severity === "danger") return "danger";
   if (finding.severity === "warn") return "caution";
   return "neutral";
@@ -226,17 +210,14 @@ export function buildSkillInstallReview(
    * It takes precedence over the search-result scan. */
   installScan?: HermesSkillScan,
 ): SkillInstallReview {
-  const merged: HermesHubSkillResult = installScan
-    ? { ...result, scan: installScan }
-    : result;
+  const merged: HermesHubSkillResult = installScan ? { ...result, scan: installScan } : result;
   const verdict = verdictMeta(skillInstallVerdict(merged));
   const scan = merged.scan;
   const installable = verdict.gate !== "blocked";
   const canForce = allowsForceOverride(merged);
   // A scanned, gated verdict needs `force` to override; a plain low-trust
   // direct-URL install (no conclusive scan) just needs confirmation, not force.
-  const requiresForce =
-    installable && Boolean(scan) && verdict.gate !== "allow";
+  const requiresForce = installable && Boolean(scan) && verdict.gate !== "allow";
   return {
     identifier: merged.identifier,
     name: merged.name || merged.identifier,

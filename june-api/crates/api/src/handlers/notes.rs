@@ -1,6 +1,11 @@
 use crate::{
-    audio::validate_audio, auth::authenticated_user, envelope::ApiResponse, error::ApiError,
-    multipart::MultipartFields, state::ApiState, validation,
+    audio::validate_audio,
+    auth::{authenticated_user, provider_credentials},
+    envelope::ApiResponse,
+    error::ApiError,
+    multipart::MultipartFields,
+    state::ApiState,
+    validation,
 };
 use axum::{
     Json,
@@ -20,6 +25,7 @@ pub(crate) async fn transcribe(
     multipart: Multipart,
 ) -> Result<Json<ApiResponse<TranscribeResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     let limits = state.limits();
     let mut form = MultipartFields::collect(multipart, limits.max_audio_bytes).await?;
     let audio = form.required_audio()?;
@@ -65,6 +71,7 @@ pub(crate) async fn transcribe(
             language,
             model_id: ModelId(model_id),
             preview,
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(TranscribeResponse::from(output))))
@@ -76,6 +83,7 @@ pub(crate) async fn generate(
     Json(request): Json<GenerateRequest>,
 ) -> Result<Json<ApiResponse<GenerateResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
@@ -93,6 +101,7 @@ pub(crate) async fn generate(
             language: request.language,
             existing_generated_note: request.existing_generated_note,
             model_id: ModelId(model_id),
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(GenerateResponse::from(output))))

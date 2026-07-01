@@ -19,10 +19,7 @@ import {
 } from "../lib/hermes-admin";
 import { SkillSetupView } from "../components/settings/SkillSetupSection";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
-import {
-  FAKE_SECRET,
-  skillSetupScenario,
-} from "./fixtures/hermes-admin-scenarios";
+import { FAKE_SECRET, skillSetupScenario } from "./fixtures/hermes-admin-scenarios";
 
 /** Builds a setup engine from a harness (its shape matches SkillSetupEngine). */
 function engineFromHarness(scenario = skillSetupScenario()): {
@@ -53,11 +50,7 @@ describe("skill setup — requirement parsing", () => {
         { name: "OPTIONAL_KEY", optional: true },
       ],
     });
-    expect(req.env.map((e) => e.name)).toEqual([
-      "PLAIN_KEY",
-      "OPENAI_API_KEY",
-      "OPTIONAL_KEY",
-    ]);
+    expect(req.env.map((e) => e.name)).toEqual(["PLAIN_KEY", "OPENAI_API_KEY", "OPTIONAL_KEY"]);
     expect(req.env[0].required).toBe(true); // bare name defaults to required
     expect(req.env[1].prompt).toBe("OpenAI API key");
     expect(req.env[1].requiredFor).toBe("model calls");
@@ -182,9 +175,7 @@ describe("skill setup — badge + model", () => {
   });
 
   it("encodes the skills.config dotted path consistently", () => {
-    expect(skillConfigPath("research", "model")).toBe(
-      "skills.config.research.model",
-    );
+    expect(skillConfigPath("research", "model")).toBe("skills.config.research.model");
     expect(skillConfigPathSegments("research", "model")).toEqual([
       "skills",
       "config",
@@ -233,16 +224,11 @@ describe("skill setup — config validation", () => {
   });
 
   it("accepts a blank optional value", () => {
-    expect(validateConfigValue({ key: "x", required: false }, "").ok).toBe(
-      true,
-    );
+    expect(validateConfigValue({ key: "x", required: false }, "").ok).toBe(true);
   });
 
   it("rejects a path value with line breaks", () => {
-    const result = validateConfigValue(
-      { key: "output_dir", required: false },
-      "~/a\n~/b",
-    );
+    const result = validateConfigValue({ key: "output_dir", required: false }, "~/a\n~/b");
     expect(result.ok).toBe(false);
   });
 });
@@ -256,12 +242,8 @@ describe("skill setup — config endpoint parsing", () => {
     const { config } = parseConfigResult({
       config: { skills: { config: { exporter: { output_dir: "~/notes" } } } },
     });
-    expect(
-      readConfigPath(config, ["skills", "config", "exporter", "output_dir"]),
-    ).toBe("~/notes");
-    expect(
-      readConfigPath(config, ["skills", "config", "missing", "k"]),
-    ).toBeUndefined();
+    expect(readConfigPath(config, ["skills", "config", "exporter", "output_dir"])).toBe("~/notes");
+    expect(readConfigPath(config, ["skills", "config", "missing", "k"])).toBeUndefined();
   });
 
   it("defaults a config write to next-session timing", () => {
@@ -284,9 +266,7 @@ describe("skill setup — controller", () => {
     const controller = new SkillSetupController(engine, "research", research());
     await controller.load();
     const { model } = controller.getSnapshot();
-    const openai = model.env.find(
-      (e) => e.requirement.name === "OPENAI_API_KEY",
-    );
+    const openai = model.env.find((e) => e.requirement.name === "OPENAI_API_KEY");
     const serp = model.env.find((e) => e.requirement.name === "SERP_API_KEY");
     expect(openai?.configured).toBe(false); // missing required
     expect(serp?.configured).toBe(true); // optional, set
@@ -301,18 +281,12 @@ describe("skill setup — controller", () => {
     const setSpy = vi.spyOn(engine.client.env, "set");
     const controller = new SkillSetupController(engine, "research", research());
     await controller.load();
-    await controller.setSecret(
-      "OPENAI_API_KEY",
-      "sk-FAKE-NEW-VALUE-123456789012",
-    );
+    await controller.setSecret("OPENAI_API_KEY", "sk-FAKE-NEW-VALUE-123456789012");
     const openai = controller
       .getSnapshot()
       .model.env.find((e) => e.requirement.name === "OPENAI_API_KEY");
     expect(openai?.configured).toBe(true);
-    expect(setSpy).toHaveBeenCalledWith(
-      "OPENAI_API_KEY",
-      "sk-FAKE-NEW-VALUE-123456789012",
-    );
+    expect(setSpy).toHaveBeenCalledWith("OPENAI_API_KEY", "sk-FAKE-NEW-VALUE-123456789012");
     controller.dispose();
   });
 
@@ -359,13 +333,8 @@ describe("skill setup — controller", () => {
     expect(before?.current).toBe("~/notes");
 
     await controller.setConfig("format", "json");
-    expect(setSpy).toHaveBeenCalledWith(
-      ["skills", "config", "exporter", "format"],
-      "json",
-    );
-    const after = controller
-      .getSnapshot()
-      .model.config.find((c) => c.requirement.key === "format");
+    expect(setSpy).toHaveBeenCalledWith(["skills", "config", "exporter", "format"], "json");
+    const after = controller.getSnapshot().model.config.find((c) => c.requirement.key === "format");
     expect(after?.current).toBe("json");
     controller.dispose();
   });
@@ -395,12 +364,7 @@ describe("skill setup — controller", () => {
     );
     await controller.load();
     await controller.deleteConfig("output_dir");
-    expect(delSpy).toHaveBeenCalledWith([
-      "skills",
-      "config",
-      "exporter",
-      "output_dir",
-    ]);
+    expect(delSpy).toHaveBeenCalledWith(["skills", "config", "exporter", "output_dir"]);
     const after = controller
       .getSnapshot()
       .model.config.find((c) => c.requirement.key === "output_dir");
@@ -425,9 +389,7 @@ describe("skill setup — controller", () => {
 // ---------------------------------------------------------------------------
 
 describe("skill setup — view", () => {
-  function stateWith(
-    overrides: Partial<SkillSetupState> = {},
-  ): SkillSetupState {
+  function stateWith(overrides: Partial<SkillSetupState> = {}): SkillSetupState {
     const requirements: HermesSkillSetupRequirements = {
       env: [
         {
@@ -436,9 +398,7 @@ describe("skill setup — view", () => {
           required: true,
         },
       ],
-      config: [
-        { key: "output_dir", prompt: "Output directory", required: true },
-      ],
+      config: [{ key: "output_dir", prompt: "Output directory", required: true }],
     };
     const model = buildSkillSetupModel(
       requirements,
@@ -488,10 +448,7 @@ describe("skill setup — view", () => {
         name: "Save",
       }),
     );
-    expect(setSecret).toHaveBeenCalledWith(
-      "OPENAI_API_KEY",
-      "sk-FAKE-typed-123456",
-    );
+    expect(setSecret).toHaveBeenCalledWith("OPENAI_API_KEY", "sk-FAKE-typed-123456");
     // After save the field is cleared (value lives in Hermes now).
     await waitFor(() => expect((field as HTMLInputElement).value).toBe(""));
   });

@@ -7,12 +7,7 @@ type FolderPickerProps = {
   onRemove: (folderId: string) => void;
 };
 
-export function FolderPicker({
-  folders,
-  folderIds,
-  onAssign,
-  onRemove,
-}: FolderPickerProps) {
+export function FolderPicker({ folders, folderIds, onAssign, onRemove }: FolderPickerProps) {
   return (
     <div className="folder-picker">
       {folders.map((folder) => {
@@ -22,9 +17,7 @@ export function FolderPicker({
             <input
               type="checkbox"
               checked={assigned}
-              onChange={() =>
-                assigned ? onRemove(folder.id) : onAssign(folder.id)
-              }
+              onChange={() => (assigned ? onRemove(folder.id) : onAssign(folder.id))}
             />
             {folder.name}
           </label>

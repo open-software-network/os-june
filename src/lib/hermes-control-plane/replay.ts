@@ -53,9 +53,7 @@ export function replayFixture(fixture: HermesReplayFixture): JuneHermesEvent[] {
 
 /** Like {@link replayFixture}, but pairs each classified event with its source
  * frame and index for precise, low-noise test diagnostics. */
-export function replayFixtureFrames(
-  fixture: HermesReplayFixture,
-): ReplayedFrame[] {
+export function replayFixtureFrames(fixture: HermesReplayFixture): ReplayedFrame[] {
   return fixture.frames.map((raw, index) => ({
     index,
     raw,

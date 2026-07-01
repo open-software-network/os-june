@@ -30,16 +30,9 @@ import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import type { HermesAddMcpServerPayload } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesMcpServerInfo, HermesMcpTestResult } from "./schemas";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives one MCP servers page operates on, all
  * bound to the SAME target. Production builds this from a bridge connection (see
@@ -228,10 +221,7 @@ export class McpServersController {
       if (this.disposed) return;
       this.applyOptimistic(name, current.enabled);
       this.pending.delete(name);
-      const adminError = HermesAdminError.from(
-        `PUT /api/mcp/servers/${name}/enabled`,
-        error,
-      );
+      const adminError = HermesAdminError.from(`PUT /api/mcp/servers/${name}/enabled`, error);
       this.error = adminError.safeMessage;
       this.recompute();
     }
@@ -261,10 +251,7 @@ export class McpServersController {
       return state;
     } catch (error) {
       if (this.disposed) return this.tests.get(name) ?? { pending: false };
-      const adminError = HermesAdminError.from(
-        `POST /api/mcp/servers/${name}/test`,
-        error,
-      );
+      const adminError = HermesAdminError.from(`POST /api/mcp/servers/${name}/test`, error);
       const state: McpTestState = {
         pending: false,
         error: adminError.safeMessage,
@@ -324,10 +311,7 @@ export class McpServersController {
     } catch (error) {
       if (this.disposed) return false;
       this.pending.delete(name);
-      const adminError = HermesAdminError.from(
-        `DELETE /api/mcp/servers/${name}`,
-        error,
-      );
+      const adminError = HermesAdminError.from(`DELETE /api/mcp/servers/${name}`, error);
       this.error = adminError.safeMessage;
       this.recompute();
       return false;
@@ -380,19 +364,13 @@ export class McpServersController {
   private readonly refresh = (): void => {
     void this.load();
   };
-  private readonly setEnabledAction = (
-    name: string,
-    enabled: boolean,
-  ): void => {
+  private readonly setEnabledAction = (name: string, enabled: boolean): void => {
     void this.setEnabled(name, enabled);
   };
-  private readonly testAction = (name: string): Promise<McpTestState> =>
-    this.test(name);
-  private readonly addAction = (
-    payload: HermesAddMcpServerPayload,
-  ): Promise<boolean> => this.add(payload);
-  private readonly removeAction = (name: string): Promise<boolean> =>
-    this.remove(name);
+  private readonly testAction = (name: string): Promise<McpTestState> => this.test(name);
+  private readonly addAction = (payload: HermesAddMcpServerPayload): Promise<boolean> =>
+    this.add(payload);
+  private readonly removeAction = (name: string): Promise<boolean> => this.remove(name);
   private readonly dismissNotificationAction = (id: string): void => {
     this.dismissNotification(id);
   };
@@ -403,13 +381,8 @@ export class McpServersController {
  * yields the "unavailable" state without constructing a controller. The
  * controller loads once on mount and tears down on unmount.
  */
-export function useMcpServersController(
-  engine: McpServersEngine | null,
-): McpServersState {
-  const controller = useMemo(
-    () => (engine ? new McpServersController(engine) : null),
-    [engine],
-  );
+export function useMcpServersController(engine: McpServersEngine | null): McpServersState {
+  const controller = useMemo(() => (engine ? new McpServersController(engine) : null), [engine]);
 
   const [snapshot, setSnapshot] = useState<McpServersState>(() =>
     controller ? controller.getSnapshot() : UNAVAILABLE_STATE,
@@ -520,9 +493,7 @@ export function useMcpServers(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

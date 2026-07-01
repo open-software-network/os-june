@@ -34,20 +34,12 @@ const EXTENSION_ICONS: Record<string, typeof IconFileText> = {
 /** The icon component matching a file's type, derived from its extension.
  * Accepts a bare filename or a full path. */
 export function fileTypeIconComponent(nameOrPath: string): typeof IconFileText {
-  const extension = nameOrPath
-    .slice(nameOrPath.lastIndexOf(".") + 1)
-    .toLowerCase();
+  const extension = nameOrPath.slice(nameOrPath.lastIndexOf(".") + 1).toLowerCase();
   return EXTENSION_ICONS[extension] ?? IconFileText;
 }
 
 /** Renders the file-type glyph for a filename. */
-export function FileTypeIcon({
-  name,
-  size = 14,
-}: {
-  name: string;
-  size?: number;
-}) {
+export function FileTypeIcon({ name, size = 14 }: { name: string; size?: number }) {
   const Icon = fileTypeIconComponent(name);
   return <Icon size={size} />;
 }

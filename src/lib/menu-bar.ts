@@ -2,10 +2,8 @@ import type { AgentSessionStatusDetail } from "./agent-events";
 import type { HermesSessionInfo } from "./tauri";
 
 export const AGENT_MENU_BAR_STATE_EVENT = "june:menu-bar:agent-state";
-export const AGENT_MENU_BAR_NEW_SESSION_EVENT =
-  "june:menu-bar:new-agent-session";
-export const AGENT_MENU_BAR_OPEN_SESSION_EVENT =
-  "june:menu-bar:open-agent-session";
+export const AGENT_MENU_BAR_NEW_SESSION_EVENT = "june:menu-bar:new-agent-session";
+export const AGENT_MENU_BAR_OPEN_SESSION_EVENT = "june:menu-bar:open-agent-session";
 export const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT = "june:menu-bar:set-agent-hud";
 export const CLOSE_TAB_EVENT = "june://close-tab";
 export const OPEN_SETTINGS_EVENT = "june://open-settings";
@@ -73,11 +71,7 @@ export function buildAgentMenuBarState({
     .map((session) => ({
       id: session.id,
       title: titleForSession(session),
-      status: statusForSession(
-        session.id,
-        workingSessionIds,
-        waitingSessionIds,
-      ),
+      status: statusForSession(session.id, workingSessionIds, waitingSessionIds),
       lastActive: sessionTimestamp(session),
     }));
 
@@ -152,8 +146,7 @@ function sessionTimestamp(session: HermesSessionInfo) {
 function timestampString(value: unknown) {
   if (typeof value === "string" && value.trim()) return value;
   if (typeof value === "number" && Number.isFinite(value)) {
-    const milliseconds =
-      value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+    const milliseconds = value > 0 && value < 10_000_000_000 ? value * 1000 : value;
     return new Date(milliseconds).toISOString();
   }
   return new Date(0).toISOString();

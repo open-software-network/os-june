@@ -19,10 +19,7 @@ import {
   type McpCatalogState,
 } from "../lib/hermes-admin";
 import { McpCatalogView } from "../components/settings/McpCatalogSection";
-import {
-  makeAdminHarness,
-  instantSleep,
-} from "./fixtures/hermes-admin-harness";
+import { makeAdminHarness, instantSleep } from "./fixtures/hermes-admin-harness";
 import { mcpCatalogBrowseScenario } from "./fixtures/hermes-admin-scenarios";
 
 /** Parses a wire-shaped object into a HermesMcpCatalogEntry. */
@@ -53,22 +50,14 @@ describe("mcp catalog — schema", () => {
   it("classifies auth: explicit api-key/oauth/third-party/none", () => {
     expect(entryFromWire({ name: "a", auth: "api-key" }).auth).toBe("api-key");
     expect(entryFromWire({ name: "b", auth: "oauth" }).auth).toBe("oauth");
-    expect(entryFromWire({ name: "c", auth: "third-party" }).auth).toBe(
-      "third-party",
-    );
+    expect(entryFromWire({ name: "c", auth: "third-party" }).auth).toBe("third-party");
     expect(entryFromWire({ name: "d", auth: "none" }).auth).toBe("none");
   });
 
   it("infers oauth from transport/flag and api-key from required env", () => {
-    expect(entryFromWire({ name: "e", transport: "http-oauth" }).auth).toBe(
-      "oauth",
-    );
-    expect(entryFromWire({ name: "f", requires_oauth: true }).auth).toBe(
-      "oauth",
-    );
-    expect(
-      entryFromWire({ name: "g", required_env: [{ key: "TOKEN" }] }).auth,
-    ).toBe("api-key");
+    expect(entryFromWire({ name: "e", transport: "http-oauth" }).auth).toBe("oauth");
+    expect(entryFromWire({ name: "f", requires_oauth: true }).auth).toBe("oauth");
+    expect(entryFromWire({ name: "g", required_env: [{ key: "TOKEN" }] }).auth).toBe("api-key");
     expect(entryFromWire({ name: "h" }).auth).toBe("unknown");
   });
 
@@ -157,17 +146,13 @@ describe("mcp catalog — view logic", () => {
   it("derives the catalog status: available / installed-disabled / enabled", () => {
     expect(catalogStatusOf(fetchEntry)).toBe("available");
     expect(catalogStatusOf(installedEntry)).toBe("installed-disabled");
-    expect(
-      catalogStatusOf(
-        entryFromWire({ name: "on", installed: true, enabled: true }),
-      ),
-    ).toBe("enabled");
+    expect(catalogStatusOf(entryFromWire({ name: "on", installed: true, enabled: true }))).toBe(
+      "enabled",
+    );
   });
 
   it("collects env requirements only for api-key entries (not oauth)", () => {
-    expect(envRequirementsFor(githubEntry).map((r) => r.key)).toEqual([
-      "GITHUB_TOKEN",
-    ]);
+    expect(envRequirementsFor(githubEntry).map((r) => r.key)).toEqual(["GITHUB_TOKEN"]);
     expect(envRequirementsFor(linearEntry)).toEqual([]);
     expect(needsCredentials(githubEntry)).toBe(true);
     expect(needsCredentials(fetchEntry)).toBe(false);
@@ -175,17 +160,12 @@ describe("mcp catalog — view logic", () => {
 
   it("flags oauth/third-party as needing an auth handoff", () => {
     expect(needsAuthHandoff(linearEntry)).toBe(true);
-    expect(
-      needsAuthHandoff(entryFromWire({ name: "stripe", auth: "third-party" })),
-    ).toBe(true);
+    expect(needsAuthHandoff(entryFromWire({ name: "stripe", auth: "third-party" }))).toBe(true);
     expect(needsAuthHandoff(fetchEntry)).toBe(false);
   });
 
   it("validates an install draft: required env must be present", () => {
-    const blank = validateInstallDraft(
-      githubEntry,
-      emptyInstallDraft(githubEntry),
-    );
+    const blank = validateInstallDraft(githubEntry, emptyInstallDraft(githubEntry));
     expect(blank.ok).toBe(false);
     if (!blank.ok) expect(blank.errors.GITHUB_TOKEN).toBeTruthy();
 
@@ -241,9 +221,7 @@ describe("mcp catalog — controller", () => {
 
   it("surfaces a retryable error on load failure", async () => {
     const { harness, controller } = controllerFor();
-    vi.spyOn(harness.client.mcp, "catalog").mockRejectedValueOnce(
-      new Error("boom"),
-    );
+    vi.spyOn(harness.client.mcp, "catalog").mockRejectedValueOnce(new Error("boom"));
     await controller.load();
     expect(controller.getSnapshot().status).toBe("error");
     expect(controller.getSnapshot().retryable).toBe(true);
@@ -253,9 +231,7 @@ describe("mcp catalog — controller", () => {
   it("installs a no-auth entry (background), invalidates mcpServers, restart-required", async () => {
     const { harness, controller } = controllerFor();
     await controller.load();
-    const fetchEntry = controller
-      .getSnapshot()
-      .entries.find((e) => e.installName === "fetch")!;
+    const fetchEntry = controller.getSnapshot().entries.find((e) => e.installName === "fetch")!;
     const payload = { name: "fetch" };
 
     const progresses: Array<number | undefined> = [];
@@ -277,23 +253,18 @@ describe("mcp catalog — controller", () => {
     const note = controller.getSnapshot().notifications.at(-1);
     expect(note?.timing).toBe("gateway-restart");
     expect(note?.message).toContain("Restart Hermes gateway");
-    expect(controller.getSnapshot().lifecycle.state).toBe(
-      "gateway-restart-required",
-    );
+    expect(controller.getSnapshot().lifecycle.state).toBe("gateway-restart-required");
     // The entry reflects installed locally without a reload.
-    expect(
-      controller.getSnapshot().entries.find((e) => e.installName === "fetch")
-        ?.installed,
-    ).toBe(true);
+    expect(controller.getSnapshot().entries.find((e) => e.installName === "fetch")?.installed).toBe(
+      true,
+    );
     controller.dispose();
   });
 
   it("installed entries appear in the MCP servers list", async () => {
     const { harness, controller } = controllerFor();
     await controller.load();
-    const fetchEntry = controller
-      .getSnapshot()
-      .entries.find((e) => e.installName === "fetch")!;
+    const fetchEntry = controller.getSnapshot().entries.find((e) => e.installName === "fetch")!;
     await controller.install(fetchEntry, { name: "fetch" });
     const servers = await harness.client.mcp.listServers();
     expect(servers.some((s) => s.name === "fetch")).toBe(true);
@@ -303,9 +274,7 @@ describe("mcp catalog — controller", () => {
   it("sends required env in the install body and never logs the secret", async () => {
     const { harness, controller } = controllerFor();
     await controller.load();
-    const githubEntry = controller
-      .getSnapshot()
-      .entries.find((e) => e.installName === "github")!;
+    const githubEntry = controller.getSnapshot().entries.find((e) => e.installName === "github")!;
     const secret = "ghp_FAKE_secret_value_123";
     await controller.install(githubEntry, {
       name: "github",
@@ -313,12 +282,10 @@ describe("mcp catalog — controller", () => {
     });
     expect(controller.getSnapshot().installs.get("github")?.phase).toBe("done");
     // The secret reached the install endpoint body...
-    const installReq = harness.server.requestLog.find(
-      (r) => r.path === "/api/mcp/catalog/install",
-    );
-    expect((installReq?.body as { env?: Record<string, string> })?.env).toEqual(
-      { GITHUB_TOKEN: secret },
-    );
+    const installReq = harness.server.requestLog.find((r) => r.path === "/api/mcp/catalog/install");
+    expect((installReq?.body as { env?: Record<string, string> })?.env).toEqual({
+      GITHUB_TOKEN: secret,
+    });
     // ...but was never written to the transport log.
     expect(JSON.stringify(harness.logs)).not.toContain(secret);
     controller.dispose();
@@ -327,9 +294,7 @@ describe("mcp catalog — controller", () => {
   it("marks an oauth install as needing an auth handoff", async () => {
     const { controller } = controllerFor();
     await controller.load();
-    const linearEntry = controller
-      .getSnapshot()
-      .entries.find((e) => e.installName === "linear")!;
+    const linearEntry = controller.getSnapshot().entries.find((e) => e.installName === "linear")!;
     await controller.install(linearEntry, { name: "linear" });
     const state = controller.getSnapshot().installs.get("linear");
     expect(state?.phase).toBe("done");
@@ -349,9 +314,7 @@ describe("mcp catalog — controller", () => {
     };
     const { controller } = controllerFor(scenario);
     await controller.load();
-    const fetchEntry = controller
-      .getSnapshot()
-      .entries.find((e) => e.installName === "fetch")!;
+    const fetchEntry = controller.getSnapshot().entries.find((e) => e.installName === "fetch")!;
     await controller.install(fetchEntry, { name: "fetch" });
     const state = controller.getSnapshot().installs.get("fetch");
     expect(state?.phase).toBe("failed");
@@ -363,9 +326,7 @@ describe("mcp catalog — controller", () => {
   it("clears a terminal install state", async () => {
     const { controller } = controllerFor();
     await controller.load();
-    const fetchEntry = controller
-      .getSnapshot()
-      .entries.find((e) => e.installName === "fetch")!;
+    const fetchEntry = controller.getSnapshot().entries.find((e) => e.installName === "fetch")!;
     await controller.install(fetchEntry, { name: "fetch" });
     expect(controller.getSnapshot().installs.get("fetch")?.phase).toBe("done");
     controller.clearInstall("fetch");
@@ -435,9 +396,7 @@ describe("mcp catalog — view", () => {
   it("installs a no-auth entry directly, with no env payload", () => {
     const install = vi.fn();
     render(<McpCatalogView state={baseState({ install })} />);
-    const fetchCard = screen
-      .getByRole("button", { name: "Fetch" })
-      .closest("li") as HTMLElement;
+    const fetchCard = screen.getByRole("button", { name: "Fetch" }).closest("li") as HTMLElement;
     fireEvent.click(within(fetchCard).getByRole("button", { name: "Install" }));
     expect(install).toHaveBeenCalledTimes(1);
     expect(install.mock.calls[0][1]).toMatchObject({ name: "fetch" });
@@ -446,12 +405,8 @@ describe("mcp catalog — view", () => {
 
   it("opens the install dialog for an entry that needs credentials", () => {
     render(<McpCatalogView state={baseState()} />);
-    const githubCard = screen
-      .getByRole("button", { name: "GitHub" })
-      .closest("li") as HTMLElement;
-    fireEvent.click(
-      within(githubCard).getByRole("button", { name: "Install" }),
-    );
+    const githubCard = screen.getByRole("button", { name: "GitHub" }).closest("li") as HTMLElement;
+    fireEvent.click(within(githubCard).getByRole("button", { name: "Install" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText(/Install GitHub/)).toBeInTheDocument();
     // A masked input for the required env value is shown.
@@ -462,12 +417,8 @@ describe("mcp catalog — view", () => {
   it("requires the credential and then sends it in the install payload", () => {
     const install = vi.fn();
     render(<McpCatalogView state={baseState({ install })} />);
-    const githubCard = screen
-      .getByRole("button", { name: "GitHub" })
-      .closest("li") as HTMLElement;
-    fireEvent.click(
-      within(githubCard).getByRole("button", { name: "Install" }),
-    );
+    const githubCard = screen.getByRole("button", { name: "GitHub" }).closest("li") as HTMLElement;
+    fireEvent.click(within(githubCard).getByRole("button", { name: "Install" }));
     const dialog = screen.getByRole("dialog");
     // Submitting blank surfaces a validation error, no install.
     fireEvent.click(within(dialog).getByRole("button", { name: "Install" }));
@@ -503,24 +454,18 @@ describe("mcp catalog — view", () => {
     });
     render(<McpCatalogView state={state} />);
     expect(screen.getByText("Installed, disabled")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Reinstall" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reinstall" })).toBeInTheDocument();
   });
 
   it("shows install progress and a restart-to-apply done state", () => {
     const progressing = baseState({
-      installs: new Map([
-        ["fetch", { installName: "fetch", phase: "installing", progress: 50 }],
-      ]),
+      installs: new Map([["fetch", { installName: "fetch", phase: "installing", progress: 50 }]]),
     });
     const { rerender } = render(<McpCatalogView state={progressing} />);
     expect(screen.getByText(/installing 50%/i)).toBeInTheDocument();
 
     const done = baseState({
-      installs: new Map([
-        ["fetch", { installName: "fetch", phase: "done", progress: 100 }],
-      ]),
+      installs: new Map([["fetch", { installName: "fetch", phase: "done", progress: 100 }]]),
     });
     rerender(<McpCatalogView state={done} />);
     expect(screen.getByText("Restart to apply")).toBeInTheDocument();
@@ -529,10 +474,7 @@ describe("mcp catalog — view", () => {
   it("shows a done state that points to the sign-in handoff", () => {
     const state = baseState({
       installs: new Map([
-        [
-          "linear",
-          { installName: "linear", phase: "done", needsAuthHandoff: true },
-        ],
+        ["linear", { installName: "linear", phase: "done", needsAuthHandoff: true }],
       ]),
     });
     render(<McpCatalogView state={state} />);
@@ -544,10 +486,7 @@ describe("mcp catalog — view", () => {
     const state = baseState({
       install,
       installs: new Map([
-        [
-          "fetch",
-          { installName: "fetch", phase: "failed", error: "Install blocked." },
-        ],
+        ["fetch", { installName: "fetch", phase: "failed", error: "Install blocked." }],
       ]),
     });
     render(<McpCatalogView state={state} />);

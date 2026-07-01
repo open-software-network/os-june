@@ -15,14 +15,7 @@ type SidebarResizeConfig = {
 export function handleSidebarResizeStart(
   event: ReactPointerEvent<HTMLDivElement>,
   currentWidth: number,
-  {
-    collapseWidth,
-    minWidth,
-    maxWidth,
-    onStart,
-    onEnd,
-    commit = flushSync,
-  }: SidebarResizeConfig,
+  { collapseWidth, minWidth, maxWidth, onStart, onEnd, commit = flushSync }: SidebarResizeConfig,
 ) {
   if (event.button !== 0) return;
   event.preventDefault();
@@ -55,10 +48,7 @@ export function handleSidebarResizeStart(
   // committed sidebar state catches up on pointer-up.
   function setSnapTransition(animate: boolean) {
     const timing = "var(--t-med) var(--ease-out)";
-    if (shell)
-      shell.style.transition = animate
-        ? `--sidebar-w-current ${timing}`
-        : "none";
+    if (shell) shell.style.transition = animate ? `--sidebar-w-current ${timing}` : "none";
   }
 
   function beginSnapTransition() {
@@ -76,11 +66,7 @@ export function handleSidebarResizeStart(
   // to transition-less tracking: killing it mid-flight teleports the sidebar
   // from the interpolated width to the cursor in a single frame.
   function onSnapTweenEnd(endEvent: TransitionEvent) {
-    if (
-      endEvent.target !== shell ||
-      endEvent.propertyName !== "--sidebar-w-current"
-    )
-      return;
+    if (endEvent.target !== shell || endEvent.propertyName !== "--sidebar-w-current") return;
     snapTweening = false;
     setSnapTransition(false);
   }

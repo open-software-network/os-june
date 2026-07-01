@@ -1,6 +1,9 @@
 use crate::{
-    auth::authenticated_user, error::ApiError, handlers::notes::require_priced_model,
-    state::ApiState, validation,
+    auth::{authenticated_user, provider_credentials},
+    error::ApiError,
+    handlers::notes::require_priced_model,
+    state::ApiState,
+    validation,
 };
 use axum::{
     Json,
@@ -17,6 +20,7 @@ pub(crate) async fn chat_completions(
     Json(mut body): Json<serde_json::Value>,
 ) -> Result<Response, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     let model_id = body
         .get("model")
         .and_then(serde_json::Value::as_str)
@@ -39,6 +43,7 @@ pub(crate) async fn chat_completions(
             user_id,
             model_id: ModelId(model_id),
             body,
+            provider_credentials,
         })
         .await?;
     Ok((
