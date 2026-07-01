@@ -265,6 +265,20 @@ find "$out/python" -maxdepth 1 -type l -delete
 find "$out/python/current/bin" -type l -delete
 rm -rf "$out/python/current/lib/pkgconfig" "$out/python/current/share"
 
+# Drop the tcl/tk GUI tier. The agent runtime is headless and never imports
+# tkinter, and linuxdeploy dependency-walks every ELF in the AppDir but does
+# not search the bundle's own lib/ for _tkinter's libtcl, so shipping it
+# breaks AppImage packaging (and costs ~20 MB).
+find "$out/python/current/lib" -maxdepth 1 \( \
+  -name 'libtcl*' -o -name 'libtk*' -o \
+  -name 'tcl[0-9]*' -o -name 'tk[0-9]*' -o \
+  -name 'itcl*' -o -name 'thread[0-9]*' \
+\) -exec rm -rf {} +
+stdlib_dir="$out/python/current/lib/python3.11"
+rm -rf "$stdlib_dir/tkinter" "$stdlib_dir/idlelib" "$stdlib_dir/turtledemo" \
+  "$stdlib_dir/turtle.py"
+find "$stdlib_dir/lib-dynload" -name '_tkinter*' -delete
+
 log "installing python deps (uv sync --extra all --locked)"
 # Same tiers as install.sh "python-deps": the hash-verified lockfile sync
 # first; when the shipped lockfile is out of sync with pyproject (it is at the
