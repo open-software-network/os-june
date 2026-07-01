@@ -550,8 +550,12 @@ pub async fn os_accounts_upgrade() -> Result<(), AppError> {
             "OS Accounts is not configured for this build.",
         ));
     }
-    let session: CheckoutSessionWire =
-        authed_post(&cfg, "/billing/subscription", serde_json::json!({})).await?;
+    let session: CheckoutSessionWire = authed_post(
+        &cfg,
+        "/billing/subscription",
+        subscription_checkout_request(),
+    )
+    .await?;
     let url = session.url.trim();
     if url.is_empty() {
         return Err(AppError::new(
@@ -560,6 +564,12 @@ pub async fn os_accounts_upgrade() -> Result<(), AppError> {
         ));
     }
     open_in_browser(url)
+}
+
+fn subscription_checkout_request() -> serde_json::Value {
+    serde_json::json!({
+        "allow_promotion_codes": true,
+    })
 }
 
 /// Opens the accounts portal in the default browser. The webview swallows
@@ -1479,5 +1489,13 @@ mod tests {
     fn oauth_scope_allows_checkout_and_credit_spend() {
         assert!(OAUTH_SCOPES.contains("billing:write"));
         assert!(OAUTH_SCOPES.contains("credits:spend"));
+    }
+
+    #[test]
+    fn subscription_checkout_request_allows_promotion_codes() {
+        assert_eq!(
+            subscription_checkout_request(),
+            serde_json::json!({ "allow_promotion_codes": true })
+        );
     }
 }
