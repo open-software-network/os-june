@@ -426,7 +426,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             display_name: "GPT-4o mini transcribe".to_string(),
             description: Some("Fast OpenAI speech-to-text model.".to_string()),
             privacy: Some("anonymized".to_string()),
-            pricing: Some(serde_json::json!({ "display": "$0.00125/sec audio" })),
+            pricing: Some(serde_json::json!({ "display": "$0.00125 per second audio" })),
             context_tokens: Some(16_000),
             traits: vec!["prompt".to_string()],
             capabilities: Vec::new(),
