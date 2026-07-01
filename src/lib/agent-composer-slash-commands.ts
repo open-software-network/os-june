@@ -1,3 +1,5 @@
+import { IMAGE_GENERATION_ENABLED } from "./feature-flags";
+
 export type BuiltinComposerSlashCommandName = "model" | "file" | "image";
 
 export type BuiltinComposerSlashCommandDef = {
@@ -26,7 +28,7 @@ export type SlashModelResolution =
   | { status: "missing"; query: string }
   | { status: "ambiguous"; query: string; matches: ComposerSlashModelOption[] };
 
-export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] = [
+const BASE_BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] = [
   {
     name: "model",
     label: "Model",
@@ -39,13 +41,20 @@ export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] =
     description: "Attach files to this message.",
     insertText: "/file ",
   },
-  {
-    name: "image",
-    label: "Image",
-    description: "Generate an image from a prompt.",
-    insertText: "/image ",
-  },
 ];
+
+export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] =
+  IMAGE_GENERATION_ENABLED
+    ? [
+        ...BASE_BUILTIN_COMPOSER_SLASH_COMMANDS,
+        {
+          name: "image",
+          label: "Image",
+          description: "Generate an image from a prompt.",
+          insertText: "/image ",
+        },
+      ]
+    : BASE_BUILTIN_COMPOSER_SLASH_COMMANDS;
 
 export function parseBuiltinComposerSlashCommand(
   input: string,

@@ -59,7 +59,6 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "web",
   "browser",
   "vision",
-  "image_gen",
   "tts",
   "skills",
   "todo",

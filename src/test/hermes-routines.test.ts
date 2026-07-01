@@ -139,6 +139,10 @@ describe("Routines Hermes integration", () => {
     });
   });
 
+  it("keeps image generation out of unrestricted routine toolsets", () => {
+    expect(UNRESTRICTED_ROUTINE_TOOLSETS).not.toContain("image_gen");
+  });
+
   it("does not queue a manual run when the persistent gateway cannot start", async () => {
     mocks.ensureHermesBridgeGateway.mockRejectedValue(new Error("gateway unavailable"));
 

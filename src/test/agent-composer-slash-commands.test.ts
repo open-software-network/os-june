@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  matchBuiltinComposerSlashCommands,
   parseBuiltinComposerSlashCommand,
   parseSlashFileArguments,
   resolveSlashModel,
@@ -17,8 +18,20 @@ describe("agent composer built-in slash commands", () => {
       name: "file",
       argument: "./notes.md",
     });
+    expect(parseBuiltinComposerSlashCommand("/image a red bicycle")).toEqual({
+      name: "image",
+      argument: "a red bicycle",
+    });
     expect(parseBuiltinComposerSlashCommand("/repo-build-pr fix it")).toBeNull();
     expect(parseBuiltinComposerSlashCommand("/Users/alex/Desktop/report.pdf summarize")).toBeNull();
+  });
+
+  it("hides image generation from built-in slash suggestions", () => {
+    expect(matchBuiltinComposerSlashCommands("")).toEqual([
+      expect.objectContaining({ name: "model" }),
+      expect.objectContaining({ name: "file" }),
+    ]);
+    expect(matchBuiltinComposerSlashCommands("image")).toEqual([]);
   });
 
   it("parses quoted file paths", () => {

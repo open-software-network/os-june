@@ -231,6 +231,7 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage } from "../../lib/chat-image-generation";
+import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
 import { CategoryIcon } from "./composer/CategoryIcon";
 import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
@@ -2946,6 +2947,10 @@ export function AgentWorkspace({
     }
 
     if (parsed.name === "image") {
+      if (!IMAGE_GENERATION_ENABLED) {
+        setError("Image generation is not available.");
+        return true;
+      }
       await runImageSlashCommand(parsed.argument, commandText);
       return true;
     }
