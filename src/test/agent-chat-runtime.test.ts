@@ -1176,6 +1176,59 @@ describe("Agent chat runtime", () => {
     expect(tool?.type === "tool" ? tool.text : "").toContain("src/App.tsx");
   });
 
+  it("renders an MCP image tool result as an inline image part (JUN-171 Phase B)", () => {
+    // The june_image MCP returns an image content block plus a JSON text block
+    // carrying the filename/label. The image must render in-thread (so it also
+    // enters the model's context) and its base64 must NOT leak into the
+    // collapsed tool row's text.
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-06-04T10:00:00.000Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: {
+              name: "generate_image",
+              arguments: { prompt: "a red bicycle" },
+            },
+          },
+        ]),
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "generate_image",
+        content: [
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+          {
+            type: "text",
+            text: JSON.stringify({
+              filename: "generated-image-abc.png",
+              label: "a red bicycle",
+              model: "venice-sd35",
+            }),
+          },
+        ],
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    const image = turns[0]?.parts.find((part) => part.type === "image");
+    expect(image).toMatchObject({
+      type: "image",
+      status: "complete",
+      prompt: "a red bicycle",
+      dataUrl: "data:image/png;base64,aGVsbG8=",
+      name: "generated-image-abc.png",
+    });
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.text : "").not.toContain("aGVsbG8=");
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],

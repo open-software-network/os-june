@@ -1446,6 +1446,15 @@ export function AgentWorkspace({
   const [imageTurnsBySession, setImageTurnsBySession] = useState<Record<string, AgentChatTurn[]>>(
     {},
   );
+  // JUN-171 (Phase A): the `/image` fast path renders in-thread but never enters
+  // the model's session history, so a follow-up ("do you think it's nice?")
+  // reaches an empty context. Hold each generated image here, keyed by session,
+  // and lazily attach it to the user's NEXT prompt via the same
+  // `image.attach_bytes` path composer attachments use — so the image lands in
+  // context exactly when the model first needs it. A ref (not state) on purpose:
+  // it must NOT render a composer chip (the image already shows in-thread; ADR
+  // 0003 decision 2). Cleared once attached.
+  const pendingFastPathImagesRef = useRef<Record<string, AgentAttachment[]>>({});
   // Per-session ordering for message fetches: the sequence handed out at
   // fetch start, and the highest sequence whose response was applied. See
   // listSessionMessagesOrdered.
@@ -3405,6 +3414,20 @@ export function AgentWorkspace({
         hermesModeFor(sessionId),
       );
       void loadFilesystemSnapshot();
+      // JUN-171 (Phase A): hold the generated image so the user's next message
+      // carries it into the model's context (lazy attach). No composer chip —
+      // it already renders in-thread as the assistant image turn above. Reuses
+      // attachmentStateFrom so it rides the exact structured-attach path a
+      // pasted/dropped image would (kind:"image", status:"imported").
+      const heldImage: AgentAttachment = {
+        ...result.file,
+        id: `held-image:${sessionId}:${Date.now()}`,
+        attach: attachmentStateFrom(result.file, sessionId),
+      };
+      pendingFastPathImagesRef.current = {
+        ...pendingFastPathImagesRef.current,
+        [sessionId]: [...(pendingFastPathImagesRef.current[sessionId] ?? []), heldImage],
+      };
     } catch (err) {
       updateImagePart({ status: "error", error: messageFromError(err) });
     } finally {
@@ -4397,7 +4420,16 @@ export function AgentWorkspace({
             defaultGenerationModelId
         : defaultGenerationModelId,
     );
-    const turnAttachments = options?.attachments ?? [];
+    // JUN-171 (Phase A): fold any held fast-path `/image` outputs for this
+    // session into the turn so they ride the same structured-attach path as
+    // composer images and enter the model's context. Never on the skipPrompt
+    // (`/image`) path itself — that would flush a prior image with no following
+    // prompt (the semantics ADR 0003 decision 2 deliberately avoids).
+    const heldFastPathImages =
+      options?.skipPrompt || !targetSessionId
+        ? []
+        : (pendingFastPathImagesRef.current[targetSessionId] ?? []);
+    const turnAttachments = [...(options?.attachments ?? []), ...heldFastPathImages];
     const pendingImages = pendingImageAttachments(
       turnAttachments.map((attachment) => attachment.attach),
     );
@@ -4568,6 +4600,17 @@ export function AgentWorkspace({
         clearQueuedIssueReport();
         rollbackOptimisticBeforePrompt(err);
       }
+    }
+    // JUN-171 (Phase A): the held fast-path images have now been attached (for a
+    // vision model) or folded into the path-in-prompt fallback (non-vision), so
+    // drop them — the following message must not re-attach the same image. A
+    // failed attach throws above (rollback) and never reaches here, so the hold
+    // survives for a retry. Single-flight submit guarantees nothing was added to
+    // the session's bucket between the merge and here.
+    if (heldFastPathImages.length) {
+      const next = { ...pendingFastPathImagesRef.current };
+      delete next[storedSessionId];
+      pendingFastPathImagesRef.current = next;
     }
     const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
     setRuntimeSessionIds((current) => ({
@@ -6019,10 +6062,24 @@ export function AgentWorkspace({
   // generated file uses. The image part carries its bytes inline for the
   // thumbnail, but the affordances key off the imported path on disk.
   const downloadGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
-    if (!part.path) return;
-    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+    // A `/image` result has an imported workspace file; save it through the
+    // bridge (native save dialog). A tool-produced image (june_image MCP) has
+    // no June-workspace path — its bytes live only in the inline data url, so
+    // save those directly via an anchor download.
+    if (part.path) {
+      void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
+        setError(messageFromError(err)),
+      );
+      return;
+    }
+    if (part.dataUrl) {
+      const link = document.createElement("a");
+      link.href = part.dataUrl;
+      link.download = part.name?.trim() || "generated-image.png";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
   };
   const openGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
     if (!part.path) return;
@@ -9778,17 +9835,28 @@ function AgentGeneratedImage({
     );
   }
   const label = part.name?.trim() || "Generated image";
+  // "Open" enlarges the imported file in the artifact viewer, which needs a
+  // workspace path. A tool-produced image (june_image MCP) has only inline
+  // bytes, so it renders as a plain frame (no dead open affordance); download
+  // still works off the data url.
+  const image = part.dataUrl ? (
+    <img src={part.dataUrl} alt={part.prompt} draggable={false} />
+  ) : null;
   return (
     <figure className="agent-generated-image" data-status="complete">
-      <button
-        type="button"
-        className="agent-generated-image-frame"
-        onClick={() => onOpen?.(part)}
-        aria-label={`Open ${label}`}
-        title="Open image"
-      >
-        {part.dataUrl ? <img src={part.dataUrl} alt={part.prompt} draggable={false} /> : null}
-      </button>
+      {part.path ? (
+        <button
+          type="button"
+          className="agent-generated-image-frame"
+          onClick={() => onOpen?.(part)}
+          aria-label={`Open ${label}`}
+          title="Open image"
+        >
+          {image}
+        </button>
+      ) : (
+        <div className="agent-generated-image-frame">{image}</div>
+      )}
       <figcaption className="agent-generated-image-bar">
         <span className="agent-generated-image-name" title={label}>
           {label}

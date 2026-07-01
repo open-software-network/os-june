@@ -5988,6 +5988,102 @@ describe("AgentWorkspace", () => {
     expect(mocks.importHermesBridgeFileBytes).not.toHaveBeenCalled();
   });
 
+  it("carries a /image fast-path image into the next message so a follow-up has it in context (JUN-171 Phase A)", async () => {
+    // JUN-171: the /image image renders in-thread but must also enter the
+    // model's session history, so a follow-up ("what do you think?") reaches the
+    // model WITH the image. On a vision model the held image is sent via
+    // image.attach_bytes before that follow-up's prompt.submit — and with NO
+    // composer chip in between (it already renders in-thread).
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    // The fast-path image renders in-thread with no composer chip.
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(document.querySelector(".agent-attachment-chip")).toBeNull();
+    // The /image itself never attaches (no prompt to carry it yet).
+    expect(
+      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
+    ).toBe(false);
+
+    await user.type(await screen.findByRole("textbox"), "what do you think");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    // The generated image lands in the session via image.attach_bytes, keyed to
+    // the same session, before the follow-up prompt.submit.
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+        session_id: "runtime-session-1",
+        mime_type: "image/png",
+        content_base64: "cHJldmlldw==",
+        filename: expect.stringMatching(/^generated-image-\d+\.png$/),
+      }),
+    );
+    const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "image.attach_bytes",
+    );
+    const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(attachIndex).toBeGreaterThanOrEqual(0);
+    expect(submitIndex).toBeGreaterThan(attachIndex);
+    // Attached exactly once — the held image is cleared after it goes through,
+    // not re-sent.
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "image.attach_bytes"),
+    ).toHaveLength(1);
+  });
+
+  it("falls back to a path-in-prompt for a /image image on a non-vision model (JUN-171 Phase A)", async () => {
+    // The default model (GLM 5.2) has no vision: the held /image image can't be
+    // "seen", so the follow-up's prompt names the image file (the existing
+    // unsupported-image fallback) instead of calling image.attach_bytes.
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("img", { name: "a red bicycle" });
+
+    await user.type(await screen.findByRole("textbox"), "what do you think");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    await waitFor(() => {
+      const submitCall = mocks.gatewayRequest.mock.calls.find(
+        ([method]) => method === "prompt.submit",
+      );
+      expect(submitCall?.[1]?.text).toContain("does not support image input");
+      expect(submitCall?.[1]?.text).toMatch(/generated-image-\d+\.png/);
+    });
+    // No structured attach on a non-vision model — the image rides as a path.
+    expect(
+      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
+    ).toBe(false);
+  });
+
   it("chooses one preferred image when paste exposes multiple representations", async () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();

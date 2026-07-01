@@ -207,6 +207,12 @@ export function buildHermesSessionChatTurns(
         text: textFromHermesContent(message.content) ?? "",
         status: "complete",
       });
+      // An image tool result carries its image inline (base64); render it as an
+      // image part so it shows in-thread instead of being lost to the collapsed
+      // tool row. The base64 is stripped from the tool text above.
+      for (const imagePart of imagePartsFromHermesContent(message.content)) {
+        turn.parts.push(imagePart);
+      }
       turn.status = "complete";
       continue;
     }
@@ -1210,6 +1216,10 @@ export function textFromHermesContent(value: unknown, depth = 0): string | undef
   }
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
+    // MCP image content blocks carry raw base64 in `data`; never surface that as
+    // "text" — it would dump a giant base64 string into a tool row. They render
+    // inline as image parts instead (see imagePartsFromHermesContent).
+    if (record.type === "image") return undefined;
     for (const key of ["text", "output_text", "content", "message", "delta", "summary"]) {
       const text = textFromHermesContent(record[key], depth + 1);
       if (text?.trim()) return text;
@@ -1223,6 +1233,88 @@ function parseLikelyJsonContent(value: string) {
   const trimmed = value.trim();
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return undefined;
   return safeJsonParse(trimmed);
+}
+
+type McpImageBlock = { data: string; mimeType: string };
+
+/** Collects MCP image content blocks ({type:"image", data:<base64>, mimeType})
+ * from a tool result. The content may be an array of blocks, a JSON string of
+ * one, or nested under `content`, so walk it defensively (depth-bounded). */
+function mcpImageContentBlocks(value: unknown, depth = 0): McpImageBlock[] {
+  if (value === null || value === undefined || depth > 4) return [];
+  if (typeof value === "string") {
+    const parsed = parseLikelyJsonContent(value);
+    return parsed !== undefined ? mcpImageContentBlocks(parsed, depth + 1) : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => mcpImageContentBlocks(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (record.type === "image" && typeof record.data === "string" && record.data.trim()) {
+      const mimeType =
+        typeof record.mimeType === "string" && record.mimeType.trim()
+          ? record.mimeType
+          : "image/png";
+      return [{ data: record.data, mimeType }];
+    }
+    if (Array.isArray(record.content)) {
+      return mcpImageContentBlocks(record.content, depth + 1);
+    }
+  }
+  return [];
+}
+
+/** The caption/filename an image tool ({@link mcpImageContentBlocks}) returned
+ * alongside its image, carried in a sibling JSON text block ({label, filename}).
+ * Best-effort: used for the inline image's alt text and open/download name. */
+function mcpImageMetadata(value: unknown, depth = 0): { label?: string; filename?: string } {
+  if (value === null || value === undefined || depth > 4) return {};
+  if (typeof value === "string") {
+    const parsed = parseLikelyJsonContent(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      const label = typeof record.label === "string" ? record.label : undefined;
+      const filename = typeof record.filename === "string" ? record.filename : undefined;
+      if (label || filename) return { label, filename };
+    }
+    return {};
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const meta = mcpImageMetadata(item, depth + 1);
+      if (meta.label || meta.filename) return meta;
+    }
+    return {};
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === "string") {
+      const meta = mcpImageMetadata(record.text, depth + 1);
+      if (meta.label || meta.filename) return meta;
+    }
+    if (Array.isArray(record.content)) {
+      return mcpImageMetadata(record.content, depth + 1);
+    }
+  }
+  return {};
+}
+
+/** Turns MCP image content blocks in a tool result into inline image parts, so a
+ * tool-produced image (e.g. the `june_image` MCP `generate_image`/`edit_image`
+ * tools) renders in-thread the same way the `/image` fast path does — and thus
+ * enters the session context the model reads. */
+export function imagePartsFromHermesContent(content: unknown): AgentChatImagePart[] {
+  const blocks = mcpImageContentBlocks(content);
+  if (!blocks.length) return [];
+  const meta = mcpImageMetadata(content);
+  return blocks.map((block) => ({
+    type: "image",
+    status: "complete",
+    prompt: meta.label?.trim() || "Generated image",
+    dataUrl: `data:${block.mimeType};base64,${block.data}`,
+    ...(meta.filename ? { name: meta.filename } : {}),
+  }));
 }
 
 function stripHermesContextMarkers(value: string) {
