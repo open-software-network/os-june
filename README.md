@@ -36,13 +36,7 @@
   <a href="https://x.com/OpenSoftwareCo">X</a>
 </p>
 
-![The June desktop app on macOS, showing the dictation history and the recording HUD](.github/assets/june-app.jpg)
-
-<!-- Demo GIF slot: drop a ~30 second recording at .github/assets/june-demo.gif
-     (dictation into a real app, a meeting note, an agent task with an approval),
-     then replace this comment with:
-![A 30 second tour of June: dictation, meeting notes, and an agent session](.github/assets/june-demo.gif)
--->
+![A 30 second tour of June: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/june-demo.gif)
 
 
 ## Why June
@@ -84,16 +78,20 @@ verifiable.
 
 <table>
   <tr>
-    <td width="50%">
-      <img src=".github/assets/june-welcome.png" alt="The June welcome screen: chat and work with June, speak instead of type, effortlessly capture meetings, private by default">
+    <td width="33%">
+      <img src=".github/assets/june-meeting-notes.jpg" alt="A meeting note in June with a live transcription preview while recording">
     </td>
-    <td width="50%">
-      <img src=".github/assets/june-agent-tray.png" alt="The June agent tray in the menu bar: three sessions running, one waiting for approval before acting">
+    <td width="33%">
+      <img src=".github/assets/june-agent-analysis.jpg" alt="A June agent session in private mode, reporting its analysis of a spreadsheet">
+    </td>
+    <td width="33%">
+      <img src=".github/assets/june-model-picker.jpg" alt="The June model picker, with each model labeled with pricing, context window, and its privacy tier">
     </td>
   </tr>
   <tr>
-    <td align="center">Private by default, from the first screen</td>
-    <td align="center">Agent sessions run in the background and ask before acting</td>
+    <td align="center">Meeting notes with live transcription, no bot in the call</td>
+    <td align="center">The agent working through a spreadsheet in private mode</td>
+    <td align="center">Every model labeled with its privacy tier</td>
   </tr>
 </table>
 
