@@ -18,6 +18,7 @@ pub enum ActionSlug {
     AgentChat,
     DictateCleanup,
     DictateTranscribe,
+    ImageEdit,
     ImageGenerate,
     NoteGenerate,
     NoteTranscribe,
@@ -31,6 +32,7 @@ impl ActionSlug {
             Self::AgentChat => "agent_chat",
             Self::DictateCleanup => "dictate_cleanup",
             Self::DictateTranscribe => "dictate_transcribe",
+            Self::ImageEdit => "image_edit",
             Self::ImageGenerate => "image_generate",
             Self::NoteGenerate => "note_generate",
             Self::NoteTranscribe => "note_transcribe",
@@ -223,6 +225,26 @@ pub struct ImageGenerationRequest {
     pub model: ModelId,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// Venice `safe_mode` (blurs adult content). `None` leaves it unset so Venice
+    /// applies its own default; a value forces it on/off. Carried so the on-device
+    /// safe-mode setting can flow through to generation.
+    pub safe_mode: Option<bool>,
+    pub provider_credentials: ProviderCredentials,
+}
+
+/// What an image editor needs: the source image bytes (base64, no `data:`
+/// prefix) plus its mime, the edit instruction, the model, optional Venice
+/// safe mode, and provider credentials. Image editing (img2img) is a SEPARATE
+/// Venice endpoint and model catalog from generation, with a raw-binary
+/// response, so it has its own domain type and provider rather than reusing
+/// the generator.
+#[derive(Clone, Debug)]
+pub struct ImageEditRequest {
+    pub image_base64: String,
+    pub mime_type: String,
+    pub prompt: String,
+    pub model: ModelId,
+    pub safe_mode: Option<bool>,
     pub provider_credentials: ProviderCredentials,
 }
 
@@ -401,6 +423,11 @@ pub trait ImageGenerator: Send + Sync {
         &self,
         request: ImageGenerationRequest,
     ) -> Result<GeneratedImage, DomainError>;
+}
+
+#[async_trait]
+pub trait ImageEditor: Send + Sync {
+    async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError>;
 }
 
 #[async_trait]

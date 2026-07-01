@@ -7,8 +7,8 @@ use june_config::{
 use june_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
     MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceImageGenerator,
-    VeniceModelCatalog, client_with_timeout, default_client, jwks_client,
+    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceImageEditor,
+    VeniceImageGenerator, VeniceModelCatalog, client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
@@ -166,11 +166,20 @@ fn build_router(
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
         generator: build_image_generator(upstream_http, &config.upstreams.venice),
+        editor: build_image_editor(upstream_http, &config.upstreams.venice),
         pricing: config
             .image_pricing
             .iter()
             .map(|(model, credits)| (model.clone(), ImageModelPrice::venice(*credits)))
             .collect(),
+        edit_pricing: config
+            .image_edit_pricing
+            .iter()
+            .map(|(model, credits)| (model.clone(), ImageModelPrice::venice(*credits)))
+            .collect(),
+        default_edit_model: config.default_image_edit_model.clone(),
+        // Edits are the same latency class as generation, so they reuse the
+        // image hold TTL rather than adding a second knob.
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_image_secs,
     }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
@@ -216,6 +225,16 @@ fn build_image_generator(
     venice: &june_config::UpstreamConfig,
 ) -> Arc<dyn june_domain::ImageGenerator> {
     Arc::new(VeniceImageGenerator::from_config(
+        upstream_http.clone(),
+        venice,
+    ))
+}
+
+fn build_image_editor(
+    upstream_http: &reqwest::Client,
+    venice: &june_config::UpstreamConfig,
+) -> Arc<dyn june_domain::ImageEditor> {
+    Arc::new(VeniceImageEditor::from_config(
         upstream_http.clone(),
         venice,
     ))

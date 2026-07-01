@@ -30,7 +30,7 @@ pub use handlers::dictate::{
     DictateCleanupRequest, DictateCleanupResponse, DictateTranscribeResponse,
 };
 pub use handlers::health::HealthDto;
-pub use handlers::image::{ImageGenerateRequest, ImageGenerateResponse};
+pub use handlers::image::{ImageEditRequest, ImageGenerateRequest, ImageGenerateResponse};
 pub use handlers::issues::IssueReportResponse;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
@@ -66,6 +66,12 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/image/generate",
             post(handlers::image::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            // Edits carry a base64 source image, which can exceed the JSON body
+            // budget, so give this route the audio-sized limit like uploads.
+            "/v1/image/edit",
+            post(handlers::image::edit).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
         )
         .route(
             "/v1/dictate",

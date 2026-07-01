@@ -9,8 +9,8 @@ use crate::{
 };
 use june_config::ModelProvider;
 use june_domain::{
-    ActionSlug, Credits, GeneratedImage, ImageGenerationRequest, ImageGenerator, ModelId,
-    OsAccountsClient, ProviderCredentials, Receipt, UserId,
+    ActionSlug, Credits, GeneratedImage, ImageEditRequest, ImageEditor, ImageGenerationRequest,
+    ImageGenerator, ModelId, OsAccountsClient, ProviderCredentials, Receipt, UserId,
 };
 use std::{
     collections::BTreeMap,
@@ -29,9 +29,17 @@ use std::{
 pub struct ImageServiceDeps {
     pub os_accounts: Arc<dyn OsAccountsClient>,
     pub generator: Arc<dyn ImageGenerator>,
+    pub editor: Arc<dyn ImageEditor>,
     /// Flat price and upstream provider per image model. A model absent here
     /// is rejected as `model_not_priced`.
     pub pricing: BTreeMap<String, ImageModelPrice>,
+    /// Flat price and upstream provider per EDITED image, keyed by edit model
+    /// id (a separate catalog). A model absent here is rejected as
+    /// `model_not_priced`.
+    pub edit_pricing: BTreeMap<String, ImageModelPrice>,
+    /// Edit model used when an edit request names none (the image MCP never
+    /// does). Must be a key in `edit_pricing`.
+    pub default_edit_model: String,
     pub hold_ttl_seconds: u64,
 }
 
@@ -53,10 +61,13 @@ impl ImageModelPrice {
 pub struct ImageService {
     os_accounts: Arc<dyn OsAccountsClient>,
     generator: Arc<dyn ImageGenerator>,
+    editor: Arc<dyn ImageEditor>,
     pricing: BTreeMap<String, ImageModelPrice>,
+    edit_pricing: BTreeMap<String, ImageModelPrice>,
+    default_edit_model: String,
     hold_ttl_seconds: u64,
-    /// Per-process sequence that makes every generation settle under a UNIQUE
-    /// charge key. Image generation is not idempotent — a repeat produces a new
+    /// Per-process sequence that makes every generation/edit settle under a
+    /// UNIQUE charge key. Image work is not idempotent — a repeat produces a new
     /// image and a new upstream cost — so the key is never client-supplied; that
     /// prevents replaying one settlement to mint free images.
     seq: AtomicU64,
@@ -67,7 +78,10 @@ impl ImageService {
         Self {
             os_accounts: deps.os_accounts,
             generator: deps.generator,
+            editor: deps.editor,
             pricing: deps.pricing,
+            edit_pricing: deps.edit_pricing,
+            default_edit_model: deps.default_edit_model,
             hold_ttl_seconds: deps.hold_ttl_seconds,
             seq: AtomicU64::new(0),
         }
@@ -99,6 +113,7 @@ impl ImageService {
                     model: ModelId(params.model.clone()),
                     width: params.width,
                     height: params.height,
+                    safe_mode: params.safe_mode,
                     provider_credentials: params.provider_credentials.clone(),
                 })
                 .await?;
@@ -125,6 +140,7 @@ impl ImageService {
                 model: ModelId(params.model.clone()),
                 width: params.width,
                 height: params.height,
+                safe_mode: params.safe_mode,
                 provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
@@ -145,6 +161,74 @@ impl ImageService {
         Ok(ImageGenerateOutput { image, receipt })
     }
 
+    /// Metered image edit (img2img), mirroring `generate`: resolve the edit
+    /// model (requests name none, so the default governs), reject an unpriced
+    /// model before any wallet/Venice call, authorize a hold, edit, then charge
+    /// the flat edit price under a unique key. A failed/rejected edit returns the
+    /// error WITHOUT charging (the hold expires).
+    pub async fn edit(&self, params: ImageEditParams) -> Result<ImageGenerateOutput, ServiceError> {
+        let model = params
+            .model
+            .clone()
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or_else(|| self.default_edit_model.clone());
+        let price = self
+            .edit_pricing
+            .get(&model)
+            .copied()
+            .ok_or(ServiceError::ModelNotPriced)?;
+        let estimate = Credits(price.credits);
+        if price.provider == ModelProvider::Venice
+            && uses_user_venice_key(&params.provider_credentials)
+        {
+            let image = self
+                .editor
+                .edit(ImageEditRequest {
+                    image_base64: params.image_base64.clone(),
+                    mime_type: params.mime_type.clone(),
+                    prompt: params.prompt.clone(),
+                    model: ModelId(model.clone()),
+                    safe_mode: params.safe_mode,
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await?;
+            log_skipped_user_venice_key(ActionSlug::ImageEdit, &params.user_id, &model);
+            return Ok(ImageGenerateOutput {
+                image,
+                receipt: zero_receipt(),
+            });
+        }
+        let authorization = authorize_or_deny(AuthorizeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::ImageEdit,
+            estimate,
+            hold_ttl_seconds: self.hold_ttl_seconds,
+        })
+        .await?;
+        let image = self
+            .editor
+            .edit(ImageEditRequest {
+                image_base64: params.image_base64.clone(),
+                mime_type: params.mime_type.clone(),
+                prompt: params.prompt.clone(),
+                model: ModelId(model.clone()),
+                safe_mode: params.safe_mode,
+                provider_credentials: params.provider_credentials.clone(),
+            })
+            .await?;
+        let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
+        let receipt = charge(ChargeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            action_token: authorization.action_token,
+            credits: charge_credits,
+            idempotency_key: self.edit_idempotency_key(&params, &model),
+        })
+        .await?;
+        log_settled(ActionSlug::ImageEdit, &params.user_id, &model, &receipt);
+        Ok(ImageGenerateOutput { image, receipt })
+    }
+
     /// Each successful generation gets a distinct charge key from the
     /// per-process sequence, so a repeat can never replay a prior settlement to
     /// bill zero. A transport-level retry of THIS one charge reuses the same
@@ -158,6 +242,17 @@ impl ImageService {
             sha256_hex(image_shape(params).as_bytes())
         )
     }
+
+    /// The edit counterpart of [`Self::idempotency_key`]: distinct per edit via
+    /// the shared sequence, so two edits settle as two charges.
+    fn edit_idempotency_key(&self, params: &ImageEditParams, model: &str) -> String {
+        format!(
+            "image_edit:{}:{}:{}",
+            params.user_id.0,
+            self.seq.fetch_add(1, Ordering::Relaxed),
+            sha256_hex(edit_shape(params, model).as_bytes())
+        )
+    }
 }
 
 /// A canonical string for everything that shapes an image, hashed into the
@@ -169,6 +264,20 @@ fn image_shape(params: &ImageGenerateParams) -> String {
         "model": params.model,
         "width": params.width,
         "height": params.height,
+        "safe_mode": params.safe_mode,
+    })
+    .to_string()
+}
+
+/// A canonical string for everything that shapes an edit, hashed into the
+/// idempotency key. The source image is itself hashed (not embedded whole) to
+/// keep the key small while still distinguishing different source images.
+fn edit_shape(params: &ImageEditParams, model: &str) -> String {
+    serde_json::json!({
+        "prompt": params.prompt,
+        "model": model,
+        "image": sha256_hex(params.image_base64.as_bytes()),
+        "safe_mode": params.safe_mode,
     })
     .to_string()
 }
@@ -180,6 +289,20 @@ pub struct ImageGenerateParams {
     pub model: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub safe_mode: Option<bool>,
+    pub provider_credentials: ProviderCredentials,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImageEditParams {
+    pub user_id: UserId,
+    /// Source image as raw base64 (no `data:` prefix).
+    pub image_base64: String,
+    pub mime_type: String,
+    pub prompt: String,
+    /// `None` uses the service's default edit model.
+    pub model: Option<String>,
+    pub safe_mode: Option<bool>,
     pub provider_credentials: ProviderCredentials,
 }
 
@@ -191,13 +314,15 @@ pub struct ImageGenerateOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageGenerateParams, ImageModelPrice, ImageService, ImageServiceDeps};
+    use super::{
+        ImageEditParams, ImageGenerateParams, ImageModelPrice, ImageService, ImageServiceDeps,
+    };
     use async_trait::async_trait;
     use june_config::ModelProvider;
     use june_domain::{
         Authorization, AuthorizeRequest, ChargeRequest, DomainError, GeneratedImage,
-        ImageGenerationRequest, ImageGenerator, OsAccountsClient, ProviderCredentials, Receipt,
-        UserId,
+        ImageEditRequest, ImageEditor, ImageGenerationRequest, ImageGenerator, OsAccountsClient,
+        ProviderCredentials, Receipt, UserId,
     };
     use pretty_assertions::assert_eq;
     use std::{
@@ -295,6 +420,20 @@ mod tests {
         }
     }
 
+    struct FixedEditor;
+
+    #[async_trait]
+    impl ImageEditor for FixedEditor {
+        async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError> {
+            Ok(GeneratedImage {
+                image_base64: "ZWRpdGVk".to_string(),
+                mime_type: "image/png".to_string(),
+                model: request.model.0,
+                provider: "venice".to_string(),
+            })
+        }
+    }
+
     fn service(
         os_accounts: Arc<RecordingOsAccounts>,
         generator: Arc<dyn ImageGenerator>,
@@ -302,7 +441,13 @@ mod tests {
         ImageService::new(ImageServiceDeps {
             os_accounts,
             generator,
+            editor: Arc::new(FixedEditor),
             pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
+            edit_pricing: BTreeMap::from([(
+                "firered-image-edit".to_string(),
+                ImageModelPrice::venice(80),
+            )]),
+            default_edit_model: "firered-image-edit".to_string(),
             hold_ttl_seconds: 60,
         })
     }
@@ -314,6 +459,19 @@ mod tests {
             model: model.to_string(),
             width: None,
             height: None,
+            safe_mode: None,
+            provider_credentials: ProviderCredentials::default(),
+        }
+    }
+
+    fn edit_params() -> ImageEditParams {
+        ImageEditParams {
+            user_id: UserId("usr_1".to_string()),
+            image_base64: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+            prompt: "make it fluffier".to_string(),
+            model: None,
+            safe_mode: Some(false),
             provider_credentials: ProviderCredentials::default(),
         }
     }
@@ -426,6 +584,7 @@ mod tests {
         let service = ImageService::new(ImageServiceDeps {
             os_accounts: os_accounts.clone(),
             generator: Arc::new(FixedGenerator),
+            editor: Arc::new(FixedEditor),
             pricing: BTreeMap::from([(
                 "openai-image".to_string(),
                 ImageModelPrice {
@@ -433,6 +592,8 @@ mod tests {
                     provider: ModelProvider::Openai,
                 },
             )]),
+            edit_pricing: BTreeMap::new(),
+            default_edit_model: "firered-image-edit".to_string(),
             hold_ttl_seconds: 60,
         });
         let mut params = params("openai-image");
@@ -475,5 +636,66 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(charge_keys.len(), 2);
         assert_ne!(charge_keys[0], charge_keys[1]);
+    }
+
+    #[tokio::test]
+    async fn edit_authorizes_then_charges_the_default_edit_model_price() {
+        // An edit with no model uses the default edit model and charges its flat
+        // edit price under the image_edit action.
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let output = service(os_accounts.clone(), Arc::new(FixedGenerator))
+            .edit(edit_params())
+            .await
+            .expect("edit succeeds");
+
+        assert_eq!(output.receipt.credits_charged.0, 80);
+        let events = os_accounts.events();
+        assert_eq!(
+            events[0],
+            Call::Authorize {
+                action: "image_edit".to_string(),
+                estimate: 80,
+            }
+        );
+        match &events[1] {
+            Call::Charge {
+                credits,
+                idempotency_key,
+            } => {
+                assert_eq!(*credits, 80);
+                assert!(idempotency_key.starts_with("image_edit:usr_1:"));
+            }
+            Call::Authorize { .. } => panic!("expected a charge, got an authorize"),
+        }
+    }
+
+    #[tokio::test]
+    async fn user_venice_key_edits_without_wallet_authorize_or_charge() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let mut params = edit_params();
+        params.provider_credentials = ProviderCredentials {
+            venice_api_key: Some("vc_user_key".to_string()),
+        };
+        let output = service(os_accounts.clone(), Arc::new(FixedGenerator))
+            .edit(params)
+            .await
+            .expect("edit succeeds");
+
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert!(os_accounts.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn edit_with_an_unpriced_model_is_rejected_before_any_wallet_call() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let result = service(os_accounts.clone(), Arc::new(FixedGenerator))
+            .edit(ImageEditParams {
+                model: Some("some-unpriced-edit-model".to_string()),
+                ..edit_params()
+            })
+            .await;
+
+        assert!(matches!(result, Err(crate::ServiceError::ModelNotPriced)));
+        assert!(os_accounts.events().is_empty());
     }
 }

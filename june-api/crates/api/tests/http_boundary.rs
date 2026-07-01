@@ -9,10 +9,10 @@ use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageGenerationRequest,
-    ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient, Receipt, TokenUsage,
-    Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest, WebFetchResult,
-    WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
+    GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageEditRequest, ImageEditor,
+    ImageGenerationRequest, ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient,
+    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
+    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
@@ -600,6 +600,58 @@ async fn integration_image_generate_rejects_unpriced_model() -> Result<(), Box<d
 }
 
 #[tokio::test]
+async fn integration_image_edit_returns_enveloped_image() -> Result<(), Box<dyn Error>> {
+    // No model is sent (the image MCP names none); the default edit model is used
+    // and its base64 result comes back in the standard envelope.
+    let response = send(json_request(
+        "/v1/image/edit",
+        &serde_json::json!({ "image": "aGVsbG8=", "prompt": "make it fluffier" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["imageBase64"], "ZWRpdGVk");
+    assert_eq!(body["data"]["mimeType"], "image/png");
+    assert_eq!(body["data"]["model"], "firered-image-edit");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_edit_requires_a_source_image() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/edit",
+        &serde_json::json!({ "image": "   ", "prompt": "make it fluffier" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "image_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_edit_maps_upstream_failure_to_502() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/edit",
+        &serde_json::json!({ "image": "aGVsbG8=", "prompt": "boom" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "upstream_provider_failed");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> {
     let response = send(get_request("/verify")?).await;
 
@@ -703,7 +755,13 @@ fn test_state_with_sinks_and_transcriber(
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
         generator: Arc::new(FakeImageGenerator),
+        editor: Arc::new(FakeImageEditor),
         pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
+        edit_pricing: BTreeMap::from([(
+            "firered-image-edit".to_string(),
+            ImageModelPrice::venice(80),
+        )]),
+        default_edit_model: "firered-image-edit".to_string(),
         hold_ttl_seconds: 30,
     }));
 
@@ -1115,6 +1173,23 @@ impl ImageGenerator for FakeImageGenerator {
         }
         Ok(GeneratedImage {
             image_base64: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+            model: request.model.0,
+            provider: "fake-image".to_string(),
+        })
+    }
+}
+
+struct FakeImageEditor;
+
+#[async_trait]
+impl ImageEditor for FakeImageEditor {
+    async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError> {
+        if request.prompt.contains("boom") {
+            return Err(DomainError::UpstreamProvider);
+        }
+        Ok(GeneratedImage {
+            image_base64: "ZWRpdGVk".to_string(),
             mime_type: "image/png".to_string(),
             model: request.model.0,
             provider: "fake-image".to_string(),
