@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   listNotes: vi.fn(),
   getNote: vi.fn(),
   deleteNote: vi.fn(),
+  deleteNotes: vi.fn(),
   updateNote: vi.fn(),
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
@@ -86,6 +87,7 @@ vi.mock("../lib/tauri", () => ({
   listNotes: mocks.listNotes,
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
+  deleteNotes: mocks.deleteNotes,
   updateNote: mocks.updateNote,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   openPrivacySettings: mocks.openPrivacySettings,
@@ -225,6 +227,7 @@ describe("notes recording reliability", () => {
     // suite asserts recording lands on note-1, so the fresh note IS note-1.
     mocks.createNote.mockResolvedValue(first);
     mocks.deleteNote.mockResolvedValue(undefined);
+    mocks.deleteNotes.mockResolvedValue(undefined);
     mocks.listNotes.mockResolvedValue({ items: [first, second] });
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === "note-2" ? second : first,
@@ -315,6 +318,49 @@ describe("notes recording reliability", () => {
       expect(mocks.startRecording).toHaveBeenCalledWith("note-1", "microphonePlusSystem");
     });
   }
+
+  it("stays on meeting notes after deleting the last note", async () => {
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [first],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.listNotes.mockResolvedValue({ items: [] });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: "Actions for First note" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Delete note" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete note" }));
+
+    await waitFor(() => expect(mocks.deleteNote).toHaveBeenCalledWith("note-1"));
+    expect(
+      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Capture your first meeting" })).toBeInTheDocument();
+  });
+
+  it("stays on meeting notes after bulk deleting every note", async () => {
+    mocks.listNotes.mockResolvedValue({ items: [] });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select First note" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select Second note" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete notes" }));
+
+    await waitFor(() => expect(mocks.deleteNotes).toHaveBeenCalledWith(["note-1", "note-2"]));
+    expect(
+      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Capture your first meeting" })).toBeInTheDocument();
+  });
 
   it("does not mark a different note transcribing when finishing a recording started elsewhere", async () => {
     mocks.finishRecording.mockResolvedValue({
