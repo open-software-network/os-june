@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import { NOTE_DND_MIME } from "../lib/dnd";
-import type { FolderDto, NoteListItemDto } from "../lib/tauri";
+import type { AccountStatus, FolderDto, NoteListItemDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   osAccountsReferralSummary: vi.fn(),
@@ -273,6 +273,67 @@ describe("Sidebar primary navigation", () => {
     await user.click(identityButton);
     await user.click(screen.getByRole("menuitem", { name: "Settings" }));
     expect(onChangeView).toHaveBeenCalledWith("settings");
+  });
+
+  it("shows account name, then email, then handle in the sidebar footer", () => {
+    const renderSidebar = (account: AccountStatus) =>
+      render(
+        <Sidebar
+          notes={notes}
+          activeView="notes"
+          account={account}
+          onChangeView={vi.fn()}
+          onSelectNote={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onRemoveNoteFromFolder={vi.fn()}
+          onNewAgentSession={vi.fn()}
+          onSelectAgentSession={vi.fn()}
+        />,
+      );
+
+    const { unmount: unmountNamed } = renderSidebar({
+      signedIn: true,
+      configured: true,
+      user: {
+        id: "usr_123",
+        handle: "alex",
+        email: "alex@example.com",
+        displayName: "Alex",
+      },
+    });
+    expect(
+      screen.getByRole("button", { name: "Alex, account menu" }),
+    ).toBeInTheDocument();
+    unmountNamed();
+
+    const { unmount: unmountEmail } = renderSidebar({
+      signedIn: true,
+      configured: true,
+      user: {
+        id: "usr_123",
+        handle: "alex",
+        email: "alex@example.com",
+        displayName: " ",
+      },
+    });
+    expect(
+      screen.getByRole("button", { name: "alex@example.com, account menu" }),
+    ).toBeInTheDocument();
+    unmountEmail();
+
+    renderSidebar({
+      signedIn: true,
+      configured: true,
+      user: {
+        id: "usr_123",
+        handle: "alex",
+        email: " ",
+      },
+    });
+    expect(
+      screen.getByRole("button", { name: "alex, account menu" }),
+    ).toBeInTheDocument();
   });
 
   it("opens dictation history from the primary nav", async () => {

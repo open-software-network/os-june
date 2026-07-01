@@ -1989,6 +1989,7 @@ function SidebarIdentity({
 function accountDisplayName(account: AccountStatus) {
   return (
     account.user?.displayName?.trim() ||
+    account.user?.email?.trim() ||
     account.user?.handle?.trim() ||
     "Account"
   );
