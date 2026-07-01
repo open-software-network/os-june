@@ -5405,6 +5405,60 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("estimates skill-expanded composer prompts before sending", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 64,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "large-skill",
+        description: "Adds a large instruction block.",
+        category: "Testing",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockResolvedValue({
+      name: "large-skill",
+      relativePath: "large-skill/SKILL.md",
+      content: `# Large skill\n\n${"Follow this instruction. ".repeat(80)}`,
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await screen.findByRole("button", { name: "Model: Short context" });
+    await user.type(screen.getByRole("textbox"), "/large-skill summarize");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 64 token context window.",
+    );
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+  });
+
   it("counts pending attachment size in the oversize composer estimate", async () => {
     mocks.providerModelSettings.mockResolvedValue({
       settings: {

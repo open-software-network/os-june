@@ -763,6 +763,7 @@ type PreparedComposerSubmission = {
 };
 
 type ComposerInputSizeWarning = {
+  inputSignature: string;
   signature: string;
   estimatedTokens: number;
   contextLimit: number;
@@ -1223,10 +1224,11 @@ export function AgentWorkspace({
   // Confirmation that a submitted issue report reached the June team; shown
   // in the composer notice slot until dismissed by the next send.
   const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
-  const [composerSizeWarningSignature, setComposerSizeWarningSignature] = useState<string | null>(
+  const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
     null,
   );
   const composerSizeProceedSignatureRef = useRef<string | null>(null);
+  const composerSizeProceedInputSignatureRef = useRef<string | null>(null);
   // Honest result of the last model switch (feature 10): scoped to the session
   // it acted on so it survives background refreshes and disappears when the
   // user moves to another conversation. A null sessionId means it reports a
@@ -1880,22 +1882,18 @@ export function AgentWorkspace({
     composerHasPendingImage &&
     !!resolvedGenerationModel &&
     !modelSupportsImageInput(resolvedGenerationModel);
-  const composerInputSizeWarning = useMemo(
+  const composerInputSignature = useMemo(
     () =>
-      oversizedComposerInputWarning({
+      composerInputSignatureFor({
         message: draft.trim(),
         category,
         attachments,
         model: generationModel,
-        models: generationModels,
       }),
-    [attachments, category, draft, generationModel, generationModels],
+    [attachments, category, draft, generationModel],
   );
   const visibleComposerSizeWarning =
-    composerSizeWarningSignature &&
-    composerInputSizeWarning?.signature === composerSizeWarningSignature
-      ? composerInputSizeWarning
-      : null;
+    composerSizeWarning?.inputSignature === composerInputSignature ? composerSizeWarning : null;
   const selectedHermesMessages = useMemo(() => {
     if (!selectedHermesSessionId) return [];
     return [
@@ -2844,17 +2842,17 @@ export function AgentWorkspace({
   }, [attachments]);
 
   useEffect(() => {
-    const signature = composerInputSizeWarning?.signature ?? null;
-    if (composerSizeWarningSignature && composerSizeWarningSignature !== signature) {
-      setComposerSizeWarningSignature(null);
+    if (composerSizeWarning && composerSizeWarning.inputSignature !== composerInputSignature) {
+      setComposerSizeWarning(null);
     }
     if (
       composerSizeProceedSignatureRef.current &&
-      composerSizeProceedSignatureRef.current !== signature
+      composerSizeProceedInputSignatureRef.current !== composerInputSignature
     ) {
       composerSizeProceedSignatureRef.current = null;
+      composerSizeProceedInputSignatureRef.current = null;
     }
-  }, [composerInputSizeWarning?.signature, composerSizeWarningSignature]);
+  }, [composerInputSignature, composerSizeWarning]);
 
   useEffect(() => {
     let disposed = false;
@@ -3197,14 +3195,6 @@ export function AgentWorkspace({
     )
       return;
     if (message && (await handleBuiltinComposerSlashCommand(message))) return;
-    if (
-      composerInputSizeWarning &&
-      composerSizeProceedSignatureRef.current !== composerInputSizeWarning.signature
-    ) {
-      setComposerSizeWarningSignature(composerInputSizeWarning.signature);
-      composerEditorRef.current?.focus();
-      return;
-    }
     // June is mid-run: send the message straight into the loop via steer so
     // June picks it up after the current tool call (adds context without
     // interrupting — Escape or Stop interrupts instead). Plain-text follow-ups
@@ -3218,6 +3208,21 @@ export function AgentWorkspace({
       selectedHermesSessionId &&
       workingSessionIdsRef.current.has(selectedHermesSessionId)
     ) {
+      const steerSizeWarning = oversizedComposerInputWarning({
+        content: message,
+        inputSignature: composerInputSignature,
+        attachments: [],
+        model: generationModel,
+        models: generationModels,
+      });
+      if (
+        steerSizeWarning &&
+        composerSizeProceedSignatureRef.current !== steerSizeWarning.signature
+      ) {
+        setComposerSizeWarning(steerSizeWarning);
+        composerEditorRef.current?.focus();
+        return;
+      }
       const steerSessionId = selectedHermesSessionId;
       // Delivery guarantee. Hermes only injects a steer into the next tool
       // result and rejects the RPC during a no-tool phase, so the steer alone
@@ -3280,6 +3285,21 @@ export function AgentWorkspace({
       | undefined;
     try {
       const prepared = await prepareComposerSubmission(message, attachments);
+      const runtimeContent = reportCategory
+        ? categoryPrompt(reportCategory, prepared.runtimeContent)
+        : prepared.runtimeContent;
+      const sizeWarning = oversizedComposerInputWarning({
+        content: runtimeContent,
+        inputSignature: composerInputSignature,
+        attachments,
+        model: generationModel,
+        models: generationModels,
+      });
+      if (sizeWarning && composerSizeProceedSignatureRef.current !== sizeWarning.signature) {
+        setComposerSizeWarning(sizeWarning);
+        composerEditorRef.current?.focus();
+        return;
+      }
       const nextIssueReport: PendingIssueReport | undefined = reportCategory
         ? {
             category: reportCategory,
@@ -3322,18 +3342,12 @@ export function AgentWorkspace({
         };
       }
       setIssueReportNotice(null);
-      await submitHermesSession(
-        reportCategory
-          ? categoryPrompt(reportCategory, prepared.runtimeContent)
-          : prepared.runtimeContent,
-        undefined,
-        {
-          displayContent: prepared.displayContent,
-          titleContent: prepared.titleContent,
-          attachments,
-          ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
-        },
-      );
+      await submitHermesSession(runtimeContent, undefined, {
+        displayContent: prepared.displayContent,
+        titleContent: prepared.titleContent,
+        attachments,
+        ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
+      });
       if (reportFollowUpSessionId) {
         deferredFailedIssueReportDeliverySessionIdsRef.current.delete(reportFollowUpSessionId);
       }
@@ -3403,20 +3417,24 @@ export function AgentWorkspace({
   function proceedWithOversizeComposerInput() {
     if (!visibleComposerSizeWarning) return;
     composerSizeProceedSignatureRef.current = visibleComposerSizeWarning.signature;
-    setComposerSizeWarningSignature(null);
+    composerSizeProceedInputSignatureRef.current = visibleComposerSizeWarning.inputSignature;
+    setComposerSizeWarning(null);
     void submit();
   }
 
   function trimOversizeComposerInput() {
-    setComposerSizeWarningSignature(null);
+    setComposerSizeWarning(null);
+    composerSizeProceedSignatureRef.current = null;
+    composerSizeProceedInputSignatureRef.current = null;
     composerEditorRef.current?.focus();
   }
 
   function switchOversizeComposerModel() {
     const switchModel = visibleComposerSizeWarning?.switchModel;
     if (!switchModel) return;
-    setComposerSizeWarningSignature(null);
+    setComposerSizeWarning(null);
     composerSizeProceedSignatureRef.current = null;
+    composerSizeProceedInputSignatureRef.current = null;
     void handleSelectGenerationModel(switchModel.id);
   }
 
@@ -10883,15 +10901,35 @@ function artifactsFromFilesystemSnapshot(
   );
 }
 
-function oversizedComposerInputWarning({
+function composerInputSignatureFor({
   message,
   category,
   attachments,
   model,
-  models,
 }: {
   message: string;
   category: ReportCategory | null;
+  attachments: AgentAttachment[];
+  model?: VeniceModelDto;
+}) {
+  const attachmentSignature = composerAttachmentSignature(attachments);
+  return [
+    model?.id ?? "",
+    positiveContextTokens(model?.contextTokens) ?? "",
+    category ?? "",
+    composerInputHash(`${message}\n${attachmentSignature}`),
+  ].join(":");
+}
+
+function oversizedComposerInputWarning({
+  content,
+  inputSignature,
+  attachments,
+  model,
+  models,
+}: {
+  content: string;
+  inputSignature: string;
   attachments: AgentAttachment[];
   model?: VeniceModelDto;
   models: VeniceModelDto[];
@@ -10899,37 +10937,25 @@ function oversizedComposerInputWarning({
   const contextLimit = positiveContextTokens(model?.contextTokens);
   if (!contextLimit) return null;
 
-  const displayContent = promptWithAttachments(message, attachments);
-  const routedContent = category ? categoryPrompt(category, displayContent) : displayContent;
   const attachmentBytes = attachments.reduce(
     (total, attachment) => total + nonNegativeAttachmentSize(attachment.size),
     0,
   );
   const estimatedTokens = Math.ceil(
-    (routedContent.length + attachmentBytes) / COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN,
+    (content.length + attachmentBytes) / COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN,
   );
   if (estimatedTokens <= contextLimit) return null;
 
-  const attachmentSignature = attachments
-    .map((attachment) =>
-      [
-        attachment.id,
-        attachment.path,
-        attachment.name,
-        attachment.size ?? "",
-        attachment.attach.status,
-      ].join("|"),
-    )
-    .join("\n");
   const signature = [
+    inputSignature,
     model?.id ?? "",
     contextLimit,
-    category ?? "",
     estimatedTokens,
-    composerInputHash(`${routedContent}\n${attachmentSignature}`),
+    composerInputHash(content),
   ].join(":");
 
   return {
+    inputSignature,
     signature,
     estimatedTokens,
     contextLimit,
@@ -10941,6 +10967,20 @@ function oversizedComposerInputWarning({
       models,
     }),
   };
+}
+
+function composerAttachmentSignature(attachments: AgentAttachment[]) {
+  return attachments
+    .map((attachment) =>
+      [
+        attachment.id,
+        attachment.path,
+        attachment.name,
+        attachment.size ?? "",
+        attachment.attach.status,
+      ].join("|"),
+    )
+    .join("\n");
 }
 
 function positiveContextTokens(value?: number) {
