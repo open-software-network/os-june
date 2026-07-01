@@ -578,19 +578,14 @@ pub async fn process_saved_source_audio(
     let has_valid_transcript = !transcription_outcome.candidates.is_empty();
     let visible_failures =
         visible_transcription_failures(&transcription_outcome.failures, has_valid_transcript);
+    // `visible_failures` is already filtered by `should_record_source_failure`,
+    // so every entry here is one we persist.
     for failure in &visible_failures {
         let warning = failure
             .input
             .warning
             .as_deref()
             .unwrap_or("Source did not produce a usable transcript.");
-        if !should_record_source_failure(
-            failure.input.source.as_str(),
-            warning,
-            has_valid_transcript,
-        ) {
-            continue;
-        }
         let persistence_started = Instant::now();
         repos
             .upsert_failed_source_turn_transcript(
@@ -884,7 +879,7 @@ async fn transcribe_prepared_audio(
             request.base_context.as_deref(),
             build_transcription_context(&previous).as_deref(),
         );
-        let transcript = transcribe_with_transient_retries(
+        let transcript = match transcribe_with_transient_retries(
             &transcriber,
             TranscriptionRequest {
                 provider: request.provider.clone(),
@@ -896,7 +891,16 @@ async fn transcribe_prepared_audio(
                 preview: false,
             },
         )
-        .await?;
+        .await
+        {
+            Ok(transcript) => transcript,
+            // A no-speech chunk is a silent segment, not a turn failure: fixed-size
+            // splitting routinely leaves a quiet trailing chunk. Skip it so the
+            // speech already transcribed from this turn's earlier chunks survives.
+            // Aborting here would discard that text and silently drop the turn.
+            Err(error) if is_no_speech_error(&error) => continue,
+            Err(error) => return Err(error),
+        };
         if language.is_none() {
             language = transcript.language.clone();
         }
@@ -917,10 +921,10 @@ async fn transcribe_prepared_audio(
     }
 
     if text_parts.is_empty() {
-        return Err(AppError::new(
-            "transcription_empty",
-            "Transcription provider returned empty text for every audio chunk.",
-        ));
+        // Every chunk was silent. Report it as a no-speech turn — exactly like a
+        // single silent turn — so it stays a non-blocking failure rather than a
+        // generic error that would fail the whole note.
+        return Err(AppError::new("no_speech", "no_speech"));
     }
     Ok(TranscriptionProviderResult {
         text: text_parts.join("\n"),
@@ -1507,6 +1511,13 @@ fn should_record_source_failure(source: &str, warning: &str, has_valid_transcrip
 fn is_no_speech_message(message: &str) -> bool {
     let normalized = message.trim().to_ascii_lowercase();
     normalized == "no_speech" || normalized.contains("no speech detected")
+}
+
+/// Whether a transcription error is a no-speech condition rather than a real
+/// failure. The backend surfaces an empty (silent) segment as a 400 with a
+/// `no_speech` reason, so it arrives on either the error code or message.
+fn is_no_speech_error(error: &AppError) -> bool {
+    is_no_speech_message(&error.code) || is_no_speech_message(&error.message)
 }
 
 fn user_facing_transcription_failure_message(code: &str, message: &str) -> String {
@@ -2263,6 +2274,126 @@ mod tests {
             writer.write_sample(*sample).unwrap();
         }
         writer.finalize().unwrap();
+    }
+
+    fn write_mono_wav(path: &std::path::Path, sample_rate: u32, sample_count: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for index in 0..sample_count {
+            // Content is irrelevant: the mock transcriber keys on the chunk
+            // operation id, not the audio. A non-zero ramp keeps it a signal.
+            writer.write_sample((index % 100) as i16 - 50).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn is_no_speech_error_detects_no_speech_conditions() {
+        assert!(is_no_speech_error(&AppError::new("no_speech", "no_speech")));
+        assert!(is_no_speech_error(&AppError::new(
+            "june_request_failed",
+            "no_speech"
+        )));
+        assert!(!is_no_speech_error(&AppError::new(
+            "june_api_response_invalid",
+            "The processing service returned an invalid response."
+        )));
+    }
+
+    #[tokio::test]
+    async fn multi_chunk_turn_keeps_earlier_text_when_trailing_chunk_has_no_speech() {
+        // A 31s turn splits into a 30s chunk-0 and a ~1s chunk-1. The trailing
+        // chunk returns no-speech; the turn must still succeed with chunk-0's
+        // text instead of aborting and discarding it.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-chunk-nospeech-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio_path = dir.join("turn.wav");
+        write_mono_wav(&audio_path, 16_000, 16_000 * 31);
+
+        let transcriber = Arc::new(move |request: TranscriptionRequest| {
+            Box::pin(async move {
+                if request.operation_id().ends_with("-chunk-0") {
+                    Ok(TranscriptionProviderResult {
+                        text: "first chunk speech".to_string(),
+                        language: Some("en".to_string()),
+                        provider: "test".to_string(),
+                    })
+                } else {
+                    Err(AppError::new("no_speech", "no_speech"))
+                }
+            }) as TranscriptionFuture
+        }) as TurnTranscriber;
+
+        let result = transcribe_prepared_audio(
+            transcriber,
+            TranscribePreparedAudioRequest {
+                provider: "test".to_string(),
+                audio_path,
+                temp_dir: dir.clone(),
+                chunk_stem: "turn-0".to_string(),
+                title: "Meeting".to_string(),
+                base_context: None,
+                operation_id: "turn-0".to_string(),
+                source: "microphone".to_string(),
+                start_ms: Some(0),
+                end_ms: Some(31_000),
+                turn_index: Some(0),
+            },
+        )
+        .await
+        .expect("a trailing no-speech chunk must not fail the whole turn");
+
+        assert_eq!(result.text, "first chunk speech");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn multi_chunk_turn_reports_no_speech_when_every_chunk_is_silent() {
+        // When no chunk has speech, the turn must fail as a no-speech condition
+        // so it stays non-blocking — not a generic error that fails the note.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-chunk-allsilent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio_path = dir.join("turn.wav");
+        write_mono_wav(&audio_path, 16_000, 16_000 * 31);
+
+        let transcriber = Arc::new(move |_request: TranscriptionRequest| {
+            Box::pin(async move { Err(AppError::new("no_speech", "no_speech")) })
+                as TranscriptionFuture
+        }) as TurnTranscriber;
+
+        let error = transcribe_prepared_audio(
+            transcriber,
+            TranscribePreparedAudioRequest {
+                provider: "test".to_string(),
+                audio_path,
+                temp_dir: dir.clone(),
+                chunk_stem: "turn-0".to_string(),
+                title: "Meeting".to_string(),
+                base_context: None,
+                operation_id: "turn-0".to_string(),
+                source: "microphone".to_string(),
+                start_ms: Some(0),
+                end_ms: Some(31_000),
+                turn_index: Some(0),
+            },
+        )
+        .await
+        .expect_err("an all-silent turn must fail");
+
+        assert!(
+            is_no_speech_error(&error),
+            "all-silent turn must stay a non-blocking no-speech failure, got code={} message={}",
+            error.code,
+            error.message
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
