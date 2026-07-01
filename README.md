@@ -38,6 +38,13 @@
 
 ![The June desktop app on macOS, showing the dictation history and the recording HUD](.github/assets/june-app.jpg)
 
+<!-- Demo GIF slot: drop a ~30 second recording at .github/assets/june-demo.gif
+     (dictation into a real app, a meeting note, an agent task with an approval),
+     then replace this comment with:
+![A 30 second tour of June: dictation, meeting notes, and an agent session](.github/assets/june-demo.gif)
+-->
+
+
 ## Why June
 
 Most AI apps ask you to hand over your most sensitive data and trust them with
@@ -74,6 +81,21 @@ verifiable.
 - **Your choice of models.** Pick generation, transcription, and dictation
   models from the live catalog, each labeled with its privacy tier. Bring your
   own Venice API key if you prefer.
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src=".github/assets/june-welcome.png" alt="The June welcome screen: chat and work with June, speak instead of type, effortlessly capture meetings, private by default">
+    </td>
+    <td width="50%">
+      <img src=".github/assets/june-agent-tray.png" alt="The June agent tray in the menu bar: three sessions running, one waiting for approval before acting">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">Private by default, from the first screen</td>
+    <td align="center">Agent sessions run in the background and ask before acting</td>
+  </tr>
+</table>
 
 ## How June keeps it private
 
@@ -171,10 +193,10 @@ pnpm test:rust     # desktop Rust
 pnpm test:june-api # June API
 ```
 
-`make verify` mirrors CI. Read [AGENTS.md](AGENTS.md) before opening a PR; the
-enforceable UI rules live in [spec/](spec/index.md). Report bugs through
-GitHub issues, and report security vulnerabilities privately per
-[SECURITY.md](SECURITY.md).
+`make verify` mirrors CI. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then
+[AGENTS.md](AGENTS.md) for the full contributor guide; the enforceable UI
+rules live in [spec/](spec/index.md). Report bugs through GitHub issues, and
+report security vulnerabilities privately per [SECURITY.md](SECURITY.md).
 
 - Community: [t.me/osjune](https://t.me/osjune)
 - Updates: [@OpenSoftwareCo](https://x.com/OpenSoftwareCo) and the
