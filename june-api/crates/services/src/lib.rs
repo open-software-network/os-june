@@ -20,7 +20,8 @@ pub use dictate::{
 };
 pub use error::ServiceError;
 pub use image::{
-    ImageGenerateOutput, ImageGenerateParams, ImageModelPrice, ImageService, ImageServiceDeps,
+    ImageEditParams, ImageGenerateOutput, ImageGenerateParams, ImageModelPrice, ImageService,
+    ImageServiceDeps,
 };
 pub use note_generate::{
     NOTE_GENERATE_PROMPT_VERSION, NoteGenerateOutput, NoteGenerateParams, NoteGenerateService,
