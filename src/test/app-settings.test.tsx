@@ -1823,17 +1823,17 @@ describe("AppSettings", () => {
       await screen.findByRole("option", { name: /Venice SD3\.5/ }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("option", { name: /FLUX\.1 Dev/ }),
+      screen.getByRole("option", { name: /FLUX 2 Pro/ }),
     ).toBeInTheDocument();
     // Image models are not fetched from the catalog.
     expect(mocks.listVeniceModels).not.toHaveBeenCalledWith("image");
 
-    await user.click(screen.getByRole("option", { name: /FLUX\.1 Dev/ }));
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith("image", "flux-dev");
+    await user.click(screen.getByRole("option", { name: /FLUX 2 Pro/ }));
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith("image", "flux-2-pro");
     // The picker closes after a selection.
     await waitFor(() =>
       expect(
-        screen.queryByRole("option", { name: /FLUX\.1 Dev/ }),
+        screen.queryByRole("option", { name: /FLUX 2 Pro/ }),
       ).not.toBeInTheDocument(),
     );
   });

@@ -6,7 +6,11 @@ use june_domain::GeneratedImage;
 use june_services::ImageGenerateParams;
 use serde::{Deserialize, Serialize};
 
-/// Largest and smallest image dimension Venice accepts (pixel-based models).
+/// Bounds for an explicit `width`/`height`. We only reject values above Venice's
+/// max here; the per-model *minimum* is enforced by Venice itself (pixel models
+/// typically floor at 64-256 px), where a too-small value returns a 400 that
+/// surfaces as `image_generation_rejected`. Client validation defers to Venice's
+/// per-model floor rather than guessing one.
 const MIN_IMAGE_DIMENSION: u32 = 1;
 const MAX_IMAGE_DIMENSION: u32 = 1280;
 
@@ -19,11 +23,6 @@ pub struct ImageGenerateRequest {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
-    /// Optional client idempotency id reused across retries so a dropped-response
-    /// retry is not double-charged. Empty means the server sequences each call as
-    /// a distinct charge.
-    #[serde(default)]
-    pub request_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,7 +75,6 @@ pub(crate) async fn generate(
         .image()
         .generate(ImageGenerateParams {
             user_id,
-            request_id: request.request_id,
             prompt,
             model,
             width,

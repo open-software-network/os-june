@@ -3238,6 +3238,12 @@ export function AgentWorkspace({
     if (heroMode) setHeroLeaving(true);
     clearComposerCommandDraft(commandText);
     setError(null);
+    // Busy-gate the WHOLE flow (session create + generation) via the same
+    // importingFiles flag submit() and the send button already check, so a
+    // second Enter or /image can't launch another billable generation while this
+    // one is in flight. generatingImage only tailors the placeholder copy.
+    setImportingFiles(true);
+    setGeneratingImage(true);
 
     let targetSessionId: string | undefined;
     try {
@@ -3248,11 +3254,15 @@ export function AgentWorkspace({
       });
     } catch (err) {
       if (heroMode) setHeroLeaving(false);
+      setGeneratingImage(false);
+      setImportingFiles(false);
       setError(messageFromError(err));
       return;
     }
     if (!targetSessionId) {
       if (heroMode) setHeroLeaving(false);
+      setGeneratingImage(false);
+      setImportingFiles(false);
       setError("Could not start an image session. Try again.");
       return;
     }
@@ -3295,7 +3305,6 @@ export function AgentWorkspace({
       ],
     }));
 
-    setGeneratingImage(true);
     try {
       const result = await generateChatImage(prompt, {
         generate: (text, model) => generateImage(text, model),
@@ -3329,6 +3338,7 @@ export function AgentWorkspace({
       updateImagePart({ status: "error", error: messageFromError(err) });
     } finally {
       setGeneratingImage(false);
+      setImportingFiles(false);
     }
   }
 

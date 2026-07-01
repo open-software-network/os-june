@@ -513,16 +513,18 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
 
 /// Per-image credit price for the curated Venice image models June offers. Keep
 /// the ids in sync with `IMAGE_MODELS` in the frontend (`src/lib/image-models.ts`)
-/// and `DEFAULT_IMAGE_MODEL` in the Tauri providers module. Values are the Venice
-/// per-image cost with a ~2x margin (mirroring the flat web-tool pricing):
-/// SD3.5 ~$0.01 -> 20, Qwen Image ~$0.03 -> 60, FLUX.1 Dev / `HiDream` (legacy
-/// tier) -> 20 / 40. `$1 = 1000 credits`.
+/// and `DEFAULT_IMAGE_MODEL` in the Tauri providers module — every id here must
+/// be a current Venice image model (verified against the models list), or
+/// generation fails `image_generation_rejected`. Values are the Venice per-image
+/// cost with a ~2x margin (mirroring the flat web-tool pricing): SD3.5 ~$0.01 ->
+/// 20, Chroma ~$0.01 -> 20, Qwen Image ~$0.03 -> 60, FLUX 2 Pro ~$0.03 -> 60.
+/// `$1 = 1000 credits`.
 fn default_image_pricing() -> BTreeMap<String, u64> {
     BTreeMap::from([
         ("venice-sd35".to_string(), 20),
-        ("flux-dev".to_string(), 20),
+        ("flux-2-pro".to_string(), 60),
         ("qwen-image".to_string(), 60),
-        ("hidream".to_string(), 40),
+        ("chroma".to_string(), 20),
     ])
 }
 
@@ -1020,7 +1022,7 @@ mod tests {
     #[test]
     fn default_config_prices_the_curated_image_models() {
         let config = valid_config();
-        for model in ["venice-sd35", "flux-dev", "qwen-image", "hidream"] {
+        for model in ["venice-sd35", "flux-2-pro", "qwen-image", "chroma"] {
             assert!(
                 config.image_pricing.get(model).is_some_and(|c| *c > 0),
                 "missing image price for {model}"

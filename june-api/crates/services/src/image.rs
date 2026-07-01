@@ -37,10 +37,10 @@ pub struct ImageService {
     generator: Arc<dyn ImageGenerator>,
     pricing: BTreeMap<String, u64>,
     hold_ttl_seconds: u64,
-    /// Per-process sequence for the idempotency key when the caller supplies no
-    /// request id. It makes each generation settle as a distinct charge (so
-    /// "generate twice" bills twice); it does NOT dedup a client-level retry —
-    /// only a caller-supplied `request_id` does that.
+    /// Per-process sequence that makes every generation settle under a UNIQUE
+    /// charge key. Image generation is not idempotent — a repeat produces a new
+    /// image and a new upstream cost — so the key is never client-supplied; that
+    /// prevents replaying one settlement to mint free images.
     seq: AtomicU64,
 }
 
@@ -107,21 +107,16 @@ impl ImageService {
         Ok(ImageGenerateOutput { image, receipt })
     }
 
-    /// A caller-supplied `request_id` dedups a dropped-response retry; when
-    /// absent, a per-process sequence makes each call a distinct charge. The
-    /// request shape (prompt + model + size) is hashed in so reusing an id with
-    /// a different shape still settles as a new charge rather than replaying the
-    /// prior one.
+    /// Each successful generation gets a distinct charge key from the
+    /// per-process sequence, so a repeat can never replay a prior settlement to
+    /// bill zero. A transport-level retry of THIS one charge reuses the same
+    /// computed key (it is built once per `generate` call) and so still dedups.
+    /// The request shape is hashed in for traceability.
     fn idempotency_key(&self, params: &ImageGenerateParams) -> String {
-        let scope = if params.request_id.trim().is_empty() {
-            format!("seq:{}", self.seq.fetch_add(1, Ordering::Relaxed))
-        } else {
-            params.request_id.trim().to_string()
-        };
         format!(
             "image_generate:{}:{}:{}",
             params.user_id.0,
-            scope,
+            self.seq.fetch_add(1, Ordering::Relaxed),
             sha256_hex(image_shape(params).as_bytes())
         )
     }
@@ -143,9 +138,6 @@ fn image_shape(params: &ImageGenerateParams) -> String {
 #[derive(Clone, Debug)]
 pub struct ImageGenerateParams {
     pub user_id: UserId,
-    /// Optional client idempotency id; empty means server-sequenced (each call
-    /// is a distinct charge, no retry dedup).
-    pub request_id: String,
     pub prompt: String,
     pub model: String,
     pub width: Option<u32>,
@@ -274,10 +266,9 @@ mod tests {
         })
     }
 
-    fn params(model: &str, request_id: &str) -> ImageGenerateParams {
+    fn params(model: &str) -> ImageGenerateParams {
         ImageGenerateParams {
             user_id: UserId("usr_1".to_string()),
-            request_id: request_id.to_string(),
             prompt: "a cat".to_string(),
             model: model.to_string(),
             width: None,
@@ -289,7 +280,7 @@ mod tests {
     async fn authorizes_then_charges_the_flat_model_price() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let output = service(os_accounts.clone(), Arc::new(FixedGenerator))
-            .generate(params("venice-sd35", "req_1"))
+            .generate(params("venice-sd35"))
             .await
             .expect("generation succeeds");
 
@@ -308,9 +299,12 @@ mod tests {
                 idempotency_key,
             } => {
                 assert_eq!(*credits, 20);
-                let digest = idempotency_key
-                    .strip_prefix("image_generate:usr_1:req_1:")
+                // Key is `image_generate:<user>:<seq>:<64-hex shape digest>`.
+                let rest = idempotency_key
+                    .strip_prefix("image_generate:usr_1:")
                     .expect("key has the expected prefix");
+                let (seq, digest) = rest.split_once(':').expect("seq:digest");
+                assert!(seq.chars().all(|ch| ch.is_ascii_digit()));
                 assert_eq!(digest.len(), 64);
                 assert!(digest.chars().all(|ch| ch.is_ascii_hexdigit()));
             }
@@ -322,7 +316,7 @@ mod tests {
     async fn unpriced_model_is_rejected_before_any_wallet_call() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let result = service(os_accounts.clone(), Arc::new(FixedGenerator))
-            .generate(params("some-unlisted-model", "req_1"))
+            .generate(params("some-unlisted-model"))
             .await;
 
         assert!(matches!(result, Err(crate::ServiceError::ModelNotPriced)));
@@ -334,7 +328,7 @@ mod tests {
     async fn insufficient_balance_denial_does_not_generate_or_charge() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(false));
         let result = service(os_accounts.clone(), Arc::new(FixedGenerator))
-            .generate(params("venice-sd35", "req_1"))
+            .generate(params("venice-sd35"))
             .await;
 
         assert!(matches!(
@@ -355,7 +349,7 @@ mod tests {
     async fn failed_generation_authorizes_but_never_charges() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let result = service(os_accounts.clone(), Arc::new(FailingGenerator))
-            .generate(params("venice-sd35", "req_1"))
+            .generate(params("venice-sd35"))
             .await;
 
         assert!(matches!(result, Err(crate::ServiceError::UpstreamProvider)));
@@ -369,14 +363,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_request_id_uses_a_distinct_sequenced_key_per_call() {
-        // Two generations with no client request_id must settle as two distinct
-        // charges (generate twice = charge twice), not replay the first.
+    async fn each_generation_uses_a_distinct_charge_key() {
+        // Two generations must settle as two distinct charges (generate twice =
+        // charge twice) — a repeat can never replay the first to bill zero.
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let service = service(os_accounts.clone(), Arc::new(FixedGenerator));
         for _ in 0..2 {
             service
-                .generate(params("venice-sd35", ""))
+                .generate(params("venice-sd35"))
                 .await
                 .expect("generation succeeds");
         }
