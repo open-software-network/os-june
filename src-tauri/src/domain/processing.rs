@@ -396,7 +396,27 @@ pub async fn process_saved_source_audio(
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let processing_started = Instant::now();
     let detection_started = Instant::now();
-    let sources = drop_silent_system_sources(sources);
+    let SilentSystemDropOutcome {
+        kept: sources,
+        dropped,
+    } = partition_silent_system_sources(sources);
+    for drop in &dropped {
+        repos
+            .add_source_checkpoint(
+                session_id,
+                Some(drop.artifact_id.as_str()),
+                Some(drop.source.as_str()),
+                "silent_source_dropped",
+                Some(
+                    serde_json::json!({
+                        "source": drop.source,
+                        "maxRms": drop.max_rms,
+                    })
+                    .to_string(),
+                ),
+            )
+            .await?;
+    }
     let turns = detect_turns(
         &sources
             .iter()
@@ -1457,33 +1477,70 @@ fn blocking_transcription_failure_summary(
     source_failure_summary(&blocking_failures)
 }
 
-/// Remove system-audio sources whose track is effectively silent, but only when
-/// another source remains to carry the recording. Keeping the last source — even
-/// a silent one — preserves the "no speech" failure for system-only captures.
+struct DroppedSource {
+    artifact_id: String,
+    source: String,
+    max_rms: f32,
+}
+
+struct SilentSystemDropOutcome {
+    kept: Vec<(String, String, PathBuf)>,
+    dropped: Vec<DroppedSource>,
+}
+
+#[cfg(test)]
 fn drop_silent_system_sources(
     sources: Vec<(String, String, PathBuf)>,
 ) -> Vec<(String, String, PathBuf)> {
+    partition_silent_system_sources(sources).kept
+}
+
+/// Remove system-audio sources whose track is effectively silent, but only when
+/// another source remains to carry the recording. Keeping the last source — even
+/// a silent one — preserves the "no speech" failure for system-only captures.
+///
+/// A system track is only dropped when it falls below what the system lane's
+/// turn detection could still find (`SYSTEM_DETECTION_MIN_RMS`). A higher floor
+/// would strand quiet-but-real tracks before the full-source fallback ever runs,
+/// transcribing mic-only.
+fn partition_silent_system_sources(
+    sources: Vec<(String, String, PathBuf)>,
+) -> SilentSystemDropOutcome {
     let has_other_source = sources
         .iter()
         .any(|(_, source, _)| source.as_str() != "system");
     if !has_other_source {
-        return sources;
+        return SilentSystemDropOutcome {
+            kept: sources,
+            dropped: Vec::new(),
+        };
     }
-    sources
-        .into_iter()
-        .filter(|(_, source, path)| {
-            let silent = source.as_str() == "system"
-                && crate::audio::turns::source_is_effectively_silent(path);
-            if silent {
-                tracing::info!(
-                    %source,
-                    path = %path.display(),
-                    "skipping silent system source — no transcribable audio"
-                );
-            }
-            !silent
-        })
-        .collect()
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for (artifact_id, source, path) in sources {
+        let silent = source.as_str() == "system"
+            && crate::audio::turns::source_is_effectively_silent_with_floor(
+                &path,
+                crate::audio::turns::SYSTEM_DETECTION_MIN_RMS,
+            );
+        if silent {
+            let max_rms = crate::audio::turns::source_max_rms(&path).unwrap_or(0.0);
+            tracing::info!(
+                %source,
+                path = %path.display(),
+                max_rms,
+                "skipping silent system source — no transcribable audio"
+            );
+            dropped.push(DroppedSource {
+                artifact_id,
+                source,
+                max_rms,
+            });
+        } else {
+            kept.push((artifact_id, source, path));
+        }
+    }
+    SilentSystemDropOutcome { kept, dropped }
 }
 
 fn add_full_source_turns_for_missing_sources(
@@ -2646,6 +2703,36 @@ mod tests {
         // System-only capture of silence must survive so its "no speech"
         // failure still reaches the user.
         assert_eq!(kept.len(), 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keeps_quiet_system_source_between_detection_and_silence_floors() {
+        let dir =
+            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+        write_test_wav(&mic_path, &[20_000, -18_000]);
+        // ~0.008 RMS: detectable by the system lane (min_rms 0.006) but under the
+        // 0.012 normalized-chunk silence floor. Must survive the pre-filter so the
+        // full-source fallback can still transcribe it.
+        let amplitude = (0.008 * i16::MAX as f32).round() as i16;
+        let quiet = vec![amplitude; 48_000];
+        write_test_wav(&system_path, &quiet);
+
+        let kept = drop_silent_system_sources(vec![
+            ("mic".to_string(), "microphone".to_string(), mic_path),
+            ("sys".to_string(), "system".to_string(), system_path.clone()),
+        ]);
+
+        assert_eq!(kept.len(), 2);
+        // The old 0.012 floor still judges it silent — the chunk-skip guard is
+        // intentionally left stricter than the pre-filter.
+        assert!(crate::audio::turns::source_is_effectively_silent(
+            &system_path
+        ));
 
         let _ = std::fs::remove_dir_all(dir);
     }

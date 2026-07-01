@@ -10,10 +10,14 @@ const NORMALIZE_MAX_GAIN: f32 = 32.0;
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
 const TRANSCRIPTION_CHANNELS: u16 = 1;
 pub const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 30 * 1000;
-/// Loudest-window RMS below which a track carries no transcribable speech.
-/// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
-/// activity `min_rms`, so we only ever skip clearly-silent audio.
+/// Loudest-window RMS below which normalized audio carries no transcribable
+/// speech. Applied to already-gained audio (chunk-skip before API calls), so a
+/// track this quiet after up to 32x normalization is genuinely silent.
 const SILENCE_RMS_FLOOR: f32 = 0.012;
+/// Activity `min_rms` for the system lane's turn detection. The pre-transcription
+/// silence pre-filter must not drop below what detection can still find, so both
+/// derive from this one constant.
+pub const SYSTEM_DETECTION_MIN_RMS: f32 = 0.006;
 
 #[derive(Debug, Clone)]
 pub struct DetectionSource {
@@ -66,10 +70,24 @@ pub fn detect_turns(sources: &[DetectionSource]) -> Result<Vec<AudioTurn>, AppEr
 /// can't be read we return `false` so the audio is still attempted rather than
 /// silently dropped.
 pub fn source_is_effectively_silent(path: &Path) -> bool {
+    source_is_effectively_silent_with_floor(path, SILENCE_RMS_FLOOR)
+}
+
+/// Like [`source_is_effectively_silent`] but with a caller-supplied floor, so
+/// the pre-transcription drop can use the detector's floor while the normalized
+/// chunk-skip keeps the higher default.
+pub fn source_is_effectively_silent_with_floor(path: &Path, floor: f32) -> bool {
     match read_rms_windows(path) {
-        Ok(windows) => windows.iter().copied().fold(0.0_f32, f32::max) < SILENCE_RMS_FLOOR,
+        Ok(windows) => windows.iter().copied().fold(0.0_f32, f32::max) < floor,
         Err(_) => false,
     }
+}
+
+/// The loudest 30ms RMS window of a source, or `None` if it can't be read.
+pub fn source_max_rms(path: &Path) -> Option<f32> {
+    read_rms_windows(path)
+        .ok()
+        .map(|windows| windows.iter().copied().fold(0.0_f32, f32::max))
 }
 
 pub fn coalesce_turns_for_transcription(mut turns: Vec<AudioTurn>) -> Vec<AudioTurn> {
@@ -459,7 +477,7 @@ fn config_for_source(source: &str) -> SourceDetectionConfig {
             end_silence_ms: 2_000,
             min_turn_ms: 600,
             merge_gap_ms: 1_200,
-            min_rms: 0.006,
+            min_rms: SYSTEM_DETECTION_MIN_RMS,
             noise_multiplier: 3.0,
         }
     } else {
@@ -584,6 +602,46 @@ mod tests {
 
         assert!(source_is_effectively_silent(&silent));
         assert!(!source_is_effectively_silent(&audible));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn quiet_system_track_survives_detection_floor_but_is_silent_at_default_floor() {
+        let dir = std::env::temp_dir().join(format!("os-june-floor-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let quiet = dir.join("quiet-system.wav");
+        // Constant amplitude ~0.008 RMS: between the system detection floor
+        // (0.006) and the normalized-chunk silence floor (0.012).
+        let amplitude = (0.008 * i16::MAX as f32).round() as i16;
+        let samples = vec![amplitude; 16_000];
+        write_samples(&quiet, &samples);
+
+        let max_rms = source_max_rms(&quiet).unwrap();
+        assert!(
+            max_rms > SYSTEM_DETECTION_MIN_RMS && max_rms < SILENCE_RMS_FLOOR,
+            "expected RMS between floors, got {max_rms}"
+        );
+        assert!(!source_is_effectively_silent_with_floor(
+            &quiet,
+            SYSTEM_DETECTION_MIN_RMS
+        ));
+        assert!(source_is_effectively_silent(&quiet));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn truly_silent_track_is_dropped_at_detection_floor() {
+        let dir = std::env::temp_dir().join(format!("os-june-floor-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let silent = dir.join("silent-system.wav");
+        write_samples(&silent, &vec![0_i16; 16_000]);
+
+        assert!(source_is_effectively_silent_with_floor(
+            &silent,
+            SYSTEM_DETECTION_MIN_RMS
+        ));
 
         let _ = std::fs::remove_dir_all(dir);
     }
