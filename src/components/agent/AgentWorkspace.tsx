@@ -847,6 +847,7 @@ type IssueReportFollowUpSubmitFailedDetail = {
 
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
+const NEW_SESSION_DRAFT_STORAGE_KEY = "june:agent:new-session-draft";
 const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY = "june:agent:reviewable-issue-reports";
 const ISSUE_REPORT_DELIVERY_SETTLED_EVENT = "june-agent-issue-report-delivery-settled";
 const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
@@ -868,17 +869,83 @@ function rememberComposerDraft(
   if (!key) return;
   if (!text.trim() && !category && attachments.length === 0) {
     agentComposerDrafts.delete(key);
+    if (key === NEW_SESSION_DRAFT_KEY) removeStoredNewSessionDraft();
     return;
   }
-  agentComposerDrafts.set(key, {
+  const snapshot = {
     text,
     category,
     attachments: [...attachments],
-  });
+  };
+  agentComposerDrafts.set(key, snapshot);
+  if (key === NEW_SESSION_DRAFT_KEY) writeStoredNewSessionDraft(snapshot);
 }
 
 function forgetComposerDraft(key: string | null) {
-  if (key) agentComposerDrafts.delete(key);
+  if (!key) return;
+  agentComposerDrafts.delete(key);
+  if (key === NEW_SESSION_DRAFT_KEY) removeStoredNewSessionDraft();
+}
+
+function readComposerDraft(key: string | null) {
+  if (!key) return undefined;
+  const snapshot = agentComposerDrafts.get(key);
+  if (snapshot || key !== NEW_SESSION_DRAFT_KEY) return snapshot;
+  const storedSnapshot = readStoredNewSessionDraft();
+  if (storedSnapshot) agentComposerDrafts.set(key, storedSnapshot);
+  return storedSnapshot;
+}
+
+function hasNewSessionComposerDraft() {
+  return Boolean(agentComposerDrafts.get(NEW_SESSION_DRAFT_KEY) ?? readStoredNewSessionDraft());
+}
+
+function writeStoredNewSessionDraft(snapshot: ComposerDraftSnapshot) {
+  const text = snapshot.text;
+  const category = snapshot.category;
+  if (!text.trim() && !category) {
+    removeStoredNewSessionDraft();
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(
+      NEW_SESSION_DRAFT_STORAGE_KEY,
+      JSON.stringify({ text, category }),
+    );
+  } catch {
+    // Storage can be unavailable in restricted webviews; the in-memory draft
+    // still covers ordinary view switches in this process.
+  }
+}
+
+function readStoredNewSessionDraft(): ComposerDraftSnapshot | undefined {
+  try {
+    const value = window.sessionStorage.getItem(NEW_SESSION_DRAFT_STORAGE_KEY);
+    if (!value) return undefined;
+    const parsed = JSON.parse(value) as { text?: unknown; category?: unknown };
+    const text = typeof parsed.text === "string" ? parsed.text : "";
+    const category = isReportCategory(parsed.category) ? parsed.category : null;
+    if (!text.trim() && !category) {
+      removeStoredNewSessionDraft();
+      return undefined;
+    }
+    return { text, category, attachments: [] };
+  } catch {
+    removeStoredNewSessionDraft();
+    return undefined;
+  }
+}
+
+function removeStoredNewSessionDraft() {
+  try {
+    window.sessionStorage.removeItem(NEW_SESSION_DRAFT_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in restricted webviews.
+  }
+}
+
+function shouldOpenNewSessionOnMount() {
+  return hasPendingNewSessionRequest() || hasNewSessionComposerDraft();
 }
 
 function activeToolCallsRecord(
@@ -1171,6 +1238,7 @@ function messageAfterIssueReportDiagnosisBoundary(
 export function resetAgentSessionContinuity() {
   sessionContinuity = null;
   agentComposerDrafts.clear();
+  removeStoredNewSessionDraft();
 }
 
 export function AgentWorkspace({
@@ -1267,18 +1335,19 @@ export function AgentWorkspace({
   // Mounting without an explicit target restores the last open conversation,
   // so app restarts and dev reloads land the user back in the session they
   // were working in instead of bouncing them to the newest one. A pending
-  // new-session marker overrides the restore: the mount-time sessions-changed
-  // dispatch would otherwise announce the restored session as selected, which
-  // App reads as "switched to an existing session" and drops a pending
-  // project assignment before the new session even exists.
+  // new-session marker or saved new-session draft overrides the restore: the
+  // marker path prevents a stale selected-session broadcast from dropping
+  // pending project context, while the draft path keeps unsent hero text
+  // visible after a view switch or reload.
+  const [startInNewSessionMode] = useState(
+    () => !initialSessionId && shouldOpenNewSessionOnMount(),
+  );
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<string | undefined>(
-    () => initialSessionId ?? (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
+    () => initialSessionId ?? (startInNewSessionMode ? undefined : readLastOpenSessionId()),
   );
   const selectedHermesSessionIdRef = useRef<string | undefined>(selectedHermesSessionId);
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
-  const [newSessionMode, setNewSessionMode] = useState(
-    () => !initialSessionId && hasPendingNewSessionRequest(),
-  );
+  const [newSessionMode, setNewSessionMode] = useState(startInNewSessionMode);
   const setError = useCallback(
     (message: string | null, options: AgentWorkspaceErrorOptions = {}) => {
       if (!message) {
@@ -5018,7 +5087,7 @@ export function AgentWorkspace({
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       composerEditorRef.current?.setContent(initialPrompt);
     } else {
-      clearComposerDraft(NEW_SESSION_DRAFT_KEY);
+      restoreComposerDraft(NEW_SESSION_DRAFT_KEY);
     }
     if (!initialPrompt) return;
     dispatchAgentSessionStatus({
@@ -5063,7 +5132,7 @@ export function AgentWorkspace({
     const editor = composerEditorRef.current;
     if (!editor) return;
     restoredComposerDraftKeyRef.current = key;
-    const snapshot = key ? agentComposerDrafts.get(key) : undefined;
+    const snapshot = readComposerDraft(key);
     draftRef.current = snapshot?.text ?? "";
     categoryRef.current = snapshot?.category ?? null;
     attachmentsRef.current = snapshot?.attachments ?? [];

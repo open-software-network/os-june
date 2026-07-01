@@ -3289,6 +3289,61 @@ describe("AgentWorkspace", () => {
     await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("come back to this"));
   });
 
+  it("restores a new-session draft instead of reopening the last session", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "draft a launch plan");
+    expect(screen.getByRole("textbox")).toHaveTextContent("draft a launch plan");
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent("draft a launch plan"),
+    );
+  });
+
+  it("keeps a new-session draft when a blank New Session event returns to chat", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "do not drop this");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("do not drop this"));
+  });
+
+  it("restores a stored new-session draft instead of reopening the last session", async () => {
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
+    window.sessionStorage.setItem(
+      "june:agent:new-session-draft",
+      JSON.stringify({ text: "stored hero draft", category: null }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("stored hero draft"));
+  });
+
   it("restores drafts when switching sessions without remounting", async () => {
     const user = userEvent.setup();
     const secondSession = {
