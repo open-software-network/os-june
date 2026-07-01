@@ -225,8 +225,6 @@ jobs:
         with:
           path: .tauri-hermes/hermes
           key: hermes-bundle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bundle-hermes-runtime.sh', 'src-tauri/src/hermes_bridge.rs') }}
-          restore-keys: |
-            hermes-bundle-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Bundle Hermes runtime into app resources
         env:
