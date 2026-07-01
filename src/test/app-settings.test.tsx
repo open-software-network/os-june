@@ -472,7 +472,7 @@ describe("AppSettings", () => {
     expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
   });
 
-  it("shows an accent reset button after choosing a non-default accent", () => {
+  it("changes the accent color through the appearance picker", () => {
     vi.useFakeTimers();
     try {
       render(
@@ -488,44 +488,32 @@ describe("AppSettings", () => {
         />,
       );
 
-      expect(
-        screen.queryByRole("button", {
-          name: "Reset accent color to default",
-        }),
-      ).not.toBeInTheDocument();
+      // The accessible name carries the current selection so screen readers
+      // announce the active accent, not just the static "Accent color" label.
+      const trigger = (label: string) =>
+        screen.getByRole("button", { name: `Accent color: ${label}` });
+      expect(trigger("Clay")).toHaveTextContent("Clay");
 
-      fireEvent.click(screen.getByRole("button", { name: "Accent color: Rose. Change" }));
-      fireEvent.click(screen.getByRole("radio", { name: "Clay" }));
-
+      // Pick a non-default accent from the shared select popover.
+      fireEvent.click(trigger("Clay"));
+      fireEvent.click(screen.getByRole("option", { name: "Rose" }));
       act(() => {
-        vi.advanceTimersByTime(316);
+        vi.advanceTimersByTime(320);
+      });
+
+      expect(localStorage.getItem("os-june:brand")).toBe("rose");
+      expect(trigger("Rose")).toHaveTextContent("Rose");
+
+      // Re-selecting the default from the list is the reset (no separate
+      // button), mirroring how the language picker's "Auto-detect" works.
+      fireEvent.click(trigger("Rose"));
+      fireEvent.click(screen.getByRole("option", { name: "Clay" }));
+      act(() => {
+        vi.advanceTimersByTime(320);
       });
 
       expect(localStorage.getItem("os-june:brand")).toBe("clay");
-      expect(
-        screen.getByRole("button", { name: "Accent color: Clay. Change" }),
-      ).toBeInTheDocument();
-      const resetButton = screen.getByRole("button", {
-        name: "Reset accent color to default",
-      });
-      const accentButton = screen.getByRole("button", {
-        name: "Accent color: Clay. Change",
-      });
-      expect(
-        resetButton.compareDocumentPosition(accentButton) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-
-      fireEvent.click(resetButton);
-
-      expect(localStorage.getItem("os-june:brand")).toBe("rose");
-      expect(
-        screen.getByRole("button", { name: "Accent color: Rose. Change" }),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", {
-          name: "Reset accent color to default",
-        }),
-      ).not.toBeInTheDocument();
+      expect(trigger("Clay")).toHaveTextContent("Clay");
     } finally {
       vi.useRealTimers();
     }

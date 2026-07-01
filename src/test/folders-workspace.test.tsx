@@ -417,6 +417,54 @@ describe("Sidebar primary navigation", () => {
     expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull();
   });
 
+  it("omits the billing settings jump from the palette in local dev mode", async () => {
+    const user = userEvent.setup();
+    const renderSidebar = (account: AccountStatus) =>
+      render(
+        <Sidebar
+          notes={notes}
+          activeView="notes"
+          account={account}
+          onChangeView={vi.fn()}
+          onSelectNote={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onRemoveNoteFromFolder={vi.fn()}
+          onNewAgentSession={vi.fn()}
+          onSelectAgentSession={vi.fn()}
+          onSettingsTabChange={vi.fn()}
+        />,
+      );
+
+    const openPaletteAndSearch = async () => {
+      await user.click(screen.getByRole("searchbox", { name: "Search" }));
+      const palette = screen.getByRole("dialog", { name: "Search" });
+      const search = within(palette).getByRole("searchbox", { name: "Search" });
+      await user.type(search, "billing");
+      return palette;
+    };
+
+    // A regular account surfaces the billing jump once a query is typed.
+    const regular = renderSidebar({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_regular", handle: "regular" },
+    });
+    const regularPalette = await openPaletteAndSearch();
+    expect(within(regularPalette).getByText("Settings -> Billing")).toBeInTheDocument();
+    regular.unmount();
+
+    // Local dev hides billing everywhere, including the palette jump.
+    renderSidebar({
+      signedIn: true,
+      configured: true,
+      localDev: true,
+      user: { id: "usr_local_dev", handle: "local-dev" },
+    });
+    const localDevPalette = await openPaletteAndSearch();
+    expect(within(localDevPalette).queryByText("Settings -> Billing")).toBeNull();
+  });
+
   it("opens the referral dialog and copies the invite link", async () => {
     const user = userEvent.setup();
     const clipboardWrite = vi.spyOn(navigator.clipboard, "writeText");

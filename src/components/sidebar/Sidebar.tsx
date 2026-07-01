@@ -82,7 +82,7 @@ import type {
 } from "../../lib/tauri";
 import { osAccountsReferralSummary } from "../../lib/tauri";
 import { JuneMark } from "../account/AccountGate";
-import type { SettingsTab } from "../settings/AppSettings";
+import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { DotSpinner } from "../DotSpinner";
@@ -584,15 +584,36 @@ export function Sidebar({
         action: () => onChangeView("routines"),
       },
       {
-        id: "quick:settings-general",
-        label: "Settings -> General",
+        id: "quick:settings",
+        label: "Open settings",
         icon: <IconSettingsGear4 size={15} />,
-        searchText: normalizeCommandQuery("settings general"),
-        action: () => {
-          onSettingsTabChange?.("general");
-          onChangeView("settings");
-        },
+        searchText: normalizeCommandQuery("open settings preferences"),
+        action: () => onChangeView("settings"),
       },
+      // Per-tab settings jumps surface only once a query is typed so ten
+      // rows don't flood the default Quick actions list. The general tab
+      // hosts Appearance, so its search text carries those terms too.
+      ...(normalized
+        ? SETTINGS_TABS.filter(
+            (tab) =>
+              !HIDDEN_SETTINGS_TABS.has(tab.id) && !(account.localDev && tab.id === "billing"),
+          ).map(
+            (tab): CommandPaletteItem => ({
+              id: `quick:settings-${tab.id}`,
+              label: `Settings -> ${tab.label}`,
+              icon: <IconSettingsGear4 size={15} />,
+              searchText: normalizeCommandQuery(
+                tab.id === "general"
+                  ? "settings general appearance theme accent account"
+                  : `settings ${tab.label}`,
+              ),
+              action: () => {
+                onSettingsTabChange?.(tab.id);
+                onChangeView("settings");
+              },
+            }),
+          )
+        : []),
     ].filter(matches);
 
     return [
@@ -600,6 +621,7 @@ export function Sidebar({
       { title: "Quick actions", items: quickItems },
     ].filter((group) => group.items.length > 0);
   }, [
+    account.localDev,
     agentSessions,
     commandQuery,
     notes,

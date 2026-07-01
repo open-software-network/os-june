@@ -32,7 +32,7 @@
   /* The selected accent, defaulting to dusty rose. subscribeBrand() (see
    * src/lib/brand.ts) overrides this from the stored preference and live-syncs
    * it when the accent changes in the main window. */
-  --brand: #936862;
+  --brand: #b5551f;
   /* The accent lifted for legibility on the dark glass — derived from --brand
    * so the June mark + shimmer track the selected accent. */
   --attention: color-mix(in oklch, var(--brand) 62%, white);

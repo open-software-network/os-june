@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
@@ -50,6 +50,7 @@ import {
   shortcutFromCapturePayload,
 } from "../shortcuts/use-shortcut-capture";
 import {
+  Select,
   selectPopoverPlacement,
   selectPopoverStyle,
   type SelectPopoverPlacement,
@@ -60,8 +61,7 @@ import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
 import type { ReportCategory } from "../agent/composer/reportCategory";
 import { getStoredTheme, setStoredTheme, type ThemePreference } from "../../lib/theme";
-import { DEFAULT_BRAND, getStoredBrand, setStoredBrand, type BrandId } from "../../lib/brand";
-import { AccentWheel } from "./AccentWheel";
+import { BRAND_PRESETS, getStoredBrand, setStoredBrand, type BrandId } from "../../lib/brand";
 import {
   getReleaseChannel,
   reconcileToStable,
@@ -979,24 +979,22 @@ export function AppSettings({
                       </p>
                     </div>
                     <div className="settings-row-control">
-                      {brand !== DEFAULT_BRAND ? (
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          aria-label="Reset accent color to default"
-                          onClick={() => {
-                            setBrand(DEFAULT_BRAND);
-                            setStoredBrand(DEFAULT_BRAND);
-                          }}
-                        >
-                          Reset
-                        </button>
-                      ) : null}
-                      <AccentWheel
+                      <Select
+                        className="accent-select"
                         value={brand}
+                        options={BRAND_PRESETS.map((preset) => ({
+                          value: preset.id,
+                          label: preset.label,
+                          color: preset.value,
+                        }))}
+                        placeholder="Clay"
+                        ariaLabel={`Accent color: ${
+                          BRAND_PRESETS.find((preset) => preset.id === brand)?.label ??
+                          BRAND_PRESETS[0].label
+                        }`}
                         onChange={(id) => {
-                          setBrand(id);
-                          setStoredBrand(id);
+                          setBrand(id as BrandId);
+                          setStoredBrand(id as BrandId);
                         }}
                       />
                     </div>
@@ -1120,7 +1118,7 @@ export function AppSettings({
                                 >
                                   <span>{option.label}</span>
                                   <span className="select-check" aria-hidden>
-                                    {selected ? <IconCheckmark1Small size={14} /> : null}
+                                    {selected ? <IconCheckmark2Small size={14} /> : null}
                                   </span>
                                 </button>
                               </li>
@@ -1167,8 +1165,9 @@ export function AppSettings({
                       <IconChevronDownSmall size={14} />
                     </button>
                     {micOpen ? (
-                      // 2px = (trigger 32 - item 28) / 2, so the selected item
-                      // overlays the trigger label exactly with no visual jump.
+                      // selectPopoverStyle offsets for the popover chrome and
+                      // the trigger/row height difference, so the selected
+                      // item overlays the trigger exactly with no visual jump.
                       <ul
                         className="select-popover"
                         role="listbox"
@@ -1193,7 +1192,7 @@ export function AppSettings({
                               >
                                 <span>{option.name}</span>
                                 <span className="select-check" aria-hidden>
-                                  {selected ? <IconCheckmark1Small size={14} /> : null}
+                                  {selected ? <IconCheckmark2Small size={14} /> : null}
                                 </span>
                               </button>
                             </li>
