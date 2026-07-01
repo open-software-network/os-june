@@ -208,6 +208,62 @@ jobs:
       - name: Cargo test
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+  # Permanent Linux compile coverage on every PR that touches src-tauri.
+  # Ubuntu minutes are ~10x cheaper than macOS, so unlike the workflow_dispatch
+  # Windows bundle job this runs on the same changed-paths gate as the macOS
+  # `rust` job. It only compiles and tests (no packaging), which is enough to
+  # catch Linux-specific build breaks early.
+  linux-rust:
+    name: Tauri Linux compile and tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libasound2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libdbus-1-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: tauri-cargo-registry-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: src-tauri/target
+          key: tauri-cargo-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-target-${{ runner.os }}-
+
+      - name: Cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
   windows-rust:
     name: Tauri Windows build
     needs: changes
@@ -305,6 +361,165 @@ jobs:
         with:
           name: june-windows-debug-nsis
           path: src-tauri/target/debug/bundle/nsis/*-setup.exe
+
+  # workflow_dispatch-only, like windows-rust: packaging is the expensive path
+  # (it bundles the full Hermes runtime and builds the AppImage/deb), so it is
+  # not run on every PR. It proves the Linux packaged app builds and that the
+  # bundled Hermes runtime lands inside both the AppImage and the deb payloads.
+  linux-bundle:
+    name: Tauri Linux build
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.desktop_bundle == 'true'
+    # 22.04 on purpose, matching the production Linux release: binaries built
+    # on a newer image require a newer glibc than LTS-distro users have, and
+    # this job exists to prove the packaged build in that same environment.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libasound2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            libfuse2
+
+      - name: Install uv
+        run: pipx install uv==0.11.15
+
+      - name: Cache cargo registry
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: tauri-cargo-registry-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: src-tauri/target
+          # runner.os is "Linux" on every ubuntu image, but target artifacts
+          # built against ubuntu-latest system libs are not usable on the
+          # pinned 22.04 image; key by image so the caches never mix.
+          key: tauri-cargo-target-ubuntu-22.04-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-target-ubuntu-22.04-
+
+      - name: Bundle Hermes runtime
+        run: ./scripts/bundle-hermes-runtime-linux.sh
+
+      - name: Help linuxdeploy resolve bundled Hermes libraries
+        run: |
+          # linuxdeploy dependency-walks every ELF in the AppDir but resolves
+          # DT_NEEDED names only through standard paths and LD_LIBRARY_PATH,
+          # not each library's own $ORIGIN rpath. manylinux wheels (Pillow et
+          # al) vendor hash-named deps in *.libs dirs next to the extension,
+          # so expose those dirs (and the bundled CPython's lib/) for the walk.
+          hermes_lib_path="$(find "$PWD/.tauri-hermes/hermes" -type d \( -name '*.libs' -o -path '*/python/current/lib' \) | paste -sd: -)"
+          echo "LD_LIBRARY_PATH=$hermes_lib_path" >> "$GITHUB_ENV"
+
+      - name: Tauri Linux bundle
+        env:
+          # linuxdeploy's strip pass chokes on large debug binaries and its
+          # failure is opaque; the debug bundle does not need stripping.
+          NO_STRIP: "true"
+        run: node scripts/tauri-build.mjs --debug --no-sign --verbose
+
+      - name: Verify Linux bundle
+        run: |
+          set -euo pipefail
+          bundle_root="src-tauri/target/debug/bundle"
+
+          appimage="$(find "$bundle_root/appimage" -maxdepth 1 -name '*.AppImage' | head -1)"
+          if [ -z "$appimage" ]; then
+            echo "::error::AppImage was not produced."
+            exit 1
+          fi
+          if [ ! -s "$appimage" ]; then
+            echo "::error::AppImage is empty."
+            exit 1
+          fi
+
+          deb="$(find "$bundle_root/deb" -maxdepth 1 -name '*.deb' | head -1)"
+          if [ -z "$deb" ]; then
+            echo "::error::deb package was not produced."
+            exit 1
+          fi
+          if [ ! -s "$deb" ]; then
+            echo "::error::deb package is empty."
+            exit 1
+          fi
+
+          expected_paths="native/hermes/bin/hermes native/hermes/python native/hermes/hermes-agent/pyproject.toml"
+
+          # deb payload: dpkg-deb lists the archive contents without unpacking.
+          # grep a listing file instead of piping: grep -q exits at first match
+          # and the resulting EPIPE would fail the pipeline under pipefail.
+          deb_listing="$RUNNER_TEMP/deb-listing.txt"
+          dpkg-deb -c "$deb" > "$deb_listing"
+          for expected in $expected_paths; do
+            if ! grep -qF "$expected" "$deb_listing"; then
+              echo "::error::deb payload does not include bundled Hermes path $expected."
+              exit 1
+            fi
+          done
+
+          # AppImage payload: --appimage-extract unpacks the squashfs without
+          # FUSE (the runtime intercepts the flag before any mount).
+          appimage_abs="$(readlink -f "$appimage")"
+          extract_dir="$RUNNER_TEMP/appimage-extract"
+          rm -rf "$extract_dir"
+          mkdir -p "$extract_dir"
+          chmod +x "$appimage_abs"
+          ( cd "$extract_dir" && "$appimage_abs" --appimage-extract >/dev/null )
+          for expected in $expected_paths; do
+            if [ -z "$(find "$extract_dir/squashfs-root" -path "*$expected" -print -quit)" ]; then
+              echo "::error::AppImage payload does not include bundled Hermes path $expected."
+              exit 1
+            fi
+          done
+
+      - name: Upload Linux bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: june-linux-debug-bundle
+          path: |
+            src-tauri/target/debug/bundle/appimage/*.AppImage
+            src-tauri/target/debug/bundle/deb/*.deb
 
 # Coverage reruns of these suites live in coverage.yml (manual-only). They
 # duplicated this workflow's jobs on a macOS runner for every push and PR

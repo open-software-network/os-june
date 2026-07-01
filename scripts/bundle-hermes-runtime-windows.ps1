@@ -131,7 +131,14 @@ function Invoke-Uv {
       Set-Location $previousLocation
     }
     foreach ($key in $ExtraEnv.Keys) {
-      [Environment]::SetEnvironmentVariable($key, $saved[$key], "Process")
+      # PowerShell binds $null to a .NET string parameter as "", which leaves
+      # the variable present-but-empty instead of deleted, and uv rejects
+      # empty boolish values. Force a true null so unset stays unset.
+      $restored = $saved[$key]
+      if ([string]::IsNullOrEmpty($restored)) {
+        $restored = [NullString]::Value
+      }
+      [Environment]::SetEnvironmentVariable($key, $restored, "Process")
     }
   }
 }
@@ -274,6 +281,7 @@ try {
     UV_PROJECT_ENVIRONMENT = $venvDir
     UV_NO_CONFIG = "1"
     UV_PYTHON_INSTALL_DIR = $pythonRoot
+    UV_PYTHON_INSTALL_BIN = "0"
   } $agentDir
 } catch {
   $syncSucceeded = $false
@@ -283,6 +291,7 @@ if (!$syncSucceeded) {
   Invoke-Uv $uv @("pip", "install", "-p", $venvDir, "-e", ".[all]") @{
     UV_NO_CONFIG = "1"
     UV_PYTHON_INSTALL_DIR = $pythonRoot
+    UV_PYTHON_INSTALL_BIN = "0"
   } $agentDir
 }
 

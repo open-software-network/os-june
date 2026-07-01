@@ -130,9 +130,14 @@ in-app. It is free to start.
 - [Download for macOS](https://opensoftware.co/download/mac)
 - [All releases and changelog source](https://github.com/open-software-network/os-june-releases)
 
-Windows builds cover the app shell, sign-in, microphone recording, notes, and
-the bundled agent runtime, but not global dictation paste, system audio
-capture, or the macOS sandbox. macOS is the primary target.
+Windows and Linux builds cover the app shell, sign-in, microphone recording,
+notes, and the bundled agent runtime, but not global dictation paste, system
+audio capture, or the macOS sandbox. macOS is the primary target. Windows
+ships as an NSIS installer; Linux ships as an AppImage and a deb, and only the
+AppImage auto-updates. Grab both from the releases page above. Release
+procedures live in [docs/release-macos.md](docs/release-macos.md),
+[docs/release-windows.md](docs/release-windows.md), and
+[docs/release-linux.md](docs/release-linux.md).
 
 ## Repository layout
 

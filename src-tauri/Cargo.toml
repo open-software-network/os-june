@@ -77,5 +77,14 @@ window-vibrancy = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Secret Service is the only Linux keyring store that survives a reboot; the
+# keyutils backend is session-scoped, so tokens there would vanish on logout.
+# crypto-rust keeps transport encryption pure Rust (no OpenSSL). libdbus links
+# from the system: build hosts need libdbus-1-dev, and at runtime every desktop
+# with a Secret Service has libdbus (it is the transport), so the AppImage
+# follows the standard exclude list and does not ship it.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
 [dev-dependencies]
 tempfile = "3.14"

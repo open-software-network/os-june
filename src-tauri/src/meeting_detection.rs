@@ -1,5 +1,7 @@
 use serde::Serialize;
-use std::{collections::BTreeSet, thread, time::Duration};
+#[cfg(target_os = "macos")]
+use std::thread;
+use std::{collections::BTreeSet, time::Duration};
 use tauri::{AppHandle, Emitter};
 
 const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;

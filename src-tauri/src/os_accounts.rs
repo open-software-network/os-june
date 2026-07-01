@@ -651,6 +651,17 @@ pub fn setup_deep_link(app: &tauri::App) {
     use tauri::Manager;
     use tauri_plugin_deep_link::DeepLinkExt;
 
+    // macOS and Windows register the osjune:// scheme at install time
+    // (Info.plist, NSIS registry), and a Linux deb registers it through its
+    // .desktop entry. An AppImage is never installed, so nothing tells the
+    // desktop environment about the scheme; register at runtime (the plugin
+    // writes a user-level .desktop handler and resolves the outer AppImage
+    // path via $APPIMAGE). Without this, sign-in cannot redirect back.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = app.deep_link().register_all() {
+        eprintln!("[os-accounts] deep link registration failed: {error}");
+    }
+
     let app_handle = app.app_handle().clone();
     app.deep_link().on_open_url(move |event| {
         let Some(url) = event.urls().first().cloned() else {
@@ -1226,7 +1237,7 @@ async fn store_tokens(pair: &TokenPair) -> Result<(), AppError> {
     store_platform_tokens(json).await
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 async fn store_platform_tokens(json: String) -> Result<(), AppError> {
     let service = keychain_service().to_string();
     tokio::task::spawn_blocking(move || {
@@ -1237,11 +1248,11 @@ async fn store_platform_tokens(json: String) -> Result<(), AppError> {
     .map_err(|e| AppError::new("keychain_write_failed", e.to_string()))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 async fn store_platform_tokens(_json: String) -> Result<(), AppError> {
     Err(AppError::new(
         "secure_token_storage_unavailable",
-        "Secure token storage is only available on macOS and Windows.",
+        "Secure token storage is only available on macOS, Windows, and Linux.",
     ))
 }
 
@@ -1253,7 +1264,7 @@ async fn load_tokens() -> Option<TokenPair> {
     load_platform_tokens().await
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 async fn load_platform_tokens() -> Option<TokenPair> {
     let service = keychain_service().to_string();
     let raw = tokio::task::spawn_blocking(move || {
@@ -1266,7 +1277,7 @@ async fn load_platform_tokens() -> Option<TokenPair> {
     serde_json::from_str(&raw).ok()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 async fn load_platform_tokens() -> Option<TokenPair> {
     None
 }
@@ -1283,7 +1294,7 @@ async fn clear_tokens() {
     clear_platform_tokens().await;
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 async fn clear_platform_tokens() {
     let service = keychain_service().to_string();
     let _ = tokio::task::spawn_blocking(move || {
@@ -1294,7 +1305,7 @@ async fn clear_platform_tokens() {
     .await;
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 async fn clear_platform_tokens() {}
 
 fn keychain_service() -> &'static str {

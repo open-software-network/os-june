@@ -9,6 +9,7 @@ const REPLAY_ONBOARDING_FLAG = "--replay-onboarding";
 const platformConfigs = {
   darwin: "src-tauri/tauri.macos.conf.json",
   win32: "src-tauri/tauri.windows.conf.json",
+  linux: "src-tauri/tauri.linux.conf.json",
 };
 
 let replayOnboarding = false;

@@ -11,8 +11,11 @@ on:
 permissions:
   contents: read
 
+# Shared with the other platform release workflows: each downloads the
+# release's latest.json, builds, then re-uploads it with its own platform key
+# merged in, so concurrent runs would clobber each other's updater entry.
 concurrency:
-  group: production-desktop-windows
+  group: production-desktop-release-assets
   cancel-in-progress: false
 
 env:
@@ -107,6 +110,7 @@ jobs:
           "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Validate release secrets
+        id: release-secrets
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -121,8 +125,6 @@ jobs:
         run: |
           $missing = 0
           $required = @(
-            "WINDOWS_CERTIFICATE",
-            "WINDOWS_CERTIFICATE_PASSWORD",
             "TAURI_SIGNING_PRIVATE_KEY",
             "RELEASE_APP_ID",
             "RELEASE_APP_PRIVATE_KEY",
@@ -138,6 +140,22 @@ jobs:
               Write-Host "::error::$name is required for a production Windows release."
               $missing = 1
             }
+          }
+
+          $hasWindowsCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)
+          $hasWindowsCertificatePassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
+          if ($hasWindowsCertificate -xor $hasWindowsCertificatePassword) {
+            Write-Host "::error::WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD must be configured together for Authenticode signing."
+            $missing = 1
+          }
+
+          if ($hasWindowsCertificate -and $hasWindowsCertificatePassword) {
+            "authenticode=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "WINDOWS_AUTHENTICODE_ENABLED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            Write-Host "::warning::WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are not configured; publishing an unsigned Windows installer."
+            "authenticode=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "WINDOWS_AUTHENTICODE_ENABLED=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
 
           exit $missing
@@ -174,6 +192,7 @@ jobs:
           "RELEASE_MANIFEST_PATH=$manifestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Write Windows signing certificate
+        if: steps.release-secrets.outputs.authenticode == 'true'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -192,6 +211,7 @@ jobs:
         run: ./scripts/bundle-hermes-runtime-windows.ps1
 
       - name: Sign bundled Hermes runtime
+        if: steps.release-secrets.outputs.authenticode == 'true'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -225,7 +245,10 @@ jobs:
 
       - name: Verify Windows signatures and payload
         shell: pwsh
+        env:
+          WINDOWS_AUTHENTICODE_ENABLED: ${{ steps.release-secrets.outputs.authenticode }}
         run: |
+          $authenticodeEnabled = $env:WINDOWS_AUTHENTICODE_ENABLED -eq "true"
           $exe = Get-Item "src-tauri/target/release/os-june.exe" -ErrorAction Stop
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           if ($null -eq $setup) {
@@ -238,8 +261,11 @@ jobs:
               throw "$($file.FullName) is empty."
             }
             $signature = Get-AuthenticodeSignature -FilePath $file.FullName
-            if ($signature.Status -ne "Valid") {
+            if ($authenticodeEnabled -and $signature.Status -ne "Valid") {
               throw "Authenticode signature is $($signature.Status) for $($file.FullName). $($signature.StatusMessage)"
+            }
+            if (-not $authenticodeEnabled) {
+              Write-Host "::warning::Authenticode signature check skipped for $($file.FullName). Status: $($signature.Status)."
             }
           }
 
@@ -327,10 +353,16 @@ jobs:
       - name: Summary
         shell: pwsh
         run: |
+          $authenticode = if ($env:WINDOWS_AUTHENTICODE_ENABLED -eq "1") {
+            "signed"
+          } else {
+            "not signed (certificate secrets not configured)"
+          }
           @(
             "### Production Windows release",
             "- Version: ``$env:VERSION``",
             "- Release repo: ``open-software-network/os-june-releases``",
             "- Marketing download: ``https://github.com/open-software-network/os-june-releases/releases/latest/download/June_x64-setup.exe``",
-            "- Updater platform key: ``windows-x86_64``"
+            "- Updater platform key: ``windows-x86_64``",
+            "- Authenticode: ``$authenticode``"
           ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

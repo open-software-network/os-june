@@ -188,6 +188,19 @@ pub async fn fetch_update(
     pending: State<'_, PendingUpdate>,
     reconcile: bool,
 ) -> Result<Option<UpdateMeta>, AppError> {
+    // Tauri's Linux updater can only replace an AppImage, but the manifest's
+    // linux-x86_64 entry matches any Linux install. A deb install would be
+    // offered the update and then fail partway through install, so report
+    // "no update" instead (deb users upgrade by installing a newer deb).
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_none() {
+        *pending
+            .0
+            .lock()
+            .map_err(|_| AppError::new("update_check_failed", "Update lock failed."))? = None;
+        return Ok(None);
+    }
+
     let channel = current_channel(&app);
     let endpoint = tauri::Url::parse(channel.endpoint())
         .map_err(|error| AppError::new("update_check_failed", error.to_string()))?;
