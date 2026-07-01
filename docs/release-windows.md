@@ -44,19 +44,20 @@ the update artifact that Tauri verifies before installation.
 
 ## Cutting a production Windows release
 
-Cut the macOS release first (build an RC, then promote it) and merge the version
-PR:
+Cut the macOS release first (build an RC, then promote it):
 
 ```text
 GitHub Actions -> rc-desktop-release -> Run workflow (base-version X.Y.Z, rc-number N)
-GitHub Actions -> promote-desktop-release -> Run workflow
+GitHub Actions -> promote-desktop-release -> Run workflow (rc-version X.Y.Z-rc.N)
 ```
 
 Promote owns the clean semver `X.Y.Z`, the `release: vX.Y.Z` bump PR to `main`,
-the stable release creation, macOS assets, and initial `latest.json`. Merge that
-PR (so `main` is at `X.Y.Z`) before running the Windows workflow below.
+the stable release creation, macOS assets, and initial `latest.json`. It also
+records the source commit in a `stable-build.json` asset on the `vX.Y.Z` release.
+The Windows workflow reads that commit and rebuilds the same tree, so it does NOT
+depend on the version PR being merged and can run as soon as promote finishes.
 
-After it succeeds, run:
+Once promote has published `vX.Y.Z`, run:
 
 ```text
 GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z
@@ -64,11 +65,12 @@ GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z
 
 The Windows workflow performs the release steps in order:
 
-1. Checks out `main`.
+1. Reads `stable-build.json` from the `vX.Y.Z` release to learn the promoted
+   source commit, then checks that commit out (not `main`).
 2. Validates required Windows signing, updater, release, and production runtime
    secrets.
-3. Verifies `package.json`, `src-tauri/tauri.conf.json`, and
-   `src-tauri/Cargo.toml` already match the requested version.
+3. Stamps the clean `X.Y.Z` version into the checked-out tree so the Windows
+   build matches the promoted macOS version.
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
    `open-software-network/os-june-releases`.
 5. Runs `pnpm lint` and `pnpm test`.

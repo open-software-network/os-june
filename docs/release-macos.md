@@ -82,15 +82,20 @@ higher `rc-number` until it is good.
 
 ```text
 GitHub Actions -> promote-desktop-release -> Run workflow
-  rc-version = (blank, or X.Y.Z-rc.N to guard against promoting the wrong one)
+  rc-version = X.Y.Z-rc.N   (required; must match the current rc release exactly)
 ```
+
+`rc-version` is required and must equal the version the `rc` release currently
+holds; a mismatch (or a blank field) fails the run, so you can never promote a
+different candidate than you intend.
 
 `promote-desktop-release` checks out the exact commit the RC was built from,
 stamps the clean `X.Y.Z`, and reruns the full sign + notarize path, so stable
 ships the same source you tested with a clean version string. It then:
 
 - publishes the `vX.Y.Z` stable release (marked latest) with the DMG, updater
-  archive + signature, and a regenerated `latest.json`;
+  archive + signature, a regenerated `latest.json`, and a `stable-build.json`
+  recording the source commit (so the Windows build reuses the same tree);
 - generates the changelog (first-parent commits since the previous `release: v...`)
   and embeds it in both the GitHub release notes and `latest.json`;
 - opens a `release: vX.Y.Z` PR bumping the version files on `main`.
@@ -98,7 +103,9 @@ ships the same source you tested with a clean version string. It then:
 ### 4. Merge the version PR
 
 Merge the `release: vX.Y.Z` PR so `main`'s version files advance and the next
-changelog can anchor on it. This is required before cutting the Windows release.
+changelog can anchor on it. The Windows release does not depend on this merge
+(it rebuilds from the commit recorded in `stable-build.json`), so it can run in
+parallel.
 
 The app polls:
 
