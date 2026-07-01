@@ -380,6 +380,20 @@ describe("App shortcuts", () => {
     }
   });
 
+  it("clears the OS Accounts browser session from sidebar sign-out", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await user.click(screen.getByRole("button", { name: "alex@example.com, account menu" }));
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+
+    expect(mocks.osAccountsLogout).toHaveBeenCalledWith({ clearBrowserSession: true });
+    expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
+  });
+
   it("starts a new session with Command-N", async () => {
     const onNewSession = vi.fn();
     window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
