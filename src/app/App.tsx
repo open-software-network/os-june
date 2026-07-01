@@ -422,9 +422,7 @@ export function App() {
   const recordingInactivityTrackerRef = useRef<RecordingInactivityTracker>({});
   const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
     useState<RecordingInactivityPrompt | null>(null);
-  const [recordingInactivityNow, setRecordingInactivityNow] = useState(() =>
-    Date.now(),
-  );
+  const [recordingInactivityNow, setRecordingInactivityNow] = useState(() => Date.now());
   // The stop-and-trim modal. Set when the user presses Done; carries the
   // finalized recording's waveform so they can trim before transcription.
   const [trimSession, setTrimSession] = useState<{
@@ -2387,10 +2385,7 @@ export function App() {
       // the recording — finalize the full take immediately. The backend staged
       // it before previewing, so this still goes through the normal pipeline.
       setTrimSession(null);
-      if (
-        !owningNoteId ||
-        !(await applyNoteScopedProcessingFailure(owningNoteId, err))
-      ) {
+      if (!owningNoteId || !(await applyNoteScopedProcessingFailure(owningNoteId, err))) {
         await finalizeRecording(sessionId, owningNoteId, null);
       }
     } finally {
@@ -2403,9 +2398,7 @@ export function App() {
   async function handleConfirmTrim(trim: TrimRangeDto | null) {
     const session = trimSession;
     if (!session || session.finalizing) return;
-    setTrimSession((current) =>
-      current ? { ...current, finalizing: true } : current,
-    );
+    setTrimSession((current) => (current ? { ...current, finalizing: true } : current));
     await finalizeRecording(session.sessionId, session.noteId, trim);
     setTrimSession(null);
   }

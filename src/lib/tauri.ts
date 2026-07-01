@@ -266,12 +266,20 @@ export type TrimRangeDto = {
   endMs: number;
 };
 
+export type TrimSourceDto = {
+  source: RecordingSource;
+  /** Absolute path to the finalized source WAV, for asset-protocol playback. */
+  path: string;
+};
+
 export type RecordingTrimPreviewDto = {
   sessionId: string;
   durationMs: number;
   /** Normalized 0..1 amplitude maxima, one per equal-width time bucket. */
   peaks: number[];
   sourceMode?: RecordingSourceMode;
+  /** Source WAVs to play back while reviewing the clip in the trim modal. */
+  sources: TrimSourceDto[];
 };
 
 export type RecordingPresenceBoundsDto = {

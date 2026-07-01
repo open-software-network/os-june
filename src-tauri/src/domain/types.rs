@@ -275,8 +275,18 @@ pub struct FinishRecordingRequest {
     pub trim: Option<TrimRange>,
 }
 
+/// A finalized source WAV the trim modal can play back through the Tauri asset
+/// protocol while the user reviews the clip before transcription.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrimSourceDto {
+    pub source: RecordingSource,
+    pub path: String,
+}
+
 /// Downsampled waveform returned when the user stops a recording, so the trim
 /// modal can draw the clip and place its handles before transcription runs.
+/// `sources` carries the on-disk WAV paths so the modal can play the audio back.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingTrimPreviewDto {
@@ -284,6 +294,7 @@ pub struct RecordingTrimPreviewDto {
     pub duration_ms: i64,
     pub peaks: Vec<f32>,
     pub source_mode: RecordingSourceMode,
+    pub sources: Vec<TrimSourceDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

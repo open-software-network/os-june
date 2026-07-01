@@ -17580,6 +17580,61 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* Playback head sweeping the waveform. Above the shades and handles so it stays
+ * visible over the trimmed-away regions. */
+.trim-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--foreground);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--card) 70%, transparent);
+  pointer-events: none;
+}
+
+.trim-transport {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.trim-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.trim-play:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
+}
+
+.trim-play:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring-focus);
+}
+
+.trim-play:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.trim-playhead-time {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Referral dialog — a 50/50 split. The left is a terracotta hero (brand
  * gradient + the app's fractal-noise grain, the same recipe as
  * .dictation-hint) that carries the offer; the right is the borderless

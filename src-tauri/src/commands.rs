@@ -36,7 +36,7 @@ use crate::{
             SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
             SendAgentMessageRequest, SessionFolderDto, SessionRequest, SourceReadinessDto,
             StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
-            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse, TrimSourceDto,
             UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
@@ -786,11 +786,20 @@ pub async fn prepare_recording_trim(
     const PREVIEW_BUCKETS: usize = 240;
     let finished = stage_finish_capture(&request.session_id)?;
     let preview = waveform_preview(&finished.sources, PREVIEW_BUCKETS)?;
+    let sources = finished
+        .sources
+        .iter()
+        .map(|source| TrimSourceDto {
+            source: source.source,
+            path: source.final_path.to_string_lossy().into_owned(),
+        })
+        .collect();
     Ok(RecordingTrimPreviewDto {
         session_id: finished.session_id.clone(),
         duration_ms: preview.duration_ms,
         peaks: preview.peaks,
         source_mode: finished.source_mode,
+        sources,
     })
 }
 

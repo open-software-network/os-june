@@ -342,12 +342,8 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await userEvent.click(await screen.findByRole("button", { name: "Done" }));
     // Done opens the trim modal; finalize the full clip to transcribe.
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Use full recording" }),
-    );
-    await waitFor(() =>
-      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1", undefined),
-    );
+    await userEvent.click(await screen.findByRole("button", { name: "Use full recording" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1", undefined));
 
     // note-2 must not pick up note-1's optimistic "transcribing" lock.
     mocks.getNote.mockClear();
@@ -685,12 +681,8 @@ describe("notes recording reliability", () => {
     // back to transcribing so the shimmer shows and polling resumes.
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
     // Done opens the trim modal; finalize the full clip to transcribe.
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Use full recording" }),
-    );
-    await waitFor(() =>
-      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1", undefined),
-    );
+    await userEvent.click(await screen.findByRole("button", { name: "Use full recording" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1", undefined));
 
     await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
   });
