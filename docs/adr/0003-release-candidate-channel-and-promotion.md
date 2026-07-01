@@ -81,6 +81,12 @@ update.
 
 - `rc-desktop-dmg.yml` rejects a `base-version` that is not strictly greater than
   `main`'s current version, so an RC can only ever target an unreleased version.
+- `rc-desktop-dmg.yml` also rejects a composed `X.Y.Z-rc.N` that does not strictly
+  exceed the version the `rc` release currently holds (allowing the first
+  candidate when no `rc` release exists yet). The base-vs-`main` check alone
+  ignores the rc iteration, so without this a rerun with an equal or lower
+  `rc-number` would publish backward over the fixed channel URL and strand testers
+  already on the higher build.
 - `promote-desktop.yml` requires `rc-version` and fails unless it matches the RC
   release exactly, so a promote can never silently ship a different candidate.
 
@@ -114,6 +120,13 @@ version-bump PR being merged first.
 
 ## Consequences
 
+- **Every channel is forward-only, enforced at three independent layers.** The
+  updater's `should_update` gate (`remote > current`, except the guarded stable
+  escape), the RC build's version-advance gate (composed `X.Y.Z-rc.N` must exceed
+  the current `rc` release), and Q9 (`base-version > main`) each stop a different
+  way the channel could move backward. No single layer covers all three; a build
+  can pass Q9 yet still regress the `rc` channel, which is why the version-advance
+  gate is separate.
 - **No general stable rollback.** By design (Q5) there is no lever to push an
   older stable to users; recover from a bad stable by releasing forward.
 - **Promote does a second full macOS build + notarize.** Slower than re-tagging,
