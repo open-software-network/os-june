@@ -6,6 +6,7 @@
 //! lives here and the update check/install run as the `fetch_update` /
 //! `install_update` commands below.
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -147,24 +148,59 @@ pub enum DownloadEvent {
 #[derive(Default)]
 pub struct PendingUpdate(pub Mutex<Option<tauri_plugin_updater::Update>>);
 
+/// The updater's install gate, extracted from the `version_comparator` closure so
+/// it can be tested without a live updater. Mirrors Tauri's default
+/// (`remote > current`) except when reconciling onto stable: there, a prerelease
+/// build is also allowed to install an *older* stable, so a user leaving the rc
+/// channel drops back onto the current stable line instead of being stranded on
+/// their rc build until stable catches up (Q4-Q6).
+///
+/// The prerelease escape is gated on `channel == Stable`: on the rc channel the
+/// installed build is always a prerelease, so allowing the escape there would let
+/// rc.2 "update" down to rc.1 and wreck rc iteration ordering (Q1). `reconcile` is
+/// a one-time flag the frontend only sets on the leave-rc switch, never on routine
+/// launch/periodic/manual checks, so a normal check never downgrades.
+fn should_update(
+    channel: ReleaseChannel,
+    current: &Version,
+    remote: &Version,
+    reconcile: bool,
+) -> bool {
+    if channel == ReleaseChannel::Stable && reconcile {
+        remote > current || !current.pre.is_empty()
+    } else {
+        remote > current
+    }
+}
+
 /// Checks the persisted channel's manifest for an update. Endpoints are set at
 /// runtime (the only place Tauri allows it) from the channel, while the
 /// signature pubkey is inherited from `tauri.conf.json`. The found `Update` is
 /// stashed for `install_update`; a `None` result clears any stale handle.
 ///
 /// The channel is read from managed state rather than passed in, so the check
-/// always follows the setting the user actually saved.
+/// always follows the setting the user actually saved. `reconcile` (false for
+/// every routine check) opens the one-time escape from a prerelease onto an older
+/// stable when leaving the rc channel; see `should_update`.
 #[tauri::command]
 pub async fn fetch_update(
     app: AppHandle,
     pending: State<'_, PendingUpdate>,
+    reconcile: bool,
 ) -> Result<Option<UpdateMeta>, AppError> {
-    let endpoint = tauri::Url::parse(current_channel(&app).endpoint())
+    let channel = current_channel(&app);
+    let endpoint = tauri::Url::parse(channel.endpoint())
         .map_err(|error| AppError::new("update_check_failed", error.to_string()))?;
     let update = app
         .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|error| AppError::new("update_check_failed", error.to_string()))?
+        // The comparator is the sole downgrade gate; routing the default path
+        // through `should_update` too keeps all install-decision logic in one
+        // tested place. With reconcile=false this is exactly `remote > current`.
+        .version_comparator(move |current, release| {
+            should_update(channel, &current, &release.version, reconcile)
+        })
         .build()
         .map_err(|error| AppError::new("update_check_failed", error.to_string()))?
         .check()
@@ -370,5 +406,82 @@ mod tests {
             ReleaseChannel::Rc.endpoint(),
             ReleaseChannel::Stable.endpoint()
         );
+    }
+
+    fn v(raw: &str) -> Version {
+        Version::parse(raw).unwrap()
+    }
+
+    // The reconcile escape: on stable, a prerelease build installs an OLDER stable
+    // so leaving rc drops you back onto the stable line (Q4-Q6).
+    #[test]
+    fn stable_reconcile_from_prerelease_installs_older_stable() {
+        assert!(should_update(
+            ReleaseChannel::Stable,
+            &v("1.2.3-rc.2"),
+            &v("1.2.2"),
+            true,
+        ));
+    }
+
+    // The escape must never fire on a routine check, even from a prerelease, or a
+    // periodic check would silently downgrade an rc user (Q6).
+    #[test]
+    fn stable_without_reconcile_never_downgrades_a_prerelease() {
+        assert!(!should_update(
+            ReleaseChannel::Stable,
+            &v("1.2.3-rc.2"),
+            &v("1.2.2"),
+            false,
+        ));
+    }
+
+    // A clean stable build ignores the escape entirely: reconcile only rescues a
+    // prerelease, it is not a general stable rollback lever (Q5).
+    #[test]
+    fn stable_reconcile_from_clean_build_only_moves_forward() {
+        assert!(!should_update(
+            ReleaseChannel::Stable,
+            &v("1.2.3"),
+            &v("1.2.2"),
+            true,
+        ));
+        assert!(should_update(
+            ReleaseChannel::Stable,
+            &v("1.2.3"),
+            &v("1.2.4"),
+            true,
+        ));
+    }
+
+    // The escape is guarded on the stable channel: on rc it must stay a plain
+    // forward-only compare so rc.2 never "updates" down to rc.1 (Q1). Even a stray
+    // reconcile=true (which the frontend never sends on rc) cannot break ordering.
+    #[test]
+    fn rc_channel_is_forward_only_even_with_reconcile() {
+        assert!(!should_update(
+            ReleaseChannel::Rc,
+            &v("1.2.3-rc.2"),
+            &v("1.2.3-rc.1"),
+            true,
+        ));
+        assert!(should_update(
+            ReleaseChannel::Rc,
+            &v("1.2.3-rc.1"),
+            &v("1.2.3-rc.2"),
+            false,
+        ));
+    }
+
+    // Semver already orders a clean base above its prereleases, so promoting an rc
+    // to its stable base is a normal forward update, escape or not.
+    #[test]
+    fn base_version_supersedes_its_prerelease() {
+        assert!(should_update(
+            ReleaseChannel::Stable,
+            &v("1.2.3-rc.1"),
+            &v("1.2.3"),
+            false,
+        ));
     }
 }

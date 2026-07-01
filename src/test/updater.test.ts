@@ -4,6 +4,7 @@ import type { DownloadEvent } from "../lib/updater";
 import {
   checkJuneUpdate,
   getReleaseChannel,
+  reconcileToStable,
   setReleaseChannel,
 } from "../lib/updater";
 
@@ -34,8 +35,11 @@ describe("checkJuneUpdate", () => {
     invokeMock.mockResolvedValueOnce(null);
 
     expect(await checkJuneUpdate()).toBeNull();
-    // No channel argument: fetch_update reads the persisted channel in Rust.
-    expect(invokeMock).toHaveBeenCalledWith("fetch_update");
+    // No channel argument (fetch_update reads the persisted channel in Rust);
+    // reconcile=false keeps a routine check forward-only.
+    expect(invokeMock).toHaveBeenCalledWith("fetch_update", {
+      reconcile: false,
+    });
   });
 
   it("returns a synthetic update carrying version and notes", async () => {
@@ -68,6 +72,25 @@ describe("checkJuneUpdate", () => {
       { event: "Started", data: { contentLength: 10 } },
       { event: "Finished" },
     ]);
+  });
+});
+
+describe("reconcileToStable", () => {
+  it("checks with reconcile=true so an older stable can install", async () => {
+    invokeMock.mockResolvedValueOnce({ version: "1.2.2" });
+
+    const update = await reconcileToStable();
+
+    expect(update?.version).toBe("1.2.2");
+    expect(invokeMock).toHaveBeenCalledWith("fetch_update", {
+      reconcile: true,
+    });
+  });
+
+  it("returns null when stable has nothing to reconcile onto", async () => {
+    invokeMock.mockResolvedValueOnce(null);
+
+    expect(await reconcileToStable()).toBeNull();
   });
 });
 

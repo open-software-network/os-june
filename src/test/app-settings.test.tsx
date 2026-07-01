@@ -50,6 +50,7 @@ const mocks = vi.hoisted(() => ({
   juneOpenVerifyPage: vi.fn(),
   getReleaseChannel: vi.fn(),
   setReleaseChannel: vi.fn(),
+  reconcileToStable: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -57,6 +58,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/updater", () => ({
   getReleaseChannel: mocks.getReleaseChannel,
   setReleaseChannel: mocks.setReleaseChannel,
+  reconcileToStable: mocks.reconcileToStable,
+}));
+
+// Pin a prerelease build so the leave-rc reconcile offer can be exercised; the
+// About meta rows read these same mocked constants.
+vi.mock("../app/build-info", () => ({
+  APP_VERSION: "9.9.9-rc.2",
+  APP_COMMIT_HASH: "abc1234",
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -185,6 +194,7 @@ describe("AppSettings", () => {
     mocks.juneOpenVerifyPage.mockResolvedValue(undefined);
     mocks.getReleaseChannel.mockResolvedValue("stable");
     mocks.setReleaseChannel.mockResolvedValue(undefined);
+    mocks.reconcileToStable.mockResolvedValue(null);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
@@ -1894,6 +1904,73 @@ describe("AppSettings", () => {
     await user.click(rcOption);
 
     expect(mocks.setReleaseChannel).toHaveBeenCalledWith("rc");
+  });
+
+  it("offers a stable reconcile when leaving rc on a prerelease build", async () => {
+    mocks.getReleaseChannel.mockResolvedValue("rc");
+    mocks.reconcileToStable.mockResolvedValue({ version: "9.9.8" });
+    const onReconcileToStable = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+        onReconcileToStable={onReconcileToStable}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    const stableOption = await screen.findByRole("button", { name: "Stable" });
+    await user.click(stableOption);
+
+    expect(mocks.setReleaseChannel).toHaveBeenCalledWith("stable");
+    // The bespoke in-context confirm names the exact stable on offer plus the
+    // base the rc will reach once promoted (9.9.9-rc.2 -> 9.9.9).
+    const confirm = await screen.findByText(/Installs 9\.9\.8/);
+    expect(confirm).toHaveTextContent("9.9.9");
+
+    await user.click(screen.getByRole("button", { name: "Switch to stable" }));
+    expect(onReconcileToStable).toHaveBeenCalledOnce();
+  });
+
+  it("skips the reconcile offer when stable has nothing to install", async () => {
+    mocks.getReleaseChannel.mockResolvedValue("rc");
+    mocks.reconcileToStable.mockResolvedValue(null);
+    const onReconcileToStable = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={vi.fn()}
+        onReconcileToStable={onReconcileToStable}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+
+    const stableOption = await screen.findByRole("button", { name: "Stable" });
+    await user.click(stableOption);
+
+    await waitFor(() => expect(mocks.reconcileToStable).toHaveBeenCalled());
+    expect(screen.queryByText(/Switch to stable now/)).not.toBeInTheDocument();
+    expect(onReconcileToStable).not.toHaveBeenCalled();
   });
 
   it("opens the server attestation page from About through Rust", async () => {

@@ -43,19 +43,35 @@ export function setReleaseChannel(channel: ReleaseChannel): Promise<void> {
   return invoke("set_release_channel", { channel });
 }
 
-/**
- * Checks for an update on the user's selected channel. The channel itself is
- * resolved Rust-side (from persisted state), so no channel argument is needed
- * and the check can never disagree with the saved setting.
- */
-export async function checkJuneUpdate(): Promise<JuneUpdate | null> {
-  const meta = await invoke<UpdateMeta | null>("fetch_update");
+async function fetchJuneUpdate(reconcile: boolean): Promise<JuneUpdate | null> {
+  const meta = await invoke<UpdateMeta | null>("fetch_update", { reconcile });
   if (!meta) return null;
   return {
     version: meta.version,
     body: meta.body,
     downloadAndInstall: (onEvent) => installStagedUpdate(onEvent),
   };
+}
+
+/**
+ * Checks for an update on the user's selected channel. The channel itself is
+ * resolved Rust-side (from persisted state), so no channel argument is needed
+ * and the check can never disagree with the saved setting. `reconcile` is false:
+ * every routine check (launch/periodic/manual) is forward-only.
+ */
+export function checkJuneUpdate(): Promise<JuneUpdate | null> {
+  return fetchJuneUpdate(false);
+}
+
+/**
+ * The one-time escape from a prerelease build back onto stable, run only when the
+ * user switches the channel to stable. Passing `reconcile=true` lets Rust offer an
+ * *older* stable so leaving the rc channel drops you back onto the stable line
+ * instead of stranding you on the rc build (Q4-Q6). Only meaningful on the stable
+ * channel; Rust ignores it on rc so rc iteration ordering is never disturbed.
+ */
+export function reconcileToStable(): Promise<JuneUpdate | null> {
+  return fetchJuneUpdate(true);
 }
 
 function installStagedUpdate(
