@@ -41,6 +41,65 @@ bridge_rs="$root/src-tauri/src/hermes_bridge.rs"
 log() { printf '\033[1;34m[bundle-hermes]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[bundle-hermes]\033[0m %s\n' "$*" >&2; exit 1; }
 
+ensure_no_symlinks() {
+  local leftover_links
+  leftover_links="$(find "$out" -type l | head -5)"
+  [ -z "$leftover_links" ] || die "bundle still contains symlinks:
+$leftover_links"
+}
+
+sign_macho_files() {
+  if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+    log "signing Mach-O files as: $APPLE_SIGNING_IDENTITY"
+    local signed=0
+    while IFS= read -r -d '' candidate; do
+      if file -b "$candidate" | grep -q 'Mach-O'; then
+        codesign --force --timestamp --options runtime \
+          --sign "$APPLE_SIGNING_IDENTITY" "$candidate"
+        signed=$((signed + 1))
+      fi
+    done < <(find "$out" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0)
+    log "signed $signed Mach-O files"
+  else
+    log "APPLE_SIGNING_IDENTITY not set; skipping codesign (dev bundle)"
+  fi
+}
+
+run_self_test() {
+  log "self-test: running the launcher from a relocated copy"
+  local selftest_root selftest test_home version_output
+  selftest_root="$(mktemp -d)"
+  trap 'rm -rf "$selftest_root"' EXIT
+  selftest="$selftest_root/re located"
+  mkdir -p "$selftest"
+  cp -R "$out" "$selftest/hermes"
+  test_home="$selftest_root/hermes-home"
+  mkdir -p "$test_home"
+  version_output="$(HERMES_HOME="$test_home" "$selftest/hermes/bin/hermes" --version)" \
+    || die "self-test failed: bundled hermes --version"
+  case "$version_output" in
+    *"$selftest/hermes/hermes-agent"*) ;;
+    *) die "self-test failed: hermes resolved the wrong project root: $version_output" ;;
+  esac
+  "$selftest/hermes/python/current/bin/python3.11" -c "import hermes_cli.main" \
+    || die "self-test failed: bare interpreter cannot import hermes_cli (pth broken)"
+  rm -rf "$selftest_root"
+  trap - EXIT
+}
+
+print_bundle_size() {
+  du -sh "$out" | awk '{print "[bundle-hermes] bundle size: " $1}'
+}
+
+bundle_is_reusable() {
+  [ -f "$out/PIN" ] || return 1
+  [ "$(cat "$out/PIN")" = "$commit" ] || return 1
+  [ -x "$out/bin/hermes" ] || return 1
+  [ -x "$out/python/current/bin/python3.11" ] || return 1
+  [ -d "$out/hermes-agent" ] || return 1
+  [ -f "$out/hermes-agent/hermes_cli/web_dist/index.html" ] || return 1
+}
+
 # Builds that skip this script still compile: build.rs creates a placeholder
 # at the resources mapping (`ensure_bundled_hermes_dir`), and the app falls
 # back to the managed on-device install when no launcher is present.
@@ -65,8 +124,21 @@ tarball_url="$(pin HERMES_SOURCE_TARBALL_URL)"
 [ -n "$tarball_url" ] || die "could not read HERMES_SOURCE_TARBALL_URL from $bridge_rs"
 log "pin: $commit"
 
-# ---- uv ----------------------------------------------------------------------
 work="$out_parent/work"
+if bundle_is_reusable; then
+  log "using cached Hermes bundle for pin: $commit"
+  ensure_no_symlinks
+  # Always sign restored binaries with the currently imported Developer ID cert.
+  sign_macho_files
+  run_self_test
+  print_bundle_size
+  log "done: $out"
+  exit 0
+elif [ -e "$out" ]; then
+  log "cached Hermes bundle is missing required files or has a stale pin; rebuilding"
+fi
+
+# ---- uv ----------------------------------------------------------------------
 rm -rf "$out" "$work"
 mkdir -p "$work"
 # No curl-pipe-sh here, deliberately: this script runs in release CI after the
@@ -216,8 +288,7 @@ log "precompiling bytecode (checked-hash)"
 
 # No symlinks may survive anywhere in the bundle (Tauri bundler limitation,
 # see above) — fail loudly here instead of opaquely at app-bundling time.
-leftover_links="$(find "$out" -type l | head -5)"
-[ -z "$leftover_links" ] || die "bundle still contains symlinks:\n$leftover_links"
+ensure_no_symlinks
 
 # ---- launcher -----------------------------------------------------------------
 mkdir -p "$out/bin"
@@ -237,20 +308,7 @@ chmod +x "$out/bin/hermes"
 # Notarization rejects any unsigned Mach-O inside the app. Sign every binary
 # (interpreter, dylibs, extension modules) with the hardened runtime; the
 # outer app signature then seals the rest of the tree as resources.
-if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-  log "signing Mach-O files as: $APPLE_SIGNING_IDENTITY"
-  signed=0
-  while IFS= read -r -d '' candidate; do
-    if file -b "$candidate" | grep -q 'Mach-O'; then
-      codesign --force --timestamp --options runtime \
-        --sign "$APPLE_SIGNING_IDENTITY" "$candidate"
-      signed=$((signed + 1))
-    fi
-  done < <(find "$out" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0)
-  log "signed $signed Mach-O files"
-else
-  log "APPLE_SIGNING_IDENTITY not set; skipping codesign (dev bundle)"
-fi
+sign_macho_files
 
 # Stamp the bundle with its source pin. build.rs compares this against the
 # pins in hermes_bridge.rs and evicts a stale bundle (built before a pin
@@ -258,23 +316,8 @@ fi
 printf '%s\n' "$commit" > "$out/PIN"
 
 # ---- self-test: prove relocatability from a moved path with a space -----------
-log "self-test: running the launcher from a relocated copy"
-selftest_root="$(mktemp -d)"
-trap 'rm -rf "$selftest_root"' EXIT
-selftest="$selftest_root/re located"
-mkdir -p "$selftest"
-cp -R "$out" "$selftest/hermes"
-test_home="$selftest_root/hermes-home"
-mkdir -p "$test_home"
-version_output="$(HERMES_HOME="$test_home" "$selftest/hermes/bin/hermes" --version)" \
-  || die "self-test failed: bundled hermes --version"
-case "$version_output" in
-  *"$selftest/hermes/hermes-agent"*) ;;
-  *) die "self-test failed: hermes resolved the wrong project root: $version_output" ;;
-esac
-"$selftest/hermes/python/current/bin/python3.11" -c "import hermes_cli.main" \
-  || die "self-test failed: bare interpreter cannot import hermes_cli (pth broken)"
+run_self_test
 
 rm -rf "$work"
-du -sh "$out" | awk '{print "[bundle-hermes] bundle size: " $1}'
+print_bundle_size
 log "done: $out"

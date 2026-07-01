@@ -36,6 +36,9 @@ Create or confirm these before cutting the first updater release:
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
+- Optional fast release runner: a dedicated self-hosted Mac Studio runner with
+  the `desktop-release` label. See
+  [desktop-release-runner.md](desktop-release-runner.md).
 
 The updater keypair is separate from the Apple Developer ID certificate. The
 public key is embedded in `src-tauri/tauri.conf.json`; the private key must live
@@ -64,6 +67,7 @@ in-app updater, then promote it to stable. There is no direct stable-build path.
 GitHub Actions -> rc-desktop-release -> Run workflow
   base-version = X.Y.Z   (the version you are heading toward)
   rc-number    = 1        (2, 3, ... for later candidates)
+  macos-runner = mac-studio
 ```
 
 `rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
@@ -83,6 +87,7 @@ higher `rc-number` until it is good.
 ```text
 GitHub Actions -> promote-desktop-release -> Run workflow
   rc-version = X.Y.Z-rc.N   (required; must match the current rc release exactly)
+  macos-runner = mac-studio
 ```
 
 `rc-version` is required and must equal the version the `rc` release currently
