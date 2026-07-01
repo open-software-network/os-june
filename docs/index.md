@@ -46,6 +46,7 @@ feature specs). Full index: [spec/index.md](../spec/index.md).
 ## Release & ops runbooks
 
 - [release-macos.md](release-macos.md) / [release-windows.md](release-windows.md) — the release runbooks
+- [desktop-release-runner.md](desktop-release-runner.md) — Mac Studio self-hosted runner setup for signed desktop releases
 - [reproducible-builds.md](reproducible-builds.md) — June API source → TEE trust chain (Phase A shipped)
 - [github-security-readiness.md](github-security-readiness.md) — pre-public repo hardening checklist
 - [settings-focus-runbook.md](settings-focus-runbook.md) — transient: settings tabs hidden while admin surfaces stabilize
