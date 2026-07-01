@@ -36,10 +36,17 @@ describe("agent turn action styles", () => {
 }`);
   });
 
-  it("styles the action row as a floating pill", () => {
+  it("keeps the action row chromeless and alignable to the message edge", () => {
     const inner = cssRuleFor(".agent-turn-actions-inner");
-    expect(inner).toContain("background: var(--popover);");
-    expect(inner).toContain("border: 1px solid var(--border);");
+    // A quiet icon row: any bg/border here fights the message bubble above it.
+    expect(inner).not.toContain("background:");
+    expect(inner).not.toContain("border:");
     expect(inner).toContain("width: fit-content;");
+    // Block-level flex, not inline-flex: the user-turn variant right-aligns
+    // with an auto margin, which resolves to 0 on an inline-level box.
+    expect(inner).toContain("display: flex;");
+    expect(cssRuleFor(".agent-user-turn .agent-turn-actions-inner")).toContain(
+      "margin-inline-start: auto;",
+    );
   });
 });

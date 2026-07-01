@@ -1673,25 +1673,19 @@ input:focus-visible,
 }
 
 .agent-turn-actions-inner {
-  display: inline-flex;
+  /* No chrome of its own: a quiet icon row sitting in the inter-turn gap.
+   * Anything heavier (bg, border) fights the message bubbles above it.
+   * Block-level flex, not inline-flex: the user-turn variant right-aligns
+   * with an auto margin, which resolves to 0 on an inline-level box. */
+  display: flex;
   align-items: center;
   gap: var(--sp-1);
-  /* A floating pill so the icon-only controls read against the transcript
-   * text they overlap. Pulled up so it straddles the message's bottom edge
-   * instead of floating in the gap below it. The negative margin only moves
-   * the pill within the out-of-flow row (see .agent-turn-actions), so it
-   * still can't affect the message height. */
   width: fit-content;
-  margin-block-start: calc(-1 * var(--sp-2));
-  padding: var(--sp-px) var(--sp-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--popover);
-  box-shadow: var(--shadow-sm);
+  padding-top: var(--sp-px);
 }
 
 .agent-user-turn .agent-turn-actions-inner {
-  /* User turns are right-aligned, so push the pill to the message's edge. */
+  /* User turns are right-aligned, so push the row to the message's edge. */
   margin-inline-start: auto;
 }
 
@@ -1966,12 +1960,16 @@ input:focus-visible,
 
 /* Feature 06: the "Steering" system item recording a mid-run instruction. Quiet
  * one-line row in the same muted register as the context-compaction summary, so
- * a redirect reads as a beat in the transcript rather than a message bubble. */
+ * a redirect reads as a beat in the transcript rather than a message bubble —
+ * but it IS something the user sent, so it sits on the sender's side of the
+ * column like the user bubbles do. */
 .agent-steering-item {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  width: min(760px, 100%);
+  width: fit-content;
+  max-width: min(760px, 100%);
+  margin-inline-start: auto;
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
   font-size: var(--fs-lg);
@@ -3824,11 +3822,13 @@ input:focus-visible,
   inline-size: var(--sp-10);
   block-size: var(--sp-10);
   padding: 0;
-  border: 1px solid var(--border);
+  /* Borderless, themed like the send button's family: the shadow does the
+   * lifting and the brand-colored arrow ties it to the active accent. */
+  border: none;
   border-radius: var(--r-pill);
   background: var(--popover);
-  box-shadow: var(--shadow-sm);
-  color: var(--muted-foreground);
+  box-shadow: var(--shadow-md);
+  color: var(--brand);
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -3846,8 +3846,9 @@ input:focus-visible,
 }
 
 .agent-scroll-to-latest:hover {
-  background: var(--accent);
-  color: var(--accent-foreground);
+  /* Mirrors .agent-composer-send: solid brand with a white glyph. */
+  background: var(--brand);
+  color: oklch(100% 0 none);
 }
 
 @media (prefers-reduced-motion: reduce) {

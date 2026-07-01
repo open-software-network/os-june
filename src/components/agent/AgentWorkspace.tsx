@@ -7,6 +7,7 @@ import { IconBolt } from "central-icons/IconBolt";
 import { IconBranchSimple } from "central-icons/IconBranchSimple";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
+import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
 import { IconClipboard } from "central-icons/IconClipboard";
@@ -47,7 +48,6 @@ import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPencil } from "central-icons/IconPencil";
-import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
@@ -5059,10 +5059,34 @@ export function AgentWorkspace({
     const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
-      const raw = await createHermesMethods(gateway).branchSession({
-        sessionId,
-        fromMessageId,
-      });
+      const methods = createHermesMethods(gateway);
+      const branchVia = (runtimeId: string) =>
+        methods.branchSession({ sessionId: runtimeId, fromMessageId });
+      // session.branch targets the LIVE runtime id, not the stored id the turn
+      // carries — a stored (or stale runtime) id answers "Session not found"
+      // once the runtime that minted it is gone. Try the freshest id we know;
+      // if that runtime has been torn down, resume the stored session for a
+      // new runtime and retry once. Mirrors fetchSessionUsage.
+      const storedSessionId = modeSessionId ?? sessionId;
+      let raw: unknown;
+      try {
+        raw = await branchVia(runtimeSessionIdsRef.current[storedSessionId] ?? sessionId);
+      } catch (err) {
+        if (!isSessionGoneError(messageFromError(err))) throw err;
+        const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+          session_id: storedSessionId,
+          cols: 96,
+        });
+        const runtimeSessionId = resumed.session_id;
+        if (!runtimeSessionId) {
+          throw new Error("Hermes did not resume the session.");
+        }
+        setRuntimeSessionIds((current) => ({
+          ...current,
+          [storedSessionId]: runtimeSessionId,
+        }));
+        raw = await branchVia(runtimeSessionId);
+      }
       const result: BranchSessionResult | undefined = parseBranchSessionResult(raw, {
         sourceSessionId: sessionId,
         sourceMessageId: fromMessageId,
@@ -5231,16 +5255,6 @@ export function AgentWorkspace({
     editor.setContent(snapshot?.text ?? "", snapshot?.category ?? null, {
       focus: false,
     });
-  }
-
-  function editUserPrompt(text: string) {
-    composerEditorRef.current?.setContent(text, null);
-    setDraft(text);
-    setCategory(null);
-    draftRef.current = text;
-    categoryRef.current = null;
-    setComposerAttachments([]);
-    rememberComposerDraft(composerDraftKeyRef.current, text, null, []);
   }
 
   function setComposerAttachments(
@@ -6666,7 +6680,6 @@ export function AgentWorkspace({
             )
           }
           branchingMessageId={branchingMessageId}
-          onEditUserPrompt={editUserPrompt}
         />
       ))}
       {workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user" ? (
@@ -6770,7 +6783,6 @@ export function AgentWorkspace({
                 sessionUnrestricted(selectedTask.hermesSessionId),
               );
             }}
-            onEditUserPrompt={editUserPrompt}
           />
         ))}
         {workingTaskIds.has(selectedTask.id) && taskTurns.at(-1)?.role === "user" ? (
@@ -8816,7 +8828,6 @@ function AgentChatTurnRow({
   onTopUp,
   topUpLabel,
   onBranch,
-  onEditUserPrompt,
   branchingMessageId,
   turn,
 }: {
@@ -8846,7 +8857,6 @@ function AgentChatTurnRow({
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
-  onEditUserPrompt?: (text: string) => void;
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
    * omit it, so the action is absent there. */
@@ -8919,7 +8929,6 @@ function AgentChatTurnRow({
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const copyText = copyableTextForTurn(turn);
-  const userPromptText = turn.role === "user" ? copyText : "";
 
   async function copyTurn() {
     if (!copyText) return;
@@ -8961,24 +8970,14 @@ function AgentChatTurnRow({
       onClick={() => void copyTurn()}
     >
       {copied ? (
-        <IconCheckmark1Small size={14} aria-hidden />
+        // Medium checkmark: the small variant reads too slight as the only
+        // confirmation left now that the label is gone.
+        <IconCheckmark1Medium size={14} aria-hidden />
       ) : (
         <IconClipboard size={14} aria-hidden />
       )}
     </button>
   ) : null;
-  const editAction =
-    turn.role === "user" && !turn.isScheduledRun && userPromptText && onEditUserPrompt ? (
-      <button
-        type="button"
-        className="agent-turn-action"
-        aria-label="Edit message"
-        title="Edit message"
-        onClick={() => onEditUserPrompt(userPromptText)}
-      >
-        <IconPencilLine size={14} aria-hidden />
-      </button>
-    ) : null;
   // Timestamp for the row. relativeDate returns "" for an unparseable value, so
   // we only render the <time> when there's a real date to show.
   const timestampLabel = relativeDate(turn.createdAt);
@@ -8992,7 +8991,7 @@ function AgentChatTurnRow({
     </time>
   ) : null;
   const turnActions =
-    copyAction || editAction || branchAction || timestampAction ? (
+    copyAction || branchAction || timestampAction ? (
       <div className="agent-turn-actions">
         <div className="agent-turn-actions-inner">
           {/* The timestamp sits on the outer/far side of the row: before the
@@ -9000,7 +8999,6 @@ function AgentChatTurnRow({
            * assistant turns, so the icons always stay nearest the message. */}
           {turn.role === "user" ? timestampAction : null}
           {copyAction}
-          {editAction}
           {branchAction}
           {turn.role === "user" ? null : timestampAction}
         </div>

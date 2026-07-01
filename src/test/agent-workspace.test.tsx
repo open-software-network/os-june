@@ -3095,7 +3095,7 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("prefills a user prompt for editing and resubmits the revision", async () => {
+  it("resumes a torn-down runtime and retries when branching answers session not found", async () => {
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "u1",
@@ -3110,6 +3110,24 @@ describe("AgentWorkspace", () => {
         timestamp: "2026-06-12T10:00:05Z",
       },
     ]);
+    const branchTargets: string[] = [];
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { session_id?: string }) => {
+      if (method === "session.branch") {
+        branchTargets.push(params?.session_id ?? "");
+        // session.branch is keyed by the LIVE runtime id: the stored id the
+        // turn carries 404s once its runtime is gone.
+        if (params?.session_id !== "runtime-fresh") {
+          return Promise.reject(
+            new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}'),
+          );
+        }
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-fresh" });
+      }
+      return Promise.resolve({});
+    });
     const user = userEvent.setup();
 
     render(<AgentWorkspace initialSession={existingSession} />);
@@ -3118,24 +3136,18 @@ describe("AgentWorkspace", () => {
     expect(userTurn).not.toBeNull();
     await user.click(
       within(userTurn as HTMLElement).getByRole("button", {
-        name: "Edit message",
+        name: "Branch from here",
       }),
     );
 
-    const composer = screen.getByRole("textbox");
-    expect(composer).toHaveTextContent("Draft the launch plan");
-    await user.type(composer, " for sales");
-
-    const send = screen.getByRole("button", { name: "Send message" });
-    await waitFor(() => expect(send).not.toBeDisabled());
-    await user.click(send);
-
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-        session_id: "runtime-session-1",
-        text: "Draft the launch plan for sales",
-      }),
-    );
+    // Stored id first (no cached runtime), then resume, then the retry lands.
+    await waitFor(() => expect(branchTargets).toEqual(["session-1", "runtime-fresh"]));
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+      session_id: "session-1",
+      cols: 96,
+    });
+    // The fork opened instead of surfacing the raw 404.
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
   });
 
   it("repairs gateway-glued contractions in assistant prose but not code or user text", async () => {
