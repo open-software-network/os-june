@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
     inputs:
       rc-version:
-        description: "RC version to promote (e.g. 0.0.25-rc.1). Blank = whatever the rc release currently holds. If set, must match the rc release."
-        required: false
+        description: "RC version to promote (e.g. 0.0.25-rc.1). Must match the version the rc release currently holds."
+        required: true
         type: string
 
 permissions:
@@ -69,8 +69,10 @@ jobs:
             echo "::error::rc-build.json commit is not a 40-char sha: $commit"
             exit 1
           fi
-          # Optional guard: refuse to promote a different rc than the operator named.
-          if [ -n "${RC_VERSION_INPUT:-}" ] && [ "$RC_VERSION_INPUT" != "$rc_version" ]; then
+          # Q10: rc-version is required and must name the exact rc the release
+          # currently holds, so a promote can never silently ship a different rc
+          # than the operator intended.
+          if [ "$RC_VERSION_INPUT" != "$rc_version" ]; then
             echo "::error::Requested $RC_VERSION_INPUT but the rc release holds $rc_version."
             exit 1
           fi

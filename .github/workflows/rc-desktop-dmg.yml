@@ -147,6 +147,28 @@ jobs:
             echo "::error::RC number must be a positive integer (no leading zeros), got: $RC_NUMBER_INPUT"
             exit 1
           fi
+          # Q9: an rc must target a version ahead of what main already ships, so it
+          # can only ever be promoted forward. main is the checked-out ref, so its
+          # package.json is the current released version. Reuse bump-version's
+          # compareSemver for the same ordering the version-bump gate uses.
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import {
+            compareSemver,
+            currentVersionFromPackageJson,
+          } from "./scripts/bump-version.mjs";
+          const base = process.env.BASE_VERSION_INPUT;
+          const main = currentVersionFromPackageJson(
+            readFileSync("package.json", "utf8"),
+          );
+          if (compareSemver(base, main) <= 0) {
+            console.error(
+              `::error::Base version ${base} must be greater than main's current version ${main}; an rc can only target an unreleased version.`,
+            );
+            process.exit(1);
+          }
+          console.log(`Base version ${base} is ahead of main (${main}).`);
+          NODE
           echo "VERSION=${BASE_VERSION_INPUT}-rc.${RC_NUMBER_INPUT}" >> "$GITHUB_ENV"
           # Record the exact source commit so promote-desktop.yml can rebuild the
           # clean X.Y.Z from this same tree (only the version string differs).
