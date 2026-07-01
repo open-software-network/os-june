@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   setDictationLanguage: vi.fn(),
   setDictationShortcut: vi.fn(),
   osAccountsLogin: vi.fn(),
+  juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("../lib/tauri", () => ({
   setDictationLanguage: mocks.setDictationLanguage,
   setDictationShortcut: mocks.setDictationShortcut,
   osAccountsLogin: mocks.osAccountsLogin,
+  juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
@@ -142,6 +144,7 @@ describe("OnboardingFlow", () => {
     );
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
+    mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.setDictationLanguage.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockResolvedValue(undefined);
@@ -418,6 +421,20 @@ describe("OnboardingFlow", () => {
 
     expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
     await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
+  });
+
+  it("opens the June community from the welcome step", async () => {
+    const user = userEvent.setup();
+    render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
+
+    await screen.findByRole("heading", { name: "Welcome to June" });
+    await user.click(
+      screen.getByRole("button", {
+        name: "June community on Telegram",
+      }),
+    );
+
+    expect(mocks.juneOpenCommunityPage).toHaveBeenCalledOnce();
   });
 
   it("shows Windows-accurate welcome copy", async () => {

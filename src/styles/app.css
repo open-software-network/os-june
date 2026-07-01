@@ -18412,6 +18412,7 @@ input:focus-visible,
  * shouldn't stretch with it — keep them in a centered, button-width column. */
 .welcome-card-intro .welcome-providers,
 .welcome-card-intro .welcome-status,
+.welcome-card-intro .onboarding-community,
 .welcome-card-intro .welcome-terms {
   width: 100%;
   max-width: 320px;
@@ -18665,6 +18666,34 @@ input:focus-visible,
   line-height: 1.5;
   color: var(--muted-foreground);
   text-wrap: pretty;
+}
+
+.onboarding-community {
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--brand) 18%, var(--border));
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--warm-soft) 34%, var(--card));
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  text-align: center;
+}
+
+.onboarding-community-link {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.onboarding-community-link:hover {
+  color: var(--warm-strong);
 }
 
 .onboarding-skip {

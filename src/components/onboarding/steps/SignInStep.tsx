@@ -4,7 +4,11 @@ import { IconLock } from "central-icons/IconLock";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
 import { isMacLikePlatform } from "../../../lib/platform";
-import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
+import {
+  juneOpenCommunityPage,
+  osAccountsCancelLogin,
+  osAccountsLogin,
+} from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
@@ -125,6 +129,17 @@ export function SignInStep({
           </li>
         ))}
       </ul>
+      <p className="onboarding-community">
+        Join us in the{" "}
+        <button
+          type="button"
+          className="onboarding-community-link"
+          onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
+        >
+          June community on Telegram
+        </button>
+        .
+      </p>
       {account.configured ? (
         <div className="welcome-providers">
           {busy ? (

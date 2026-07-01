@@ -46,12 +46,14 @@ const mocks = vi.hoisted(() => ({
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
   deleteDictionaryEntry: vi.fn(),
+  juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
 
 vi.mock("../lib/tauri", () => ({
+  JUNE_COMMUNITY_URL: "https://t.me/osjune",
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
   localAudioFileSrc: mocks.localAudioFileSrc,
@@ -83,6 +85,7 @@ vi.mock("../lib/tauri", () => ({
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
   deleteDictionaryEntry: mocks.deleteDictionaryEntry,
+  juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
 }));
 
@@ -171,6 +174,7 @@ describe("AppSettings", () => {
       language,
     }));
     mocks.listDictionaryEntries.mockResolvedValue([]);
+    mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
     mocks.juneOpenVerifyPage.mockResolvedValue(undefined);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
@@ -1878,6 +1882,30 @@ describe("AppSettings", () => {
       await screen.findByRole("button", { name: "Verify server" }),
     );
     expect(mocks.juneOpenVerifyPage).toHaveBeenCalledOnce();
+  });
+
+  it("opens the June community page from About through Rust", async () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+    expect(await screen.findByText("Community")).toBeInTheDocument();
+    expect(screen.getByText(/t\.me\/osjune/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Join community" }));
+
+    expect(mocks.juneOpenCommunityPage).toHaveBeenCalledOnce();
   });
 
   it("replays onboarding from About in dev builds", async () => {
