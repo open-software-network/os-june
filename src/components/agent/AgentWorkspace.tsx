@@ -6461,7 +6461,7 @@ export function AgentWorkspace({
                       : "Start session"
                   }
                 >
-                  {submitting ? <Spinner /> : <IconArrowUp size={16} />}
+                  {submitting ? <Spinner /> : <IconArrowUp size={18} />}
                 </button>
               )}
             </div>
