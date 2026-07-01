@@ -406,7 +406,8 @@ jobs:
             wget \
             file \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            libfuse2t64
 
       - name: Install uv
         run: pipx install uv==0.11.15
@@ -434,7 +435,11 @@ jobs:
         run: ./scripts/bundle-hermes-runtime-linux.sh
 
       - name: Tauri Linux bundle
-        run: node scripts/tauri-build.mjs --debug --no-sign
+        env:
+          # linuxdeploy's strip pass chokes on large debug binaries and its
+          # failure is opaque; the debug bundle does not need stripping.
+          NO_STRIP: "true"
+        run: node scripts/tauri-build.mjs --debug --no-sign --verbose
 
       - name: Verify Linux bundle
         run: |

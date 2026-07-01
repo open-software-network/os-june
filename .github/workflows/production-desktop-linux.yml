@@ -121,7 +121,8 @@ jobs:
             wget \
             file \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            libfuse2t64
 
       - name: Install uv
         run: pipx install uv==0.11.15
@@ -205,6 +206,9 @@ jobs:
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # linuxdeploy strip failures are opaque; release binaries are already
+          # built with production profile and do not need linuxdeploy stripping.
+          NO_STRIP: "true"
         run: pnpm tauri:build
 
       - name: Verify Linux outputs and payload
