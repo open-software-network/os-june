@@ -8636,6 +8636,11 @@ function chatTurnsSignature(turns: AgentChatTurn[]) {
   );
 }
 
+// Deliberate-tooltip delay for the icon-only turn actions, matching the tab
+// bar's shortcut tips — slower than the shared hover-intent debounce so
+// sweeping across the row doesn't pop a trail of labels.
+const TURN_ACTION_TIP_DELAY_MS = 550;
+
 const AGENT_TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
 
 function isAgentTranscriptNearBottom(scroller: HTMLElement) {
@@ -8961,34 +8966,45 @@ function AgentChatTurnRow({
     />
   ) : null;
   const copyAction = copyText ? (
-    <button
-      type="button"
-      className="agent-turn-action"
-      aria-label={copied ? "Copied message" : "Copy message"}
-      title={copied ? "Copied" : "Copy message"}
-      data-copied={copied ? "true" : undefined}
-      onClick={() => void copyTurn()}
+    <HoverTip
+      compact
+      width={104}
+      delay={TURN_ACTION_TIP_DELAY_MS}
+      tip={copied ? "Copied" : "Copy message"}
+      className="agent-turn-action-tip"
     >
-      {copied ? (
-        // Medium checkmark: the small variant reads too slight as the only
-        // confirmation left now that the label is gone.
-        <IconCheckmark1Medium size={14} aria-hidden />
-      ) : (
-        <IconClipboard size={14} aria-hidden />
-      )}
-    </button>
+      <button
+        type="button"
+        className="agent-turn-action"
+        aria-label={copied ? "Copied message" : "Copy message"}
+        data-copied={copied ? "true" : undefined}
+        onClick={() => void copyTurn()}
+      >
+        {copied ? (
+          // Medium checkmark: the small variant reads too slight as the only
+          // confirmation left now that the label is gone.
+          <IconCheckmark1Medium size={14} aria-hidden />
+        ) : (
+          <IconClipboard size={14} aria-hidden />
+        )}
+      </button>
+    </HoverTip>
   ) : null;
   // Timestamp for the row. relativeDate returns "" for an unparseable value, so
   // we only render the <time> when there's a real date to show.
   const timestampLabel = relativeDate(turn.createdAt);
   const timestampAction = timestampLabel ? (
-    <time
-      className="agent-turn-timestamp"
-      dateTime={turn.createdAt}
-      title={new Date(turn.createdAt).toLocaleString()}
+    <HoverTip
+      compact
+      width={200}
+      delay={TURN_ACTION_TIP_DELAY_MS}
+      tip={new Date(turn.createdAt).toLocaleString()}
+      className="agent-turn-action-tip"
     >
-      {timestampLabel}
-    </time>
+      <time className="agent-turn-timestamp" dateTime={turn.createdAt}>
+        {timestampLabel}
+      </time>
+    </HoverTip>
   ) : null;
   const turnActions =
     copyAction || branchAction || timestampAction ? (
@@ -9938,18 +9954,25 @@ export function BranchFromHereAction({
   const branchable = isBranchableMessageId(messageId);
   const disabled = submitting || !branchable;
   return (
-    <button
-      type="button"
-      className="agent-turn-action"
+    <HoverTip
+      compact
+      width={branchable ? 136 : 216}
+      delay={TURN_ACTION_TIP_DELAY_MS}
       // The disabled reason is honest, not silent: a synthetic/in-flight turn
       // has no persisted id Hermes can fork from yet.
-      title={branchable ? "Branch from here" : "Branching is available once the message is saved"}
-      aria-label="Branch from here"
-      disabled={disabled}
-      onClick={() => onBranch(messageId, sessionId)}
+      tip={branchable ? "Branch from here" : "Branching is available once the message is saved"}
+      className="agent-turn-action-tip"
     >
-      <IconBranchSimple size={14} aria-hidden />
-    </button>
+      <button
+        type="button"
+        className="agent-turn-action"
+        aria-label="Branch from here"
+        disabled={disabled}
+        onClick={() => onBranch(messageId, sessionId)}
+      >
+        <IconBranchSimple size={14} aria-hidden />
+      </button>
+    </HoverTip>
   );
 }
 

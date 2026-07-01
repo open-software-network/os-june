@@ -1735,11 +1735,19 @@ input:focus-visible,
   color: var(--success);
 }
 
+/* HoverTip anchor around each action: a real box (never display: contents —
+ * the tip positions off the anchor's rect) that hugs its button. */
+.agent-turn-action-tip {
+  display: inline-flex;
+}
+
 .agent-turn-action:disabled {
-  /* Keep it visible-but-inert so the explanatory title still reaches the user
-   * (a fully hidden control can't explain why it's unavailable). */
+  /* Visible-but-inert so the HoverTip can still explain why it's unavailable
+   * (a fully hidden control can't). pointer-events: none lets the hover reach
+   * the tip anchor — disabled buttons swallow mouse events. */
   cursor: default;
   opacity: 0.55;
+  pointer-events: none;
 }
 
 .agent-assistant-empty {
