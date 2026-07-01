@@ -33,9 +33,42 @@ jobs:
           owner: open-software-network
           repositories: os-june,os-june-releases
 
+      # Read which source commit the stable macOS release was built from (no
+      # checkout needed yet) so Windows rebuilds that exact tree rather than
+      # whatever main has since advanced to. Also validates the version input.
+      - name: Resolve stable source commit
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          if ($env:VERSION_INPUT -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw "Version must be semver X.Y.Z with no leading zeros, got: $env:VERSION_INPUT"
+          }
+
+          $metaDir = Join-Path $env:RUNNER_TEMP "stable-meta"
+          New-Item -ItemType Directory -Force -Path $metaDir | Out-Null
+          gh release download "v$env:VERSION_INPUT" --repo open-software-network/os-june-releases --pattern "stable-build.json" --dir $metaDir
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release v$env:VERSION_INPUT does not include stable-build.json. Promote the macOS release first, then attach Windows assets for the same version."
+          }
+
+          $meta = Get-Content -Raw (Join-Path $metaDir "stable-build.json") | ConvertFrom-Json
+          if ($meta.version -ne $env:VERSION_INPUT) {
+            throw "stable-build.json version is $($meta.version), expected $env:VERSION_INPUT."
+          }
+          if ($meta.commit -notmatch '^[0-9a-f]{40}$') {
+            throw "stable-build.json commit is not a 40-char sha: $($meta.commit)"
+          }
+
+          "VERSION=$env:VERSION_INPUT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "STABLE_COMMIT=$($meta.commit)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: main
+          # The exact commit the promoted macOS release was built from, so the
+          # Windows installer ships the same tested source under the same version.
+          ref: ${{ env.STABLE_COMMIT }}
           fetch-depth: 0
 
       - name: Setup pnpm
@@ -109,31 +142,13 @@ jobs:
 
           exit $missing
 
-      - name: Validate release version input
+      - name: Stamp clean release version
         shell: pwsh
-        env:
-          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          if ($env:VERSION_INPUT -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-            throw "Version must be semver X.Y.Z with no leading zeros, got: $env:VERSION_INPUT"
-          }
-
-          $packageVersion = (Get-Content -Raw "package.json" | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content -Raw "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
-          $cargoVersion = (Select-String -Path "src-tauri/Cargo.toml" -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          $versions = @{
-            "package.json" = $packageVersion
-            "src-tauri/tauri.conf.json" = $tauriVersion
-            "src-tauri/Cargo.toml" = $cargoVersion
-          }
-
-          foreach ($entry in $versions.GetEnumerator()) {
-            if ($entry.Value -ne $env:VERSION_INPUT) {
-              throw "$($entry.Key) is $($entry.Value), expected $env:VERSION_INPUT. Run the production macOS release first, then attach Windows assets for the same version."
-            }
-          }
-
-          "VERSION=$env:VERSION_INPUT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # The checked-out commit still carries the RC's version files; stamp the
+          # clean X.Y.Z so the Windows build matches the promoted macOS version.
+          node scripts/set-build-version.mjs $env:VERSION
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
 
       - name: Verify release exists
         shell: pwsh

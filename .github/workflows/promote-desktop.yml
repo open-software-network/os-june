@@ -293,6 +293,13 @@ jobs:
           cp "${app_archives[0]}" "$app_archive"
           cp "${app_signatures[0]}" "$app_signature"
 
+          # Record the source commit on the stable release so the Windows build
+          # can rebuild the exact tree this macOS release shipped, independent of
+          # how far main has advanced (mirrors the rc's rc-build.json).
+          stable_build_json="$release_dir/stable-build.json"
+          printf '{\n  "version": "%s",\n  "commit": "%s"\n}\n' \
+            "$VERSION" "$BUILD_COMMIT" > "$stable_build_json"
+
           SIGNATURE_PATH="$app_signature" \
           LATEST_JSON_PATH="$latest_json" \
           RELEASE_CHANGELOG_PATH="$RELEASE_CHANGELOG_PATH" \
@@ -347,6 +354,7 @@ jobs:
             "$app_archive" \
             "$app_signature" \
             "$latest_json" \
+            "$stable_build_json" \
             --repo open-software-network/os-june-releases \
             --clobber
 
