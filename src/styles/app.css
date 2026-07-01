@@ -3856,10 +3856,10 @@ input:focus-visible,
 }
 
 .agent-scroll-to-latest:hover {
-  /* A whisper of the active accent, not the near-neutral --accent (only a 3%
-   * brand mix, which reads as a grey flicker here): a real but very light
-   * brand wash over the pill's own surface. The border stays put. */
-  background: color-mix(in oklch, var(--brand) 8%, var(--popover));
+  /* The canonical quiet-hover accent tint (not the near-neutral --accent,
+   * which reads as a grey flicker here). Tracks the selected accent and
+   * adapts to dark mode through var(--card). The border stays put. */
+  background: var(--brand-tint);
 }
 
 @media (prefers-reduced-motion: reduce) {
