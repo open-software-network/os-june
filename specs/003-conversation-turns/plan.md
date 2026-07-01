@@ -51,6 +51,7 @@ specs/003-conversation-turns/
 - Each source uses RMS windows, a dynamic noise floor, minimum active duration, minimum turn duration, silence hysteresis, and gap merging.
 - Microphone detection uses stricter thresholds and longer silence windows to avoid room-noise false positives.
 - System detection uses lower thresholds and shorter silence windows for cleaner playback signals.
+- Speaker bleed (echo) is trimmed out of microphone turns: spans where a concurrent system turn is clearly louder are cut away and stay attributed to the system source, while the genuine system-free remainder of the microphone turn is kept, so a remote participant's voice played through the speakers is not misattributed to the microphone and the user's own reply in the same turn is not lost.
 - System audio must preserve wall-clock gaps so its timestamps can be compared with microphone timestamps.
 - Failed turn transcriptions are skipped for generation, while valid turn transcripts continue to be used.
 - Adjacent same-source turns are coalesced before transcription when the timeline indicates one continuing intervention.
