@@ -69,6 +69,7 @@ run_self_test() {
   log "self-test: running the launcher from a relocated copy"
   local selftest_root selftest test_home version_output
   selftest_root="$(mktemp -d)"
+  trap 'rm -rf "$selftest_root"' EXIT
   selftest="$selftest_root/re located"
   mkdir -p "$selftest"
   cp -R "$out" "$selftest/hermes"
@@ -83,6 +84,7 @@ run_self_test() {
   "$selftest/hermes/python/current/bin/python3.11" -c "import hermes_cli.main" \
     || die "self-test failed: bare interpreter cannot import hermes_cli (pth broken)"
   rm -rf "$selftest_root"
+  trap - EXIT
 }
 
 print_bundle_size() {
