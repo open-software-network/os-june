@@ -5064,17 +5064,20 @@ export function AgentWorkspace({
         methods.branchSession({ sessionId: runtimeId, fromMessageId });
       // session.branch targets the LIVE runtime id, not the stored id the turn
       // carries — a stored (or stale runtime) id answers "Session not found"
-      // once the runtime that minted it is gone. Try the freshest id we know;
-      // if that runtime has been torn down, resume the stored session for a
-      // new runtime and retry once. Mirrors fetchSessionUsage.
-      const storedSessionId = modeSessionId ?? sessionId;
+      // once the runtime that minted it is gone. Resolution keys off the
+      // SOURCE session being branched (a delegated turn carries its own
+      // session id; the parent's runtime must never be asked to fork a
+      // child's message) — modeSessionId only picks the gateway. Try the
+      // freshest id we know; if that runtime has been torn down, resume the
+      // source session for a new runtime and retry once. Mirrors
+      // fetchSessionUsage.
       let raw: unknown;
       try {
-        raw = await branchVia(runtimeSessionIdsRef.current[storedSessionId] ?? sessionId);
+        raw = await branchVia(runtimeSessionIdsRef.current[sessionId] ?? sessionId);
       } catch (err) {
         if (!isSessionGoneError(messageFromError(err))) throw err;
         const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-          session_id: storedSessionId,
+          session_id: sessionId,
           cols: 96,
         });
         const runtimeSessionId = resumed.session_id;
@@ -5083,7 +5086,7 @@ export function AgentWorkspace({
         }
         setRuntimeSessionIds((current) => ({
           ...current,
-          [storedSessionId]: runtimeSessionId,
+          [sessionId]: runtimeSessionId,
         }));
         raw = await branchVia(runtimeSessionId);
       }
