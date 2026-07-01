@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { IconArrowDown } from "central-icons/IconArrowDown";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
@@ -5933,6 +5934,34 @@ export function AgentWorkspace({
     transcriptShouldStickToBottomRef.current = true;
   }, [renderedTurnsSignature, selectedHermesSessionId, selectedHistoryLoaded, selectedTaskId]);
 
+  // Jump back to the live edge from the floating pill. Glide the same way the
+  // auto-scroll effect does — arm the programmatic-scroll ref + timeout so the
+  // scroll handler reads the glide as ours, not a user scroll that would
+  // release follow mode.
+  const scrollTranscriptToLatest = useCallback(() => {
+    const scroller = agentScrollRef.current;
+    if (!scroller) return;
+    if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
+    transcriptShouldStickToBottomRef.current = true;
+    transcriptLastScrollTopRef.current = scroller.scrollTop;
+    transcriptProgrammaticScrollRef.current = true;
+    if (transcriptProgrammaticScrollTimeoutRef.current !== undefined) {
+      window.clearTimeout(transcriptProgrammaticScrollTimeoutRef.current);
+    }
+    transcriptProgrammaticScrollTimeoutRef.current = window.setTimeout(() => {
+      transcriptProgrammaticScrollRef.current = false;
+      transcriptShouldStickToBottomRef.current = isAgentTranscriptNearBottom(scroller);
+      transcriptProgrammaticScrollTimeoutRef.current = undefined;
+    }, 800);
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+  }, []);
+
   // Reshuffle the deck each time the hero comes back, so repeat visits start
   // from a fresh hand instead of wherever the last rotation left off.
   useEffect(() => {
@@ -6072,6 +6101,12 @@ export function AgentWorkspace({
         onDrop={handleComposerDrop}
         onPaste={handleComposerPaste}
       >
+        {/* Anchored inside the fixed composer column so it rides the box's
+            real height (multi-line drafts, stacked notices) instead of
+            guessing a clearance from the card edge. */}
+        {heroMode ? null : (
+          <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
+        )}
         <AnimatePresence>
           {busyNotice || galleryErrors ? (
             // Same fade as the recording-consent note, so the pill dissolves
@@ -8598,6 +8633,55 @@ function isAgentTranscriptNearBottom(scroller: HTMLElement) {
   );
 }
 
+// Self-contained so scroll-driven visibility never re-renders the huge
+// AgentWorkspace: only this leaf flips on its own scroll + resize signals.
+// While the reader is parked up-thread, streamed turns grow the content
+// WITHOUT firing a scroll event, so the ResizeObserver watches the content
+// column (not just the scroller) to catch that growth.
+export function AgentScrollToLatestButton({
+  scrollRef,
+  onJump,
+}: {
+  scrollRef: RefObject<HTMLDivElement | null>;
+  onJump: () => void;
+}) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const recheck = () => {
+      const nothingToScroll = scroller.scrollHeight <= scroller.clientHeight;
+      const next = !nothingToScroll && !isAgentTranscriptNearBottom(scroller);
+      setVisible((current) => (current === next ? current : next));
+    };
+    recheck();
+    scroller.addEventListener("scroll", recheck, { passive: true });
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(recheck) : undefined;
+    observer?.observe(scroller);
+    const content = scroller.firstElementChild;
+    if (content) observer?.observe(content);
+    return () => {
+      scroller.removeEventListener("scroll", recheck);
+      observer?.disconnect();
+    };
+  }, [scrollRef]);
+
+  return (
+    <button
+      type="button"
+      className="agent-scroll-to-latest"
+      data-visible={visible ? "true" : undefined}
+      aria-label="Scroll to latest"
+      aria-hidden={visible ? undefined : true}
+      tabIndex={visible ? undefined : -1}
+      onClick={onJump}
+    >
+      <IconArrowDown size={16} ariaHidden />
+    </button>
+  );
+}
+
 // Collapse runs of "thinking-only" assistant turns (reasoning/tool, no answer
 // text) into the next answer turn, so a back-to-back chain of thoughts shows as
 // a single "Thought" disclosure rather than several stacked in a row.
@@ -8877,11 +8961,10 @@ function AgentChatTurnRow({
       onClick={() => void copyTurn()}
     >
       {copied ? (
-        <IconCheckmark1Small size={13} aria-hidden />
+        <IconCheckmark1Small size={14} aria-hidden />
       ) : (
-        <IconClipboard size={13} aria-hidden />
+        <IconClipboard size={14} aria-hidden />
       )}
-      <span>{copied ? "Copied" : "Copy"}</span>
     </button>
   ) : null;
   const editAction =
@@ -8893,17 +8976,33 @@ function AgentChatTurnRow({
         title="Edit message"
         onClick={() => onEditUserPrompt(userPromptText)}
       >
-        <IconPencilLine size={13} aria-hidden />
-        <span>Edit</span>
+        <IconPencilLine size={14} aria-hidden />
       </button>
     ) : null;
+  // Timestamp for the row. relativeDate returns "" for an unparseable value, so
+  // we only render the <time> when there's a real date to show.
+  const timestampLabel = relativeDate(turn.createdAt);
+  const timestampAction = timestampLabel ? (
+    <time
+      className="agent-turn-timestamp"
+      dateTime={turn.createdAt}
+      title={new Date(turn.createdAt).toLocaleString()}
+    >
+      {timestampLabel}
+    </time>
+  ) : null;
   const turnActions =
-    copyAction || editAction || branchAction ? (
+    copyAction || editAction || branchAction || timestampAction ? (
       <div className="agent-turn-actions">
         <div className="agent-turn-actions-inner">
+          {/* The timestamp sits on the outer/far side of the row: before the
+           * icons on right-aligned user turns, after them on left-aligned
+           * assistant turns, so the icons always stay nearest the message. */}
+          {turn.role === "user" ? timestampAction : null}
           {copyAction}
           {editAction}
           {branchAction}
+          {turn.role === "user" ? null : timestampAction}
         </div>
       </div>
     ) : null;
@@ -9851,8 +9950,7 @@ export function BranchFromHereAction({
       disabled={disabled}
       onClick={() => onBranch(messageId, sessionId)}
     >
-      <IconBranchSimple size={13} aria-hidden />
-      <span>Branch from here</span>
+      <IconBranchSimple size={14} aria-hidden />
     </button>
   );
 }

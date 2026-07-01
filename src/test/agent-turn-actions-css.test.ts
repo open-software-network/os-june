@@ -35,4 +35,11 @@ describe("agent turn action styles", () => {
   pointer-events: auto;
 }`);
   });
+
+  it("styles the action row as a floating pill", () => {
+    const inner = cssRuleFor(".agent-turn-actions-inner");
+    expect(inner).toContain("background: var(--popover);");
+    expect(inner).toContain("border: 1px solid var(--border);");
+    expect(inner).toContain("width: fit-content;");
+  });
 });

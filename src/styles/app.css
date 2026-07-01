@@ -1673,13 +1673,26 @@ input:focus-visible,
 }
 
 .agent-turn-actions-inner {
-  display: flex;
+  display: inline-flex;
+  align-items: center;
   gap: var(--sp-1);
-  padding-top: var(--sp-px);
+  /* A floating pill so the icon-only controls read against the transcript
+   * text they overlap. Pulled up so it straddles the message's bottom edge
+   * instead of floating in the gap below it. The negative margin only moves
+   * the pill within the out-of-flow row (see .agent-turn-actions), so it
+   * still can't affect the message height. */
+  width: fit-content;
+  margin-block-start: calc(-1 * var(--sp-2));
+  padding: var(--sp-px) var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  box-shadow: var(--shadow-sm);
 }
 
 .agent-user-turn .agent-turn-actions-inner {
-  justify-content: flex-end;
+  /* User turns are right-aligned, so push the pill to the message's edge. */
+  margin-inline-start: auto;
 }
 
 .agent-assistant-turn-body {
@@ -1694,19 +1707,29 @@ input:focus-visible,
   pointer-events: auto;
 }
 
+/* Icon-only square targets; the tooltip/title carries the label. */
 .agent-turn-action {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: var(--sp-px) var(--sp-1);
+  justify-content: center;
+  inline-size: var(--sp-8);
+  block-size: var(--sp-8);
+  padding: 0;
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-weight: 500;
   line-height: 1;
   cursor: pointer;
+}
+
+/* Muted timestamp riding on the outer edge of the pill. */
+.agent-turn-timestamp {
+  padding-inline: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .agent-turn-action:hover:not(:disabled) {
@@ -3783,6 +3806,55 @@ input:focus-visible,
   height: 48px;
   border-bottom-left-radius: var(--r-window);
   background: linear-gradient(to bottom, transparent, var(--card) 72%);
+}
+
+/* Floating "jump to live edge" pill. Absolute (never fixed on its own: a
+ * composited fixed element gets clipped by the overflow-hidden card in
+ * WKWebView), anchored inside the fixed .agent-composer column so it hovers
+ * just above the box's real top edge — multi-line drafts and stacked notices
+ * push it up instead of colliding with it. Hidden at rest and inert so it
+ * never steals a click or a tab stop when there's nothing to jump to. */
+.agent-scroll-to-latest {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + var(--sp-2));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--sp-10);
+  block-size: var(--sp-10);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--popover);
+  box-shadow: var(--shadow-sm);
+  color: var(--muted-foreground);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, var(--sp-2));
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.agent-scroll-to-latest[data-visible="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+
+.agent-scroll-to-latest:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-scroll-to-latest {
+    transition: none;
+    transform: translate(-50%, 0);
+  }
 }
 
 /* In a session the docked box is near-opaque frost: a whisper of the
