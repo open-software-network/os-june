@@ -246,6 +246,103 @@ pub(crate) fn shortcut_edge_action(
     }
 }
 
+/// Dictation session state for the Windows worker, mirroring the macOS
+/// helper's `isListening` / `isFinalizing` pair (`listening` there is
+/// `isListening || isFinalizing`).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SessionState {
+    /// No utterance in flight.
+    #[default]
+    Idle,
+    /// Microphone capture running (macOS `isListening`).
+    Listening,
+    /// Capture stopped, recording_ready sent, transcription in flight until
+    /// the pipeline delivers paste_text or discard_recording (macOS
+    /// `isFinalizing`).
+    Finalizing,
+}
+
+/// Pure session state machine for the Windows dictation worker, the twin of
+/// the macOS helper's state handling: `start()` there rejects while
+/// `listening` (which includes finalizing) with an `already_listening` error,
+/// `stop()` rejects unless actively listening with `not_listening`, and paste
+/// or discard reset the state. Keeping the transitions here makes the
+/// wrong-session interleaving rules unit-testable on any host: without the
+/// finalizing gate, a start accepted while the previous utterance's
+/// transcription was still in flight would let that utterance's paste_text or
+/// discard_recording land on the new session.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Default)]
+pub(crate) struct SessionStateMachine {
+    state: SessionState,
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+impl SessionStateMachine {
+    pub(crate) fn state(&self) -> SessionState {
+        self.state
+    }
+
+    /// macOS `dictation.listening`: true while listening or finalizing. The
+    /// toggle command uses this to pick start vs stop.
+    pub(crate) fn is_engaged(&self) -> bool {
+        self.state != SessionState::Idle
+    }
+
+    /// start_listening arrived. False mirrors the macOS `already_listening`
+    /// rejection (start while listening, or while a transcription is still
+    /// finalizing). The state only advances via [`Self::capture_started`],
+    /// once the microphone actually opened.
+    pub(crate) fn request_start(&self) -> bool {
+        self.state == SessionState::Idle
+    }
+
+    /// Microphone capture opened successfully.
+    pub(crate) fn capture_started(&mut self) {
+        self.state = SessionState::Listening;
+    }
+
+    /// stop_and_paste arrived. False mirrors the macOS `not_listening`
+    /// rejection (stop while idle or already finalizing).
+    pub(crate) fn request_stop(&mut self) -> bool {
+        if self.state != SessionState::Listening {
+            return false;
+        }
+        self.state = SessionState::Finalizing;
+        true
+    }
+
+    /// paste_text arrived. True resolves the finalizing utterance (state
+    /// returns to idle). False means the paste is stale: a new utterance is
+    /// already listening (possible after a discard cleared the finalizing
+    /// state and a new start was accepted), so pasting now would inject the
+    /// superseded utterance's text into the new session; drop it instead.
+    pub(crate) fn paste_delivered(&mut self) -> bool {
+        if self.state == SessionState::Listening {
+            return false;
+        }
+        self.state = SessionState::Idle;
+        true
+    }
+
+    /// discard_recording arrived (or the session failed). Returns whether the
+    /// discard interrupted live listening, which is the only case the macOS
+    /// helper announces with recording_discarded (`wasListening` there reads
+    /// `isListening`, not the finalizing flag).
+    pub(crate) fn discarded(&mut self) -> bool {
+        let was_listening = self.state == SessionState::Listening;
+        self.state = SessionState::Idle;
+        was_listening
+    }
+
+    /// Unconditional reset for failure paths and shutdown, mirroring the
+    /// macOS resetRecordingState.
+    pub(crate) fn reset(&mut self) {
+        self.state = SessionState::Idle;
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub use windows_impl::{dispatch, init, shutdown};
 
@@ -253,6 +350,7 @@ pub use windows_impl::{dispatch, init, shutdown};
 mod windows_impl {
     use super::{
         code_for_vk, key_label_for_vk, shortcut_is_supported, vk_for_code, windows_shortcut_label,
+        SessionState, SessionStateMachine,
     };
     use crate::dictation::{
         ingest_helper_event, DictationShortcutKind, DictationShortcutModifiers,
@@ -730,7 +828,11 @@ mod windows_impl {
 
     struct Worker {
         app: AppHandle,
-        listening: bool,
+        /// Mirrors the macOS helper's isListening/isFinalizing pair; see
+        /// [`super::SessionStateMachine`]. The finalizing gate is what stops a
+        /// new start_listening from interleaving with the previous
+        /// utterance's still-in-flight paste_text/discard_recording.
+        session: SessionStateMachine,
         capture: Option<CaptureSession>,
         last_recording: Option<PathBuf>,
         target: Option<(isize, String)>,
@@ -740,7 +842,7 @@ mod windows_impl {
     fn run_worker(app: AppHandle, rx: Receiver<WorkerMsg>) {
         let mut worker = Worker {
             app,
-            listening: false,
+            session: SessionStateMachine::default(),
             capture: None,
             last_recording: None,
             target: None,
@@ -820,7 +922,9 @@ mod windows_impl {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("hotkey")
                         .to_string();
-                    if self.listening {
+                    // macOS keys this off `dictation.listening`, which is
+                    // true while listening or finalizing.
+                    if self.session.is_engaged() {
                         self.emit(json!({
                             "type": "hotkey_trigger",
                             "payload": { "action": "stop", "shortcut": shortcut },
@@ -854,7 +958,10 @@ mod windows_impl {
                     self.emit_permission_status()
                 }
                 "shutdown" => {
-                    self.discard();
+                    // macOS shutdown resets state and cleans up without a
+                    // recording_discarded announcement.
+                    self.session.reset();
+                    self.cleanup_recordings();
                     self.emit(json!({ "type": "shutdown_ack" }));
                     return true;
                 }
@@ -868,7 +975,7 @@ mod windows_impl {
         }
 
         fn tick_level(&mut self) {
-            if !self.listening {
+            if self.session.state() != SessionState::Listening {
                 return;
             }
             let Some(session) = self.capture.as_ref() else {
@@ -889,7 +996,18 @@ mod windows_impl {
         }
 
         fn start(&mut self) {
-            if self.listening {
+            if !self.session.request_start() {
+                // Mirrors the macOS start() rejection: a start while
+                // listening, or while the previous utterance's transcription
+                // is still finalizing, must not open a second session that
+                // the in-flight paste_text/discard_recording could cross.
+                self.emit(json!({
+                    "type": "error",
+                    "payload": {
+                        "code": "already_listening",
+                        "message": "Dictation is already listening.",
+                    },
+                }));
                 return;
             }
             // Remember the app the user is dictating into (the foreground window
@@ -904,7 +1022,7 @@ mod windows_impl {
             match self.begin_capture() {
                 Ok(session) => {
                     self.capture = Some(session);
-                    self.listening = true;
+                    self.session.capture_started();
                     self.emit(json!({
                         "type": "listening_started",
                         "payload": {
@@ -923,12 +1041,23 @@ mod windows_impl {
         }
 
         fn stop(&mut self) {
-            if !self.listening {
+            if !self.session.request_stop() {
+                // Mirrors the macOS stop() rejection while idle or finalizing.
+                self.emit(json!({
+                    "type": "error",
+                    "payload": {
+                        "code": "not_listening",
+                        "message": "Dictation is not listening.",
+                    },
+                }));
                 return;
             }
-            self.listening = false;
+            // Finalizing from here until the pipeline delivers paste_text or
+            // discard_recording for this utterance; request_start rejects
+            // until then.
             self.emit(json!({ "type": "finalizing_transcript" }));
             let Some(session) = self.capture.take() else {
+                self.session.reset();
                 return;
             };
             let observed = finalize_capture(session);
@@ -946,6 +1075,10 @@ mod windows_impl {
                     }));
                 }
                 Err(error) => {
+                    // No recording_ready will follow, so no paste/discard
+                    // resolves this utterance; clear finalizing here (macOS
+                    // fail() resets state the same way).
+                    self.session.reset();
                     self.emit(json!({
                         "type": "error",
                         "payload": { "code": error.code, "message": error.message },
@@ -955,7 +1088,18 @@ mod windows_impl {
         }
 
         fn discard(&mut self) {
-            self.listening = false;
+            // macOS announces recording_discarded only when the discard
+            // interrupted live listening (wasListening reads isListening); a
+            // discard that resolves a finalizing utterance stays quiet and
+            // the pipeline's own error event drives the UI.
+            let interrupted_listening = self.session.discarded();
+            self.cleanup_recordings();
+            if interrupted_listening {
+                self.emit(json!({ "type": "recording_discarded" }));
+            }
+        }
+
+        fn cleanup_recordings(&mut self) {
             if let Some(session) = self.capture.take() {
                 let path = session.path.clone();
                 drop(session);
@@ -964,16 +1108,32 @@ mod windows_impl {
             if let Some(path) = self.last_recording.take() {
                 let _ = std::fs::remove_file(path);
             }
-            self.emit(json!({ "type": "recording_discarded" }));
         }
 
         fn paste(&mut self, text: String) {
+            if !self.session.paste_delivered() {
+                // Stale paste for a superseded utterance: a discard already
+                // cleared the finalizing state and a new recording is live.
+                // Pasting now would inject the old text into the new session.
+                tracing::warn!("dropping stale dictation paste for a superseded utterance");
+                return;
+            }
             // Drop the just-transcribed recording; it has served its purpose.
             if let Some(path) = self.last_recording.take() {
                 let _ = std::fs::remove_file(path);
             }
             let trimmed = text.trim();
             if trimmed.is_empty() {
+                // Mirrors the macOS fail(missingTranscript) path; the code is
+                // in the shared silent-error list so the HUD dismisses
+                // quietly.
+                self.emit(json!({
+                    "type": "error",
+                    "payload": {
+                        "code": "empty_transcript",
+                        "message": "No transcript text was available to paste.",
+                    },
+                }));
                 return;
             }
             let to_paste = format!("{trimmed} ");
@@ -1388,7 +1548,7 @@ mod tests {
     use super::{
         code_for_vk, key_label_for_vk, shortcut_edge_action, shortcut_is_supported,
         validate_shortcut_for_windows, vk_for_code, windows_shortcut_label, DictationShortcutKind,
-        DictationShortcutModifiers, ShortcutEdgeAction,
+        DictationShortcutModifiers, SessionState, SessionStateMachine, ShortcutEdgeAction,
     };
 
     fn ctrl_alt() -> DictationShortcutModifiers {
@@ -1539,6 +1699,76 @@ mod tests {
         // macOS-only bare Fn / modifier-only chords have no Windows key.
         assert!(!shortcut_is_supported("Fn", &ctrl_alt()));
         assert!(!shortcut_is_supported("Modifiers", &ctrl_alt()));
+    }
+
+    #[test]
+    fn start_is_rejected_while_the_previous_transcription_is_finalizing() {
+        let mut session = SessionStateMachine::default();
+        assert!(session.request_start());
+        session.capture_started();
+        assert!(session.request_stop());
+        assert_eq!(session.state(), SessionState::Finalizing);
+        // The previous utterance's transcription is in flight: a new start
+        // must be rejected (macOS already_listening) or its paste/discard
+        // could land on the wrong session.
+        assert!(!session.request_start());
+        // The toggle command still sees the session as engaged.
+        assert!(session.is_engaged());
+        // A second stop while finalizing is the macOS not_listening path.
+        assert!(!session.request_stop());
+    }
+
+    #[test]
+    fn start_is_accepted_after_the_paste_resolves_the_utterance() {
+        let mut session = SessionStateMachine::default();
+        session.capture_started();
+        assert!(session.request_stop());
+        assert!(session.paste_delivered());
+        assert_eq!(session.state(), SessionState::Idle);
+        assert!(session.request_start());
+    }
+
+    #[test]
+    fn start_is_accepted_after_a_discard_resolves_the_utterance() {
+        let mut session = SessionStateMachine::default();
+        session.capture_started();
+        assert!(session.request_stop());
+        // Discard during finalizing resolves quietly (no recording_discarded
+        // announcement, matching macOS wasListening reading isListening).
+        assert!(!session.discarded());
+        assert_eq!(session.state(), SessionState::Idle);
+        assert!(session.request_start());
+
+        // A discard that interrupts live listening does announce.
+        session.capture_started();
+        assert!(session.discarded());
+    }
+
+    #[test]
+    fn stale_paste_for_a_superseded_utterance_is_dropped() {
+        let mut session = SessionStateMachine::default();
+        // Utterance one records, stops, and the user discards while its
+        // transcription is still finalizing.
+        session.capture_started();
+        assert!(session.request_stop());
+        session.discarded();
+        // Utterance two starts recording.
+        assert!(session.request_start());
+        session.capture_started();
+        // Utterance one's paste_text arrives late: it must be dropped, not
+        // pasted into utterance two's live session.
+        assert!(!session.paste_delivered());
+        assert_eq!(session.state(), SessionState::Listening);
+        // Utterance two still resolves normally.
+        assert!(session.request_stop());
+        assert!(session.paste_delivered());
+    }
+
+    #[test]
+    fn stop_without_a_live_recording_is_rejected() {
+        let mut session = SessionStateMachine::default();
+        assert!(!session.request_stop());
+        assert_eq!(session.state(), SessionState::Idle);
     }
 
     #[test]
