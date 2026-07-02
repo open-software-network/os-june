@@ -139,11 +139,23 @@ import {
   shouldReplayOnboarding,
 } from "../lib/onboarding";
 import {
+  depletedBalanceAction,
   depletedBalanceActionLabel,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
 import { runDepletedBalanceAction } from "../lib/billing-actions";
+import {
+  MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CONFIRM_BODY,
+  MAX_UPGRADE_CONFIRM_LABEL,
+  MAX_UPGRADE_CONFIRM_TITLE,
+  MAX_UPGRADE_READY_STATUS,
+  MAX_UPGRADE_SLOW_STATUS,
+  MAX_UPGRADE_WAITING_STATUS,
+  pollForMaxGrant,
+} from "../lib/max-upgrade";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { checkJuneUpdate, reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
 import { PROCESSING_DEMO_NOTE_ID, shouldPollProcessingStatus } from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
@@ -502,14 +514,61 @@ export function App() {
   const fundingRequired =
     !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
+  // Confirm gate for the Pro -> Max upgrade reached from depleted-balance
+  // surfaces (note failure banner, agent workspace notice). The change
+  // charges the saved card the moment it runs, so it never fires straight
+  // from those buttons.
+  const [maxUpgradePromptOpen, setMaxUpgradePromptOpen] = useState(false);
+  const [maxUpgradeError, setMaxUpgradeError] = useState<string>();
+  // Transient billing feedback ("You are on Max now...") shown beside the
+  // error banner; cleared automatically once it has been seen.
+  const [billingNotice, setBillingNotice] = useState<string | null>(null);
+  const billingNoticeTimerRef = useRef<number | undefined>(undefined);
+  const showBillingNotice = useCallback((notice: string, autoClearMs?: number) => {
+    window.clearTimeout(billingNoticeTimerRef.current);
+    setBillingNotice(notice);
+    if (autoClearMs) {
+      billingNoticeTimerRef.current = window.setTimeout(() => setBillingNotice(null), autoClearMs);
+    }
+  }, []);
+  const confirmMaxUpgrade = useCallback(async () => {
+    const baselineCredits = account.balance?.credits ?? 0;
+    try {
+      const outcome = await runDepletedBalanceAction(account);
+      if (outcome !== "changed_plan") {
+        // Stale snapshot resolved another way (subscribe prompt): refresh and
+        // let the surfaces re-render; nothing was charged.
+        void refreshAccount();
+        return;
+      }
+    } catch (err) {
+      // Keep the dialog open with the failure inside it, next to retry.
+      setMaxUpgradeError(messageFromError(err));
+      throw err;
+    }
+    // The PATCH resolves before the webhook grants the credits: show interim
+    // feedback and poll briefly until the new balance lands.
+    showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
+    // No separate refresh: the poll's first tick refreshes immediately, and a
+    // parallel request could resolve out of order and overwrite the poll's
+    // fresher snapshot with a stale pre-grant one.
+    void pollForMaxGrant(refreshAccount, baselineCredits).then((landed) => {
+      showBillingNotice(landed ? MAX_UPGRADE_READY_STATUS : MAX_UPGRADE_SLOW_STATUS, 8000);
+    });
+  }, [account, refreshAccount, showBillingNotice]);
   const handleTopUp = useCallback(() => {
     // Tier-aware: Max tops up, Pro upgrades in place to Max, Free subscribes.
-    // changed_plan grants credits immediately with no browser round trip, so
-    // refresh to lift the funding gate. upgrade_required / subscribe_required
-    // mean the server proved our snapshot stale (top-up gated behind Max, or
-    // no active subscription): refresh so the depleted-balance surfaces
-    // re-render as the right prompt and the user chooses explicitly; no raw
-    // error, and never an automatic purchase.
+    // The upgrade is a charge, so it routes through an explicit confirm
+    // dialog. upgrade_required / subscribe_required mean the server proved
+    // our snapshot stale (top-up gated behind Max, or no active
+    // subscription): refresh so the depleted-balance surfaces re-render as
+    // the right prompt and the user chooses explicitly; no raw error, and
+    // never an automatic purchase.
+    if (depletedBalanceAction(account) === "upgrade_to_max") {
+      setMaxUpgradeError(undefined);
+      setMaxUpgradePromptOpen(true);
+      return;
+    }
     runDepletedBalanceAction(account)
       .then((outcome) => {
         if (outcome !== "opened_browser") void refreshAccount();
@@ -2765,6 +2824,11 @@ export function App() {
             data-note-detail-scroller={noteDetailScrollerActive ? "true" : undefined}
           >
             {error ? <p className="error-banner">{error}</p> : null}
+            {billingNotice ? (
+              <p className="notice-banner" role="status">
+                {billingNotice}
+              </p>
+            ) : null}
             <div className="workspace">
               {activeView === "settings" ? (
                 <AppSettings
@@ -3243,6 +3307,15 @@ export function App() {
         folders={state.folders}
         onSetFolder={(sessionId, folderId) => handleSetSessionFolder(sessionId, folderId)}
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
+      />
+      <ConfirmDialog
+        open={maxUpgradePromptOpen}
+        onClose={() => setMaxUpgradePromptOpen(false)}
+        onConfirm={confirmMaxUpgrade}
+        title={MAX_UPGRADE_CONFIRM_TITLE}
+        description={maxUpgradeError ?? MAX_UPGRADE_CONFIRM_BODY}
+        confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
+        confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
     </main>
   );

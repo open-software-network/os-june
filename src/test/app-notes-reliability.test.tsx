@@ -53,6 +53,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  osAccountsChangePlan: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
@@ -110,6 +111,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
+  osAccountsChangePlan: mocks.osAccountsChangePlan,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
@@ -291,6 +293,11 @@ describe("notes recording reliability", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.osAccountsChangePlan.mockResolvedValue({
+      subscribed: true,
+      status: "active",
+      plan: "max",
+    });
     mocks.updateNote.mockImplementation(async (input) => ({
       ...first,
       ...input,
@@ -822,5 +829,60 @@ describe("notes recording reliability", () => {
         activeTab: "transcription",
       }),
     );
+  });
+
+  it("confirms before upgrading a Pro subscriber to Max from the failure banner", async () => {
+    const failedNote = {
+      ...first,
+      processingStatus: "failed" as const,
+      lastError: "Your balance is too low. Upgrade to continue.",
+    };
+    const proAccount: AccountStatus = {
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex" },
+      balance: { credits: 10, usdMillis: 10 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    };
+    mocks.osAccountsStatus.mockResolvedValue(proAccount);
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [failedNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : failedNote,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+
+    // The banner's action is the tier-correct in-place upgrade, and it never
+    // charges without an explicit confirm.
+    await userEvent.click(await screen.findByRole("button", { name: "Upgrade to Max" }));
+    expect(
+      await screen.findByText(
+        "Max is $100 per month, charged to your saved card now. Your billing cycle restarts today.",
+      ),
+    ).toBeInTheDocument();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+
+    // After the PATCH, the post-upgrade poll's refresh already reports the
+    // granted Max balance, so the success feedback lands immediately.
+    mocks.osAccountsStatus.mockResolvedValue({
+      ...proAccount,
+      balance: { credits: 50_000, usdMillis: 50_000 },
+      subscription: { subscribed: true, status: "active", plan: "max" },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Upgrade now" }));
+
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    expect(
+      await screen.findByText("You are on Max now. Your new credits are ready."),
+    ).toBeInTheDocument();
   });
 });

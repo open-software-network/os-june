@@ -1,7 +1,18 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { hasLiveSubscription } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
+import {
+  MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CONFIRM_BODY,
+  MAX_UPGRADE_CONFIRM_LABEL,
+  MAX_UPGRADE_CONFIRM_TITLE,
+  MAX_UPGRADE_READY_STATUS,
+  MAX_UPGRADE_SLOW_STATUS,
+  MAX_UPGRADE_WAITING_STATUS,
+  pollForMaxGrant,
+} from "../../lib/max-upgrade";
 import {
   BILLING_DEMO_FIXTURES,
   BILLING_DEMO_ORDER,
@@ -165,6 +176,10 @@ export function BillingSettingsSection({
   const [refreshing, setRefreshing] = useState(false);
   const [billingStatus, setBillingStatus] = useState<string>();
   const [spins, setSpins] = useState(0);
+  // The plan awaiting an explicit confirm. A plan change charges the saved
+  // card immediately, so it never fires straight from the card CTA.
+  const [planToConfirm, setPlanToConfirm] = useState<SubscriptionPlan | null>(null);
+  const [confirmError, setConfirmError] = useState<string>();
   const demoPlan = useForcedBillingPlan();
 
   async function handleUpgrade(plan: SubscriptionPlan) {
@@ -176,15 +191,16 @@ export function BillingSettingsSection({
     }
   }
 
-  // In-place upgrade for a paid subscriber (Pro -> Max). Unlike checkout, this
-  // changes the live subscription, so refresh to reflect the new plan and its
-  // freshly granted credits.
+  // In-place upgrade for a paid subscriber (Pro -> Max), run from the confirm
+  // dialog only. The PATCH resolves before the webhook grants the new
+  // credits, so on success this sets a "credits on the way" status and polls
+  // in the background until the grant lands (or a bounded timeout passes).
+  // Real failures rethrow so the dialog stays open showing the error.
   async function handleChangePlan(plan: SubscriptionPlan) {
     const planLabel = plan === "max" ? "Max" : "Pro";
+    const baselineCredits = account.balance?.credits ?? 0;
     try {
       await osAccountsChangePlan(plan);
-      setBillingStatus(`You are now on ${planLabel}. Your new credits are ready.`);
-      await onRefresh();
     } catch (error) {
       const code = errorCode(error);
       if (code === "already_on_plan") {
@@ -201,8 +217,18 @@ export function BillingSettingsSection({
         await onRefresh();
         return;
       }
-      setBillingStatus(messageFromError(error));
+      // Keep the dialog open (ConfirmDialog swallows the rethrow but stays
+      // up) and show the failure inside it, next to the retry affordance.
+      setConfirmError(messageFromError(error));
+      throw error;
     }
+    setBillingStatus(MAX_UPGRADE_WAITING_STATUS);
+    // No separate refresh: the poll's first tick refreshes immediately, and a
+    // parallel request could resolve out of order and overwrite the poll's
+    // fresher snapshot with a stale pre-grant one.
+    void pollForMaxGrant(onRefresh, baselineCredits).then((landed) => {
+      setBillingStatus(landed ? MAX_UPGRADE_READY_STATUS : MAX_UPGRADE_SLOW_STATUS);
+    });
   }
 
   async function handleManageSubscription() {
@@ -241,7 +267,11 @@ export function BillingSettingsSection({
     spins,
     onRefresh: () => void handleRefresh(),
     onUpgrade: (plan: SubscriptionPlan) => void handleUpgrade(plan),
-    onChangePlan: (plan: SubscriptionPlan) => void handleChangePlan(plan),
+    // Confirm first: the change charges the saved card the moment it runs.
+    onChangePlan: (plan: SubscriptionPlan) => {
+      setConfirmError(undefined);
+      setPlanToConfirm(plan);
+    },
     onManage: () => void handleManageSubscription(),
   };
 
@@ -266,6 +296,17 @@ export function BillingSettingsSection({
       ) : (
         <BillingCard account={demoAccount ?? account} {...cardProps} />
       )}
+      <ConfirmDialog
+        open={planToConfirm !== null}
+        onClose={() => setPlanToConfirm(null)}
+        onConfirm={async () => {
+          if (planToConfirm) await handleChangePlan(planToConfirm);
+        }}
+        title={MAX_UPGRADE_CONFIRM_TITLE}
+        description={confirmError ?? MAX_UPGRADE_CONFIRM_BODY}
+        confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
+        confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
+      />
     </section>
   );
 }

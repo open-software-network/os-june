@@ -9309,6 +9309,18 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+/* Positive sibling of .error-banner for transient good news (billing
+ * feedback like "You are on Max now"). Same geometry, success palette. */
+.notice-banner {
+  margin: 0 0 var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--success) 40%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--success) 12%, transparent);
+  color: color-mix(in oklch, var(--success) 60%, var(--foreground));
+  font-size: var(--fs-md);
+}
+
 /* Agent variant: actions on the right, and breathing room below the sticky
  * session bar instead of sitting on its bottom edge. */
 .agent-main > .agent-error-banner {
