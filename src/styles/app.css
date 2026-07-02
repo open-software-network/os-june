@@ -5448,8 +5448,9 @@ input:focus-visible,
     opacity 300ms var(--ease-in-out),
     transform 300ms var(--ease-in-out),
     visibility 0s linear;
-  transition-delay: 0s, 0s, calc(var(--chip-i, 0) * 90ms),
-    calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms + 300ms);
+  transition-delay:
+    0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms),
+    calc(var(--chip-i, 0) * 90ms + 300ms);
 }
 
 .agent-hero-chip:hover:not(:disabled) {
