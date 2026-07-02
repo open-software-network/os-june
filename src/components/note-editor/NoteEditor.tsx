@@ -192,7 +192,11 @@ export function NoteEditor({
   const systemDenied =
     systemSource?.permissionState === "denied" || systemSource?.permissionState === "restricted";
   const systemUnsupported = systemSource?.permissionState === "unsupported";
-  const showRecordingOptions = isMacLikePlatform();
+  // Recording options (the system-audio toggle) show wherever a system-audio
+  // backend exists. macOS always qualifies; Windows qualifies once readiness
+  // reports a supported system source (WASAPI loopback, no permission needed).
+  // Platforms without a backend report "unsupported" and stay hidden.
+  const showRecordingOptions = isMacLikePlatform() || (systemSource != null && !systemUnsupported);
   // Mic denial is sourced from App via the dictation helper, not from
   // sourceReadiness — the Rust cpal-based check can't see TCC denials.
   const micDenied = microphoneBlocked;

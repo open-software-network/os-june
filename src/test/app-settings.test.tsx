@@ -1385,11 +1385,10 @@ describe("AppSettings", () => {
               {
                 source: "system",
                 required: true,
-                ready: false,
-                permissionState: "denied",
+                ready: true,
+                permissionState: "granted",
                 deviceAvailable: true,
-                captureAvailable: false,
-                recoveryAction: "openSystemAudioSettings",
+                captureAvailable: true,
               },
             ],
           }}
@@ -1405,6 +1404,8 @@ describe("AppSettings", () => {
         />,
       );
 
+      // The permissions list stays microphone-only on Windows: there is no
+      // accessibility handoff and system audio needs no OS permission grant.
       expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
@@ -1422,12 +1423,14 @@ describe("AppSettings", () => {
       expect(onEnableAccessibility).not.toHaveBeenCalled();
       expect(onEnableSystemAudio).not.toHaveBeenCalled();
 
+      // The Audio tab still offers the system-audio capture toggle on Windows
+      // (WASAPI loopback is supported); only the macOS-only mic test is hidden.
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
       expect(
-        screen.queryByRole("switch", {
+        screen.getByRole("switch", {
           name: "Capture system audio for notes",
         }),
-      ).not.toBeInTheDocument();
+      ).toBeInTheDocument();
       expect(
         screen.queryByRole("button", {
           name: "Start test",

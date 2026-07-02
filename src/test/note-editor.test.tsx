@@ -711,10 +711,12 @@ describe("NoteEditor", () => {
     expect(onEnableSystemAudio).toHaveBeenCalledOnce();
   });
 
-  it("hides system audio recording options on Windows", () => {
+  it("hides system audio recording options when the system source is unsupported", () => {
+    // A platform without a system-audio backend reports "unsupported" from the
+    // stub backend; the recording options stay hidden regardless of host OS.
     const restoreNavigator = stubNavigatorPlatform(
-      "Win32",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Linux x86_64",
+      "Mozilla/5.0 (X11; Linux x86_64)",
     );
     try {
       render(
@@ -750,6 +752,56 @@ describe("NoteEditor", () => {
       expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
       expect(screen.queryByRole("button", { name: "Recording options" })).not.toBeInTheDocument();
       expect(screen.queryByText("Capture system audio")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("System audio requires macOS 14.2 or later."),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("shows system audio recording options on Windows when supported", async () => {
+    // Windows ships a WASAPI loopback backend, so readiness reports the system
+    // source as granted and the recording options appear like they do on macOS.
+    const user = userEvent.setup();
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      render(
+        <NoteEditor
+          {...props}
+          note={note()}
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: true,
+            checkedAt: now,
+            sources: [
+              {
+                source: "microphone",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+              {
+                source: "system",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+            ],
+          }}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Recording options" }));
+      const systemSwitch = screen.getByRole("switch", { name: "Capture system audio" });
+      expect(systemSwitch).toBeEnabled();
       expect(
         screen.queryByText("System audio requires macOS 14.2 or later."),
       ).not.toBeInTheDocument();

@@ -402,7 +402,11 @@ export function AppSettings({
   );
   const systemState = systemReadiness?.permissionState;
   const systemDenied = systemState === "denied" || systemState === "restricted";
-  const systemUnavailable = !macLikePlatform || systemState === "unsupported";
+  // System audio availability follows the backend readiness rather than the
+  // host OS: macOS and Windows both ship a capture backend (Windows via WASAPI
+  // loopback, which needs no permission), while platforms without one report
+  // "unsupported" from the stub backend and hide the control.
+  const systemUnavailable = systemState === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
