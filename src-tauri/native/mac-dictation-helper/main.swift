@@ -985,6 +985,15 @@ final class FocusTargetController {
         return app.localizedName ?? app.bundleIdentifier ?? "\(app.processIdentifier)"
     }
 
+    /// Bundle id of the app `activateLastExternalApp()` will paste into, so
+    /// the main process can shape cleanup for the same target it pastes to.
+    func targetBundleIdentifier() -> String? {
+        guard let app = lastExternalApp, !app.isTerminated else {
+            return nil
+        }
+        return app.bundleIdentifier
+    }
+
     @objc private func applicationDidActivate(_ notification: Notification) {
         guard
             let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
@@ -1675,6 +1684,7 @@ final class DictationController {
         emit("recording_ready", [
             "path": recordingURL.path,
             "observedAudioLevel": String(format: "%.4f", maxObservedAudioLevel),
+            "targetBundleIdentifier": FocusTargetController.shared.targetBundleIdentifier() ?? "",
         ])
     }
 

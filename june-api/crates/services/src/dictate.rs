@@ -156,6 +156,7 @@ impl DictateService {
                 .cleanup(CleanupRequest {
                     text: params.text,
                     dictionary_context: params.dictionary_context,
+                    app_context: params.app_context,
                     style: params.style,
                     model: params.model_id.clone(),
                     system_prompt: prompts::DICTATE_CLEANUP.to_string(),
@@ -185,6 +186,7 @@ impl DictateService {
             .cleanup(CleanupRequest {
                 text: params.text,
                 dictionary_context: params.dictionary_context,
+                app_context: params.app_context,
                 style: params.style,
                 model: params.model_id.clone(),
                 system_prompt: prompts::DICTATE_CLEANUP.to_string(),
@@ -238,6 +240,8 @@ pub struct DictateCleanupParams {
     pub utterance_id: String,
     pub text: String,
     pub dictionary_context: Option<String>,
+    /// Recognized insertion-surface slug ("email"); shapes output layout.
+    pub app_context: Option<String>,
     pub style: String,
     pub model_id: ModelId,
     pub provider_credentials: ProviderCredentials,

@@ -203,6 +203,20 @@ mod tests {
         assert!(prompt.contains("Return only the corrected transcript text"));
     }
 
+    #[test]
+    fn dictate_cleanup_prompt_keeps_email_layout_to_layout_only() {
+        let prompt = super::prompts::DICTATE_CLEANUP;
+
+        // App-context layout exists, is scoped to email drafts, and can never
+        // add or drop words. Guards the feature against becoming a rewriter.
+        assert!(prompt.contains("<app_context>"));
+        assert!(prompt.contains("email layout"));
+        assert!(prompt.contains("This is layout only"));
+        assert!(prompt.contains("never invent a subject line, greeting, sign-off"));
+        assert!(prompt.contains("stays as-is even in an email app"));
+        assert!(prompt.contains("Ignore app contexts you do not recognize"));
+    }
+
     #[tokio::test]
     async fn dictate_cleanup_uses_deterministic_idempotency_key_with_real_session() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
@@ -229,6 +243,7 @@ mod tests {
                 utterance_id: "utt_2".to_string(),
                 text: "hello".to_string(),
                 dictionary_context: Some("Jakub".to_string()),
+                app_context: None,
                 style: "plain".to_string(),
                 model_id: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
@@ -281,6 +296,7 @@ mod tests {
                 utterance_id: "utt_1".to_string(),
                 text: "hello".to_string(),
                 dictionary_context: None,
+                app_context: None,
                 style: "plain".to_string(),
                 model_id: ModelId("text-model".to_string()),
                 provider_credentials: user_venice_credentials(),
@@ -506,6 +522,7 @@ mod tests {
                 utterance_id: "utt_2".to_string(),
                 text: "hello".to_string(),
                 dictionary_context: None,
+                app_context: None,
                 style: "plain".to_string(),
                 model_id: ModelId("audio-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),

@@ -24,7 +24,6 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
-import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
@@ -41,7 +40,6 @@ import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
 import { IconGauge } from "central-icons/IconGauge";
-import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -77,6 +75,7 @@ import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
+import { ModelPrivacyChip } from "../ui/ModelPrivacyChip";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
 import {
@@ -191,6 +190,7 @@ import {
   type AgentArtifact as TimelineArtifact,
 } from "../../lib/hermes-artifact-store";
 import { SessionUsagePanel } from "./SessionUsagePanel";
+import { useUsagePanelDemo } from "../../lib/usage-panel-demo";
 import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawer";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
@@ -1640,6 +1640,10 @@ export function AgentWorkspace({
   // The session whose usage/cost panel is open, or null. Self-contained for
   // feature 09; feature 11's activity drawer will later host the same panel.
   const [usagePanelSessionId, setUsagePanelSessionId] = useState<string | null>(null);
+  // Dev-only: __usageDemo("half") parks the usage overlay in a fixture state
+  // regardless of the real session. Null in production because the command is
+  // never registered. See lib/usage-panel-demo.ts.
+  const usageDemo = useUsagePanelDemo();
   // The session whose context-compaction dialog is open, or null (feature 08).
   const [compactSessionId, setCompactSessionId] = useState<string | null>(null);
   // Dev-only sample files seeded by window.__agentFiles — surfaced alongside
@@ -2113,6 +2117,13 @@ export function AgentWorkspace({
   // alphabetically-first vision model. See preferredVisionFallbackModel.
   const preferredVisionModel = useMemo(
     () => preferredVisionFallbackModel(generationModels),
+    [generationModels],
+  );
+  // Maps a raw model id (as the usage payload reports it) to its catalog DTO for
+  // the usage panel, so it can show both the display name and the privacy badge;
+  // returns undefined when the id is unknown.
+  const resolveModel = useCallback(
+    (modelId: string) => generationModels.find((model) => model.id === modelId),
     [generationModels],
   );
   // Mirror the send-time fallback trigger (pendingImageAttachments +
@@ -7522,21 +7533,49 @@ export function AgentWorkspace({
                 document.querySelector(".app-shell") ?? document.body,
               )
             : null}
-          {usagePanelSessionId
+          {usageDemo || usagePanelSessionId
             ? createPortal(
                 <div
                   className="agent-usage-overlay"
                   role="presentation"
                   onClick={(event) => {
-                    if (event.target === event.currentTarget) {
-                      setUsagePanelSessionId(null);
+                    if (event.target !== event.currentTarget) return;
+                    if (usageDemo) {
+                      // Closing while demoing clears the demo state, matching
+                      // __usageDemo("off"). Guard: the command is dev-only.
+                      (window as unknown as { __usageDemo?: (v: "off") => void }).__usageDemo?.(
+                        "off",
+                      );
                     }
+                    setUsagePanelSessionId(null);
                   }}
                 >
                   <SessionUsagePanel
-                    sessionId={usagePanelSessionId}
-                    fetchUsage={fetchSessionUsage}
-                    onClose={() => setUsagePanelSessionId(null)}
+                    // A stable id so the panel refetches when the fixture swaps.
+                    sessionId={usageDemo ? usageDemo.usage.sessionId : (usagePanelSessionId ?? "")}
+                    fetchUsage={
+                      usageDemo
+                        ? // Small artificial delay so the skeleton and the eased
+                          // dot-fill entrance are both visible on each swap.
+                          () =>
+                            new Promise((resolve) =>
+                              setTimeout(() => resolve(usageDemo.usage), 250),
+                            )
+                        : fetchSessionUsage
+                    }
+                    onClose={() => {
+                      if (usageDemo) {
+                        (window as unknown as { __usageDemo?: (v: "off") => void }).__usageDemo?.(
+                          "off",
+                        );
+                      }
+                      setUsagePanelSessionId(null);
+                    }}
+                    resolveModel={
+                      usageDemo
+                        ? (id) => (id === usageDemo.model.id ? usageDemo.model : undefined)
+                        : resolveModel
+                    }
                   />
                 </div>,
                 document.querySelector(".app-shell") ?? document.body,
@@ -7983,16 +8022,11 @@ function ComposerModelCardContent({
       <p className="agent-composer-model-detail-name">
         <span>{model.name}</span>
         {badge ? (
-          <span className="model-trait-icon" data-mode={badge.mode} title={badge.description}>
-            {badge.mode === "e2ee" ? (
-              <IconLock size={14} aria-hidden />
-            ) : badge.mode === "private" ? (
-              <IconGhost2 size={14} aria-hidden />
-            ) : (
-              <IconAnonymous size={14} aria-hidden />
-            )}
-            <span>{badge.label.replace(" mode", "")}</span>
-          </span>
+          <ModelPrivacyChip
+            badge={badge}
+            withTip={false}
+            label={badge.label.replace(" mode", "")}
+          />
         ) : null}
       </p>
       {values ? <p className="agent-composer-model-detail-values">{values}</p> : null}
@@ -8076,24 +8110,11 @@ function modelMatchesQuery(model: VeniceModelDto, query: string) {
 // onboarding.
 function PrivacyModeBadge({ badge }: { badge?: ModelPrivacyBadge }) {
   if (!badge) return null;
-  return (
-    <HoverTip
-      tip={badge.description}
-      className="agent-safety-badge"
-      data-mode={badge.mode}
-      tabIndex={0}
-      aria-label={`${badge.label} - ${badge.description}`}
-    >
-      {badge.mode === "e2ee" ? (
-        <IconLock size={13} aria-hidden />
-      ) : badge.mode === "private" ? (
-        <IconGhost2 size={13} aria-hidden />
-      ) : (
-        <IconAnonymous size={13} aria-hidden />
-      )}
-      {badge.label}
-    </HoverTip>
-  );
+  // Delegates to the shared chip in the themed (brand-tinted pill) family so the
+  // session bar and the usage panel render the same component. The look is
+  // unchanged: themed-md keeps the 13px icon and the `.agent-safety-badge`
+  // recipe; the aria-label now unifies to the shared "label: description" form.
+  return <ModelPrivacyChip badge={badge} variant="themed" />;
 }
 
 // Indicator of the selected session's opt-in. The jail itself is

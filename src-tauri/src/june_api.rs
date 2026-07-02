@@ -19,11 +19,13 @@ use std::{
 // docker-compose.production.yml). NOT .network — that hostname has no DNS
 // record, and the v0.0.3 DMG shipped pointing at it.
 const DEFAULT_JUNE_API_URL: &str = "https://june-api.opensoftware.co";
-// GLM 5.2 over Nemotron Nano: benchmarked ~2-4s vs ~0.8s per utterance, but it
-// reliably keeps unnumbered items as prose and expands contractions in the
-// formal style, which the nano model skips. Slow outliers degrade gracefully:
-// past DICTATION_CLEANUP_TIMEOUT_MS the raw transcript is inserted as-is.
-const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "zai-org-glm-5-2";
+// Nemotron Nano over GLM 5.2: dictation is latency-critical and nano runs
+// ~0.8s per utterance vs GLM's 2-4s (12s outliers), which felt too slow in
+// daily use. Known nano tradeoffs, accepted for speed: explicit unnumbered
+// "make a list with" requests may still be listified (over-formatting, never
+// word loss) and the formal style sometimes skips contraction expansion. No
+// other catalog model beats it: everything smarter benchmarked 2-20x slower.
+const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_PROXY_MAX_MESSAGES: usize = 64;
@@ -124,6 +126,9 @@ pub struct DictateTranscribeRequest {
 pub struct DictateCleanupRequestParams {
     pub text: String,
     pub dictionary_context: Option<String>,
+    /// Where the cleaned text will be inserted ("email"); lays the output
+    /// out for that surface. None means no special layout.
+    pub app_context: Option<String>,
     pub style: String,
     pub session_id: String,
     pub utterance_id: String,
@@ -230,6 +235,8 @@ struct DictateCleanupBody {
     utterance_id: String,
     text: String,
     dictionary_context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_context: Option<String>,
     style: String,
     model: String,
 }
@@ -357,6 +364,7 @@ pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String,
         utterance_id: params.utterance_id,
         text: params.text,
         dictionary_context: params.dictionary_context,
+        app_context: params.app_context,
         style: params.style,
         model,
     };

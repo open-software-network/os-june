@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { osAccountsLogout, osAccountsStatus } from "./tauri";
+import { osAccountsLogout, osAccountsStatus, osAccountsStatusLocal } from "./tauri";
 import type { AccountStatus } from "./tauri";
 
 const EMPTY_STATUS: AccountStatus = { signedIn: false, configured: false };
@@ -57,6 +57,23 @@ export function useAccountStatus(options: UseAccountStatusOptions = {}): UseAcco
       if (forceLogoutOnMount && !browserOnboardingDemoEnabled()) {
         await osAccountsLogout();
       }
+      // First paint must not block on the network: derive signed-in state from
+      // the keychain alone and clear the loading gate right away. The demo
+      // branch has no native backend, so leave it to `refresh()`.
+      if (!browserOnboardingDemoEnabled()) {
+        try {
+          const localStatus = await osAccountsStatusLocal();
+          if (!cancelled) {
+            setAccount(localStatus);
+            setLoading(false);
+          }
+        } catch {
+          // Old binary without the command during dev hot-reload: fall through
+          // to the full refresh; loading clears in the `.finally` below.
+        }
+      }
+      // The full snapshot fills in user/balance right after and overwrites the
+      // keychain-only status.
       await refresh();
     }
     loadInitialStatus().finally(() => {

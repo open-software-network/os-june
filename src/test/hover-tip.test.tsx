@@ -82,6 +82,168 @@ describe("HoverTip", () => {
     }
   });
 
+  it("keeps a compact tip below the anchor near the viewport bottom when it fits", () => {
+    // jsdom has no layout, so feed the geometry the measure pass reads: a short
+    // anchor low in a tall-enough viewport, and a one-line tip that fits below.
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectFor = (el: Element): DOMRect => {
+      if (el instanceof HTMLElement && el.getAttribute("role") === "tooltip") {
+        // Compact one-line tip: ~24px tall.
+        return { top: 0, left: 0, right: 120, bottom: 24, width: 120, height: 24 } as DOMRect;
+      }
+      // Anchor sits 40px above the viewport floor — plenty for a 24px tip plus
+      // the gap and margin, so the tip should stay below.
+      return { top: 744, left: 100, right: 132, bottom: 760, width: 32, height: 16 } as DOMRect;
+    };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        return rectFor(this);
+      });
+    try {
+      render(
+        <HoverTip tip="Copy message" compact width={104} tabIndex={0}>
+          Copy
+        </HoverTip>,
+      );
+      fireEvent.focus(screen.getByText("Copy"));
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "bottom");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("tightens to the widest visual line, not the widest inline fragment", () => {
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.getAttribute("role") === "tooltip") {
+          return { top: 0, left: 0, right: 216, bottom: 40, width: 216, height: 40 } as DOMRect;
+        }
+        return { top: 100, left: 100, right: 132, bottom: 116, width: 32, height: 16 } as DOMRect;
+      });
+    const fragment = (left: number, right: number, top: number, bottom: number) =>
+      ({ left, right, top, bottom, width: right - left, height: bottom - top }) as DOMRect;
+    // First visual line split into two inline fragments (plain text + inline
+    // markup) spanning 10..160; second line a single 90px fragment. The widest
+    // single fragment is 90px, but the widest LINE is 150px — the box must be
+    // sized from the line, or one-line content would be forced to re-wrap.
+    const rangeSpy = vi
+      .spyOn(Range.prototype, "getClientRects")
+      .mockReturnValue([
+        fragment(10, 100, 0, 16),
+        fragment(100, 160, 0, 16),
+        fragment(10, 100, 16, 32),
+      ] as unknown as DOMRectList);
+    const realGetComputedStyle = window.getComputedStyle.bind(window);
+    const styleSpy = vi
+      .spyOn(window, "getComputedStyle")
+      .mockImplementation((el: Element, pseudo?: string | null) =>
+        (el as HTMLElement).getAttribute?.("role") === "tooltip"
+          ? ({
+              paddingLeft: "6px",
+              paddingRight: "6px",
+              borderLeftWidth: "1px",
+              borderRightWidth: "1px",
+            } as CSSStyleDeclaration)
+          : realGetComputedStyle(el, pseudo),
+      );
+    try {
+      render(
+        <HoverTip tip="Two-line tip with inline markup" width={216} tabIndex={0}>
+          Info
+        </HoverTip>,
+      );
+      fireEvent.focus(screen.getByText("Info"));
+      // ceil(150 line span + 12 padding + 2 borders) — not 90 + 14.
+      expect(screen.getByRole("tooltip").style.width).toBe("164px");
+    } finally {
+      rectSpy.mockRestore();
+      rangeSpy.mockRestore();
+      styleSpy.mockRestore();
+    }
+  });
+
+  it("does not flip sides when the anchor is re-entered while the tip is open", () => {
+    vi.useFakeTimers();
+    // Anchor pinned so close to the viewport floor that the tip opens above it;
+    // a re-hover must not teleport the visible card back below.
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectFor = (el: Element): DOMRect => {
+      if (el instanceof HTMLElement && el.getAttribute("role") === "tooltip") {
+        return { top: 0, left: 0, right: 120, bottom: 200, width: 120, height: 200 } as DOMRect;
+      }
+      // Only 20px of room below — a 200px tip can't fit, so it flips to top.
+      return { top: 764, left: 100, right: 132, bottom: 780, width: 32, height: 16 } as DOMRect;
+    };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        return rectFor(this);
+      });
+    try {
+      render(
+        <HoverTip tip="A tall explainer that flips above the anchor." tabIndex={0}>
+          Info
+        </HoverTip>,
+      );
+      const anchor = screen.getByText("Info");
+      fireEvent.focus(anchor);
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "top");
+
+      // Fade out, then re-enter while still mounted — the side must hold.
+      fireEvent.blur(anchor);
+      fireEvent.focus(anchor);
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "top");
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps its side when the tip content changes while mounted", () => {
+    // A content swap while open (e.g. "Copy message" → "Copied") re-runs the
+    // measure pass with the new height; the visible card must keep the side it
+    // committed to even when the new content would no longer fit there.
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectFor = (el: HTMLElement): DOMRect => {
+      if (el.getAttribute("role") === "tooltip") {
+        const height = el.textContent?.includes("much longer") ? 200 : 24;
+        return { top: 0, left: 0, right: 120, bottom: height, width: 120, height } as DOMRect;
+      }
+      // 40px below the anchor: the 24px tip fits there, the 200px one cannot.
+      return { top: 744, left: 100, right: 132, bottom: 760, width: 32, height: 16 } as DOMRect;
+    };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        return rectFor(this);
+      });
+    try {
+      const { rerender } = render(
+        <HoverTip tip="Copied" compact width={104} tabIndex={0}>
+          Copy
+        </HoverTip>,
+      );
+      fireEvent.focus(screen.getByText("Copy"));
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "bottom");
+
+      rerender(
+        <HoverTip tip="A much longer label swapped in while open" compact width={104} tabIndex={0}>
+          Copy
+        </HoverTip>,
+      );
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "bottom");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("cancels the exit when the anchor is re-entered mid-fade", () => {
     vi.useFakeTimers();
     try {

@@ -27,6 +27,21 @@ use tauri::{
 
 const DICTATION_TRANSCRIPTION_CONTEXT: &str = "Transcribe this as clean hands-free dictation for direct insertion into the active app. Preserve the speaker's intended words, language, and meaning. Remove filler sounds and accidental false starts when they are not meaningful, especially um, uh, ah, er, and a... stutters. Do not remove intentional articles such as a or an when they are grammatically needed. Convert spoken punctuation and formatting into text punctuation, including comma, period, question mark, exclamation point, colon, semicolon, dash, newline, and new paragraph. Convert quote/unquote, open quote/close quote, and start quote/end quote into actual quotation marks around the quoted words. Output only the dictated text.";
 const DICTATION_CLEANUP_TIMEOUT_MS: u64 = 15_000;
+/// App-context slug sent with dictation cleanup when the paste target is a
+/// known kind of app, so the cleaned text is laid out for that surface.
+/// Email is the only recognized context today.
+const APP_CONTEXT_EMAIL: &str = "email";
+/// Native email clients by bundle id. Browser webmail (Gmail, Outlook web)
+/// needs focused-tab detection and is a deliberate follow-up.
+const EMAIL_APP_BUNDLE_IDS: &[&str] = &[
+    "com.apple.mail",
+    "com.microsoft.Outlook",
+    "com.readdle.SparkDesktop",
+    "com.readdle.smartemail-Mac",
+    "it.bloop.airmail2",
+    "com.mimestream.Mimestream",
+    "com.superhuman.electron",
+];
 const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 const DICTATION_EVENT_LOG: &str = "dictation-events.log";
 
@@ -2239,6 +2254,16 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 }
 
 async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
+    // Resolve the paste target before the first await. Prefer the bundle id
+    // the helper captured with the recording: its FocusTargetController is
+    // the same authority that activateLastExternalApp() pastes into, so
+    // layout and paste share one source of truth. Fall back to the frontmost
+    // app for helper builds that predate the field.
+    let app_context = recording
+        .target_bundle_id
+        .as_deref()
+        .map(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
+        .unwrap_or_else(frontmost_app_context);
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
@@ -2292,6 +2317,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         &provider,
         result,
         dictionary_context,
+        app_context,
         style,
         session_id,
         utterance_id,
@@ -2336,6 +2362,34 @@ fn dictation_transcription_context(style: DictationStyle) -> String {
     )
 }
 
+fn is_email_app_bundle(bundle_id: &str) -> bool {
+    EMAIL_APP_BUNDLE_IDS
+        .iter()
+        .any(|known| bundle_id.eq_ignore_ascii_case(known))
+}
+
+/// The app-context slug for the app the user is dictating into, read when
+/// dictation stops (the frontmost app is the paste target). None when the
+/// frontmost app is not a recognized context or cannot be determined.
+#[cfg(target_os = "macos")]
+fn frontmost_app_context() -> Option<String> {
+    let bundle_id = frontmost_bundle_id()?;
+    is_email_app_bundle(&bundle_id).then(|| APP_CONTEXT_EMAIL.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn frontmost_app_context() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_bundle_id() -> Option<String> {
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    let front = workspace.frontmostApplication()?;
+    let bundle_id = front.bundleIdentifier()?;
+    Some(bundle_id.to_string())
+}
+
 async fn dictionary_context_for_app(app: &AppHandle) -> Option<String> {
     let repos = crate::commands::repositories(app).await.ok()?;
     let entries = repos.list_dictionary_entries().await.ok()?;
@@ -2347,6 +2401,7 @@ async fn maybe_cleanup_dictation_result(
     provider: &str,
     result: Result<TranscriptionProviderResult, AppError>,
     dictionary_context: Option<String>,
+    app_context: Option<String>,
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
@@ -2358,11 +2413,13 @@ async fn maybe_cleanup_dictation_result(
     tracing::info!(
         provider,
         style = ?style,
+        app_context = app_context.as_deref(),
         "dictation cleanup starting",
     );
     match cleanup_dictation_text(
         &transcript.text,
         dictionary_context.as_deref(),
+        app_context,
         style,
         session_id,
         utterance_id,
@@ -2385,6 +2442,7 @@ async fn maybe_cleanup_dictation_result(
 async fn cleanup_dictation_text(
     text: &str,
     dictionary_context: Option<&str>,
+    app_context: Option<String>,
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
@@ -2398,6 +2456,7 @@ async fn cleanup_dictation_text(
         cleanup_text(DictateCleanupRequestParams {
             text: text.to_string(),
             dictionary_context: dictionary_context.map(str::to_string),
+            app_context,
             style: style.instruction().to_string(),
             session_id,
             utterance_id,
@@ -2522,6 +2581,13 @@ fn recording_ready_info_from_event(
     Ok(RecordingReadyInfo {
         audio_path: PathBuf::from(path),
         observed_audio_level: observed_audio_level_from_event(event),
+        target_bundle_id: event
+            .get("payload")
+            .and_then(|payload| payload.get("targetBundleIdentifier"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|bundle_id| !bundle_id.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -2551,6 +2617,10 @@ struct DictationTranscriptionOutcome {
 struct RecordingReadyInfo {
     audio_path: PathBuf,
     observed_audio_level: Option<f32>,
+    /// Bundle id of the paste target as tracked by the helper's
+    /// FocusTargetController: the same app activateLastExternalApp() will
+    /// paste into. None with older helper builds that predate the field.
+    target_bundle_id: Option<String>,
 }
 
 fn outcome_from_transcription_result(
@@ -4397,6 +4467,15 @@ mod tests {
     }
 
     #[test]
+    fn email_app_bundles_map_to_the_email_context() {
+        assert!(is_email_app_bundle("com.apple.mail"));
+        assert!(is_email_app_bundle("COM.APPLE.MAIL"));
+        assert!(is_email_app_bundle("com.microsoft.Outlook"));
+        assert!(!is_email_app_bundle("com.google.Chrome"));
+        assert!(!is_email_app_bundle(""));
+    }
+
+    #[test]
     fn casual_lowercase_style_keeps_stripped_first_word_lowercase() {
         // The backstop must never re-capitalize under CasualLowercase, even
         // when stripping a leading filler exposes a lowercase first word.
@@ -4547,6 +4626,27 @@ mod tests {
             .expect("observed audio level");
         assert!((observed - 0.04).abs() < 0.001);
         assert!(!is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn recording_ready_info_carries_the_paste_target_bundle_id() {
+        let event = serde_json::json!({
+            "type": "recording_ready",
+            "payload": {
+                "path": "/tmp/os-june-dictation-test.m4a",
+                "targetBundleIdentifier": "com.apple.mail",
+            }
+        });
+        let info = recording_ready_info_from_event(&event).expect("info parses");
+        assert_eq!(info.target_bundle_id.as_deref(), Some("com.apple.mail"));
+
+        // Older helpers omit the field (or send it empty): no target.
+        let legacy = serde_json::json!({
+            "type": "recording_ready",
+            "payload": { "path": "/tmp/os-june-dictation-test.m4a", "targetBundleIdentifier": "" }
+        });
+        let info = recording_ready_info_from_event(&legacy).expect("info parses");
+        assert_eq!(info.target_bundle_id, None);
     }
 
     #[test]

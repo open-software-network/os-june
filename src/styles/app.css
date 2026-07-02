@@ -641,6 +641,16 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
+/* Small modifier: a shorter pill for dense in-row placements (the usage panel's
+   model row). Keeps the brand-tint recipe, font-size, and warm-strong text;
+   only the height, horizontal padding, and corner radius tighten. --r-md (8px)
+   reads too round at 22px, so this drops to --r-sm (6px). */
+.agent-safety-badge-sm {
+  min-height: var(--control-xs);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+}
+
 .agent-actions {
   display: flex;
   align-items: center;
@@ -698,7 +708,14 @@ input:focus-visible,
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: var(--sp-6);
+  /* The per-turn actions row (copy/branch/timestamp) is positioned out of flow
+   * into the space below each turn (see .agent-turn-actions). The inter-turn
+   * gap must be at least the row's own height, plus a little breathing room,
+   * so a revealed row never overlaps the next turn's "Thought" summary. Both
+   * the row and this gap size off --agent-turn-actions-h, so they stay in sync
+   * if the button size changes. */
+  --agent-turn-actions-h: calc(var(--sp-8) + var(--sp-px));
+  gap: calc(var(--agent-turn-actions-h) + var(--sp-2));
   /* Align the thread rail with the composer's text line, not its outer
    * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
    * User turns stay right-aligned inside this rail. */
@@ -2068,6 +2085,10 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+.agent-compact-savings[data-unavailable="true"] {
+  font-style: italic;
+}
+
 .agent-hermes-note {
   width: min(760px, 100%);
   padding: 0 var(--sp-2);
@@ -2804,7 +2825,9 @@ input:focus-visible,
 }
 
 /* Session usage / context / cost panel (feature 09). A centered modal over the
- * session, modeled on the command palette: scrim + frosted popover card. */
+ * session, modeled on the command palette: scrim + frosted popover card. The
+ * card is a compact usage summary: a segmented context meter, lean breakdown
+ * rows, and a footer total behind a hairline. */
 .agent-usage-overlay {
   position: fixed;
   inset: 0;
@@ -2816,9 +2839,11 @@ input:focus-visible,
   background: var(--scrim);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  animation: agent-usage-overlay-in var(--t-med) var(--ease-out);
 }
 
 .agent-usage-panel {
+  position: relative;
   width: min(420px, calc(100vw - 32px));
   max-height: min(80vh, 560px);
   display: flex;
@@ -2829,23 +2854,44 @@ input:focus-visible,
   background: var(--popover);
   color: var(--popover-foreground);
   box-shadow: var(--shadow-lg);
+  animation: agent-usage-panel-in var(--t-slow) var(--ease-out);
 }
 
+@keyframes agent-usage-overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes agent-usage-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+    filter: blur(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+/* Real header row: the "Usage" title anchors the left, the refresh + close
+   buttons sit at the right. Borderless by design (the divider was rejected) with
+   balanced padding so it flows into the body below it. */
 .agent-usage-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-4) var(--sp-5) 0 var(--sp-5);
 }
 
 .agent-usage-title {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
+  margin: 0;
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-usage-header-actions {
@@ -2857,8 +2903,8 @@ input:focus-visible,
 .agent-usage-body {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-6);
-  padding: var(--sp-5);
+  gap: var(--sp-5);
+  padding: var(--sp-4) var(--sp-5) var(--sp-5) var(--sp-5);
   overflow-y: auto;
 }
 
@@ -2866,126 +2912,258 @@ input:focus-visible,
   opacity: 0.6;
 }
 
-.agent-usage-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--sp-3) var(--sp-5);
-  margin: 0;
+/* First-load skeleton bars: block-shaped shimmer standing in for the model name
+   and the legend reading/percent while the real meter track renders empty
+   beneath. The body structure is shared with the loaded content, and the live
+   track starts from a pixel-identical empty frame before lighting up, so the
+   swap has no visible jump. The bars reuse the note-text-shimmer sweep, which
+   animates background-position on a wide gradient and so composes onto a block
+   as cleanly as it does onto text. Muted base, pill radius; sizes come from
+   spacing tokens with a small local width var. */
+.agent-usage-skeleton {
+  display: inline-block;
+  height: 1em;
+  border-radius: var(--r-pill);
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    var(--muted) 35%,
+    var(--muted-foreground) 50%,
+    var(--muted) 65%,
+    var(--muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: note-text-shimmer 1.6s linear infinite;
 }
 
-.agent-usage-metric {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-px);
-  min-width: 0;
+.agent-usage-skeleton-model {
+  width: var(--usage-skeleton-model-w, 120px);
 }
 
-.agent-usage-metric dt {
-  font-size: var(--fs-xs);
-  color: var(--muted-foreground);
+.agent-usage-skeleton-reading {
+  width: 140px;
 }
 
-.agent-usage-metric dd {
-  margin: 0;
-  font-size: var(--fs-md);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+.agent-usage-skeleton-percent {
+  width: 40px;
 }
 
-[data-unavailable="true"] {
-  color: var(--muted-foreground);
-  font-style: italic;
+/* When real content lands it shares the persistent body, so there is no
+   whole-body entrance to replay. Just cross the text in with a quick opacity
+   fade so the swap from the shimmer bars reads soft; the live meter begins from
+   the same empty track frame and lights up with its own eased sweep. Scoped to
+   the text rows so the track is never touched. */
+.agent-usage-model-row,
+.agent-usage-meter-legend {
+  animation: agent-usage-text-in var(--t-med) var(--ease-out);
 }
 
-.agent-usage-context {
+@keyframes agent-usage-text-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* Segmented "tick" context meter (tall thin capsule ticks). --usage-seg-w /
+ * --usage-seg-h are the only off-token geometry the ticks need; every other
+ * value comes from tokens.css. A fixed tick count plus the track's space-between
+ * owns the gaps, which is why nothing can clip — no minimum-gap value and no
+ * mask to slice a fractional last tick. */
+.agent-usage-meter {
+  --usage-seg-w: 4px;
+  --usage-seg-h: 8px;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
 }
 
-.agent-usage-context-head,
-.agent-usage-cost-head {
+.agent-usage-meter-track {
+  display: flex;
+  justify-content: space-between;
+  height: var(--usage-seg-h);
+}
+
+.agent-usage-meter-segment {
+  flex: 0 0 var(--usage-seg-w);
+  width: var(--usage-seg-w);
+  height: var(--usage-seg-h);
+  border-radius: var(--r-pill);
+  background: var(--muted);
+  /* Every tick rests at the same size, so lit ticks sit within the exact bounds
+     of the gray ticks beneath. The eased left-to-right sweep is color-only: the
+     inline per-tick transitionDelay staggers the background flip so the lit
+     wavefront settles in without any resize. */
+  transition: background-color var(--t-slow) var(--ease-out);
+}
+
+.agent-usage-meter-segment[data-lit="true"] {
+  background: var(--primary);
+}
+
+/* Near-full reads as a themed intensity shift, not an error: a nearly-full
+   context is a heads up (June can compact it), so --destructive would
+   overclaim. --warm-strong is the deepened brand tone, so the signal tracks
+   the selected theme preset instead of flashing red. */
+.agent-usage-meter-track[data-level="critical"] .agent-usage-meter-segment[data-lit="true"] {
+  background: var(--warm-strong);
+}
+
+.agent-usage-meter-legend {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--sp-3);
+  font-size: var(--fs-sm);
 }
 
-.agent-usage-context-label,
-.agent-usage-cost-label {
+.agent-usage-meter-reading {
+  color: var(--foreground);
+}
+
+/* The percent is the anchor datum, so it carries foreground and a medium weight
+   (the reading already reads as foreground for the used count). Same small size
+   as the reading. */
+.agent-usage-meter-percent {
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.agent-usage-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* Quiet text toggle for the detail disclosure. Copies the look of
+   .transcript-turn-more (small, muted, no chrome) without its grid-scoped
+   justify-self baggage. */
+.agent-usage-more {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-sm);
+  gap: var(--sp-1);
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
 
-.agent-usage-context-reading,
-.agent-usage-cost-value {
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
+.agent-usage-more:hover {
+  color: var(--foreground);
 }
 
-.agent-usage-bar {
-  height: 6px;
-  border-radius: var(--r-pill);
-  background: var(--muted);
+/* The shared chevron only self-rotates under `[open] > summary` (details-scoped),
+   so drive it from this button's aria-expanded. Reuses .agent-disclosure-chevron
+   for color/transition; only the rotate is added here. */
+.agent-usage-more[aria-expanded="true"] .agent-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+/* Groups the toggle with its disclosure so the collapsed (0-height) disclosure
+   contributes no body flex gap below the toggle; the open-state spacing lives
+   inside the reveal so it animates with the height. */
+.agent-usage-details {
+  display: flex;
+  flex-direction: column;
+}
+
+/* House expand/collapse: grid-template-rows 0fr -> 1fr animates to intrinsic
+   height with no JS measurement; the inner min-height:0 / overflow:hidden
+   wrapper clips the content while collapsed. The detail rows are plain (no
+   backdrop), so the disclosure spans the normal body width with no bleed. */
+.agent-usage-disclosure {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--t-slow) var(--ease-out);
+}
+
+.agent-usage-disclosure[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.agent-usage-disclosure-inner {
+  min-height: 0;
   overflow: hidden;
 }
 
-.agent-usage-bar-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: var(--primary);
+/* The revealed detail rows. A padding-top keeps a gap below the toggle inside
+   the clipped reveal, so the spacing animates open with the height instead of
+   contributing a fixed body gap while collapsed. */
+.agent-usage-detail-rows {
+  padding-top: var(--sp-3);
 }
 
-.agent-usage-cost {
+.agent-usage-row {
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  padding-top: var(--sp-4);
-  border-top: 1px solid var(--border-subtle);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--fs-md);
+}
+
+/* The model row keeps the privacy chip inline after the name (chat-surface
+   style) instead of right-aligned. The actions cluster no longer floats over
+   this row (it lives in the real header), so no right clearance is reserved.
+   Scoped to this row so the detail rows keep their space-between value layout. */
+.agent-usage-model-row {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.agent-usage-primary {
+  min-width: 0;
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.agent-usage-secondary {
+  margin-left: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+
+.agent-usage-muted {
+  color: var(--muted-foreground);
+}
+
+.agent-usage-tool-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-usage-value {
+  color: var(--foreground);
+  white-space: nowrap;
 }
 
 .agent-usage-cost-value {
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
 }
 
-.agent-usage-cost-note {
+.agent-usage-fine-print {
   margin: 0;
   font-size: var(--fs-xs);
   color: var(--muted-foreground);
 }
 
-.agent-usage-tool-costs {
-  list-style: none;
-  margin: var(--sp-2) 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-
-.agent-usage-tool-costs li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
+.agent-usage-empty {
+  margin: 0;
+  padding: var(--sp-6) 0;
+  text-align: center;
   font-size: var(--fs-sm);
-}
-
-.agent-usage-tool-name {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
   color: var(--muted-foreground);
-  overflow-wrap: anywhere;
-}
-
-.agent-usage-tool-value {
-  font-variant-numeric: tabular-nums;
 }
 
 .agent-usage-error {
@@ -2993,7 +3171,8 @@ input:focus-visible,
   flex-direction: column;
   align-items: flex-start;
   gap: var(--sp-3);
-  padding: var(--sp-5);
+  /* Matches the body's padding so the error copy sits under the real header. */
+  padding: var(--sp-4) var(--sp-5) var(--sp-5) var(--sp-5);
   font-size: var(--fs-md);
 }
 
@@ -3005,6 +3184,32 @@ input:focus-visible,
   color: var(--secondary-foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-usage-overlay,
+  .agent-usage-panel,
+  .agent-usage-model-row,
+  .agent-usage-meter-legend {
+    animation: none;
+  }
+
+  /* Static shimmer bars: no sweep, a flat muted fill. */
+  .agent-usage-skeleton {
+    background: var(--muted);
+    animation: none;
+  }
+
+  .agent-usage-meter-segment {
+    /* No sweep: ticks snap to their lit color. `transition: none` also moots the
+       inline per-tick delay (nothing to delay). */
+    transition: none;
+  }
+
+  .agent-usage-disclosure,
+  .agent-usage-more {
+    transition: none;
+  }
 }
 
 /* Feature 11: the floating toggle that opens the activity drawer. Pinned to
@@ -14092,6 +14297,10 @@ input:focus-visible,
   line-height: 1.5;
   text-align: left;
   white-space: normal;
+  /* Split a wrapped tip's lines evenly so a two-line tip reads as a balanced
+   * block. HoverTip measures the line boxes AFTER this applies and tightens the
+   * box width to hug the widest line, so the box edges match the text edges. */
+  text-wrap: balance;
   pointer-events: none;
 }
 

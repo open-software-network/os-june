@@ -105,6 +105,7 @@ vi.mock("../lib/tauri", () => ({
   listDictionaryEntries: mocks.listDictionaryEntries,
   deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
   osAccountsStatus: mocks.osAccountsStatus,
+  osAccountsStatusLocal: mocks.osAccountsStatus,
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
