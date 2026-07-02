@@ -165,6 +165,10 @@ impl VeniceTranscriber {
             })?;
         let form = Form::new()
             .text("model", model_id.clone())
+            // Venice ASR accepts only `response_format` `json` | `text`
+            // (`verbose_json` is rejected with a 400) and never returns a
+            // `language`, so detected language is filled in server-side after
+            // transcription — do not switch this to `verbose_json`.
             .text("response_format", "json")
             .part("file", audio_part);
         let response = self

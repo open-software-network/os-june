@@ -5,6 +5,7 @@ mod charge_flow;
 mod dictate;
 mod error;
 mod image;
+mod language;
 mod metering;
 mod note_generate;
 mod note_transcribe;

@@ -4,6 +4,7 @@ use crate::{
         zero_receipt,
     },
     error::ServiceError,
+    language::fill_missing_language,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
     pricing::PricingTable,
     prompts,
@@ -63,6 +64,9 @@ impl DictateService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
+        // Captured before `params.language` is moved into the request below, so
+        // enrichment can fall back to the user-configured language.
+        let requested_language = params.language.clone();
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -80,6 +84,7 @@ impl DictateService {
                 })
                 .await
                 .map_err(ServiceError::from)?;
+            let transcript = fill_missing_language(transcript, requested_language.as_deref());
             log_skipped_user_venice_key(
                 ActionSlug::DictateTranscribe,
                 &params.user_id,
@@ -113,6 +118,7 @@ impl DictateService {
             })
             .await
             .map_err(ServiceError::from)?;
+        let transcript = fill_missing_language(transcript, requested_language.as_deref());
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "dictate_transcribe:{}:{}:{}",
