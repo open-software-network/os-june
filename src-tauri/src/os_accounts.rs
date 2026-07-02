@@ -462,20 +462,7 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
                 portal_url: portal_url(&cfg),
             })
         }
-        Err(error) => {
-            // A transient snapshot failure (OS Accounts briefly unreachable
-            // after an update restart) is not a sign-out: we still hold valid
-            // tokens. Only a definitive rejection clears the cached signed-in
-            // state, so a focus-triggered status poll during an outage can't
-            // disable meeting capture, which reads cached_signed_in().
-            if snapshot_failure_clears_session(&error) {
-                set_cached_signed_in(false);
-            }
-            Ok(AccountStatus {
-                configured: cfg.configured(),
-                ..Default::default()
-            })
-        }
+        Err(error) => Ok(account_status_for_snapshot_failure(&cfg, &error)),
     }
 }
 
@@ -1114,23 +1101,61 @@ fn snapshot_failure_clears_session(error: &AppError) -> bool {
     matches!(error.code.as_str(), "session_expired" | "signed_out")
 }
 
+fn account_status_for_snapshot_failure(cfg: &Config, error: &AppError) -> AccountStatus {
+    if snapshot_failure_clears_session(error) {
+        set_cached_signed_in(false);
+        return AccountStatus {
+            configured: cfg.configured(),
+            ..Default::default()
+        };
+    }
+
+    // A transient snapshot failure (OS Accounts briefly unreachable after an
+    // update restart) is not a sign-out: we still hold tokens. Mark the session
+    // signed in for both the frontend gate and native capture checks, while
+    // leaving user/billing details unknown until a later status refresh succeeds.
+    set_cached_signed_in(true);
+    AccountStatus {
+        signed_in: true,
+        configured: cfg.configured(),
+        portal_url: portal_url(cfg),
+        ..Default::default()
+    }
+}
+
+fn terminal_refresh_error(error: AppError, first_transient_error: Option<AppError>) -> AppError {
+    if !is_transient_auth_error(&error) {
+        if let Some(transient_error) = first_transient_error {
+            return transient_error;
+        }
+    }
+    error
+}
+
 /// Refresh with a bounded retry on transient upstream failures. Each attempt
 /// calls `refresh_locked`, which re-acquires the refresh lock and re-reads the
 /// keychain, so the lock is released across the backoff sleep and a refresh
 /// completed by another caller during the wait is picked up for free. Stops
-/// immediately on success or a definitive rejection.
+/// immediately on success or on a definitive rejection before any transient
+/// attempt; after a transient attempt, keep reporting the transient error so a
+/// retry against a consumed rotating token cannot clear the session.
 async fn refresh_locked_with_retry(cfg: &Config) -> Result<String, AppError> {
     let mut attempt = 0;
+    let mut first_transient_error: Option<AppError> = None;
     loop {
         match refresh_locked(cfg).await {
             Ok(access) => return Ok(access),
             Err(error) => {
                 attempt += 1;
-                if attempt < AUTH_REFRESH_MAX_ATTEMPTS && is_transient_auth_error(&error) {
+                let transient = is_transient_auth_error(&error);
+                if transient && first_transient_error.is_none() {
+                    first_transient_error = Some(error.clone());
+                }
+                if attempt < AUTH_REFRESH_MAX_ATTEMPTS && transient {
                     tokio::time::sleep(AUTH_REFRESH_RETRY_BACKOFF * attempt as u32).await;
                     continue;
                 }
-                return Err(error);
+                return Err(terminal_refresh_error(error, first_transient_error));
             }
         }
     }
@@ -1237,7 +1262,7 @@ async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> R
                 .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."));
         }
         if resp.error_code == Some(ERR_TOKEN_EXPIRED) && attempt == 0 {
-            access = refresh_locked(cfg).await?;
+            access = refresh_locked_with_retry(cfg).await?;
             continue;
         }
         return Err(AppError::new(
@@ -1276,7 +1301,7 @@ async fn authed_post<T: for<'de> Deserialize<'de>>(
                 .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."));
         }
         if resp.error_code == Some(ERR_TOKEN_EXPIRED) && attempt == 0 {
-            access = refresh_locked(cfg).await?;
+            access = refresh_locked_with_retry(cfg).await?;
             continue;
         }
         return Err(AppError::new(
@@ -1789,5 +1814,60 @@ mod tests {
             "request_failed",
             "OS Accounts request failed."
         )));
+    }
+
+    #[test]
+    fn transient_snapshot_failure_reports_signed_in_status() {
+        let cfg = Config {
+            accounts_url: "https://accounts.opensoftware.co/".to_string(),
+            api_url: "https://api.accounts.opensoftware.co".to_string(),
+            client_id: "ocl_test".to_string(),
+            loopback_port: DEFAULT_LOOPBACK_PORT,
+        };
+
+        let status = account_status_for_snapshot_failure(&cfg, &auth_refresh_unavailable_error());
+
+        assert!(status.signed_in);
+        assert!(status.configured);
+        assert_eq!(
+            status.portal_url.as_deref(),
+            Some("https://accounts.opensoftware.co")
+        );
+        assert!(status.user.is_none());
+        assert!(status.balance.is_none());
+        assert!(status.subscription.is_none());
+    }
+
+    #[test]
+    fn definitive_snapshot_failure_reports_signed_out_status() {
+        let cfg = Config {
+            accounts_url: "https://accounts.opensoftware.co/".to_string(),
+            api_url: "https://api.accounts.opensoftware.co".to_string(),
+            client_id: "ocl_test".to_string(),
+            loopback_port: DEFAULT_LOOPBACK_PORT,
+        };
+
+        let status = account_status_for_snapshot_failure(&cfg, &session_expired_error());
+
+        assert!(!status.signed_in);
+        assert!(status.configured);
+        assert!(status.portal_url.is_none());
+    }
+
+    #[test]
+    fn retry_terminal_error_preserves_the_first_transient_failure() {
+        let error = terminal_refresh_error(
+            session_expired_error(),
+            Some(auth_refresh_unavailable_error()),
+        );
+
+        assert_eq!(error.code, AUTH_REFRESH_UNAVAILABLE_CODE);
+    }
+
+    #[test]
+    fn retry_terminal_error_keeps_definitive_rejection_without_prior_transient() {
+        let error = terminal_refresh_error(session_expired_error(), None);
+
+        assert_eq!(error.code, "session_expired");
     }
 }
