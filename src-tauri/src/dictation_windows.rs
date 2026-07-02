@@ -181,18 +181,28 @@ pub(crate) enum ShortcutEdgeAction {
 }
 
 /// Pure decision for a trigger-key edge, factored out of the raw hook
-/// callback so it is unit-testable on any host. `matched` is the shortcut the
-/// key+modifiers currently match (down edges only); `suppressed_kind` is set
-/// when this key's down edge was already suppressed and is still held. A held
-/// key whose repeats arrive is swallowed even if the modifiers were released
-/// mid-hold (`matched` gone), so a suppressed trigger can never leak repeats
-/// into the focused app before its release.
+/// callback so it is unit-testable on any host. `injected` is the
+/// KBDLLHOOKSTRUCT LLKHF_INJECTED / LLKHF_LOWER_IL_INJECTED state: injected
+/// events always pass through untouched, regardless of any shortcut match —
+/// our own synthesized Ctrl+V paste travels back through the same low-level
+/// hook, and matching it would swallow the V (so the target app never
+/// receives the paste) or re-trigger dictation mid-paste for a user who bound
+/// a colliding chord. `matched` is the shortcut the key+modifiers currently
+/// match (down edges only); `suppressed_kind` is set when this key's down
+/// edge was already suppressed and is still held. A held key whose repeats
+/// arrive is swallowed even if the modifiers were released mid-hold
+/// (`matched` gone), so a suppressed trigger can never leak repeats into the
+/// focused app before its release.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn shortcut_edge_action(
+    injected: bool,
     is_down: bool,
     matched: Option<DictationShortcutKind>,
     suppressed_kind: Option<DictationShortcutKind>,
 ) -> ShortcutEdgeAction {
+    if injected {
+        return ShortcutEdgeAction::PassThrough;
+    }
     if is_down {
         if suppressed_kind.is_some() {
             return ShortcutEdgeAction::SwallowRepeat;
@@ -251,8 +261,9 @@ mod windows_impl {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
-        SetForegroundWindow, SetWindowsHookExW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
-        WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        SetForegroundWindow, SetWindowsHookExW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+        LLKHF_LOWER_IL_INJECTED, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
+        WM_SYSKEYUP,
     };
 
     const VK_CONTROL: i32 = 0x11;
@@ -487,7 +498,11 @@ mod windows_impl {
             let vk = info.vkCode as u16;
             let is_down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
             let is_up = message == WM_KEYUP || message == WM_SYSKEYUP;
-            if (is_down || is_up) && process_key(vk, is_down) {
+            // Synthesized input (including our own SendInput Ctrl+V paste)
+            // arrives back through this hook flagged as injected; it must
+            // never be treated as shortcut input or shortcut capture.
+            let injected = (info.flags.0 & (LLKHF_INJECTED.0 | LLKHF_LOWER_IL_INJECTED.0)) != 0;
+            if (is_down || is_up) && process_key(vk, is_down, injected) {
                 // Swallow the trigger key so the shortcut doesn't leak into the
                 // focused app (e.g. typing the push-to-talk key while dictating).
                 return LRESULT(1);
@@ -499,7 +514,7 @@ mod windows_impl {
     /// Pure-ish hook decision: matches the key against configured shortcuts (or
     /// records it in capture mode) and returns whether to suppress it. Only ever
     /// `try_lock`s the shared state so it can never block global input.
-    fn process_key(vk: u16, is_down: bool) -> bool {
+    fn process_key(vk: u16, is_down: bool, injected: bool) -> bool {
         let Some(state) = HOOK_STATE.get() else {
             return false;
         };
@@ -508,7 +523,9 @@ mod windows_impl {
         };
 
         if guard.capturing {
-            if is_down && !is_modifier_vk(vk) {
+            // Injected keys must not be recorded as a captured shortcut
+            // either (e.g. a paste synthesized while the capture UI is open).
+            if !injected && is_down && !is_modifier_vk(vk) {
                 guard.capturing = false;
                 let modifiers = current_modifiers();
                 if let Some(code) = code_for_vk(vk) {
@@ -548,7 +565,7 @@ mod windows_impl {
             .find(|(held, _)| *held == vk)
             .map(|(_, kind)| *kind);
 
-        match super::shortcut_edge_action(is_down, matched, suppressed_kind) {
+        match super::shortcut_edge_action(injected, is_down, matched, suppressed_kind) {
             super::ShortcutEdgeAction::PassThrough => false,
             super::ShortcutEdgeAction::SwallowRepeat => true,
             super::ShortcutEdgeAction::DispatchDown(kind) => {
@@ -862,6 +879,14 @@ mod windows_impl {
                 return;
             }
             let to_paste = format!("{trimmed} ");
+            // Mirror the macOS helper's ordering exactly: final_transcript is
+            // emitted with the padded paste text before the clipboard write.
+            // The dictation history view reloads on this event, so without it
+            // an open history view would stay stale after a Windows dictation.
+            self.emit(json!({
+                "type": "final_transcript",
+                "payload": { "text": to_paste },
+            }));
             let previous = clipboard_get_text();
             if let Err(error) = clipboard_set_text(&to_paste) {
                 self.emit(json!({
@@ -1322,13 +1347,14 @@ mod tests {
     fn key_repeat_for_a_held_trigger_is_swallowed_without_a_second_down_edge() {
         // First down: dispatch and suppress.
         assert_eq!(
-            shortcut_edge_action(true, Some(DictationShortcutKind::Toggle), None),
+            shortcut_edge_action(false, true, Some(DictationShortcutKind::Toggle), None),
             ShortcutEdgeAction::DispatchDown(DictationShortcutKind::Toggle)
         );
         // OS key repeat while held (key already suppressed): swallowed, no
         // second down edge — a repeat must not re-toggle dictation.
         assert_eq!(
             shortcut_edge_action(
+                false,
                 true,
                 Some(DictationShortcutKind::Toggle),
                 Some(DictationShortcutKind::Toggle)
@@ -1338,6 +1364,7 @@ mod tests {
         // Same for push-to-talk: no re-dispatched down on repeats.
         assert_eq!(
             shortcut_edge_action(
+                false,
                 true,
                 Some(DictationShortcutKind::PushToTalk),
                 Some(DictationShortcutKind::PushToTalk)
@@ -1347,7 +1374,7 @@ mod tests {
         // Repeats stay swallowed even if the modifiers were released mid-hold
         // (no current match), so a suppressed trigger never leaks into the app.
         assert_eq!(
-            shortcut_edge_action(true, None, Some(DictationShortcutKind::Toggle)),
+            shortcut_edge_action(false, true, None, Some(DictationShortcutKind::Toggle)),
             ShortcutEdgeAction::SwallowRepeat
         );
     }
@@ -1355,12 +1382,12 @@ mod tests {
     #[test]
     fn release_of_a_suppressed_trigger_dispatches_the_up_edge() {
         assert_eq!(
-            shortcut_edge_action(false, None, Some(DictationShortcutKind::PushToTalk)),
+            shortcut_edge_action(false, false, None, Some(DictationShortcutKind::PushToTalk)),
             ShortcutEdgeAction::DispatchUp(DictationShortcutKind::PushToTalk)
         );
         // A release we never suppressed passes through untouched.
         assert_eq!(
-            shortcut_edge_action(false, None, None),
+            shortcut_edge_action(false, false, None, None),
             ShortcutEdgeAction::PassThrough
         );
     }
@@ -1368,7 +1395,34 @@ mod tests {
     #[test]
     fn unmatched_keys_pass_through() {
         assert_eq!(
-            shortcut_edge_action(true, None, None),
+            shortcut_edge_action(false, true, None, None),
+            ShortcutEdgeAction::PassThrough
+        );
+    }
+
+    #[test]
+    fn injected_events_pass_through_regardless_of_match() {
+        // Our own synthesized Ctrl+V comes back through the hook flagged as
+        // injected. Even if it matches a configured shortcut (a user bound
+        // Ctrl+V, or a colliding toggle chord), it must pass through: matching
+        // would swallow the V so the paste never lands, or start a new
+        // dictation mid-paste.
+        assert_eq!(
+            shortcut_edge_action(true, true, Some(DictationShortcutKind::Toggle), None),
+            ShortcutEdgeAction::PassThrough
+        );
+        assert_eq!(
+            shortcut_edge_action(true, true, Some(DictationShortcutKind::PushToTalk), None),
+            ShortcutEdgeAction::PassThrough
+        );
+        // Injected events never touch the suppressed bookkeeping either, even
+        // while the same key is physically held and suppressed.
+        assert_eq!(
+            shortcut_edge_action(true, true, None, Some(DictationShortcutKind::Toggle)),
+            ShortcutEdgeAction::PassThrough
+        );
+        assert_eq!(
+            shortcut_edge_action(true, false, None, Some(DictationShortcutKind::Toggle)),
             ShortcutEdgeAction::PassThrough
         );
     }
