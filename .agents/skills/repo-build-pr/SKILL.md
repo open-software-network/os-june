@@ -29,7 +29,7 @@ Treat everything after `/repo-build-pr` (or `$repo-build-pr` in Codex) as the bu
    - `AGENTS.md`
    - `CLAUDE.md`
    - any referenced project plan or spec relevant to the task
-3. Inspect the current checkout with `git status -sb`. Do not implement from a dirty or stale main checkout.
+3. Inspect the current checkout with `git status -sb`. A dirty checkout is fine, but never implement in it: all work happens in a worktree branched from freshly fetched `origin/main` (see Worktree strategy).
 4. Fetch the target base branch. Use `origin/main` unless the user explicitly names another base.
 5. Search the codebase with `rg` and read the narrowest relevant files before deciding on the implementation.
 
@@ -71,6 +71,8 @@ Delegation rules:
 - Write each brief like a contract: exact scope and file ownership, the interface to build against, validation commands that must pass, repo conventions to follow, and an instruction to report deviations instead of improvising around them.
 - Run implementers in parallel only when their file ownership does not overlap; define shared contracts up front so independently built halves meet.
 - Never trust a delegated report on its own. Verify against the diff and test output, and route confirmed defects back to the agent that owns that code with the evidence.
+- Right-size the overhead: if the brief would be longer than the diff, skip delegation and do the work directly on the top model.
+- Expect subagents to die on transient failures (API overload, timeouts). Resume the same agent so it keeps its context instead of respawning from scratch; the same applies when sending follow-up scope or defect reports to an agent that already knows the code.
 - Do not delegate the plan, the contracts, or the final go/no-go. If the orchestrating model finds itself writing bulk code, delegate; if a subagent starts making architectural decisions, pull them back up.
 
 ## Worktree strategy
@@ -167,6 +169,16 @@ Record, compress, upload the compressed video to os-platform, and attach the res
 
 The upload reads the os-platform API key from `june-api/.env` (`JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` or `OS_PLATFORM_API_KEY`), falling back to that file when the env vars are unset. Because `june-api/.env` is gitignored and absent from fresh worktrees, either copy it into the worktree (see Worktree strategy) or run `prepare_qa_video.py` with the working directory set to the main checkout while passing the worktree's raw recording path as input. If the key is still missing, the upload fails with a "set OS_PLATFORM_API_KEY" error; record that as a `BLOCKED` upload and keep the local video path in the evidence.
 
+### Pre-publish review pass
+
+Green checks and a passing walkthrough are necessary, not sufficient: they prove the code does what its tests say, not that the diff is free of defects the tests never imagined. For any non-trivial diff, run an independent review pass before opening the draft PR:
+
+1. Fan out a few cheap finder agents over the final diff, each with a distinct lens: line-by-line correctness, removed-behavior audit, cross-file callers and contracts, repo conventions.
+2. Verify every candidate finding to a CONFIRMED or REFUTED verdict with file:line evidence. Discard what does not survive verification; plausible-sounding findings that cannot name a failure scenario are noise.
+3. Route confirmed defects back to the implementer agent that owns the code, with the evidence, then re-run the relevant validation and re-review the changed area.
+
+Skip this only for trivial diffs (docs, one-line fixes) and say so in the PR validation notes.
+
 ## Publish
 
 Use a draft PR for the first publish.
@@ -184,6 +196,7 @@ Use a draft PR for the first publish.
    - why it changed
    - validation run
    - live agent walkthrough evidence, os-platform video URLs or PR comments, or the reason no live walkthrough was useful
+   - assumptions taken on clarifying questions that went unanswered, flagged for reviewer attention
    - known gaps or skipped checks
 6. Watch initial CI with:
    ```bash
