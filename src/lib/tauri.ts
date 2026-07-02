@@ -1492,6 +1492,13 @@ export async function osAccountsStatus() {
   return invoke<AccountStatus>("os_accounts_status");
 }
 
+/** Keychain-only status with no network I/O — the launch fast-path so first
+ * paint doesn't block on the account snapshot. User/balance stay unknown until
+ * the full `osAccountsStatus` lands. */
+export async function osAccountsStatusLocal() {
+  return invoke<AccountStatus>("os_accounts_status_local");
+}
+
 export async function osAccountsLogin() {
   return invoke<AccountStatus>("os_accounts_login");
 }

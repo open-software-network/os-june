@@ -84,10 +84,52 @@ struct Envelope<T> {
 
 /// Token pair. Stored in the OS keychain by default, **never** handed to the webview.
 /// Zeroizes memory on drop so a refresh-rotated token doesn't linger.
+///
+/// Also deserialized straight from the OS Accounts wire envelope
+/// (`Envelope<TokenPair>` in `exchange_code`/`refresh_locked`), so its shape must
+/// stay a pure token pair — cache fields live on `StoredAccount`, never here.
 #[derive(Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop)]
 struct TokenPair {
     access_token: String,
     refresh_token: String,
+}
+
+/// Last-known account snapshot cached alongside the tokens, so the launch
+/// fast-path (and an outage) can paint the user's real identity/balance instead
+/// of generic fallbacks. Holds exactly what a status returns.
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+struct AccountSnapshot {
+    user: AccountUser,
+    balance: AccountBalance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subscription: Option<AccountSubscription>,
+}
+
+/// What actually lives in the single keychain entry: the token pair plus an
+/// optional cached snapshot. `#[serde(flatten)]` keeps the on-disk JSON flat
+/// (`{access_token, refresh_token, snapshot?}`), so an existing entry written
+/// before caching — `{access_token, refresh_token}` — still parses with
+/// `snapshot: None`.
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredAccount {
+    #[serde(flatten)]
+    pair: TokenPair,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot: Option<AccountSnapshot>,
+}
+
+impl StoredAccount {
+    fn new(pair: TokenPair, snapshot: Option<AccountSnapshot>) -> Self {
+        Self { pair, snapshot }
+    }
+}
+
+/// On refresh the token pair rotates but the account snapshot doesn't, so carry
+/// the previously cached snapshot onto the fresh pair — otherwise every window
+/// focus that triggers a refresh would blank the cache until the next status
+/// snapshot lands.
+fn merge_rotated_tokens(fresh: TokenPair, previous: Option<AccountSnapshot>) -> StoredAccount {
+    StoredAccount::new(fresh, previous)
 }
 
 #[derive(Deserialize)]
@@ -153,7 +195,7 @@ pub struct ReferralSummary {
     pub available_months: i64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUser {
     pub id: String,
@@ -166,7 +208,7 @@ pub struct AccountUser {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountBalance {
     pub credits: i64,
@@ -175,7 +217,7 @@ pub struct AccountBalance {
     pub usage_remaining_percent: Option<i64>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSubscription {
     pub subscribed: bool,
@@ -442,16 +484,25 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
         return Ok(local_dev_account_status());
     }
     let cfg = Config::load();
-    if load_tokens().await.is_none() {
+    let Some(stored) = load_account().await else {
         set_cached_signed_in(false);
         return Ok(AccountStatus {
             configured: cfg.configured(),
             ..Default::default()
         });
-    }
+    };
     match fetch_snapshot(&cfg).await {
         Ok((user, balance, subscription)) => {
             set_cached_signed_in(true);
+            // Refresh the cached snapshot for the next launch fast-path, but
+            // avoid keychain write churn: status runs on every window focus, so
+            // only rewrite when the snapshot actually changed.
+            persist_snapshot_if_changed(&AccountSnapshot {
+                user: user.clone(),
+                balance: balance.clone(),
+                subscription: subscription.clone(),
+            })
+            .await;
             Ok(AccountStatus {
                 signed_in: true,
                 configured: cfg.configured(),
@@ -462,8 +513,55 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
                 portal_url: portal_url(&cfg),
             })
         }
-        Err(error) => Ok(account_status_for_snapshot_failure(&cfg, &error)),
+        Err(error) => Ok(account_status_for_snapshot_failure(
+            &cfg,
+            &error,
+            stored.snapshot,
+        )),
     }
+}
+
+/// Launch fast-path: derive signed-in state from the keychain alone, with no
+/// network I/O, so first paint doesn't block on the account snapshot. The
+/// user/balance/subscription returned here are the *last-known* values cached
+/// alongside the tokens (absent on a first launch after upgrade, before any
+/// snapshot was cached); the full `os_accounts_status` snapshot refreshes them
+/// moments later.
+#[tauri::command]
+pub async fn os_accounts_status_local() -> Result<AccountStatus, AppError> {
+    if local_dev_enabled() {
+        set_cached_signed_in(true);
+        return Ok(local_dev_account_status());
+    }
+    let cfg = Config::load();
+    let Some(stored) = load_account().await else {
+        set_cached_signed_in(false);
+        return Ok(AccountStatus {
+            configured: cfg.configured(),
+            ..Default::default()
+        });
+    };
+    // Tokens present: signed in immediately so the frontend gate opens, seeded
+    // with the last-known snapshot so the identity/balance don't flash generic
+    // fallbacks before the full snapshot lands.
+    set_cached_signed_in(true);
+    let (user, balance, subscription) = match stored.snapshot {
+        Some(snapshot) => (
+            Some(snapshot.user),
+            Some(snapshot.balance),
+            snapshot.subscription,
+        ),
+        None => (None, None, None),
+    };
+    Ok(AccountStatus {
+        signed_in: true,
+        configured: cfg.configured(),
+        user,
+        balance,
+        subscription,
+        portal_url: portal_url(&cfg),
+        ..Default::default()
+    })
 }
 
 #[tauri::command]
@@ -511,8 +609,16 @@ pub async fn os_accounts_login(
 
     let code = await_authorization_code(&cfg, &flow, &login_url, &csrf).await?;
     let pair = exchange_code(&cfg, &code, &verifier, &redirect_uri).await?;
-    store_tokens(&pair).await?;
+    store_tokens(&StoredAccount::new(pair, None)).await?;
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
+    // Warm the cache from first sign-in so the next launch fast-path paints the
+    // real identity instead of fallbacks.
+    persist_snapshot_if_changed(&AccountSnapshot {
+        user: user.clone(),
+        balance: balance.clone(),
+        subscription: subscription.clone(),
+    })
+    .await;
     set_cached_signed_in(true);
     Ok(AccountStatus {
         signed_in: true,
@@ -995,13 +1101,14 @@ async fn exchange_code(
 /// already refreshed.
 async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
     let _guard = refresh_lock().lock().await;
-    let pair = match load_tokens().await {
-        Some(pair) => pair,
+    let stored = match load_account().await {
+        Some(stored) => stored,
         None => {
             set_cached_signed_in(false);
             return Err(AppError::new("signed_out", "Not signed in."));
         }
     };
+    let pair = &stored.pair;
     // Read status and body separately so a transient upstream failure (a
     // Cloudflare/TEE 5xx or an outright connection error) is not conflated with
     // a definitive rejection of the refresh token. reqwest does not error on a
@@ -1030,7 +1137,9 @@ async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
         Ok(envelope) if envelope.success => match envelope.data {
             Some(fresh) => {
                 let access = fresh.access_token.clone();
-                store_tokens(&fresh).await?;
+                // Rotation swaps the token pair but not the account snapshot;
+                // carry the previously cached snapshot forward.
+                store_tokens(&merge_rotated_tokens(fresh, stored.snapshot.clone())).await?;
                 set_cached_signed_in(true);
                 Ok(access)
             }
@@ -1052,7 +1161,19 @@ async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
 /// is the HTTP status; `parsed_rejection` is true when the body was a
 /// well-formed envelope explicitly reporting failure.
 fn classify_refresh_failure(status: u16, parsed_rejection: bool) -> AppError {
-    if refresh_failure_is_transient(status, parsed_rejection) {
+    let transient = refresh_failure_is_transient(status, parsed_rejection);
+    // Log status codes and the classification only — never the body or token.
+    tracing::warn!(
+        status,
+        parsed_rejection,
+        classification = if transient {
+            "transient"
+        } else {
+            "session_expired"
+        },
+        "os accounts token refresh failed"
+    );
+    if transient {
         auth_refresh_unavailable_error()
     } else {
         session_expired_error()
@@ -1060,18 +1181,18 @@ fn classify_refresh_failure(status: u16, parsed_rejection: bool) -> AppError {
 }
 
 /// Whether a failed refresh is worth retrying. Server/infra wobble (5xx) and
-/// rate limiting (429) are transient; an explicit 2xx/4xx rejection of the
-/// refresh token is definitive. A 2xx body we could not parse is treated as a
-/// proxy shim (transient).
+/// rate limiting (429) are always transient. Otherwise a failure is definitive
+/// (session_expired) ONLY when the body parsed as a well-formed envelope
+/// rejection: a real "your refresh token is expired/revoked" answer from OS
+/// Accounts always arrives as a parsed envelope. An unparseable body — even on
+/// a 4xx — is far more likely an infra/edge outage (e.g. a platform "application
+/// not found" page served by the load balancer during a deploy or Railway
+/// hiccup) than a genuine token rejection; signing the user out on it would
+/// discard a still-valid rotating refresh token, so treat it as transient.
 fn refresh_failure_is_transient(status: u16, parsed_rejection: bool) -> bool {
     match status {
         500..=599 | 429 => true,
-        _ if parsed_rejection => false,
-        400..=499 => false,
-        // Unrecognised status (a 2xx we couldn't parse, or a 1xx/3xx that
-        // reqwest's redirect-following should never surface): lean toward
-        // transient rather than signing the user out on an unexpected shape.
-        _ => true,
+        _ => !parsed_rejection,
     }
 }
 
@@ -1101,23 +1222,58 @@ fn snapshot_failure_clears_session(error: &AppError) -> bool {
     matches!(error.code.as_str(), "session_expired" | "signed_out")
 }
 
-fn account_status_for_snapshot_failure(cfg: &Config, error: &AppError) -> AccountStatus {
-    if snapshot_failure_clears_session(error) {
+fn account_status_for_snapshot_failure(
+    cfg: &Config,
+    error: &AppError,
+    cached: Option<AccountSnapshot>,
+) -> AccountStatus {
+    let clears_session = snapshot_failure_clears_session(error);
+    // Log the error code and whether it cleared the session; no user data.
+    tracing::warn!(
+        error_code = %error.code,
+        cleared_session = clears_session,
+        "os accounts status snapshot failed"
+    );
+    if clears_session {
         set_cached_signed_in(false);
+    } else {
+        // A transient snapshot failure (OS Accounts briefly unreachable after
+        // an update restart) is not a sign-out: we still hold tokens.
+        set_cached_signed_in(true);
+    }
+    snapshot_failure_status(cfg, clears_session, cached)
+}
+
+/// Build the status returned when a snapshot fetch fails. A definitive failure
+/// (session cleared) drops to signed-out with no cached data. A transient one
+/// keeps the session signed in for both the frontend gate and native capture
+/// checks, surfacing the last-known snapshot when we have one so an outage
+/// doesn't blank the user's name and balance; otherwise details stay unknown.
+fn snapshot_failure_status(
+    cfg: &Config,
+    clears_session: bool,
+    cached: Option<AccountSnapshot>,
+) -> AccountStatus {
+    if clears_session {
         return AccountStatus {
             configured: cfg.configured(),
             ..Default::default()
         };
     }
-
-    // A transient snapshot failure (OS Accounts briefly unreachable after an
-    // update restart) is not a sign-out: we still hold tokens. Mark the session
-    // signed in for both the frontend gate and native capture checks, while
-    // leaving user/billing details unknown until a later status refresh succeeds.
-    set_cached_signed_in(true);
+    let (user, balance, subscription) = match cached {
+        Some(snapshot) => (
+            Some(snapshot.user),
+            Some(snapshot.balance),
+            snapshot.subscription,
+        ),
+        None => (None, None, None),
+    };
     AccountStatus {
         signed_in: true,
         configured: cfg.configured(),
+        user,
+        balance,
+        subscription,
         portal_url: portal_url(cfg),
         ..Default::default()
     }
@@ -1186,6 +1342,10 @@ pub async fn access_token() -> Result<String, AppError> {
                 // cached signed-in state so callers surface a retriable error
                 // instead of discarding work and dropping to a signed-out UI.
                 if !is_transient_auth_error(&error) {
+                    tracing::warn!(
+                        error_code = %error.code,
+                        "definitive refresh failure on access_token; clearing signed-in state"
+                    );
                     set_cached_signed_in(false);
                 }
                 Err(error)
@@ -1232,6 +1392,10 @@ pub async fn refresh_access_token() -> Result<String, AppError> {
             // Preserve the session on a transient upstream failure; only a
             // definitive rejection flips the cached state to signed-out.
             if !is_transient_auth_error(&error) {
+                tracing::warn!(
+                    error_code = %error.code,
+                    "definitive refresh failure on refresh_access_token; clearing signed-in state"
+                );
                 set_cached_signed_in(false);
             }
             Err(error)
@@ -1386,8 +1550,33 @@ fn net_error(e: reqwest::Error) -> AppError {
     AppError::new("network_error", message)
 }
 
-async fn store_tokens(pair: &TokenPair) -> Result<(), AppError> {
-    let json = serde_json::to_string(pair)
+/// Refresh the cached account snapshot, rewriting the keychain entry only when
+/// the snapshot actually changed. Status runs on every window focus, so a
+/// blind rewrite would churn the keychain each time; comparing first keeps the
+/// stored token pair untouched when nothing moved. Best-effort: a failed cache
+/// write must not fail the status call, so errors are swallowed after logging.
+async fn persist_snapshot_if_changed(snapshot: &AccountSnapshot) {
+    // Hold the refresh lock across the load-modify-write: refresh_locked
+    // rotates the token pair under this lock, and writing back a pair loaded
+    // before the rotation would resurrect a consumed refresh token (and sign
+    // the user out on the next refresh).
+    let _guard = refresh_lock().lock().await;
+    let Some(mut stored) = load_account().await else {
+        // Tokens vanished between the fetch and here (e.g. a concurrent
+        // logout); nothing to attach the snapshot to.
+        return;
+    };
+    if stored.snapshot.as_ref() == Some(snapshot) {
+        return;
+    }
+    stored.snapshot = Some(snapshot.clone());
+    if let Err(error) = store_tokens(&stored).await {
+        tracing::warn!(error_code = %error.code, "failed to cache account snapshot");
+    }
+}
+
+async fn store_tokens(account: &StoredAccount) -> Result<(), AppError> {
+    let json = serde_json::to_string(account)
         .map_err(|e| AppError::new("token_serialize_failed", e.to_string()))?;
     #[cfg(debug_assertions)]
     if use_dev_plaintext_token_store() {
@@ -1415,7 +1604,8 @@ async fn store_platform_tokens(_json: String) -> Result<(), AppError> {
     ))
 }
 
-async fn load_tokens() -> Option<TokenPair> {
+/// Load the full stored account (token pair + optional cached snapshot).
+async fn load_account() -> Option<StoredAccount> {
     #[cfg(debug_assertions)]
     if use_dev_plaintext_token_store() {
         return load_dev_plaintext_tokens().await;
@@ -1423,8 +1613,13 @@ async fn load_tokens() -> Option<TokenPair> {
     load_platform_tokens().await
 }
 
+/// Token-only convenience for callers that don't need the cached snapshot.
+async fn load_tokens() -> Option<TokenPair> {
+    load_account().await.map(|account| account.pair)
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-async fn load_platform_tokens() -> Option<TokenPair> {
+async fn load_platform_tokens() -> Option<StoredAccount> {
     let service = keychain_service().to_string();
     let raw = tokio::task::spawn_blocking(move || {
         keyring::Entry::new(&service, KEYCHAIN_USER)
@@ -1437,7 +1632,7 @@ async fn load_platform_tokens() -> Option<TokenPair> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-async fn load_platform_tokens() -> Option<TokenPair> {
+async fn load_platform_tokens() -> Option<StoredAccount> {
     None
 }
 
@@ -1538,7 +1733,7 @@ async fn store_dev_plaintext_tokens(json: String) -> Result<(), AppError> {
 }
 
 #[cfg(debug_assertions)]
-async fn load_dev_plaintext_tokens() -> Option<TokenPair> {
+async fn load_dev_plaintext_tokens() -> Option<StoredAccount> {
     let raw = tokio::task::spawn_blocking(|| std::fs::read_to_string(dev_plaintext_token_path()))
         .await
         .ok()?
@@ -1752,13 +1947,22 @@ mod tests {
     }
 
     #[test]
-    fn refresh_client_rejection_is_definitive() {
-        // An expired/revoked refresh token comes back as a 4xx with an explicit
-        // failure envelope — the user must sign in again.
+    fn refresh_client_rejection_is_definitive_only_when_parsed() {
+        // An expired/revoked refresh token comes back with an explicit failure
+        // envelope — the user must sign in again.
         assert!(!refresh_failure_is_transient(400, true));
         assert!(!refresh_failure_is_transient(401, true));
-        // A 4xx with no parseable envelope is still a definitive rejection.
-        assert!(!refresh_failure_is_transient(403, false));
+    }
+
+    #[test]
+    fn refresh_unparseable_4xx_is_transient() {
+        // A 4xx with no parseable envelope is an infra/edge error page (e.g. a
+        // platform "application not found" 404 during an outage), not a genuine
+        // token rejection — keep the session and retry.
+        assert!(refresh_failure_is_transient(404, false));
+        assert!(refresh_failure_is_transient(400, false));
+        assert!(refresh_failure_is_transient(401, false));
+        assert!(refresh_failure_is_transient(403, false));
     }
 
     #[test]
@@ -1781,6 +1985,16 @@ mod tests {
             AUTH_REFRESH_UNAVAILABLE_CODE
         );
         assert_eq!(classify_refresh_failure(401, true).code, "session_expired");
+        // A parsed 5xx rejection is still transient, not a sign-out.
+        assert_eq!(
+            classify_refresh_failure(503, true).code,
+            AUTH_REFRESH_UNAVAILABLE_CODE
+        );
+        // An unparseable 404 (edge outage) keeps the session.
+        assert_eq!(
+            classify_refresh_failure(404, false).code,
+            AUTH_REFRESH_UNAVAILABLE_CODE
+        );
     }
 
     #[test]
@@ -1825,7 +2039,8 @@ mod tests {
             loopback_port: DEFAULT_LOOPBACK_PORT,
         };
 
-        let status = account_status_for_snapshot_failure(&cfg, &auth_refresh_unavailable_error());
+        let status =
+            account_status_for_snapshot_failure(&cfg, &auth_refresh_unavailable_error(), None);
 
         assert!(status.signed_in);
         assert!(status.configured);
@@ -1847,7 +2062,7 @@ mod tests {
             loopback_port: DEFAULT_LOOPBACK_PORT,
         };
 
-        let status = account_status_for_snapshot_failure(&cfg, &session_expired_error());
+        let status = account_status_for_snapshot_failure(&cfg, &session_expired_error(), None);
 
         assert!(!status.signed_in);
         assert!(status.configured);
@@ -1869,5 +2084,156 @@ mod tests {
         let error = terminal_refresh_error(session_expired_error(), None);
 
         assert_eq!(error.code, "session_expired");
+    }
+
+    fn sample_snapshot() -> AccountSnapshot {
+        AccountSnapshot {
+            user: AccountUser {
+                id: "usr_abc".to_string(),
+                handle: "june".to_string(),
+                email: Some("june@example.com".to_string()),
+                display_name: Some("June User".to_string()),
+                avatar_url: None,
+            },
+            balance: AccountBalance {
+                credits: 4200,
+                usd_millis: 1000,
+                usage_remaining_percent: Some(80),
+            },
+            subscription: Some(AccountSubscription {
+                subscribed: true,
+                status: Some("active".to_string()),
+                plan: Some("pro".to_string()),
+                plan_credits: Some(5000),
+                trial_end: None,
+                current_period_end: None,
+                trial_period_days: None,
+            }),
+        }
+    }
+
+    fn test_cfg() -> Config {
+        Config {
+            accounts_url: "https://accounts.opensoftware.co/".to_string(),
+            api_url: "https://api.accounts.opensoftware.co".to_string(),
+            client_id: "ocl_test".to_string(),
+            loopback_port: DEFAULT_LOOPBACK_PORT,
+        }
+    }
+
+    #[test]
+    fn old_format_entry_parses_with_no_cached_snapshot() {
+        // Entries written before caching hold only the token pair; they must
+        // keep parsing so an upgrade doesn't force a re-login.
+        let stored: StoredAccount =
+            serde_json::from_str(r#"{"access_token":"a","refresh_token":"r"}"#)
+                .expect("old-format entry parses");
+        assert_eq!(stored.pair.access_token, "a");
+        assert_eq!(stored.pair.refresh_token, "r");
+        assert!(stored.snapshot.is_none());
+    }
+
+    #[test]
+    fn new_format_entry_round_trips_with_a_snapshot() {
+        let stored = StoredAccount::new(
+            TokenPair {
+                access_token: "a".to_string(),
+                refresh_token: "r".to_string(),
+            },
+            Some(sample_snapshot()),
+        );
+        let json = serde_json::to_string(&stored).expect("serialize");
+        // Snapshot rides alongside the flattened token pair in one flat object.
+        assert!(json.contains("\"access_token\":\"a\""));
+        assert!(json.contains("\"snapshot\""));
+
+        let parsed: StoredAccount = serde_json::from_str(&json).expect("round-trip");
+        assert_eq!(parsed.pair.access_token, "a");
+        assert!(parsed.snapshot.as_ref() == Some(&sample_snapshot()));
+    }
+
+    #[test]
+    fn token_pair_deserialize_ignores_cache_fields_from_the_wire() {
+        // The refresh/exchange wire envelope decodes into TokenPair directly;
+        // it must ignore any snapshot field so cache shape never leaks into wire
+        // expectations.
+        let pair: TokenPair = serde_json::from_str(
+            r#"{"access_token":"a","refresh_token":"r","snapshot":{"user":{}}}"#,
+        )
+        .expect("wire pair parses despite extra fields");
+        assert_eq!(pair.access_token, "a");
+    }
+
+    #[test]
+    fn rotating_tokens_preserves_the_cached_snapshot() {
+        // Refresh rotates the pair but not the snapshot: carry it forward.
+        let fresh = TokenPair {
+            access_token: "a2".to_string(),
+            refresh_token: "r2".to_string(),
+        };
+        let merged = merge_rotated_tokens(fresh, Some(sample_snapshot()));
+        assert_eq!(merged.pair.access_token, "a2");
+        assert_eq!(merged.pair.refresh_token, "r2");
+        assert!(merged.snapshot.as_ref() == Some(&sample_snapshot()));
+    }
+
+    #[test]
+    fn rotating_tokens_without_a_prior_snapshot_stays_empty() {
+        let fresh = TokenPair {
+            access_token: "a2".to_string(),
+            refresh_token: "r2".to_string(),
+        };
+        let merged = merge_rotated_tokens(fresh, None);
+        assert!(merged.snapshot.is_none());
+    }
+
+    #[test]
+    fn snapshot_equality_detects_unchanged_snapshots() {
+        // Drives the write-if-changed guard: an identical snapshot must compare
+        // equal so status doesn't rewrite the keychain on every window focus.
+        let a = sample_snapshot();
+        let b = sample_snapshot();
+        assert!(a == b);
+
+        let mut changed = sample_snapshot();
+        changed.balance.credits = 0;
+        assert!(a != changed);
+    }
+
+    #[test]
+    fn transient_snapshot_failure_surfaces_the_cached_snapshot() {
+        // During an outage the user keeps seeing their last-known identity and
+        // balance instead of blank fallbacks.
+        let status = snapshot_failure_status(&test_cfg(), false, Some(sample_snapshot()));
+
+        assert!(status.signed_in);
+        assert!(status.configured);
+        assert_eq!(
+            status.portal_url.as_deref(),
+            Some("https://accounts.opensoftware.co")
+        );
+        assert_eq!(
+            status.user.as_ref().map(|u| u.handle.as_str()),
+            Some("june")
+        );
+        assert_eq!(status.balance.as_ref().map(|b| b.credits), Some(4200));
+        assert_eq!(
+            status.subscription.as_ref().map(|s| s.subscribed),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn definitive_snapshot_failure_ignores_any_cached_snapshot() {
+        // A cleared session drops to signed-out with nothing, even if a cache
+        // happened to be loaded.
+        let status = snapshot_failure_status(&test_cfg(), true, Some(sample_snapshot()));
+
+        assert!(!status.signed_in);
+        assert!(status.configured);
+        assert!(status.user.is_none());
+        assert!(status.balance.is_none());
+        assert!(status.subscription.is_none());
+        assert!(status.portal_url.is_none());
     }
 }
