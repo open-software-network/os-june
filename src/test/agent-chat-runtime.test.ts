@@ -1,15 +1,115 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyHermesEvent,
+  isTerminalHermesEvent,
+  type JuneHermesEvent,
+} from "../lib/hermes-control-plane";
+import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
   displayedComposerUserMessageText,
   repairContractionSpacing,
-  toolEventKey,
 } from "../lib/agent-chat-runtime";
 import { categoryPrompt } from "../lib/issue-report-prompt";
 import { explicitSkillInvocationPrompt } from "../lib/skill-slash-commands";
 import type { AgentMessageDto, HermesSessionMessage } from "../lib/tauri";
+
+const DEFAULT_RECEIVED_AT = "2026-06-04T10:00:00.000Z";
+
+type TranscriptEvent = Extract<JuneHermesEvent, { kind: "transcript" }>;
+type ReasoningEvent = Extract<JuneHermesEvent, { kind: "reasoning" }>;
+type ToolEvent = Extract<JuneHermesEvent, { kind: "tool" }>;
+type PendingActionEvent = Extract<JuneHermesEvent, { kind: "pending_action" }>;
+type PendingActionResolutionEvent = Extract<JuneHermesEvent, { kind: "pending_action_resolution" }>;
+type BackgroundActivityEvent = Extract<JuneHermesEvent, { kind: "background_activity" }>;
+type ErrorEvent = Extract<JuneHermesEvent, { kind: "error" }>;
+
+function transcriptEvent(event: Partial<TranscriptEvent> = {}): TranscriptEvent {
+  return {
+    kind: "transcript",
+    sessionId: "",
+    complete: false,
+    failed: false,
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function reasoningEvent(
+  event: Pick<ReasoningEvent, "delta"> & Partial<ReasoningEvent>,
+): ReasoningEvent {
+  return {
+    kind: "reasoning",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function toolEvent(event: Partial<ToolEvent> & Pick<ToolEvent, "key">): ToolEvent {
+  return {
+    kind: "tool",
+    sessionId: "",
+    phase: "progress",
+    text: "",
+    isClarify: false,
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function pendingActionEvent(
+  event: Pick<PendingActionEvent, "action"> & Partial<PendingActionEvent>,
+): PendingActionEvent {
+  return {
+    kind: "pending_action",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function pendingActionResolutionEvent(
+  event: Pick<PendingActionResolutionEvent, "action"> & Partial<PendingActionResolutionEvent>,
+): PendingActionResolutionEvent {
+  return {
+    kind: "pending_action_resolution",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function backgroundActivityEvent(
+  event: Omit<Partial<BackgroundActivityEvent>, "activity"> & {
+    activity: Partial<BackgroundActivityEvent["activity"]> &
+      Pick<BackgroundActivityEvent["activity"], "phase">;
+  },
+): BackgroundActivityEvent {
+  const receivedAt = event.receivedAt ?? DEFAULT_RECEIVED_AT;
+  const { activity, ...rest } = event;
+  return {
+    kind: "background_activity",
+    sessionId: "",
+    receivedAt,
+    ...rest,
+    activity: {
+      ...activity,
+      subagentId: activity.subagentId ?? "subagent",
+      lastEventAt: activity.lastEventAt ?? receivedAt,
+    },
+  };
+}
+
+function errorEvent(event: Partial<ErrorEvent> = {}): ErrorEvent {
+  return {
+    kind: "error",
+    message: "The agent reported an error.",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
 
 describe("repairContractionSpacing", () => {
   it("re-inserts the space the gateway drops after a contraction", () => {
@@ -258,11 +358,13 @@ describe("Agent chat runtime", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
-      Array.from({ length: 12 }, (_, index) => ({
-        type: "message.complete",
-        receivedAt,
-        payload: { text: `Reply ${index}` },
-      })),
+      Array.from({ length: 12 }, (_, index) =>
+        transcriptEvent({
+          receivedAt,
+          complete: true,
+          delta: `Reply ${index}`,
+        }),
+      ),
     );
 
     expect(
@@ -491,21 +593,17 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "thinking.delta",
+        }),
+        reasoningEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "I should prefer" },
-        },
-        {
-          type: "thinking.delta",
+          delta: "I should prefer",
+        }),
+        reasoningEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "ably use Homebrew." },
-        },
+          delta: "ably use Homebrew.",
+        }),
       ],
     );
 
@@ -523,21 +621,24 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-1", name: "clarify" },
-        },
-        {
-          type: "clarify.request",
-          session_id: "runtime-session",
+          name: "clarify",
+          isClarify: true,
+          sanitizedPayload: { tool_id: "tool-1", name: "clarify" },
+        }),
+        pendingActionEvent({
+          sessionId: "runtime-session",
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: {
-            request_id: "clarify-1",
+          action: {
+            kind: "clarify",
+            requestId: "clarify-1",
             question: "Which email provider should I configure?",
             choices: ["Gmail", "Fastmail"],
           },
-        },
+        }),
       ],
     );
 
@@ -558,25 +659,33 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "clarify.request",
+        pendingActionEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
-            request_id: "clarify-1",
+          action: {
+            kind: "clarify",
+            requestId: "clarify-1",
             question: "Use Gmail?",
             choices: ["Yes", "No"],
           },
-        },
-        {
-          type: "clarify.response",
+        }),
+        pendingActionResolutionEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { request_id: "clarify-1", answer: "Yes" },
-        },
-        {
-          type: "tool.complete",
+          action: {
+            kind: "clarify",
+            requestId: "clarify-1",
+            question: "",
+            choices: [],
+            answer: "Yes",
+          },
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: { tool_id: "tool-1", name: "clarify" },
-        },
+          name: "clarify",
+          isClarify: true,
+          sanitizedPayload: { tool_id: "tool-1", name: "clarify" },
+        }),
       ],
     );
 
@@ -597,23 +706,29 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "approval.request",
-          session_id: "runtime-session",
+        pendingActionEvent({
+          sessionId: "runtime-session",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
-            request_id: "approval-1",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
             command: "python script.py",
             description: "Run this command?",
-            allow_permanent: true,
+            allowPermanent: true,
           },
-        },
-        {
-          type: "approval.response",
-          session_id: "runtime-session",
+        }),
+        pendingActionResolutionEvent({
+          sessionId: "runtime-session",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { request_id: "approval-1", choice: "session" },
-        },
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "",
+            description: "",
+            allowPermanent: true,
+            choice: "session",
+          },
+        }),
       ],
     );
 
@@ -636,26 +751,21 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "Hello" },
-        },
-        {
-          type: "message.delta",
+          delta: "Hello",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "\n\n" },
-        },
-        {
-          type: "message.delta",
+          delta: "\n\n",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.300Z",
-          payload: { text: "World" },
-        },
+          delta: "World",
+        }),
       ],
     );
 
@@ -667,21 +777,17 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "no" },
-        },
-        {
-          type: "message.delta",
+          delta: "no",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "no" },
-        },
+          delta: "no",
+        }),
       ],
     );
 
@@ -716,21 +822,18 @@ describe("Agent chat runtime", () => {
 
   it("returns the raw completed message text for persistence", () => {
     const text = completedHermesMessageText([
-      {
-        type: "message.start",
+      transcriptEvent({
         receivedAt: "2026-06-04T10:00:00.000Z",
-        payload: {},
-      },
-      {
-        type: "message.delta",
+      }),
+      transcriptEvent({
         receivedAt: "2026-06-04T10:00:00.100Z",
-        payload: { text: "Yes.\n\nYes." },
-      },
-      {
-        type: "message.complete",
+        delta: "Yes.\n\nYes.",
+      }),
+      transcriptEvent({
         receivedAt: "2026-06-04T10:00:01.000Z",
-        payload: { text: "Yes.\n\nYes." },
-      },
+        complete: true,
+        delta: "Yes.\n\nYes.",
+      }),
     ]);
 
     expect(text).toBe("Yes.\n\nYes.");
@@ -741,36 +844,36 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "Let me check." },
-        },
-        {
-          type: "tool.start",
+          delta: "Let me check.",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { tool_id: "tool-1", name: "search" },
-        },
-        {
-          type: "tool.complete",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:00.300Z",
-          payload: { tool_id: "tool-1", name: "search" },
-        },
-        {
-          type: "message.delta",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.400Z",
-          payload: { text: "Here is the answer." },
-        },
-        {
-          type: "message.complete",
+          delta: "Here is the answer.",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "Let me check.Here is the answer." },
-        },
+          complete: true,
+          delta: "Let me check.Here is the answer.",
+        }),
       ],
     );
 
@@ -787,26 +890,26 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Partial garble" },
-        },
-        {
-          type: "tool.start",
+          delta: "Partial garble",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { tool_id: "tool-1", name: "search" },
-        },
-        {
-          type: "message.delta",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "more" },
-        },
-        {
-          type: "message.complete",
+          delta: "more",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "The authoritative answer." },
-        },
+          complete: true,
+          delta: "The authoritative answer.",
+        }),
       ],
     );
 
@@ -821,16 +924,15 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Let me explore it." },
-        },
-        {
-          type: "message.complete",
+          delta: "Let me explore it.",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "Let me exploreit." },
-        },
+          complete: true,
+          delta: "Let me exploreit.",
+        }),
       ],
     );
 
@@ -844,16 +946,15 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "return\nvalue" },
-        },
-        {
-          type: "message.complete",
+          delta: "return\nvalue",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "return value" },
-        },
+          complete: true,
+          delta: "return value",
+        }),
       ],
     );
 
@@ -867,16 +968,15 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Here is the full answer." },
-        },
-        {
-          type: "message.complete",
+          delta: "Here is the full answer.",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "Here is the full" },
-        },
+          complete: true,
+          delta: "Here is the full",
+        }),
       ],
     );
 
@@ -891,10 +991,10 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        { type: "message.start", receivedAt, payload: {} },
-        { type: "message.complete", receivedAt, payload: { text: "One" } },
-        { type: "message.start", receivedAt, payload: {} },
-        { type: "message.complete", receivedAt, payload: { text: "Two" } },
+        transcriptEvent({ receivedAt }),
+        transcriptEvent({ receivedAt, complete: true, delta: "One" }),
+        transcriptEvent({ receivedAt }),
+        transcriptEvent({ receivedAt, complete: true, delta: "Two" }),
       ],
     );
 
@@ -903,22 +1003,32 @@ describe("Agent chat runtime", () => {
   });
 
   it("keys tool events by tool_id so terminal events update the same part", () => {
-    expect(toolEventKey({ type: "tool.start", payload: { tool_id: "tool-9" } })).toBe("tool-9");
+    const event = toolEvent({
+      key: "tool-9",
+      phase: "start",
+      receivedAt: "2026-06-04T10:00:00.000Z",
+      sanitizedPayload: { tool_id: "tool-9" },
+    });
+    expect(event.key).toBe("tool-9");
 
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-9",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-9", name: "search", text: "Searching" },
-        },
-        {
-          type: "tool.complete",
+          name: "search",
+          text: "Searching",
+          sanitizedPayload: { tool_id: "tool-9", name: "search", text: "Searching" },
+        }),
+        toolEvent({
+          key: "tool-9",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { tool_id: "tool-9" },
-        },
+          sanitizedPayload: { tool_id: "tool-9" },
+        }),
       ],
     );
 
@@ -927,21 +1037,56 @@ describe("Agent chat runtime", () => {
     expect(toolParts?.[0]?.status).toBe("complete");
   });
 
+  it("ignores message.completed for transcript turns while keeping it terminal", () => {
+    const completed = classifyHermesEvent({
+      type: "message.completed",
+      session_id: "runtime-session",
+      payload: { text: "Should not render" },
+    });
+
+    expect(isTerminalHermesEvent(completed)).toBe(true);
+    expect(buildAgentChatTurns([], [], [completed])).toEqual([]);
+  });
+
+  it("does not duplicate assistant text when message.completed follows message.complete", () => {
+    const complete = classifyHermesEvent({
+      type: "message.complete",
+      session_id: "runtime-session",
+      payload: { text: "Done." },
+    });
+    const completed = classifyHermesEvent({
+      type: "message.completed",
+      session_id: "runtime-session",
+      payload: { text: "Done." },
+    });
+
+    const turns = buildAgentChatTurns([], [], [complete, completed]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Done.", status: "complete" }]);
+  });
+
   it("does not merge same-name tool calls with distinct tool ids", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-a",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-a", name: "search", text: "First" },
-        },
-        {
-          type: "tool.start",
+          name: "search",
+          text: "First",
+          sanitizedPayload: { tool_id: "tool-a", name: "search", text: "First" },
+        }),
+        toolEvent({
+          key: "tool-b",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { tool_id: "tool-b", name: "search", text: "Second" },
-        },
+          name: "search",
+          text: "Second",
+          sanitizedPayload: { tool_id: "tool-b", name: "search", text: "Second" },
+        }),
       ],
     );
 
@@ -1065,11 +1210,14 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "tool.complete",
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-1", name: "search", text: "Done" },
-        },
+          name: "search",
+          text: "Done",
+          sanitizedPayload: { tool_id: "tool-1", name: "search", text: "Done" },
+        }),
       ],
     );
 
@@ -1081,15 +1229,17 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
+          name: "terminal",
+          sanitizedPayload: {
             tool_id: "tool-1",
             name: "terminal",
             command: "curl https://example.com/docs",
           },
-        },
+        }),
       ],
     );
 
@@ -1105,31 +1255,37 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
+          name: "terminal",
+          sanitizedPayload: {
             tool_id: "tool-1",
             name: "terminal",
             command: "curl https://example.com/docs",
           },
-        },
-        {
-          type: "tool.progress",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "progress",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: {
+          text: "Fetched 42 lines",
+          sanitizedPayload: {
             tool_id: "tool-1",
             output: "Fetched 42 lines",
           },
-        },
-        {
-          type: "tool.complete",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: {
+          text: "Done",
+          sanitizedPayload: {
             tool_id: "tool-1",
             result: "Done",
           },
-        },
+        }),
       ],
     );
 
@@ -1181,21 +1337,16 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "Working on it" },
-        },
-        {
-          type: "error",
+          delta: "Working on it",
+        }),
+        errorEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: {},
-        },
+        }),
       ],
     );
 
@@ -1219,13 +1370,25 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "error",
+        errorEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { message: CREDITS_ERROR },
-        },
+          message: CREDITS_ERROR,
+        }),
       ],
     );
+
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
+  });
+
+  it("folds a summary-only classified error into the same notice path", () => {
+    const event = classifyHermesEvent({
+      type: "error",
+      session_id: "runtime-session",
+      payload: { summary: CREDITS_ERROR },
+    });
+    expect(event.kind).toBe("error");
+
+    const turns = buildAgentChatTurns([], [], [event]);
 
     expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
@@ -1247,16 +1410,16 @@ describe("Agent chat runtime", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Let me check" },
-        },
-        {
-          type: "message.complete",
+          delta: "Let me check",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: CREDITS_ERROR, status: "error" },
-        },
+          complete: true,
+          delta: CREDITS_ERROR,
+          failed: true,
+        }),
       ],
     );
 
@@ -1267,11 +1430,12 @@ describe("Agent chat runtime", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
-        {
-          type: "message.complete",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: CREDITS_ERROR, status: "error" },
-        },
+          complete: true,
+          delta: CREDITS_ERROR,
+          failed: true,
+        }),
       ],
     );
 
@@ -1302,11 +1466,10 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "error",
+        errorEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { message: OVERFLOW_ERROR },
-        },
+          message: OVERFLOW_ERROR,
+        }),
       ],
     );
 
@@ -1324,11 +1487,10 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "error",
+        errorEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { message: text },
-        },
+          message: text,
+        }),
       ],
     );
 
@@ -1339,11 +1501,12 @@ describe("Agent chat runtime", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
-        {
-          type: "message.complete",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: OVERFLOW_ERROR, status: "error" },
-        },
+          complete: true,
+          delta: OVERFLOW_ERROR,
+          failed: true,
+        }),
       ],
     );
 
@@ -1429,11 +1592,12 @@ describe("Agent chat runtime", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
-        {
-          type: "message.complete",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: prose, status: "complete" },
-        },
+          complete: true,
+          delta: prose,
+          failed: false,
+        }),
       ],
     );
 
@@ -1445,44 +1609,44 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
-            subagent_id: "sa-1",
-            task_index: 0,
-            task_count: 2,
+          activity: {
+            subagentId: "sa-1",
+            phase: "start",
+            taskIndex: 0,
+            taskCount: 2,
             goal: "Write the privacy page",
           },
-        },
-        {
-          type: "subagent.start",
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.050Z",
-          payload: {
-            subagent_id: "sa-2",
-            task_index: 1,
-            task_count: 2,
+          activity: {
+            subagentId: "sa-2",
+            phase: "start",
+            taskIndex: 1,
+            taskCount: 2,
             goal: "Write the terms page",
           },
-        },
-        {
-          type: "subagent.tool",
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: {
-            subagent_id: "sa-1",
+          activity: {
+            subagentId: "sa-1",
+            phase: "tool",
             goal: "Write the privacy page",
-            tool_preview: "edit privacy.tsx",
+            resultPreview: "edit privacy.tsx",
           },
-        },
-        {
-          type: "subagent.complete",
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: {
-            subagent_id: "sa-1",
+          activity: {
+            subagentId: "sa-1",
+            phase: "complete",
             goal: "Write the privacy page",
-            summary: "Done: 1 file written",
+            resultPreview: "Done: 1 file written",
           },
-        },
+        }),
       ],
     );
 
@@ -1509,17 +1673,15 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
-        },
+          activity: { subagentId: "sa-1", phase: "start", goal: "Write the privacy page" },
+        }),
         // A tool event carrying only the id + preview, no goal.
-        {
-          type: "subagent.tool",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { subagent_id: "sa-1", tool_preview: "edit privacy.tsx" },
-        },
+          activity: { subagentId: "sa-1", phase: "tool", resultPreview: "edit privacy.tsx" },
+        }),
       ],
     );
     const tool = turns[0]?.parts.find((part) => part.type === "tool");
@@ -1535,17 +1697,15 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
-        },
+          activity: { subagentId: "sa-1", phase: "start", goal: "Write the privacy page" },
+        }),
         // A subtype not in the documented union; must still terminate the row.
-        {
-          type: "subagent.timeout",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:05.000Z",
-          payload: { subagent_id: "sa-1" },
-        },
+          activity: { subagentId: "sa-1", phase: "error" },
+        }),
       ],
     );
     const tool = turns[0]?.parts.find((part) => part.type === "tool");
@@ -1555,21 +1715,41 @@ describe("Agent chat runtime", () => {
     });
   });
 
+  it("keeps blocked subagent rows running because they can resume", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        backgroundActivityEvent({
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          activity: { subagentId: "sa-1", phase: "start", goal: "Write the privacy page" },
+        }),
+        backgroundActivityEvent({
+          receivedAt: "2026-06-04T10:00:05.000Z",
+          activity: { subagentId: "sa-1", phase: "blocked" },
+        }),
+      ],
+    );
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Subagent: Write the privacy page",
+      status: "running",
+    });
+  });
+
   it("labels a goal-less subagent by its task position and marks failures", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { task_index: 2, task_count: 5 },
-        },
-        {
-          type: "subagent.complete",
+          activity: { phase: "start", taskIndex: 2, taskCount: 5 },
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { task_index: 2, task_count: 5, status: "failed" },
-        },
+          activity: { phase: "error", taskIndex: 2, taskCount: 5 },
+        }),
       ],
     );
     const tool = turns[0]?.parts.find((part) => part.type === "tool");

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { classifyHermesEvent } from "../lib/hermes-control-plane";
+import { classifyHermesEvent, createSteeringEvent } from "../lib/hermes-control-plane";
 import type { JuneHermesEvent } from "../lib/hermes-control-plane";
 import { ACTIVITY_SESSIONS_CAP, createHermesActivityStore } from "../lib/hermes-activity-store";
 
@@ -70,6 +70,49 @@ describe("createHermesActivityStore", () => {
     expect(record?.pendingActionCount).toBe(2);
   });
 
+  it("a pending action resolution moves a non-terminal session back to running", () => {
+    const store = createHermesActivityStore();
+    store.record(
+      classified("clarify.request", "s1", {
+        request_id: "r1",
+        question: "Which file?",
+      }),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("waiting");
+
+    store.record(
+      classified("clarify.response", "s1", {
+        request_id: "r1",
+        answer: "vite.config.ts",
+      }),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("running");
+  });
+
+  it("a failed tool event clears the in-flight tool", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    expect(store.getRecord("s1")?.currentTool).toBe("bash");
+
+    store.record(classified("tool.error", "s1", { tool_name: "bash" }), "sandboxed");
+    const record = store.getRecord("s1");
+    expect(record?.phase).toBe("running");
+    expect(record?.currentTool).toBeUndefined();
+  });
+
+  it("a steering event is a no-op for activity phase", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    store.record(
+      createSteeringEvent("s1", "focus on tests", new Date().toISOString()),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.getRecord("s1")?.currentTool).toBe("bash");
+  });
+
   it("completion flips the session to phase 'complete' but keeps the row", () => {
     const store = createHermesActivityStore();
     store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
@@ -83,6 +126,17 @@ describe("createHermesActivityStore", () => {
     expect(record).toBeDefined();
     expect(record?.phase).toBe("complete");
     // A completed session is no longer "active".
+    expect(store.activeCount()).toBe(0);
+  });
+
+  it("message completion flips the session to phase 'complete'", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("message.start", "s1"), "sandboxed");
+    expect(store.getRecord("s1")?.phase).toBe("running");
+
+    store.record(classified("message.complete", "s1", { text: "Done" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("complete");
     expect(store.activeCount()).toBe(0);
   });
 
@@ -151,6 +205,17 @@ describe("createHermesActivityStore", () => {
     store.record(classified("subagent.error", "s1", { subagent_id: "a1" }), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("error");
     expect(store.activeCount()).toBe(0);
+  });
+
+  it("lets parent transcript streaming recover visibility after a subagent error", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("subagent.error", "s1", { subagent_id: "a1" }), "sandboxed");
+    expect(store.getRecord("s1")?.phase).toBe("error");
+
+    store.record(classified("message.delta", "s1", { delta: "Still streaming" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
   });
 
   it("keeps the parent in 'background' while any sibling subagent is still working", () => {
@@ -245,5 +310,22 @@ describe("createHermesActivityStore", () => {
     expect(store.getRecords().length).toBeLessThanOrEqual(ACTIVITY_SESSIONS_CAP);
     // The very first session should have been evicted.
     expect(store.getRecord("s0")).toBeUndefined();
+  });
+
+  it("evicts completed rows before an older live row when over capacity", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "running", { tool_name: "bash" }), "sandboxed");
+    advance(1);
+
+    for (let i = 0; i < ACTIVITY_SESSIONS_CAP; i++) {
+      const sessionId = `complete-${i}`;
+      store.record(classified("tool.start", sessionId, { tool_name: "bash" }), "sandboxed");
+      store.record(classified("session.complete", sessionId), "sandboxed");
+      advance(1);
+    }
+
+    expect(store.getRecords()).toHaveLength(ACTIVITY_SESSIONS_CAP);
+    expect(store.getRecord("running")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
   });
 });

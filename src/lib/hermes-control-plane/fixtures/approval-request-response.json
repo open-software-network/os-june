@@ -3,7 +3,7 @@
   "hermesVersion": "v2026.6.19",
   "recordedFrom": "tui-gateway",
   "sanitized": true,
-  "_note": "An approval prompt and its resolution. approval.request -> pending_action/approval. approval.response is NOT a new pending action; the classifier currently routes it to unsupported (locked here as honest current behavior).",
+  "_note": "An approval prompt and its resolution. approval.request -> pending_action/approval. approval.response -> pending_action_resolution/approval.",
   "frames": [
     {
       "type": "approval.request",

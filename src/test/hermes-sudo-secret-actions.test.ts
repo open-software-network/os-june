@@ -1,24 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { buildAgentChatTurns } from "../lib/agent-chat-runtime";
-import sudoFixture from "../lib/hermes-control-plane/fixtures/sudo-request-response.json";
-import secretFixture from "../lib/hermes-control-plane/fixtures/secret-request-response.json";
+import type { JuneHermesEvent } from "../lib/hermes-control-plane";
 
-// The feature-05 fixtures carry the canonical wire shapes. The secret fixture
-// deliberately includes a fake secret value in its request payload; the
-// runtime must never surface it on a part.
-const SECRET_VALUE_PLACEHOLDER = secretFixture._secretValuePlaceholder;
+const SECRET_VALUE_PLACEHOLDER = "sk-FAKE-PLACEHOLDER-secret-value-do-not-use-0000000000";
 
-function liveFrame(
-  frame: { type: string; session_id?: string; payload?: unknown },
-  receivedAt: string,
+function pendingAction(event: Extract<JuneHermesEvent, { kind: "pending_action" }>) {
+  return event;
+}
+
+function pendingActionResolution(
+  event: Extract<JuneHermesEvent, { kind: "pending_action_resolution" }>,
 ) {
-  return { ...frame, receivedAt };
+  return event;
 }
 
 describe("Hermes sudo pending action — runtime", () => {
   it("renders a live sudo.request as a pending sudo chat part", () => {
-    const [request] = sudoFixture.frames;
-    const turns = buildAgentChatTurns([], [], [liveFrame(request, "2026-06-04T10:00:00.000Z")]);
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingAction({
+          kind: "pending_action",
+          sessionId: "sess-sudo",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          action: {
+            kind: "sudo",
+            requestId: "su-1",
+            command: "apt-get install ripgrep",
+            reason: "ripgrep is required to search the dependency tree",
+            mode: "unrestricted",
+          },
+        }),
+      ],
+    );
 
     expect(turns[0]?.parts).toEqual([
       {
@@ -34,13 +49,33 @@ describe("Hermes sudo pending action — runtime", () => {
   });
 
   it("marks a sudo request resolved after a sudo.response", () => {
-    const [request, response] = sudoFixture.frames;
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        liveFrame(request, "2026-06-04T10:00:00.000Z"),
-        liveFrame(response, "2026-06-04T10:00:01.000Z"),
+        pendingAction({
+          kind: "pending_action",
+          sessionId: "sess-sudo",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          action: {
+            kind: "sudo",
+            requestId: "su-1",
+            command: "apt-get install ripgrep",
+            reason: "ripgrep is required to search the dependency tree",
+            mode: "unrestricted",
+          },
+        }),
+        pendingActionResolution({
+          kind: "pending_action_resolution",
+          sessionId: "sess-sudo",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          action: {
+            kind: "sudo",
+            requestId: "su-1",
+            mode: "unrestricted",
+            granted: true,
+          },
+        }),
       ],
     );
 
@@ -58,10 +93,15 @@ describe("Hermes sudo pending action — runtime", () => {
       [],
       [],
       [
-        liveFrame(
-          { type: "sudo.request", payload: { request_id: "su-bare" } },
-          "2026-06-04T10:00:00.000Z",
-        ),
+        pendingAction({
+          kind: "pending_action",
+          sessionId: "",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          action: {
+            kind: "sudo",
+            requestId: "su-bare",
+          },
+        }),
       ],
     );
 
@@ -79,8 +119,24 @@ describe("Hermes sudo pending action — runtime", () => {
 
 describe("Hermes secret pending action — runtime", () => {
   it("renders a live secret.request as a pending secret chat part with metadata only", () => {
-    const [request] = secretFixture.frames;
-    const turns = buildAgentChatTurns([], [], [liveFrame(request, "2026-06-04T10:00:00.000Z")]);
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingAction({
+          kind: "pending_action",
+          sessionId: "sess-secret",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          action: {
+            kind: "secret",
+            requestId: "se-1",
+            keyName: "OPENAI_API_KEY",
+            reason: "Needed to call the OpenAI API on your behalf",
+            redacted: true,
+          },
+        }),
+      ],
+    );
 
     expect(turns[0]?.parts).toEqual([
       {
@@ -95,8 +151,24 @@ describe("Hermes secret pending action — runtime", () => {
   });
 
   it("never carries the secret value onto the part even when the gateway leaks it", () => {
-    const [request] = secretFixture.frames;
-    const turns = buildAgentChatTurns([], [], [liveFrame(request, "2026-06-04T10:00:00.000Z")]);
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingAction({
+          kind: "pending_action",
+          sessionId: "sess-secret",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          action: {
+            kind: "secret",
+            requestId: "se-1",
+            keyName: "OPENAI_API_KEY",
+            reason: "Needed to call the OpenAI API on your behalf",
+            redacted: true,
+          },
+        }),
+      ],
+    );
 
     // The whole serialized turn tree must be free of the leaked value.
     const serialized = JSON.stringify(turns);
@@ -105,13 +177,32 @@ describe("Hermes secret pending action — runtime", () => {
   });
 
   it("marks a secret request resolved after a secret.response without echoing the value", () => {
-    const [request, response] = secretFixture.frames;
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        liveFrame(request, "2026-06-04T10:00:00.000Z"),
-        liveFrame(response, "2026-06-04T10:00:01.000Z"),
+        pendingAction({
+          kind: "pending_action",
+          sessionId: "sess-secret",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          action: {
+            kind: "secret",
+            requestId: "se-1",
+            keyName: "OPENAI_API_KEY",
+            reason: "Needed to call the OpenAI API on your behalf",
+            redacted: true,
+          },
+        }),
+        pendingActionResolution({
+          kind: "pending_action_resolution",
+          sessionId: "sess-secret",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          action: {
+            kind: "secret",
+            requestId: "se-1",
+            redacted: true,
+          },
+        }),
       ],
     );
 
