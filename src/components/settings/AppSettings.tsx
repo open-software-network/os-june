@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   JUNE_COMMUNITY_URL,
+  dictationHotkeyStatus,
   dictationHelperCommand,
   dictationSettings,
   listVeniceModels,
@@ -500,6 +501,9 @@ export function AppSettings({
         const response = await dictationSettings();
         if (cancelled) return;
         setSettings(response.settings);
+        const hotkeyStatus = await dictationHotkeyStatus();
+        if (cancelled) return;
+        handleHelperEvent(hotkeyStatus);
         const modelResponse = await providerModelSettings();
         if (cancelled) return;
         // Merge over defaults so a settings payload that predates a field

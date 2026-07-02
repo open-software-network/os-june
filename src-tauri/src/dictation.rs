@@ -1997,15 +1997,15 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
     // Reap the exited child so it does not linger as a zombie, and clear the
     // stale handle so commands correctly see the helper as unavailable while
     // it is down.
-    reap_exited_helper(&state);
+    if !reap_exited_helper(&state) {
+        return;
+    }
+    reset_shortcut_activation(app);
 
     let policy = RespawnPolicy::default();
     let mut survived = spawn_instant.elapsed();
     loop {
-        let shutting_down = state.shutting_down.load(Ordering::SeqCst);
-        let prior = state.respawn_failures.load(Ordering::SeqCst);
-        let (action, next_failures) = decide_respawn(shutting_down, prior, survived, &policy);
-        state.respawn_failures.store(next_failures, Ordering::SeqCst);
+        let (action, next_failures) = decide_and_record_respawn(&state, survived, &policy);
 
         match action {
             RespawnAction::Skip => return,
@@ -2014,12 +2014,10 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
                     attempts = next_failures,
                     "dictation helper kept exiting; giving up until relaunch"
                 );
-                emit_dictation_event_value(
+                emit_helper_unavailable(
                     app,
-                    helper_unavailable_event(
-                        "exhausted",
-                        "Dictation stopped and could not restart. Relaunch June to restore it.",
-                    ),
+                    "exhausted",
+                    "Dictation stopped and could not restart. Relaunch June to restore it.",
                 );
                 return;
             }
@@ -2032,23 +2030,24 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
                 // Surface the notice while the helper is down so the hotkey is
                 // never silently dead; a successful respawn clears it by
                 // re-emitting the hotkey-ready event.
-                emit_dictation_event_value(
-                    app,
-                    helper_unavailable_event("restarting", "Dictation stopped and is restarting."),
-                );
+                emit_helper_unavailable(app, "restarting", "Dictation stopped and is restarting.");
                 thread::sleep(backoff);
                 if state.shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
                 match spawn_helper(app) {
-                    Ok(helper) => {
-                        if store_respawned_helper(&state, helper) {
+                    Ok(helper) => match store_respawned_helper(&state, helper) {
+                        StoreRespawnedHelper::Stored => {
                             reapply_helper_settings(app);
+                            // The new helper is live and its reader thread now
+                            // supervises.
+                            return;
                         }
-                        // Either the new helper is live (its reader thread now
-                        // supervises) or shutdown raced us and it was stopped.
-                        return;
-                    }
+                        StoreRespawnedHelper::ExitedBeforeStore => {
+                            survived = Duration::ZERO;
+                        }
+                        StoreRespawnedHelper::Abandoned => return,
+                    },
                     Err(error) => {
                         tracing::warn!(
                             error = %error.message,
@@ -2065,32 +2064,66 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
     }
 }
 
-fn reap_exited_helper(state: &HelperState) {
-    if let Ok(mut guard) = state.process.lock() {
-        if let Some(mut process) = guard.take() {
-            let _ = process.child.wait();
+fn decide_and_record_respawn(
+    state: &HelperState,
+    survived: Duration,
+    policy: &RespawnPolicy,
+) -> (RespawnAction, u32) {
+    loop {
+        let shutting_down = state.shutting_down.load(Ordering::SeqCst);
+        let prior = state.respawn_failures.load(Ordering::SeqCst);
+        let (action, next_failures) = decide_respawn(shutting_down, prior, survived, policy);
+        if matches!(action, RespawnAction::Skip) {
+            return (action, next_failures);
+        }
+        if state
+            .respawn_failures
+            .compare_exchange(prior, next_failures, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return (action, next_failures);
         }
     }
 }
 
+fn reap_exited_helper(state: &HelperState) -> bool {
+    if let Ok(mut guard) = state.process.lock() {
+        if let Some(mut process) = guard.take() {
+            let _ = process.child.wait();
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StoreRespawnedHelper {
+    Stored,
+    ExitedBeforeStore,
+    Abandoned,
+}
+
 /// Installs a freshly respawned helper as the active process, unless an
 /// intentional shutdown raced in first, in which case the new helper is stopped
-/// so it does not leak. Returns true when the helper was stored and is live.
-fn store_respawned_helper(state: &HelperState, helper: HelperProcess) -> bool {
+/// so it does not leak.
+fn store_respawned_helper(state: &HelperState, mut helper: HelperProcess) -> StoreRespawnedHelper {
     let Ok(mut guard) = state.process.lock() else {
         // Poisoned lock: stop the orphan we just created rather than leak it.
         abandon_helper(helper);
-        return false;
+        return StoreRespawnedHelper::Abandoned;
     };
     if state.shutting_down.load(Ordering::SeqCst) {
         // Shutdown won the race. Drop the lock before the blocking kill so
         // other command threads are not stalled on wait().
         drop(guard);
         abandon_helper(helper);
-        return false;
+        return StoreRespawnedHelper::Abandoned;
+    }
+    if matches!(helper.child.try_wait(), Ok(Some(_))) {
+        return StoreRespawnedHelper::ExitedBeforeStore;
     }
     *guard = Some(helper);
-    true
+    StoreRespawnedHelper::Stored
 }
 
 /// Stops a helper we spawned but will not install (shutdown raced the respawn).
@@ -2119,6 +2152,14 @@ fn reapply_helper_settings(app: &AppHandle) {
     let _ = apply_microphone_setting(&helper_state, &settings.microphone);
     let _ = apply_shortcut_settings(&helper_state, &settings);
     let event = hotkey_ready_event(&settings);
+    if let Some(status) = app.try_state::<HotkeyStatus>() {
+        set_hotkey_status(&status, event.clone());
+    }
+    emit_dictation_event_value(app, event);
+}
+
+fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
+    let event = helper_unavailable_event(reason, message);
     if let Some(status) = app.try_state::<HotkeyStatus>() {
         set_hotkey_status(&status, event.clone());
     }
@@ -3083,9 +3124,13 @@ fn dictation_event_visibility(event_type: Option<&str>) -> DictationEventVisibil
             | "final_transcript"
             | "paste_target",
         ) => DictationEventVisibility::Show,
-        Some("paste_completed" | "agent_session_prompt" | "error" | "shutdown_ack") => {
-            DictationEventVisibility::Hide
-        }
+        Some(
+            "paste_completed"
+            | "agent_session_prompt"
+            | "error"
+            | "shutdown_ack"
+            | "helper_unavailable",
+        ) => DictationEventVisibility::Hide,
         _ => DictationEventVisibility::Ignore,
     }
 }
@@ -3554,8 +3599,12 @@ mod tests {
         let policy = test_policy();
         // A helper that had exhausted its retries but then ran healthily is
         // treated as a fresh first failure, so an isolated later kill recovers.
-        let (action, failures) =
-            decide_respawn(false, 3, policy.healthy_runtime + Duration::from_secs(1), &policy);
+        let (action, failures) = decide_respawn(
+            false,
+            3,
+            policy.healthy_runtime + Duration::from_secs(1),
+            &policy,
+        );
         assert_eq!(
             action,
             RespawnAction::Respawn {
@@ -3574,6 +3623,22 @@ mod tests {
         assert_eq!(respawn_backoff(3, &policy), Duration::from_millis(400));
         // Clamped to max_backoff once doubling would overshoot it.
         assert_eq!(respawn_backoff(20, &policy), policy.max_backoff);
+    }
+
+    #[test]
+    fn respawn_decision_records_failure_count() {
+        let state = HelperState::default();
+        let policy = test_policy();
+
+        let (action, failures) = decide_and_record_respawn(&state, Duration::ZERO, &policy);
+        assert!(matches!(action, RespawnAction::Respawn { attempt: 1, .. }));
+        assert_eq!(failures, 1);
+        assert_eq!(state.respawn_failures.load(Ordering::SeqCst), 1);
+
+        let (action, failures) = decide_and_record_respawn(&state, Duration::ZERO, &policy);
+        assert!(matches!(action, RespawnAction::Respawn { attempt: 2, .. }));
+        assert_eq!(failures, 2);
+        assert_eq!(state.respawn_failures.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -4359,6 +4424,14 @@ mod tests {
     fn agent_session_prompt_hides_dictation_hud() {
         assert!(matches!(
             dictation_event_visibility(Some("agent_session_prompt")),
+            DictationEventVisibility::Hide
+        ));
+    }
+
+    #[test]
+    fn helper_unavailable_hides_dictation_hud() {
+        assert!(matches!(
+            dictation_event_visibility(Some("helper_unavailable")),
             DictationEventVisibility::Hide
         ));
     }
