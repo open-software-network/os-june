@@ -258,6 +258,7 @@ pub fn run() {
             providers::set_local_generation_enabled,
             providers::probe_local_generation_endpoint,
             os_accounts::os_accounts_status,
+            os_accounts::os_accounts_status_local,
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
