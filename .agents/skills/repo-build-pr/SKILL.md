@@ -4,6 +4,8 @@ description: >-
   Use when the user invokes /repo-build-pr (or $repo-build-pr in Codex), or asks
   to build, implement, ship, or fix something in os-june from a feature prompt,
   bug report, screenshot, PR comment, or freeform repo task: study the prompt,
+  plan and architect on the most capable model while delegating bulk
+  implementation to cheaper strong models,
   work in one or more git worktrees based on complexity, validate changes with
   deterministic checks plus agent-driven live app walkthroughs when useful,
   record, upload through os-platform, and attach reviewer-friendly QA video URLs
@@ -31,6 +33,26 @@ Treat everything after `/repo-build-pr` (or `$repo-build-pr` in Codex) as the bu
 5. Search the codebase with `rg` and read the narrowest relevant files before deciding on the implementation.
 
 If the prompt is ambiguous but a conservative implementation path is clear, proceed and document the assumption. Ask the user only when the missing detail changes the product behavior or could waste substantial work.
+
+## Model orchestration
+
+Assume the session is running on the most capable model available (for example Fable 5 in Claude Code, GPT-5.6 in Codex). That model is expensive, so spend it where capability compounds and delegate everything else.
+
+The top model keeps the work that determines whether the PR is right:
+
+- intake, scoping, and the implementation plan
+- architecture and the contracts between parallel tracks (command names, request/response shapes, file ownership)
+- judgment calls: review-feedback triage, tradeoffs, anything ambiguous or irreversible
+- verification: reading delegated diffs, adversarially re-checking claimed results, deciding what is actually done
+
+Delegate the bulk of the implementation to strong but cheaper models (for example Opus 4.8 subagents via the Agent tool's `model` option in Claude Code, GPT-5.5 in Codex): writing code against a specified contract, test authoring, mechanical refactors, merge-conflict resolution with clear instructions, QA recording, and PR housekeeping.
+
+Delegation rules:
+
+- Write each brief like a contract: exact scope and file ownership, the interface to build against, validation commands that must pass, repo conventions to follow, and an instruction to report deviations instead of improvising around them.
+- Run implementers in parallel only when their file ownership does not overlap; define shared contracts up front so independently built halves meet.
+- Never trust a delegated report on its own. Verify against the diff and test output, and route confirmed defects back to the agent that owns that code with the evidence.
+- Do not delegate the plan, the contracts, or the final go/no-go. If the orchestrating model finds itself writing bulk code, delegate; if a subagent starts making architectural decisions, pull them back up.
 
 ## Worktree strategy
 
