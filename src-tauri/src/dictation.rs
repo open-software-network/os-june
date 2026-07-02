@@ -201,7 +201,7 @@ impl DictationStyle {
                 "Writing style: casual lowercase. Use lowercase wherever grammatically possible, including the beginning of sentences, while preserving proper nouns, acronyms, brand names, and code exactly when capitalization matters. Keep the speaker's wording exactly as dictated."
             }
             Self::Formal => {
-                "Writing style: formal. Conventional capitalization and complete punctuation. Formality comes from clean casing and punctuation only: keep the speaker's own words and sentence structure, and do not reword, shorten, or polish their phrasing."
+                "Writing style: formal. Conventional capitalization, complete punctuation, and full words: expand casual contractions, for example don't becomes do not. Beyond that, keep the speaker's own words and sentence structure; do not reword, shorten, or polish their phrasing."
             }
         }
     }

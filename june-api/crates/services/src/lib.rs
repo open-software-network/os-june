@@ -188,8 +188,9 @@ mod tests {
         assert!(prompt.contains("Never summarize, condense, shorten, or tighten"));
         assert!(prompt.contains("When unsure whether something is filler or intended, keep it"));
         assert!(prompt.contains("They are voice, not noise"));
-        // Style must stay a casing/punctuation knob, never a rewrite license.
-        assert!(prompt.contains("casing and punctuation conventions only"));
+        // Style must stay a mechanical knob, never a rewrite license.
+        assert!(prompt.contains("mechanical conventions only"));
+        assert!(prompt.contains("never licenses rewording, restructuring, shortening"));
         // Structure appears only when dictated; spoken numbers make lists.
         assert!(prompt.contains("structure the speaker did not dictate"));
         assert!(prompt.contains("one apples two bananas three oranges"));

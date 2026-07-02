@@ -21,9 +21,9 @@ const SAMPLES: Record<DictationStyle, { description: string; sample: string }> =
       "got it. let me know when you're free to chat about the q3 plan. happy to jump on in the morning.",
   },
   formal: {
-    description: "Polished phrasing, full words, conventional capitalization.",
+    description: "Full words and conventional capitalization. Keeps your wording.",
     sample:
-      "Understood. Please let me know when you have time to discuss the Q3 plan. I am available to meet in the morning.",
+      "Got it. Let me know when you are free to chat about the Q3 plan. Happy to jump on in the morning.",
   },
 };
 
