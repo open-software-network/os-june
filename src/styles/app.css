@@ -5431,6 +5431,27 @@ input:focus-visible,
   transition-delay: 0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
 }
 
+/* Composer holds a draft: the chips bow out. The suggestions have done
+ * their job once the person is typing, and a click here would stage over
+ * (replace) what they typed — see runShortcut. Same wave as the rotation's
+ * exit; visibility flips after the fade so the invisible buttons also
+ * leave the tab order and the accessibility tree. Coming back (field
+ * cleared), the base transition runs and visibility snaps on instantly. */
+.agent-hero-chips[data-hidden="true"] .agent-hero-chip {
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    opacity 300ms var(--ease-in-out),
+    transform 300ms var(--ease-in-out),
+    visibility 0s linear;
+  transition-delay: 0s, 0s, calc(var(--chip-i, 0) * 90ms),
+    calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms + 300ms);
+}
+
 .agent-hero-chip:hover:not(:disabled) {
   /* Soft dusty wash in the brand family (not neutral grey) so the backdrop
      echoes the accent the chip's icon already carries. */

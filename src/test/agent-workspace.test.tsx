@@ -6200,6 +6200,11 @@ describe("AgentWorkspace", () => {
       );
       expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
 
+      // Staging a prompt counts as "composer has content": the chip row bows
+      // out so a second click can't stage over the draft.
+      const chips = document.querySelector(".agent-hero-chips");
+      expect(chips).toHaveAttribute("data-hidden", "true");
+
       await user.click(screen.getByRole("button", { name: "Start session" }));
 
       await waitFor(() =>
@@ -6393,7 +6398,11 @@ describe("AgentWorkspace", () => {
       await user.click(await screen.findByRole("button", { name: /Research a topic/ }));
 
       const composer = screen.getByRole("textbox");
-      await waitFor(() => expect(composer.textContent ?? "").toContain("Research <topic>"));
+      await waitFor(() =>
+        expect(composer.textContent ?? "").toContain("Research a topic and write a short summary"),
+      );
+      // The <placeholder> brackets are authoring syntax; they must never render.
+      expect(composer.textContent ?? "").not.toContain("<");
       expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
     } finally {
       randomSpy.mockRestore();

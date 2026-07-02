@@ -233,7 +233,11 @@ import {
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage } from "../../lib/chat-image-generation";
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
-import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+  stripPlaceholder,
+} from "./composer/ComposerEditor";
 import { CategoryIcon } from "./composer/CategoryIcon";
 import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
 import {
@@ -523,8 +527,10 @@ type AgentShortcut = {
   description: string;
   prompt: string;
   /**
-   * "prefill" drops the prompt into the composer for the user to finish
-   * (selecting the <placeholder> if there is one); "attach" prefills and
+   * "prefill" drops the prompt into the composer for the user to finish; the
+   * first `<placeholder>` token arrives as its bare phrase, selected for
+   * overtyping — the angle brackets are authoring syntax and never reach the
+   * composer. "attach" prefills and
    * opens the file picker. There is deliberately no action that submits on
    * click: every preset lands in the composer first, so the person sees
    * exactly what will run — and approves the spend — before it costs tokens.
@@ -564,7 +570,7 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     title: "Research a topic",
     description: "Get a short, sourced write-up on anything.",
     prompt:
-      "Research <topic> and write a short summary (a few paragraphs) of what you find, with sources.",
+      "Research <a topic> and write a short summary (a few paragraphs) of what you find, with sources.",
     action: "prefill",
   },
   {
@@ -5309,7 +5315,11 @@ export function AgentWorkspace({
     composerEditorRef.current?.setContent(shortcut.prompt, null, {
       selectPlaceholder: true,
     });
-    rememberComposerDraft(composerDraftKeyRef.current, shortcut.prompt, null);
+    rememberComposerDraft(
+      composerDraftKeyRef.current,
+      stripPlaceholder(shortcut.prompt)?.text ?? shortcut.prompt,
+      null,
+    );
   }
 
   async function cancelTask(taskId: string) {
@@ -6853,9 +6863,15 @@ export function AgentWorkspace({
           {composer}
           {activePanel === "chat" ? (
             <div className="agent-hero-suggestions">
+              {/* The chips bow out while the composer holds a draft: staging a
+                  chip runs setContent, which replaces the whole composer
+                  document, so a click here would clobber what the person
+                  typed. Once they're typing, the suggestions have done their
+                  job. They return when the field is cleared. */}
               <div
                 className="agent-hero-chips"
                 data-phase={heroChipPhase}
+                data-hidden={draft.trim() ? "true" : undefined}
                 onMouseEnter={() => {
                   heroChipsHoverRef.current = true;
                 }}
