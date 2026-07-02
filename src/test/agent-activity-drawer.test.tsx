@@ -7,8 +7,7 @@ import type { AgentActivityRecord } from "../lib/hermes-activity-store";
 const NOW = Date.UTC(2026, 5, 24, 12, 0, 30);
 
 function record(
-  partial: Partial<AgentActivityRecord> &
-    Pick<AgentActivityRecord, "sessionId">,
+  partial: Partial<AgentActivityRecord> & Pick<AgentActivityRecord, "sessionId">,
 ): AgentActivityRecord {
   return {
     id: partial.sessionId,
@@ -23,9 +22,7 @@ function record(
   };
 }
 
-function renderDrawer(
-  props: Partial<Parameters<typeof AgentActivityDrawer>[0]> = {},
-) {
+function renderDrawer(props: Partial<Parameters<typeof AgentActivityDrawer>[0]> = {}) {
   return render(
     <AgentActivityDrawer
       open
@@ -50,9 +47,7 @@ describe("AgentActivityDrawer", () => {
 
   it("shows an empty state when open with no activity", () => {
     renderDrawer({ records: [] });
-    expect(
-      screen.getByRole("region", { name: "Agent activity" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Agent activity" })).toBeInTheDocument();
     expect(screen.getByText(/no agents are working/i)).toBeInTheDocument();
   });
 
@@ -83,9 +78,7 @@ describe("AgentActivityDrawer", () => {
 
   it("shows a waiting session with its pending-action count", () => {
     renderDrawer({
-      records: [
-        record({ sessionId: "s1", phase: "waiting", pendingActionCount: 2 }),
-      ],
+      records: [record({ sessionId: "s1", phase: "waiting", pendingActionCount: 2 })],
     });
     const row = screen.getByRole("listitem");
     expect(within(row).getByText(/waiting/i)).toBeInTheDocument();
@@ -94,9 +87,7 @@ describe("AgentActivityDrawer", () => {
 
   it("shows background subagent count", () => {
     renderDrawer({
-      records: [
-        record({ sessionId: "s1", phase: "background", subagentCount: 3 }),
-      ],
+      records: [record({ sessionId: "s1", phase: "background", subagentCount: 3 })],
     });
     const row = screen.getAllByRole("listitem")[0];
     expect(within(row).getByText(/background/i)).toBeInTheDocument();
@@ -117,9 +108,7 @@ describe("AgentActivityDrawer", () => {
               phase: "tool",
               goal: "Research reconnect",
               currentTool: "grep",
-              lastEventAt: new Date(
-                Date.UTC(2026, 5, 24, 12, 0, 0),
-              ).toISOString(),
+              lastEventAt: new Date(Date.UTC(2026, 5, 24, 12, 0, 0)).toISOString(),
             },
             {
               subagentId: "sub-2",
@@ -128,9 +117,7 @@ describe("AgentActivityDrawer", () => {
               phase: "complete",
               goal: "Index files",
               resultPreview: "Indexed 128 files",
-              lastEventAt: new Date(
-                Date.UTC(2026, 5, 24, 12, 0, 10),
-              ).toISOString(),
+              lastEventAt: new Date(Date.UTC(2026, 5, 24, 12, 0, 10)).toISOString(),
             },
           ],
         }),
@@ -144,9 +131,7 @@ describe("AgentActivityDrawer", () => {
     expect(screen.getByText(/indexed 128 files/i)).toBeInTheDocument();
     const toolSub = screen.getByText("Research reconnect").closest("li");
     expect(toolSub).not.toBeNull();
-    expect(
-      within(toolSub as HTMLElement).getByText("Searching files"),
-    ).toBeInTheDocument();
+    expect(within(toolSub as HTMLElement).getByText("Searching files")).toBeInTheDocument();
   });
 
   it("exposes the subagent id and handle on the row for the interrupt seam (feature 13)", () => {
@@ -163,9 +148,7 @@ describe("AgentActivityDrawer", () => {
               parentSessionId: "s1",
               phase: "progress",
               goal: "Background task",
-              lastEventAt: new Date(
-                Date.UTC(2026, 5, 24, 12, 0, 0),
-              ).toISOString(),
+              lastEventAt: new Date(Date.UTC(2026, 5, 24, 12, 0, 0)).toISOString(),
             },
           ],
         }),
@@ -173,9 +156,7 @@ describe("AgentActivityDrawer", () => {
     });
 
     // Feature 13 wires a stop button using a trustworthy id off the row.
-    const subRow = container.querySelector(
-      '[data-subagent-id="sub-7"]',
-    ) as HTMLElement | null;
+    const subRow = container.querySelector('[data-subagent-id="sub-7"]') as HTMLElement | null;
     expect(subRow).not.toBeNull();
     expect(subRow?.getAttribute("data-subagent-handle")).toBe("bg-h-7");
   });
@@ -184,9 +165,7 @@ describe("AgentActivityDrawer", () => {
     renderDrawer({
       records: [record({ sessionId: "s1", phase: "running", subagents: [] })],
     });
-    expect(
-      screen.queryByRole("list", { name: /background work/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: /background work/i })).not.toBeInTheDocument();
   });
 
   it("shows an errored session", () => {
@@ -238,9 +217,7 @@ describe("AgentActivityDrawer", () => {
       titleForSession: () => "Refactor auth",
       onOpenSession,
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: /open session/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /open session/i }));
     expect(onOpenSession).toHaveBeenCalledWith("s1");
   });
 
@@ -263,9 +240,7 @@ describe("AgentActivityDrawer", () => {
       titleForSession: () => "Blocked on me",
       canSteerSession: () => false,
     });
-    expect(
-      screen.queryByRole("button", { name: /steer/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /steer/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
   });
 
@@ -286,16 +261,10 @@ describe("AgentActivityDrawer", () => {
       records: [record({ sessionId: "s1", phase: "complete" })],
       titleForSession: () => "Done session",
     });
-    expect(
-      screen.queryByRole("button", { name: /stop/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /steer/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /stop/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /steer/i })).not.toBeInTheDocument();
     // But you can still open a finished session to read it.
-    expect(
-      screen.getByRole("button", { name: /open session/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /open session/i })).toBeInTheDocument();
   });
 
   it("falls back to the session id when no title is known", () => {

@@ -38,9 +38,7 @@ export function EmptyState({
           </span>
         ) : null}
         <h2 className="empty-state-title">{title}</h2>
-        {description ? (
-          <p className="empty-state-description">{description}</p>
-        ) : null}
+        {description ? <p className="empty-state-description">{description}</p> : null}
         {action ? <div className="empty-state-action">{action}</div> : null}
       </div>
       {footer ? <div className="empty-state-footer">{footer}</div> : null}

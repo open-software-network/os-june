@@ -30,8 +30,7 @@ const REDACTED = "[redacted]";
  * in a URL. Hermes puts the session token on the websocket URL as `?token=`;
  * an admin request URL should never carry one, but we scrub defensively so a
  * future endpoint that does cannot leak it through a logged URL. */
-const SENSITIVE_QUERY_KEYS =
-  /^(token|api[_-]?key|secret|access[_-]?token|key)$/i;
+const SENSITIVE_QUERY_KEYS = /^(token|api[_-]?key|secret|access[_-]?token|key)$/i;
 
 /**
  * Returns `url` with any sensitive query-parameter VALUE replaced by
@@ -110,17 +109,11 @@ const SENSITIVE_KEY_WORDS =
  *    alphanumeric run that is not a path/URL. This catches a secret-shaped
  *    value under a benign key, e.g. `{"custom_field":"AKIA...44chars"`. */
 function scrubBearerAndTokens(value: string): string {
-  const sensitiveKeyPair = new RegExp(
-    `("(?:${SENSITIVE_KEY_WORDS})"\\s*:\\s*)"[^"]*"`,
-    "gi",
-  );
+  const sensitiveKeyPair = new RegExp(`("(?:${SENSITIVE_KEY_WORDS})"\\s*:\\s*)"[^"]*"`, "gi");
   // Any `"key": "value"` pair, so we can inspect the value's shape.
   const anyStringPair = /("[^"]*"\s*:\s*)"([^"]*)"/g;
   return scrubTokenQuery(value)
-    .replace(
-      sensitiveKeyPair,
-      (_match, prefix: string) => `${prefix}"${REDACTED}"`,
-    )
+    .replace(sensitiveKeyPair, (_match, prefix: string) => `${prefix}"${REDACTED}"`)
     .replace(anyStringPair, (match, prefix: string, inner: string) =>
       isCredentialShapedValue(inner) ? `${prefix}"${REDACTED}"` : match,
     )

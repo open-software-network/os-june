@@ -138,8 +138,10 @@ fn positive_duration_drift_tolerance_ms(expected_duration_ms: i64, base_toleranc
     let proportional_tolerance_ms =
         expected_duration_ms / POSITIVE_DURATION_DRIFT_RATIO_DENOMINATOR;
     proportional_tolerance_ms
-        .max(MIN_POSITIVE_DURATION_DRIFT_MS)
-        .min(MAX_POSITIVE_DURATION_DRIFT_MS)
+        .clamp(
+            MIN_POSITIVE_DURATION_DRIFT_MS,
+            MAX_POSITIVE_DURATION_DRIFT_MS,
+        )
         .max(base_tolerance_ms)
 }
 

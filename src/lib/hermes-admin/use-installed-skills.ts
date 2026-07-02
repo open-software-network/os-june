@@ -28,16 +28,10 @@ import { hermesBridgeStatus, type HermesBridgeStatus } from "../tauri";
 import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
-import {
-  GatewayLifecycle,
-  type GatewayLifecycleSnapshot,
-} from "./gateway-lifecycle";
+import { createRustAdminFetch } from "./rust-transport";
+import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesSkillInfo } from "./schemas";
-import {
-  adminTargetForMode,
-  type HermesAdminMode,
-  type HermesAdminTarget,
-} from "./target";
+import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** The wired-up foundation primitives one installed-Skills page operates on,
  * all bound to the SAME target. Production builds this from a bridge connection
@@ -216,8 +210,7 @@ export class InstalledSkillsController {
     if (!current) return;
     // External skills are read-only in June; never attempt a write.
     if (current.readOnly) {
-      this.error =
-        "This skill loads from an external directory and is read-only in June.";
+      this.error = "This skill loads from an external directory and is read-only in June.";
       this.recompute();
       return;
     }
@@ -259,9 +252,7 @@ export class InstalledSkillsController {
   }
 
   private applyOptimistic(name: string, enabled: boolean): void {
-    this.skills = this.skills.map((skill) =>
-      skill.name === name ? { ...skill, enabled } : skill,
-    );
+    this.skills = this.skills.map((skill) => (skill.name === name ? { ...skill, enabled } : skill));
   }
 
   private buildSnapshot(): InstalledSkillsState {
@@ -380,7 +371,14 @@ export function useInstalledSkillsEngine(
 
   return useMemo(() => {
     if (!target) return null;
-    const client = createHermesAdminClient(target);
+    // Production routes admin I/O through Rust (`hermes_admin_request`) rather
+    // than a webview fetch the cross-origin dashboard would 401. The fetch is
+    // bound to this target's mode so Rust targets the chosen runtime, never the
+    // first connection. Tests build the engine from the fake-server harness and
+    // keep the injected node fetch, so this branch is production-only.
+    const client = createHermesAdminClient(target, {
+      fetch: createRustAdminFetch(target.mode),
+    });
     const cache = new AdminStateCache(target);
     const lifecycle = new GatewayLifecycle(client, cache);
     return { target, client, cache, lifecycle };
@@ -413,9 +411,7 @@ export function useInstalledSkills(
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setBridgeError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setBridgeError(error instanceof Error ? error.message : String(error));
           loaded.current = true;
         }
       });

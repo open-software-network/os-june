@@ -19,17 +19,13 @@ type OnboardingReplayEnv = {
   readonly VITE_JUNE_REPLAY_ONBOARDING?: string;
 };
 
-export function applyOnboardingReplayFlag(
-  env: OnboardingReplayEnv = import.meta.env,
-) {
+export function applyOnboardingReplayFlag(env: OnboardingReplayEnv = import.meta.env) {
   if (shouldReplayOnboarding(env)) {
     resetOnboardingForReplay();
   }
 }
 
-export function shouldReplayOnboarding(
-  env: OnboardingReplayEnv = import.meta.env,
-) {
+export function shouldReplayOnboarding(env: OnboardingReplayEnv = import.meta.env) {
   return env.DEV === true && env.VITE_JUNE_REPLAY_ONBOARDING === "1";
 }
 

@@ -37,11 +37,7 @@ const BTN = 24;
 
 type Layout = { visible: TabItem[]; hidden: TabItem[] };
 
-function computeLayout(
-  tabs: TabItem[],
-  activeTabId: string,
-  available: number,
-): Layout {
+function computeLayout(tabs: TabItem[], activeTabId: string, available: number): Layout {
   // Reserve the "+" button. If every tab fits at MIN_TAB, show them all.
   const forAll = available - BTN - GAP;
   const capAll = Math.floor((forAll + GAP) / (MIN_TAB + GAP));
@@ -70,13 +66,8 @@ function computeLayout(
 
 // The width each visible tab resolves to under flex (equal share of the space
 // left after the +/overflow buttons and gaps), clamped like the CSS.
-function effectiveTabWidth(
-  count: number,
-  hasOverflow: boolean,
-  available: number,
-): number {
-  if (!Number.isFinite(available) || count <= 0)
-    return Number.POSITIVE_INFINITY;
+function effectiveTabWidth(count: number, hasOverflow: boolean, available: number): number {
+  if (!Number.isFinite(available) || count <= 0) return Number.POSITIVE_INFINITY;
   const buttons = BTN + (hasOverflow ? BTN : 0);
   const items = count + (hasOverflow ? 1 : 0) + 1;
   const gaps = Math.max(0, items - 1) * GAP;
@@ -143,11 +134,7 @@ export function TabBar({
   // and then the close button as it tightens — ending at a centered icon, the
   // moment the close can't sit with nice padding. Deterministic (vs. relying on
   // CSS container queries to fire) since we already know the width.
-  const tabWidth = effectiveTabWidth(
-    visible.length,
-    hidden.length > 0,
-    available,
-  );
+  const tabWidth = effectiveTabWidth(visible.length, hidden.length > 0, available);
   const size = tabWidth < 64 ? "icon" : tabWidth < 120 ? "tight" : "full";
 
   // The overflow popover is meaningless once everything fits again.
@@ -292,12 +279,7 @@ export function TabBar({
             </span>
           }
         >
-          <button
-            type="button"
-            className="tab-new"
-            aria-label="New tab"
-            onClick={onNew}
-          >
+          <button type="button" className="tab-new" aria-label="New tab" onClick={onNew}>
             <IconPlusMedium size={14} />
           </button>
         </HoverTip>

@@ -1,7 +1,7 @@
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
-import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -17,11 +17,20 @@ import {
   skillPath,
   sourceMeta,
   useInstalledSkills,
+  useSkillLifecycle,
+  useSkillsSetupOverview,
   type HermesAdminMode,
   type HermesSkillInfo,
   type InstalledSkillsState,
+  type SkillLifecycleState,
+  type SkillSetupBadge as SkillSetupBadgeModel,
+  type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
 import { Switch } from "../ui/Switch";
+import { AdminNotifications } from "./AdminNotifications";
+import { SkillDetailSection } from "./SkillDetailSection";
+import { SkillLifecycleActions } from "./SkillLifecycleActions";
+import { SetupStatusBadge, SkillSetupSection } from "./SkillSetupSection";
 
 /** Sentinel for the "all categories" filter chip. */
 const ALL_CATEGORIES = "__all__";
@@ -30,9 +39,10 @@ type InstalledSkillsSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the
    * safe sandboxed runtime; the host can point it at Full mode explicitly. */
   mode?: HermesAdminMode;
-  /** Opens the skill detail surface for a given skill name. Wired by the host
-   * (Track 04 owns the detail page); when omitted the "Open" affordance is
-   * hidden so the page never offers a dead link. */
+  /** Opens the skill detail surface for a given skill name. When omitted, the
+   * section manages its own in-place detail sub-view (the default): clicking a
+   * row's open arrow swaps the list for {@link SkillDetailSection}. A host can
+   * override this to route detail elsewhere (e.g. a deep link). */
   onOpenSkill?: (name: string) => void;
 };
 
@@ -54,8 +64,38 @@ export function InstalledSkillsSection({
   onOpenSkill,
 }: InstalledSkillsSectionProps) {
   const state = useInstalledSkills(mode);
+  const setup = useSkillsSetupOverview(mode);
+  // Lifecycle actions (update / audit / uninstall / reset) run on their own
+  // engine; on a successful mutation they refresh the inventory through this
+  // callback so the list + toolsets reflect the change.
+  const lifecycle = useSkillLifecycle(mode, undefined, state.refresh);
+  // The detail surface is a sub-view OFF this section (matching how the setup
+  // panel and hub drawer are surfaced), not a top-level tab. When the host
+  // supplies its own `onOpenSkill`, we defer to it; otherwise we open the
+  // built-in detail view in place.
+  const [openSkill, setOpenSkill] = useState<string | null>(null);
+  const handleOpen = onOpenSkill ?? ((name) => setOpenSkill(name));
+
+  if (!onOpenSkill && openSkill) {
+    const info = state.skills.find((skill) => skill.name === openSkill);
+    return (
+      <SkillDetailSection
+        skill={openSkill}
+        info={info}
+        mode={state.mode ?? mode}
+        onBack={() => setOpenSkill(null)}
+      />
+    );
+  }
+
   return (
-    <InstalledSkillsView state={state} mode={mode} onOpenSkill={onOpenSkill} />
+    <InstalledSkillsView
+      state={state}
+      mode={mode}
+      onOpenSkill={handleOpen}
+      setup={setup}
+      lifecycle={lifecycle}
+    />
   );
 }
 
@@ -68,13 +108,24 @@ export function InstalledSkillsView({
   state,
   mode = "sandboxed",
   onOpenSkill,
+  setup,
+  lifecycle,
 }: {
   state: InstalledSkillsState;
   mode?: HermesAdminMode;
   onOpenSkill?: (name: string) => void;
+  /** The shared setup overview, so each row can show its setup status badge and
+   * open an inline setup panel. Optional so the view still renders in a test
+   * that does not care about setup. */
+  setup?: SkillsSetupOverview;
+  /** The lifecycle action state (update / audit / uninstall / reset). Optional so
+   * the view still renders in a test that only cares about the inventory. */
+  lifecycle?: SkillLifecycleState;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>(ALL_CATEGORIES);
+  // The skill whose inline setup panel is open (one at a time).
+  const [openSetup, setOpenSetup] = useState<string | null>(null);
 
   const categories = useMemo(() => categoriesOf(state.skills), [state.skills]);
   const visible = useMemo(
@@ -86,11 +137,20 @@ export function InstalledSkillsView({
     [state.skills, query, category],
   );
 
+  // The count of skills with an available update that can be bulk-updated (hub /
+  // official, update available, and not locally modified — we never overwrite
+  // local edits in a bulk sweep).
+  const updatableCount = useMemo(() => {
+    if (!lifecycle) return 0;
+    return state.skills.filter((skill) => {
+      const policy = lifecycle.policyFor(skill);
+      return policy.actions.update.available && policy.updateAvailable && !policy.locallyModified;
+    }).length;
+  }, [lifecycle, state.skills]);
+
   // A category that vanished after a refresh should not strand the filter.
   const activeCategory =
-    category !== ALL_CATEGORIES && !categories.includes(category)
-      ? ALL_CATEGORIES
-      : category;
+    category !== ALL_CATEGORIES && !categories.includes(category) ? ALL_CATEGORIES : category;
 
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
@@ -98,34 +158,26 @@ export function InstalledSkillsView({
   const hasSkills = state.skills.length > 0;
 
   return (
-    <section
-      className="settings-group installed-skills"
-      aria-labelledby="installed-skills-heading"
-    >
+    <section className="settings-group installed-skills" aria-labelledby="installed-skills-heading">
       <h2 id="installed-skills-heading" className="settings-group-heading">
         Installed skills
       </h2>
       <p className="settings-group-description">
-        Browse the skills Hermes has installed and choose which ones future
-        sessions can use. Changes apply to new sessions.{" "}
-        <ModeNote
-          mode={state.mode ?? mode}
-          profile={state.profile}
-          show={!isUnavailable}
-        />
+        Browse the skills Hermes has installed and choose which ones future sessions can use.
+        Changes apply to new sessions.{" "}
+        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
       <LifecycleBanner state={state} />
-      <Notifications state={state} />
+      <AdminNotifications
+        notifications={state.notifications}
+        onDismiss={state.dismissNotification}
+      />
 
       <div className="settings-card installed-skills-card">
         <div className="installed-skills-toolbar">
           <div className="installed-skills-search">
-            <IconMagnifyingGlass
-              size={15}
-              ariaHidden
-              className="installed-skills-search-icon"
-            />
+            <IconMagnifyingGlass size={15} ariaHidden className="installed-skills-search-icon" />
             <input
               type="search"
               value={query}
@@ -135,6 +187,28 @@ export function InstalledSkillsView({
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
+          {lifecycle ? (
+            <button
+              type="button"
+              className="installed-skills-check"
+              disabled={isUnavailable || isLoadingFirst || lifecycle.sweeping}
+              onClick={lifecycle.checkForUpdates}
+            >
+              <IconArrowRotateClockwise size={14} ariaHidden />
+              {lifecycle.sweeping ? "Checking..." : "Check for updates"}
+            </button>
+          ) : null}
+          {lifecycle && updatableCount > 0 ? (
+            <button
+              type="button"
+              className="installed-skills-update-all"
+              disabled={lifecycle.sweeping}
+              onClick={() => lifecycle.updateAll(state.skills)}
+            >
+              <IconArrowInbox size={14} ariaHidden />
+              Update all ({updatableCount})
+            </button>
+          ) : null}
           <button
             type="button"
             className="installed-skills-refresh"
@@ -145,13 +219,15 @@ export function InstalledSkillsView({
             Refresh
           </button>
         </div>
+        {lifecycle?.sweepError ? (
+          <p className="settings-row-error installed-skills-inline-error">
+            <IconExclamationCircle size={14} ariaHidden />
+            {lifecycle.sweepError}
+          </p>
+        ) : null}
 
         {categories.length > 1 && !isUnavailable ? (
-          <div
-            className="installed-skills-filters"
-            role="group"
-            aria-label="Filter by category"
-          >
+          <div className="installed-skills-filters" role="group" aria-label="Filter by category">
             <CategoryChip
               label="All"
               count={state.skills.length}
@@ -162,10 +238,7 @@ export function InstalledSkillsView({
               <CategoryChip
                 key={name}
                 label={name}
-                count={
-                  state.skills.filter((skill) => skillCategory(skill) === name)
-                    .length
-                }
+                count={state.skills.filter((skill) => skillCategory(skill) === name).length}
                 active={activeCategory === name}
                 onSelect={() => setCategory(name)}
               />
@@ -212,9 +285,18 @@ export function InstalledSkillsView({
                   skill={skill}
                   pending={state.pending.has(skill.name)}
                   onToggle={(enabled) => state.toggle(skill.name, enabled)}
-                  onOpen={
-                    onOpenSkill ? () => onOpenSkill(skill.name) : undefined
+                  onOpen={onOpenSkill ? () => onOpenSkill(skill.name) : undefined}
+                  lifecycle={lifecycle}
+                  setupBadge={setup?.badgeFor(skill)}
+                  setupOpen={openSetup === skill.name}
+                  onToggleSetup={
+                    setup
+                      ? () =>
+                          setOpenSetup((current) => (current === skill.name ? null : skill.name))
+                      : undefined
                   }
+                  setupMode={state.mode ?? mode}
+                  onSetupSaved={setup?.refresh}
                 />
               ))}
             </ul>
@@ -246,13 +328,14 @@ function ModeNote({
   );
 }
 
-/** The shared gateway-lifecycle banner. Only shown when there is something to
- * say (a pending next-session change or a restart state) so a clean page is not
- * cluttered. Skill toggles are next-session, so this stays informational. */
+/** The shared gateway-lifecycle banner. Always shown (every skill change applies
+ * to new sessions, so the page states that standing, not only after a change).
+ * When the lifecycle is clean it carries the standing next-session message; a
+ * non-clean state (a pending restart) overrides it with its own copy + tone. */
 function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
-  const snapshot = state.lifecycle;
   if (state.status === "unavailable") return null;
-  if (snapshot.state === "clean") return null;
+  const snapshot = state.lifecycle;
+  const clean = snapshot.state === "clean";
   const tone =
     snapshot.state === "restart-failed"
       ? "destructive"
@@ -260,46 +343,20 @@ function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
           snapshot.state === "active-session-should-restart"
         ? "warning"
         : "info";
+  // The standing copy mirrors gateway-lifecycle's `changes-apply-next-session`
+  // snapshot, shown before any toggle so the timing is never a surprise.
+  const label = clean ? "Applies next session" : snapshot.label;
+  const detail = clean
+    ? "Your changes take effect in new sessions. Current sessions are unaffected."
+    : snapshot.detail;
   return (
     <div className="installed-skills-lifecycle" data-tone={tone} role="status">
       <span className="installed-skills-lifecycle-eyebrow">
         <IconCircleInfo size={15} ariaHidden />
-        {snapshot.label}
+        {label}
       </span>
-      <span className="installed-skills-lifecycle-body">{snapshot.detail}</span>
+      <span className="installed-skills-lifecycle-body">{detail}</span>
     </div>
-  );
-}
-
-/** The durable admin notifications ("Skill updated. New sessions can use it.").
- * Dismissible, newest first. Errors render with a destructive tone. */
-function Notifications({ state }: { state: InstalledSkillsState }) {
-  if (state.notifications.length === 0) return null;
-  const newestFirst = [...state.notifications].reverse();
-  return (
-    <ul className="installed-skills-notifications" aria-label="Recent changes">
-      {newestFirst.map((note) => (
-        <li
-          key={note.id}
-          className="installed-skills-notification"
-          data-tone={note.isError ? "destructive" : "info"}
-          role="status"
-        >
-          <span className="installed-skills-notification-text">
-            {note.message}
-          </span>
-          <button
-            type="button"
-            className="installed-skills-notification-dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => state.dismissNotification(note.id)}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -337,11 +394,31 @@ function SkillRow({
   pending,
   onToggle,
   onOpen,
+  lifecycle,
+  setupBadge,
+  setupOpen,
+  onToggleSetup,
+  setupMode,
+  onSetupSaved,
 }: {
   skill: HermesSkillInfo;
   pending: boolean;
   onToggle: (enabled: boolean) => void;
   onOpen?: () => void;
+  /** The lifecycle action state, when available, so the row can offer the valid
+   * update / audit / uninstall / reset actions for this skill's source. */
+  lifecycle?: SkillLifecycleState;
+  /** The skill's setup status badge, or undefined when it declares no setup. */
+  setupBadge?: SkillSetupBadgeModel;
+  /** Whether this row's inline setup panel is open. */
+  setupOpen?: boolean;
+  /** Toggles the inline setup panel; undefined hides the setup affordance. */
+  onToggleSetup?: () => void;
+  /** The mode the setup panel targets (so a write's blast radius is explicit). */
+  setupMode?: HermesAdminMode;
+  /** Refreshes the list's setup-status overview after an inline save, since the
+   * setup panel uses a separate cache that does not invalidate the overview. */
+  onSetupSaved?: () => void;
 }) {
   const meta = sourceMeta(skill.source);
   const restrictions = platformRestrictions(skill);
@@ -349,6 +426,8 @@ function SkillRow({
   const path = skillPath(skill);
   const readOnly = Boolean(skill.readOnly);
   const labelId = `installed-skill-${cssId(skill.name)}`;
+  const panelId = `installed-skill-setup-${cssId(skill.name)}`;
+  const canSetUp = Boolean(setupBadge && onToggleSetup);
 
   return (
     <li className="installed-skill-row" data-enabled={skill.enabled}>
@@ -358,9 +437,8 @@ function SkillRow({
             {skill.name}
           </span>
           <SourcePill source={skill.source} label={meta.label} />
-          {skill.version ? (
-            <span className="installed-skill-version">v{skill.version}</span>
-          ) : null}
+          {skill.version ? <span className="installed-skill-version">v{skill.version}</span> : null}
+          {setupBadge ? <SetupStatusBadge badge={setupBadge} /> : null}
           {readOnly ? (
             <span className="installed-skill-readonly" title={meta.blurb}>
               <IconLock size={12} ariaHidden />
@@ -403,13 +481,33 @@ function SkillRow({
 
         {readOnly ? (
           <p className="installed-skill-note">
-            Loaded from an external directory. It may be shared with other tools
-            and cannot be changed from June.
+            Loaded from an external directory. It may be shared with other tools and cannot be
+            changed from June.
           </p>
+        ) : null}
+
+        {lifecycle ? (
+          <SkillLifecycleActions
+            skill={skill}
+            policy={lifecycle.policyFor(skill)}
+            state={lifecycle}
+            variant="row"
+          />
         ) : null}
       </div>
 
       <div className="installed-skill-actions">
+        {canSetUp ? (
+          <button
+            type="button"
+            className="installed-skill-setup-toggle"
+            aria-expanded={setupOpen}
+            aria-controls={panelId}
+            onClick={onToggleSetup}
+          >
+            {setupOpen ? "Hide setup" : "Set up"}
+          </button>
+        ) : null}
         {onOpen ? (
           <button
             type="button"
@@ -428,11 +526,25 @@ function SkillRow({
             aria-labelledby={labelId}
             onCheckedChange={onToggle}
           />
-          <span className="installed-skill-timing" aria-hidden>
-            {pending ? "Saving" : "Next session"}
-          </span>
+          {pending ? (
+            <span className="installed-skill-timing" aria-hidden>
+              Saving
+            </span>
+          ) : null}
         </span>
       </div>
+
+      {canSetUp && setupOpen ? (
+        <div className="installed-skill-setup-panel" id={panelId}>
+          <SkillSetupSection
+            skill={skill.name}
+            skillRaw={skill.raw}
+            mode={setupMode}
+            onClose={onToggleSetup}
+            onSaved={onSetupSaved}
+          />
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -450,10 +562,7 @@ function SkillsLoading() {
   return (
     <ul className="installed-skills-list" aria-hidden>
       {[0, 1, 2].map((index) => (
-        <li
-          key={index}
-          className="installed-skill-row installed-skill-skeleton"
-        >
+        <li key={index} className="installed-skill-row installed-skill-skeleton">
           <div className="installed-skill-main">
             <span className="installed-skill-skeleton-line installed-skill-skeleton-title" />
             <span className="installed-skill-skeleton-line" />
@@ -464,13 +573,7 @@ function SkillsLoading() {
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
+function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="installed-skills-empty" role="status">
       <span className="installed-skills-empty-icon" aria-hidden>
@@ -499,11 +602,7 @@ function ErrorState({
       <p className="installed-skills-empty-title">Couldn't load skills</p>
       <p className="installed-skills-empty-description">{message}</p>
       {retryable ? (
-        <button
-          type="button"
-          className="installed-skills-retry"
-          onClick={onRetry}
-        >
+        <button type="button" className="installed-skills-retry" onClick={onRetry}>
           Try again
         </button>
       ) : null}

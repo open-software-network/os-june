@@ -15,9 +15,7 @@ export function hasLiveSubscription(account: AccountStatus): boolean {
 }
 
 export function depletedBalanceActionLabel(account: AccountStatus) {
-  return shouldOpenPortalForDepletedBalance(account)
-    ? "Top up credits"
-    : "Upgrade";
+  return shouldOpenPortalForDepletedBalance(account) ? "Top up credits" : "Upgrade";
 }
 
 export function shouldOpenPortalForDepletedBalance(account: AccountStatus) {
@@ -34,13 +32,21 @@ function hasKnownNonLiveSubscription(account: AccountStatus): boolean {
   return typeof status === "string" && status.length > 0;
 }
 
+function hasNegativeBalance(account: AccountStatus): boolean {
+  const credits = account.balance?.credits;
+  return typeof credits === "number" && credits < 0;
+}
+
 // New users start from their OS Accounts credits, not a card-gated
-// subscription. Only block the shell when the backend positively reports a
-// zero-or-negative balance and a non-live subscription state. Older account
-// snapshots may omit `credits` or subscription status; treat those as usable
-// and let the metered action return a precise out-of-credits error if needed.
+// subscription. A known negative balance is never usable, even for live
+// subscribers, because it means spending has already crossed the credit floor.
+// Zero-credit live subscribers keep the current credit-line behavior. Older
+// account snapshots may omit `credits` or subscription status; treat those as
+// usable and let the metered action return a precise out-of-credits error if
+// needed.
 export function shouldBlockOnFunding(account: AccountStatus): boolean {
   if (!account.signedIn) return false;
+  if (hasNegativeBalance(account)) return true;
   if (hasLiveSubscription(account)) return false;
   if (!hasKnownNonLiveSubscription(account)) return false;
 

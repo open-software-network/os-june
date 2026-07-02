@@ -42,9 +42,7 @@ export function AddSessionsToProjectDialog({
     const normalized = query.trim().toLowerCase();
     if (!normalized) return available;
     return available.filter((session) =>
-      `${session.title ?? ""} ${session.preview ?? ""}`
-        .toLowerCase()
-        .includes(normalized),
+      `${session.title ?? ""} ${session.preview ?? ""}`.toLowerCase().includes(normalized),
     );
   }, [sessions, sessionFolderIds, folder.id, query]);
 
@@ -85,12 +83,7 @@ export function AddSessionsToProjectDialog({
       initialFocusSelector='input[name="add-sessions-search"]'
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
           <button
@@ -139,9 +132,7 @@ export function AddSessionsToProjectDialog({
                     </span>
                     <span className="add-notes-body">
                       <span className="add-notes-title">
-                        {session.title?.trim() ||
-                          session.preview?.trim() ||
-                          "Untitled session"}
+                        {session.title?.trim() || session.preview?.trim() || "Untitled session"}
                       </span>
                       <span className="add-notes-preview">
                         {session.preview?.trim() || "No messages yet"}
@@ -157,10 +148,7 @@ export function AddSessionsToProjectDialog({
           </ul>
         ) : (
           <p className="add-notes-empty">
-            {sessions.some(
-              (session) =>
-                !(sessionFolderIds[session.id] ?? []).includes(folder.id),
-            )
+            {sessions.some((session) => !(sessionFolderIds[session.id] ?? []).includes(folder.id))
               ? "No sessions match that search."
               : "Every session already lives in this project."}
           </p>

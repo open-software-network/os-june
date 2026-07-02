@@ -29,10 +29,7 @@ import { DEFAULT_HERMES_PROFILE } from "./target";
 
 /** The subset of `fetch` this module needs, so a mock or the fake server can be
  * substituted without satisfying the entire DOM `fetch` signature. */
-export type FetchLike = (
-  input: string,
-  init?: RequestInit,
-) => Promise<Response>;
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 /** A diagnostics sink. Receives ALREADY-REDACTED structured records; it must
  * never see a raw secret. Defaults to a no-op (admin traffic is silent unless a
@@ -93,10 +90,7 @@ export function createAdminTransport(
   const defaultTimeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const log = options.logger;
 
-  return async function send<T>(
-    request: AdminRequestInit,
-    parse: (raw: unknown) => T,
-  ): Promise<T> {
+  return async function send<T>(request: AdminRequestInit, parse: (raw: unknown) => T): Promise<T> {
     const endpoint = `${request.method} ${request.path}`;
     // A `silent` request is never logged, even on error.
     const sink = request.silent ? undefined : log;
@@ -115,8 +109,7 @@ export function createAdminTransport(
           "X-Hermes-Session-Token": target.token,
           "Content-Type": "application/json",
         },
-        body:
-          request.body === undefined ? undefined : JSON.stringify(request.body),
+        body: request.body === undefined ? undefined : JSON.stringify(request.body),
         signal: controller.signal,
       });
     } catch (error) {
@@ -174,10 +167,7 @@ export function createAdminTransport(
 
 /** Builds the full request URL: base + path + profile + extra query, with every
  * value URL-encoded. The token is deliberately NOT added here. */
-function buildUrl(
-  target: HermesAdminTarget,
-  request: AdminRequestInit,
-): string {
+function buildUrl(target: HermesAdminTarget, request: AdminRequestInit): string {
   const params = new URLSearchParams();
   if (request.scopeToProfile !== false) {
     params.set("profile", target.profile || DEFAULT_HERMES_PROFILE);
@@ -237,8 +227,6 @@ function emit(
     ...(detail instanceof HermesAdminError
       ? { error: detail.toLogSafe() }
       : { status: detail.status }),
-    ...(requestBody === undefined
-      ? {}
-      : { requestBody: redactForLog(requestBody) }),
+    ...(requestBody === undefined ? {} : { requestBody: redactForLog(requestBody) }),
   });
 }

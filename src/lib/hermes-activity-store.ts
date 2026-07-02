@@ -51,12 +51,7 @@ import { pendingActionStore } from "./hermes-pending-actions";
 export const ACTIVITY_SESSIONS_CAP = 50;
 
 /** The phase a session's agent is in, derived from the latest event kind. */
-export type AgentActivityPhase =
-  | "running"
-  | "waiting"
-  | "background"
-  | "error"
-  | "complete";
+export type AgentActivityPhase = "running" | "waiting" | "background" | "error" | "complete";
 
 /**
  * One session's rolled-up activity. `pendingActionCount` is read live from
@@ -203,9 +198,7 @@ export function createHermesActivityStore(
   }
 
   function getRecords(): AgentActivityRecord[] {
-    return [...bySession.values()]
-      .map(toRecord)
-      .sort((a, b) => b.lastEventAt - a.lastEventAt);
+    return [...bySession.values()].map(toRecord).sort((a, b) => b.lastEventAt - a.lastEventAt);
   }
 
   function getRecord(sessionId: string): AgentActivityRecord | undefined {
@@ -327,16 +320,13 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "error";
       return;
     case "lifecycle":
-      row.phase = isTerminalLifecycleStatus(event.status)
-        ? "complete"
-        : "running";
+      row.phase = isTerminalLifecycleStatus(event.status) ? "complete" : "running";
       return;
     case "transcript":
     case "reasoning":
       // The agent is actively producing output — running, unless it has already
       // reached a terminal state this turn (a late delta shouldn't un-complete).
-      if (row.phase !== "complete" && row.phase !== "error")
-        row.phase = "running";
+      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
       return;
     case "unsupported":
       // An event June can't model must not silently change the reported phase.
@@ -382,12 +372,10 @@ function applyBackgroundActivity(
       ...previous,
       ...activity,
       handle: nonEmpty(activity.handle) ?? previous?.handle,
-      parentSessionId:
-        nonEmpty(activity.parentSessionId) ?? previous?.parentSessionId,
+      parentSessionId: nonEmpty(activity.parentSessionId) ?? previous?.parentSessionId,
       goal: nonEmpty(activity.goal) ?? previous?.goal,
       currentTool: nonEmpty(activity.currentTool) ?? previous?.currentTool,
-      resultPreview:
-        nonEmpty(activity.resultPreview) ?? previous?.resultPreview,
+      resultPreview: nonEmpty(activity.resultPreview) ?? previous?.resultPreview,
     });
   }
   if (nonEmpty(activity.currentTool)) row.currentTool = activity.currentTool;
@@ -419,9 +407,7 @@ function isTerminalSubagentPhase(phase: BackgroundHermesPhase): boolean {
 /** How many of a session's subagents are still working (drives the drawer's
  * "in progress" badge). Excludes terminal ones so the badge doesn't claim "3
  * background subagents" after all three finished. */
-function countActiveSubagents(
-  subagents: Map<string, BackgroundHermesActivity>,
-): number {
+function countActiveSubagents(subagents: Map<string, BackgroundHermesActivity>): number {
   let count = 0;
   for (const subagent of subagents.values()) {
     if (!isTerminalSubagentPhase(subagent.phase)) count += 1;

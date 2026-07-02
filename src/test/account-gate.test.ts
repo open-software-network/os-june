@@ -9,9 +9,7 @@ import type { AccountStatus } from "../lib/tauri";
 
 describe("shouldBlockOnSignIn", () => {
   it("blocks when the user is not signed in", () => {
-    expect(shouldBlockOnSignIn({ signedIn: false, configured: true })).toBe(
-      true,
-    );
+    expect(shouldBlockOnSignIn({ signedIn: false, configured: true })).toBe(true);
   });
 
   it("allows when the user is signed in", () => {
@@ -37,9 +35,7 @@ describe("shouldBlockOnFunding", () => {
   }
 
   it("never blocks signed-out users (the sign-in gate owns that)", () => {
-    expect(shouldBlockOnFunding({ signedIn: false, configured: true })).toBe(
-      false,
-    );
+    expect(shouldBlockOnFunding({ signedIn: false, configured: true })).toBe(false);
   });
 
   it("blocks an account with known zero credits and no subscription", () => {
@@ -97,6 +93,27 @@ describe("shouldBlockOnFunding", () => {
     ).toBe(false);
   });
 
+  it("blocks a negative balance even for a live subscriber", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: -1, usdMillis: -1 },
+          subscription: { subscribed: true, status: "active" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks a negative balance while subscription state is unknown", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: -1, usdMillis: -1 },
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("blocks a past-due subscriber with no credits left", () => {
     expect(
       shouldBlockOnFunding(
@@ -138,9 +155,7 @@ describe("shouldBlockOnFunding", () => {
   });
 
   it("allows unknown credit snapshots and lets metered actions decide", () => {
-    expect(shouldBlockOnFunding(signedIn({ balance: { usdMillis: 0 } }))).toBe(
-      false,
-    );
+    expect(shouldBlockOnFunding(signedIn({ balance: { usdMillis: 0 } }))).toBe(false);
     expect(shouldBlockOnFunding(signedIn())).toBe(false);
   });
 });

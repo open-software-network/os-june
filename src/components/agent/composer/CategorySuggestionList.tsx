@@ -40,9 +40,7 @@ export const CategorySuggestionList = forwardRef<
   CategorySuggestionListProps
 >(({ items, command }, ref) => {
   const [selected, setSelected] = useState(0);
-  const [activeSource, setActiveSource] = useState<
-    "keyboard" | "pointer" | null
-  >(null);
+  const [activeSource, setActiveSource] = useState<"keyboard" | "pointer" | null>(null);
   const [detail, setDetail] = useState<{
     index: number;
     key: string;
@@ -62,10 +60,7 @@ export const CategorySuggestionList = forwardRef<
   const hoverIntent = useCallback(
     (action: () => void) => {
       cancelHoverIntent();
-      hoverTimerRef.current = window.setTimeout(
-        action,
-        SKILL_DETAIL_HOVER_INTENT_MS,
-      );
+      hoverTimerRef.current = window.setTimeout(action, SKILL_DETAIL_HOVER_INTENT_MS);
     },
     [cancelHoverIntent],
   );
@@ -78,9 +73,7 @@ export const CategorySuggestionList = forwardRef<
     setFade((prev) => {
       const top = canScroll && !atTop;
       const bottom = canScroll && !atBottom;
-      return prev.top === top && prev.bottom === bottom
-        ? prev
-        : { top, bottom };
+      return prev.top === top && prev.bottom === bottom ? prev : { top, bottom };
     });
   }, []);
 
@@ -131,8 +124,7 @@ export const CategorySuggestionList = forwardRef<
       const gap = 6;
       const margin = 12;
       const cardWidth = 300;
-      const canOpenRight =
-        menuRect.right + gap + cardWidth <= window.innerWidth - margin;
+      const canOpenRight = menuRect.right + gap + cardWidth <= window.innerWidth - margin;
       const canOpenLeft = menuRect.left - gap - cardWidth >= margin;
       const side = canOpenRight ? "right" : canOpenLeft ? "left" : null;
       if (!side) {
@@ -141,10 +133,7 @@ export const CategorySuggestionList = forwardRef<
       }
 
       const cardHeightGuess = 150;
-      const maxTop = Math.max(
-        0,
-        window.innerHeight - menuRect.top - margin - cardHeightGuess,
-      );
+      const maxTop = Math.max(0, window.innerHeight - menuRect.top - margin - cardHeightGuess);
       setDetail({
         index,
         key: commandItemKey(item),
@@ -191,19 +180,12 @@ export const CategorySuggestionList = forwardRef<
   );
 
   if (items.length === 0) {
-    return (
-      <div className="agent-category-menu agent-category-menu-empty">
-        No matches
-      </div>
-    );
+    return <div className="agent-category-menu agent-category-menu-empty">No matches</div>;
   }
 
   const detailItem = detail ? items[detail.index] : undefined;
   const activeDetail =
-    detail &&
-    detail.index === selected &&
-    detailItem &&
-    commandItemKey(detailItem) === detail.key
+    detail && detail.index === selected && detailItem && commandItemKey(detailItem) === detail.key
       ? detailItem
       : null;
   const categories = items
@@ -261,13 +243,9 @@ export const CategorySuggestionList = forwardRef<
           data-side={detail?.side}
           style={{ top: detail?.top ?? 0 }}
         >
-          <p className="agent-category-menu-detail-title">
-            {commandItemDetailTitle(activeDetail)}
-          </p>
+          <p className="agent-category-menu-detail-title">{commandItemDetailTitle(activeDetail)}</p>
           {commandItemDetailMeta(activeDetail) ? (
-            <p className="agent-category-menu-detail-meta">
-              {commandItemDetailMeta(activeDetail)}
-            </p>
+            <p className="agent-category-menu-detail-meta">{commandItemDetailMeta(activeDetail)}</p>
           ) : null}
           {commandItemDetailDescription(activeDetail) ? (
             <p className="agent-category-menu-detail-desc">
@@ -313,9 +291,7 @@ export const CategorySuggestionList = forwardRef<
       >
         <span
           className="agent-category-menu-icon"
-          data-category={
-            item.kind === "category" ? item.category.key : undefined
-          }
+          data-category={item.kind === "category" ? item.category.key : undefined}
         >
           {item.kind === "category" ? (
             <CategoryIcon category={item.category.key} size={16} />
@@ -326,9 +302,7 @@ export const CategorySuggestionList = forwardRef<
           )}
         </span>
         <span className="agent-category-menu-copy">
-          <span className="agent-category-menu-label">
-            {commandItemLabel(item)}
-          </span>
+          <span className="agent-category-menu-label">{commandItemLabel(item)}</span>
         </span>
       </button>
     );
@@ -351,9 +325,7 @@ function commandItemLabel(item: ComposerSlashCommandItem) {
 function commandHasDetail(item: ComposerSlashCommandItem) {
   if (item.kind === "builtin") return Boolean(item.command.description.trim());
   if (item.kind === "skill") {
-    return Boolean(
-      item.skill.description?.trim() || item.skill.category?.trim(),
-    );
+    return Boolean(item.skill.description?.trim() || item.skill.category?.trim());
   }
   return false;
 }
@@ -375,9 +347,7 @@ function commandItemDetailDescription(item: ComposerSlashCommandItem) {
   return "";
 }
 
-function commandItemIcon(
-  item: Extract<ComposerSlashCommandItem, { kind: "builtin" }>,
-) {
+function commandItemIcon(item: Extract<ComposerSlashCommandItem, { kind: "builtin" }>) {
   return item.command.name === "file" ? (
     <IconFileText size={16} aria-hidden />
   ) : (

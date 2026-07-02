@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   setDictationLanguage: vi.fn(),
   setDictationShortcut: vi.fn(),
   osAccountsLogin: vi.fn(),
+  juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("../lib/tauri", () => ({
   setDictationLanguage: mocks.setDictationLanguage,
   setDictationShortcut: mocks.setDictationShortcut,
   osAccountsLogin: mocks.osAccountsLogin,
+  juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
@@ -130,18 +132,15 @@ describe("OnboardingFlow", () => {
     vi.clearAllMocks();
     localStorage.clear();
     emitDictationEvent = undefined;
-    mocks.listen.mockImplementation(
-      (eventName: string, handler: ListenHandler) => {
-        if (eventName === "dictation-event") emitDictationEvent = handler;
-        return Promise.resolve(vi.fn());
-      },
-    );
+    mocks.listen.mockImplementation((eventName: string, handler: ListenHandler) => {
+      if (eventName === "dictation-event") emitDictationEvent = handler;
+      return Promise.resolve(vi.fn());
+    });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(
-      systemAudioReadiness(true),
-    );
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(true));
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
+    mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.setDictationLanguage.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockResolvedValue(undefined);
@@ -156,9 +155,7 @@ describe("OnboardingFlow", () => {
     });
   });
 
-  function flowProps(
-    overrides: Partial<Parameters<typeof OnboardingFlow>[0]> = {},
-  ) {
+  function flowProps(overrides: Partial<Parameters<typeof OnboardingFlow>[0]> = {}) {
     return {
       account,
       onAccountChanged: vi.fn(),
@@ -184,10 +181,7 @@ describe("OnboardingFlow", () => {
 
   function stubNavigatorPlatform(platform: string, userAgent: string) {
     const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
-    const ownUserAgent = Object.getOwnPropertyDescriptor(
-      navigator,
-      "userAgent",
-    );
+    const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
     Object.defineProperty(navigator, "platform", {
       configurable: true,
       get: () => platform,
@@ -211,10 +205,7 @@ describe("OnboardingFlow", () => {
   }
 
   function stubMacNavigatorPlatform() {
-    return stubNavigatorPlatform(
-      "MacIntel",
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
-    );
+    return stubNavigatorPlatform("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)");
   }
 
   it("walks the full flow for a subscribed user", async () => {
@@ -224,9 +215,7 @@ describe("OnboardingFlow", () => {
     // Permissions: continue stays locked until the helper reports both granted.
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
     grantPermissions();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Continue" }));
     // The next step is hands-on practice. Onboarding no longer opens billing
     // or asks for a card before the user tries the product.
@@ -242,9 +231,7 @@ describe("OnboardingFlow", () => {
 
   async function walkToPractice(user: ReturnType<typeof userEvent.setup>) {
     grantPermissions();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByPlaceholderText(/Tell June what to do/i);
   }
@@ -405,19 +392,27 @@ describe("OnboardingFlow", () => {
     const user = userEvent.setup();
     const onAccountChanged = vi.fn();
     mocks.osAccountsLogin.mockResolvedValue(account);
-    render(
-      <OnboardingFlow
-        {...flowProps({ account: signedOutAccount, onAccountChanged })}
-      />,
-    );
+    render(<OnboardingFlow {...flowProps({ account: signedOutAccount, onAccountChanged })} />);
 
     await screen.findByRole("heading", { name: "Welcome to June" });
-    await user.click(
-      screen.getByRole("button", { name: "Continue with OpenSoftware" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
     expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
     await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
+  });
+
+  it("opens the June community from the welcome step", async () => {
+    const user = userEvent.setup();
+    render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
+
+    await screen.findByRole("heading", { name: "Welcome to June" });
+    await user.click(
+      screen.getByRole("button", {
+        name: "June community on Telegram",
+      }),
+    );
+
+    expect(mocks.juneOpenCommunityPage).toHaveBeenCalledOnce();
   });
 
   it("shows Windows-accurate welcome copy", async () => {
@@ -429,29 +424,17 @@ describe("OnboardingFlow", () => {
       render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
 
       await screen.findByRole("heading", { name: "Welcome to June" });
+      expect(screen.getByText("Desktop notes for your work")).toBeInTheDocument();
+      expect(screen.getByText("Meeting notes from your mic")).toBeInTheDocument();
       expect(
-        screen.getByText("Desktop notes for your work"),
+        screen.getByText("Record meetings from your microphone and turn them into notes."),
       ).toBeInTheDocument();
-      expect(
-        screen.getByText("Meeting notes from your mic"),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          "Record meetings from your microphone and turn them into notes.",
-        ),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByText("Speak instead of type"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Speak instead of type")).not.toBeInTheDocument();
       expect(
         screen.queryByText(/June turns your voice into polished writing/),
       ).not.toBeInTheDocument();
-      expect(
-        screen.queryByText("Effortlessly capture meetings"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByText("Chat and work with June"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Effortlessly capture meetings")).not.toBeInTheDocument();
+      expect(screen.queryByText("Chat and work with June")).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
@@ -463,16 +446,12 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", { name: "Let June listen and type" });
 
     grantPermissions();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByPlaceholderText(/Tell June what to do/i);
 
     expect(screen.queryByRole("heading", { name: /free trial/i })).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: /Start free trial/i }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /Start free trial/i })).toBeNull();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
 
@@ -491,10 +470,7 @@ describe("OnboardingFlow", () => {
     expect(screen.queryByRole("listbox")).toBeNull();
     expect(screen.queryByRole("option")).toBeNull();
 
-    await user.type(
-      screen.getByPlaceholderText(/Tell June what to do/i),
-      "hello there",
-    );
+    await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "hello there");
     await user.click(screen.getByRole("button", { name: "Start using June" }));
   });
 
@@ -562,15 +538,11 @@ describe("OnboardingFlow", () => {
         }),
       });
 
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-      );
+      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
       await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
       await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
-      expect(
-        screen.queryByRole("heading", { name: "Talk to June" }),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Talk to June" })).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
@@ -583,9 +555,7 @@ describe("OnboardingFlow", () => {
     try {
       await renderFlow();
       await waitFor(() =>
-        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith(
-          "microphonePlusSystem",
-        ),
+        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith("microphonePlusSystem"),
       );
     } finally {
       restoreNavigator();
@@ -595,9 +565,7 @@ describe("OnboardingFlow", () => {
   it("keeps continue locked and falls back to settings when system audio is denied", async () => {
     const user = userEvent.setup();
     const restoreNavigator = stubMacNavigatorPlatform();
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(
-      systemAudioReadiness(false),
-    );
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(false));
     try {
       await renderFlow();
       grantPermissions();
@@ -607,20 +575,14 @@ describe("OnboardingFlow", () => {
       );
       expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
 
-      await user.click(
-        screen.getByRole("button", { name: "Allow system audio access" }),
-      );
+      await user.click(screen.getByRole("button", { name: "Allow system audio access" }));
       expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
 
       // The user flips the toggle and comes back; the focus re-probe picks
       // up the grant.
-      mocks.checkRecordingSourceReadiness.mockResolvedValue(
-        systemAudioReadiness(true),
-      );
+      mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(true));
       window.dispatchEvent(new Event("focus"));
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-      );
+      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     } finally {
       restoreNavigator();
     }
@@ -640,9 +602,7 @@ describe("OnboardingFlow", () => {
       grantPermissions();
 
       await screen.findByText("Needs macOS 14.2 or later.");
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-      );
+      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     } finally {
       restoreNavigator();
     }
@@ -650,21 +610,15 @@ describe("OnboardingFlow", () => {
 
   it("does not show System Settings copy when system audio permission is granted but capture is unavailable", async () => {
     const restoreNavigator = stubMacNavigatorPlatform();
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(
-      systemAudioCaptureUnavailableReadiness(),
-    );
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioCaptureUnavailableReadiness());
     try {
       await renderFlow();
       grantPermissions();
 
       expect(
-        screen.queryByText(
-          "Turned off in System Settings. Flip the toggle and June will notice.",
-        ),
+        screen.queryByText("Turned off in System Settings. Flip the toggle and June will notice."),
       ).not.toBeInTheDocument();
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-      );
+      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     } finally {
       restoreNavigator();
     }
@@ -684,9 +638,7 @@ describe("subscribeToOnboardingComplete", () => {
     // BroadcastChannel message for the same completion; the guard collapses
     // them into a single invocation.
     localStorage.setItem("june.onboarding.completedVersion", "999");
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: "june.onboarding.completedVersion" }),
-    );
+    window.dispatchEvent(new StorageEvent("storage", { key: "june.onboarding.completedVersion" }));
     window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
 
     expect(callback).toHaveBeenCalledOnce();
@@ -699,9 +651,7 @@ describe("subscribeToOnboardingComplete", () => {
     unsubscribe();
 
     localStorage.setItem("june.onboarding.completedVersion", "999");
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: "june.onboarding.completedVersion" }),
-    );
+    window.dispatchEvent(new StorageEvent("storage", { key: "june.onboarding.completedVersion" }));
     window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
 
     expect(callback).not.toHaveBeenCalled();

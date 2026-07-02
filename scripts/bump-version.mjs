@@ -116,10 +116,7 @@ function replaceCargoPackageVersion(contents, requestedVersion) {
   if (index === -1) {
     throw new Error("Could not find [package] version in Cargo.toml.");
   }
-  lines[index] = lines[index].replace(
-    /version\s*=\s*"[^"]*"/,
-    `version = "${requestedVersion}"`,
-  );
+  lines[index] = lines[index].replace(/version\s*=\s*"[^"]*"/, `version = "${requestedVersion}"`);
   return lines.join("\n");
 }
 

@@ -23,11 +23,7 @@
  * the same session always resumes under the same jail it ran under in June.
  */
 
-import {
-  type HermesMode,
-  hermesModeFor,
-  hermesModeFromUnrestricted,
-} from "./hermes-control-plane";
+import { type HermesMode, hermesModeFor, hermesModeFromUnrestricted } from "./hermes-control-plane";
 
 /** Which interactive shell to open. `tui` is the modern Hermes TUI; `repl` is
  * the classic prompt_toolkit REPL (`--cli`), kept as an escape hatch for when
@@ -49,14 +45,10 @@ export type BuildHermesTuiResumeArgsInput = {
  * Throws on a blank session id — resuming "the most recent" session would
  * silently break the trace link this whole feature depends on.
  */
-export function buildHermesTuiResumeArgs(
-  input: BuildHermesTuiResumeArgsInput,
-): string[] {
+export function buildHermesTuiResumeArgs(input: BuildHermesTuiResumeArgsInput): string[] {
   const sessionId = input.sessionId.trim();
   if (!sessionId) {
-    throw new Error(
-      "A session id is required to resume a Hermes TUI debug session.",
-    );
+    throw new Error("A session id is required to resume a Hermes TUI debug session.");
   }
   const interfaceFlag = input.interface === "repl" ? "--cli" : "--tui";
   return [interfaceFlag, "--resume", sessionId];
@@ -67,10 +59,7 @@ export function buildHermesTuiResumeArgs(
  * TUI session window with the June session it was launched from. Both halves
  * resume the same id, so this line is the proof they are the same session.
  */
-export function hermesTuiDebugTraceLine(input: {
-  sessionId: string;
-  mode: HermesMode;
-}): string {
+export function hermesTuiDebugTraceLine(input: { sessionId: string; mode: HermesMode }): string {
   return `Hermes TUI debug: resuming June session ${input.sessionId} in raw TUI (${input.mode} mode). Same session id, same profile as June.`;
 }
 

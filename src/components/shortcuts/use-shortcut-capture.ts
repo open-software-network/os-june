@@ -35,10 +35,7 @@ export function useShortcutCapture({
   kind: DictationShortcutKind;
   /** Fires after the chord is captured AND persisted. `saved` is the
    * settings snapshot the backend returned (undefined in stubbed envs). */
-  onSaved?: (
-    saved: DictationSettingsDto | undefined,
-    captured: CapturedShortcut,
-  ) => void;
+  onSaved?: (saved: DictationSettingsDto | undefined, captured: CapturedShortcut) => void;
 }) {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string>();
@@ -81,17 +78,12 @@ export function useShortcutCapture({
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
       if (helperEvent.type === "shortcut_capture_error") {
-        setError(
-          helperEvent.payload?.message ?? "Shortcut could not be captured.",
-        );
+        setError(helperEvent.payload?.message ?? "Shortcut could not be captured.");
         setCapturing(false);
         return;
       }
       if (helperEvent.type !== "shortcut_captured") return;
-      const captured = shortcutFromCapturePayload(
-        helperEvent.payload?.shortcut,
-        1,
-      );
+      const captured = shortcutFromCapturePayload(helperEvent.payload?.shortcut, 1);
       if (!captured) {
         setError("Shortcut capture returned invalid data.");
         setCapturing(false);
@@ -130,9 +122,7 @@ export function useShortcutCapture({
         return;
       }
       // Stop the helper's capture before persisting: the chord is decided.
-      void dictationHelperCommand({ type: "cancel_shortcut_capture" }).catch(
-        () => undefined,
-      );
+      void dictationHelperCommand({ type: "cancel_shortcut_capture" }).catch(() => undefined);
       persistCaptured(result.shortcut);
     }
     window.addEventListener("keydown", onKey, true);
@@ -153,9 +143,7 @@ export function useShortcutCapture({
   useEffect(() => {
     return () => {
       if (capturingRef.current) {
-        void dictationHelperCommand({ type: "cancel_shortcut_capture" }).catch(
-          () => undefined,
-        );
+        void dictationHelperCommand({ type: "cancel_shortcut_capture" }).catch(() => undefined);
       }
     };
   }, []);
@@ -172,9 +160,7 @@ export function shortcutFromCapturePayload(
   const value = shortcut as Partial<DictationShortcutSetting>;
   const modifiers = value.modifiers;
   const pressCount =
-    value.pressCount === 1 || value.pressCount === 2
-      ? value.pressCount
-      : fallbackPressCount;
+    value.pressCount === 1 || value.pressCount === 2 ? value.pressCount : fallbackPressCount;
   if (
     typeof value.code !== "string" ||
     typeof value.label !== "string" ||
@@ -205,8 +191,7 @@ export type CaptureKeyResult =
   | { kind: "needsModifier" }
   | { kind: "chord"; shortcut: CapturedShortcut };
 
-export const MODIFIER_REQUIRED_MESSAGE =
-  "Shortcut must include Cmd, Ctrl, Opt, Shift, or Fn.";
+export const MODIFIER_REQUIRED_MESSAGE = "Shortcut must include Cmd, Ctrl, Opt, Shift, or Fn.";
 
 export function chordFromKeyEvent(event: KeyboardEvent): CaptureKeyResult {
   if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) {

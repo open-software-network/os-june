@@ -45,9 +45,7 @@ describe("buildWsUrl — matches the ws_url format in start_hermes_bridge_inner"
 
 describe("buildStatusUrl — matches the readiness probe in wait_for_hermes", () => {
   it("builds http://host:port/api/status", () => {
-    expect(buildStatusUrl("127.0.0.1", 51234)).toBe(
-      "http://127.0.0.1:51234/api/status",
-    );
+    expect(buildStatusUrl("127.0.0.1", 51234)).toBe("http://127.0.0.1:51234/api/status");
   });
 });
 
@@ -66,9 +64,7 @@ describe("buildHermesDashboardArgs — matches the hermes_args array", () => {
 
 describe("buildRpcFrame — matches HermesGatewayClient.request wire frame", () => {
   it("builds a JSON-RPC 2.0 request frame with id, method, params", () => {
-    expect(
-      buildRpcFrame(1, "session.create", { title: "Smoke", cols: 96 }),
-    ).toEqual({
+    expect(buildRpcFrame(1, "session.create", { title: "Smoke", cols: 96 })).toEqual({
       jsonrpc: "2.0",
       id: 1,
       method: "session.create",
@@ -122,9 +118,7 @@ describe("isControlledModelDispatchError — gates the /model smoke PASS", () =>
   });
 
   it("rejects a rejection with no code", () => {
-    expect(isControlledModelDispatchError(new Error("connection closed"))).toBe(
-      false,
-    );
+    expect(isControlledModelDispatchError(new Error("connection closed"))).toBe(false);
     expect(isControlledModelDispatchError({})).toBe(false);
   });
 

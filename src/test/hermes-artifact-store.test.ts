@@ -165,8 +165,7 @@ describe("artifactsFromToolEvent", () => {
     // path (single token, >31 chars) used to be masked by the classifier's
     // sanitize step, so the artifact pointed at "[redacted]". The classifier
     // here runs the real sanitize path, so this proves the real file survives.
-    const path =
-      "/Users/me/code/project/src/components/agent/AgentWorkspace.tsx";
+    const path = "/Users/me/code/project/src/components/agent/AgentWorkspace.tsx";
     expect(path.length).toBeGreaterThan(31);
     const event = toolClassified("tool.complete", "s1", {
       name: "edit_file",
@@ -221,8 +220,7 @@ describe("createHermesArtifactStore", () => {
     // End-to-end: classify (which sanitizes) -> store.record -> drawer read.
     // Proves the artifact a user clicks opens the real file.
     const store = createHermesArtifactStore();
-    const path =
-      "/Users/me/code/project/src/components/agent/AgentWorkspace.tsx";
+    const path = "/Users/me/code/project/src/components/agent/AgentWorkspace.tsx";
     store.record(
       toolClassified("tool.complete", "s1", { name: "edit_file", path }),
       "unrestricted",
@@ -259,10 +257,7 @@ describe("createHermesArtifactStore", () => {
 
   it("ignores events that produce no artifacts", () => {
     const store = createHermesArtifactStore();
-    store.record(
-      toolClassified("tool.complete", "s1", { name: "run_command" }),
-      "sandboxed",
-    );
+    store.record(toolClassified("tool.complete", "s1", { name: "run_command" }), "sandboxed");
     expect(store.getRecordsForSession("s1")).toEqual([]);
     expect(store.getVersion()).toBe(0);
   });
@@ -330,9 +325,7 @@ describe("createHermesArtifactStore", () => {
         "sandboxed",
       );
     }
-    expect(store.getRecordsForSession("s1")).toHaveLength(
-      ARTIFACTS_PER_SESSION_CAP,
-    );
+    expect(store.getRecordsForSession("s1")).toHaveLength(ARTIFACTS_PER_SESSION_CAP);
   });
 
   it("keeps artifacts partitioned per session", () => {

@@ -1,0 +1,11 @@
+# Mirrors june-api/clippy.toml, adapted for the Tauri shell:
+#   - msrv tracks src-tauri's rust-version (1.80.0), not june-api's 1.95.
+#   - too-many-arguments is relaxed to 8: Tauri command handlers legitimately
+#     take several parameters plus injected State/AppHandle.
+#   - the std::env disallowed-methods ban is intentionally omitted: unlike
+#     june-api (typed config only), the desktop shell reads and sets process
+#     env at startup (JUNE_API_URL, OS_ACCOUNTS_*, spawning the Hermes runtime).
+msrv = "1.80.0"
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 8
+type-complexity-threshold = 250

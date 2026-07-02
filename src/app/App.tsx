@@ -1,22 +1,11 @@
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
-import { IconArrowRight } from "central-icons/IconArrowRight";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from "react";
-import type {
-  CSSProperties,
-  PointerEvent as ReactPointerEvent,
-  ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
 import { FundingGate } from "../components/account/FundingGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
@@ -40,24 +29,13 @@ import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToP
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
-import {
-  NotesList,
-  type NotesListHandle,
-} from "../components/notes-list/NotesList";
+import type { UpdateCardDemoApi } from "../lib/update-card-demo";
+import { NotesList, type NotesListHandle } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
-import {
-  AppSettings,
-  type SettingsTab,
-} from "../components/settings/AppSettings";
+import { AppSettings, type SettingsTab } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { TabBar, type TabItem } from "../components/tabs/TabBar";
-import {
-  defaultNav,
-  makeTabId,
-  navEquals,
-  type Tab,
-  type TabNav,
-} from "./tabs/tabs";
+import { defaultNav, makeTabId, navEquals, type Tab, type TabNav } from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
@@ -100,10 +78,7 @@ import {
   agentHudShow,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
-import {
-  playRecordingSound,
-  preloadRecordingSounds,
-} from "../lib/recording-sounds";
+import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
@@ -171,8 +146,8 @@ import {
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import { checkJuneUpdate, relaunchJune, type JuneUpdate } from "../lib/updater";
-import { shouldPollProcessingStatus } from "./processing-polling";
+import { checkJuneUpdate, reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
+import { PROCESSING_DEMO_NOTE_ID, shouldPollProcessingStatus } from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import { handleSidebarResizeStart } from "./sidebar-resize";
@@ -192,9 +167,7 @@ const SIDEBAR_COLLAPSE_WIDTH = 160;
 const CHECK_FOR_UPDATES_EVENT = "june://check-for-updates";
 const AGENT_MENU_BAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_MENU_BAR_SESSION_LIMIT = 6;
-const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [
-  250, 500, 1000, 2000, 4000, 8000,
-];
+const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
@@ -247,18 +220,14 @@ function tabMeta(
 ): { title: string; icon: ReactNode } {
   switch (nav.view) {
     case "meetings": {
-      const note = nav.noteId
-        ? notes.find((n) => n.id === nav.noteId)
-        : undefined;
+      const note = nav.noteId ? notes.find((n) => n.id === nav.noteId) : undefined;
       return {
         title: note?.title?.trim() || "New note",
         icon: <IconNoteText size={TAB_ICON_SIZE} />,
       };
     }
     case "folders": {
-      const folder = nav.folderId
-        ? folders.find((f) => f.id === nav.folderId)
-        : undefined;
+      const folder = nav.folderId ? folders.find((f) => f.id === nav.folderId) : undefined;
       return {
         title: folder?.name?.trim() || "Projects",
         icon: <IconProjects size={TAB_ICON_SIZE} />,
@@ -269,10 +238,7 @@ function tabMeta(
         ? sessions.find((s) => s.id === nav.agentSessionId)
         : undefined;
       return {
-        title:
-          agentSessionTabTitle(session) ||
-          nav.agentSessionTitle?.trim() ||
-          "New session",
+        title: agentSessionTabTitle(session) || nav.agentSessionTitle?.trim() || "New session",
         icon: <IconBubble3 size={TAB_ICON_SIZE} />,
       };
     }
@@ -312,18 +278,12 @@ function tabMeta(
 
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
-  const [state, dispatch] = useReducer(
-    notesReducer,
-    undefined,
-    createInitialState,
-  );
+  const [state, dispatch] = useReducer(notesReducer, undefined, createInitialState);
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [sidebarResizing, setSidebarResizing] = useState(false);
-  const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">(
-    "none",
-  );
+  const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">("none");
   const [bootstrapped, setBootstrapped] = useState(false);
   // macOS launches on a fresh agent session. The Windows installer does not
   // bundle Hermes yet, so Windows starts on meeting notes instead of promising
@@ -354,29 +314,21 @@ export function App() {
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
-  const [activeAgentSessionSeed, setActiveAgentSessionSeed] =
-    useState<HermesSessionInfo>();
-  const setActiveAgentSession = useCallback(
-    (session: HermesSessionInfo | undefined) => {
-      setActiveAgentSessionId(session?.id);
-      setActiveAgentSessionSeed(session);
-    },
-    [],
+  const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<HermesSessionInfo>();
+  const setActiveAgentSession = useCallback((session: HermesSessionInfo | undefined) => {
+    setActiveAgentSessionId(session?.id);
+    setActiveAgentSessionSeed(session);
+  }, []);
+  const [agentWorkingSessionIds, setAgentWorkingSessionIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
   );
-  const [agentWorkingSessionIds, setAgentWorkingSessionIds] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
-  const [agentWaitingSessionIds, setAgentWaitingSessionIds] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
+  const [agentWaitingSessionIds, setAgentWaitingSessionIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   // sessionId -> project (folder) ids. Sessions live in Hermes, so their
   // project assignments are tracked separately from the notes state.
-  const [sessionFolders, setSessionFolders] = useState<
-    Record<string, string[]>
-  >({});
-  const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<
-    string[] | null
-  >(null);
+  const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
+  const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<string[] | null>(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
   // mirroring notes-from-folder.
@@ -400,8 +352,7 @@ export function App() {
   const agentSessionsListRef = useRef<AgentSessionsListHandle | null>(null);
   // Where the back affordance in settings returns to — captured when settings
   // is opened so "back" lands the user where they were, not on Notes.
-  const [settingsReturnView, setSettingsReturnView] =
-    useState<SidebarView>("notes");
+  const [settingsReturnView, setSettingsReturnView] = useState<SidebarView>("notes");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const openSettings = useCallback(() => {
     const returnView = activeViewRef.current;
@@ -418,29 +369,24 @@ export function App() {
   const [folderReturnTarget, setFolderReturnTarget] = useState<
     { noteId: string; label: string } | undefined
   >();
-  const [moveDialogNoteIds, setMoveDialogNoteIds] = useState<string[] | null>(
-    null,
-  );
+  const [moveDialogNoteIds, setMoveDialogNoteIds] = useState<string[] | null>(null);
   // User's intent for system audio. Defaults true ("record everything").
   // The actual sourceMode is derived below so that granting/revoking
   // permission in System Settings flips the toggle without losing intent.
   const [userWantsSystemAudio, setUserWantsSystemAudio] = useState(true);
-  const [sourceReadiness, setSourceReadiness] =
-    useState<RecordingSourceReadinessDto>();
+  const [sourceReadiness, setSourceReadiness] = useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
+  const [accessibilityBannerDismissed, setAccessibilityBannerDismissed] = useState(false);
   const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
-  const [readyUpdate, setReadyUpdate] =
-    useState<UpdatePromptPayload<JuneUpdate> | null>(null);
+  const [readyUpdate, setReadyUpdate] = useState<UpdatePromptPayload<JuneUpdate> | null>(null);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [preparingUpdate, setPreparingUpdate] = useState(false);
   const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
-  const [updateProgress, setUpdateProgress] =
-    useState<UpdateInstallProgress | null>(null);
-  const systemGranted = !!sourceReadiness?.sources.find(
-    (source) => source.source === "system",
-  )?.ready;
+  const [updateProgress, setUpdateProgress] = useState<UpdateInstallProgress | null>(null);
+  const systemGranted = !!sourceReadiness?.sources.find((source) => source.source === "system")
+    ?.ready;
   const recordingState = state.recordingStatus?.state;
   const captureActive =
     recordingState === "recording" ||
@@ -448,9 +394,7 @@ export function App() {
     recordingState === "finalizing" ||
     recordingState === "validating";
   const sourceMode: RecordingSourceMode =
-    userWantsSystemAudio && systemGranted
-      ? "microphonePlusSystem"
-      : "microphoneOnly";
+    userWantsSystemAudio && systemGranted ? "microphonePlusSystem" : "microphoneOnly";
   const {
     account,
     error: accountError,
@@ -469,20 +413,14 @@ export function App() {
   // floating global recorder pill is up (it shows whenever a recording is live
   // but you're not viewing its note). Always update them together via
   // setRecordingNote so they can't drift.
-  const [recordingNoteId, setRecordingNoteIdState] = useState<
-    string | undefined
-  >(undefined);
+  const [recordingNoteId, setRecordingNoteIdState] = useState<string | undefined>(undefined);
   const recordingStatusRef = useRef(state.recordingStatus);
   const recordingInactivityTrackerRef = useRef<RecordingInactivityTracker>({});
   const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
     useState<RecordingInactivityPrompt | null>(null);
-  const [recordingInactivityNow, setRecordingInactivityNow] = useState(() =>
-    Date.now(),
-  );
+  const [recordingInactivityNow, setRecordingInactivityNow] = useState(() => Date.now());
   const recordingStartInFlightRef = useRef(false);
-  const [liveTranscriptEvents, setLiveTranscriptEvents] = useState<
-    LiveTranscriptEventDto[]
-  >([]);
+  const [liveTranscriptEvents, setLiveTranscriptEvents] = useState<LiveTranscriptEventDto[]>([]);
   useEffect(() => {
     recordingStatusRef.current = state.recordingStatus;
   }, [state.recordingStatus]);
@@ -493,24 +431,63 @@ export function App() {
   // Dev-only synthetic status driving the global recorder pill, set by the
   // window.__globalRecorderPill console hook. When non-null it force-shows the
   // pill (any view, no real recording) so its styling can be inspected.
-  const [demoRecorderStatus, setDemoRecorderStatus] =
-    useState<RecordingStatusDto | null>(null);
+  const [demoRecorderStatus, setDemoRecorderStatus] = useState<RecordingStatusDto | null>(null);
   const demoRecorderRef = useRef<GlobalRecorderDemoApi | null>(null);
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     let cancelled = false;
-    void import("../lib/global-recorder-demo").then(
-      ({ registerGlobalRecorderDemo }) => {
-        if (cancelled) return;
-        demoRecorderRef.current = registerGlobalRecorderDemo({
-          setStatus: setDemoRecorderStatus,
-        });
-      },
-    );
+    void import("../lib/global-recorder-demo").then(({ registerGlobalRecorderDemo }) => {
+      if (cancelled) return;
+      demoRecorderRef.current = registerGlobalRecorderDemo({
+        setStatus: setDemoRecorderStatus,
+      });
+    });
     return () => {
       cancelled = true;
       demoRecorderRef.current?.dispose();
       demoRecorderRef.current = null;
+    };
+  }, []);
+  // Dev-only console driver (window.__processingDemo) that seeds a synthetic
+  // meeting note parked in a transcription-processing stage so the
+  // ProcessingProgressIndicator can be inspected without a real recording.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/processing-progress-demo").then(({ registerProcessingProgressDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerProcessingProgressDemo({
+        seedNote: (note) => {
+          dispatch({ type: "noteLoaded", note });
+          setActiveView("meetings");
+        },
+      }));
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+  // Dev console driver for the sidebar "Relaunch to update" card
+  // (window.__updateCard). Pushes synthetic values into the real update state
+  // so the card's styling can be parked and inspected without a live update.
+  const updateCardDemoRef = useRef<UpdateCardDemoApi | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    void import("../lib/update-card-demo").then(({ registerUpdateCardDemo }) => {
+      if (cancelled) return;
+      updateCardDemoRef.current = registerUpdateCardDemo({
+        setReadyUpdate,
+        setStatus: setUpdateStatus,
+        setRelaunching: setRelaunchingUpdate,
+      });
+    });
+    return () => {
+      cancelled = true;
+      updateCardDemoRef.current?.dispose();
+      updateCardDemoRef.current = null;
     };
   }, []);
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
@@ -523,12 +500,9 @@ export function App() {
     import.meta.env.DEV &&
     !account.signedIn &&
     (accountLoading || !!accountError || !account.configured);
-  const signInRequired =
-    !devAccountsUnconfigured && shouldBlockOnSignIn(account);
+  const signInRequired = !devAccountsUnconfigured && shouldBlockOnSignIn(account);
   const fundingRequired =
-    !devAccountsUnconfigured &&
-    !signInRequired &&
-    shouldBlockOnFunding(account);
+    !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
   const topUpOpensPortal = shouldOpenPortalForDepletedBalance(account);
   const handleTopUp = useCallback(() => {
@@ -546,8 +520,7 @@ export function App() {
   // Onboarding counts as blocked so bootstrap, update checks, and the eager
   // permission probes hold off until the wizard finishes — the wizard owns
   // the permission prompts while it's on screen.
-  const appBlocked =
-    accountLoading || signInRequired || fundingRequired || onboardingRequired;
+  const appBlocked = accountLoading || signInRequired || fundingRequired || onboardingRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -592,17 +565,11 @@ export function App() {
     }
     return map;
   }, [state.activeRecoveries]);
-  const recoverableNoteIds = useMemo(
-    () => new Set(recoveriesByNote.keys()),
-    [recoveriesByNote],
-  );
-  const selectedRecovery = selectedNote
-    ? recoveriesByNote.get(selectedNote.id)
-    : undefined;
+  const recoverableNoteIds = useMemo(() => new Set(recoveriesByNote.keys()), [recoveriesByNote]);
+  const selectedRecovery = selectedNote ? recoveriesByNote.get(selectedNote.id) : undefined;
   const noteDetailScrollerActive = activeView === "meetings" && !!selectedNote;
   const noteHasBreadcrumb = !!(originFolder || originAllNotes);
-  const detailScrollerActive =
-    activeView === "folders" && !!state.selectedFolderId;
+  const detailScrollerActive = activeView === "folders" && !!state.selectedFolderId;
 
   // ---- Tabs ------------------------------------------------------------
   // The current live navigation, reduced to a snapshot. Fields are gated by
@@ -617,9 +584,7 @@ export function App() {
       folderId: activeView === "folders" ? state.selectedFolderId : undefined,
       agentSessionId: activeView === "agent" ? activeAgentSessionId : undefined,
       agentSessionTitle:
-        activeView === "agent"
-          ? agentSessionTabTitle(activeAgentSessionSeed)
-          : undefined,
+        activeView === "agent" ? agentSessionTabTitle(activeAgentSessionSeed) : undefined,
       agentOrigin: activeView === "agent" ? agentOrigin : undefined,
     }),
     [
@@ -680,9 +645,7 @@ export function App() {
       // release to a target that might be unreachable (a deleted session/note).
       restoreTargetRef.current = nav;
       setAgentOrigin(nav.view === "agent" ? nav.agentOrigin : undefined);
-      setOriginFolderId(
-        nav.view === "meetings" ? nav.originFolderId : undefined,
-      );
+      setOriginFolderId(nav.view === "meetings" ? nav.originFolderId : undefined);
       setOriginAllNotes(nav.view === "meetings" ? !!nav.originAllNotes : false);
       // The "back to <note>" breadcrumb target isn't part of a tab's snapshot,
       // so clear it on every restore — otherwise it leaks from the tab that set
@@ -710,9 +673,7 @@ export function App() {
         setActiveAgentSession(undefined);
       }
       const needsNoteLoad =
-        nav.view === "meetings" &&
-        !!nav.noteId &&
-        selectedNoteIdRef.current !== nav.noteId;
+        nav.view === "meetings" && !!nav.noteId && selectedNoteIdRef.current !== nav.noteId;
       if (needsNoteLoad) {
         const noteId = nav.noteId!;
         void getNote(noteId)
@@ -771,9 +732,7 @@ export function App() {
     setActiveAgentSession(undefined);
     setActiveView("agent");
     window.setTimeout(() => {
-      window.dispatchEvent(
-        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
-      );
+      window.dispatchEvent(new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT));
     }, 0);
   }, []);
 
@@ -851,11 +810,7 @@ export function App() {
       prev.filter(
         (tab) =>
           tab.id === activeTabId ||
-          !(
-            tab.nav.view === "meetings" &&
-            tab.nav.noteId &&
-            removedIds.has(tab.nav.noteId)
-          ),
+          !(tab.nav.view === "meetings" && tab.nav.noteId && removedIds.has(tab.nav.noteId)),
       ),
     );
   }
@@ -924,8 +879,7 @@ export function App() {
   const newTabIntentRef = useRef(false);
   useEffect(() => {
     const record = (event: MouseEvent) => {
-      newTabIntentRef.current =
-        event.metaKey || event.ctrlKey || event.button === 1;
+      newTabIntentRef.current = event.metaKey || event.ctrlKey || event.button === 1;
     };
     window.addEventListener("click", record, true);
     window.addEventListener("auxclick", record, true);
@@ -999,7 +953,7 @@ export function App() {
   // shouldBlockOnSignIn back on, so the app falls through to the AccountGate.
   async function handleSignOut() {
     try {
-      await osAccountsLogout();
+      await osAccountsLogout({ clearBrowserSession: true });
       handleAccountChanged({ signedIn: false, configured: account.configured });
     } catch (err) {
       setError(messageFromError(err));
@@ -1045,11 +999,7 @@ export function App() {
 
   const prepareUpdate = useCallback(
     (payload: UpdatePromptPayload<JuneUpdate>, mode: UpdateCheckMode) => {
-      if (
-        preparingUpdateRef.current ||
-        readyUpdateRef.current ||
-        relaunchingUpdateRef.current
-      ) {
+      if (preparingUpdateRef.current || readyUpdateRef.current || relaunchingUpdateRef.current) {
         return;
       }
 
@@ -1066,9 +1016,7 @@ export function App() {
           setUpdateProgress(progress);
           if (mode === "manual" && !updateProgressHiddenRef.current) {
             setUpdateStatus(
-              progress.state === "installing"
-                ? "Preparing update..."
-                : "Downloading update...",
+              progress.state === "installing" ? "Preparing update..." : "Downloading update...",
             );
           }
         },
@@ -1094,7 +1042,9 @@ export function App() {
   );
 
   const runUpdateCheck = useCallback(
-    (mode: UpdateCheckMode) => {
+    // `check` defaults to the routine, forward-only check; the leave-rc reconcile
+    // passes reconcileToStable so it can pull an older stable (see below).
+    (mode: UpdateCheckMode, check: () => Promise<JuneUpdate | null> = checkJuneUpdate) => {
       if (readyUpdateRef.current || relaunchingUpdateRef.current) return;
       if (checkingUpdateRef.current) return;
       if (preparingUpdateRef.current) {
@@ -1109,7 +1059,7 @@ export function App() {
       else if (mode === "launch") setUpdateStatus(null);
       void checkForJuneUpdate(
         {
-          check: checkJuneUpdate,
+          check,
           prompt: (payload) => {
             prepareUpdate(payload, mode);
           },
@@ -1127,6 +1077,14 @@ export function App() {
     },
     [prepareUpdate],
   );
+
+  // Confirmed in Settings after switching off the rc channel: re-check with
+  // reconcile=true (which re-stashes the Rust-side pending update, so a periodic
+  // check between the Settings confirm and this call can't leave a stale handle)
+  // then run the same download -> ready -> relaunch flow as any update.
+  const handleReconcileToStable = useCallback(() => {
+    runUpdateCheck("manual", reconcileToStable);
+  }, [runUpdateCheck]);
 
   const handleRelaunchUpdate = useCallback(() => {
     if (!readyUpdateRef.current || relaunchingUpdateRef.current) return;
@@ -1160,12 +1118,10 @@ export function App() {
   useEffect(() => {
     let aborted = false;
     let unlisten: (() => void) | undefined;
-    void listen(CHECK_FOR_UPDATES_EVENT, () => runUpdateCheck("manual")).then(
-      (cleanup) => {
-        if (aborted) cleanup();
-        else unlisten = cleanup;
-      },
-    );
+    void listen(CHECK_FOR_UPDATES_EVENT, () => runUpdateCheck("manual")).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
     return () => {
       aborted = true;
       unlisten?.();
@@ -1193,8 +1149,7 @@ export function App() {
     }
 
     function handleOpenEvent(event: Event) {
-      const detail = (event as CustomEvent<{ session?: HermesSessionInfo }>)
-        .detail;
+      const detail = (event as CustomEvent<{ session?: HermesSessionInfo }>).detail;
       openAgentWorkspace(detail?.session);
     }
 
@@ -1248,10 +1203,7 @@ export function App() {
           if (cancelled) return;
           const retryDelay = AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS[attempt];
           if (retryDelay == null) return;
-          retryTimeout = window.setTimeout(
-            () => loadAgentMenuBarSessions(attempt + 1),
-            retryDelay,
-          );
+          retryTimeout = window.setTimeout(() => loadAgentMenuBarSessions(attempt + 1), retryDelay);
         });
     }
 
@@ -1274,7 +1226,8 @@ export function App() {
         if (cancelled) return;
         const next: Record<string, string[]> = {};
         for (const assignment of assignments) {
-          (next[assignment.sessionId] ??= []).push(assignment.folderId);
+          next[assignment.sessionId] ??= [];
+          next[assignment.sessionId].push(assignment.folderId);
         }
         setSessionFolders(next);
       })
@@ -1343,12 +1296,8 @@ export function App() {
           working: agentMenuBarWorkingSessionIdsRef.current,
           waiting: agentMenuBarWaitingSessionIdsRef.current,
         });
-        setAgentWorkingSessionIds(
-          new Set(agentMenuBarWorkingSessionIdsRef.current),
-        );
-        setAgentWaitingSessionIds(
-          new Set(agentMenuBarWaitingSessionIdsRef.current),
-        );
+        setAgentWorkingSessionIds(new Set(agentMenuBarWorkingSessionIdsRef.current));
+        setAgentWaitingSessionIds(new Set(agentMenuBarWaitingSessionIdsRef.current));
       }
       publishAgentMenuBarState();
     }
@@ -1360,45 +1309,21 @@ export function App() {
       agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.filter(
         (session) => session.id !== sessionId,
       );
-      setAgentSessions((current) =>
-        current.filter((session) => session.id !== sessionId),
-      );
+      setAgentSessions((current) => current.filter((session) => session.id !== sessionId));
       agentMenuBarWorkingSessionIdsRef.current.delete(sessionId);
       agentMenuBarWaitingSessionIdsRef.current.delete(sessionId);
-      setAgentWorkingSessionIds(
-        new Set(agentMenuBarWorkingSessionIdsRef.current),
-      );
-      setAgentWaitingSessionIds(
-        new Set(agentMenuBarWaitingSessionIdsRef.current),
-      );
+      setAgentWorkingSessionIds(new Set(agentMenuBarWorkingSessionIdsRef.current));
+      setAgentWaitingSessionIds(new Set(agentMenuBarWaitingSessionIdsRef.current));
       publishAgentMenuBarState();
     }
 
-    window.addEventListener(
-      AGENT_SESSIONS_CHANGED_EVENT,
-      handleSessionsChanged,
-    );
-    window.addEventListener(
-      AGENT_SESSION_STATUS_EVENT,
-      handleAgentStatusForMenuBar,
-    );
-    window.addEventListener(
-      AGENT_DELETE_SESSION_EVENT,
-      handleAgentSessionDeleted,
-    );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, handleSessionsChanged);
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatusForMenuBar);
+    window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleAgentSessionDeleted);
     return () => {
-      window.removeEventListener(
-        AGENT_SESSIONS_CHANGED_EVENT,
-        handleSessionsChanged,
-      );
-      window.removeEventListener(
-        AGENT_SESSION_STATUS_EVENT,
-        handleAgentStatusForMenuBar,
-      );
-      window.removeEventListener(
-        AGENT_DELETE_SESSION_EVENT,
-        handleAgentSessionDeleted,
-      );
+      window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, handleSessionsChanged);
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatusForMenuBar);
+      window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleAgentSessionDeleted);
     };
   }, [publishAgentMenuBarState]);
 
@@ -1407,18 +1332,13 @@ export function App() {
     let unlisten: (() => void) | undefined;
 
     function handleVisibilityChanged(event: Event) {
-      const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>)
-        .detail;
+      const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>).detail;
       if (detail) applyAgentHudVisibility(detail.enabled);
     }
 
-    window.addEventListener(
-      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
-      handleVisibilityChanged,
-    );
-    void listen<AgentHudVisibilityChangedDetail>(
-      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
-      (event) => applyAgentHudVisibility(event.payload.enabled),
+    window.addEventListener(AGENT_HUD_VISIBILITY_CHANGED_EVENT, handleVisibilityChanged);
+    void listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) =>
+      applyAgentHudVisibility(event.payload.enabled),
     )
       .then((cleanup) => {
         if (aborted) cleanup();
@@ -1431,10 +1351,7 @@ export function App() {
     return () => {
       aborted = true;
       unlisten?.();
-      window.removeEventListener(
-        AGENT_HUD_VISIBILITY_CHANGED_EVENT,
-        handleVisibilityChanged,
-      );
+      window.removeEventListener(AGENT_HUD_VISIBILITY_CHANGED_EVENT, handleVisibilityChanged);
     };
   }, [applyAgentHudVisibility]);
 
@@ -1442,14 +1359,9 @@ export function App() {
     let aborted = false;
     const unlisteners: Array<() => void> = [];
 
-    async function installMenuBarListener<T>(
-      eventName: string,
-      handler: (payload: T) => void,
-    ) {
+    async function installMenuBarListener<T>(eventName: string, handler: (payload: T) => void) {
       try {
-        const cleanup = await listen<T>(eventName, (event) =>
-          handler(event.payload),
-        );
+        const cleanup = await listen<T>(eventName, (event) => handler(event.payload));
         if (aborted) cleanup();
         else unlisteners.push(cleanup);
       } catch {
@@ -1464,44 +1376,39 @@ export function App() {
       setActiveAgentSession(undefined);
       setActiveView("agent");
       window.setTimeout(() => {
-        window.dispatchEvent(
-          new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
-        );
+        window.dispatchEvent(new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT));
       }, 0);
     });
 
-    void installMenuBarListener<string>(
-      AGENT_MENU_BAR_OPEN_SESSION_EVENT,
-      (sessionId) => {
-        setAgentOrigin(undefined);
-        if (!sessionId) {
-          setActiveAgentSession(undefined);
+    void installMenuBarListener<string>(AGENT_MENU_BAR_OPEN_SESSION_EVENT, (sessionId) => {
+      setAgentOrigin(undefined);
+      if (!sessionId) {
+        setActiveAgentSession(undefined);
+        setActiveView("agent");
+        return;
+      }
+      setActiveAgentSessionId(sessionId);
+      setActiveAgentSessionSeed(undefined);
+      const cachedSession = agentMenuBarSessionsRef.current.find(
+        (session) => session.id === sessionId,
+      );
+      if (cachedSession) {
+        setActiveAgentSession(cachedSession);
+        setActiveView("agent");
+        return;
+      }
+      void listHermesSessions({ limit: 100 })
+        .then((sessions) => {
+          agentMenuBarSessionsRef.current = sessions;
+          const session = sessions.find((item) => item.id === sessionId);
+          if (session) setActiveAgentSession(session);
           setActiveView("agent");
-          return;
-        }
-        setActiveAgentSessionId(sessionId);
-        setActiveAgentSessionSeed(undefined);
-        const cachedSession = agentMenuBarSessionsRef.current.find(
-          (session) => session.id === sessionId,
-        );
-        if (cachedSession) {
-          setActiveAgentSession(cachedSession);
+          publishAgentMenuBarState();
+        })
+        .catch(() => {
           setActiveView("agent");
-          return;
-        }
-        void listHermesSessions({ limit: 100 })
-          .then((sessions) => {
-            agentMenuBarSessionsRef.current = sessions;
-            const session = sessions.find((item) => item.id === sessionId);
-            if (session) setActiveAgentSession(session);
-            setActiveView("agent");
-            publishAgentMenuBarState();
-          })
-          .catch(() => {
-            setActiveView("agent");
-          });
-      },
-    );
+        });
+    });
 
     void installMenuBarListener<boolean>(
       AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
@@ -1558,9 +1465,7 @@ export function App() {
         return;
       }
       const microphone = stringPayloadValue(helperEvent.payload?.microphone);
-      const accessibility = stringPayloadValue(
-        helperEvent.payload?.accessibility,
-      );
+      const accessibility = stringPayloadValue(helperEvent.payload?.accessibility);
       if (microphone) setMicrophoneStatus(microphone);
       if (accessibility) setAccessibilityStatus(accessibility);
     }).then((cleanup) => {
@@ -1580,21 +1485,18 @@ export function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let aborted = false;
-    void listen<{ action: "reopen"; noteId?: string }>(
-      "meeting-hud-action",
-      (event) => {
-        if (event.payload?.action !== "reopen") return;
-        const main = getCurrentWindow();
-        void main.show();
-        void main.unminimize();
-        void main.setFocus();
-        const noteId = event.payload.noteId ?? recordingNoteIdRef.current;
-        if (noteId) {
-          setActiveView("meetings");
-          void handleSelectNote(noteId);
-        }
-      },
-    ).then((cleanup) => {
+    void listen<{ action: "reopen"; noteId?: string }>("meeting-hud-action", (event) => {
+      if (event.payload?.action !== "reopen") return;
+      const main = getCurrentWindow();
+      void main.show();
+      void main.unminimize();
+      void main.setFocus();
+      const noteId = event.payload.noteId ?? recordingNoteIdRef.current;
+      if (noteId) {
+        setActiveView("meetings");
+        void handleSelectNote(noteId);
+      }
+    }).then((cleanup) => {
       // If the listener resolves after unmount, tear it down immediately.
       if (aborted) cleanup();
       else unlisten = cleanup;
@@ -1606,6 +1508,10 @@ export function App() {
   }, []);
 
   const accessibilityBlocked = isAccessibilityBlocked(accessibilityStatus);
+  useEffect(() => {
+    if (!accessibilityBlocked) setAccessibilityBannerDismissed(false);
+  }, [accessibilityBlocked]);
+
   // The Rust readiness check probes mic via cpal, which doesn't reflect
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
   // instead — that's the authoritative macOS API for the mic privacy
@@ -1613,9 +1519,7 @@ export function App() {
   const microphoneBlocked = isDeniedPermission(microphoneStatus);
 
   const refreshPermissionStatuses = useCallback(() => {
-    void dictationHelperCommand({ type: "get_permission_status" }).catch(
-      () => undefined,
-    );
+    void dictationHelperCommand({ type: "get_permission_status" }).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -1728,12 +1632,7 @@ export function App() {
   // checking briefly while macOS is in front. This matches Accessibility's
   // permission flow and avoids relying on a single webview focus event.
   useEffect(() => {
-    if (
-      appBlocked ||
-      captureActive ||
-      systemGranted ||
-      systemAudioRefreshRequest === 0
-    ) {
+    if (appBlocked || captureActive || systemGranted || systemAudioRefreshRequest === 0) {
       return;
     }
     let cancelled = false;
@@ -1751,10 +1650,7 @@ export function App() {
         });
     }
     poll();
-    const interval = window.setInterval(
-      poll,
-      SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS,
-    );
+    const interval = window.setInterval(poll, SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS);
     const timeout = window.setTimeout(() => {
       window.clearInterval(interval);
     }, SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS);
@@ -1789,10 +1685,7 @@ export function App() {
   }
 
   useEffect(() => {
-    if (
-      !state.recordingStatus ||
-      !["recording", "paused"].includes(state.recordingStatus.state)
-    ) {
+    if (!state.recordingStatus || !["recording", "paused"].includes(state.recordingStatus.state)) {
       return;
     }
     const sessionId = state.recordingStatus.sessionId;
@@ -1851,10 +1744,7 @@ export function App() {
       if (!activeRecording || payload.sessionId !== activeRecording.sessionId) {
         return;
       }
-      if (
-        recordingNoteIdRef.current &&
-        payload.noteId !== recordingNoteIdRef.current
-      ) {
+      if (recordingNoteIdRef.current && payload.noteId !== recordingNoteIdRef.current) {
         return;
       }
       const text = payload.text.trim();
@@ -1873,10 +1763,13 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (
-      !selectedNote ||
-      !shouldPollProcessingStatus(selectedNote.processingStatus)
-    ) {
+    if (!selectedNote || !shouldPollProcessingStatus(selectedNote.processingStatus)) {
+      return;
+    }
+    // The dev __processingDemo note lives only in the reducer; there is no
+    // backend row to poll, and getNote would clobber its synthetic stage with
+    // a "note not found". Stripped from production via import.meta.env.DEV.
+    if (import.meta.env.DEV && selectedNote.id === PROCESSING_DEMO_NOTE_ID) {
       return;
     }
     const noteId = selectedNote.id;
@@ -1903,8 +1796,7 @@ export function App() {
   const handleCreateNote = useCallback(
     async (folderId?: string | null) => {
       try {
-        const targetFolderId =
-          folderId === null ? undefined : (folderId ?? state.selectedFolderId);
+        const targetFolderId = folderId === null ? undefined : (folderId ?? state.selectedFolderId);
         const note = await createNote(targetFolderId);
         dispatch({ type: "noteLoaded", note });
         setOriginFolderId(undefined);
@@ -1927,9 +1819,7 @@ export function App() {
     setActiveAgentSession(undefined);
     setActiveView("agent");
     window.setTimeout(() => {
-      window.dispatchEvent(
-        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
-      );
+      window.dispatchEvent(new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT));
     }, 0);
   }, []);
 
@@ -1944,14 +1834,7 @@ export function App() {
       return;
     }
     void handleCreateNote(null);
-  }, [
-    activeView,
-    appBlocked,
-    bootstrapped,
-    handleCreateNote,
-    selectedNote,
-    state.selectedNoteId,
-  ]);
+  }, [activeView, appBlocked, bootstrapped, handleCreateNote, selectedNote, state.selectedNoteId]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -1995,11 +1878,7 @@ export function App() {
     }
   }
 
-  async function handleRenameFolder(
-    folderId: string,
-    name: string,
-    description?: string,
-  ) {
+  async function handleRenameFolder(folderId: string, name: string, description?: string) {
     try {
       const folder = await renameFolder(folderId, name, description);
       dispatch({ type: "folderRenamed", folder });
@@ -2089,17 +1968,12 @@ export function App() {
     }
   }
 
-  async function handleRemoveSessionFromFolder(
-    sessionId: string,
-    folderId: string,
-  ) {
+  async function handleRemoveSessionFromFolder(sessionId: string, folderId: string) {
     try {
       await removeSessionFromFolder(sessionId, folderId);
       setSessionFolders((prev) => {
         const next = { ...prev };
-        const remaining = (next[sessionId] ?? []).filter(
-          (id) => id !== folderId,
-        );
+        const remaining = (next[sessionId] ?? []).filter((id) => id !== folderId);
         if (remaining.length > 0) next[sessionId] = remaining;
         else delete next[sessionId];
         return next;
@@ -2128,6 +2002,26 @@ export function App() {
     }, 0);
   }
 
+  // "Start chat with this bundle" from the Bundles settings tab: the same
+  // fresh-chat handshake the dictation prompt path uses, auto-submitting the
+  // bundle's slash command so Hermes resolves the bundle and loads its skills.
+  function handleStartBundleChat(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending(trimmed);
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: trimmed },
+        }),
+      );
+    }, 0);
+  }
+
   // "New session" from inside a project: same fresh-chat handshake, but the
   // session gets filed into the project once Hermes hands back its id.
   function handleNewAgentSessionInProject(folderId: string) {
@@ -2140,9 +2034,7 @@ export function App() {
     setActiveAgentSession(undefined);
     setActiveView("agent");
     window.setTimeout(() => {
-      window.dispatchEvent(
-        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
-      );
+      window.dispatchEvent(new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT));
     }, 0);
   }
 
@@ -2196,6 +2088,16 @@ export function App() {
     }
   }
 
+  function handleEmptyNotesAfterDelete() {
+    const currentView = activeViewRef.current;
+    if (currentView === "meetings" || currentView === "notes" || currentView === "all-notes") {
+      setActiveView("notes");
+    }
+    setOriginFolderId(undefined);
+    setOriginAllNotes(false);
+    setFolderReturnTarget(undefined);
+  }
+
   async function handleDeleteNote(noteId: string) {
     if (state.recordingStatus) {
       setError("Stop the current recording before deleting a note.");
@@ -2211,9 +2113,7 @@ export function App() {
         const note = await getNote(nextNoteId);
         dispatch({ type: "noteLoaded", note });
       } else {
-        setActiveView("settings");
-        setOriginFolderId(undefined);
-        setFolderReturnTarget(undefined);
+        handleEmptyNotesAfterDelete();
       }
     } catch (err) {
       setError(messageFromError(err));
@@ -2235,9 +2135,7 @@ export function App() {
         const note = await getNote(nextNoteId);
         dispatch({ type: "noteLoaded", note });
       } else {
-        setActiveView("settings");
-        setOriginFolderId(undefined);
-        setFolderReturnTarget(undefined);
+        handleEmptyNotesAfterDelete();
       }
     } catch (err) {
       setError(messageFromError(err));
@@ -2257,9 +2155,7 @@ export function App() {
     }
   }
 
-  async function handleUpdateNote(
-    patch: Partial<Pick<NoteDto, "title" | "editedContent">>,
-  ) {
+  async function handleUpdateNote(patch: Partial<Pick<NoteDto, "title" | "editedContent">>) {
     if (!selectedNote) return;
     const optimistic = {
       ...selectedNote,
@@ -2280,10 +2176,7 @@ export function App() {
   }
 
   const handleStartRecordingForNote = useCallback(
-    async (
-      noteId: string,
-      options: { startAlreadyClaimed?: boolean } = {},
-    ): Promise<boolean> => {
+    async (noteId: string, options: { startAlreadyClaimed?: boolean } = {}): Promise<boolean> => {
       const startAlreadyClaimed = options.startAlreadyClaimed ?? false;
       if (
         recordingStatusRef.current ||
@@ -2310,9 +2203,7 @@ export function App() {
         const readiness = await checkRecordingSourceReadiness(sourceMode);
         setSourceReadiness(readiness);
 
-        const micSource = readiness.sources.find(
-          (source) => source.source === "microphone",
-        );
+        const micSource = readiness.sources.find((source) => source.source === "microphone");
         if (!micSource?.ready) {
           setRecordingNote(undefined);
           recordingStatusRef.current = undefined;
@@ -2325,9 +2216,7 @@ export function App() {
         // available, fall back to mic-only for this take — the derived
         // sourceMode will follow automatically next render via
         // setSourceReadiness above.
-        const systemSource = readiness.sources.find(
-          (source) => source.source === "system",
-        );
+        const systemSource = readiness.sources.find((source) => source.source === "system");
         const effectiveMode: RecordingSourceMode =
           sourceMode === "microphonePlusSystem" && !systemSource?.ready
             ? "microphoneOnly"
@@ -2385,14 +2274,12 @@ export function App() {
       const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
       const restoreNoteId =
-        previousNoteId && previousNoteId !== note.id
-          ? previousNoteId
-          : response.items[0]?.id;
+        previousNoteId && previousNoteId !== note.id ? previousNoteId : response.items[0]?.id;
       if (restoreNoteId) {
         const restored = await getNote(restoreNoteId);
         dispatch({ type: "noteLoaded", note: restored });
       } else {
-        setActiveView("settings");
+        handleEmptyNotesAfterDelete();
       }
     } catch (err) {
       setError(messageFromError(err));
@@ -2469,10 +2356,7 @@ export function App() {
       const result = await finishRecording(sessionId);
       dispatch({ type: "noteProcessingUpdated", note: result.note });
     } catch (err) {
-      if (
-        !owningNoteId ||
-        !(await applyNoteScopedProcessingFailure(owningNoteId, err))
-      ) {
+      if (!owningNoteId || !(await applyNoteScopedProcessingFailure(owningNoteId, err))) {
         setError(messageFromError(err));
       }
     } finally {
@@ -2480,10 +2364,7 @@ export function App() {
     }
   }
 
-  async function applyNoteScopedProcessingFailure(
-    noteId: string,
-    err: unknown,
-  ) {
+  async function applyNoteScopedProcessingFailure(noteId: string, err: unknown) {
     try {
       const note = await getNote(noteId);
       if (note.processingStatus !== "failed") return false;
@@ -2568,10 +2449,7 @@ export function App() {
         const sessionId = recordingInactivityPrompt.sessionId;
         recordingInactivityTrackerRef.current = { sessionId };
         setRecordingInactivityPrompt(null);
-        if (
-          currentStatus?.sessionId !== sessionId ||
-          currentStatus.state !== "recording"
-        ) {
+        if (currentStatus?.sessionId !== sessionId || currentStatus.state !== "recording") {
           return;
         }
         void handlePauseRecording(sessionId).then((paused) => {
@@ -2607,12 +2485,7 @@ export function App() {
   }
 
   const recordingInactivitySecondsRemaining = recordingInactivityPrompt
-    ? Math.max(
-        0,
-        Math.ceil(
-          (recordingInactivityPrompt.expiresAt - recordingInactivityNow) / 1000,
-        ),
-      )
+    ? Math.max(0, Math.ceil((recordingInactivityPrompt.expiresAt - recordingInactivityNow) / 1000))
     : 0;
 
   if (accountLoading) {
@@ -2624,10 +2497,7 @@ export function App() {
           data-tauri-drag-region
           onPointerDown={handleTitlebarPointerDown}
         />
-        <div
-          className="welcome-screen welcome-screen-loading"
-          aria-label="Loading account"
-        />
+        <div className="welcome-screen welcome-screen-loading" aria-label="Loading account" />
       </main>
     );
   }
@@ -2693,11 +2563,8 @@ export function App() {
   // note. Elsewhere, the sidebar header carries a tiny recording presence; the
   // floating pill is only the collapsed-sidebar fallback.
   const viewingRecordingNote =
-    activeView === "meetings" &&
-    selectedNoteId !== undefined &&
-    selectedNoteId === recordingNoteId;
-  const recorderPresenceVisible =
-    Boolean(state.recordingStatus) && !viewingRecordingNote;
+    activeView === "meetings" && selectedNoteId !== undefined && selectedNoteId === recordingNoteId;
+  const recorderPresenceVisible = Boolean(state.recordingStatus) && !viewingRecordingNote;
   const recordingNoteTitle =
     (selectedNote?.id === recordingNoteId
       ? selectedNote?.title
@@ -2706,16 +2573,13 @@ export function App() {
   // The dev console demo (window.__globalRecorderPill) force-shows the recorder
   // presence with synthetic status; otherwise it tracks the real recording.
   const recorderPresenceStatus =
-    demoRecorderStatus ??
-    (recorderPresenceVisible ? state.recordingStatus : null);
+    demoRecorderStatus ?? (recorderPresenceVisible ? state.recordingStatus : null);
   const sidebarRecorderStatus =
     recorderPresenceStatus && !sidebarCollapsed && activeView !== "settings"
       ? recorderPresenceStatus
       : null;
   const pillStatus =
-    recorderPresenceStatus && !sidebarRecorderStatus
-      ? recorderPresenceStatus
-      : null;
+    recorderPresenceStatus && !sidebarRecorderStatus ? recorderPresenceStatus : null;
   const pillIsDemo = demoRecorderStatus !== null;
 
   return (
@@ -2817,9 +2681,7 @@ export function App() {
         recoverableNoteIds={recoverableNoteIds}
         recordingStatus={sidebarRecorderStatus}
         recordingTitle={recordingNoteTitle}
-        onOpenRecording={() =>
-          pillIsDemo ? undefined : void handleOpenRecordingNote()
-        }
+        onOpenRecording={() => (pillIsDemo ? undefined : void handleOpenRecordingNote())}
         collapsed={sidebarCollapsed}
         footerAccessory={
           <UpdateHub
@@ -2882,8 +2744,9 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
-          {accessibilityBlocked ? (
+          {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
+              onDismiss={() => setAccessibilityBannerDismissed(true)}
               onEnableAccessibility={handleEnableAccessibility}
             />
           ) : null}
@@ -2892,9 +2755,7 @@ export function App() {
             className="main-panel-body"
             data-active-view={activeView}
             data-detail-scroller={detailScrollerActive ? "true" : undefined}
-            data-note-detail-scroller={
-              noteDetailScrollerActive ? "true" : undefined
-            }
+            data-note-detail-scroller={noteDetailScrollerActive ? "true" : undefined}
           >
             {error ? <p className="error-banner">{error}</p> : null}
             <div className="workspace">
@@ -2916,7 +2777,9 @@ export function App() {
                   activeTab={settingsTab}
                   onTabChange={setSettingsTab}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
+                  onReconcileToStable={handleReconcileToStable}
                   onReportIssue={handleReportIssue}
+                  onStartBundleChat={handleStartBundleChat}
                 />
               ) : activeView === "dictation" ? (
                 <DictationHistoryView
@@ -2924,10 +2787,7 @@ export function App() {
                     setSettingsReturnView(activeView);
                     setActiveView("settings");
                     setSettingsTab("dictation");
-                    const headingId =
-                      target === "style"
-                        ? "style-heading"
-                        : "dictionary-heading";
+                    const headingId = target === "style" ? "style-heading" : "dictionary-heading";
                     window.setTimeout(() => {
                       document.getElementById(headingId)?.scrollIntoView({
                         behavior: "smooth",
@@ -3034,12 +2894,8 @@ export function App() {
                     setActiveView("agent");
                   }}
                   onNewSession={handleNewAgentSession}
-                  onOpenMoveDialog={(sessionId) =>
-                    setMoveDialogSessionIds([sessionId])
-                  }
-                  onOpenMoveSessions={(sessionIds) =>
-                    setMoveDialogSessionIds(sessionIds)
-                  }
+                  onOpenMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
+                  onOpenMoveSessions={(sessionIds) => setMoveDialogSessionIds(sessionIds)}
                   onRemoveFromProject={(sessionId, folderId) =>
                     void handleRemoveSessionFromFolder(sessionId, folderId)
                   }
@@ -3077,15 +2933,12 @@ export function App() {
                     folderReturnTarget
                       ? {
                           label: `Back to ${folderReturnTarget.label}`,
-                          onBack: () =>
-                            void handleReturnToNote(folderReturnTarget.noteId),
+                          onBack: () => void handleReturnToNote(folderReturnTarget.noteId),
                         }
                       : undefined
                   }
                   onSelectFolder={(folderId) => handleSelectFolder(folderId)}
-                  onCreateFolder={(name, description) =>
-                    handleCreateFolder(name, description)
-                  }
+                  onCreateFolder={(name, description) => handleCreateFolder(name, description)}
                   onRenameFolder={(folderId, name, description) =>
                     void handleRenameFolder(folderId, name, description)
                   }
@@ -3104,9 +2957,7 @@ export function App() {
                     if (folderId) {
                       void handleSelectNoteFromFolder(noteId, folderId);
                     } else {
-                      void handleSelectNote(noteId).then(() =>
-                        setActiveView("meetings"),
-                      );
+                      void handleSelectNote(noteId).then(() => setActiveView("meetings"));
                     }
                   }}
                   onAssignNoteToFolder={(noteId, folderId) =>
@@ -3117,9 +2968,7 @@ export function App() {
                   }
                   onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
                   onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
-                  onCreateSession={(folderId) =>
-                    handleNewAgentSessionInProject(folderId)
-                  }
+                  onCreateSession={(folderId) => handleNewAgentSessionInProject(folderId)}
                   onSelectSession={(session) => {
                     // Remember the project so the agent view can breadcrumb
                     // back to it.
@@ -3149,9 +2998,7 @@ export function App() {
                   onRemoveSessionFromFolder={(sessionId, folderId) =>
                     void handleRemoveSessionFromFolder(sessionId, folderId)
                   }
-                  onOpenSessionMoveDialog={(sessionId) =>
-                    setMoveDialogSessionIds([sessionId])
-                  }
+                  onOpenSessionMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
                 />
               ) : selectedNote ? (
                 <div className="note-shell">
@@ -3213,31 +3060,20 @@ export function App() {
                       note={selectedNote}
                       folders={state.folders}
                       recordingStatus={
-                        selectedNoteId === recordingNoteId
-                          ? state.recordingStatus
-                          : undefined
+                        selectedNoteId === recordingNoteId ? state.recordingStatus : undefined
                       }
                       recordingDisabled={Boolean(
-                        state.recordingStatus &&
-                        selectedNoteId !== recordingNoteId,
+                        state.recordingStatus && selectedNoteId !== recordingNoteId,
                       )}
                       liveTranscript={
-                        selectedNoteId === recordingNoteId
-                          ? liveTranscriptEvents
-                          : []
+                        selectedNoteId === recordingNoteId ? liveTranscriptEvents : []
                       }
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}
-                      onRecoverRecording={(sessionId) =>
-                        handleRecovery(sessionId, "validate")
-                      }
-                      onDiscardRecording={(sessionId) =>
-                        handleRecovery(sessionId, "discard")
-                      }
-                      onTitleChange={(title) =>
-                        void handleUpdateNote({ title })
-                      }
+                      onRecoverRecording={(sessionId) => handleRecovery(sessionId, "validate")}
+                      onDiscardRecording={(sessionId) => handleRecovery(sessionId, "discard")}
+                      onTitleChange={(title) => void handleUpdateNote({ title })}
                       onContentChange={(sourceNoteId, editedContent) => {
                         // Blur fired by an editor that was already torn
                         // down on note-switch — ignore so we don't write
@@ -3253,20 +3089,12 @@ export function App() {
                         void updateNote({
                           noteId: selectedNote.id,
                           activeTab,
-                        }).then((note) =>
-                          dispatch({ type: "noteUpdated", note }),
-                        )
+                        }).then((note) => dispatch({ type: "noteUpdated", note }))
                       }
                       onStartRecording={() => void handleStartRecording()}
-                      onPauseRecording={(sessionId) =>
-                        void handlePauseRecording(sessionId)
-                      }
-                      onResumeRecording={(sessionId) =>
-                        void handleResumeRecording(sessionId)
-                      }
-                      onFinishRecording={(sessionId) =>
-                        void handleFinishRecording(sessionId)
-                      }
+                      onPauseRecording={(sessionId) => void handlePauseRecording(sessionId)}
+                      onResumeRecording={(sessionId) => void handleResumeRecording(sessionId)}
+                      onFinishRecording={(sessionId) => void handleFinishRecording(sessionId)}
                       onRetry={async () => {
                         if (!selectedNote) return;
                         try {
@@ -3292,10 +3120,7 @@ export function App() {
                         void handleSetNoteFolder(selectedNote.id, folderId)
                       }
                       onRemoveFolder={(folderId) =>
-                        void handleRemoveNoteFromFolder(
-                          selectedNote.id,
-                          folderId,
-                        )
+                        void handleRemoveNoteFromFolder(selectedNote.id, folderId)
                       }
                       onNavigateToFolder={(folderId) => {
                         setActiveView("folders");
@@ -3310,10 +3135,7 @@ export function App() {
                         void (async () => {
                           const folder = await handleCreateFolder(name);
                           if (folder) {
-                            await handleSetNoteFolder(
-                              selectedNote.id,
-                              folder.id,
-                            );
+                            await handleSetNoteFolder(selectedNote.id, folder.id);
                           }
                         })();
                       }}
@@ -3345,9 +3167,7 @@ export function App() {
                 <GlobalRecorderPill
                   status={pillStatus}
                   title={recordingNoteTitle}
-                  onOpen={() =>
-                    pillIsDemo ? undefined : void handleOpenRecordingNote()
-                  }
+                  onOpen={() => (pillIsDemo ? undefined : void handleOpenRecordingNote())}
                 />
               </motion.div>
             ) : null}
@@ -3381,8 +3201,8 @@ export function App() {
       >
         <div className="dialog-body">
           <p className="recording-inactivity-copy">
-            June will pause this recording in{" "}
-            {recordingInactivitySecondsRemaining} seconds if you do not answer.
+            June will pause this recording in {recordingInactivitySecondsRemaining} seconds if you
+            do not answer.
           </p>
         </div>
       </Dialog>
@@ -3397,9 +3217,7 @@ export function App() {
             : []
         }
         folders={state.folders}
-        onSetFolder={(noteId, folderId) =>
-          handleSetNoteFolder(noteId, folderId)
-        }
+        onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId)}
         onMoved={() => notesListRef.current?.resetSelection()}
       />
       <MoveSessionToProjectDialog
@@ -3409,17 +3227,12 @@ export function App() {
           moveDialogSessionIds
             ? moveDialogSessionIds
                 .map((id) => agentSessions.find((s) => s.id === id))
-                .filter(
-                  (session): session is HermesSessionInfo =>
-                    session !== undefined,
-                )
+                .filter((session): session is HermesSessionInfo => session !== undefined)
             : []
         }
         sessionFolderIds={sessionFolders}
         folders={state.folders}
-        onSetFolder={(sessionId, folderId) =>
-          handleSetSessionFolder(sessionId, folderId)
-        }
+        onSetFolder={(sessionId, folderId) => handleSetSessionFolder(sessionId, folderId)}
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
     </main>
@@ -3501,11 +3314,7 @@ function UpdateRelaunchCard({
   const failed = status?.toLowerCase().includes("failed") ?? false;
 
   return (
-    <aside
-      className="update-popover"
-      role={failed ? "alert" : "status"}
-      aria-live="polite"
-    >
+    <aside className="update-popover" role={failed ? "alert" : "status"} aria-live="polite">
       <button
         type="button"
         className="update-relaunch-card"
@@ -3517,18 +3326,16 @@ function UpdateRelaunchCard({
           <JuneMark />
         </span>
         <span className="update-relaunch-copy">
-          <span className="update-relaunch-title">
+          <span
+            className={relaunching ? "update-relaunch-title text-shimmer" : "update-relaunch-title"}
+          >
             {relaunching ? "Relaunching..." : "Relaunch to update"}
           </span>
-          <span className={status ? "update-relaunch-status" : undefined}>
-            {meta}
-          </span>
+          <span className={status ? "update-relaunch-status" : undefined}>{meta}</span>
         </span>
-        <IconArrowRight
-          className="update-relaunch-arrow"
-          size={18}
-          aria-hidden
-        />
+        {!relaunching && (
+          <IconChevronRightSmall className="update-relaunch-arrow" size={16} aria-hidden />
+        )}
       </button>
     </aside>
   );
@@ -3547,9 +3354,7 @@ function UpdateStatusCard({
 }) {
   const percent = updateProgressPercent(progress);
   const progressWidth =
-    progress?.state === "installing" && percent === undefined
-      ? "100%"
-      : `${percent ?? 0}%`;
+    progress?.state === "installing" && percent === undefined ? "100%" : `${percent ?? 0}%`;
   const failed = status.toLowerCase().includes("failed");
 
   return (
@@ -3566,9 +3371,7 @@ function UpdateStatusCard({
         <button
           type="button"
           className="update-status-close"
-          aria-label={
-            preparing ? "Hide update progress" : "Dismiss update status"
-          }
+          aria-label={preparing ? "Hide update progress" : "Dismiss update status"}
           onClick={onDismiss}
         >
           <IconCrossSmall size={12} aria-hidden />
@@ -3577,10 +3380,7 @@ function UpdateStatusCard({
       {progress ? (
         <div className="update-progress" aria-hidden>
           <div className="update-progress-track">
-            <div
-              className="update-progress-fill"
-              style={{ width: progressWidth }}
-            />
+            <div className="update-progress-fill" style={{ width: progressWidth }} />
           </div>
           {percent !== undefined ? (
             <span className="update-progress-percent">{percent}%</span>
@@ -3595,9 +3395,7 @@ function updateProgressPercent(progress: UpdateInstallProgress | null) {
   if (!progress?.contentLength || progress.contentLength <= 0) return undefined;
   return Math.min(
     100,
-    Math.round(
-      ((progress.downloadedBytes ?? 0) / progress.contentLength) * 100,
-    ),
+    Math.round(((progress.downloadedBytes ?? 0) / progress.contentLength) * 100),
   );
 }
 
@@ -3646,9 +3444,8 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
   event.preventDefault();
   void getCurrentWindow()
     .startDragging()
-    .catch((error: unknown) =>
-      console.warn("Failed to start window drag", error),
-    );
+    // biome-ignore lint/suspicious/noConsole: surfacing a drag failure is a deliberate diagnostic
+    .catch((error: unknown) => console.warn("Failed to start window drag", error));
 }
 
 function isDeniedPermission(state?: string) {
@@ -3766,8 +3563,7 @@ function withFakeRecovery(payload: BootstrapResponse): {
   let enabled = false;
   try {
     enabled =
-      new URLSearchParams(window.location.search).get("fake-recovery") ===
-        "1" ||
+      new URLSearchParams(window.location.search).get("fake-recovery") === "1" ||
       window.location.hash.toLowerCase() === "#fake-recovery" ||
       localStorage.getItem("os-june:dev:fake-recovery") === "1";
   } catch {

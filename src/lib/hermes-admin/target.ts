@@ -57,9 +57,7 @@ function normalizeBaseUrl(baseUrl: string): string {
 /** The mode label for a connection: a runtime is `unrestricted` only when Full
  * mode is on; everything else (including an environmentally-unsandboxed default
  * runtime) is treated as `sandboxed` for the purpose of mode display. */
-export function modeForConnection(
-  connection: HermesBridgeConnection,
-): HermesAdminMode {
+export function modeForConnection(connection: HermesBridgeConnection): HermesAdminMode {
   return connection.fullMode ? "unrestricted" : "sandboxed";
 }
 
@@ -94,12 +92,14 @@ export function adminTargetForMode(
   profile: string = DEFAULT_HERMES_PROFILE,
 ): HermesAdminTarget | undefined {
   const wantFull = mode === "unrestricted";
+  // A connection is only targetable once it carries a base URL. Production
+  // connections always do, but a partially-populated status (e.g. a runtime
+  // still coming up) must yield "no target" rather than crash a render-path
+  // caller like the skill-review hook on `undefined.replace`.
   const connection = (status.connections ?? []).find(
-    (candidate) => candidate.fullMode === wantFull,
+    (candidate) => candidate.fullMode === wantFull && Boolean(candidate.baseUrl),
   );
-  return connection
-    ? adminTargetFromConnection(connection, profile)
-    : undefined;
+  return connection ? adminTargetFromConnection(connection, profile) : undefined;
 }
 
 /**

@@ -1,10 +1,7 @@
 import { useEffect, useId, type RefObject } from "react";
 import { setRecordingPresenceBounds } from "./tauri";
 
-export function useRecordingPresenceBounds(
-  ref: RefObject<HTMLElement>,
-  enabled = true,
-) {
+export function useRecordingPresenceBounds(ref: RefObject<HTMLElement>, enabled = true) {
   const ownerId = useId();
 
   useEffect(() => {
@@ -38,10 +35,7 @@ export function useRecordingPresenceBounds(
     update();
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? undefined
-        : new ResizeObserver(update);
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(update);
     observer?.observe(element);
 
     return () => {

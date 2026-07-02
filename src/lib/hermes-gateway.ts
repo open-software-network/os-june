@@ -79,9 +79,7 @@ export class HermesGatewayClient {
     this.close();
     const socket = new WebSocket(wsUrl);
     this.socket = socket;
-    socket.addEventListener("message", (event) =>
-      this.handleMessage(event.data),
-    );
+    socket.addEventListener("message", (event) => this.handleMessage(event.data));
     socket.addEventListener("close", () => {
       // A stale socket's close event must not reject requests pending on
       // the socket that replaced it, nor notify close listeners.
@@ -142,11 +140,7 @@ export class HermesGatewayClient {
     };
   }
 
-  request<T>(
-    method: string,
-    params: Record<string, unknown> = {},
-    timeoutMs = 120000,
-  ) {
+  request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = 120000) {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("Hermes gateway is not connected."));
@@ -181,10 +175,7 @@ export class HermesGatewayClient {
       this.pending.delete(frame.id);
       if (frame.error) {
         pending.reject(
-          new HermesGatewayError(
-            frame.error.message ?? "Hermes RPC failed.",
-            frame.error.code,
-          ),
+          new HermesGatewayError(frame.error.message ?? "Hermes RPC failed.", frame.error.code),
         );
       } else {
         pending.resolve(frame.result);

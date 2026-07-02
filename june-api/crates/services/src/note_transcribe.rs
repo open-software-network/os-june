@@ -1,14 +1,16 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        zero_receipt,
     },
     error::ServiceError,
+    metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
     pricing::PricingTable,
     util::{ceil_seconds, sha256_hex},
 };
 use june_domain::{
-    ActionSlug, AudioDurationProbe, AudioFormat, Credits, ModelId, OsAccountsClient, Receipt,
-    Transcriber, Transcript, TranscriptionRequest, UserId,
+    ActionSlug, AudioDurationProbe, AudioFormat, Credits, ModelId, OsAccountsClient,
+    ProviderCredentials, Receipt, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use std::sync::Arc;
 
@@ -77,10 +79,11 @@ impl NoteTranscribeService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
-        // Flat-estimate mode: skip per-request estimation for the upfront
-        // authorize. The Hold is bigger than necessary; the actual charge
-        // below is what the user pays.
-        let estimate = Credits(self.flat_estimate_credits);
+        // The Hold must cover the already-known price: the charge below is
+        // clamped to the Hold's cap, so a flat-only estimate would silently
+        // underbill any audio priced above it. The flat value remains the
+        // floor, keeping short-audio holds exactly as before.
+        let estimate = Credits(actual.0.max(self.flat_estimate_credits));
         let prepared = PreparedNoteTranscription {
             params,
             format,
@@ -88,10 +91,58 @@ impl NoteTranscribeService {
             actual,
             estimate,
         };
+        if uses_user_venice_key_for_model(
+            &self.pricing,
+            &prepared.params.model_id.0,
+            &prepared.params.provider_credentials,
+        ) {
+            return self.transcribe_with_user_venice_key(prepared).await;
+        }
         if prepared.params.preview {
             return self.transcribe_preview(prepared).await;
         }
         self.transcribe_charged(prepared).await
+    }
+
+    async fn transcribe_with_user_venice_key(
+        &self,
+        prepared: PreparedNoteTranscription,
+    ) -> Result<NoteTranscribeOutput, ServiceError> {
+        let PreparedNoteTranscription {
+            params,
+            format,
+            seconds,
+            actual: _,
+            estimate: _,
+        } = prepared;
+        if params.preview && seconds > self.preview_max_audio_seconds {
+            return Err(ServiceError::InvalidInput {
+                reason: format!(
+                    "live transcript preview chunks must be {} seconds or shorter",
+                    self.preview_max_audio_seconds
+                ),
+            });
+        }
+        let transcript = self
+            .transcriber
+            .transcribe(TranscriptionRequest {
+                audio: params.audio,
+                format,
+                context: params.context,
+                language: params.language,
+                model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
+            })
+            .await?;
+        log_skipped_user_venice_key(
+            ActionSlug::NoteTranscribe,
+            &params.user_id,
+            &params.model_id.0,
+        );
+        Ok(NoteTranscribeOutput {
+            transcript,
+            receipt: zero_receipt(),
+        })
     }
 
     async fn transcribe_preview(
@@ -137,6 +188,7 @@ impl NoteTranscribeService {
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
@@ -200,6 +252,7 @@ impl NoteTranscribeService {
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         tracing::info!(
@@ -242,6 +295,7 @@ pub struct NoteTranscribeParams {
     pub language: Option<String>,
     pub model_id: ModelId,
     pub preview: bool,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]

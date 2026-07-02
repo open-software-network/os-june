@@ -18,16 +18,8 @@ function artifact(
   };
 }
 
-function renderSection(
-  props: Partial<Parameters<typeof AgentArtifactsSection>[0]> = {},
-) {
-  return render(
-    <AgentArtifactsSection
-      artifacts={[]}
-      onOpenArtifact={vi.fn()}
-      {...props}
-    />,
-  );
+function renderSection(props: Partial<Parameters<typeof AgentArtifactsSection>[0]> = {}) {
+  return render(<AgentArtifactsSection artifacts={[]} onOpenArtifact={vi.fn()} {...props} />);
 }
 
 describe("AgentArtifactsSection", () => {
@@ -38,13 +30,9 @@ describe("AgentArtifactsSection", () => {
 
   it("lists a created file with its display name", () => {
     renderSection({
-      artifacts: [
-        artifact({ id: "a1", path: "/tmp/notes.md", action: "created" }),
-      ],
+      artifacts: [artifact({ id: "a1", path: "/tmp/notes.md", action: "created" })],
     });
-    expect(
-      screen.getByRole("region", { name: /artifacts/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: /artifacts/i })).toBeInTheDocument();
     expect(screen.getByText("notes.md")).toBeInTheDocument();
     // The action is conveyed in text, sentence case.
     expect(screen.getByText(/created/i)).toBeInTheDocument();
@@ -60,9 +48,7 @@ describe("AgentArtifactsSection", () => {
 
   it("labels a sandboxed file as a sandboxed copy", () => {
     renderSection({
-      artifacts: [
-        artifact({ id: "a1", path: "/tmp/x.txt", mode: "sandboxed" }),
-      ],
+      artifacts: [artifact({ id: "a1", path: "/tmp/x.txt", mode: "sandboxed" })],
     });
     const row = screen.getByRole("listitem");
     expect(within(row).getByText(/sandbox/i)).toBeInTheDocument();
@@ -70,9 +56,7 @@ describe("AgentArtifactsSection", () => {
 
   it("labels an unrestricted file as an unrestricted local path", () => {
     renderSection({
-      artifacts: [
-        artifact({ id: "a1", path: "/etc/hosts", mode: "unrestricted" }),
-      ],
+      artifacts: [artifact({ id: "a1", path: "/etc/hosts", mode: "unrestricted" })],
     });
     const row = screen.getByRole("listitem");
     expect(within(row).getByText(/unrestricted/i)).toBeInTheDocument();

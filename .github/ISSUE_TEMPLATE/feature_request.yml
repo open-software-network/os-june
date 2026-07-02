@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest an improvement or a new capability for June
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. If you want to talk it through first, the
+        [Telegram community](https://t.me/osjune) is a good place to start.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve
+      description: Describe the situation where June falls short today.
+      placeholder: I dictate in two languages and June always cleans up my text in English.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat
+        - Dictation
+        - Meeting notes
+        - Agent
+        - Image generation
+        - Billing and account
+        - Onboarding and settings
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+    validations:
+      required: false

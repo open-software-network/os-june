@@ -1,0 +1,173 @@
+<!doctype html>
+<!--
+  Dev-only preview for the /image composer affordance. Renders the real
+  AgentWorkspace in a plain browser by faking the Tauri IPC bridge: empty
+  sessions (hero composer, no gateway connect), and generate_image +
+  import_hermes_bridge_file_bytes return a fixed red PNG so the generated
+  image renders inline. Nothing here ships (vite builds only the configured
+  entries). Usage: pnpm dev, open /agent-image-preview.html.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>June image generation preview</title>
+    <script>
+      (function () {
+        // Neutralize the Hermes gateway: a real ws:// has no server here, and
+        // the /image flow never touches the gateway. A no-op socket lets a
+        // session be selected without an unhandled connection failure.
+        window.WebSocket = class {
+          constructor() {
+            this.readyState = 0;
+          }
+          addEventListener() {}
+          removeEventListener() {}
+          send() {}
+          close() {}
+        };
+        const RED_PNG =
+          "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEtz/QMZxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywK5G4EPzFmrLgAAAABJRU5ErkJggg==";
+        const PREVIEW_DATA_URL = "data:image/png;base64," + RED_PNG;
+
+        const callbacks = new Map();
+        let nextId = 1;
+        const listeners = new Map();
+
+        const genModels = {
+          mode: "generation",
+          modelType: "text",
+          selectedModel: "zai-org-glm-5-2",
+          models: [
+            {
+              provider: "venice",
+              id: "zai-org-glm-5-2",
+              name: "GLM 5.2",
+              modelType: "text",
+              privacy: "private",
+              traits: [],
+              capabilities: ["functionCalling"],
+            },
+          ],
+        };
+
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+          unregisterListener(event, eventId) {
+            const set = listeners.get(event);
+            if (set) set.delete(eventId);
+          },
+        };
+
+        window.__TAURI_INTERNALS__ = {
+          transformCallback(cb) {
+            const id = nextId++;
+            callbacks.set(id, cb);
+            return id;
+          },
+          unregisterCallback(id) {
+            callbacks.delete(id);
+          },
+          convertFileSrc(p) {
+            return p;
+          },
+          async invoke(cmd, args = {}) {
+            switch (cmd) {
+              case "plugin:event|listen": {
+                if (!listeners.has(args.event)) {
+                  listeners.set(args.event, new Set());
+                }
+                listeners.get(args.event).add(args.handler);
+                return args.handler;
+              }
+              case "plugin:event|unlisten":
+                return null;
+              case "os_accounts_status":
+                return {
+                  signedIn: true,
+                  configured: true,
+                  user: {
+                    id: "usr_preview",
+                    handle: "preview",
+                    email: "preview@example.com",
+                    displayName: "Preview",
+                  },
+                  balance: { credits: 5000, usdMillis: 5000 },
+                  subscription: { subscribed: false },
+                };
+              case "hermes_bridge_sessions":
+                return {
+                  sessions: [
+                    {
+                      id: "session-1",
+                      title: "Existing session",
+                      preview: "",
+                      last_active: "2026-06-04T12:00:00Z",
+                      message_count: 2,
+                    },
+                  ],
+                };
+              case "hermes_bridge_session_messages":
+                return { messages: [] };
+              case "list_agent_tasks":
+                return { items: [] };
+              case "provider_model_settings":
+                return {
+                  settings: {
+                    transcriptionProvider: "venice",
+                    transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+                    generationModel: "zai-org-glm-5-2",
+                    imageModel: "venice-sd35",
+                  },
+                };
+              case "list_venice_models":
+                return genModels;
+              case "hermes_bridge_status":
+                return {
+                  running: true,
+                  connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+                };
+              case "start_hermes_bridge":
+                return {
+                  running: true,
+                  connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+                  connections: [{ port: 61234, wsUrl: "ws://127.0.0.1:61234" }],
+                };
+              case "hermes_agent_cli_access":
+                return { enabled: false };
+              case "hermes_bridge_skills":
+                return [];
+              case "hermes_bridge_toolsets":
+                return [];
+              case "hermes_bridge_filesystem_snapshot":
+                return { roots: [] };
+              case "hermes_bridge_messaging_platforms":
+                return { platforms: [] };
+              case "generate_image":
+                return {
+                  imageBase64: RED_PNG,
+                  mimeType: "image/png",
+                  model: "venice-sd35",
+                  provider: "venice",
+                };
+              case "import_hermes_bridge_file_bytes":
+                return {
+                  name: "generated-image.png",
+                  path: "/workspace/uploads/generated-image.png",
+                  rootLabel: "Workspace",
+                  size: 256,
+                  previewDataUrl: PREVIEW_DATA_URL,
+                };
+              default:
+                console.log("[preview] unstubbed invoke:", cmd, args);
+                return null;
+            }
+          },
+        };
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/agent-image-preview.tsx"></script>
+  </body>
+</html>

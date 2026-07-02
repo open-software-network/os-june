@@ -31,10 +31,7 @@ describe("buildAgentMenuBarState", () => {
     expect(state.activeCount).toBe(2);
     expect(state.needsUserCount).toBe(1);
     expect(state.agentHudEnabled).toBe(true);
-    expect(state.sessions.map((session) => session.id)).toEqual([
-      "session-new",
-      "session-old",
-    ]);
+    expect(state.sessions.map((session) => session.id)).toEqual(["session-new", "session-old"]);
     expect(state.sessions[0]).toMatchObject({
       title: "Newer work",
       status: "waitingForUser",
@@ -46,14 +43,11 @@ describe("buildAgentMenuBarState", () => {
   });
 
   it("keeps waiting sessions visible before recent idle sessions", () => {
-    const recentIdleSessions: HermesSessionInfo[] = Array.from(
-      { length: 6 },
-      (_, index) => ({
-        id: `idle-${index}`,
-        title: `Idle ${index}`,
-        last_active: `2026-06-04T13:0${index}:00Z`,
-      }),
-    );
+    const recentIdleSessions: HermesSessionInfo[] = Array.from({ length: 6 }, (_, index) => ({
+      id: `idle-${index}`,
+      title: `Idle ${index}`,
+      last_active: `2026-06-04T13:0${index}:00Z`,
+    }));
     const state = buildAgentMenuBarState({
       sessions: [
         ...recentIdleSessions,

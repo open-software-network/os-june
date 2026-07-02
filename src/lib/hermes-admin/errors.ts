@@ -20,12 +20,7 @@ import { redactBodyPreview } from "./redact";
  * message. `http` is a non-2xx response; `network` is a fetch/transport
  * failure; `parse` is a 2xx body that failed schema validation; `timeout` is a
  * client-side abort; `offline` is "no live Hermes runtime to target". */
-export type HermesAdminErrorKind =
-  | "http"
-  | "network"
-  | "parse"
-  | "timeout"
-  | "offline";
+export type HermesAdminErrorKind = "http" | "network" | "parse" | "timeout" | "offline";
 
 /** The longest raw body we keep for debugging. Long enough to be useful, short
  * enough that a redaction miss has a bounded blast radius. */
@@ -65,8 +60,7 @@ export class HermesAdminError extends Error {
   readonly rawBodyPreview?: string;
 
   constructor(init: HermesAdminErrorInit) {
-    const safeMessage =
-      init.safeMessage ?? defaultSafeMessage(init.kind, init.status);
+    const safeMessage = init.safeMessage ?? defaultSafeMessage(init.kind, init.status);
     // The Error message itself must be safe: it can land in a console or a
     // generic crash reporter, so it gets the SAFE text, never the raw body.
     super(safeMessage);
@@ -122,10 +116,7 @@ function isAbortError(error: unknown): boolean {
 
 /** A generic, user-safe message for a kind/status. Deliberately says nothing
  * about the response body. */
-function defaultSafeMessage(
-  kind: HermesAdminErrorKind,
-  status?: number,
-): string {
+function defaultSafeMessage(kind: HermesAdminErrorKind, status?: number): string {
   switch (kind) {
     case "offline":
       return "Hermes is not running.";
@@ -140,8 +131,7 @@ function defaultSafeMessage(
         return "Hermes rejected the request (not authorized).";
       }
       if (status === 404) return "That Hermes resource was not found.";
-      if (status === 409)
-        return "That change conflicts with the current state.";
+      if (status === 409) return "That change conflicts with the current state.";
       if (status !== undefined && status >= 500) {
         return "Hermes ran into a problem with that request.";
       }
@@ -151,10 +141,7 @@ function defaultSafeMessage(
 
 /** Default retryability: transport-level failures and 5xx are retryable; a 4xx
  * is the caller's fault and a parse failure won't fix itself on retry. */
-function defaultRetryable(
-  kind: HermesAdminErrorKind,
-  status?: number,
-): boolean {
+function defaultRetryable(kind: HermesAdminErrorKind, status?: number): boolean {
   if (kind === "network" || kind === "timeout") return true;
   if (kind === "http") return status !== undefined && status >= 500;
   return false;

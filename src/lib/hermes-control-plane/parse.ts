@@ -38,9 +38,7 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
 /** A finite number, or undefined. Rejects NaN, Infinity, strings, and the rest
  * so a bad wire value never renders as a real metric. */
 export function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 /** First finite number found across the given containers (checked in order)

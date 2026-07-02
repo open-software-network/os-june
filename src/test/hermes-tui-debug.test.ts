@@ -21,9 +21,11 @@ describe("buildHermesTuiResumeArgs — pure CLI argument construction", () => {
   });
 
   it("forces the classic REPL with --cli when interface is repl", () => {
-    expect(
-      buildHermesTuiResumeArgs({ sessionId: "sess-42", interface: "repl" }),
-    ).toEqual(["--cli", "--resume", "sess-42"]);
+    expect(buildHermesTuiResumeArgs({ sessionId: "sess-42", interface: "repl" })).toEqual([
+      "--cli",
+      "--resume",
+      "sess-42",
+    ]);
   });
 
   it("resumes by the exact June session id, never a title", () => {

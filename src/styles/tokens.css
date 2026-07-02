@@ -27,14 +27,32 @@
   initial-value: 240px;
 }
 
+/* Brand accent changes at runtime from the Appearance color wheel. Registering
+ * it as a color lets the entire derived theme interpolate instead of snapping
+ * all --brand color-mix consumers in one repaint. */
+@property --brand {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #b5551f;
+}
+
+/* Surface-tinting companion to --brand: the accent with its oklch chroma capped
+ * at 0.07 (same lightness/hue). Surface neutrals mix from this so a high-chroma
+ * accent (clay) doesn't over-cream the greys. Registered as a color for the
+ * same interpolate-don't-snap reason as --brand. */
+@property --brand-wash {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #976851;
+}
+
 :root {
   /* Type ------------------------------------------------------------- */
   --font-sans:
-    "ABC Diatype", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+    "ABC Diatype", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
   --font-serif: "Martina Plantijn", "Iowan Old Style", Georgia, serif;
-  --font-mono:
-    "Berkeley Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-mono: "Berkeley Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
   --fs-xs: 11px;
   --fs-sm: 12px;
@@ -131,7 +149,10 @@
   --settings-agent-card-min-h: 640px;
   --settings-agent-card-max-h: 900px;
   --settings-agent-card-viewport-offset: calc(
-    var(--titlebar-h) + var(--sp-12) + var(--sp-7) + var(--sp-3)
+    var(--titlebar-h) +
+    var(--sp-12) +
+    var(--sp-7) +
+    var(--sp-3)
   );
   --settings-skill-editor-min-h: 360px;
   --settings-skill-editor-ideal-h: 52dvh;
@@ -150,31 +171,39 @@
    * --foreground; dark theme inherits the same recipe. */
   --ring-focus: color-mix(in oklch, var(--foreground) 30%, transparent);
 
-  --background: oklch(95.13% 0.0015 84.59);
+  /* Surface neutrals carry a sliver of --brand-wash so the whole backdrop tints
+   * to whatever accent is selected (rose = warm greys, ocean = cool greys,
+   * etc.). The wash is the accent with its chroma capped, so a high-chroma
+   * accent (clay) tints the greys the same amount a dusty one (rose) does
+   * instead of over-creaming them. Text/foreground tokens stay pure neutral for
+   * legibility; only these fills, cards, borders, and the sidebar pick up the
+   * wash. Everything else (buttons, --brand-tint, the recorder accent) stays on
+   * full-strength --brand. */
+  --background: color-mix(in oklch, oklch(95.13% 0.0015 84.59), var(--brand-wash) 3%);
   --foreground: oklch(27.24% 0.0015 84.59);
-  --card: oklch(100% 0 none);
+  --card: color-mix(in oklch, oklch(100% 0 none), var(--brand-wash) 2%);
   --card-foreground: oklch(27.24% 0.0015 84.59);
-  --popover: oklch(100% 0 none);
+  --popover: color-mix(in oklch, oklch(100% 0 none), var(--brand-wash) 2%);
   --popover-foreground: oklch(27.24% 0.0015 84.59);
   --primary: oklch(34% 0.008 84.59);
   --primary-foreground: oklch(100% 0 none);
-  --secondary: oklch(97.03% 0 none);
+  --secondary: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --secondary-foreground: oklch(20.44% 0 none);
-  --muted: oklch(92.87% 0.0015 84.59);
+  --muted: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand-wash) 4%);
   --muted-foreground: oklch(55.8% 0.0015 84.59);
-  --accent: oklch(97.03% 0 none);
+  --accent: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --accent-foreground: oklch(20.44% 0 none);
   --destructive: oklch(57% 0.22 27);
   --destructive-soft: oklch(95% 0.025 27);
   --success: oklch(48% 0.12 150);
-  --border: oklch(86.91% 0.0015 84.59);
-  --input: oklch(86.91% 0.0015 84.59);
+  --border: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
+  --input: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
   --ring: oklch(75% 0.0015 84.59);
 
-  --sidebar: oklch(95.13% 0.0015 84.59);
+  --sidebar: color-mix(in oklch, oklch(95.13% 0.0015 84.59), var(--brand-wash) 4%);
   --sidebar-foreground: oklch(27.24% 0.0015 84.59);
-  --sidebar-accent: oklch(92.87% 0.0015 84.59);
-  --sidebar-border: oklch(86.91% 0.0015 84.59);
+  --sidebar-accent: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand-wash) 5%);
+  --sidebar-border: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
 
   /* Subtle surface + border — the canonical "quiet chip/track/secondary
    * button" fill and the soft 1px outline used on inset cards. Both
@@ -182,23 +211,41 @@
    * and adapt across light/dark. */
   --surface-subtle: color-mix(in oklch, var(--muted) 65%, transparent);
   --border-subtle: color-mix(in oklch, var(--border) 55%, transparent);
-  --body-copy: color-mix(
-    in oklch,
-    var(--foreground) 86%,
-    var(--muted-foreground)
-  );
+  --body-copy: color-mix(in oklch, var(--foreground) 86%, var(--muted-foreground));
   --popover-border: color-mix(in oklch, var(--foreground) 10%, transparent);
 
-  /* OS June brand mark — warm terracotta, the fill behind the logo glyph.
-   * Fixed across light/dark (the logo art is identical in both themes). */
-  --brand: #c25a33;
+  /* Default accent — the clay terracotta, the base every derived token mixes
+   * from. Themeable: the Appearance picker overrides this one value at runtime
+   * and everything below derives from it, so the whole UI recolors. The app
+   * icon (src-tauri/icons) and in-app marks are generated from this same clay,
+   * so the brand identity stays consistent across the accent set. */
+  --brand: #b5551f;
+  /* Chroma-capped companion to --brand (see the @property block). Surface
+   * neutrals mix from this so clay's high chroma doesn't over-cream the greys;
+   * the Appearance picker overrides both --brand and --brand-wash together. */
+  --brand-wash: #976851;
 
   --record: oklch(60% 0.22 27);
+  /* Soft dusty tint of the brand, for quiet button backdrops and hovers
+   * (e.g. the session-view quick-action buttons). Derived from --brand so it
+   * tracks the selected accent without touching any foreground/text color. */
+  --brand-tint: color-mix(in oklch, var(--brand) 12%, var(--card));
+  --brand-tint-strong: color-mix(in oklch, var(--brand) 20%, var(--card));
+  /* Accent-family hairlines for chips/cards that want a themed edge. Opaque
+   * mixes into the card (not alpha fades of the accent, which composite into
+   * a muddy grey veil on light surfaces) so the line stays a clean pastel of
+   * the accent. Adapts to dark mode through var(--card). */
+  --brand-line: color-mix(in oklch, var(--brand) 14%, var(--card));
+  --brand-line-strong: color-mix(in oklch, var(--brand) 30%, var(--card));
   /* Warm-accent set for the record button hover state — a soft peach
    * surface and a deeper terracotta foreground. Reusable for any
    * "live/recording" primary action that wants a warmer feel. */
-  --warm-soft: oklch(90% 0.07 55);
-  --warm-strong: oklch(52% 0.16 38);
+  /* The warm/recorder accent family now derives from --brand so the recorder
+   * controls (and every warm surface) track the selected accent. A light
+   * brand-tinted surface + a deepened brand foreground. The live "recording"
+   * red stays --record on purpose. */
+  --warm-soft: color-mix(in oklch, var(--brand) 16%, var(--card));
+  --warm-strong: color-mix(in oklch, var(--brand) 88%, black);
   /* New-session hero wash — the warm gradient pooling at the bottom of the
    * intro screen, with a 1px inset rim that keeps its edge crisp against the
    * shell. The brand tint works over both cards (a subtle glow in dark), but
@@ -225,16 +272,31 @@
   --t-fast: 100ms;
   --t-med: 160ms;
   --t-slow: 240ms;
+  transition: --brand 220ms var(--ease-out);
 
   /* Shadows ---------------------------------------------------------- */
   --shadow-sm: 0 1px 2px oklch(24% 0.002 84.59 / 6%);
-  --shadow-md:
-    0 4px 12px oklch(24% 0.002 84.59 / 6%),
-    0 1px 2px oklch(24% 0.002 84.59 / 4%);
-  --shadow-lg:
-    0 18px 40px oklch(24% 0.002 84.59 / 10%),
-    0 2px 6px oklch(24% 0.002 84.59 / 6%);
+  --shadow-md: 0 4px 12px oklch(24% 0.002 84.59 / 6%), 0 1px 2px oklch(24% 0.002 84.59 / 4%);
+  --shadow-lg: 0 18px 40px oklch(24% 0.002 84.59 / 10%), 0 2px 6px oklch(24% 0.002 84.59 / 6%);
   --shadow-inset: 0 0 0 1px oklch(0% 0 none / 4%);
+}
+
+:root[data-brand-transition="true"],
+:root[data-brand-transition="true"] * {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow;
+  transition-duration: 220ms;
+  transition-timing-function: var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    transition: none;
+  }
+
+  :root[data-brand-transition="true"],
+  :root[data-brand-transition="true"] * {
+    transition: none;
+  }
 }
 
 [data-theme="light"] {
@@ -263,19 +325,23 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --background: oklch(0.165 0.0015 84.59);
+  /* Same wash as light, a touch stronger since a tint reads less against
+   * near-black. Surfaces mix from --brand-wash (chroma-capped) for the same
+   * reason as light: clay shouldn't over-cream the greys. Foregrounds + alpha
+   * hairlines stay neutral, and --border/--input/--ring stay pure white alpha. */
+  --background: color-mix(in oklch, oklch(0.165 0.0015 84.59), var(--brand-wash) 6%);
   --foreground: oklch(0.985 0.0015 84.59);
-  --card: oklch(0.195 0.0015 84.59);
+  --card: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand-wash) 6%);
   --card-foreground: oklch(0.985 0.0015 84.59);
-  --popover: oklch(0.195 0.0015 84.59);
+  --popover: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand-wash) 6%);
   --popover-foreground: oklch(0.985 0.0015 84.59);
   --primary: oklch(0.86 0.008 84.59);
   --primary-foreground: oklch(0.216 0.0015 84.59);
-  --secondary: oklch(0.268 0.0015 84.59);
+  --secondary: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --secondary-foreground: oklch(0.985 0.0015 84.59);
-  --muted: oklch(0.268 0.0015 84.59);
+  --muted: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --muted-foreground: oklch(0.709 0.0015 84.59);
-  --accent: oklch(0.268 0.0015 84.59);
+  --accent: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --accent-foreground: oklch(0.985 0.0015 84.59);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-soft: oklch(0.3 0.08 22 / 40%);
@@ -284,22 +350,20 @@
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(1 0 0 / 18%);
 
-  --sidebar: oklch(0.14 0.0015 84.59);
+  --sidebar: color-mix(in oklch, oklch(0.14 0.0015 84.59), var(--brand-wash) 6%);
   --sidebar-foreground: oklch(0.985 0.0015 84.59);
-  --sidebar-accent: oklch(0.22 0.0015 84.59);
+  --sidebar-accent: color-mix(in oklch, oklch(0.22 0.0015 84.59), var(--brand-wash) 7%);
   --sidebar-border: oklch(1 0 0 / 8%);
   /* Dark --border is already an 8-10% white alpha, so the light-mode
    * 55% mix would dilute it below the visibility floor. Bump to 80%
    * so the subtle border still reads against the dark card. */
   --border-subtle: color-mix(in oklch, var(--border) 80%, transparent);
-  --body-copy: color-mix(
-    in oklch,
-    var(--foreground) 88%,
-    var(--muted-foreground)
-  );
+  --body-copy: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground));
   --popover-border: color-mix(in oklch, white 12%, transparent);
-  --warm-soft: oklch(0.42 0.12 50);
-  --warm-strong: oklch(0.86 0.16 60);
+  /* Dark inverts the roles: a deep brand-tinted surface + a lifted brand
+   * foreground. Both still derive from --brand so theming cascades. */
+  --warm-soft: color-mix(in oklch, var(--brand) 30%, var(--card));
+  --warm-strong: color-mix(in oklch, var(--brand) 55%, white);
   /* See the light-theme note: the wash tint carries over, the rim becomes a
    * faint white inner highlight (kin to this theme's --shadow-inset). */
   --hero-wash-rim: oklch(100% 0 none / 8%);
@@ -312,9 +376,7 @@
   --selection-foreground: var(--foreground);
 
   --shadow-sm: 0 1px 2px oklch(0% 0 none / 30%);
-  --shadow-md:
-    0 4px 12px oklch(0% 0 none / 32%), 0 1px 2px oklch(0% 0 none / 24%);
-  --shadow-lg:
-    0 18px 40px oklch(0% 0 none / 40%), 0 2px 6px oklch(0% 0 none / 28%);
+  --shadow-md: 0 4px 12px oklch(0% 0 none / 32%), 0 1px 2px oklch(0% 0 none / 24%);
+  --shadow-lg: 0 18px 40px oklch(0% 0 none / 40%), 0 2px 6px oklch(0% 0 none / 28%);
   --shadow-inset: 0 0 0 1px oklch(100% 0 none / 5%);
 }

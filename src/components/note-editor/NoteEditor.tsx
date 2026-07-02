@@ -9,7 +9,7 @@ import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Switch } from "../ui/Switch";
 import type {
@@ -99,15 +99,6 @@ const SOURCE_FILTERS = [
   { value: "system", label: "System" },
 ] as const;
 
-const PROCESSING_STAGES: {
-  status: ProcessingStageStatus;
-  label: string;
-}[] = [
-  { status: "validating", label: "Audio" },
-  { status: "transcribing", label: "Transcript" },
-  { status: "generating", label: "Summary" },
-];
-
 const RECORD_CONSENT_REVEAL_DELAY_MS = 420;
 const RECORD_CONSENT_AUTO_HIDE_MS = 5000;
 
@@ -194,17 +185,12 @@ export function NoteEditor({
   }, [transcriptTurns]);
   const visibleTurns = useMemo(() => {
     if (!hasBothSources || sourceFilter === "all") return transcriptTurns;
-    return transcriptTurns.filter(
-      (turn) => sourceKey(turn.source) === sourceFilter,
-    );
+    return transcriptTurns.filter((turn) => sourceKey(turn.source) === sourceFilter);
   }, [transcriptTurns, hasBothSources, sourceFilter]);
   const systemOn = sourceMode === "microphonePlusSystem";
-  const systemSource = sourceReadiness?.sources.find(
-    (source) => source.source === "system",
-  );
+  const systemSource = sourceReadiness?.sources.find((source) => source.source === "system");
   const systemDenied =
-    systemSource?.permissionState === "denied" ||
-    systemSource?.permissionState === "restricted";
+    systemSource?.permissionState === "denied" || systemSource?.permissionState === "restricted";
   const systemUnsupported = systemSource?.permissionState === "unsupported";
   const showRecordingOptions = isMacLikePlatform();
   // Mic denial is sourced from App via the dictation helper, not from
@@ -220,9 +206,7 @@ export function NoteEditor({
   useEffect(() => {
     const prev = consentEdgeRef.current;
     const shouldReveal =
-      prev.noteId !== note.id
-        ? recordingActive
-        : recordingActive && !prev.recording;
+      prev.noteId !== note.id ? recordingActive : recordingActive && !prev.recording;
 
     consentEdgeRef.current = { noteId: note.id, recording: recordingActive };
     // Undo the ref mutation on cleanup so StrictMode's double-invoke replays
@@ -262,9 +246,33 @@ export function NoteEditor({
   const processingLock = processingStatus !== null;
   const recordButtonDisabled = recordingDisabled;
   const recordOptionsDisabled = processingLock || recordingDisabled;
-  const showProcessingSkeleton =
-    note.processingStatus === "transcribing" ||
-    note.processingStatus === "generating";
+  // When generation finishes for the note you're looking at, reveal the fresh
+  // notes with a top-down wipe instead of letting the text snap in. Only fires
+  // on the live processing -> ready edge for this same note — never when
+  // opening an already-finished one. `justFinished` is derived during render
+  // against the last commit, so the clip lands on the very first ready frame
+  // (no chance of painting the notes un-clipped before the wipe starts);
+  // `notesRevealing` then holds the class for the rest of the animation.
+  const [notesRevealing, setNotesRevealing] = useState(false);
+  const revealEdgeRef = useRef({ noteId: note.id, processing: processingLock });
+  const justFinished =
+    revealEdgeRef.current.noteId === note.id &&
+    revealEdgeRef.current.processing &&
+    !processingLock &&
+    note.processingStatus === "ready";
+  useEffect(() => {
+    revealEdgeRef.current = { noteId: note.id, processing: processingLock };
+    if (justFinished) setNotesRevealing(true);
+  }, [note.id, processingLock, note.processingStatus, justFinished]);
+  // Hold the class just past the staggered block cascade, then drop it. (The
+  // blocks finish at different times, so a timer is cleaner than chasing the
+  // last animationend.)
+  useEffect(() => {
+    if (!notesRevealing) return;
+    const timer = window.setTimeout(() => setNotesRevealing(false), 1200);
+    return () => window.clearTimeout(timer);
+  }, [notesRevealing]);
+  const revealingNotes = justFinished || notesRevealing;
   // Shell snaps straight back to idle after stop — the body shimmer
   // covers the "still processing" affordance, and the record button
   // stays disabled via processingLock so nothing can re-trigger.
@@ -273,8 +281,7 @@ export function NoteEditor({
   const transcriptText = transcriptToText(note, liveTranscriptTurns);
   const showTranscriptProcessing = processingStatus !== null;
   const showLivePreviewWaiting =
-    recordingForNote?.livePreviewEnabled === true &&
-    liveTranscriptTurns.length === 0;
+    recordingForNote?.livePreviewEnabled === true && liveTranscriptTurns.length === 0;
   // Processing runs in the background and is queued per note, so a recording
   // that's still transcribing/generating no longer blocks starting another —
   // you can stack messages and they process in order. The record button only
@@ -346,20 +353,12 @@ export function NoteEditor({
                   />
                 ) : null}
                 <CopyTranscriptButton
-                  text={
-                    visibleTurns.length
-                      ? turnsToText(visibleTurns)
-                      : transcriptText
-                  }
+                  text={visibleTurns.length ? turnsToText(visibleTurns) : transcriptText}
                 />
               </div>
             ) : null}
             {showLivePreviewWaiting ? (
-              <div
-                className="transcript-processing"
-                role="status"
-                aria-live="polite"
-              >
+              <div className="transcript-processing" role="status" aria-live="polite">
                 <DotSpinner className="transcript-processing-spinner" />
                 <span className="transcript-processing-label">
                   Listening for transcript preview...
@@ -391,42 +390,34 @@ export function NoteEditor({
                     : (processingText ??
                       (note.processingStatus === "failed"
                         ? "No transcript was produced."
-                        : (note.lastError ??
-                          "No transcript is available yet.")))}
+                        : (note.lastError ?? "No transcript is available yet.")))}
                 </p>
               </div>
             )}
           </div>
         ) : (
           <div className="note-body-stack">
-            <NotePreview
-              noteId={note.id}
-              markdown={content}
-              onChange={onContentChange}
-              emptyPlaceholder={
-                processingLock
-                  ? ""
-                  : "Hit record to capture a conversation, or just start typing your thoughts here"
-              }
-            />
+            <div className={revealingNotes ? "note-reveal-active" : undefined}>
+              <NotePreview
+                noteId={note.id}
+                markdown={content}
+                onChange={onContentChange}
+                emptyPlaceholder={
+                  processingLock
+                    ? ""
+                    : "Hit record to capture a conversation, or just start typing your thoughts here"
+                }
+              />
+            </div>
+            {/* The badge is the whole wait state now — no skeleton, since the
+                generated note's shape isn't ours to predict. It clears as the
+                notes wipe in above it. */}
             {processingStatus ? (
               <ProcessingProgressIndicator
                 status={processingStatus}
                 queuedRecordings={queuedRecordings}
                 queuedTooltipId={queuedTooltipId}
               />
-            ) : null}
-            {showProcessingSkeleton ? (
-              <div className="note-skeleton" aria-hidden="true">
-                <span className="note-skeleton-heading" />
-                <span className="note-skeleton-body">
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                  <span className="note-skeleton-line" />
-                </span>
-              </div>
             ) : null}
           </div>
         )}
@@ -441,11 +432,7 @@ export function NoteEditor({
             icon={<IconMicrophoneOff size={14} aria-hidden />}
             body="Microphone access is blocked. You can still write notes here."
             actions={
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={onEnableMicrophone}
-              >
+              <button type="button" className="btn btn-secondary" onClick={onEnableMicrophone}>
                 Enable
               </button>
             }
@@ -483,15 +470,10 @@ export function NoteEditor({
               className="record-shell"
               data-state={shellState}
               data-options-open={
-                !recordingForNote &&
-                !recordOptionsDisabled &&
-                showRecordingOptions &&
-                optionsOpen
+                !recordingForNote && !recordOptionsDisabled && showRecordingOptions && optionsOpen
               }
             >
-              {!recordingForNote &&
-              !recordOptionsDisabled &&
-              showRecordingOptions ? (
+              {!recordingForNote && !recordOptionsDisabled && showRecordingOptions ? (
                 <div
                   className="record-options-panel"
                   data-open={optionsOpen}
@@ -503,24 +485,16 @@ export function NoteEditor({
                         System audio requires macOS 14.2 or later.
                       </p>
                     ) : (
-                      <div
-                        className="record-options-row"
-                        data-locked={systemDenied || undefined}
-                      >
+                      <div className="record-options-row" data-locked={systemDenied || undefined}>
                         <Switch
                           checked={systemOn}
                           disabled={systemDenied}
                           aria-labelledby="record-options-system"
                           onCheckedChange={(next) =>
-                            onSourceModeChange(
-                              next ? "microphonePlusSystem" : "microphoneOnly",
-                            )
+                            onSourceModeChange(next ? "microphonePlusSystem" : "microphoneOnly")
                           }
                         />
-                        <span
-                          id="record-options-system"
-                          className="record-options-label"
-                        >
+                        <span id="record-options-system" className="record-options-label">
                           Capture system audio
                         </span>
                         {systemDenied ? (
@@ -595,16 +569,8 @@ export function NoteEditor({
                         <button
                           type="button"
                           className="record-button"
-                          aria-label={
-                            recordingDisabled
-                              ? "Recording in progress"
-                              : "Record"
-                          }
-                          title={
-                            recordingDisabled
-                              ? "Recording in progress"
-                              : "Record"
-                          }
+                          aria-label={recordingDisabled ? "Recording in progress" : "Record"}
+                          title={recordingDisabled ? "Recording in progress" : "Record"}
                           disabled={recordButtonDisabled}
                           onClick={onStartRecording}
                         >
@@ -678,15 +644,11 @@ function FolderChip({
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return folders;
-    return folders.filter((folder) =>
-      folder.name.toLowerCase().includes(normalized),
-    );
+    return folders.filter((folder) => folder.name.toLowerCase().includes(normalized));
   }, [folders, query]);
 
   const trimmed = query.trim();
-  const exactMatch = folders.some(
-    (folder) => folder.name.toLowerCase() === trimmed.toLowerCase(),
-  );
+  const exactMatch = folders.some((folder) => folder.name.toLowerCase() === trimmed.toLowerCase());
   const showCreate = trimmed.length > 0 && !exactMatch;
 
   return (
@@ -746,9 +708,7 @@ function FolderChip({
                 }}
               >
                 <IconPlusMedium size={14} />
-                <span className="move-to-folder-item-name">
-                  Create “{trimmed}”
-                </span>
+                <span className="move-to-folder-item-name">Create “{trimmed}”</span>
                 <span aria-hidden />
               </button>
               <div className="move-to-folder-divider" aria-hidden />
@@ -765,14 +725,10 @@ function FolderChip({
                     role="menuitemcheckbox"
                     aria-checked={isAssigned}
                     className="move-to-folder-item"
-                    onClick={() =>
-                      isAssigned ? onRemove(folder.id) : onAssign(folder.id)
-                    }
+                    onClick={() => (isAssigned ? onRemove(folder.id) : onAssign(folder.id))}
                   >
                     <IconProjects size={14} />
-                    <span className="move-to-folder-item-name">
-                      {folder.name}
-                    </span>
+                    <span className="move-to-folder-item-name">{folder.name}</span>
                     <span className="move-to-folder-item-check" aria-hidden>
                       {isAssigned ? "✓" : ""}
                     </span>
@@ -800,78 +756,49 @@ function ProcessingProgressIndicator({
   queuedTooltipId?: string;
   className?: string;
 }) {
-  const activeIndex = PROCESSING_STAGES.findIndex(
-    (stage) => stage.status === status,
-  );
-  const label = processingMessage(status) ?? "Processing audio...";
-  const progressValueText = `${processingStageLabel(status)} stage in progress`;
-  const classes = ["note-processing-progress", className]
-    .filter(Boolean)
-    .join(" ");
+  const reduceMotion = useReducedMotion();
+  const classes = ["note-processing-progress", className].filter(Boolean).join(" ");
 
   return (
-    <div
-      className={classes}
-      data-status={status}
-      role="status"
-      aria-live="polite"
-    >
-      <div className="note-processing-progress-head">
-        <DotSpinner className="note-processing-progress-spinner" />
-        <span className="note-processing-progress-label">{label}</span>
-        {queuedRecordings > 0 && queuedTooltipId ? (
-          <span
-            className="note-generating-count"
-            tabIndex={0}
-            aria-describedby={queuedTooltipId}
+    <div className={classes} data-status={status} role="status" aria-live="polite">
+      <DotSpinner className="note-processing-progress-spinner" />
+      {/* A departure-board roll: each stage label rises into the one-line
+          window as the previous one lifts out, blurring through the hand-off so
+          the change feels organic rather than a hard cut. popLayout keeps the
+          entering label in flow (so the chip stays sized) while the leaving one
+          is popped out to slide away. Reduced motion drops to a plain
+          crossfade. */}
+      <div className="note-processing-roll">
+        <AnimatePresence initial={false} mode="popLayout">
+          <motion.span
+            key={status}
+            className="note-processing-roll-item"
+            initial={reduceMotion ? { opacity: 0 } : { y: "65%", opacity: 0, filter: "blur(5px)" }}
+            animate={reduceMotion ? { opacity: 1 } : { y: "0%", opacity: 1, filter: "blur(0px)" }}
+            exit={reduceMotion ? { opacity: 0 } : { y: "-65%", opacity: 0, filter: "blur(5px)" }}
+            transition={{
+              duration: reduceMotion ? 0.15 : 0.5,
+              ease: [0.22, 1, 0.36, 1],
+            }}
           >
-            +{queuedRecordings}
-            <span
-              className="note-generating-tip"
-              id={queuedTooltipId}
-              role="tooltip"
-            >
-              {queuedRecordings} more recording
-              {queuedRecordings > 1 ? "s" : ""} queued
-            </span>
-          </span>
-        ) : null}
+            {processingStageMessage(status)}
+          </motion.span>
+        </AnimatePresence>
       </div>
-      <div
-        className="note-processing-progress-track"
-        role="progressbar"
-        aria-label="Note processing progress"
-        aria-valuetext={progressValueText}
-      />
-      <ol className="note-processing-progress-steps" aria-hidden="true">
-        {PROCESSING_STAGES.map((stage, index) => {
-          const state =
-            index < activeIndex
-              ? "done"
-              : index === activeIndex
-                ? "active"
-                : "pending";
-          return (
-            <li
-              key={stage.status}
-              className="note-processing-progress-step"
-              data-state={state}
-            >
-              <span className="note-processing-progress-dot" />
-              <span className="note-processing-progress-step-label">
-                {stage.label}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
+      {queuedRecordings > 0 && queuedTooltipId ? (
+        <span className="note-generating-count" tabIndex={0} aria-describedby={queuedTooltipId}>
+          +{queuedRecordings}
+          <span className="note-generating-tip" id={queuedTooltipId} role="tooltip">
+            {queuedRecordings} more recording
+            {queuedRecordings > 1 ? "s" : ""} queued
+          </span>
+        </span>
+      ) : null}
     </div>
   );
 }
 
-function processingStageStatus(
-  status: NoteDto["processingStatus"],
-): ProcessingStageStatus | null {
+function processingStageStatus(status: NoteDto["processingStatus"]): ProcessingStageStatus | null {
   switch (status) {
     case "validating":
     case "transcribing":
@@ -882,14 +809,17 @@ function processingStageStatus(
   }
 }
 
-function processingStageLabel(status: ProcessingStageStatus): string {
+// The stage name as it reads in the rolling label and the spoken status. Kept
+// ellipsis-free: the roll and track motion already carry the "in progress"
+// sense, so the words can stay calm.
+function processingStageMessage(status: ProcessingStageStatus): string {
   switch (status) {
     case "validating":
-      return "Audio";
+      return "Preparing audio";
     case "transcribing":
-      return "Transcript";
+      return "Transcribing audio";
     case "generating":
-      return "Summary";
+      return "Generating notes";
   }
 }
 
@@ -918,10 +848,7 @@ function turnsToText(turns: RenderedTranscriptTurn[]): string {
     .join("\n\n");
 }
 
-function transcriptToText(
-  note: NoteDto,
-  liveTurns: RenderedTranscriptTurn[] = [],
-): string {
+function transcriptToText(note: NoteDto, liveTurns: RenderedTranscriptTurn[] = []): string {
   const sourceTurns = orderedVisibleSourceTranscripts(note);
   if (sourceTurns.length || liveTurns.length) {
     return turnsToText(
@@ -934,23 +861,18 @@ function transcriptToText(
   return note.transcript?.text ?? "";
 }
 
-function orderedVisibleSourceTranscripts(
-  note: NoteDto,
-): RenderedTranscriptTurn[] {
+function orderedVisibleSourceTranscripts(note: NoteDto): RenderedTranscriptTurn[] {
   return (note.sourceTranscripts ?? [])
     .filter((turn) => {
       if (turn.text.trim()) return true;
-      if (note.processingStatus === "failed" || !turn.lastError) return false;
-      return true;
+      return Boolean(turn.lastError);
     })
     .map((turn, index) => ({ turn, index }))
     .sort(compareSourceTranscriptOrder)
     .map(({ turn }) => turn);
 }
 
-function liveTranscriptEventToTurn(
-  event: LiveTranscriptEventDto,
-): RenderedTranscriptTurn {
+function liveTranscriptEventToTurn(event: LiveTranscriptEventDto): RenderedTranscriptTurn {
   return {
     id: `live-${event.sessionId}-${event.source}-${event.segmentId}`,
     text: event.text,
@@ -970,16 +892,10 @@ function compareSourceTranscriptOrder(
   left: { turn: RenderedTranscriptTurn; index: number },
   right: { turn: RenderedTranscriptTurn; index: number },
 ) {
-  const turnIndexOrder = compareOptionalNumber(
-    left.turn.turnIndex,
-    right.turn.turnIndex,
-  );
+  const turnIndexOrder = compareOptionalNumber(left.turn.turnIndex, right.turn.turnIndex);
   if (turnIndexOrder !== 0) return turnIndexOrder;
 
-  const startOrder = compareOptionalNumber(
-    left.turn.startMs,
-    right.turn.startMs,
-  );
+  const startOrder = compareOptionalNumber(left.turn.startMs, right.turn.startMs);
   if (startOrder !== 0) return startOrder;
 
   const endOrder = compareOptionalNumber(left.turn.endMs, right.turn.endMs);
@@ -1053,33 +969,18 @@ function TranscriptTurn({
   }
 
   return (
-    <article
-      className="transcript-turn"
-      data-source={isSystem ? "system" : "microphone"}
-    >
+    <article className="transcript-turn" data-source={isSystem ? "system" : "microphone"}>
       <span className="transcript-turn-icon" aria-hidden>
-        {isSystem ? (
-          <IconVolumeFull size={14} />
-        ) : (
-          <IconMicrophoneLine size={14} />
-        )}
+        {isSystem ? <IconVolumeFull size={14} /> : <IconMicrophoneLine size={14} />}
       </span>
       <div className="transcript-turn-body">
         <div className="transcript-turn-meta">
-          <span className="transcript-turn-source">
-            {sourceLabel(transcript.source)}
-          </span>
+          <span className="transcript-turn-source">{sourceLabel(transcript.source)}</span>
           {turnTime ? <time>{turnTime}</time> : null}
-          {preview ? (
-            <span className="transcript-turn-preview">Live preview</span>
-          ) : null}
+          {preview ? <span className="transcript-turn-preview">Live preview</span> : null}
         </div>
         {hasText ? (
-          <p
-            ref={textRef}
-            className="transcript-turn-text"
-            data-expanded={expanded || undefined}
-          >
+          <p ref={textRef} className="transcript-turn-text" data-expanded={expanded || undefined}>
             {transcript.text}
           </p>
         ) : null}
@@ -1092,9 +993,7 @@ function TranscriptTurn({
             {expanded ? "Show less" : "Show more"}
           </button>
         ) : null}
-        {errorMessage ? (
-          <p className="source-transcript-error">{errorMessage}</p>
-        ) : null}
+        {errorMessage ? <p className="source-transcript-error">{errorMessage}</p> : null}
       </div>
       {canCopy ? (
         <button

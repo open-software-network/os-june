@@ -28,13 +28,7 @@ type RecordingHudDemoOptions = {
   local: boolean;
 };
 
-type DemoState =
-  | "recording"
-  | "paused"
-  | "vertical"
-  | "horizontal"
-  | "demo"
-  | "clear";
+type DemoState = "recording" | "paused" | "vertical" | "horizontal" | "demo" | "clear";
 
 const STATUS_EVENT = "meeting-hud-status";
 const ZONE_EVENT = "meeting-hud-zone";
@@ -88,10 +82,7 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
 
   // A slow sine carrier plus jitter reads as speech; recentPeaks feeds the
   // meter's coalescing tail (applyStatus reads the last few) so the bars move.
-  function statusFor(
-    state: RecordingStatusDto["state"],
-    level: number,
-  ): RecordingStatusDto {
+  function statusFor(state: RecordingStatusDto["state"], level: number): RecordingStatusDto {
     const recentPeaks = Array.from({ length: 6 }, (_, i) =>
       Math.max(0, Math.min(1, level + (Math.random() - 0.5) * 0.2 - i * 0.02)),
     );
@@ -163,9 +154,7 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
     return "Lifecycle running (~11s): record with levels, pause, resume, back to flat.";
   }
 
-  (window as unknown as Record<string, unknown>).__recordingHud = (
-    state?: DemoState,
-  ) => {
+  (window as unknown as Record<string, unknown>).__recordingHud = (state?: DemoState) => {
     switch (state) {
       case "recording":
         recording();

@@ -7,10 +7,7 @@ import {
 } from "../components/agent/AgentWorkspace";
 import { createHermesMethods } from "../lib/hermes-control-plane";
 import type { AgentChatPart } from "../lib/agent-chat-runtime";
-import {
-  isBranchableMessageId,
-  parseBranchSessionResult,
-} from "../lib/hermes-session-branch";
+import { isBranchableMessageId, parseBranchSessionResult } from "../lib/hermes-session-branch";
 import branchFixture from "../lib/hermes-control-plane/fixtures/branch.json";
 
 describe("parseBranchSessionResult", () => {
@@ -27,22 +24,14 @@ describe("parseBranchSessionResult", () => {
 
   it("accepts session_id / sessionId / nested session as the new id", () => {
     expect(
-      parseBranchSessionResult(
-        { session_id: "fork-a" },
-        { sourceSessionId: "src" },
-      )?.sessionId,
+      parseBranchSessionResult({ session_id: "fork-a" }, { sourceSessionId: "src" })?.sessionId,
     ).toBe("fork-a");
     expect(
-      parseBranchSessionResult(
-        { sessionId: "fork-b" },
-        { sourceSessionId: "src" },
-      )?.sessionId,
+      parseBranchSessionResult({ sessionId: "fork-b" }, { sourceSessionId: "src" })?.sessionId,
     ).toBe("fork-b");
     expect(
-      parseBranchSessionResult(
-        { session: { id: "fork-c" } },
-        { sourceSessionId: "src" },
-      )?.sessionId,
+      parseBranchSessionResult({ session: { id: "fork-c" } }, { sourceSessionId: "src" })
+        ?.sessionId,
     ).toBe("fork-c");
   });
 
@@ -70,30 +59,18 @@ describe("parseBranchSessionResult", () => {
   });
 
   it("returns undefined when no usable new session id is present", () => {
+    expect(parseBranchSessionResult(null, { sourceSessionId: "src" })).toBeUndefined();
+    expect(parseBranchSessionResult({}, { sourceSessionId: "src" })).toBeUndefined();
     expect(
-      parseBranchSessionResult(null, { sourceSessionId: "src" }),
+      parseBranchSessionResult({ new_session_id: 42 }, { sourceSessionId: "src" }),
     ).toBeUndefined();
-    expect(
-      parseBranchSessionResult({}, { sourceSessionId: "src" }),
-    ).toBeUndefined();
-    expect(
-      parseBranchSessionResult(
-        { new_session_id: 42 },
-        { sourceSessionId: "src" },
-      ),
-    ).toBeUndefined();
-    expect(
-      parseBranchSessionResult("nonsense", { sourceSessionId: "src" }),
-    ).toBeUndefined();
+    expect(parseBranchSessionResult("nonsense", { sourceSessionId: "src" })).toBeUndefined();
   });
 
   it("never echoes the source id as the new id (a no-op fork is not a fork)", () => {
     // If the gateway returns only the source id, that is not a new session.
     expect(
-      parseBranchSessionResult(
-        { session_id: "src" },
-        { sourceSessionId: "src" },
-      ),
+      parseBranchSessionResult({ session_id: "src" }, { sourceSessionId: "src" }),
     ).toBeUndefined();
   });
 });
@@ -107,9 +84,7 @@ describe("isBranchableMessageId", () => {
   it("rejects synthetic transcript turn ids (not persisted message ids)", () => {
     // These ids are minted client-side by the turn builder and are NOT valid
     // branch locators — branching from them would fake precision.
-    expect(isBranchableMessageId("assistant:2026-06-24T00:00:00Z:2")).toBe(
-      false,
-    );
+    expect(isBranchableMessageId("assistant:2026-06-24T00:00:00Z:2")).toBe(false);
     expect(isBranchableMessageId("error:2026-06-24T00:00:00Z")).toBe(false);
     expect(isBranchableMessageId("pending:user:1719190000000")).toBe(false);
   });
@@ -178,9 +153,7 @@ describe("branchSourceSessionIdForTurn", () => {
 
   it("leaves normal assistant turns on the selected session fallback", () => {
     expect(
-      branchSourceSessionIdForTurn(
-        turnWith({ type: "text", text: "Done", status: "complete" }),
-      ),
+      branchSourceSessionIdForTurn(turnWith({ type: "text", text: "Done", status: "complete" })),
     ).toBeUndefined();
   });
 });
@@ -197,9 +170,7 @@ describe("BranchFromHereAction", () => {
     );
 
     render(<BranchFromHereAction messageId="m-3" onBranch={onBranch} />);
-    await userEvent.click(
-      screen.getByRole("button", { name: /branch from here/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /branch from here/i }));
 
     expect(onBranch).toHaveBeenCalledWith("m-3", undefined);
     expect(request).toHaveBeenCalledWith("session.branch", {
@@ -220,16 +191,8 @@ describe("BranchFromHereAction", () => {
       }),
     );
 
-    render(
-      <BranchFromHereAction
-        messageId="m-3"
-        sessionId="sess-delegated"
-        onBranch={onBranch}
-      />,
-    );
-    await userEvent.click(
-      screen.getByRole("button", { name: /branch from here/i }),
-    );
+    render(<BranchFromHereAction messageId="m-3" sessionId="sess-delegated" onBranch={onBranch} />);
+    await userEvent.click(screen.getByRole("button", { name: /branch from here/i }));
 
     expect(onBranch).toHaveBeenCalledWith("m-3", "sess-delegated");
     expect(request).toHaveBeenCalledWith("session.branch", {
@@ -241,10 +204,7 @@ describe("BranchFromHereAction", () => {
   it("disables the action and explains why when message identity is insufficient", () => {
     const onBranch = vi.fn();
     render(
-      <BranchFromHereAction
-        messageId="assistant:2026-06-24T00:00:00Z:2"
-        onBranch={onBranch}
-      />,
+      <BranchFromHereAction messageId="assistant:2026-06-24T00:00:00Z:2" onBranch={onBranch} />,
     );
     const button = screen.getByRole("button", { name: /branch from here/i });
     expect(button).toBeDisabled();
@@ -257,11 +217,7 @@ describe("BranchFromHereAction", () => {
 
   it("shows a spinning/disabled state while a branch is in flight", () => {
     const onBranch = vi.fn();
-    render(
-      <BranchFromHereAction messageId="m-3" onBranch={onBranch} submitting />,
-    );
-    expect(
-      screen.getByRole("button", { name: /branch from here/i }),
-    ).toBeDisabled();
+    render(<BranchFromHereAction messageId="m-3" onBranch={onBranch} submitting />);
+    expect(screen.getByRole("button", { name: /branch from here/i })).toBeDisabled();
   });
 });

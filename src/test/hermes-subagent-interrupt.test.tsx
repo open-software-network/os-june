@@ -16,12 +16,10 @@ import type { BackgroundHermesActivity } from "../lib/hermes-control-plane";
  */
 
 const NOW = Date.UTC(2026, 5, 24, 12, 0, 30);
-const AT = (s: number) =>
-  new Date(Date.UTC(2026, 5, 24, 12, 0, s)).toISOString();
+const AT = (s: number) => new Date(Date.UTC(2026, 5, 24, 12, 0, s)).toISOString();
 
 function record(
-  partial: Partial<AgentActivityRecord> &
-    Pick<AgentActivityRecord, "sessionId">,
+  partial: Partial<AgentActivityRecord> & Pick<AgentActivityRecord, "sessionId">,
 ): AgentActivityRecord {
   return {
     id: partial.sessionId,
@@ -37,8 +35,7 @@ function record(
 }
 
 function subagent(
-  partial: Partial<BackgroundHermesActivity> &
-    Pick<BackgroundHermesActivity, "subagentId">,
+  partial: Partial<BackgroundHermesActivity> & Pick<BackgroundHermesActivity, "subagentId">,
 ): BackgroundHermesActivity {
   return {
     phase: "progress",
@@ -48,9 +45,7 @@ function subagent(
   };
 }
 
-function renderDrawer(
-  props: Partial<Parameters<typeof AgentActivityDrawer>[0]> = {},
-) {
+function renderDrawer(props: Partial<Parameters<typeof AgentActivityDrawer>[0]> = {}) {
   return render(
     <AgentActivityDrawer
       open
@@ -206,9 +201,7 @@ describe("AgentActivityDrawer — subagent interrupt (feature 13)", () => {
     // The interrupt does not fire until the user confirms the destructive stop.
     expect(onStopSubagent).not.toHaveBeenCalled();
     const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: /stop/i }),
-    );
+    await userEvent.click(within(dialog).getByRole("button", { name: /stop/i }));
     expect(onStopSubagent).toHaveBeenCalledWith({
       sessionId: "s1",
       subagentId: "sub-tool",
@@ -236,9 +229,7 @@ describe("AgentActivityDrawer — subagent interrupt (feature 13)", () => {
     const row = subagentRow(container, "sub-tool");
     await userEvent.click(within(row).getByRole("button", { name: /stop/i }));
     const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: /keep running/i }),
-    );
+    await userEvent.click(within(dialog).getByRole("button", { name: /keep running/i }));
     expect(onStopSubagent).not.toHaveBeenCalled();
   });
 
@@ -289,9 +280,7 @@ describe("AgentActivityDrawer — subagent interrupt (feature 13)", () => {
         name: /stop/i,
       }),
     );
-    expect(
-      within(subagentRow(container, "sub-7")).getByText(/stopping/i),
-    ).toBeInTheDocument();
+    expect(within(subagentRow(container, "sub-7")).getByText(/stopping/i)).toBeInTheDocument();
 
     // A later complete event flows through the store -> new records prop.
     rerender(
@@ -331,9 +320,7 @@ describe("AgentActivityDrawer — subagent interrupt (feature 13)", () => {
   it("marks the row complete (no noisy failure) when Hermes says the subagent already finished", async () => {
     // interruptSubagent rejects because the subagent already completed. The row
     // must settle as complete, never show an error.
-    const onStopSubagent = vi
-      .fn()
-      .mockRejectedValue(new Error("subagent already complete"));
+    const onStopSubagent = vi.fn().mockRejectedValue(new Error("subagent already complete"));
     const { container } = renderDrawer({
       onStopSubagent,
       records: [

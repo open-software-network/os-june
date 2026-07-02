@@ -26,6 +26,15 @@ pub struct AppConfig {
     #[serde(default)]
     pub issue_reports: IssueReportsConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
+    /// Flat credits charged per generated image, keyed by image model id. Kept
+    /// separate from `pricing` (the text/ASR catalog) so image models never leak
+    /// into the served model pickers. A model absent here is rejected at the
+    /// `/image/generate` boundary (`model_not_priced`), so the settings picker
+    /// must only offer models listed here. `$1 = 1000 credits`; values are the
+    /// Venice per-image cost with margin (e.g. SD3.5 costs about $0.01,
+    /// charged 20).
+    #[serde(default = "default_image_pricing")]
+    pub image_pricing: BTreeMap<String, u64>,
 }
 
 impl Debug for AppConfig {
@@ -39,6 +48,7 @@ impl Debug for AppConfig {
             .field("attestation", &self.attestation)
             .field("issue_reports", &self.issue_reports)
             .field("pricing", &self.pricing)
+            .field("image_pricing", &self.image_pricing)
             .finish()
     }
 }
@@ -226,6 +236,8 @@ pub struct OsAccountsConfig {
     pub web_fetch_credits: u64,
     /// Hold TTL for the metered web search and web fetch actions.
     pub authorize_hold_ttl_web_secs: u64,
+    /// Hold TTL for the metered image generation action.
+    pub authorize_hold_ttl_image_secs: u64,
 }
 
 impl Debug for OsAccountsConfig {
@@ -267,6 +279,10 @@ impl Debug for OsAccountsConfig {
             .field(
                 "authorize_hold_ttl_web_secs",
                 &self.authorize_hold_ttl_web_secs,
+            )
+            .field(
+                "authorize_hold_ttl_image_secs",
+                &self.authorize_hold_ttl_image_secs,
             )
             .finish()
     }
@@ -393,13 +409,18 @@ struct TextModelFallback {
 /// reached at startup so metered charges still settle. The catalog carries the
 /// authoritative numbers and extends over this on every boot. Split out of
 /// `AppConfig::default` to keep that constructor under the line limit.
+///
+/// Usage credit prices include June's 1.2x retail multiplier over upstream
+/// cost. `$1 = 1000 credits`.
 fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     let mut pricing = BTreeMap::new();
     pricing.insert(
         "gpt-4o-mini-transcribe".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(1_000_000),
+            // OpenAI lists ASR prices per MINUTE ($0.003/min for mini);
+            // converted per second with the 1.2x retail multiplier.
+            credits_per_million_seconds: Some(60_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -407,7 +428,9 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             display_name: "GPT-4o mini transcribe".to_string(),
             description: Some("Fast OpenAI speech-to-text model.".to_string()),
             privacy: Some("anonymized".to_string()),
-            pricing: Some(serde_json::json!({ "display": "$0.001/sec audio" })),
+            // Matches what `models.rs::price_description` derives from the
+            // credit price above (raw metadata only — the API recomputes it).
+            pricing: Some(serde_json::json!({ "display": "$0.00006 per second audio" })),
             context_tokens: Some(16_000),
             traits: vec!["prompt".to_string()],
             capabilities: Vec::new(),
@@ -417,7 +440,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         "nvidia/parakeet-tdt-0.6b-v3".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(100_000),
+            credits_per_million_seconds: Some(120_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Venice,
@@ -440,8 +463,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-2",
             display_name: "GLM 5.2",
-            input_credits_per_million_tokens: 1_750,
-            output_credits_per_million_tokens: 5_500,
+            input_credits_per_million_tokens: 2_100,
+            output_credits_per_million_tokens: 6_600,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -454,16 +477,25 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "kimi-k2-6",
             display_name: "Kimi K2.6",
-            input_credits_per_million_tokens: 850,
-            output_credits_per_million_tokens: 4_660,
+            input_credits_per_million_tokens: 1_020,
+            output_credits_per_million_tokens: 5_592,
             context_tokens: 256_000,
-            capabilities: &["supportsFunctionCalling"],
+            // Kimi K2.6 is natively multimodal (Venice `supportsVision`), so it
+            // is the image-input fallback the frontend switches to when an image
+            // is attached to a non-vision model. Declare vision here too so that
+            // fallback still resolves when the live Venice catalog can't be
+            // reached at boot and only these built-in defaults are available.
+            capabilities: &[
+                "supportsFunctionCalling",
+                "supportsVision",
+                "supportsMultipleImages",
+            ],
         },
         TextModelFallback {
             id: "zai-org-glm-5-1",
             display_name: "GLM 5.1",
-            input_credits_per_million_tokens: 1_750,
-            output_credits_per_million_tokens: 5_500,
+            input_credits_per_million_tokens: 2_100,
+            output_credits_per_million_tokens: 6_600,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -476,8 +508,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5",
             display_name: "GLM 5",
-            input_credits_per_million_tokens: 1_000,
-            output_credits_per_million_tokens: 3_200,
+            input_credits_per_million_tokens: 1_200,
+            output_credits_per_million_tokens: 3_840,
             context_tokens: 198_000,
             capabilities: &["supportsFunctionCalling"],
         },
@@ -485,6 +517,23 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         pricing.insert(model.id.to_string(), text_model_config(model));
     }
     pricing
+}
+
+/// Per-image credit price for the curated Venice image models June offers. Keep
+/// the ids in sync with `IMAGE_MODELS` in the frontend (`src/lib/image-models.ts`)
+/// and `DEFAULT_IMAGE_MODEL` in the Tauri providers module — every id here must
+/// be a current Venice image model (verified against the models list), or
+/// generation fails `image_generation_rejected`. Values are the Venice per-image
+/// cost with a ~2x margin (mirroring the flat web-tool pricing): SD3.5 ~$0.01 ->
+/// 20, Chroma ~$0.01 -> 20, Qwen Image ~$0.03 -> 60, FLUX 2 Pro ~$0.03 -> 60.
+/// `$1 = 1000 credits`.
+fn default_image_pricing() -> BTreeMap<String, u64> {
+    BTreeMap::from([
+        ("venice-sd35".to_string(), 20),
+        ("flux-2-pro".to_string(), 60),
+        ("qwen-image".to_string(), 60),
+        ("chroma".to_string(), 20),
+    ])
 }
 
 fn text_model_config(model: TextModelFallback) -> ModelPriceConfig {
@@ -536,6 +585,7 @@ impl Default for AppConfig {
                 web_search_credits: 20,
                 web_fetch_credits: 20,
                 authorize_hold_ttl_web_secs: 30,
+                authorize_hold_ttl_image_secs: 60,
             },
             upstreams: UpstreamsConfig {
                 openai: UpstreamConfig {
@@ -552,11 +602,12 @@ impl Default for AppConfig {
                 source_repo_url: "https://github.com/open-software-network/os-june".to_string(),
                 image_repo: "ghcr.io/open-software-network/june-api".to_string(),
                 trust_center_url:
-                    "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
+                    "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
                         .to_string(),
             },
             issue_reports: IssueReportsConfig::default(),
             pricing: default_pricing(),
+            image_pricing: default_image_pricing(),
         }
     }
 }
@@ -697,6 +748,21 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
             }
         }
     }
+    validate_image_pricing(config)?;
+    Ok(())
+}
+
+/// A zero per-image price would silently generate for free — reject it like the
+/// per-model rate validation so a misconfigured price fails fast.
+fn validate_image_pricing(config: &AppConfig) -> Result<(), ConfigError> {
+    for (model_id, credits) in &config.image_pricing {
+        if *credits == 0 {
+            return Err(ConfigError::InvalidPricing {
+                model: model_id.clone(),
+                reason: "credits_per_image must be > 0".to_string(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -799,6 +865,114 @@ mod tests {
         config
     }
 
+    fn packaged_config_toml() -> AppConfig {
+        use figment::{
+            Figment,
+            providers::{Format, Serialized, Toml},
+        };
+        let toml_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.toml");
+        Figment::new()
+            .merge(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::file(toml_path))
+            .extract::<AppConfig>()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn default_kimi_declares_vision_but_glm_does_not() {
+        // Kimi K2.6 is the image-input fallback the app switches to, so it must
+        // read as vision-capable even from these built-in defaults, before the
+        // live Venice catalog loads (JUN-165). The non-vision GLM defaults must
+        // not claim vision, or the fallback could land on one of them.
+        let config = AppConfig::default();
+        let declares_vision = |id: &str| {
+            config
+                .pricing
+                .get(id)
+                .is_some_and(|model| model.capabilities.iter().any(|c| c == "supportsVision"))
+        };
+        assert!(
+            declares_vision("kimi-k2-6"),
+            "kimi-k2-6 default capabilities should declare supportsVision"
+        );
+        assert!(
+            config.pricing.contains_key("zai-org-glm-5-2"),
+            "zai-org-glm-5-2 should be present in default pricing"
+        );
+        assert!(
+            !declares_vision("zai-org-glm-5-2"),
+            "GLM 5.2 default must not claim vision"
+        );
+    }
+
+    #[test]
+    fn packaged_config_toml_keeps_kimi_vision_in_sync() {
+        // config.toml overrides default_pricing() via Figment and ships in the
+        // Docker image, so it is what `/models` serves when the live Venice
+        // catalog is unreachable. It must agree that Kimi is a vision model, or
+        // the image-attach fallback breaks in the packaged build (JUN-165).
+        let config = packaged_config_toml();
+        // A TOML-only model proves config.toml actually merged, so a failed
+        // load can't make the vision assertion below pass on the default alone.
+        assert!(
+            config
+                .pricing
+                .contains_key("nvidia-nemotron-3-nano-30b-a3b"),
+            "packaged config.toml did not merge"
+        );
+        let kimi_declares_vision = config
+            .pricing
+            .get("kimi-k2-6")
+            .is_some_and(|model| model.capabilities.iter().any(|c| c == "supportsVision"));
+        assert!(
+            kimi_declares_vision,
+            "packaged config.toml must declare supportsVision for kimi-k2-6"
+        );
+    }
+
+    #[test]
+    fn packaged_config_toml_includes_usage_margin() {
+        let config = packaged_config_toml();
+
+        // Per-second conversions of OpenAI's per-MINUTE ASR list prices
+        // ($0.003/min mini, $0.006/min 4o) with the 1.2x retail multiplier.
+        assert_eq!(
+            config
+                .pricing
+                .get("gpt-4o-mini-transcribe")
+                .and_then(|model| model.credits_per_million_seconds),
+            Some(60_000)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("gpt-4o-transcribe")
+                .and_then(|model| model.credits_per_million_seconds),
+            Some(120_000)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("zai-org-glm-5-2")
+                .and_then(|model| model.input_credits_per_million_tokens),
+            Some(2_100)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("zai-org-glm-5-2")
+                .and_then(|model| model.output_credits_per_million_tokens),
+            Some(6_600)
+        );
+        assert_eq!(
+            config
+                .pricing
+                .get("nvidia-nemotron-3-nano-30b-a3b")
+                .and_then(|model| model.input_credits_per_million_tokens),
+            Some(84)
+        );
+    }
+
     #[test]
     fn config_debug_redacts_secrets() {
         let mut config = AppConfig::default();
@@ -887,6 +1061,28 @@ mod tests {
         let result = validate(&config);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_image_price() {
+        // A zero per-image price would silently generate for free; reject it.
+        let mut config = valid_config();
+        config.image_pricing.insert("free-image".to_string(), 0);
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_config_prices_the_curated_image_models() {
+        let config = valid_config();
+        for model in ["venice-sd35", "flux-2-pro", "qwen-image", "chroma"] {
+            assert!(
+                config.image_pricing.get(model).is_some_and(|c| *c > 0),
+                "missing image price for {model}"
+            );
+        }
     }
 
     #[test]

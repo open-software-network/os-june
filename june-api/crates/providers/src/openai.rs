@@ -142,7 +142,9 @@ mod tests {
     use super::OpenAiTranscriber;
     use crate::http;
     use june_config::UpstreamConfig;
-    use june_domain::{AudioFormat, DomainError, ModelId, Transcriber, TranscriptionRequest};
+    use june_domain::{
+        AudioFormat, DomainError, ModelId, ProviderCredentials, Transcriber, TranscriptionRequest,
+    };
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use wiremock::{
@@ -167,6 +169,7 @@ mod tests {
             context: None,
             language: None,
             model: ModelId("gpt-4o-mini-transcribe".to_string()),
+            provider_credentials: ProviderCredentials::default(),
         }
     }
 

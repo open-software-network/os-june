@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in June is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. You can also report bugs
+        from inside June (it attaches diagnostics automatically), but a GitHub
+        issue is great for anything you want tracked in the open.
+
+        For security vulnerabilities, please do not open a public issue.
+        Follow the [security policy](https://github.com/open-software-network/os-june/security/policy) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: When I ended a meeting recording, the note stayed on "Generating" forever.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a meeting note with microphone plus system audio
+        2. Record for a few minutes
+        3. Stop the recording
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat
+        - Dictation
+        - Meeting notes
+        - Agent
+        - Image generation
+        - Billing and account
+        - Onboarding and settings
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: June version and channel
+      description: Shown in Settings. Include stable or rc.
+      placeholder: v0.0.26, stable
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: macOS version and chip
+      placeholder: macOS 15.5, Apple Silicon
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs
+      description: Anything else that helps. Drag and drop images or paste log output.
+    validations:
+      required: false

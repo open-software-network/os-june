@@ -4,10 +4,7 @@ import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconTextIndicator } from "central-icons/IconTextIndicator";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
-import {
-  dictationHelperCommand,
-  openPrivacySettings,
-} from "../../../lib/tauri";
+import { dictationHelperCommand, openPrivacySettings } from "../../../lib/tauri";
 import { isMacLikePlatform } from "../../../lib/platform";
 import { StepActions, StepCard } from "../StepChrome";
 import {
@@ -38,11 +35,7 @@ function PermissionRow({
   onAllow?: () => void;
 }) {
   return (
-    <li
-      className="onboarding-perm"
-      data-granted={granted}
-      data-probing={probing}
-    >
+    <li className="onboarding-perm" data-granted={granted} data-probing={probing}>
       <span className="onboarding-perm-icon" aria-hidden>
         {granted ? <IconCheckmark1Small size={15} /> : icon}
       </span>
@@ -164,9 +157,7 @@ export function PermissionsStep({
               granted={showPermissionRows && accessibilityGranted}
               title="Accessibility"
               detail="Types your words at your cursor, in any app."
-              onAllow={
-                showPermissionRows ? openAccessibilitySettings : undefined
-              }
+              onAllow={showPermissionRows ? openAccessibilitySettings : undefined}
             />
             <PermissionRow
               icon={<IconVolumeFull size={15} />}
@@ -201,8 +192,7 @@ export function PermissionsStep({
           !showPermissionRows ||
           !micGranted ||
           (macLikePlatform &&
-            (!accessibilityGranted ||
-              !(systemAudioGranted || systemAudioUnsupported)))
+            (!accessibilityGranted || !(systemAudioGranted || systemAudioUnsupported)))
         }
         onSkip={onContinue}
       />

@@ -1,0 +1,431 @@
+name: promote-desktop-release
+
+# Promotes the current rc build to the stable update channel by REBUILDING at a
+# clean X.Y.Z version (flavor B). It checks out the exact source commit the rc
+# was built from (recorded in the rc release's rc-build.json), stamps the clean
+# version, and runs the same sign + notarize + publish path as a production
+# release. Stable therefore ships the same source you tested as the rc, with a
+# clean version string. The rebuild needs the Apple + minisign secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      rc-version:
+        description: "RC version to promote (e.g. 0.0.25-rc.1). Must match the version the rc release currently holds."
+        required: true
+        type: string
+      macos-runner:
+        description: "Runner for the signed macOS build"
+        required: true
+        default: "mac-studio"
+        type: choice
+        options:
+          - mac-studio
+          - github-hosted
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-desktop-release
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  promote:
+    name: Promote rc macOS app to stable
+    runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["macos-latest"]') }}
+    environment: production
+    steps:
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-june,os-june-releases
+
+      # Read the rc build manifest first (no checkout needed) to learn which
+      # version + source commit to promote, then check that commit out below.
+      - name: Resolve rc version and source commit
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RC_VERSION_INPUT: ${{ inputs.rc-version }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/rc-meta"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          gh release download rc \
+            --repo open-software-network/os-june-releases \
+            --pattern "rc-build.json" \
+            --dir "$dir"
+
+          rc_version="$(node -e 'const d=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(d.version||""))' "$dir/rc-build.json")"
+          commit="$(node -e 'const d=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(d.commit||""))' "$dir/rc-build.json")"
+
+          rc_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[1-9][0-9]*$'
+          sha_re='^[0-9a-f]{40}$'
+          if [[ ! "$rc_version" =~ $rc_re ]]; then
+            echo "::error::rc-build.json version is not X.Y.Z-rc.N: $rc_version"
+            exit 1
+          fi
+          if [[ ! "$commit" =~ $sha_re ]]; then
+            echo "::error::rc-build.json commit is not a 40-char sha: $commit"
+            exit 1
+          fi
+          # Q10: rc-version is required and must name the exact rc the release
+          # currently holds, so a promote can never silently ship a different rc
+          # than the operator intended.
+          if [ "$RC_VERSION_INPUT" != "$rc_version" ]; then
+            echo "::error::Requested $RC_VERSION_INPUT but the rc release holds $rc_version."
+            exit 1
+          fi
+
+          # VERSION strips the -rc.N suffix for the clean stable version.
+          {
+            echo "RC_VERSION=$rc_version"
+            echo "BUILD_COMMIT=$commit"
+            echo "VERSION=${rc_version%-rc.*}"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # The exact commit the rc was built from, so stable rebuilds that tree.
+          ref: ${{ env.BUILD_COMMIT }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo registry
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      # No src-tauri/target cache, same notarization rationale as the rc and
+      # production workflows.
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
+          PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
+          PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_API_ISSUER \
+            APPLE_API_KEY \
+            APPLE_API_KEY_P8 \
+            TAURI_SIGNING_PRIVATE_KEY \
+            PRODUCTION_OS_ACCOUNTS_URL \
+            PRODUCTION_OS_ACCOUNTS_API_URL \
+            PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
+            PRODUCTION_JUNE_API_URL
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} is required to promote a stable release."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Stamp clean stable version
+        run: |
+          set -euo pipefail
+          # The rc already ran lint/test/test:rust at this exact commit, so the
+          # only change here is the version string (rc -> clean); no need to
+          # re-run the suite. set-build-version accepts the plain X.Y.Z too.
+          node scripts/set-build-version.mjs "$VERSION"
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+
+      - name: Generate release changelog
+        run: |
+          set -euo pipefail
+          changelog_path="$RUNNER_TEMP/release-changelog.md"
+          node scripts/generate-release-changelog.mjs "$VERSION" "$changelog_path"
+          echo "RELEASE_CHANGELOG_PATH=$changelog_path" >> "$GITHUB_ENV"
+
+      - name: Write Apple API key
+        id: apple-api-key
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+          echo "path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/os-june-signing.keychain-db"
+          keychain_password="os-june-$RANDOM-$RANDOM"
+          cert="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" \
+            $(security list-keychains -d user | tr -d '"')
+          rm -f "$cert"
+
+      - name: Cache bundled Hermes runtime
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .tauri-hermes/hermes
+          key: hermes-bundle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bundle-hermes-runtime.sh', 'src-tauri/src/hermes_bridge.rs') }}
+
+      - name: Bundle Hermes runtime into app resources
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: ./scripts/bundle-hermes-runtime.sh
+
+      - name: Build and sign stable app artifacts
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ steps.apple-api-key.outputs.path }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
+          OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
+          OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+        with:
+          args: --bundles app,dmg --target universal-apple-darwin
+          includeUpdaterJson: false
+
+      - name: Notarize, verify, and publish stable release assets
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ steps.apple-api-key.outputs.path }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg
+          )
+          if [ "${#dmgs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one stable DMG, found ${#dmgs[@]}"
+            exit 1
+          fi
+
+          dmg="${dmgs[0]}"
+          xcrun notarytool submit "$dmg" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type install --verbose "$dmg"
+
+          app_archives=(
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+          )
+          app_signatures=(
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          )
+          if [ "${#app_archives[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one app updater archive, found ${#app_archives[@]}"
+            exit 1
+          fi
+          if [ "${#app_signatures[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one app updater signature, found ${#app_signatures[@]}"
+            exit 1
+          fi
+
+          release_dir="$RUNNER_TEMP/stable-release-assets"
+          rm -rf "$release_dir"
+          mkdir -p "$release_dir"
+          stable_dmg="$release_dir/June_universal.dmg"
+          legacy_dmg="$release_dir/June_aarch64.dmg"
+          app_archive="$release_dir/June_universal.app.tar.gz"
+          app_signature="$release_dir/June_universal.app.tar.gz.sig"
+          latest_json="$release_dir/latest.json"
+          cp "$dmg" "$stable_dmg"
+          cp "$dmg" "$legacy_dmg"
+          cp "${app_archives[0]}" "$app_archive"
+          cp "${app_signatures[0]}" "$app_signature"
+
+          # Record the source commit on the stable release so the Windows build
+          # can rebuild the exact tree this macOS release shipped, independent of
+          # how far main has advanced (mirrors the rc's rc-build.json).
+          stable_build_json="$release_dir/stable-build.json"
+          printf '{\n  "version": "%s",\n  "commit": "%s"\n}\n' \
+            "$VERSION" "$BUILD_COMMIT" > "$stable_build_json"
+
+          SIGNATURE_PATH="$app_signature" \
+          LATEST_JSON_PATH="$latest_json" \
+          RELEASE_CHANGELOG_PATH="$RELEASE_CHANGELOG_PATH" \
+          node <<'NODE'
+          const fs = require("node:fs");
+          const version = process.env.VERSION;
+          const signature = fs.readFileSync(process.env.SIGNATURE_PATH, "utf8");
+          const notes = fs
+            .readFileSync(process.env.RELEASE_CHANGELOG_PATH, "utf8")
+            .trim();
+          const url = `https://github.com/open-software-network/os-june-releases/releases/download/v${version}/June_universal.app.tar.gz`;
+          const platform = { signature, url };
+          const latest = {
+            version,
+            notes,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "darwin-aarch64": platform,
+              "darwin-x86_64": platform,
+              "darwin-aarch64-app": platform,
+              "darwin-x86_64-app": platform,
+            },
+          };
+          fs.writeFileSync(
+            process.env.LATEST_JSON_PATH,
+            `${JSON.stringify(latest, null, 2)}\n`,
+          );
+          NODE
+
+          release_notes_file="${RELEASE_CHANGELOG_PATH:?}"
+          # --latest marks this the repo's latest release so the stable channel
+          # URL (releases/latest/download/latest.json) resolves here.
+          if gh release view "v$VERSION" --repo open-software-network/os-june-releases >/dev/null 2>&1; then
+            gh release edit "v$VERSION" \
+              --repo open-software-network/os-june-releases \
+              --title "June v$VERSION" \
+              --notes-file "$release_notes_file" \
+              --prerelease=false \
+              --latest
+          else
+            gh release create "v$VERSION" \
+              --repo open-software-network/os-june-releases \
+              --title "June v$VERSION" \
+              --notes-file "$release_notes_file" \
+              --latest \
+              --target main
+          fi
+
+          gh release upload "v$VERSION" \
+            "$stable_dmg" \
+            "$legacy_dmg" \
+            "$app_archive" \
+            "$app_signature" \
+            "$latest_json" \
+            "$stable_build_json" \
+            --repo open-software-network/os-june-releases \
+            --clobber
+
+      # Record the released version on main so its version files advance and the
+      # next changelog can find this release. Runs only after the stable release
+      # is published, so a build/notarize failure never leaves main bumped without
+      # a matching release. The release App is on main's branch-protection bypass
+      # list, so it commits the bump straight to main (no PR to merge); the push
+      # authenticates as the App via the credentials persisted at checkout. This
+      # is the version-bump duty inherited from the retired production workflow.
+      - name: Record released version on main
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+          # This bump is the last step, after the stable release is already
+          # published. Its push can lose a race with an unrelated commit to main;
+          # rather than fail the whole promote (which would force a 30-60 min
+          # rebuild rerun), re-fetch and replay the deterministic bump onto the new
+          # tip, then fast-forward push again. promote's own tree (the rc's pinned
+          # commit with the build version stamped in) is discarded each attempt.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard
+            git checkout -B main origin/main
+            current="$(node -e 'process.stdout.write(require("./package.json").version)')"
+            if [ "$current" = "$VERSION" ]; then
+              echo "main is already at v$VERSION; nothing to record."
+              exit 0
+            fi
+            # version:bump (not set-build-version) so main's monotonic X.Y.Z gate applies.
+            pnpm version:bump "$VERSION"
+            cargo update --workspace --manifest-path src-tauri/Cargo.toml
+            git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            git commit -m "release: v$VERSION"
+            # Plain push (never force main); the App bypasses branch protection.
+            if git push origin HEAD:main; then
+              echo "Recorded release: v$VERSION on main."
+              exit 0
+            fi
+            echo "::warning::Push to main was rejected (it advanced); retrying ($attempt/5)."
+          done
+          echo "::error::Could not record release: v$VERSION on main after 5 attempts."
+          exit 1
+
+      # Release announcements are handled by the org's GitHub Slack app
+      # (`/github subscribe open-software-network/os-june-releases releases`),
+      # which posts when the stable `vX.Y.Z` release is published. See
+      # docs/release-macos.md.
+      - name: Summary
+        run: |
+          {
+            echo "### Promoted rc to stable"
+            echo "- Promoted: \`$RC_VERSION\` -> \`v$VERSION\` (rebuilt from \`$BUILD_COMMIT\`)"
+            echo "- Stable manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"

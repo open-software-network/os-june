@@ -98,10 +98,7 @@ function micTestDescription(state: MicTestState) {
 }
 
 function formatMicTestTime(milliseconds: number, durationSeconds: number) {
-  const seconds = Math.min(
-    durationSeconds,
-    Math.floor(Math.max(0, milliseconds) / 1000),
-  );
+  const seconds = Math.min(durationSeconds, Math.floor(Math.max(0, milliseconds) / 1000));
   return formatMicTestDuration(seconds);
 }
 
@@ -162,9 +159,7 @@ function MicTestPlayer({
             setDuration(nextDuration);
           }
         }}
-        onTimeUpdate={(event) =>
-          setCurrentTime(event.currentTarget.currentTime)
-        }
+        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
         onPause={() => onPlayingChange(false)}
         onPlay={() => onPlayingChange(true)}
         onEnded={() => {

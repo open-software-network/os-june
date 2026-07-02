@@ -18,6 +18,7 @@ pub enum ActionSlug {
     AgentChat,
     DictateCleanup,
     DictateTranscribe,
+    ImageGenerate,
     NoteGenerate,
     NoteTranscribe,
     WebFetch,
@@ -30,6 +31,7 @@ impl ActionSlug {
             Self::AgentChat => "agent_chat",
             Self::DictateCleanup => "dictate_cleanup",
             Self::DictateTranscribe => "dictate_transcribe",
+            Self::ImageGenerate => "image_generate",
             Self::NoteGenerate => "note_generate",
             Self::NoteTranscribe => "note_transcribe",
             Self::WebFetch => "web_fetch",
@@ -98,6 +100,20 @@ impl TokenUsage {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProviderCredentials {
+    pub venice_api_key: Option<String>,
+}
+
+impl ProviderCredentials {
+    pub fn has_venice_api_key(&self) -> bool {
+        self.venice_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Authorization {
@@ -163,6 +179,7 @@ pub struct TranscriptionRequest {
     pub context: Option<String>,
     pub language: Option<String>,
     pub model: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +192,7 @@ pub struct GenerationRequest {
     pub existing_generated_note: Option<String>,
     pub model: ModelId,
     pub system_prompt: String,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -184,12 +202,38 @@ pub struct CleanupRequest {
     pub style: String,
     pub model: ModelId,
     pub system_prompt: String,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
 pub struct AgentChatRequest {
     pub body: serde_json::Value,
     pub model: ModelId,
+    pub provider_credentials: ProviderCredentials,
+}
+
+/// What an image generator needs: a prompt, the model, optional pixel
+/// dimensions, and provider credentials. Deliberately carries no user id,
+/// so the provider sees only the inference inputs and the upstream key.
+#[derive(Clone, Debug)]
+pub struct ImageGenerationRequest {
+    pub prompt: String,
+    pub model: ModelId,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub provider_credentials: ProviderCredentials,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImage {
+    /// Base64-encoded image bytes, no `data:` prefix. The frontend wraps this
+    /// in a data URL for the existing inline image display path.
+    pub image_base64: String,
+    /// IANA mime of the encoded bytes, e.g. `image/png`.
+    pub mime_type: String,
+    pub model: String,
+    pub provider: String,
 }
 
 /// Which upstream engine Venice should run a web search against. Brave is the
@@ -210,6 +254,7 @@ pub struct WebSearchRequest {
     /// `None` lets the provider apply its default.
     pub limit: Option<u32>,
     pub provider: WebSearchProvider,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -235,6 +280,7 @@ pub struct WebSearchResult {
 #[derive(Clone, Debug)]
 pub struct WebFetchRequest {
     pub url: String,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -345,6 +391,14 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+}
+
+#[async_trait]
+pub trait ImageGenerator: Send + Sync {
+    async fn generate(
+        &self,
+        request: ImageGenerationRequest,
+    ) -> Result<GeneratedImage, DomainError>;
 }
 
 #[async_trait]

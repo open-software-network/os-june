@@ -16,10 +16,7 @@ import {
   type HermesAdminTarget,
 } from "../../lib/hermes-admin";
 import type { HermesBridgeConnection } from "../../lib/tauri";
-import {
-  FakeHermesServer,
-  type FakeHermesScenario,
-} from "./fake-hermes-server";
+import { FakeHermesServer, type FakeHermesScenario } from "./fake-hermes-server";
 
 /** Builds a bridge-shaped connection pointing at a fake server, in a chosen
  * mode/profile, so targeting logic is exercised with realistic inputs. */
@@ -48,10 +45,7 @@ export function targetForFake(
   server: FakeHermesServer,
   options: { mode?: HermesAdminMode; profile?: string } = {},
 ): HermesAdminTarget {
-  return adminTargetFromConnection(
-    connectionForFake(server, options),
-    options.profile,
-  );
+  return adminTargetFromConnection(connectionForFake(server, options), options.profile);
 }
 
 export type AdminHarness = {

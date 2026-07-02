@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { HermesAdminError, createHermesAdminClient } from "../lib/hermes-admin";
-import {
-  makeAdminHarness,
-  targetForFake,
-} from "./fixtures/hermes-admin-harness";
+import { makeAdminHarness, targetForFake } from "./fixtures/hermes-admin-harness";
 import { FakeHermesServer } from "./fixtures/fake-hermes-server";
 import {
   emptyInstallScenario,
@@ -15,11 +12,7 @@ describe("HermesAdminClient — requests, auth, profile targeting", () => {
   it("lists skills, sending the auth token in the header (never the URL)", async () => {
     const { client, server } = makeAdminHarness(richInstallScenario());
     const skills = await client.skills.list();
-    expect(skills.map((s) => s.name)).toEqual([
-      "pdf",
-      "research",
-      "company-style",
-    ]);
+    expect(skills.map((s) => s.name)).toEqual(["pdf", "research", "company-style"]);
 
     const entry = server.requestLog.at(-1);
     expect(entry?.method).toBe("GET");
@@ -120,11 +113,7 @@ describe("HermesAdminClient — requests, auth, profile targeting", () => {
     expect(outcome.appliesAt).toBe("immediate");
     expect(outcome.requiresRestart).toBe(false);
     expect(outcome.result.ok).toBe(true);
-    expect(outcome.result.tools?.map((t) => t.name)).toEqual([
-      "query",
-      "execute",
-      "schema",
-    ]);
+    expect(outcome.result.tools?.map((t) => t.name)).toEqual(["query", "execute", "schema"]);
   });
 
   it("lists an empty install as empty arrays, not errors", async () => {
@@ -166,9 +155,7 @@ describe("HermesAdminClient — real-contract paths and shapes (v2026.6.19)", ()
     const listing = await client.env.list();
     expect(listing.vars.some((v) => v.key === "OPENAI_API_KEY")).toBe(true);
     // The listing carries presence/preview, never the plaintext value.
-    expect(JSON.stringify(listing.vars)).not.toContain(
-      "sk-FAKE-secretvalue999",
-    );
+    expect(JSON.stringify(listing.vars)).not.toContain("sk-FAKE-secretvalue999");
   });
 
   it("env.reveal reads POST /api/env/reveal and returns the plaintext value", async () => {
@@ -218,6 +205,40 @@ describe("HermesAdminClient — real-contract paths and shapes (v2026.6.19)", ()
     expect(entry?.path).toBe("/api/skills/hub/update");
     expect(entry?.body).toEqual({});
   });
+
+  it("startTestSession stops before open-terminal when the profile switch reports not-ok", async () => {
+    const { client, server } = makeAdminHarness({
+      profiles: [
+        { name: "alpha", active: false },
+        { name: "beta", active: true },
+      ],
+      profileActivateNotOk: true,
+    });
+    const result = await client.profiles.startTestSession("alpha");
+    // A body-level { ok: false } on the switch (HTTP 2xx) must short-circuit:
+    // the failure rides in the result and no terminal is opened under the
+    // un-switched profile (Greptile P1).
+    expect(result.result.ok).toBe(false);
+    expect(server.requestLog.some((r) => r.path.includes("/open-terminal"))).toBe(false);
+  });
+
+  it("config.setValueAtSegments writes a dotted name as ONE key, not nested", async () => {
+    const { client, server } = makeAdminHarness(emptyInstallScenario());
+    // A skill named with a dot would mis-nest under a dotted path.
+    await client.config.setValueAtSegments(
+      ["skills", "config", "my.skill", "apiBase"],
+      "https://x",
+    );
+    const entry = server.requestLog.at(-1);
+    expect(entry?.method).toBe("PUT");
+    expect(entry?.path).toBe("/api/config");
+    const body = entry?.body as {
+      config?: { skills?: { config?: Record<string, { apiBase?: string }> } };
+    };
+    expect(body?.config?.skills?.config?.["my.skill"]?.apiBase).toBe("https://x");
+    // Not split into my -> skill.
+    expect(body?.config?.skills?.config?.["my"]).toBeUndefined();
+  });
 });
 
 describe("HermesAdminClient — error normalization", () => {
@@ -236,9 +257,7 @@ describe("HermesAdminClient — error normalization", () => {
     expect(adminError.kind).toBe("http");
     expect(adminError.status).toBe(401);
     expect(adminError.retryable).toBe(false);
-    expect(adminError.safeMessage).toBe(
-      "Hermes rejected the request (not authorized).",
-    );
+    expect(adminError.safeMessage).toBe("Hermes rejected the request (not authorized).");
   });
 
   it("normalizes 404 with the safe not-found message", async () => {
@@ -271,9 +290,7 @@ describe("HermesAdminClient — error normalization", () => {
     );
     expect(error?.status).toBe(500);
     expect(error?.retryable).toBe(true);
-    expect(error?.safeMessage).toBe(
-      "Hermes ran into a problem with that request.",
-    );
+    expect(error?.safeMessage).toBe("Hermes ran into a problem with that request.");
   });
 
   it("treats malformed JSON in a 2xx as a parse error, not a crash", async () => {

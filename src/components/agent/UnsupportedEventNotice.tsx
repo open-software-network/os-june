@@ -47,11 +47,7 @@ export function UnsupportedEventNotice({
   const showReportIssue = debugEnabled && Boolean(onReportIssue);
 
   return (
-    <section
-      className="agent-unsupported-notice"
-      role="status"
-      aria-live="polite"
-    >
+    <section className="agent-unsupported-notice" role="status" aria-live="polite">
       <div className="agent-unsupported-notice-icon" aria-hidden="true">
         <IconWarningSign size={16} />
       </div>
@@ -60,8 +56,7 @@ export function UnsupportedEventNotice({
           June received a Hermes event it does not support yet.
         </p>
         <p className="agent-unsupported-notice-text">
-          This session can keep going. If something looks stuck, stop the
-          session and try again.
+          This session can keep going. If something looks stuck, stop the session and try again.
         </p>
 
         {showDevDetails ? (

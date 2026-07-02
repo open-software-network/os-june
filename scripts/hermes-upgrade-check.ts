@@ -80,9 +80,7 @@ function main(): void {
   console.log(
     `hermes:upgrade-check: OK. Matrix, pin note, and checklist all agree on ${result.matrixVersion}.`,
   );
-  console.log(
-    `  matrix:    src/lib/hermes-control-plane/compatibility/matrix.ts`,
-  );
+  console.log(`  matrix:    src/lib/hermes-control-plane/compatibility/matrix.ts`);
   console.log(`  pin note:  ${pinNote}`);
   console.log(`  checklist: ${HERMES_UPGRADE_CHECKLIST_FILE}`);
   console.log(

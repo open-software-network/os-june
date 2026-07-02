@@ -1,6 +1,7 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
 use os_june_lib::audio::turns::{
-    coalesce_turns_for_transcription, detect_turns, AudioTurn, DetectionSource,
+    coalesce_turns_for_transcription, detect_turns, split_wav_for_transcription, AudioTurn,
+    DetectionSource, MAX_TRANSCRIPTION_CHUNK_MS,
 };
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -109,6 +110,25 @@ fn coalesces_adjacent_same_source_turns_before_transcription() {
 }
 
 #[test]
+fn does_not_coalesce_turns_past_transcription_chunk_cap() {
+    let turns = coalesce_turns_for_transcription(vec![
+        turn("microphone", 0, MAX_TRANSCRIPTION_CHUNK_MS - 1_000, 0),
+        turn(
+            "microphone",
+            MAX_TRANSCRIPTION_CHUNK_MS,
+            MAX_TRANSCRIPTION_CHUNK_MS + 5_000,
+            1,
+        ),
+    ]);
+
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].start_ms, 0);
+    assert_eq!(turns[0].end_ms, MAX_TRANSCRIPTION_CHUNK_MS - 1_000);
+    assert_eq!(turns[1].start_ms, MAX_TRANSCRIPTION_CHUNK_MS);
+    assert_eq!(turns[1].turn_index, 1);
+}
+
+#[test]
 fn keeps_same_source_turns_separate_when_another_source_intervenes() {
     let turns = coalesce_turns_for_transcription(vec![
         turn("microphone", 1_000, 4_000, 0),
@@ -123,6 +143,32 @@ fn keeps_same_source_turns_separate_when_another_source_intervenes() {
             .collect::<Vec<_>>(),
         vec!["microphone", "system", "microphone"]
     );
+}
+
+#[test]
+fn splits_prepared_wav_into_provider_safe_chunks() {
+    let dir = tempdir().expect("tempdir");
+    let input = dir.path().join("long.wav");
+    let chunks_dir = dir.path().join("chunks");
+    write_pattern_wav(
+        &input,
+        &[
+            (MAX_TRANSCRIPTION_CHUNK_MS as u32, 8_000),
+            (MAX_TRANSCRIPTION_CHUNK_MS as u32, 7_000),
+            (5_000, 6_000),
+        ],
+    );
+
+    let chunks =
+        split_wav_for_transcription(&input, &chunks_dir, "turn").expect("wav should split");
+
+    assert_eq!(chunks.len(), 3);
+    for chunk in chunks.iter().take(2) {
+        let reader = hound::WavReader::open(chunk).expect("chunk reader");
+        assert_eq!(reader.duration(), MAX_TRANSCRIPTION_CHUNK_MS as u32);
+    }
+    let tail = hound::WavReader::open(chunks.last().expect("tail chunk")).expect("tail reader");
+    assert_eq!(tail.duration(), 5_000);
 }
 
 fn turn(source: &str, start_ms: i64, end_ms: i64, turn_index: i64) -> AudioTurn {

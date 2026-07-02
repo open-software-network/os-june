@@ -15,33 +15,23 @@ describe("repairContractionSpacing", () => {
   it("re-inserts the space the gateway drops after a contraction", () => {
     // Real cases pulled from the persisted Hermes store.
     expect(repairContractionSpacing("it'snot")).toBe("it's not");
-    expect(repairContractionSpacing("you'rereferring")).toBe(
-      "you're referring",
-    );
+    expect(repairContractionSpacing("you'rereferring")).toBe("you're referring");
     expect(repairContractionSpacing("Mac'scamera")).toBe("Mac's camera");
-    expect(repairContractionSpacing("here'swhat'sthere:")).toBe(
-      "here's what's there:",
-    );
+    expect(repairContractionSpacing("here'swhat'sthere:")).toBe("here's what's there:");
     expect(repairContractionSpacing("we'vechecked and they'lldo it")).toBe(
       "we've checked and they'll do it",
     );
-    expect(repairContractionSpacing("I'mdone, don'tworry")).toBe(
-      "I'm done, don't worry",
-    );
+    expect(repairContractionSpacing("I'mdone, don'tworry")).toBe("I'm done, don't worry");
   });
 
   it("leaves correctly spaced and non-contraction text untouched", () => {
     // Idempotent: already-spaced text has no match.
     expect(repairContractionSpacing("it's not there")).toBe("it's not there");
-    expect(repairContractionSpacing("its not a contraction")).toBe(
-      "its not a contraction",
-    );
+    expect(repairContractionSpacing("its not a contraction")).toBe("its not a contraction");
     // Trailing punctuation, not a following word, isn't a dropped space.
     expect(repairContractionSpacing("that's it.")).toBe("that's it.");
     // Names with apostrophes aren't contraction enclitics.
-    expect(repairContractionSpacing("d'Artagnan and O'Brien")).toBe(
-      "d'Artagnan and O'Brien",
-    );
+    expect(repairContractionSpacing("d'Artagnan and O'Brien")).toBe("d'Artagnan and O'Brien");
   });
 
   it("does not corrupt a plural possessive glued to the next word", () => {
@@ -110,9 +100,7 @@ describe("Agent chat runtime", () => {
 
     expect(turns).toHaveLength(2);
     expect(turns[0]?.role).toBe("user");
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Hi", status: "complete" },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Hi", status: "complete" }]);
     expect(turns[1]?.parts).toEqual([
       {
         type: "reasoning",
@@ -671,9 +659,7 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Hello\n\nWorld", status: "running" },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Hello\n\nWorld", status: "running" }]);
   });
 
   it("appends repeated deltas verbatim instead of dropping them", () => {
@@ -699,9 +685,7 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "nono", status: "running" },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "nono", status: "running" }]);
   });
 
   it("keeps legitimate repeated lines and paragraphs in persisted messages", () => {
@@ -727,9 +711,7 @@ describe("Agent chat runtime", () => {
         status: "complete",
       },
     ]);
-    expect(turns[1]?.parts).toEqual([
-      { type: "text", text: "Yes.\n\nYes.", status: "complete" },
-    ]);
+    expect(turns[1]?.parts).toEqual([{ type: "text", text: "Yes.\n\nYes.", status: "complete" }]);
   });
 
   it("returns the raw completed message text for persistence", () => {
@@ -793,11 +775,11 @@ describe("Agent chat runtime", () => {
     );
 
     expect(turns[0]?.status).toBe("complete");
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["Let me check.", "tool", "Here is the answer."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "Let me check.",
+      "tool",
+      "Here is the answer.",
+    ]);
   });
 
   it("replaces streamed text wholesale when the complete text disagrees", () => {
@@ -828,11 +810,10 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["tool", "The authoritative answer."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "tool",
+      "The authoritative answer.",
+    ]);
   });
 
   it("keeps the verbatim stream when the complete text drops a boundary space", () => {
@@ -853,11 +834,9 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["Let me explore it."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "Let me explore it.",
+    ]);
   });
 
   it("honors a complete payload that corrects streamed whitespace", () => {
@@ -878,11 +857,9 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["return value"]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "return value",
+    ]);
   });
 
   it("does not truncate streamed text when the complete payload lags behind", () => {
@@ -903,11 +880,9 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["Here is the full answer."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "Here is the full answer.",
+    ]);
   });
 
   it("assigns unique turn ids to turns created in the same millisecond", () => {
@@ -928,9 +903,7 @@ describe("Agent chat runtime", () => {
   });
 
   it("keys tool events by tool_id so terminal events update the same part", () => {
-    expect(
-      toolEventKey({ type: "tool.start", payload: { tool_id: "tool-9" } }),
-    ).toBe("tool-9");
+    expect(toolEventKey({ type: "tool.start", payload: { tool_id: "tool-9" } })).toBe("tool-9");
 
     const turns = buildAgentChatTurns(
       [],
@@ -1030,9 +1003,7 @@ describe("Agent chat runtime", () => {
 
     const firstAssistant = turns.find((turn) => turn.id === "m2");
     const secondAssistant = turns.find((turn) => turn.id === "m4");
-    expect(
-      firstAssistant?.parts.filter((part) => part.type === "tool"),
-    ).toEqual([
+    expect(firstAssistant?.parts.filter((part) => part.type === "tool")).toEqual([
       {
         type: "tool",
         id: "evt-1",
@@ -1041,9 +1012,7 @@ describe("Agent chat runtime", () => {
         status: "complete",
       },
     ]);
-    expect(
-      secondAssistant?.parts.filter((part) => part.type === "tool"),
-    ).toEqual([
+    expect(secondAssistant?.parts.filter((part) => part.type === "tool")).toEqual([
       {
         type: "tool",
         id: "evt-2",
@@ -1086,12 +1055,8 @@ describe("Agent chat runtime", () => {
     ]);
 
     expect(turns).toHaveLength(2);
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Earlier answer", status: "complete" },
-    ]);
-    expect(turns[1]?.parts.filter((part) => part.type === "tool")).toHaveLength(
-      2,
-    );
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Earlier answer", status: "complete" }]);
+    expect(turns[1]?.parts.filter((part) => part.type === "tool")).toHaveLength(2);
     expect(turns[1]?.status).toBe("complete");
   });
 
@@ -1173,9 +1138,7 @@ describe("Agent chat runtime", () => {
       name: "Browsing",
       status: "complete",
     });
-    expect(tool?.type === "tool" ? tool.text : "").toContain(
-      "Fetched 42 lines",
-    );
+    expect(tool?.type === "tool" ? tool.text : "").toContain("Fetched 42 lines");
   });
 
   it("keeps inferred labels when persisted tool result messages arrive", () => {
@@ -1264,9 +1227,7 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("folds a persisted insufficient-credits error turn into a credits notice", () => {
@@ -1279,9 +1240,7 @@ describe("Agent chat runtime", () => {
       },
     ]);
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("drops partially streamed text when the turn completes as a credits failure", () => {
@@ -1301,9 +1260,7 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("folds an insufficient-credits message.complete into a credits notice", () => {
@@ -1318,14 +1275,11 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("keeps assistant prose about credits as ordinary text", () => {
-    const prose =
-      "If you see insufficient_credits errors, upgrade from settings.";
+    const prose = "If you see insufficient_credits errors, upgrade from settings.";
     const turns = buildHermesSessionChatTurns([
       {
         id: "1",
@@ -1335,9 +1289,155 @@ describe("Agent chat runtime", () => {
       },
     ]);
 
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  // The terminal error Hermes surfaces when a single oversized turn cannot be
+  // compressed below the window (JUN-169) — reaches us as a live error event,
+  // a failed message.complete, and persisted assistant text.
+  const OVERFLOW_ERROR = "Context length exceeded (66,919 tokens). Cannot compress further.";
+
+  it("folds a live context-overflow error event into a context-overflow notice", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "error",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { message: OVERFLOW_ERROR },
+        },
+      ],
+    );
+
     expect(turns[0]?.parts).toEqual([
-      { type: "text", text: prose, status: "complete" },
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
     ]);
+  });
+
+  it("folds a live string_too_long rejection into a context-overflow notice", () => {
+    // A single oversized string (per-string cap) is a hard size failure too;
+    // the classifier catches the raw token so it degrades like the aggregate
+    // overflow instead of surfacing raw (JUN-169 review).
+    const text = "string_too_long: a single field exceeded the size limit.";
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "error",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { message: text },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "context-overflow", text }]);
+  });
+
+  it("folds a failed context-overflow message.complete into a context-overflow notice", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: OVERFLOW_ERROR, status: "error" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
+    ]);
+  });
+
+  it("folds a persisted context-overflow assistant turn into a context-overflow notice", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: OVERFLOW_ERROR,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
+    ]);
+  });
+
+  it("keeps a persisted assistant answer that mentions context length as prose", () => {
+    // A saved answer, not an error — the persisted path has no failure flag, so
+    // it must fold only on unambiguous error sentinels, never on prose that
+    // merely discusses context length (JUN-169 review: persisted prose
+    // misclassification would drop the real answer on reload).
+    const prose = "The maximum context length for GLM 5.2 is 200k tokens.";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: prose,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  it("keeps a persisted answer that explains the error tokens as prose", () => {
+    // June discussing its own error codes in a saved answer must not reload as
+    // an overflow notice: the sentinel is anchored to the start of the message,
+    // so a mid-sentence mention of prompt_too_long/string_too_long stays text
+    // (JUN-169 review).
+    const prose =
+      "The agent API can return prompt_too_long or string_too_long when a request is too big.";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: prose,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  it("folds a persisted prefixed overflow error into a context-overflow notice", () => {
+    // Hermes persists a provider failure with the runtime "Error:" prefix (the
+    // same shape as the credits path); a prefixed prompt_too_long must still
+    // fold on reload, not fall back to the raw dead-end (JUN-169 review).
+    const persisted =
+      "Error: Error code: 400 - {'message': 'prompt_too_long: the request exceeds the maximum context length'}";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: persisted,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: persisted },
+    ]);
+  });
+
+  it("keeps a successful message.complete that mentions context length as prose", () => {
+    const prose = "The maximum context length for GLM 5.2 is 200k tokens.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: prose, status: "complete" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
   });
 
   it("renders delegated subagents as live tool rows (regression: silently dropped)", () => {
@@ -1400,12 +1500,8 @@ describe("Agent chat runtime", () => {
       status: "running",
     });
     // The first subagent's row accumulated its activity then its summary.
-    expect((tools?.[0] as { text?: string }).text).toContain(
-      "edit privacy.tsx",
-    );
-    expect((tools?.[0] as { text?: string }).text).toContain(
-      "Done: 1 file written",
-    );
+    expect((tools?.[0] as { text?: string }).text).toContain("edit privacy.tsx");
+    expect((tools?.[0] as { text?: string }).text).toContain("Done: 1 file written");
   });
 
   it("keeps the goal label when a later subagent event omits it", () => {

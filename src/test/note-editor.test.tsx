@@ -89,9 +89,7 @@ describe("NoteEditor", () => {
   it("edits title and renders the generated note as a preview", async () => {
     const user = userEvent.setup();
     const onTitleChange = vi.fn();
-    render(
-      <NoteEditor {...props} note={note()} onTitleChange={onTitleChange} />,
-    );
+    render(<NoteEditor {...props} note={note()} onTitleChange={onTitleChange} />);
 
     await user.type(screen.getByLabelText("Note title"), " updated");
     expect(onTitleChange).toHaveBeenCalled();
@@ -151,9 +149,7 @@ describe("NoteEditor", () => {
 
     // Scope to the turn labels — the source filter (shown when both
     // sources are present) also renders "System"/"Microphone" options.
-    expect(
-      screen.getByText("System", { selector: ".transcript-turn-source" }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("System", { selector: ".transcript-turn-source" })).toBeInTheDocument();
     expect(
       screen.getByText("Microphone", { selector: ".transcript-turn-source" }),
     ).toBeInTheDocument();
@@ -192,9 +188,7 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(
-      screen.getByText("Preview words from the live recording"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Preview words from the live recording")).toBeInTheDocument();
     expect(screen.getByText("Live preview")).toBeInTheDocument();
   });
 
@@ -215,9 +209,7 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(
-      screen.queryByText("Listening for transcript preview..."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Listening for transcript preview...")).not.toBeInTheDocument();
 
     rerender(
       <NoteEditor
@@ -230,9 +222,7 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Listening for transcript preview...",
-    );
+    expect(screen.getByRole("status")).toHaveTextContent("Listening for transcript preview...");
   });
 
   it("shows transcript progress while retrying over existing turns", () => {
@@ -257,12 +247,8 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Transcribing audio...",
-    );
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
+    expect(screen.getByRole("status")).toHaveTextContent("Transcribing audio");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "transcribing");
     expect(screen.getByText("Previous system transcript")).toBeInTheDocument();
   });
 
@@ -277,12 +263,8 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Transcribing audio...",
-    );
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
+    expect(screen.getByRole("status")).toHaveTextContent("Transcribing audio");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "transcribing");
     expect(screen.queryByText("No transcript is available yet.")).toBeNull();
   });
 
@@ -325,9 +307,9 @@ describe("NoteEditor", () => {
       />,
     );
 
-    const renderedTurns = Array.from(
-      container.querySelectorAll(".transcript-turn-text"),
-    ).map((turn) => turn.textContent);
+    const renderedTurns = Array.from(container.querySelectorAll(".transcript-turn-text")).map(
+      (turn) => turn.textContent,
+    );
     expect(renderedTurns).toEqual([
       "First microphone turn",
       "System reply",
@@ -358,9 +340,7 @@ describe("NoteEditor", () => {
     );
 
     expect(screen.getByText(/No speech detected/i)).toBeInTheDocument();
-    expect(
-      screen.queryByText(/upstream_provider_failed/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/upstream_provider_failed/i)).not.toBeInTheDocument();
   });
 
   it("renders exhausted invalid service responses as transcript gaps", () => {
@@ -395,19 +375,15 @@ describe("NoteEditor", () => {
     );
 
     expect(screen.getByText("Usable transcript text")).toBeInTheDocument();
-    expect(
-      screen.getByText("Audio for this part could not be transcribed."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Audio for this part could not be transcribed.")).toBeInTheDocument();
     expect(
       screen.queryByText(/processing service returned an invalid response/i),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/june_api_response_invalid/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/june_api_response_invalid/i)).not.toBeInTheDocument();
     expect(screen.getByText("0:15-0:18")).toBeInTheDocument();
   });
 
-  it("does not render whole-note failures as transcript turns", () => {
+  it("renders whole-note source failures as transcript evidence", () => {
     render(
       <NoteEditor
         {...props}
@@ -438,7 +414,12 @@ describe("NoteEditor", () => {
         "Microphone: No speech detected. Try speaking louder or moving closer to the microphone.",
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByText("0:15-0:18")).not.toBeInTheDocument();
+    expect(screen.getByText("0:15-0:18")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "No speech detected. Try speaking louder or moving closer to the microphone.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("requests tab change when Transcription is selected", async () => {
@@ -453,12 +434,7 @@ describe("NoteEditor", () => {
 
   it("keeps normal spaces inline while allowing # space to start an H1", async () => {
     const user = userEvent.setup();
-    render(
-      <NoteEditor
-        {...props}
-        note={note({ generatedContent: "", editedContent: "" })}
-      />,
-    );
+    render(<NoteEditor {...props} note={note({ generatedContent: "", editedContent: "" })} />);
     const editor = screen.getByRole("textbox", { name: "Generated note" });
 
     await user.click(editor);
@@ -501,10 +477,7 @@ describe("NoteEditor", () => {
     );
     fireEvent.blur(editor);
 
-    expect(onContentChange).toHaveBeenLastCalledWith(
-      "note-1",
-      "Manual notes\n\nGenerated note",
-    );
+    expect(onContentChange).toHaveBeenLastCalledWith("note-1", "Manual notes\n\nGenerated note");
   });
 
   it("offers retry when transcript failed and audio exists", async () => {
@@ -559,10 +532,8 @@ describe("NoteEditor", () => {
     // Processing is queued per note, so a recording still in flight no longer
     // blocks starting another take.
     expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
-    expect(screen.getByText("Transcribing audio...")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Retry" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText("Transcribing audio")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
   it("shows validating progress in the notes tab", () => {
@@ -576,10 +547,8 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("Preparing audio...");
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Audio stage in progress");
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing audio");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "validating");
   });
 
   it("shows a queued count when a follow-up recording is stacked", () => {
@@ -598,9 +567,7 @@ describe("NoteEditor", () => {
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent("Generating notes");
     expect(status).toHaveTextContent("+1");
-    expect(
-      screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toHaveAttribute("aria-valuetext", "Summary stage in progress");
+    expect(status).toHaveAttribute("data-status", "generating");
   });
 
   it("starts recording immediately without a consent gate", async () => {
@@ -643,9 +610,7 @@ describe("NoteEditor", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Recording options" }));
-    await user.click(
-      screen.getByRole("switch", { name: "Capture system audio" }),
-    );
+    await user.click(screen.getByRole("switch", { name: "Capture system audio" }));
 
     expect(onSourceModeChange).toHaveBeenCalledWith("microphoneOnly");
   });
@@ -733,12 +698,8 @@ describe("NoteEditor", () => {
       );
 
       expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
-      expect(
-        screen.queryByRole("button", { name: "Recording options" }),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByText("Capture system audio"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Recording options" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Capture system audio")).not.toBeInTheDocument();
       expect(
         screen.queryByText("System audio requires macOS 14.2 or later."),
       ).not.toBeInTheDocument();
@@ -780,9 +741,9 @@ describe("NoteEditor", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
 
-    expect(
-      screen.getByRole("status", { name: "Recording consent reminder" }),
-    ).toHaveTextContent(/everyone has agreed to be recorded/i);
+    expect(screen.getByRole("status", { name: "Recording consent reminder" })).toHaveTextContent(
+      /everyone has agreed to be recorded/i,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
@@ -818,18 +779,14 @@ describe("NoteEditor", () => {
       await vi.advanceTimersByTimeAsync(420);
     });
 
-    expect(
-      screen.getByRole("status", { name: "Recording consent reminder" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Recording consent reminder" })).toBeInTheDocument();
 
     // Just shy of the auto-hide window the reminder is still up.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4999);
     });
 
-    expect(
-      screen.getByRole("status", { name: "Recording consent reminder" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Recording consent reminder" })).toBeInTheDocument();
 
     // Cross the 5s mark so the auto-hide fires...
     await act(async () => {
@@ -862,40 +819,51 @@ describe("NoteEditor", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Generating notes");
   });
 
-  it.each(["transcribing", "generating"] as const)(
-    "shows a note-shaped skeleton while %s",
-    (processingStatus) => {
-      const { container } = render(
-        <NoteEditor
-          {...props}
-          note={note({ processingStatus, activeTab: "notes" })}
-        />,
-      );
+  it.each([
+    "transcribing",
+    "generating",
+  ] as const)("shows the processing badge and no skeleton while %s", (processingStatus) => {
+    const { container } = render(
+      <NoteEditor {...props} note={note({ processingStatus, activeTab: "notes" })} />,
+    );
 
-      const skeleton = container.querySelector(".note-skeleton");
-      expect(skeleton).toBeInTheDocument();
-      expect(skeleton).toHaveAttribute("aria-hidden", "true");
-      expect(
-        skeleton?.querySelector(".note-skeleton-heading"),
-      ).toBeInTheDocument();
-      expect(
-        skeleton?.querySelector(".note-skeleton-body"),
-      ).toBeInTheDocument();
-      expect(skeleton?.querySelectorAll(".note-skeleton-line")).toHaveLength(5);
-    },
-  );
+    expect(container.querySelector(".note-skeleton")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
 
-  it.each(["ready", "validating"] as const)(
-    "hides the note-shaped skeleton while %s",
-    (processingStatus) => {
-      const { container } = render(
-        <NoteEditor
-          {...props}
-          note={note({ processingStatus, activeTab: "notes" })}
-        />,
-      );
+  it("wipes the notes in when generation finishes for the open note", () => {
+    const { container, rerender } = render(
+      <NoteEditor {...props} note={note({ processingStatus: "generating", activeTab: "notes" })} />,
+    );
 
-      expect(container.querySelector(".note-skeleton")).not.toBeInTheDocument();
-    },
-  );
+    expect(container.querySelector(".note-reveal-active")).not.toBeInTheDocument();
+
+    rerender(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "ready",
+          generatedContent: "Final notes",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(container.querySelector(".note-reveal-active")).toBeInTheDocument();
+  });
+
+  it("does not wipe when opening an already-finished note", () => {
+    const { container } = render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "ready",
+          generatedContent: "Final notes",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(container.querySelector(".note-reveal-active")).not.toBeInTheDocument();
+  });
 });

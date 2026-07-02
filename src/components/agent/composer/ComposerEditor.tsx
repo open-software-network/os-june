@@ -65,9 +65,7 @@ function focusEnd(editor: Editor | null) {
  * to its ProseMirror selection range, so a run shortcut can highlight it. The
  * paragraph's opening boundary occupies position 0, so a string index `i` maps
  * to document position `i + 1`; the range spans `<` through `>` inclusive. */
-export function placeholderSelection(
-  text: string,
-): { from: number; to: number } | null {
+export function placeholderSelection(text: string): { from: number; to: number } | null {
   const start = text.indexOf("<");
   const end = text.indexOf(">");
   if (start < 0 || end <= start) return null;
@@ -80,8 +78,7 @@ function buildDoc(text: string, category?: ReportCategory | null) {
     // A text node may not be empty, so a blank line is an empty paragraph.
     content: line ? [{ type: "text", text: line }] : [],
   }));
-  if (paragraphs.length === 0)
-    paragraphs.push({ type: "paragraph", content: [] });
+  if (paragraphs.length === 0) paragraphs.push({ type: "paragraph", content: [] });
   if (category) {
     const first = paragraphs[0];
     first.content = [
@@ -93,171 +90,161 @@ function buildDoc(text: string, category?: ReportCategory | null) {
   return { type: "doc", content: paragraphs };
 }
 
-export const ComposerEditor = forwardRef<
-  ComposerEditorHandle,
-  ComposerEditorProps
->(({ placeholder, skills, onChange, onSubmit, onReady }, ref) => {
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  const skillsRef = useRef(skills);
-  // Latest callbacks behind refs so the editor (created once) never closes
-  // over a stale handler.
-  const onChangeRef = useRef(onChange);
-  const onSubmitRef = useRef(onSubmit);
-  const onReadyRef = useRef(onReady);
-  useEffect(() => {
-    onChangeRef.current = onChange;
-    onSubmitRef.current = onSubmit;
-    onReadyRef.current = onReady;
-    skillsRef.current = skills;
-  }, [onChange, onSubmit, onReady, skills]);
+export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
+  ({ placeholder, skills, onChange, onSubmit, onReady }, ref) => {
+    const frameRef = useRef<HTMLDivElement | null>(null);
+    const skillsRef = useRef(skills);
+    // Latest callbacks behind refs so the editor (created once) never closes
+    // over a stale handler.
+    const onChangeRef = useRef(onChange);
+    const onSubmitRef = useRef(onSubmit);
+    const onReadyRef = useRef(onReady);
+    useEffect(() => {
+      onChangeRef.current = onChange;
+      onSubmitRef.current = onSubmit;
+      onReadyRef.current = onReady;
+      skillsRef.current = skills;
+    }, [onChange, onSubmit, onReady, skills]);
 
-  useEffect(() => {
-    document
-      .querySelectorAll(".agent-category-menu-host")
-      .forEach((host) =>
-        host.dispatchEvent(new CustomEvent(CATEGORY_SKILLS_CHANGED_EVENT)),
-      );
-  }, [skills]);
-
-  function updateScrollFades(nextEditor: Editor | null) {
-    const frame = frameRef.current;
-    if (!frame || !nextEditor || nextEditor.isDestroyed) return;
-    const scroller = nextEditor.view.dom;
-    const overflow = scroller.scrollHeight - scroller.clientHeight > 1;
-    const atTop = scroller.scrollTop <= 1;
-    const atBottom =
-      scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
-    if (overflow && !atTop) {
-      frame.dataset.fadeTop = "true";
-    } else {
-      delete frame.dataset.fadeTop;
-    }
-    if (overflow && !atBottom) {
-      frame.dataset.fadeBottom = "true";
-    } else {
-      delete frame.dataset.fadeBottom;
-    }
-  }
-
-  const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        // Truly-plain composer: no block structure or inline marks, just text,
-        // soft line breaks, undo/redo, and the gap cursor (which makes landing
-        // beside the atom chip feel right). Everything else is off.
-        heading: false,
-        bulletList: false,
-        orderedList: false,
-        listItem: false,
-        listKeymap: false,
-        blockquote: false,
-        codeBlock: false,
-        horizontalRule: false,
-        bold: false,
-        italic: false,
-        strike: false,
-        code: false,
-        underline: false,
-        link: false,
-        trailingNode: false,
-      }),
-      Placeholder.configure({ placeholder }),
-      createCategoryChip({ skills: () => skillsRef.current }),
-    ],
-    editorProps: {
-      attributes: {
-        class: "agent-composer-editor",
-        role: "textbox",
-        "aria-label": "Message June",
-        "aria-multiline": "true",
-      },
-      handleKeyDown: (_view, event) => {
-        if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
-          return false;
-        }
-        // The "/" palette owns Enter while it's open (it commits the
-        // highlighted category); only a closed palette submits the message.
-        if (document.querySelector(".agent-category-menu-host")) return false;
-        event.preventDefault();
-        onSubmitRef.current();
-        return true;
-      },
-    },
-    onCreate: ({ editor }) => {
-      queueMicrotask(() => {
-        updateScrollFades(editor);
-        if (!editor.isDestroyed) onReadyRef.current?.(editor);
+    useEffect(() => {
+      document.querySelectorAll(".agent-category-menu-host").forEach((host) => {
+        host.dispatchEvent(new CustomEvent(CATEGORY_SKILLS_CHANGED_EVENT));
       });
-    },
-    onUpdate: ({ editor }) => {
-      onChangeRef.current(
-        serializePlainText(editor.state.doc),
-        categoryFromDoc(editor.state.doc),
-      );
-      requestAnimationFrame(() => updateScrollFades(editor));
-    },
-  });
+    }, [skills]);
 
-  useEffect(() => {
-    if (!editor) return;
-    const scroller = editor.view.dom;
-    let frame = 0;
-    const schedule = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => updateScrollFades(editor));
-    };
-    scroller.addEventListener("scroll", schedule, { passive: true });
-    window.addEventListener("resize", schedule);
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(schedule);
-    observer?.observe(scroller);
-    schedule();
-    return () => {
-      window.cancelAnimationFrame(frame);
-      scroller.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
-      observer?.disconnect();
-    };
-  }, [editor]);
+    function updateScrollFades(nextEditor: Editor | null) {
+      const frame = frameRef.current;
+      if (!frame || !nextEditor || nextEditor.isDestroyed) return;
+      const scroller = nextEditor.view.dom;
+      const overflow = scroller.scrollHeight - scroller.clientHeight > 1;
+      const atTop = scroller.scrollTop <= 1;
+      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+      if (overflow && !atTop) {
+        frame.dataset.fadeTop = "true";
+      } else {
+        delete frame.dataset.fadeTop;
+      }
+      if (overflow && !atBottom) {
+        frame.dataset.fadeBottom = "true";
+      } else {
+        delete frame.dataset.fadeBottom;
+      }
+    }
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      focus: () => focusEnd(editor),
-      clear: () => editor?.commands.clearContent(true),
-      setContent: (text, category, options) => {
-        if (!editor) return;
-        editor.commands.setContent(buildDoc(text, category), {
-          emitUpdate: true,
+    const editor = useEditor({
+      extensions: [
+        StarterKit.configure({
+          // Truly-plain composer: no block structure or inline marks, just text,
+          // soft line breaks, undo/redo, and the gap cursor (which makes landing
+          // beside the atom chip feel right). Everything else is off.
+          heading: false,
+          bulletList: false,
+          orderedList: false,
+          listItem: false,
+          listKeymap: false,
+          blockquote: false,
+          codeBlock: false,
+          horizontalRule: false,
+          bold: false,
+          italic: false,
+          strike: false,
+          code: false,
+          underline: false,
+          link: false,
+          trailingNode: false,
+        }),
+        Placeholder.configure({ placeholder }),
+        createCategoryChip({ skills: () => skillsRef.current }),
+      ],
+      editorProps: {
+        attributes: {
+          class: "agent-composer-editor",
+          role: "textbox",
+          "aria-label": "Message June",
+          "aria-multiline": "true",
+        },
+        handleKeyDown: (_view, event) => {
+          if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+            return false;
+          }
+          // The "/" palette owns Enter while it's open (it commits the
+          // highlighted category); only a closed palette submits the message.
+          if (document.querySelector(".agent-category-menu-host")) return false;
+          event.preventDefault();
+          onSubmitRef.current();
+          return true;
+        },
+      },
+      onCreate: ({ editor }) => {
+        queueMicrotask(() => {
+          updateScrollFades(editor);
+          if (!editor.isDestroyed) onReadyRef.current?.(editor);
         });
-        // A run shortcut prefills a "<placeholder>" token; select it (rather
-        // than parking the caret at the end) so typing overtypes it in place.
-        const range =
-          options?.selectPlaceholder && !category
-            ? placeholderSelection(text)
-            : null;
-        const shouldFocus = options?.focus !== false;
-        if (range) {
-          editor.commands.setTextSelection(range);
-          if (shouldFocus) editor.view.focus();
-        } else if (shouldFocus) {
-          focusEnd(editor);
-        }
       },
-      insertCategory: (category) => {
-        if (editor) insertReportCategory(editor, category);
+      onUpdate: ({ editor }) => {
+        onChangeRef.current(
+          serializePlainText(editor.state.doc),
+          categoryFromDoc(editor.state.doc),
+        );
+        requestAnimationFrame(() => updateScrollFades(editor));
       },
-      isEmpty: () => editor?.isEmpty ?? true,
-    }),
-    [editor],
-  );
+    });
 
-  return (
-    <div ref={frameRef} className="agent-composer-editor-root">
-      <EditorContent editor={editor} />
-    </div>
-  );
-});
+    useEffect(() => {
+      if (!editor) return;
+      const scroller = editor.view.dom;
+      let frame = 0;
+      const schedule = () => {
+        window.cancelAnimationFrame(frame);
+        frame = window.requestAnimationFrame(() => updateScrollFades(editor));
+      };
+      scroller.addEventListener("scroll", schedule, { passive: true });
+      window.addEventListener("resize", schedule);
+      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+      observer?.observe(scroller);
+      schedule();
+      return () => {
+        window.cancelAnimationFrame(frame);
+        scroller.removeEventListener("scroll", schedule);
+        window.removeEventListener("resize", schedule);
+        observer?.disconnect();
+      };
+    }, [editor]);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        focus: () => focusEnd(editor),
+        clear: () => editor?.commands.clearContent(true),
+        setContent: (text, category, options) => {
+          if (!editor) return;
+          editor.commands.setContent(buildDoc(text, category), {
+            emitUpdate: true,
+          });
+          // A run shortcut prefills a "<placeholder>" token; select it (rather
+          // than parking the caret at the end) so typing overtypes it in place.
+          const range = options?.selectPlaceholder && !category ? placeholderSelection(text) : null;
+          const shouldFocus = options?.focus !== false;
+          if (range) {
+            editor.commands.setTextSelection(range);
+            if (shouldFocus) editor.view.focus();
+          } else if (shouldFocus) {
+            focusEnd(editor);
+          }
+        },
+        insertCategory: (category) => {
+          if (editor) insertReportCategory(editor, category);
+        },
+        isEmpty: () => editor?.isEmpty ?? true,
+      }),
+      [editor],
+    );
+
+    return (
+      <div ref={frameRef} className="agent-composer-editor-root">
+        <EditorContent editor={editor} />
+      </div>
+    );
+  },
+);
 ComposerEditor.displayName = "ComposerEditor";

@@ -9,10 +9,6 @@ import { markOnboardingComplete } from "../lib/onboarding";
 // stuck in the DOM and exit-dependent assertions flaky.
 MotionGlobalConfig.skipAnimations = true;
 
-vi.mock("@tauri-apps/plugin-updater", () => ({
-  check: vi.fn(async () => null),
-}));
-
 vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: vi.fn(async () => undefined),
 }));
@@ -105,10 +101,7 @@ function setNavigatorPlatform(platform: string, userAgent: string) {
 // first-run onboarding so the wizard doesn't gate them. Onboarding tests
 // opt back in by clearing localStorage.
 beforeEach(() => {
-  setNavigatorPlatform(
-    "MacIntel",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
-  );
+  setNavigatorPlatform("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)");
   markOnboardingComplete();
 });
 

@@ -84,9 +84,7 @@ describe("checkHermesVersionAgreement — drift detection", () => {
     });
     expect(result.ok).toBe(false);
     // The expected note path is reported so the operator knows what to add.
-    expect(result.errors.join("\n")).toContain(
-      "docs/hermes-upstream-v2026.7.1.md",
-    );
+    expect(result.errors.join("\n")).toContain("docs/hermes-upstream-v2026.7.1.md");
   });
 
   it("flags a checklist that does not mention the matrix version", () => {

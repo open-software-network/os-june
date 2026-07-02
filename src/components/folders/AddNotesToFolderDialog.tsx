@@ -33,9 +33,7 @@ export function AddNotesToFolderDialog({
   }, [open]);
 
   const candidates = useMemo(() => {
-    const available = notes.filter(
-      (note) => !note.folderIds.includes(folder.id),
-    );
+    const available = notes.filter((note) => !note.folderIds.includes(folder.id));
     const normalized = query.trim().toLowerCase();
     if (!normalized) return available;
     return available.filter((note) =>
@@ -81,12 +79,7 @@ export function AddNotesToFolderDialog({
       initialFocusSelector='input[name="add-notes-search"]'
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
           <button
@@ -134,9 +127,7 @@ export function AddNotesToFolderDialog({
                       <IconNoteText size={14} />
                     </span>
                     <span className="add-notes-body">
-                      <span className="add-notes-title">
-                        {note.title.trim() || "New note"}
-                      </span>
+                      <span className="add-notes-title">{note.title.trim() || "New note"}</span>
                       <span className="add-notes-preview">
                         {note.preview.trim() ? note.preview : "No preview yet"}
                       </span>

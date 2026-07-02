@@ -21,15 +21,14 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
-import {
-  agentHudHide,
-  agentHudOpenAgent,
-  agentHudSetLayout,
-  agentHudShow,
-} from "./lib/tauri";
+import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
+import { subscribeBrand } from "./lib/brand";
 import "./styles/agent-hud.css";
+
+// Recolor this HUD window to the selected accent and keep it live-synced.
+subscribeBrand();
 
 type HudSessionStatus = AgentSessionStatusKind | "idle";
 
@@ -113,10 +112,7 @@ function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
   state.sessions = detail.sessions ?? [];
   state.workingSessionIds = new Set(detail.workingSessionIds ?? []);
   state.waitingSessionIds = new Set(detail.waitingSessionIds ?? []);
-  const activeSessionIds = new Set([
-    ...state.workingSessionIds,
-    ...state.waitingSessionIds,
-  ]);
+  const activeSessionIds = new Set([...state.workingSessionIds, ...state.waitingSessionIds]);
   const knownSessionIds = new Set(state.sessions.map((session) => session.id));
   for (const [sessionId, record] of state.statusBySessionId) {
     if (
@@ -133,8 +129,7 @@ function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
     );
   }
   state.pendingStatuses = state.pendingStatuses.filter(
-    (pending) =>
-      !state.sessions.some((session) => sameSubject(session, pending)),
+    (pending) => !state.sessions.some((session) => sameSubject(session, pending)),
   );
   render();
 }
@@ -148,14 +143,12 @@ function applyStatus(detail?: AgentSessionStatusDetail) {
       state.waitingSessionIds.delete(detail.sessionId);
       state.statusBySessionId.set(detail.sessionId, terminalRecord(record));
       const replacedPending = replacePendingWithTerminalStatus(record);
-      const hasKnownSession = state.sessions.some(
-        (session) => session.id === detail.sessionId,
-      );
+      const hasKnownSession = state.sessions.some((session) => session.id === detail.sessionId);
       if (!hasKnownSession && !replacedPending) {
-        state.pendingStatuses = [
-          terminalRecord(record),
-          ...state.pendingStatuses,
-        ].slice(0, MAX_VISIBLE_ROWS);
+        state.pendingStatuses = [terminalRecord(record), ...state.pendingStatuses].slice(
+          0,
+          MAX_VISIBLE_ROWS,
+        );
       }
       render();
       return;
@@ -167,10 +160,10 @@ function applyStatus(detail?: AgentSessionStatusDetail) {
   } else {
     if (detail.status === "completed" || detail.status === "cancelled") {
       if (!replacePendingWithTerminalStatus(record)) {
-        state.pendingStatuses = [
-          terminalRecord(record),
-          ...state.pendingStatuses,
-        ].slice(0, MAX_VISIBLE_ROWS);
+        state.pendingStatuses = [terminalRecord(record), ...state.pendingStatuses].slice(
+          0,
+          MAX_VISIBLE_ROWS,
+        );
       }
       render();
       return;
@@ -207,13 +200,9 @@ function render() {
   // waitingForUser must not keep forcing the panel open, or an explicit
   // collapse could never stick.
   const waitingEntryIds = new Set(
-    entries
-      .filter((entry) => entry.status === "waitingForUser")
-      .map((entry) => entry.id),
+    entries.filter((entry) => entry.status === "waitingForUser").map((entry) => entry.id),
   );
-  const newlyWaiting = [...waitingEntryIds].some(
-    (id) => !lastWaitingEntryIds.has(id),
-  );
+  const newlyWaiting = [...waitingEntryIds].some((id) => !lastWaitingEntryIds.has(id));
   if (newlyWaiting) state.attentionExpanded = true;
   // Drop a stale flag once nothing is waiting, so it can't pop the panel
   // open again later.
@@ -250,9 +239,7 @@ function render() {
   // it FLIP-style: measure before the state flips, re-measure after, run
   // the px-to-px transition.
   const willFlipWidth =
-    surface !== null &&
-    windowShown &&
-    (hud.dataset.expanded === "true") !== expanded;
+    surface !== null && windowShown && (hud.dataset.expanded === "true") !== expanded;
   const widthBefore = willFlipWidth ? surface.getBoundingClientRect().width : 0;
 
   hud.dataset.expanded = expanded ? "true" : "false";
@@ -267,9 +254,7 @@ function render() {
   // flicker. Rows stay in the DOM while collapsed so the expand and
   // collapse reveal always has content to animate.
   const stackKey = entries
-    .map((entry) =>
-      [entry.id, entry.title, entry.summary, entry.status].join("\u0001"),
-    )
+    .map((entry) => [entry.id, entry.title, entry.summary, entry.status].join("\u0001"))
     .join("\u0002");
   if (stackKey !== lastStackKey) {
     lastStackKey = stackKey;
@@ -314,8 +299,7 @@ function renderPill(entries: HudEntry[], expanded: boolean) {
   if (!pill || !mark || !pillLabel) return;
   const { label, status, runningCount, waitingCount } = pillSummary(entries);
   const activeCount = runningCount + waitingCount;
-  const countOnly =
-    status === "running" && runningCount > 1 && waitingCount === 0;
+  const countOnly = status === "running" && runningCount > 1 && waitingCount === 0;
   mark.dataset.status = status;
   pill.dataset.countOnly = countOnly ? "true" : "false";
   pillLabel.textContent = label;
@@ -331,10 +315,7 @@ function renderPill(entries: HudEntry[], expanded: boolean) {
     }
   }
   pill.setAttribute("aria-expanded", expanded ? "true" : "false");
-  pill.setAttribute(
-    "aria-label",
-    expanded ? "Collapse agent activity" : "Expand agent activity",
-  );
+  pill.setAttribute("aria-label", expanded ? "Collapse agent activity" : "Expand agent activity");
 }
 
 function pillSummary(entries: HudEntry[]): {
@@ -343,19 +324,14 @@ function pillSummary(entries: HudEntry[]): {
   runningCount: number;
   waitingCount: number;
 } {
-  const waitingCount = entries.filter(
-    (entry) => entry.status === "waitingForUser",
-  ).length;
+  const waitingCount = entries.filter((entry) => entry.status === "waitingForUser").length;
   const runningCount = entries.filter(
     (entry) =>
-      entry.status === "received" ||
-      entry.status === "starting" ||
-      entry.status === "running",
+      entry.status === "received" || entry.status === "starting" || entry.status === "running",
   ).length;
   if (waitingCount > 0) {
     return {
-      label:
-        waitingCount === 1 ? "1 needs input" : `${waitingCount} need input`,
+      label: waitingCount === 1 ? "1 needs input" : `${waitingCount} need input`,
       status: "waitingForUser",
       runningCount,
       waitingCount,
@@ -451,10 +427,7 @@ function buildEntries() {
   return entries.sort(compareEntries).slice(0, MAX_VISIBLE_ROWS);
 }
 
-function entryFromSession(
-  session: HermesSessionInfo,
-  record?: StatusRecord,
-): HudEntry {
+function entryFromSession(session: HermesSessionInfo, record?: StatusRecord): HudEntry {
   const status = sessionStatus(session, record);
   return {
     id: session.id,
@@ -476,15 +449,8 @@ function entryFromPending(record: StatusRecord): HudEntry {
   };
 }
 
-function sessionStatus(
-  session: HermesSessionInfo,
-  record?: StatusRecord,
-): HudSessionStatus {
-  if (
-    record &&
-    isTerminalStatus(record.status) &&
-    !isExpiredTerminalRecord(record)
-  ) {
+function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSessionStatus {
+  if (record && isTerminalStatus(record.status) && !isExpiredTerminalRecord(record)) {
     return record.status;
   }
   if (state.waitingSessionIds.has(session.id)) return "waitingForUser";
@@ -497,10 +463,7 @@ function sessionStatus(
 
 function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
   return (
-    record?.title?.trim() ||
-    session.title?.trim() ||
-    session.preview?.trim() ||
-    "Agent session"
+    record?.title?.trim() || session.title?.trim() || session.preview?.trim() || "Agent session"
   );
 }
 
@@ -588,8 +551,7 @@ function compareEntries(a: HudEntry, b: HudEntry) {
 
 function statusRank(status: HudSessionStatus) {
   if (status === "waitingForUser") return 0;
-  if (status === "received" || status === "starting" || status === "running")
-    return 1;
+  if (status === "received" || status === "starting" || status === "running") return 1;
   if (status === "failed") return 2;
   if (status === "completed" || status === "cancelled") return 3;
   return 4;
@@ -609,8 +571,7 @@ function pruneOldStatuses() {
   state.pendingStatuses = state.pendingStatuses.filter(
     (record) =>
       isActiveStatus(record.status) ||
-      (isTerminalStatus(record.status) &&
-        !isExpiredTerminalRecord(record, now)),
+      (isTerminalStatus(record.status) && !isExpiredTerminalRecord(record, now)),
   );
   for (const [id, record] of state.statusBySessionId) {
     if (isExpiredTerminalRecord(record, now)) {
@@ -628,9 +589,7 @@ function replacePendingWithTerminalStatus(record: StatusRecord) {
   });
   if (replaced) return true;
   if (record.activeCount === 0) {
-    const activePending = state.pendingStatuses.filter((item) =>
-      isActiveStatus(item.status),
-    );
+    const activePending = state.pendingStatuses.filter((item) => isActiveStatus(item.status));
     // No subject matched, but the status stream says no active work remains.
     // Mark all anonymous pending rows terminal as a best-effort cleanup; each
     // row keeps its own title, while the terminal summary comes from this
@@ -641,9 +600,7 @@ function replacePendingWithTerminalStatus(record: StatusRecord) {
     ].slice(0, MAX_VISIBLE_ROWS);
     return activePending.length > 0;
   }
-  const activePending = state.pendingStatuses.filter((item) =>
-    isActiveStatus(item.status),
-  );
+  const activePending = state.pendingStatuses.filter((item) => isActiveStatus(item.status));
   if (activePending.length === 1) {
     state.pendingStatuses = state.pendingStatuses.map((item) =>
       item === activePending[0] ? terminalRecord(record, item) : item,
@@ -671,10 +628,7 @@ function scheduleStatusPrune() {
   // Expiry is paused while hovered; the pointerleave render reschedules.
   if (state.hovered) return;
   const now = Date.now();
-  const expirations = [
-    ...state.pendingStatuses,
-    ...Array.from(state.statusBySessionId.values()),
-  ]
+  const expirations = [...state.pendingStatuses, ...Array.from(state.statusBySessionId.values())]
     .map((record) => terminalExpiration(record))
     .filter((expiration): expiration is number => expiration !== undefined);
   if (!expirations.length) return;
@@ -711,17 +665,12 @@ function shouldRenderEntry(entry: HudEntry) {
 }
 
 function isTerminalStatus(status: HudSessionStatus) {
-  return (
-    status === "completed" || status === "cancelled" || status === "failed"
-  );
+  return status === "completed" || status === "cancelled" || status === "failed";
 }
 
 function sameSubject(session: HermesSessionInfo, record: StatusRecord) {
   const title = statusSubject(record);
-  return (
-    session.id === record.sessionId ||
-    session.title?.trim().toLowerCase() === title
-  );
+  return session.id === record.sessionId || session.title?.trim().toLowerCase() === title;
 }
 
 function sameStatusSubject(a: StatusRecord, b: StatusRecord) {
@@ -732,11 +681,7 @@ function statusSubject(record: StatusRecord) {
   return statusTitle(record).trim().toLowerCase();
 }
 
-async function syncWindowLayout(
-  expanded: boolean,
-  rowCount: number,
-  hasEntries: boolean,
-) {
+async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries: boolean) {
   const menuOpen = state.menuOpen;
   const visible = state.enabled && hasEntries;
   const key = `${visible}:${expanded}:${rowCount}:${menuOpen}`;
@@ -778,15 +723,8 @@ async function syncWindowLayout(
 
 /* Mirrors agent_hud_window_size in agent_hud.rs, only to tell growth from
  * shrinkage; the Rust side stays the source of truth for the real size. */
-function nativeWindowHeight(
-  expanded: boolean,
-  rowCount: number,
-  menuOpen: boolean,
-) {
-  const height =
-    !expanded || rowCount === 0
-      ? 58
-      : 8 + 36 + Math.min(rowCount, 3) * 46 + 6 + 14;
+function nativeWindowHeight(expanded: boolean, rowCount: number, menuOpen: boolean) {
+  const height = !expanded || rowCount === 0 ? 58 : 8 + 36 + Math.min(rowCount, 3) * 46 + 6 + 14;
   return menuOpen ? Math.max(height, 104) : height;
 }
 
@@ -869,11 +807,7 @@ function appendStatusIcon(parent: HTMLElement, status: HudSessionStatus) {
       return;
     case "failed":
     case "cancelled":
-      appendIcon(
-        parent,
-        status === "failed" ? IconCrossSmall : IconStopCircle,
-        14,
-      );
+      appendIcon(parent, status === "failed" ? IconCrossSmall : IconStopCircle, 14);
       return;
     case "received":
     case "starting":
@@ -947,10 +881,7 @@ function setHovered(hovered: boolean) {
     // Records that expired while held under the pointer restart their TTL,
     // so rows linger briefly instead of vanishing the instant it leaves.
     const now = Date.now();
-    const records = [
-      ...state.pendingStatuses,
-      ...state.statusBySessionId.values(),
-    ];
+    const records = [...state.pendingStatuses, ...state.statusBySessionId.values()];
     for (const record of records) {
       const expiration = terminalExpiration(record);
       if (expiration !== undefined && now > expiration) {
@@ -1033,9 +964,7 @@ window.addEventListener(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) => {
 });
 
 window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, (event) => {
-  applySessionsChanged(
-    (event as CustomEvent<AgentSessionsChangedDetail>).detail,
-  );
+  applySessionsChanged((event as CustomEvent<AgentSessionsChangedDetail>).detail);
 });
 
 window.addEventListener(AGENT_SESSION_STATUS_EVENT, (event) => {
@@ -1056,9 +985,8 @@ void listen<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, (event) =>
   applyStatus(event.payload),
 ).catch(() => {});
 
-void listen<AgentHudVisibilityChangedDetail>(
-  AGENT_HUD_VISIBILITY_CHANGED_EVENT,
-  (event) => applyVisibility(event.payload.enabled),
+void listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) =>
+  applyVisibility(event.payload.enabled),
 ).catch(() => {});
 
 // The native panel intercepts the right-/ctrl-click and asks us to open the

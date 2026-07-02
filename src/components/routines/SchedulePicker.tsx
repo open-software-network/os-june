@@ -69,14 +69,9 @@ export function SchedulePicker({
     }
   }
 
-  const intervalUnit =
-    draft.kind === "interval" && draft.minutes % 60 === 0 ? "hours" : "minutes";
+  const intervalUnit = draft.kind === "interval" && draft.minutes % 60 === 0 ? "hours" : "minutes";
   const intervalAmount =
-    draft.kind === "interval"
-      ? intervalUnit === "hours"
-        ? draft.minutes / 60
-        : draft.minutes
-      : 1;
+    draft.kind === "interval" ? (intervalUnit === "hours" ? draft.minutes / 60 : draft.minutes) : 1;
 
   const preview =
     draft.kind === "custom"
@@ -84,8 +79,7 @@ export function SchedulePicker({
       : humanizeSchedule(scheduleFromDraft(draft));
   const showPreview =
     draft.kind === "custom"
-      ? draft.expression.trim().length > 0 &&
-        preview !== draft.expression.trim()
+      ? draft.expression.trim().length > 0 && preview !== draft.expression.trim()
       : true;
 
   return (
@@ -109,16 +103,12 @@ export function SchedulePicker({
           />
         ) : null}
 
-        {draft.kind === "daily" ||
-        draft.kind === "weekdays" ||
-        draft.kind === "weekly" ? (
+        {draft.kind === "daily" || draft.kind === "weekdays" || draft.kind === "weekly" ? (
           <input
             type="time"
             value={draft.time}
             aria-label="Time"
-            onChange={(event) =>
-              onChange({ ...draft, time: event.currentTarget.value })
-            }
+            onChange={(event) => onChange({ ...draft, time: event.currentTarget.value })}
           />
         ) : null}
 
@@ -130,10 +120,7 @@ export function SchedulePicker({
               value={intervalAmount}
               aria-label="Repeat every"
               onChange={(event) => {
-                const amount = Math.max(
-                  1,
-                  Math.floor(Number(event.currentTarget.value) || 1),
-                );
+                const amount = Math.max(1, Math.floor(Number(event.currentTarget.value) || 1));
                 onChange({
                   kind: "interval",
                   minutes: intervalUnit === "hours" ? amount * 60 : amount,
@@ -148,8 +135,7 @@ export function SchedulePicker({
               onChange={(unit) =>
                 onChange({
                   kind: "interval",
-                  minutes:
-                    unit === "hours" ? intervalAmount * 60 : intervalAmount,
+                  minutes: unit === "hours" ? intervalAmount * 60 : intervalAmount,
                 })
               }
             />
@@ -177,8 +163,7 @@ export function SchedulePicker({
         <p className="schedule-picker-preview">{preview}</p>
       ) : draft.kind === "custom" ? (
         <p className="schedule-picker-preview">
-          A cron expression, an interval like "every 30m", or a date for a
-          one-time run.
+          A cron expression, an interval like "every 30m", or a date for a one-time run.
         </p>
       ) : null}
     </div>

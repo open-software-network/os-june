@@ -49,8 +49,7 @@ export type HermesUpgradeCheckResult = {
  * version via `pinNoteFilenameFor`, so it is added by the script/tests rather
  * than hard-coded here.
  */
-export const HERMES_UPGRADE_CHECKLIST_FILE =
-  "docs/hermes-upgrade-checklist.md" as const;
+export const HERMES_UPGRADE_CHECKLIST_FILE = "docs/hermes-upgrade-checklist.md" as const;
 
 /**
  * The version-agnostic doc filenames the check always requires, independent of
@@ -59,9 +58,7 @@ export const HERMES_UPGRADE_CHECKLIST_FILE =
  * (`docs/hermes-upstream-template.md`) is deliberately NOT here: it ships
  * placeholders, so gating on a concrete version would make it always fail.
  */
-export const HERMES_UPGRADE_CHECK_FILES: readonly string[] = [
-  HERMES_UPGRADE_CHECKLIST_FILE,
-];
+export const HERMES_UPGRADE_CHECK_FILES: readonly string[] = [HERMES_UPGRADE_CHECKLIST_FILE];
 
 /** The pin-note path June uses for a given version:
  * `docs/hermes-upstream-v<version>.md`. The argument already carries its `v`

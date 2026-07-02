@@ -1,4 +1,4 @@
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
@@ -21,9 +21,11 @@ export function selectPopoverPlacement(
 
   const viewportPadding = 12;
   const rowHeight = 28;
-  const popoverPadding = 8;
-  const popoverHeight = optionCount * rowHeight + popoverPadding;
-  const selectedOffset = 2 + selectedIndex * rowHeight;
+  // Vertical padding (2 x 4px) plus the 1px borders.
+  const popoverChrome = 10;
+  const popoverHeight = optionCount * rowHeight + popoverChrome;
+  // Keep in sync with selectPopoverStyle's align-selected offset.
+  const selectedOffset = 3 + selectedIndex * rowHeight;
   const panel = anchor.closest(".main-panel");
   const panelRect = panel?.getBoundingClientRect();
   const topBound = Math.max(viewportPadding, (panelRect?.top ?? 0) + 12);
@@ -57,12 +59,18 @@ export function selectPopoverStyle(
   if (placement === "above") {
     return { bottom: "calc(100% + 4px)" };
   }
-  return { top: -(2 + selectedIndex * 28) };
+  // 3px = the popover's border (1) + padding (4) minus the trigger/row height
+  // difference (32 - 28) / 2, so the selected row overlays the trigger with no
+  // vertical jump.
+  return { top: -(3 + selectedIndex * 28) };
 }
 
 export type SelectOption = {
   value: string;
   label: string;
+  /** Optional leading color chip (e.g. the accent picker). Omit for text
+   * selects like Language/Microphone and no swatch renders. */
+  color?: string;
 };
 
 /**
@@ -88,8 +96,7 @@ export function Select({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [placement, setPlacement] =
-    useState<SelectPopoverPlacement>("align-selected");
+  const [placement, setPlacement] = useState<SelectPopoverPlacement>("align-selected");
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const selectedIndex = options.findIndex((option) => option.value === value);
@@ -120,21 +127,14 @@ export function Select({
       setPlacement(
         selectedIndex === -1
           ? "below"
-          : selectPopoverPlacement(
-              wrapRef.current,
-              options.length,
-              selectedIndex,
-            ),
+          : selectPopoverPlacement(wrapRef.current, options.length, selectedIndex),
       );
     }
     setOpen((current) => !current);
   }
 
   return (
-    <div
-      className={`select-control${className ? ` ${className}` : ""}`}
-      ref={wrapRef}
-    >
+    <div className={`select-control${className ? ` ${className}` : ""}`} ref={wrapRef}>
       <button
         type="button"
         className="select-trigger"
@@ -144,6 +144,9 @@ export function Select({
         aria-expanded={open}
         onClick={toggle}
       >
+        {selected?.color ? (
+          <span className="select-swatch" style={{ background: selected.color }} aria-hidden />
+        ) : null}
         <span>{selected?.label ?? placeholder}</span>
         <IconChevronDownSmall size={14} />
       </button>
@@ -161,6 +164,7 @@ export function Select({
                 <button
                   type="button"
                   role="option"
+                  className={option.color ? "has-swatch" : undefined}
                   aria-selected={isSelected}
                   data-selected={isSelected}
                   onClick={() => {
@@ -168,9 +172,16 @@ export function Select({
                     setOpen(false);
                   }}
                 >
+                  {option.color ? (
+                    <span
+                      className="select-swatch"
+                      style={{ background: option.color }}
+                      aria-hidden
+                    />
+                  ) : null}
                   <span>{option.label}</span>
                   <span className="select-check" aria-hidden>
-                    {isSelected ? <IconCheckmark1Small size={14} /> : null}
+                    {isSelected ? <IconCheckmark2Small size={14} /> : null}
                   </span>
                 </button>
               </li>

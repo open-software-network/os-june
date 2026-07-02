@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
 import type { LiveTranscriptEventDto } from "../lib/tauri";
 
-function liveEvent(
-  overrides: Partial<LiveTranscriptEventDto> = {},
-): LiveTranscriptEventDto {
+function liveEvent(overrides: Partial<LiveTranscriptEventDto> = {}): LiveTranscriptEventDto {
   return {
     noteId: "note-1",
     sessionId: "session-1",
@@ -73,11 +71,7 @@ describe("upsertLiveTranscriptEvent", () => {
       "System one System two",
       "Mic two",
     ]);
-    expect(events.map((event) => event.source)).toEqual([
-      "microphone",
-      "system",
-      "microphone",
-    ]);
+    expect(events.map((event) => event.source)).toEqual(["microphone", "system", "microphone"]);
     expect(events.map((event) => [event.startMs, event.endMs])).toEqual([
       [0, 8000],
       [8000, 24_000],

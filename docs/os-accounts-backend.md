@@ -1,5 +1,10 @@
 # OS Accounts — metering backend (future work)
 
+> **Superseded / historical.** This document specifies a *future* metering
+> backend. That backend is now shipped; its canonical spec is
+> [june-api-prd.md](june-api-prd.md) and `authorize`/`charge` is fully
+> implemented in `june-api`. Kept for reference only — do not treat as current.
+
 This app currently integrates OS Accounts for **identity only** (Login with Open
 Software, read user + credit balance). That half runs entirely on-device in the
 Rust core (`src-tauri/src/os_accounts.rs`) — no server required.

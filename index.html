@@ -18,6 +18,29 @@
                 ? "dark"
                 : "light";
           document.documentElement.setAttribute("data-theme", resolved);
+          // Pre-paint brand accent + surface wash. Keep the id->[accent, wash]
+          // map in sync with src/lib/brand.ts so a non-default accent doesn't
+          // flash clay first.
+          var brand = localStorage.getItem("os-june:brand");
+          var brands = {
+            clay: ["#b5551f", "#976851"],
+            rose: ["#a5655c", "#9e6961"],
+            sage: ["#527f4d", "#5a7c56"],
+            ocean: ["#3d7b9a", "#467a95"],
+            // "blue" was renamed to "ocean"; keep the alias so a stored
+            // "blue" still pre-paints its swatch instead of flashing clay.
+            blue: ["#3d7b9a", "#467a95"],
+            // "amber" was dropped and folded into "clay"; keep the alias so a
+            // stored "amber" still pre-paints clay instead of flashing.
+            amber: ["#b5551f", "#976851"],
+            plum: ["#965d84", "#8f6380"],
+          };
+          var accent = brands[brand] || brands.clay;
+          document.documentElement.style.setProperty("--brand", accent[0]);
+          document.documentElement.style.setProperty(
+            "--brand-wash",
+            accent[1],
+          );
         } catch (e) {}
       })();
     </script>

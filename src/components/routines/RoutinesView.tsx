@@ -32,10 +32,7 @@ import {
   type RoutineJob,
   type RoutineUpdates,
 } from "../../lib/hermes-routines";
-import {
-  compactScheduleLabel,
-  humanizeSchedule,
-} from "../../lib/routine-schedule";
+import { compactScheduleLabel, humanizeSchedule } from "../../lib/routine-schedule";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import type { HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -64,10 +61,7 @@ type Page =
   | { kind: "create"; template?: RoutineTemplate }
   | { kind: "detail"; jobId: string };
 
-export function RoutinesView({
-  onCreateRoutine,
-  onOpenRun,
-}: RoutinesViewProps) {
+export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) {
   const [allRoutines, setRoutines] = useState<RoutineJob[]>([]);
   const [loadingState, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -146,10 +140,7 @@ export function RoutinesView({
 
   useEffect(() => {
     if (forcedEmpty) return;
-    const timer = window.setInterval(
-      () => void loadRuns(),
-      RUN_HISTORY_REFRESH_MS,
-    );
+    const timer = window.setInterval(() => void loadRuns(), RUN_HISTORY_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [forcedEmpty, loadRuns]);
 
@@ -176,9 +167,7 @@ export function RoutinesView({
     (run: HermesSessionInfo) => {
       const jobId = scheduledRunJobId(run.id);
       const routine = jobId ? routinesById.get(jobId) : undefined;
-      const sessionTitle = isReplaceableScheduledRunTitle(run.title)
-        ? ""
-        : run.title?.trim();
+      const sessionTitle = isReplaceableScheduledRunTitle(run.title) ? "" : run.title?.trim();
       return routine?.name || sessionTitle || "Routine run";
     },
     [routinesById],
@@ -188,9 +177,7 @@ export function RoutinesView({
     const normalized = query.trim().toLowerCase();
     if (!normalized) return runs;
     return runs.filter((run) =>
-      `${runLabel(run)} ${run.title ?? ""} ${run.preview ?? ""}`
-        .toLowerCase()
-        .includes(normalized),
+      `${runLabel(run)} ${run.title ?? ""} ${run.preview ?? ""}`.toLowerCase().includes(normalized),
     );
   }, [runs, query, runLabel]);
 
@@ -268,14 +255,10 @@ export function RoutinesView({
     // route failures to the banner like toggleActive does instead.
     try {
       await removeRoutine(routine.job_id);
-      setRoutines((prev) =>
-        prev.filter((entry) => entry.job_id !== routine.job_id),
-      );
+      setRoutines((prev) => prev.filter((entry) => entry.job_id !== routine.job_id));
       setError(null);
       setPage((current) =>
-        current.kind === "detail" && current.jobId === routine.job_id
-          ? { kind: "list" }
-          : current,
+        current.kind === "detail" && current.jobId === routine.job_id ? { kind: "list" } : current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -309,8 +292,7 @@ export function RoutinesView({
     void refresh();
   }
 
-  const detailRoutine =
-    page.kind === "detail" ? (routinesById.get(page.jobId) ?? null) : null;
+  const detailRoutine = page.kind === "detail" ? (routinesById.get(page.jobId) ?? null) : null;
 
   // A detail page whose routine vanished (deleted from another surface,
   // emptied by a reload) falls back to the list instead of a dead end.
@@ -364,9 +346,7 @@ export function RoutinesView({
   }
 
   if (page.kind === "detail" && detailRoutine) {
-    const routineRuns = runs.filter(
-      (run) => scheduledRunJobId(run.id) === detailRoutine.job_id,
-    );
+    const routineRuns = runs.filter((run) => scheduledRunJobId(run.id) === detailRoutine.job_id);
     return (
       <>
         <RoutineDetail
@@ -394,19 +374,11 @@ export function RoutinesView({
         <div className="folders-heading">
           <h1>
             Routines
-            {routines.length > 0 ? (
-              <span className="folders-count">{routines.length}</span>
-            ) : null}
+            {routines.length > 0 ? <span className="folders-count">{routines.length}</span> : null}
           </h1>
-          <p className="folders-subtitle">
-            Automations June runs for you on a schedule.
-          </p>
+          <p className="folders-subtitle">Automations June runs for you on a schedule.</p>
         </div>
-        <button
-          type="button"
-          className="primary-action primary-solid"
-          onClick={() => openCreate()}
-        >
+        <button type="button" className="primary-action primary-solid" onClick={() => openCreate()}>
           <IconPlusMedium size={13} />
           New routine
         </button>
@@ -463,11 +435,7 @@ export function RoutinesView({
               routine={routine}
               busy={busyIds.has(routine.job_id)}
               onOpen={() => openDetail(routine)}
-              onRunNow={() =>
-                void runNow(routine).catch((err) =>
-                  setError(messageFromError(err)),
-                )
-              }
+              onRunNow={() => void runNow(routine).catch((err) => setError(messageFromError(err)))}
               onDelete={() => setPendingDelete(routine)}
             />
           ))}
@@ -485,26 +453,18 @@ export function RoutinesView({
           <header className="routines-runs-header">
             <h2>
               Run history
-              {runs.length > 0 ? (
-                <span className="folders-count">{runs.length}</span>
-              ) : null}
+              {runs.length > 0 ? <span className="folders-count">{runs.length}</span> : null}
             </h2>
           </header>
           {runsUnavailable ? (
-            <p className="routines-runs-empty">
-              Run history is unavailable right now.
-            </p>
+            <p className="routines-runs-empty">Run history is unavailable right now.</p>
           ) : runs.length === 0 ? (
             <p className="routines-runs-empty">
               No runs yet. When a routine fires, its session appears here.
             </p>
           ) : (
             <div className="routines-runs-panel">
-              <RoutineRunList
-                runs={filteredRuns}
-                label={runLabel}
-                onOpen={onOpenRun}
-              />
+              <RoutineRunList runs={filteredRuns} label={runLabel} onOpen={onOpenRun} />
             </div>
           )}
         </section>
@@ -525,11 +485,7 @@ export function RoutinesView({
   );
 }
 
-function TemplateGrid({
-  onPick,
-}: {
-  onPick: (template: RoutineTemplate) => void;
-}) {
+function TemplateGrid({ onPick }: { onPick: (template: RoutineTemplate) => void }) {
   return (
     <ul className="routines-template-grid" role="list">
       {ROUTINE_TEMPLATES.map((template) => (
@@ -553,9 +509,7 @@ function TemplateGrid({
                 </HoverTip>
               ) : null}
             </span>
-            <p className="routines-template-description">
-              {template.description}
-            </p>
+            <p className="routines-template-description">{template.description}</p>
           </div>
           <button
             type="button"
@@ -590,9 +544,7 @@ function RoutineRow({
   const completed = routine.state === "completed";
   const status = paused ? "Paused" : completed ? "Completed" : null;
   const activity =
-    completed && routine.last_run_at
-      ? `Last ran ${formatRunTime(routine.last_run_at)}`
-      : null;
+    completed && routine.last_run_at ? `Last ran ${formatRunTime(routine.last_run_at)}` : null;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -635,9 +587,7 @@ function RoutineRow({
               </HoverTip>
             ) : null}
             {routine.last_status === "error" ? (
-              <span className="routines-item-badge routines-item-badge-error">
-                Last run failed
-              </span>
+              <span className="routines-item-badge routines-item-badge-error">Last run failed</span>
             ) : null}
           </span>
         </span>
@@ -646,9 +596,7 @@ function RoutineRow({
             <IconCalendarRepeat size={12} aria-hidden />
             {compactScheduleLabel(routine.schedule)}
           </span>
-          {activity ? (
-            <span className="routine-meta-pill">{activity}</span>
-          ) : null}
+          {activity ? <span className="routine-meta-pill">{activity}</span> : null}
           {status ? (
             <span className="routine-meta-pill">
               {paused ? <IconPause size={12} aria-hidden /> : null}
@@ -670,10 +618,7 @@ function RoutineRow({
             <IconDotGrid1x3Horizontal size={13} />
           </button>
           {menuOpen ? (
-            <span
-              className="sidebar-identity-menu routines-action-menu"
-              role="menu"
-            >
+            <span className="sidebar-identity-menu routines-action-menu" role="menu">
               <button
                 type="button"
                 role="menuitem"
@@ -748,8 +693,7 @@ const DEJUNE_MODE_OPTIONS = [
     unrestricted: false,
     icon: <IconShieldCheck size={16} aria-hidden />,
     title: "Sandboxed",
-    description:
-      "The routine can read the web and memory but cannot touch your files.",
+    description: "The routine can read the web and memory but cannot touch your files.",
   },
   {
     unrestricted: true,
@@ -861,9 +805,7 @@ function DescribeBar({
             role="menu"
             aria-label="What can this routine change?"
           >
-            <p className="agent-sandbox-menu-title">
-              What can this routine change?
-            </p>
+            <p className="agent-sandbox-menu-title">What can this routine change?</p>
             {DEJUNE_MODE_OPTIONS.map((option) => (
               <button
                 key={option.title}
@@ -877,12 +819,8 @@ function DescribeBar({
               >
                 {option.icon}
                 <span className="agent-sandbox-option">
-                  <span className="agent-sandbox-option-title">
-                    {option.title}
-                  </span>
-                  <span className="agent-sandbox-option-desc">
-                    {option.description}
-                  </span>
+                  <span className="agent-sandbox-option-title">{option.title}</span>
+                  <span className="agent-sandbox-option-desc">{option.description}</span>
                 </span>
                 {unrestricted === option.unrestricted ? (
                   <IconCheckmark1Small

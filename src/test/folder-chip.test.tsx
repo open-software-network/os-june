@@ -51,9 +51,7 @@ function baseProps(folders: FolderDto[]) {
 describe("Folder chip — move-to-folder popover", () => {
   it("shows 'Project' label when nothing is assigned", () => {
     render(<NoteEditor {...baseProps([])} />);
-    expect(
-      screen.getByRole("button", { name: /^Project/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Project/ })).toBeInTheDocument();
   });
 
   it("filters folders by the search query", async () => {
@@ -80,9 +78,7 @@ describe("Folder chip — move-to-folder popover", () => {
     const onNavigateToFolder = vi.fn();
     render(
       <NoteEditor
-        {...baseProps([
-          { id: "f1", name: "Ideas", createdAt: now, updatedAt: now },
-        ])}
+        {...baseProps([{ id: "f1", name: "Ideas", createdAt: now, updatedAt: now }])}
         note={{ ...note(), folderIds: ["f1"] }}
         onNavigateToFolder={onNavigateToFolder}
       />,
@@ -91,23 +87,16 @@ describe("Folder chip — move-to-folder popover", () => {
     await user.click(screen.getByRole("button", { name: "Open Ideas" }));
 
     expect(onNavigateToFolder).toHaveBeenCalledWith("f1");
-    expect(
-      screen.queryByPlaceholderText("Search or create project"),
-    ).toBeNull();
+    expect(screen.queryByPlaceholderText("Search or create project")).toBeNull();
   });
 
   it("offers 'Create' when no existing folder matches", async () => {
     const user = userEvent.setup();
-    const props = baseProps([
-      { id: "f1", name: "Ideas", createdAt: now, updatedAt: now },
-    ]);
+    const props = baseProps([{ id: "f1", name: "Ideas", createdAt: now, updatedAt: now }]);
     render(<NoteEditor {...props} />);
 
     await user.click(screen.getByRole("button", { name: /^Project/ }));
-    await user.type(
-      screen.getByPlaceholderText("Search or create project"),
-      "Personal",
-    );
+    await user.type(screen.getByPlaceholderText("Search or create project"), "Personal");
 
     const create = screen.getByRole("button", { name: /Create.*Personal/ });
     await user.click(create);

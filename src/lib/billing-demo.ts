@@ -18,13 +18,7 @@ const BILLING_DEMO_EVENT = "june:billing-demo-changed";
 /** A single forced variant, or "all" for the stacked gallery. */
 export type BillingDemoPlan = BillingDemoKey | "all";
 
-export type BillingDemoKey =
-  | "free"
-  | "freeLow"
-  | "pro"
-  | "trial"
-  | "pastDue"
-  | "signedOut";
+export type BillingDemoKey = "free" | "freeLow" | "pro" | "trial" | "pastDue" | "signedOut";
 
 type BillingDemoFixture = {
   label: string;
@@ -45,83 +39,82 @@ const RENEWS_AT = new Date(Date.now() + 24 * DAY_MS).toISOString();
 const TRIAL_ENDS_AT = new Date(Date.now() + 7 * DAY_MS).toISOString();
 
 // Ordered so the gallery reads from the default state outward to the edges.
-export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
-  {
-    free: {
-      label: "Free plan",
-      account: {
-        signedIn: true,
-        configured: true,
-        user: DEMO_USER,
-        balance: { credits: 3900, usdMillis: 3900, usageRemainingPercent: 78 },
-        subscription: { subscribed: false },
+export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> = {
+  free: {
+    label: "Free plan",
+    account: {
+      signedIn: true,
+      configured: true,
+      user: DEMO_USER,
+      balance: { credits: 3900, usdMillis: 3900, usageRemainingPercent: 78 },
+      subscription: { subscribed: false },
+    },
+  },
+  freeLow: {
+    label: "Free plan, running low",
+    account: {
+      signedIn: true,
+      configured: true,
+      user: DEMO_USER,
+      balance: { credits: 300, usdMillis: 300, usageRemainingPercent: 6 },
+      subscription: { subscribed: false },
+    },
+  },
+  pro: {
+    label: "Pro, active",
+    account: {
+      signedIn: true,
+      configured: true,
+      user: DEMO_USER,
+      balance: {
+        credits: 12800,
+        usdMillis: 12800,
+        usageRemainingPercent: 64,
+      },
+      subscription: {
+        subscribed: true,
+        status: "active",
+        currentPeriodEnd: RENEWS_AT,
       },
     },
-    freeLow: {
-      label: "Free plan, running low",
-      account: {
-        signedIn: true,
-        configured: true,
-        user: DEMO_USER,
-        balance: { credits: 300, usdMillis: 300, usageRemainingPercent: 6 },
-        subscription: { subscribed: false },
+  },
+  trial: {
+    label: "Pro, trialing",
+    account: {
+      signedIn: true,
+      configured: true,
+      user: DEMO_USER,
+      balance: {
+        credits: 18400,
+        usdMillis: 18400,
+        usageRemainingPercent: 92,
+      },
+      subscription: {
+        subscribed: true,
+        status: "trialing",
+        trialEnd: TRIAL_ENDS_AT,
       },
     },
-    pro: {
-      label: "Pro, active",
-      account: {
-        signedIn: true,
-        configured: true,
-        user: DEMO_USER,
-        balance: {
-          credits: 12800,
-          usdMillis: 12800,
-          usageRemainingPercent: 64,
-        },
-        subscription: {
-          subscribed: true,
-          status: "active",
-          currentPeriodEnd: RENEWS_AT,
-        },
+  },
+  pastDue: {
+    label: "Past due",
+    account: {
+      signedIn: true,
+      configured: true,
+      user: DEMO_USER,
+      balance: {
+        credits: 12800,
+        usdMillis: 12800,
+        usageRemainingPercent: 100,
       },
+      subscription: { subscribed: true, status: "past_due" },
     },
-    trial: {
-      label: "Pro, trialing",
-      account: {
-        signedIn: true,
-        configured: true,
-        user: DEMO_USER,
-        balance: {
-          credits: 18400,
-          usdMillis: 18400,
-          usageRemainingPercent: 92,
-        },
-        subscription: {
-          subscribed: true,
-          status: "trialing",
-          trialEnd: TRIAL_ENDS_AT,
-        },
-      },
-    },
-    pastDue: {
-      label: "Past due",
-      account: {
-        signedIn: true,
-        configured: true,
-        user: DEMO_USER,
-        balance: {
-          credits: 12800,
-          usdMillis: 12800,
-          usageRemainingPercent: 100,
-        },
-        subscription: { subscribed: true, status: "past_due" },
-      },
-    },
-    signedOut: {
-      label: "Signed out",
-      account: { signedIn: false, configured: true },
-    },
-  };
+  },
+  signedOut: {
+    label: "Signed out",
+    account: { signedIn: false, configured: true },
+  },
+};
 
 export const BILLING_DEMO_ORDER: BillingDemoKey[] = [
   "free",

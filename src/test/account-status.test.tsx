@@ -13,11 +13,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsStatus: mocks.osAccountsStatus,
 }));
 
-function StatusProbe({
-  forceLogoutOnMount = false,
-}: {
-  forceLogoutOnMount?: boolean;
-}) {
+function StatusProbe({ forceLogoutOnMount = false }: { forceLogoutOnMount?: boolean }) {
   const account = useAccountStatus({ forceLogoutOnMount }).account;
   return <div>{account.signedIn ? "Signed in" : "Signed out"}</div>;
 }
@@ -37,6 +33,7 @@ describe("useAccountStatus", () => {
     render(<StatusProbe forceLogoutOnMount />);
 
     await screen.findByText("Signed out");
+    expect(mocks.osAccountsLogout.mock.calls[0]?.[0]?.clearBrowserSession).not.toBe(true);
     await waitFor(() => expect(calls).toEqual(["logout", "status"]));
   });
 });

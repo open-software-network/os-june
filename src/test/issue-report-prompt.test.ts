@@ -7,17 +7,14 @@ import {
 
 describe("issue report prompt display", () => {
   it("shows only the user's report for a wrapped prompt", () => {
-    const report =
-      "I want to report an issue with June.\n\nWhat happened: the recorder crashes";
+    const report = "I want to report an issue with June.\n\nWhat happened: the recorder crashes";
     const wrapped = issueReportPrompt(report);
     expect(wrapped).toContain("in-app reporting flow");
     expect(displayedUserMessageText(wrapped)).toBe(report);
   });
 
   it("passes ordinary messages through untouched", () => {
-    expect(displayedUserMessageText("just a normal question")).toBe(
-      "just a normal question",
-    );
+    expect(displayedUserMessageText("just a normal question")).toBe("just a normal question");
   });
 
   it("does not mask a message that merely mentions one marker", () => {

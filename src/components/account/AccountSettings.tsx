@@ -27,12 +27,7 @@ type Props = {
   onRefresh: () => Promise<AccountStatus | undefined>;
 };
 
-export function AccountSettings({
-  account,
-  loading,
-  onAccountChanged,
-  onRefresh,
-}: Props) {
+export function AccountSettings({ account, loading, onAccountChanged, onRefresh }: Props) {
   return (
     <div className="settings-page">
       <header className="settings-header">
@@ -50,18 +45,12 @@ export function AccountSettings({
         onAccountChanged={onAccountChanged}
         onRefresh={onRefresh}
       />
-      {account.localDev ? null : (
-        <BillingSettingsSection account={account} onRefresh={onRefresh} />
-      )}
+      {account.localDev ? null : <BillingSettingsSection account={account} onRefresh={onRefresh} />}
     </div>
   );
 }
 
-export function AccountSettingsSection({
-  account,
-  loading,
-  onAccountChanged,
-}: Props) {
+export function AccountSettingsSection({ account, loading, onAccountChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [accountStatus, setAccountStatus] = useState<string>();
 
@@ -71,9 +60,7 @@ export function AccountSettingsSection({
     try {
       const next = await osAccountsLogin();
       onAccountChanged(next);
-      setAccountStatus(
-        next.signedIn ? `Signed in as ${displayName(next)}.` : undefined,
-      );
+      setAccountStatus(next.signedIn ? `Signed in as ${displayName(next)}.` : undefined);
     } catch (error) {
       setAccountStatus(messageFromError(error));
     } finally {
@@ -94,7 +81,7 @@ export function AccountSettingsSection({
   async function handleSignOut() {
     setBusy(true);
     try {
-      await osAccountsLogout();
+      await osAccountsLogout({ clearBrowserSession: true });
       onAccountChanged({ signedIn: false, configured: account.configured });
       setAccountStatus("Signed out.");
     } catch (error) {
@@ -109,9 +96,7 @@ export function AccountSettingsSection({
       <h2 id="account-heading" className="settings-group-heading">
         Account
       </h2>
-      {accountStatus ? (
-        <p className="settings-status">{accountStatus}</p>
-      ) : null}
+      {accountStatus ? <p className="settings-status">{accountStatus}</p> : null}
       <div className="settings-card">
         <div className="settings-rows">
           <div className="settings-row">
@@ -129,8 +114,7 @@ export function AccountSettingsSection({
                 {account.localDev
                   ? "Requests use your local June API. No OpenSoftware account is used."
                   : account.signedIn
-                    ? (account.user?.email ??
-                      `@${account.user?.handle ?? "account"}`)
+                    ? (account.user?.email ?? `@${account.user?.handle ?? "account"}`)
                     : account.configured
                       ? "Your login is managed by OpenSoftware."
                       : "OpenSoftware sign-in is not configured for this build."}
@@ -237,20 +221,13 @@ export function BillingSettingsSection({
       <p className="settings-group-description">
         Manage usage and subscription details in OpenSoftware.
       </p>
-      {billingStatus ? (
-        <p className="settings-status">{billingStatus}</p>
-      ) : null}
+      {billingStatus ? <p className="settings-status">{billingStatus}</p> : null}
       {import.meta.env.DEV && demoPlan === "all" ? (
         <div className="billing-demo-gallery">
           {BILLING_DEMO_ORDER.map((key) => (
             <div className="billing-demo-variant" key={key}>
-              <p className="billing-demo-label">
-                {BILLING_DEMO_FIXTURES[key].label}
-              </p>
-              <BillingCard
-                account={BILLING_DEMO_FIXTURES[key].account}
-                {...cardProps}
-              />
+              <p className="billing-demo-label">{BILLING_DEMO_FIXTURES[key].label}</p>
+              <BillingCard account={BILLING_DEMO_FIXTURES[key].account} {...cardProps} />
             </div>
           ))}
         </div>
@@ -280,10 +257,7 @@ function BillingCard({
 }: BillingCardProps) {
   const subscription = account.subscription;
   const liveSubscription = hasLiveSubscription(account);
-  const usageRemainingPercent = usagePercentFromBalance(
-    account.balance,
-    subscription,
-  );
+  const usageRemainingPercent = usagePercentFromBalance(account.balance, subscription);
   const billingRecovery =
     subscription?.subscribed === true &&
     typeof subscription.status === "string" &&
@@ -321,11 +295,7 @@ function BillingCard({
         </div>
         {primaryCta ? (
           <div className="billing-plan-control">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={primaryCta.onClick}
-            >
+            <button type="button" className="btn btn-secondary" onClick={primaryCta.onClick}>
               {primaryCta.label}
             </button>
           </div>
@@ -336,9 +306,7 @@ function BillingCard({
         <div className="billing-usage-head">
           <span className="billing-usage-label">Usage remaining</span>
           <span className="billing-usage-right">
-            <span className="billing-usage-value">
-              {formatPercent(usageRemainingPercent)}
-            </span>
+            <span className="billing-usage-value">{formatPercent(usageRemainingPercent)}</span>
             <button
               type="button"
               className="icon-button"
@@ -377,8 +345,7 @@ function BillingCard({
 
 function displayName(account: AccountStatus) {
   return (
-    account.user?.displayName ??
-    (account.user?.handle ? `@${account.user.handle}` : "Signed in")
+    account.user?.displayName ?? (account.user?.handle ? `@${account.user.handle}` : "Signed in")
   );
 }
 
@@ -403,9 +370,7 @@ function usagePercentFromBalance(
     Number.isFinite(subscription?.planCredits) &&
     (subscription?.planCredits ?? 0) > 0
   ) {
-    return clampPercent(
-      ((balance?.credits ?? 0) / (subscription?.planCredits ?? 1)) * 100,
-    );
+    return clampPercent(((balance?.credits ?? 0) / (subscription?.planCredits ?? 1)) * 100);
   }
   if (subscription?.subscribed === false && Number.isFinite(balance?.credits)) {
     return clampPercent(((balance?.credits ?? 0) / FREE_PLAN_CREDITS) * 100);

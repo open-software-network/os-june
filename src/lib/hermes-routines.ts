@@ -59,7 +59,6 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "web",
   "browser",
   "vision",
-  "image_gen",
   "tts",
   "skills",
   "todo",
@@ -93,9 +92,7 @@ export function routineUnrestricted(
   routine: Pick<RoutineJob, "enabled_toolsets" | "script" | "no_agent">,
 ): boolean {
   if (routine.script || routine.no_agent) return true;
-  return (routine.enabled_toolsets ?? []).some((toolset) =>
-    MACHINE_TOOLSETS.has(toolset),
-  );
+  return (routine.enabled_toolsets ?? []).some((toolset) => MACHINE_TOOLSETS.has(toolset));
 }
 
 /** The dashboard API lives on the bridge process, so make sure one is up
@@ -195,10 +192,7 @@ export type RoutineUpdates = {
  * Safe-by-default: a key not listed here forces the scheduler. */
 const BRIDGE_ONLY_SAFE_UPDATE_KEYS = new Set<string>(["name"]);
 
-export async function updateRoutine(
-  jobId: string,
-  updates: RoutineUpdates,
-): Promise<RoutineJob> {
+export async function updateRoutine(jobId: string, updates: RoutineUpdates): Promise<RoutineJob> {
   const payload: Record<string, unknown> = {};
   if (updates.name !== undefined) payload.name = updates.name;
   if (updates.schedule !== undefined) payload.schedule = updates.schedule;
@@ -245,10 +239,7 @@ export function removeRoutine(jobId: string) {
  * sandboxed routines must NOT set enabled_toolsets (the cron platform gate
  * in config.yaml then applies), unrestricted ones set the explicit
  * override. */
-export function routineCreationPrompt(
-  description: string,
-  options?: { unrestricted?: boolean },
-) {
+export function routineCreationPrompt(description: string, options?: { unrestricted?: boolean }) {
   const mode = options?.unrestricted
     ? `I chose to run this routine unrestricted. Create the job with enabled_toolsets set to exactly: ${UNRESTRICTED_ROUTINE_TOOLSETS.join(", ")}.`
     : "I chose the sandboxed default for this routine. Do not set enabled_toolsets on the job: it then runs with the restricted cron toolset (web reading, vision, todo, memory, session search) and cannot use the terminal, change files, execute code, or drive a browser. Do not attach a script to the job either: cron scripts run as plain shell subprocesses outside that sandbox. If the task clearly needs any of this, stop and tell me it requires an unrestricted routine instead of creating it.";

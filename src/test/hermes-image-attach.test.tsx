@@ -45,13 +45,7 @@ describe("parseImageDataUrl", () => {
 
 describe("isAttachableImageType", () => {
   it("accepts the image mime types the bridge previews", () => {
-    for (const mime of [
-      "image/png",
-      "image/jpeg",
-      "image/gif",
-      "image/webp",
-      "image/tiff",
-    ]) {
+    for (const mime of ["image/png", "image/jpeg", "image/gif", "image/webp", "image/tiff"]) {
       expect(isAttachableImageType(mime)).toBe(true);
     }
   });
@@ -103,20 +97,14 @@ describe("attachImageToSession", () => {
   function baseDeps() {
     return {
       attachImage: vi.fn().mockResolvedValue({ attachment_id: "att-9" }),
-      readImageData: vi
-        .fn()
-        .mockResolvedValue("data:image/png;base64,aGVsbG8="),
+      readImageData: vi.fn().mockResolvedValue("data:image/png;base64,aGVsbG8="),
       isSupported: () => true,
     };
   }
 
   it("reads bytes, calls image.attach_bytes, and flips status to attached", async () => {
     const deps = baseDeps();
-    const result = await attachImageToSession(
-      attachmentStateFrom(PNG, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(PNG, "ws-1"), "ws-1", deps);
 
     expect(deps.readImageData).toHaveBeenCalledWith("/ws/uploads/diagram.png");
     expect(deps.attachImage).toHaveBeenCalledWith({
@@ -142,11 +130,7 @@ describe("attachImageToSession", () => {
       previewDataUrl: "data:image/webp;base64,d2VicA==",
     };
 
-    const result = await attachImageToSession(
-      attachmentStateFrom(imported, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(imported, "ws-1"), "ws-1", deps);
 
     expect(deps.attachImage).toHaveBeenCalledWith({
       sessionId: "ws-1",
@@ -159,11 +143,7 @@ describe("attachImageToSession", () => {
 
   it("emits an artifact seed with the attached action and no base64", async () => {
     const deps = baseDeps();
-    const result = await attachImageToSession(
-      attachmentStateFrom(PNG, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(PNG, "ws-1"), "ws-1", deps);
     expect(result.artifact).toBeDefined();
     expect(result.artifact?.action).toBe("attached");
     expect(result.artifact?.kind).toBe("image");
@@ -173,11 +153,7 @@ describe("attachImageToSession", () => {
 
   it("emits a redacted trace entry that never contains the base64 payload", async () => {
     const deps = baseDeps();
-    const result = await attachImageToSession(
-      attachmentStateFrom(PNG, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(PNG, "ws-1"), "ws-1", deps);
     expect(result.trace).toBeDefined();
     expect(result.trace?.method).toBe("image.attach_bytes");
     const serialized = JSON.stringify(result.trace);
@@ -188,11 +164,7 @@ describe("attachImageToSession", () => {
   it("blocks with a failed status when the RPC rejects", async () => {
     const deps = baseDeps();
     deps.attachImage.mockRejectedValue(new Error("gateway down"));
-    const result = await attachImageToSession(
-      attachmentStateFrom(PNG, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(PNG, "ws-1"), "ws-1", deps);
     expect(result.state.status).toBe("failed");
     expect(result.state.error).toBeTruthy();
     expect(result.error).toBeTruthy();
@@ -201,11 +173,7 @@ describe("attachImageToSession", () => {
 
   it("fails an unsupported (non-image) attachment without calling the RPC", async () => {
     const deps = baseDeps();
-    const result = await attachImageToSession(
-      attachmentStateFrom(TEXT, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(TEXT, "ws-1"), "ws-1", deps);
     expect(deps.attachImage).not.toHaveBeenCalled();
     expect(result.state.status).toBe("failed");
     expect(result.error).toBeTruthy();
@@ -213,11 +181,7 @@ describe("attachImageToSession", () => {
 
   it("falls back without calling the RPC when the feature is gated off", async () => {
     const deps = { ...baseDeps(), isSupported: () => false };
-    const result = await attachImageToSession(
-      attachmentStateFrom(PNG, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(PNG, "ws-1"), "ws-1", deps);
     expect(deps.attachImage).not.toHaveBeenCalled();
     // Gated: the structured attach is skipped, the image stays imported so the
     // existing path-in-prompt fallback still carries it. No hard failure.
@@ -229,11 +193,7 @@ describe("attachImageToSession", () => {
   it("fails when the workspace file can't be read as an image", async () => {
     const deps = baseDeps();
     deps.readImageData.mockResolvedValue(null);
-    const result = await attachImageToSession(
-      attachmentStateFrom(PNG, "ws-1"),
-      "ws-1",
-      deps,
-    );
+    const result = await attachImageToSession(attachmentStateFrom(PNG, "ws-1"), "ws-1", deps);
     expect(deps.attachImage).not.toHaveBeenCalled();
     expect(result.state.status).toBe("failed");
     expect(result.error).toBeTruthy();
@@ -242,15 +202,11 @@ describe("attachImageToSession", () => {
 
 describe("attachmentBlocksSubmit", () => {
   it("blocks submit only on a failed image attachment", () => {
+    expect(attachmentBlocksSubmit([{ ...attachmentStateFrom(PNG, "ws"), status: "failed" }])).toBe(
+      true,
+    );
     expect(
-      attachmentBlocksSubmit([
-        { ...attachmentStateFrom(PNG, "ws"), status: "failed" },
-      ]),
-    ).toBe(true);
-    expect(
-      attachmentBlocksSubmit([
-        { ...attachmentStateFrom(PNG, "ws"), status: "attached" },
-      ]),
+      attachmentBlocksSubmit([{ ...attachmentStateFrom(PNG, "ws"), status: "attached" }]),
     ).toBe(false);
     expect(attachmentBlocksSubmit([])).toBe(false);
   });

@@ -60,9 +60,7 @@ export function DictationPracticeStep({
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={() =>
-              void (capture.capturing ? capture.cancel() : capture.start())
-            }
+            onClick={() => void (capture.capturing ? capture.cancel() : capture.start())}
           >
             {capture.capturing ? "Cancel" : "Change key"}
           </button>
@@ -75,9 +73,7 @@ export function DictationPracticeStep({
             <div className="onboarding-practice-message">
               <span className="onboarding-practice-sender">June</span>
               {greeted ? (
-                <span className="onboarding-practice-text">
-                  What should we work on first?
-                </span>
+                <span className="onboarding-practice-text">What should we work on first?</span>
               ) : (
                 <span className="onboarding-typing" aria-label="June is typing">
                   <span />

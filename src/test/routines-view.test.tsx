@@ -23,9 +23,7 @@ vi.mock("../lib/hermes-routines", async (importOriginal) => ({
 
 const adapterMocks = vi.hoisted(() => ({
   listScheduledRunSessions:
-    vi.fn<
-      (options?: { includeActive?: boolean }) => Promise<HermesSessionInfo[]>
-    >(),
+    vi.fn<(options?: { includeActive?: boolean }) => Promise<HermesSessionInfo[]>>(),
 }));
 
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
@@ -77,13 +75,8 @@ function renderView(
   );
 }
 
-function mockTextareaScrollHeight(
-  getScrollHeight: (element: HTMLTextAreaElement) => number,
-) {
-  const original = Object.getOwnPropertyDescriptor(
-    HTMLTextAreaElement.prototype,
-    "scrollHeight",
-  );
+function mockTextareaScrollHeight(getScrollHeight: (element: HTMLTextAreaElement) => number) {
+  const original = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
     configurable: true,
     get() {
@@ -92,11 +85,7 @@ function mockTextareaScrollHeight(
   });
   return () => {
     if (original) {
-      Object.defineProperty(
-        HTMLTextAreaElement.prototype,
-        "scrollHeight",
-        original,
-      );
+      Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", original);
     } else {
       Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
     }
@@ -161,9 +150,7 @@ describe("RoutinesView list", () => {
       hour: "numeric",
       minute: "2-digit",
     });
-    expect(
-      await screen.findByText(`Weekdays ${nine}`, { exact: false }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(`Weekdays ${nine}`, { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("0 9 * * 1-5", { exact: false })).toBeNull();
 
     // The search box matches the displayed wording, not just the raw cron.
@@ -220,9 +207,7 @@ describe("RoutinesView list", () => {
     expect(toggle).toBeChecked();
     await userEvent.click(toggle);
 
-    await waitFor(() =>
-      expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"),
-    );
+    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
     expect(await screen.findByText("Paused")).toBeInTheDocument();
   });
 
@@ -236,9 +221,7 @@ describe("RoutinesView list", () => {
     });
     expect(toggle).not.toBeChecked();
     await userEvent.click(toggle);
-    await waitFor(() =>
-      expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123"),
-    );
+    await waitFor(() => expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123"));
   });
 
   it("surfaces a failed reload after a successful pause", async () => {
@@ -247,9 +230,7 @@ describe("RoutinesView list", () => {
     await openDetail("Morning summary");
 
     mocks.listRoutines.mockRejectedValue(new Error("reload failed"));
-    await userEvent.click(
-      screen.getByRole("switch", { name: "Morning summary active" }),
-    );
+    await userEvent.click(screen.getByRole("switch", { name: "Morning summary active" }));
 
     expect(await screen.findByText("reload failed")).toBeInTheDocument();
   });
@@ -276,21 +257,15 @@ describe("RoutinesView templates and creation", () => {
     renderView();
     await screen.findByText("Morning brief");
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Add Morning brief" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning brief" }));
 
-    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue(
-      "Morning brief",
-    );
+    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue("Morning brief");
     const instructions = screen.getByRole("textbox", {
       name: "Instructions",
     }) as HTMLTextAreaElement;
     expect(instructions.value).toContain("morning brief");
     // The template schedule "0 8 * * 1-5" lands on the Weekdays preset.
-    expect(
-      screen.getByRole("button", { name: "Schedule type" }),
-    ).toHaveTextContent("Weekdays");
+    expect(screen.getByRole("button", { name: "Schedule type" })).toHaveTextContent("Weekdays");
   });
 
   it("creates a routine from the editor and opens its detail page", async () => {
@@ -315,9 +290,9 @@ describe("RoutinesView templates and creation", () => {
       }),
     );
     // Creation lands on the new routine's detail page.
-    expect(
-      await screen.findByRole("textbox", { name: "Routine name" }),
-    ).toHaveValue("Morning summary");
+    expect(await screen.findByRole("textbox", { name: "Routine name" })).toHaveValue(
+      "Morning summary",
+    );
   });
 
   it("routes the describe path through the agent prompt, sandboxed by default", async () => {
@@ -331,17 +306,10 @@ describe("RoutinesView templates and creation", () => {
       name: "Describe a routine to June",
     });
     // Its sandbox trigger reflects the default mode.
-    expect(
-      within(composer).getByRole("button", { name: /sandboxed/i }),
-    ).toBeInTheDocument();
+    expect(within(composer).getByRole("button", { name: /sandboxed/i })).toBeInTheDocument();
 
-    await userEvent.type(
-      within(composer).getByRole("textbox"),
-      "watch the weather and message me",
-    );
-    await userEvent.click(
-      within(composer).getByRole("button", { name: "Ask June to set it up" }),
-    );
+    await userEvent.type(within(composer).getByRole("textbox"), "watch the weather and message me");
+    await userEvent.click(within(composer).getByRole("button", { name: "Ask June to set it up" }));
 
     const prompt = onCreateRoutine.mock.calls[0][0] as string;
     expect(prompt).toContain("watch the weather and message me");
@@ -405,19 +373,13 @@ describe("RoutinesView templates and creation", () => {
       name: "Describe a routine to June",
     });
     // Arm Unrestricted through the composer's sandbox menu.
-    await userEvent.click(
-      within(composer).getByRole("button", { name: /sandboxed/i }),
-    );
-    await userEvent.click(
-      within(composer).getByRole("menuitemradio", { name: /unrestricted/i }),
-    );
+    await userEvent.click(within(composer).getByRole("button", { name: /sandboxed/i }));
+    await userEvent.click(within(composer).getByRole("menuitemradio", { name: /unrestricted/i }));
     await userEvent.type(
       within(composer).getByRole("textbox"),
       "clean up my downloads folder nightly",
     );
-    await userEvent.click(
-      within(composer).getByRole("button", { name: "Ask June to set it up" }),
-    );
+    await userEvent.click(within(composer).getByRole("button", { name: "Ask June to set it up" }));
 
     const prompt = onCreateRoutine.mock.calls[0][0] as string;
     expect(prompt).toContain(
@@ -433,17 +395,13 @@ describe("RoutinesView templates and creation", () => {
     const composer = screen.getByRole("form", {
       name: "Describe a routine to June",
     });
-    await userEvent.click(
-      within(composer).getByRole("button", { name: /sandboxed/i }),
-    );
+    await userEvent.click(within(composer).getByRole("button", { name: /sandboxed/i }));
     expect(
       within(composer).getByRole("menuitemradio", { name: /unrestricted/i }),
     ).toBeInTheDocument();
 
     await userEvent.keyboard("{Escape}");
-    expect(
-      within(composer).queryByRole("menuitemradio", { name: /unrestricted/i }),
-    ).toBeNull();
+    expect(within(composer).queryByRole("menuitemradio", { name: /unrestricted/i })).toBeNull();
   });
 });
 
@@ -453,12 +411,8 @@ describe("RoutinesView detail", () => {
     renderView();
 
     const instructions = await openDetail("Morning summary");
-    expect(instructions).toHaveValue(
-      "Summarize my unread notes and flag anything urgent.",
-    );
-    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue(
-      "Morning summary",
-    );
+    expect(instructions).toHaveValue("Summarize my unread notes and flag anything urgent.");
+    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue("Morning summary");
   });
 
   it("saves only the changed fields", async () => {
@@ -480,9 +434,7 @@ describe("RoutinesView detail", () => {
   });
 
   it("restores a blank local name after saving unrelated changes", async () => {
-    mocks.listRoutines
-      .mockResolvedValueOnce([job()])
-      .mockResolvedValueOnce([job()]);
+    mocks.listRoutines.mockResolvedValueOnce([job()]).mockResolvedValueOnce([job()]);
     renderView();
 
     const instructions = await openDetail("Morning summary");
@@ -541,9 +493,7 @@ describe("RoutinesView detail", () => {
     await openDetail("Morning summary");
 
     await userEvent.click(screen.getByRole("button", { name: "Run now" }));
-    await waitFor(() =>
-      expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"),
-    );
+    await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
     expect(screen.getByRole("button", { name: "Queued" })).toBeDisabled();
   });
 
@@ -566,9 +516,7 @@ describe("RoutinesView detail", () => {
     expect(within(history).getByText("Morning summary")).toBeInTheDocument();
     expect(within(history).queryByText("Someone else's run")).toBeNull();
 
-    await userEvent.click(
-      within(history).getByRole("button", { name: /morning summary/i }),
-    );
+    await userEvent.click(within(history).getByRole("button", { name: /morning summary/i }));
     expect(onOpenRun).toHaveBeenCalledWith(mine);
   });
 
@@ -604,20 +552,12 @@ describe("RoutinesView detail", () => {
     renderView();
     await openDetail("Morning summary");
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Routine actions" }),
-    );
-    await userEvent.click(
-      screen.getByRole("menuitem", { name: "Delete routine" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Routine actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Delete routine" }));
     const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
-    await waitFor(() =>
-      expect(mocks.removeRoutine).toHaveBeenCalledWith("abc123"),
-    );
+    await waitFor(() => expect(mocks.removeRoutine).toHaveBeenCalledWith("abc123"));
     // Back on the (now empty) list page.
     expect(await screen.findByText("Morning brief")).toBeInTheDocument();
   });
@@ -628,21 +568,13 @@ describe("RoutinesView detail", () => {
     renderView();
     await openDetail("Morning summary");
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Routine actions" }),
-    );
-    await userEvent.click(
-      screen.getByRole("menuitem", { name: "Delete routine" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Routine actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Delete routine" }));
     const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     expect(await screen.findByText("remove failed")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue(
-      "Morning summary",
-    );
+    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue("Morning summary");
   });
 });
 
@@ -659,14 +591,10 @@ describe("RoutinesView run history", () => {
     // embedded in the cron session id), not the session's own title.
     expect(within(history).getByText("Morning summary")).toBeInTheDocument();
     expect(
-      within(history).getByText(
-        "Here is today's summary of your unread notes.",
-      ),
+      within(history).getByText("Here is today's summary of your unread notes."),
     ).toBeInTheDocument();
 
-    await userEvent.click(
-      within(history).getByRole("button", { name: /morning summary/i }),
-    );
+    await userEvent.click(within(history).getByRole("button", { name: /morning summary/i }));
     expect(onOpenRun).toHaveBeenCalledWith(session);
     expect(adapterMocks.listScheduledRunSessions).toHaveBeenCalledWith({
       includeActive: true,
@@ -753,9 +681,7 @@ describe("RoutinesView run history", () => {
     renderView();
 
     const history = await screen.findByRole("region", { name: "Run history" });
-    expect(
-      within(history).getByText("Weekly Metrics Digest"),
-    ).toBeInTheDocument();
+    expect(within(history).getByText("Weekly Metrics Digest")).toBeInTheDocument();
   });
 
   it("labels orphaned placeholder-title runs generically", async () => {
@@ -775,10 +701,7 @@ describe("RoutinesView run history", () => {
   });
 
   it("filters run history with the search query", async () => {
-    mocks.listRoutines.mockResolvedValue([
-      job(),
-      job({ job_id: "def456", name: "Weekly digest" }),
-    ]);
+    mocks.listRoutines.mockResolvedValue([job(), job({ job_id: "def456", name: "Weekly digest" })]);
     adapterMocks.listScheduledRunSessions.mockResolvedValue([
       run(),
       run({
@@ -812,15 +735,11 @@ describe("RoutinesView run history", () => {
 
   it("keeps routines usable when run history fails to load", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
-    adapterMocks.listScheduledRunSessions.mockRejectedValue(
-      new Error("session store down"),
-    );
+    adapterMocks.listScheduledRunSessions.mockRejectedValue(new Error("session store down"));
     renderView();
 
     expect(await screen.findByText("Morning summary")).toBeInTheDocument();
     const history = screen.getByRole("region", { name: "Run history" });
-    expect(
-      within(history).getByText("Run history is unavailable right now."),
-    ).toBeInTheDocument();
+    expect(within(history).getByText("Run history is unavailable right now.")).toBeInTheDocument();
   });
 });

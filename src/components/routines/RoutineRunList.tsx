@@ -1,8 +1,5 @@
 import { IconZap } from "central-icons/IconZap";
-import {
-  isRunningScheduledRunSession,
-  sessionTimestamp,
-} from "../../lib/hermes-adapter";
+import { isRunningScheduledRunSession, sessionTimestamp } from "../../lib/hermes-adapter";
 import type { HermesSessionInfo } from "../../lib/tauri";
 
 /** Past runs of one or all routines: each row is a cron-sourced session,
@@ -19,12 +16,7 @@ export function RoutineRunList({
   return (
     <ul className="routines-list routines-runs-list" role="list">
       {runs.map((run) => (
-        <RunRow
-          key={run.id}
-          run={run}
-          label={label(run)}
-          onOpen={() => onOpen(run)}
-        />
+        <RunRow key={run.id} run={run} label={label(run)} onOpen={() => onOpen(run)} />
       ))}
     </ul>
   );
@@ -50,17 +42,11 @@ function RunRow({
         <span className="routines-run-body">
           <span className="routines-run-title">
             <span className="routines-run-name">{label}</span>
-            {running ? (
-              <span className="routines-run-status">Running</span>
-            ) : null}
+            {running ? <span className="routines-run-status">Running</span> : null}
           </span>
-          {preview ? (
-            <span className="routines-run-preview">{preview}</span>
-          ) : null}
+          {preview ? <span className="routines-run-preview">{preview}</span> : null}
         </span>
-        <span className="routines-run-time">
-          {formatRunTime(sessionTimestamp(run))}
-        </span>
+        <span className="routines-run-time">{formatRunTime(sessionTimestamp(run))}</span>
       </button>
     </li>
   );

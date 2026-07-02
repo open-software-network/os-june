@@ -11,9 +11,7 @@ export function visualPeakScale(peak: number) {
   return scaleLiveInputPeak(peak);
 }
 
-export function combineAudioLevels(
-  levels: Array<AudioLevelDto | undefined>,
-): AudioLevelDto {
+export function combineAudioLevels(levels: Array<AudioLevelDto | undefined>): AudioLevelDto {
   const present = levels.filter((l): l is AudioLevelDto => !!l);
   if (present.length === 0) {
     return { peak: 0, rms: 0, recentPeaks: [] };
@@ -29,22 +27,15 @@ export function combineAudioLevels(
   for (const level of present) {
     const offset = maxLen - level.recentPeaks.length;
     for (let i = 0; i < level.recentPeaks.length; i++) {
-      recentPeaks[offset + i] = Math.max(
-        recentPeaks[offset + i],
-        level.recentPeaks[i],
-      );
+      recentPeaks[offset + i] = Math.max(recentPeaks[offset + i], level.recentPeaks[i]);
     }
   }
   return { peak, rms, recentPeaks };
 }
 
-export function combineSourceAudioLevels(
-  sources: SourceStatusDto[],
-): AudioLevelDto {
+export function combineSourceAudioLevels(sources: SourceStatusDto[]): AudioLevelDto {
   return combineAudioLevels(
-    sources.map((source) =>
-      scaleAudioLevel(source.level, SOURCE_VISUAL_GAIN[source.source]),
-    ),
+    sources.map((source) => scaleAudioLevel(source.level, SOURCE_VISUAL_GAIN[source.source])),
   );
 }
 
@@ -55,10 +46,7 @@ export const SOURCE_VISUAL_GAIN: Record<RecordingSource, number> = {
   system: 0.15,
 };
 
-export function scaleAudioLevel(
-  level: AudioLevelDto,
-  gain: number,
-): AudioLevelDto {
+export function scaleAudioLevel(level: AudioLevelDto, gain: number): AudioLevelDto {
   if (gain === 1) {
     return level;
   }
@@ -76,7 +64,5 @@ export function meterLevelForSources(
   level: AudioLevelDto,
   sources?: SourceStatusDto[],
 ): AudioLevelDto {
-  return sources && sources.length > 0
-    ? combineSourceAudioLevels(sources)
-    : level;
+  return sources && sources.length > 0 ? combineSourceAudioLevels(sources) : level;
 }

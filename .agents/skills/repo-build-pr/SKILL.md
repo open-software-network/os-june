@@ -6,8 +6,9 @@ description: >-
   bug report, screenshot, PR comment, or freeform repo task: study the prompt,
   work in one or more git worktrees based on complexity, validate changes with
   deterministic checks plus agent-driven live app walkthroughs when useful,
-  record and attach reviewer-friendly QA videos when the change benefits from
-  visual evidence, open a draft PR, wait for Greptile and Codex review, address
+  record, upload through os-platform, and attach reviewer-friendly QA video URLs
+  when the change benefits from visual evidence, open a draft PR, wait for
+  Greptile and Codex review, address
   only relevant feedback, request a final review, and mark the PR ready for
   review.
 ---
@@ -35,11 +36,23 @@ If the prompt is ambiguous but a conservative implementation path is clear, proc
 
 Always isolate implementation work from the user's active checkout.
 
-- Create a dedicated sibling worktree from the chosen base:
+- Create a dedicated sibling worktree from the chosen base, then copy the
+  gitignored local environment files into it. Capture the main checkout path
+  first, because fresh worktrees do not inherit `.env` or `june-api/.env`:
   ```bash
+  MAIN="$(git rev-parse --show-toplevel)"
   git fetch origin main
   git worktree add -b codex/<short-description> ../os-june-<short-description> origin/main
+  cd ../os-june-<short-description>
+  cp "$MAIN/.env" .env 2>/dev/null || true
+  cp "$MAIN/june-api/.env" june-api/.env 2>/dev/null || true
   ```
+  These files are gitignored and exist only in the main checkout. The app, the
+  local dev token, and the QA video upload all depend on them. In particular,
+  `june-api/.env` holds the os-platform API key
+  (`JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` / `OS_PLATFORM_API_KEY`) that the
+  video upload step reads, so without this copy `prepare_qa_video.py --upload`
+  fails inside the worktree.
 - Use one worktree for simple or medium tasks.
 - Use multiple worktrees or subagents only when the prompt naturally splits into independent tracks, such as frontend plus backend exploration, competing implementation strategies, or a broad bug hunt.
 - Keep one final integration branch and one final PR unless the user explicitly asks for multiple PRs.
@@ -65,7 +78,8 @@ Run the smallest checks that prove the change, then broaden based on blast radiu
 Common checks in this repo:
 
 ```bash
-pnpm run lint
+pnpm check
+pnpm typecheck
 pnpm test
 pnpm build
 pnpm test:rust
@@ -75,7 +89,7 @@ cargo +1.95.0-aarch64-apple-darwin test --manifest-path june-api/Cargo.toml --al
 
 Choose checks based on touched files. For example:
 
-- Frontend-only change: `pnpm run lint` plus the relevant frontend test or `pnpm test`.
+- Frontend-only change: `pnpm check` and `pnpm typecheck` plus the relevant frontend test or `pnpm test`.
 - Tauri Rust change: targeted `cargo test --manifest-path src-tauri/Cargo.toml --locked`, then broader checks if shared behavior changed.
 - June API change: the pinned Rust toolchain command above.
 - Docs or skill-only change: validate the skill structure and skip expensive app builds unless related files require them.
@@ -98,9 +112,19 @@ Skip live walkthroughs for narrow docs-only, test-only, build config, pure refac
 
 Pick the least invasive surface from `$agent-e2e-qa`: Browser or the background Playwright helper for web-reachable flows, Computer Use for native-only Tauri behavior, and Chrome only for flows that depend on the user's browser session. Do not perform live billing, enter credentials, record microphone audio, or expose private data without explicit user confirmation.
 
+For a recorded video walkthrough, default to Playwright via the bundled background helper rather than foreground screen capture:
+
+```bash
+.agents/skills/agent-e2e-qa/scripts/run_background_agent_prompt.mjs --prompt "<walkthrough goal>"
+```
+
+It drives the Vite app in headless Chromium, records Playwright video to `.tmp/qa-recordings/*.webm`, and shims only the Tauri shell calls the web surface needs, so the run does not fight the user's screen. If `playwright-core` is missing, install it outside repo dependencies with `npm install --prefix .tmp/playwright-tools playwright-core@latest`. The resulting `.webm` feeds straight into `prepare_qa_video.py` for compression and upload. Reserve Computer Use recording for native-only Tauri behavior that Playwright cannot reach.
+
 Treat walkthrough failures as validation failures. Fix the issue, rerun the relevant deterministic checks, and rerun the live walkthrough before asking for final review. If the live surface is blocked by permissions, credentials, hardware, or unavailable services, include `BLOCKED` evidence and the remaining risk.
 
-Record, compress, upload, and attach a QA video to the PR when human reviewers would benefit from seeing the result, such as visual/UI changes, native interactions, agent behavior, fixed bug repros, or "the test is the demo" flows. Prefer `.agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py --upload --confirm-public --comment-pr <pr-number>` after the user or task has authorized public PR sharing. Include the video URL or PR comment in the validation evidence.
+Record, compress, upload the compressed video to os-platform, and attach the resulting remote URL to the PR when human reviewers would benefit from seeing the result, such as visual/UI changes, native interactions, agent behavior, fixed bug repros, or "the test is the demo" flows. Prefer `.agents/skills/agent-e2e-qa/scripts/prepare_qa_video.py --upload --confirm-public --comment-pr <pr-number>` after the user or task has authorized public PR sharing. Do not treat a local video path as sufficient PR evidence when video sharing was authorized; include the os-platform URL or PR comment in the validation evidence.
+
+The upload reads the os-platform API key from `june-api/.env` (`JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` or `OS_PLATFORM_API_KEY`), falling back to that file when the env vars are unset. Because `june-api/.env` is gitignored and absent from fresh worktrees, either copy it into the worktree (see Worktree strategy) or run `prepare_qa_video.py` with the working directory set to the main checkout while passing the worktree's raw recording path as input. If the key is still missing, the upload fails with a "set OS_PLATFORM_API_KEY" error; record that as a `BLOCKED` upload and keep the local video path in the evidence.
 
 ## Publish
 
@@ -118,7 +142,7 @@ Use a draft PR for the first publish.
    - what changed
    - why it changed
    - validation run
-   - live agent walkthrough evidence, video links, or the reason no live walkthrough was useful
+   - live agent walkthrough evidence, os-platform video URLs or PR comments, or the reason no live walkthrough was useful
    - known gaps or skipped checks
 6. Watch initial CI with:
    ```bash
