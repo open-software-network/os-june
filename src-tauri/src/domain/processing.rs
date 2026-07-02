@@ -2134,93 +2134,126 @@ mod tests {
 
     #[tokio::test]
     async fn transient_invalid_turn_response_retries_before_failing() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let transcriber = {
-            let attempts = Arc::clone(&attempts);
-            Arc::new(move |request: TranscriptionRequest| {
+        // Every transient class June API can surface without a provider result
+        // must recover on retry rather than fail the whole note: an
+        // invalid/empty envelope and explicit transient request failures.
+        let transient_errors = [
+            AppError::new(
+                "june_api_response_invalid",
+                "The processing service returned an invalid response.",
+            ),
+            AppError::new("june_request_failed", "authorization_denied"),
+        ];
+
+        for transient_error in transient_errors {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let transcriber = {
                 let attempts = Arc::clone(&attempts);
-                Box::pin(async move {
-                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                        return Err(AppError::new(
-                            "june_api_response_invalid",
-                            "The processing service returned an invalid response.",
-                        ));
-                    }
-                    Ok(TranscriptionProviderResult {
-                        text: request.audio_path.to_string_lossy().to_string(),
-                        language: None,
-                        provider: "test".to_string(),
-                    })
-                }) as TranscriptionFuture
-            }) as TurnTranscriber
-        };
+                Arc::new(move |request: TranscriptionRequest| {
+                    let attempts = Arc::clone(&attempts);
+                    let transient_error = transient_error.clone();
+                    Box::pin(async move {
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return Err(transient_error);
+                        }
+                        Ok(TranscriptionProviderResult {
+                            text: request.audio_path.to_string_lossy().to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        })
+                    }) as TranscriptionFuture
+                }) as TurnTranscriber
+            };
 
-        let outcome = transcribe_turn_jobs_by_source_lane(
-            vec![test_job("m0", "microphone", 0)],
-            crate::providers::OPENAI_PROVIDER.to_string(),
-            "Meeting".to_string(),
-            None,
-            transcriber,
-        )
-        .await
-        .expect("transient invalid response should be retried");
+            let outcome = transcribe_turn_jobs_by_source_lane(
+                vec![test_job("m0", "microphone", 0)],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                transcriber,
+            )
+            .await
+            .expect("transient response should be retried");
 
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        assert_eq!(outcome.failures.len(), 0);
-        assert_eq!(outcome.candidates.len(), 1);
-        assert_eq!(outcome.candidates[0].input.text, "m0");
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(outcome.failures.len(), 0);
+            assert_eq!(outcome.candidates.len(), 1);
+            assert_eq!(outcome.candidates[0].input.text, "m0");
+        }
     }
 
     #[tokio::test]
     async fn exhausted_invalid_tail_turn_stays_visible_as_failure() {
-        let tail_attempts = Arc::new(AtomicUsize::new(0));
-        let transcriber = {
-            let tail_attempts = Arc::clone(&tail_attempts);
-            Arc::new(move |request: TranscriptionRequest| {
+        // When a turn fails after the allowed attempt budget, or fails with a
+        // non-retryable provider/metering error, it stays a visible per-turn
+        // failure without dropping earlier successful turns. The surfaced
+        // warning is user-facing copy, never the raw provider code.
+        let cases = [
+            (
+                AppError::new(
+                    "june_api_response_invalid",
+                    "The processing service returned an invalid response.",
+                ),
+                "The processing service returned an invalid response.",
+                TRANSIENT_TRANSCRIPTION_ATTEMPTS,
+            ),
+            (
+                AppError::new("june_request_failed", "upstream_provider_failed"),
+                "The transcription provider could not process this audio.",
+                1,
+            ),
+            (
+                AppError::new("june_request_failed", "metering_provider_failed"),
+                "Billing is temporarily unavailable. Please try again in a moment.",
+                1,
+            ),
+        ];
+
+        for (tail_error, expected_warning, expected_attempts) in cases {
+            let tail_attempts = Arc::new(AtomicUsize::new(0));
+            let transcriber = {
                 let tail_attempts = Arc::clone(&tail_attempts);
-                Box::pin(async move {
-                    if request.audio_path == std::path::Path::new("tail") {
-                        tail_attempts.fetch_add(1, Ordering::SeqCst);
-                        return Err(AppError::new(
-                            "june_api_response_invalid",
-                            "The processing service returned an invalid response.",
-                        ));
-                    }
-                    Ok(TranscriptionProviderResult {
-                        text: request.audio_path.to_string_lossy().to_string(),
-                        language: None,
-                        provider: "test".to_string(),
-                    })
-                }) as TranscriptionFuture
-            }) as TurnTranscriber
-        };
+                Arc::new(move |request: TranscriptionRequest| {
+                    let tail_attempts = Arc::clone(&tail_attempts);
+                    let tail_error = tail_error.clone();
+                    Box::pin(async move {
+                        if request.audio_path == std::path::Path::new("tail") {
+                            tail_attempts.fetch_add(1, Ordering::SeqCst);
+                            return Err(tail_error);
+                        }
+                        Ok(TranscriptionProviderResult {
+                            text: request.audio_path.to_string_lossy().to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        })
+                    }) as TranscriptionFuture
+                }) as TurnTranscriber
+            };
 
-        let outcome = transcribe_turn_jobs_by_source_lane(
-            vec![
-                test_job("intro", "microphone", 0),
-                test_job("tail", "microphone", 1),
-            ],
-            crate::providers::OPENAI_PROVIDER.to_string(),
-            "Meeting".to_string(),
-            None,
-            transcriber,
-        )
-        .await
-        .expect("source lanes should complete despite a failed tail turn");
+            let outcome = transcribe_turn_jobs_by_source_lane(
+                vec![
+                    test_job("intro", "microphone", 0),
+                    test_job("tail", "microphone", 1),
+                ],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                transcriber,
+            )
+            .await
+            .expect("source lanes should complete despite a failed tail turn");
 
-        assert_eq!(
-            tail_attempts.load(Ordering::SeqCst),
-            TRANSIENT_TRANSCRIPTION_ATTEMPTS
-        );
-        assert_eq!(outcome.candidates.len(), 1);
-        assert_eq!(outcome.failures.len(), 1);
-        assert_eq!(outcome.candidates[0].input.text, "intro");
-        assert_eq!(outcome.failures[0].input.source, "microphone");
-        assert_eq!(outcome.failures[0].input.turn_index, Some(1));
-        assert_eq!(
-            outcome.failures[0].input.warning.as_deref(),
-            Some("The processing service returned an invalid response.")
-        );
+            assert_eq!(tail_attempts.load(Ordering::SeqCst), expected_attempts);
+            assert_eq!(outcome.candidates.len(), 1);
+            assert_eq!(outcome.failures.len(), 1);
+            assert_eq!(outcome.candidates[0].input.text, "intro");
+            assert_eq!(outcome.failures[0].input.source, "microphone");
+            assert_eq!(outcome.failures[0].input.turn_index, Some(1));
+            assert_eq!(
+                outcome.failures[0].input.warning.as_deref(),
+                Some(expected_warning)
+            );
+        }
     }
 
     #[test]
@@ -2247,6 +2280,19 @@ mod tests {
         assert!(!is_retryable_transcription_error(&AppError::new(
             "june_request_failed",
             "operation timed out"
+        )));
+        // `upstream_provider_failed` is not precise enough for desktop retry:
+        // June API uses the same envelope for transient 5xxs and deterministic
+        // provider 4xxs after taking a Hold.
+        assert!(!is_retryable_transcription_error(&AppError::new(
+            "june_request_failed",
+            "upstream_provider_failed"
+        )));
+        // `metering_provider_failed` can come from a post-ASR charge failure;
+        // replaying the desktop request would redo paid upstream work.
+        assert!(!is_retryable_transcription_error(&AppError::new(
+            "june_request_failed",
+            "metering_provider_failed"
         )));
     }
 
