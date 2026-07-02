@@ -9,6 +9,9 @@
     "deep-link:default",
     "notification:default",
     "dialog:allow-open",
-    "process:allow-restart"
+    "process:allow-restart",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
   ]
 }
