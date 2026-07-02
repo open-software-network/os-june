@@ -767,7 +767,7 @@ mod tests {
         // JUNK padding chunk (28 bytes, exactly what AVAudioFile emits).
         buf.extend_from_slice(b"JUNK");
         buf.extend_from_slice(&28_u32.to_le_bytes());
-        buf.extend(std::iter::repeat_n(0_u8, 28));
+        buf.extend(std::iter::repeat(0_u8).take(28));
         // PCM fmt chunk.
         buf.extend_from_slice(b"fmt ");
         buf.extend_from_slice(&16_u32.to_le_bytes());
@@ -780,7 +780,7 @@ mod tests {
         // FLLR page-alignment padding chunk.
         buf.extend_from_slice(b"FLLR");
         buf.extend_from_slice(&(fllr_len as u32).to_le_bytes());
-        buf.extend(std::iter::repeat_n(0_u8, fllr_len));
+        buf.extend(std::iter::repeat(0_u8).take(fllr_len));
         // data chunk with a zero declared size (still recording).
         buf.extend_from_slice(b"data");
         buf.extend_from_slice(&0_u32.to_le_bytes());
