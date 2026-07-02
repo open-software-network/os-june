@@ -6010,6 +6010,63 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("starts a /image session on a vision-capable model instead of the non-vision default", async () => {
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "kimi-k2-6",
+          name: "Kimi K2.6",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling", "supportsVision"],
+        },
+      ],
+    });
+    mocks.setVeniceModel.mockResolvedValue(undefined);
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "kimi-k2-6"),
+    );
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+      "session.create",
+      expect.objectContaining({ model: "kimi-k2-6" }),
+    );
+    expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-2",
+        model: "kimi-k2-6",
+      }),
+    );
+  });
+
   it("carries a /image fast-path image into the next message so a follow-up has it in context (JUN-171 Phase A)", async () => {
     // JUN-171: the /image image renders in-thread but must also enter the
     // model's session history, so a follow-up ("what do you think?") reaches the
