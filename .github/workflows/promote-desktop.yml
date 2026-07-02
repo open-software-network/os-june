@@ -418,7 +418,8 @@ jobs:
 
           git -C "$tap_dir" config user.name "github-actions[bot]"
           git -C "$tap_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C "$tap_dir" commit -am "june v$VERSION"
+          git -C "$tap_dir" add "$cask"
+          git -C "$tap_dir" commit -m "june v$VERSION"
           git -C "$tap_dir" push origin HEAD:main
 
       # Record the released version on main so its version files advance and the
