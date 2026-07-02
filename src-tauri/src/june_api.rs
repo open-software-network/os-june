@@ -1632,10 +1632,10 @@ mod tests {
         );
         assert_eq!(
             clean_agent_session_title(
-                "Create a Quarterly Planning Briefing With Follow Up Action Items",
+                "Create a quarterly planning briefing with follow-up action items",
             )
             .as_deref(),
-            Some("Create a Quarterly Planning Briefing With Follow")
+            Some("Create a quarterly planning briefing with follow")
         );
         assert_eq!(clean_agent_session_title("   "), None);
     }
