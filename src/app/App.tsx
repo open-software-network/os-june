@@ -1670,6 +1670,18 @@ export function App() {
 
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
+    // A mic-only recording preflight stores a readiness result with no system
+    // entry, which zeroes systemGranted, so intent alone cannot bring
+    // sourceMode back to microphonePlusSystem. Re-probe the full mode through
+    // the existing refresh channel (the effect above polls immediately and
+    // stops as soon as the system source reports ready) so systemGranted
+    // recovers and sourceMode follows the toggle.
+    const readinessCoversSystem = sourceReadiness?.sources.some(
+      (source) => source.source === "system",
+    );
+    if (next === "microphonePlusSystem" && !readinessCoversSystem) {
+      setSystemAudioRefreshRequest((request) => request + 1);
+    }
   }
 
   // Explicit "Enable" action when system audio is denied. Sets intent on
