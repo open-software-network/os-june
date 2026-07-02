@@ -19456,16 +19456,13 @@ input:focus-visible,
   background: color-mix(in oklch, var(--card) 96%, white 4%);
   /* Same hairline-ring edge, resting elevation, and ring-only focus as
    * .agent-composer-box. */
-  box-shadow:
-    var(--shadow-md),
-    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  --composer-ring: 0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  box-shadow: var(--shadow-md), var(--composer-ring);
   transition: box-shadow var(--t-med) var(--ease-out);
 }
 
 .onboarding-practice-composer:focus-within {
-  box-shadow:
-    var(--shadow-md),
-    0 0 0 1px color-mix(in oklch, var(--ring-focus) 20%, var(--border-subtle));
+  --composer-ring: 0 0 0 1px color-mix(in oklch, var(--ring-focus) 20%, var(--border-subtle));
 }
 
 .onboarding-practice-toolbar {
