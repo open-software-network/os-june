@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  depletedBalanceAction,
   depletedBalanceActionLabel,
+  isOnMaxPlan,
   shouldOpenPortalForDepletedBalance,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
@@ -160,6 +162,75 @@ describe("shouldBlockOnFunding", () => {
   });
 });
 
+describe("isOnMaxPlan", () => {
+  it("is true only for an active Max subscription", () => {
+    expect(
+      isOnMaxPlan({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active", plan: "max" },
+      }),
+    ).toBe(true);
+  });
+
+  it("treats a Pro slug and legacy (slug-less) rows as not Max", () => {
+    expect(
+      isOnMaxPlan({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active", plan: "pro" },
+      }),
+    ).toBe(false);
+    // Legacy subscription rows predate plan tiers and are all Pro.
+    expect(
+      isOnMaxPlan({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active" },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("depletedBalanceAction", () => {
+  it("subscribes unsubscribed users", () => {
+    expect(
+      depletedBalanceAction({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: false },
+      }),
+    ).toBe("subscribe");
+  });
+
+  it("upgrades Pro (and legacy) subscribers in place to Max", () => {
+    expect(
+      depletedBalanceAction({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active", plan: "pro" },
+      }),
+    ).toBe("upgrade_to_max");
+    expect(
+      depletedBalanceAction({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active" },
+      }),
+    ).toBe("upgrade_to_max");
+  });
+
+  it("tops up Max subscribers", () => {
+    expect(
+      depletedBalanceAction({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active", plan: "max" },
+      }),
+    ).toBe("top_up");
+  });
+});
+
 describe("depletedBalanceActionLabel", () => {
   it("asks unsubscribed users to upgrade", () => {
     expect(
@@ -171,12 +242,22 @@ describe("depletedBalanceActionLabel", () => {
     ).toBe("Upgrade");
   });
 
-  it("asks subscribed users to top up credits", () => {
+  it("asks Pro subscribers to upgrade to Max (only Max may buy credits)", () => {
     expect(
       depletedBalanceActionLabel({
         signedIn: true,
         configured: true,
-        subscription: { subscribed: true, status: "active" },
+        subscription: { subscribed: true, status: "active", plan: "pro" },
+      }),
+    ).toBe("Upgrade to Max");
+  });
+
+  it("asks Max subscribers to top up credits", () => {
+    expect(
+      depletedBalanceActionLabel({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active", plan: "max" },
       }),
     ).toBe("Top up credits");
   });
@@ -193,12 +274,22 @@ describe("shouldOpenPortalForDepletedBalance", () => {
     ).toBe(false);
   });
 
-  it("routes subscribed users to the account portal", () => {
+  it("keeps Pro subscribers off the portal (they upgrade in place)", () => {
     expect(
       shouldOpenPortalForDepletedBalance({
         signedIn: true,
         configured: true,
-        subscription: { subscribed: true, status: "active" },
+        subscription: { subscribed: true, status: "active", plan: "pro" },
+      }),
+    ).toBe(false);
+  });
+
+  it("routes Max subscribers to the account portal", () => {
+    expect(
+      shouldOpenPortalForDepletedBalance({
+        signedIn: true,
+        configured: true,
+        subscription: { subscribed: true, status: "active", plan: "max" },
       }),
     ).toBe(true);
   });
