@@ -429,6 +429,30 @@ describe("OnboardingFlow", () => {
       expect(
         screen.getByText("Record meetings from your microphone and turn them into notes."),
       ).toBeInTheDocument();
+      // Windows now ships dictation, so the welcome promises it.
+      expect(screen.getByText("Speak instead of type")).toBeInTheDocument();
+      expect(screen.getByText(/June turns your voice into polished writing/)).toBeInTheDocument();
+      // Meeting auto-capture and the agent remain macOS-only.
+      expect(screen.queryByText("Effortlessly capture meetings")).not.toBeInTheDocument();
+      expect(screen.queryByText("Chat and work with June")).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("does not promise dictation in the Linux welcome copy", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Linux x86_64",
+      "Mozilla/5.0 (X11; Linux x86_64)",
+    );
+    try {
+      render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
+
+      await screen.findByRole("heading", { name: "Welcome to June" });
+      expect(screen.getByText("Desktop notes for your work")).toBeInTheDocument();
+      expect(screen.getByText("Meeting notes from your mic")).toBeInTheDocument();
+      expect(screen.getByText("Private by default")).toBeInTheDocument();
+      // Dictation does not ship on Linux, so the welcome must not promise it.
       expect(screen.queryByText("Speak instead of type")).not.toBeInTheDocument();
       expect(
         screen.queryByText(/June turns your voice into polished writing/),

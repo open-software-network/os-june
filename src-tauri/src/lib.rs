@@ -4,6 +4,7 @@ pub mod audio;
 pub mod commands;
 pub mod db;
 pub mod dictation;
+pub mod dictation_windows;
 pub mod domain;
 pub mod hermes_bridge;
 pub mod june_api;

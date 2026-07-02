@@ -42,6 +42,14 @@ const EMAIL_APP_BUNDLE_IDS: &[&str] = &[
     "com.mimestream.Mimestream",
     "com.superhuman.electron",
 ];
+/// Native email clients by Windows executable name. The Windows helper reports
+/// the foreground executable as the paste target's identity (in the same
+/// `targetBundleIdentifier` field the macOS helper fills with a bundle id), so
+/// the email app-context mapping recognizes those executables too. Kept
+/// platform-neutral so the mapping is unit-testable on any host: a real macOS
+/// bundle id never matches an `.exe` and vice versa, so OR-ing this into the
+/// bundle check leaves macOS behavior unchanged.
+const EMAIL_APP_EXECUTABLES: &[&str] = &["outlook.exe", "olk.exe", "thunderbird.exe"];
 const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 const DICTATION_EVENT_LOG: &str = "dictation-events.log";
 
@@ -339,7 +347,9 @@ impl DictationShortcutSetting {
         if is_modifier_only_input(&self.code, &self.modifiers) {
             return DictationShortcutSetting::modifier_only(self.modifiers);
         }
-        let Some(key_code) = key_code_for_code(&self.code) else {
+        let Some(key_code) =
+            shortcut_key_code_for_platform(&self.code, cfg!(target_os = "windows"))
+        else {
             return default_shortcut_for_kind(kind);
         };
         if !self.modifiers.has_any() {
@@ -536,12 +546,13 @@ impl DictationShortcutInput {
             return Ok(DictationShortcutSetting::modifier_only(self.modifiers));
         }
 
-        let key_code = key_code_for_code(&self.code).ok_or_else(|| {
-            AppError::new(
-                "dictation_shortcut_unsupported",
-                "Shortcut must include a supported non-modifier key.",
-            )
-        })?;
+        let key_code = shortcut_key_code_for_platform(&self.code, cfg!(target_os = "windows"))
+            .ok_or_else(|| {
+                AppError::new(
+                    "dictation_shortcut_unsupported",
+                    "Shortcut must include a supported non-modifier key.",
+                )
+            })?;
 
         if !self.modifiers.has_any() {
             return Err(AppError::new(
@@ -638,6 +649,12 @@ pub fn setup(app: &mut tauri::App) {
         controller: Mutex::new(ShortcutActivationController::default()),
     });
 
+    // Windows runs the helper in-process rather than as a child. Initialize it
+    // before settings are applied so the shortcut/microphone commands below
+    // reach the live helper.
+    #[cfg(target_os = "windows")]
+    crate::dictation_windows::init(app.handle());
+
     let helper = spawn_helper(app.handle()).ok();
     app.manage(HelperState {
         process: Mutex::new(helper),
@@ -704,7 +721,7 @@ pub async fn delete_dictation_history_item(app: AppHandle, id: String) -> Result
 }
 
 #[tauri::command]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn set_dictation_shortcut(
     app: AppHandle,
     state: State<'_, DictationSettingsState>,
@@ -714,6 +731,13 @@ pub fn set_dictation_shortcut(
     shortcut: DictationShortcutInput,
 ) -> Result<DictationSettings, AppError> {
     let shortcut = shortcut.into_setting()?;
+    // The shared validation accepts any modifier combination (macOS can arm
+    // e.g. Shift-only chords through its event tap), but the Windows keyboard
+    // hook cannot. Reject at save time rather than silently saving a shortcut
+    // apply_set_shortcut would drop from the hook, leaving the settings pane
+    // showing a shortcut that never fires.
+    #[cfg(target_os = "windows")]
+    crate::dictation_windows::validate_shortcut_for_windows(&shortcut.code, &shortcut.modifiers)?;
     let current_settings = state
         .settings
         .lock()
@@ -745,7 +769,7 @@ pub fn set_dictation_shortcut(
 }
 
 #[tauri::command]
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn set_dictation_shortcut(
     kind: DictationShortcutKind,
     shortcut: DictationShortcutInput,
@@ -753,7 +777,7 @@ pub fn set_dictation_shortcut(
     let _ = (kind, shortcut);
     Err(AppError::new(
         "dictation_shortcut_unsupported",
-        "Dictation shortcuts are only supported on macOS.",
+        "Dictation shortcuts are not supported on this platform.",
     ))
 }
 
@@ -767,7 +791,9 @@ pub fn set_dictation_microphone(
     let settings = update_settings(&state, |settings| {
         settings.microphone = DictationMicrophoneSetting { id, name };
     })?;
-    #[cfg(not(target_os = "macos"))]
+    // Platforms with neither a child helper (macOS) nor the in-process helper
+    // (Windows) have no sink for the microphone setting; persist and return.
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     if helper_state
         .process
         .lock()
@@ -808,12 +834,14 @@ pub fn dictation_helper_command(
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
-    #[cfg(target_os = "macos")]
+    // macOS and Windows both drive the shared activation controller, so a stop
+    // or toggle command must reset it on either platform.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if helper_command_resets_shortcut_activation(&command) {
         reset_shortcut_activation(&app);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     if state
         .process
         .lock()
@@ -1370,6 +1398,8 @@ fn spawn_hud_hover_thread(app: AppHandle) {
 }
 
 pub fn stop_helper(app: &AppHandle) {
+    #[cfg(target_os = "windows")]
+    crate::dictation_windows::shutdown();
     let state = app.state::<HelperState>();
     // Mark the teardown as intentional before killing so the supervisor thread
     // (woken by the resulting stdout EOF) skips respawning instead of fighting
@@ -1395,6 +1425,25 @@ pub(crate) fn dictation_helper_pid(app: &AppHandle) -> Option<u32> {
 }
 
 fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Result<(), AppError> {
+    // Windows has no child helper process: the in-process helper twin owns
+    // capture, shortcuts and paste, so route the identical command protocol to
+    // it instead of a child's stdin.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = state;
+        crate::dictation_windows::dispatch(command)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        send_helper_command_to_process(state, command)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn send_helper_command_to_process(
+    state: &HelperState,
+    command: serde_json::Value,
+) -> Result<(), AppError> {
     let mut guard = state
         .process
         .lock()
@@ -1418,7 +1467,7 @@ fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Resul
         .map_err(|error| AppError::new("dictation_helper_write_failed", error.to_string()))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn handle_missing_helper_command(
     app: &AppHandle,
     command: &serde_json::Value,
@@ -1458,7 +1507,7 @@ fn handle_missing_helper_command(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn non_macos_permission_status_event() -> serde_json::Value {
     let (microphone, _) = crate::audio::capture::microphone_permission_state();
     serde_json::json!({
@@ -2212,6 +2261,14 @@ fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
     emit_dictation_event_value(app, event);
 }
 
+/// Feeds a structured helper event from the in-process Windows helper into the
+/// exact same ingestion path the macOS stdout reader uses, so shortcut
+/// handling, transcription and HUD/frontend routing stay shared.
+#[cfg(target_os = "windows")]
+pub(crate) fn ingest_helper_event(app: &AppHandle, event: serde_json::Value) {
+    handle_helper_event_line(app, event.to_string());
+}
+
 fn handle_helper_event_line(app: &AppHandle, line: String) {
     let event = serde_json::from_str::<serde_json::Value>(&line).ok();
     let event_type = event
@@ -2262,7 +2319,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let app_context = recording
         .target_bundle_id
         .as_deref()
-        .map(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
+        .map(|identity| is_email_paste_target(identity).then(|| APP_CONTEXT_EMAIL.to_string()))
         .unwrap_or_else(frontmost_app_context);
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
@@ -2366,6 +2423,18 @@ fn is_email_app_bundle(bundle_id: &str) -> bool {
     EMAIL_APP_BUNDLE_IDS
         .iter()
         .any(|known| bundle_id.eq_ignore_ascii_case(known))
+}
+
+fn is_email_app_executable(identity: &str) -> bool {
+    EMAIL_APP_EXECUTABLES
+        .iter()
+        .any(|known| identity.eq_ignore_ascii_case(known))
+}
+
+/// Whether the paste-target identity (a macOS bundle id or a Windows executable
+/// name) is a known native email client, so cleanup lays the text out for email.
+fn is_email_paste_target(identity: &str) -> bool {
+    is_email_app_bundle(identity) || is_email_app_executable(identity)
 }
 
 /// The app-context slug for the app the user is dictating into, read when
@@ -3549,18 +3618,18 @@ fn hotkey_ready_event(settings: &DictationSettings) -> serde_json::Value {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn initial_hotkey_event(settings: &DictationSettings) -> serde_json::Value {
     hotkey_ready_event(settings)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn initial_hotkey_event(_settings: &DictationSettings) -> serde_json::Value {
     serde_json::json!({
         "type": "hotkey_trigger_unavailable",
         "payload": {
             "reason": "unsupported",
-            "message": "Dictation shortcuts are only supported on macOS.",
+            "message": "Dictation shortcuts are not supported on this platform.",
         },
     })
 }
@@ -3579,6 +3648,25 @@ fn set_hotkey_status(state: &HotkeyStatus, event: serde_json::Value) {
     if let Ok(mut status) = state.event.lock() {
         *status = event;
     }
+}
+
+/// Resolve a shortcut's non-modifier key for the current platform. The shared
+/// table below is the macOS Carbon key-code map and predates Windows support,
+/// so it lacks keys the Windows hook can arm (e.g. F2-F12). On Windows, any
+/// key the hook's own mapping knows is accepted as a fallback, storing the
+/// Windows virtual key in `key_code` (the hook matches by `code`, so the
+/// numeric value is informational there). On macOS the fallback never runs,
+/// keeping validation byte-for-byte unchanged. Takes `windows` as a parameter
+/// (call sites pass `cfg!(target_os = "windows")`) so both branches are
+/// unit-testable on any host.
+fn shortcut_key_code_for_platform(code: &str, windows: bool) -> Option<u32> {
+    if let Some(key_code) = key_code_for_code(code) {
+        return Some(key_code);
+    }
+    if windows {
+        return crate::dictation_windows::vk_for_code(code).map(u32::from);
+    }
+    None
 }
 
 pub fn key_code_for_code(code: &str) -> Option<u32> {
@@ -3974,6 +4062,91 @@ mod tests {
         assert_eq!(shortcut.code, "KeyT");
         assert!(shortcut.modifiers.control);
         assert_eq!(shortcut.press_count, 1);
+    }
+
+    #[test]
+    fn windows_key_resolution_accepts_hook_armable_f_keys() {
+        // The shared table predates Windows support and lacks F2-F12, but the
+        // Windows hook can arm them (capture emits these codes), so the save
+        // path must resolve them on Windows.
+        assert_eq!(shortcut_key_code_for_platform("F7", true), Some(0x76));
+        assert_eq!(shortcut_key_code_for_platform("F2", true), Some(0x71));
+        // Keys in the shared table keep the shared value on Windows too.
+        assert_eq!(shortcut_key_code_for_platform("KeyD", true), Some(0x02));
+    }
+
+    #[test]
+    fn macos_key_resolution_is_unchanged() {
+        // macOS resolution must stay byte-for-byte what the shared table says:
+        // F1 resolves, F2-F12 stay rejected there today.
+        assert_eq!(shortcut_key_code_for_platform("F1", false), Some(0x7a));
+        assert_eq!(shortcut_key_code_for_platform("F7", false), None);
+        assert_eq!(shortcut_key_code_for_platform("KeyD", false), Some(0x02));
+    }
+
+    /// Pins today's macOS save behavior for an F-key chord: the shared table
+    /// has no F7, so into_setting rejects it (this test compiles the macOS
+    /// resolution path).
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn shortcut_input_f7_chord_is_still_rejected_on_macos() {
+        let error = DictationShortcutInput {
+            code: "F7".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Opt+F7".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting()
+        .expect_err("F7 has no macOS key code in the shared table");
+        assert_eq!(error.code, "dictation_shortcut_unsupported");
+    }
+
+    /// On Windows the same chord saves: capture emits F-key codes and the
+    /// hook can arm them, so into_setting must accept what capture produces.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shortcut_input_f7_chord_saves_on_windows() {
+        let shortcut = DictationShortcutInput {
+            code: "F7".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Alt+F7".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting()
+        .expect("F7 chord must save on Windows");
+        assert_eq!(shortcut.code, "F7");
+        assert_eq!(shortcut.key_code, 0x76);
+    }
+
+    #[test]
+    fn shortcut_input_still_accepts_shift_only_chords_for_the_shared_path() {
+        // The shared validation (macOS behavior) accepts any modifier,
+        // including Shift alone. The Windows save gate in
+        // set_dictation_shortcut (dictation_windows::
+        // validate_shortcut_for_windows) is layered on top of this and must
+        // not change what the shared path accepts.
+        let shortcut = DictationShortcutInput {
+            code: "KeyD".to_string(),
+            modifiers: DictationShortcutModifiers {
+                shift: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Shift+D".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting()
+        .expect("shift-only chord passes the shared validation");
+
+        assert_eq!(shortcut.code, "KeyD");
+        assert!(shortcut.modifiers.shift);
     }
 
     #[test]
@@ -4473,6 +4646,29 @@ mod tests {
         assert!(is_email_app_bundle("com.microsoft.Outlook"));
         assert!(!is_email_app_bundle("com.google.Chrome"));
         assert!(!is_email_app_bundle(""));
+    }
+
+    #[test]
+    fn email_app_executables_map_to_the_email_context() {
+        // Windows paste targets arrive as executable names.
+        assert!(is_email_app_executable("outlook.exe"));
+        assert!(is_email_app_executable("OUTLOOK.EXE"));
+        assert!(is_email_app_executable("olk.exe"));
+        assert!(is_email_app_executable("thunderbird.exe"));
+        assert!(!is_email_app_executable("chrome.exe"));
+        assert!(!is_email_app_executable(""));
+        // A macOS bundle id must never match the executable list and vice
+        // versa, so OR-ing the two leaves each platform's mapping intact.
+        assert!(!is_email_app_executable("com.apple.mail"));
+        assert!(!is_email_app_bundle("outlook.exe"));
+    }
+
+    #[test]
+    fn email_paste_target_recognizes_both_identities() {
+        assert!(is_email_paste_target("com.apple.mail"));
+        assert!(is_email_paste_target("outlook.exe"));
+        assert!(!is_email_paste_target("chrome.exe"));
+        assert!(!is_email_paste_target("com.google.Chrome"));
     }
 
     #[test]

@@ -33,7 +33,7 @@ import {
 } from "../../lib/tauri";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
-import { isMacLikePlatform } from "../../lib/platform";
+import { displayShortcutLabel, isDictationSupportedPlatform } from "../../lib/platform";
 
 const NO_DICTATIONS: DictationHistoryItemDto[] = [];
 
@@ -88,7 +88,7 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
   const [dictionaryCount, setDictionaryCount] = useState<number | null>(null);
   const [hintDismissed, setHintDismissed] = useState(readHintDismissed);
   const [pendingDelete, setPendingDelete] = useState<DictationHistoryItemDto | null>(null);
-  const dictationAvailable = isMacLikePlatform();
+  const dictationAvailable = isDictationSupportedPlatform();
 
   const loadHistory = useCallback(async () => {
     try {
@@ -149,8 +149,8 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
 
   const groups = useMemo(() => groupHistoryItems(filtered), [filtered]);
 
-  const pushToTalk = settings?.pushToTalkShortcut.label ?? "Ctrl+Opt+D";
-  const toggle = settings?.toggleShortcut.label ?? "Ctrl+Opt+T";
+  const pushToTalk = displayShortcutLabel(settings?.pushToTalkShortcut.label ?? "Ctrl+Opt+D");
+  const toggle = displayShortcutLabel(settings?.toggleShortcut.label ?? "Ctrl+Opt+T");
 
   // Show each optional feature only while it's still unconfigured, and only
   // once we know its state (avoids the card flashing in then vanishing). The
@@ -241,7 +241,9 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
           label={dictationAvailable ? "Start dictating" : "Dictation unavailable"}
           icon={<IconMicrophoneSparkleFilled size={28} />}
           title={
-            dictationAvailable ? "Start dictating anywhere" : "Dictation is only supported on macOS"
+            dictationAvailable
+              ? "Start dictating anywhere"
+              : "Dictation is not available on this device"
           }
           description={
             dictationAvailable

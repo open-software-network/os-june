@@ -1165,12 +1165,12 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
+      // Windows supports dictation, so the sign-in copy advertises it.
       expect(
         await screen.findByText(
-          "Record conversations and turn them into notes with your OpenSoftware account.",
+          "Record conversations, turn them into notes, and dictate with your OpenSoftware account.",
         ),
       ).toBeInTheDocument();
-      expect(screen.queryByText(/dictate with/)).not.toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 

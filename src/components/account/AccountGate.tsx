@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useState } from "react";
-import { isMacLikePlatform } from "../../lib/platform";
+import { isDictationSupportedPlatform } from "../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
@@ -13,7 +13,7 @@ type Props = {
 export function AccountGate({ account, loading, onAccountChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
-  const subtitle = isMacLikePlatform()
+  const subtitle = isDictationSupportedPlatform()
     ? "Record conversations, turn them into notes, and dictate with your OpenSoftware account."
     : "Record conversations and turn them into notes with your OpenSoftware account.";
 

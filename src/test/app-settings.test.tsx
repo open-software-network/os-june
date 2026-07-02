@@ -1504,9 +1504,13 @@ describe("AppSettings", () => {
         }),
       ).not.toBeInTheDocument();
 
+      // Windows supports global dictation shortcuts, so the shortcut rows are
+      // shown (the "unavailable" fallback is Linux-only now).
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
-      expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+      expect(screen.queryByText("Dictation shortcuts unavailable")).toBeNull();
+      expect(screen.getByText("Push to talk")).toBeInTheDocument();
+      expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Change" }).length).toBeGreaterThan(0);
     } finally {
       restoreNavigator();
     }

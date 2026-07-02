@@ -121,7 +121,7 @@ describe("DictationHistoryView", () => {
     await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
   });
 
-  it("does not advertise shortcut dictation on Windows", async () => {
+  it("advertises shortcut dictation on Windows with Windows modifier labels", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -134,7 +134,32 @@ describe("DictationHistoryView", () => {
 
       render(<DictationHistoryView />);
 
-      expect(await screen.findByText("Dictation is only supported on macOS")).toBeInTheDocument();
+      expect(await screen.findByText("Start dictating anywhere")).toBeInTheDocument();
+      expect(screen.queryByText("Dictation is not available on this device")).toBeNull();
+      // The macOS default labels ("Ctrl+Opt+T") render with Windows modifier
+      // names on Windows.
+      expect(screen.getByLabelText("Shortcut Ctrl+Alt+T")).toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("does not advertise shortcut dictation on Linux", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Linux x86_64",
+      "Mozilla/5.0 (X11; Linux x86_64)",
+    );
+    try {
+      mocks.listDictationHistory.mockResolvedValue({
+        retentionDays: 7,
+        items: [],
+      });
+
+      render(<DictationHistoryView />);
+
+      expect(
+        await screen.findByText("Dictation is not available on this device"),
+      ).toBeInTheDocument();
       expect(
         screen.getByText("Meeting notes still work with microphone recording on this device."),
       ).toBeInTheDocument();

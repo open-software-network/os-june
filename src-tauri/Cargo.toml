@@ -78,6 +78,20 @@ window-vibrancy = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# Already resolved transitively via cpal (WASAPI). Reused here for the
+# in-process dictation helper twin: global keyboard hook, foreground-window
+# tracking, clipboard, and synthesized Ctrl+V paste. Feature-gated to the exact
+# Win32 modules the helper touches.
+windows = { version = "0.54", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+] }
 
 [dev-dependencies]
 tempfile = "3.14"

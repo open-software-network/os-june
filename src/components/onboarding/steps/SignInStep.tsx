@@ -3,15 +3,18 @@ import { IconCalendar1 } from "central-icons/IconCalendar1";
 import { IconLock } from "central-icons/IconLock";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
-import { isMacLikePlatform } from "../../../lib/platform";
+import { isDictationSupportedPlatform, isMacLikePlatform } from "../../../lib/platform";
 import { juneOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 
 // macOS can introduce the full agent, dictation, and notes surface because the
-// release bundle includes the runtime and helpers. Windows narrows the welcome
-// promise below until its Hermes and dictation support is turnkey.
+// release bundle includes the runtime and helpers. Windows now ships dictation
+// too (via the in-process helper), so it promises notes and dictation and
+// narrows only the agent promise until Windows agent support is turnkey.
+// Other platforms (Linux) promise notes only: the dictation bullet is gated on
+// the same isDictationSupportedPlatform predicate the rest of the app uses.
 const JUNE_POINTS = [
   {
     icon: IconSparkle,
@@ -35,7 +38,7 @@ const JUNE_POINTS = [
   },
 ];
 
-const WINDOWS_JUNE_POINTS = [
+const NON_MAC_BASE_POINTS = [
   {
     icon: IconSparkle,
     title: "Desktop notes for your work",
@@ -46,8 +49,12 @@ const WINDOWS_JUNE_POINTS = [
     title: "Meeting notes from your mic",
     detail: "Record meetings from your microphone and turn them into notes.",
   },
-  JUNE_POINTS[3],
 ];
+
+// Dictation ("Speak instead of type") is shared with the macOS promise and
+// only shown where dictation actually ships (Windows today).
+const WINDOWS_JUNE_POINTS = [...NON_MAC_BASE_POINTS, JUNE_POINTS[1], JUNE_POINTS[3]];
+const LINUX_JUNE_POINTS = [...NON_MAC_BASE_POINTS, JUNE_POINTS[3]];
 
 /**
  * Step 1: welcome + sign-in, fused into one screen so the wizard frames the
@@ -67,7 +74,11 @@ export function SignInStep({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
   const isMac = isMacLikePlatform();
-  const points = isMac ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
+  const points = isMac
+    ? JUNE_POINTS
+    : isDictationSupportedPlatform()
+      ? WINDOWS_JUNE_POINTS
+      : LINUX_JUNE_POINTS;
 
   const cancelInFlight = useCallback(async () => {
     try {
