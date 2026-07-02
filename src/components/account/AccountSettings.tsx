@@ -179,9 +179,10 @@ export function BillingSettingsSection({
   // changes the live subscription, so refresh to reflect the new plan and its
   // freshly granted credits.
   async function handleChangePlan(plan: SubscriptionPlan) {
+    const planLabel = plan === "max" ? "Max" : "Pro";
     try {
       await osAccountsChangePlan(plan);
-      setBillingStatus("You are now on Max. Your new credits are ready.");
+      setBillingStatus(`You are now on ${planLabel}. Your new credits are ready.`);
       await onRefresh();
     } catch (error) {
       setBillingStatus(messageFromError(error));

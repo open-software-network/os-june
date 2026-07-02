@@ -18,6 +18,29 @@ export function errorCode(err: unknown): string | undefined {
   return undefined;
 }
 
+/** Whether an error means buying credits is gated behind the Max plan. Robust
+ * to every shape the gate can reach us in: the structured Rust AppError code
+ * (`top_up_requires_max`, mapped in os_accounts.rs from the accounts
+ * envelope), the raw numeric envelope code (3002) should a payload ever pass
+ * through unmapped, and the canonical message ("Buying credits requires the
+ * Max plan.") as a last resort. */
+export function isTopUpRequiresMaxError(err: unknown): boolean {
+  if (errorCode(err) === "top_up_requires_max") return true;
+  if (numericErrorCode(err) === 3002) return true;
+  return /requires the max plan/i.test(messageFromError(err));
+}
+
+/** Numeric error code from a raw accounts envelope (`error_code`) or any
+ * error object carrying a numeric code field, or undefined when absent. */
+function numericErrorCode(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const shape = err as { code?: unknown; error_code?: unknown; errorCode?: unknown };
+  for (const value of [shape.error_code, shape.errorCode, shape.code]) {
+    if (typeof value === "number") return value;
+  }
+  return undefined;
+}
+
 export function isHermesSessionsStartupRequestError(err: unknown) {
   return /error sending request for url \(http:\/\/127\.0\.0\.1:\d+\/api\/sessions(?:\?|[)/])/i.test(
     messageFromError(err),

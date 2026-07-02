@@ -220,9 +220,9 @@ import {
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
 import {
-  errorCode,
   isHermesServerError,
   isHermesSessionsStartupRequestError,
+  isTopUpRequiresMaxError,
   messageFromError,
 } from "../../lib/errors";
 import { withTimeout } from "../../lib/async-timeout";
@@ -1506,7 +1506,7 @@ export function AgentWorkspace({
     void Promise.resolve(result).catch((err: unknown) => {
       // A top-up that the backend gates behind Max must never surface as a raw
       // error; point the user at the upgrade path instead.
-      if (errorCode(err) === "top_up_requires_max") {
+      if (isTopUpRequiresMaxError(err)) {
         setError("Upgrade to Max to keep using credits.");
         return;
       }

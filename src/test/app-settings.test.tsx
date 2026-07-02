@@ -416,7 +416,11 @@ describe("AppSettings", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
-    mocks.osAccountsChangePlan.mockResolvedValue({ subscribed: true, plan: "max", status: "active" });
+    mocks.osAccountsChangePlan.mockResolvedValue({
+      subscribed: true,
+      plan: "max",
+      status: "active",
+    });
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });

@@ -54,6 +54,12 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const ERR_TOKEN_EXPIRED: i64 = 3001;
+/// Numeric envelope code OS Accounts returns when a non-Max user hits a
+/// top-up endpoint ("Buying credits requires the Max plan."). Mapped to a
+/// stable string code so the frontend can branch on it without matching
+/// message text.
+const ERR_TOP_UP_REQUIRES_MAX: i64 = 3002;
+const TOP_UP_REQUIRES_MAX_CODE: &str = "top_up_requires_max";
 /// Error code for a refresh that failed transiently (OS Accounts unreachable or
 /// wobbling), as opposed to a definitive rejection of the refresh token. A
 /// transient failure must NOT be treated as a sign-out: the user is still
@@ -1325,10 +1331,7 @@ async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> R
             access = refresh_locked_with_retry(cfg).await?;
             continue;
         }
-        return Err(AppError::new(
-            "request_failed",
-            accounts_request_failed_message(resp.message),
-        ));
+        return Err(accounts_request_error(resp.error_code, resp.message));
     }
     Err(AppError::new("unauthorized", "Not signed in."))
 }
@@ -1364,10 +1367,7 @@ async fn authed_post<T: for<'de> Deserialize<'de>>(
             access = refresh_locked_with_retry(cfg).await?;
             continue;
         }
-        return Err(AppError::new(
-            "request_failed",
-            accounts_request_failed_message(resp.message),
-        ));
+        return Err(accounts_request_error(resp.error_code, resp.message));
     }
     Err(AppError::new("unauthorized", "Not signed in."))
 }
@@ -1403,12 +1403,25 @@ async fn authed_patch<T: for<'de> Deserialize<'de>>(
             access = refresh_locked_with_retry(cfg).await?;
             continue;
         }
-        return Err(AppError::new(
-            "request_failed",
-            accounts_request_failed_message(resp.message),
-        ));
+        return Err(accounts_request_error(resp.error_code, resp.message));
     }
     Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+/// Map a failed accounts envelope to a structured AppError. Most failures keep
+/// the generic "request_failed" code, but envelope codes the UI must branch on
+/// (today: the Max top-up gate, 3002) become stable string codes so the
+/// frontend never has to match on message text. Extend the match as OS
+/// Accounts assigns numeric codes to more billing failures (plan-change codes
+/// are expected next).
+fn accounts_request_error(error_code: Option<i64>, message: Option<String>) -> AppError {
+    match error_code {
+        Some(ERR_TOP_UP_REQUIRES_MAX) => AppError::new(
+            TOP_UP_REQUIRES_MAX_CODE,
+            message.unwrap_or_else(|| "Buying credits requires the Max plan.".to_string()),
+        ),
+        _ => AppError::new("request_failed", accounts_request_failed_message(message)),
+    }
 }
 
 fn accounts_request_failed_message(message: Option<String>) -> String {
@@ -1808,6 +1821,32 @@ mod tests {
             change_plan_request("max"),
             serde_json::json!({ "plan": "max" })
         );
+    }
+
+    #[test]
+    fn accounts_error_maps_the_numeric_top_up_gate_to_a_stable_code() {
+        let error = accounts_request_error(
+            Some(ERR_TOP_UP_REQUIRES_MAX),
+            Some("Buying credits requires the Max plan.".to_string()),
+        );
+        assert_eq!(error.code, TOP_UP_REQUIRES_MAX_CODE);
+        assert_eq!(error.message, "Buying credits requires the Max plan.");
+
+        // A gate envelope without a message still carries the canonical copy.
+        let error = accounts_request_error(Some(ERR_TOP_UP_REQUIRES_MAX), None);
+        assert_eq!(error.code, TOP_UP_REQUIRES_MAX_CODE);
+        assert_eq!(error.message, "Buying credits requires the Max plan.");
+    }
+
+    #[test]
+    fn accounts_error_keeps_other_failures_generic() {
+        let error = accounts_request_error(Some(4000), Some("nope".to_string()));
+        assert_eq!(error.code, "request_failed");
+        assert_eq!(error.message, "nope");
+
+        let error = accounts_request_error(None, None);
+        assert_eq!(error.code, "request_failed");
+        assert_eq!(error.message, "OS Accounts request failed.");
     }
 
     #[test]

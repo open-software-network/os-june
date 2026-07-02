@@ -13,6 +13,16 @@ type Props = {
 
 const POLL_INTERVAL_MS = 10_000;
 
+type GateCopy = {
+  title: string;
+  subtitle: string;
+  cta: string;
+  /** Copy for the waiting-on-the-browser panel. Absent on the in-place Pro
+   * upgrade path, which never opens the browser. */
+  waiting?: string;
+  reopen?: string;
+};
+
 export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const [openedPortal, setOpenedPortal] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -34,7 +44,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const proUpgradeRequired = topUpRequired && !isOnMaxPlan(account);
   const maxTopUpRequired = topUpRequired && isOnMaxPlan(account);
 
-  const copy = billingRecovery
+  const copy: GateCopy = billingRecovery
     ? {
         title: "Update billing",
         subtitle: "Your payment needs attention. Update billing to keep using June.",
@@ -44,12 +54,14 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
       }
     : proUpgradeRequired
       ? {
+          // No waiting/reopen copy: the in-place upgrade never opens the
+          // browser (openedPortal stays false), and after a failure the
+          // primary CTA itself stays enabled with the error below, so it is
+          // the retry affordance.
           title: "Upgrade to Max",
           subtitle:
             "You have used your Pro credits for this cycle. Upgrade to Max for 5x the monthly usage.",
           cta: "Upgrade to Max",
-          waiting: "Waiting for your upgrade",
-          reopen: "Try again",
         }
       : maxTopUpRequired
         ? {
