@@ -161,6 +161,7 @@ import {
   isHermesFeatureSupported,
   isSensitiveKey,
   type HermesMode,
+  type JuneHermesEvent,
 } from "../../lib/hermes-control-plane";
 import {
   attachImageToSession,
@@ -276,7 +277,6 @@ import {
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
-  type LiveHermesEvent,
 } from "../../lib/agent-chat-runtime";
 import { toolActivitySentence } from "../../lib/agent-tool-labels";
 import {
@@ -891,7 +891,7 @@ type AgentSessionContinuity = {
   workingSessionIds: string[];
   waitingSessionIds: string[];
   runtimeSessionIds: Record<string, string>;
-  liveEvents: Record<string, LiveHermesEvent[]>;
+  liveEvents: Record<string, JuneHermesEvent[]>;
   titleOverrides: Record<string, string>;
   activeToolCallsBySession: Record<string, Record<string, number>>;
   pendingIssueReports: Record<string, PendingIssueReport>;
@@ -1050,7 +1050,7 @@ function captureSessionContinuity(state: {
   workingSessionIds: Set<string>;
   waitingSessionIds: Set<string>;
   runtimeSessionIds: Record<string, string>;
-  liveEvents: Record<string, LiveHermesEvent[]>;
+  liveEvents: Record<string, JuneHermesEvent[]>;
   titleOverrides: Record<string, string>;
   activeToolCallsBySession: Record<string, Record<string, number>>;
   pendingIssueReports: Record<string, PendingIssueReport>;
@@ -1507,7 +1507,7 @@ export function AgentWorkspace({
   const sessionMessagesFetchSeqRef = useRef<Map<string, number>>(new Map());
   const sessionMessagesAppliedSeqRef = useRef<Map<string, number>>(new Map());
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
-  const [liveEvents, setLiveEvents] = useState<Record<string, LiveHermesEvent[]>>(
+  const [liveEvents, setLiveEvents] = useState<Record<string, JuneHermesEvent[]>>(
     () => continuity?.liveEvents ?? {},
   );
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
@@ -1653,7 +1653,7 @@ export function AgentWorkspace({
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
-  const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>(liveEvents);
+  const liveEventsRef = useRef<Record<string, JuneHermesEvent[]>>(liveEvents);
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
   // the fetch *started*) — the scroll-settling logic needs the landing.
@@ -4298,13 +4298,9 @@ export function AgentWorkspace({
     const removeListener = gateway.onEvent((event) => {
       if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
-      // Run every live frame through the typed control plane alongside the
-      // existing string-based handling below. This is the first consumer of
-      // the classifier: it doesn't drive rendering yet (later features migrate
-      // families onto it incrementally), but it proves the live path is typed
-      // and surfaces any raw type June can't yet model. Unknown frames classify
-      // as `unsupported` rather than being dropped, so a Hermes upgrade that
-      // adds an event shows up in dev instead of silently doing nothing.
+      // Classify the raw frame once at ingress. Stores and transcript rendering
+      // consume the typed event; the raw frame remains only for trace capture
+      // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
@@ -4349,7 +4345,7 @@ export function AgentWorkspace({
       hermesArtifactStore.record(classified, hermesModeFor(storedSessionId));
       const nextSessionEvents = [
         ...(liveEventsRef.current[storedSessionId] ?? []),
-        liveEvent,
+        classified,
       ].slice(-200);
       liveEventsRef.current = {
         ...liveEventsRef.current,
@@ -5175,11 +5171,14 @@ export function AgentWorkspace({
         session_id: sessionId,
         choice,
       });
-      pushLiveEvent(liveEventKey, {
-        type: "approval.response",
-        session_id: sessionId,
-        payload: { request_id: requestId, choice },
-      });
+      pushLiveEvent(
+        liveEventKey,
+        classifyOptimisticLiveEvent({
+          type: "approval.response",
+          session_id: sessionId,
+          payload: { request_id: requestId, choice },
+        }),
+      );
       // Feature 04: the user just answered this approval — clear its global
       // "Needs you" row immediately (the response itself is the resolution).
       pendingActionStore.resolveRequest(sessionId, requestId);
@@ -5233,10 +5232,13 @@ export function AgentWorkspace({
         request_id: requestId,
         answer,
       });
-      pushLiveEvent(liveEventKey, {
-        type: "clarify.response",
-        payload: { request_id: requestId, answer },
-      });
+      pushLiveEvent(
+        liveEventKey,
+        classifyOptimisticLiveEvent({
+          type: "clarify.response",
+          payload: { request_id: requestId, answer },
+        }),
+      );
       // Feature 04: the user answered the clarification — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
       setError(null);
@@ -5283,11 +5285,14 @@ export function AgentWorkspace({
         approved,
         mode,
       });
-      pushLiveEvent(liveEventKey, {
-        type: "sudo.response",
-        session_id: sessionId,
-        payload: { request_id: requestId, granted: approved, mode },
-      });
+      pushLiveEvent(
+        liveEventKey,
+        classifyOptimisticLiveEvent({
+          type: "sudo.response",
+          session_id: sessionId,
+          payload: { request_id: requestId, granted: approved, mode },
+        }),
+      );
       // Feature 04: the user resolved the sudo prompt — clear its pending record.
       pendingActionStore.resolveRequest(sessionId, requestId);
       setError(null);
@@ -5328,11 +5333,14 @@ export function AgentWorkspace({
         requestId,
         value,
       });
-      pushLiveEvent(liveEventKey, {
-        type: "secret.response",
-        session_id: sessionId,
-        payload: { request_id: requestId, provided: true },
-      });
+      pushLiveEvent(
+        liveEventKey,
+        classifyOptimisticLiveEvent({
+          type: "secret.response",
+          session_id: sessionId,
+          payload: { request_id: requestId, provided: true },
+        }),
+      );
       // Feature 04: the user provided the secret — clear its pending record.
       pendingActionStore.resolveRequest(sessionId, requestId);
       setError(null);
@@ -5461,9 +5469,15 @@ export function AgentWorkspace({
     }
   }
 
-  function pushLiveEvent(key: string, event: HermesGatewayEvent) {
-    const liveEvent = { ...event, receivedAt: new Date().toISOString() };
-    const nextEvents = [...(liveEventsRef.current[key] ?? []), liveEvent].slice(-200);
+  function classifyOptimisticLiveEvent(event: HermesGatewayEvent): JuneHermesEvent {
+    return classifyHermesEvent({
+      ...event,
+      receivedAt: new Date().toISOString(),
+    } as HermesGatewayEvent & { receivedAt: string });
+  }
+
+  function pushLiveEvent(key: string, event: JuneHermesEvent) {
+    const nextEvents = [...(liveEventsRef.current[key] ?? []), event].slice(-200);
     liveEventsRef.current = {
       ...liveEventsRef.current,
       [key]: nextEvents,
@@ -11825,7 +11839,7 @@ function sessionHasActiveWork(
   sessionId: string,
   workingSessionIds: Set<string>,
   waitingSessionIds: Set<string>,
-  liveEvents: Record<string, LiveHermesEvent[]>,
+  liveEvents: Record<string, JuneHermesEvent[]>,
 ) {
   return (
     workingSessionIds.has(sessionId) ||
