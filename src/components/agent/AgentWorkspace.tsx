@@ -158,6 +158,7 @@ import {
   classifyHermesEvent,
   createHermesMethods,
   hermesModeFor,
+  isTerminalHermesEvent,
   isHermesFeatureSupported,
   isSensitiveKey,
   type HermesMode,
@@ -182,7 +183,7 @@ import {
 import { normalizeSteerText, steeringLiveEvent } from "../../lib/hermes-session-steer";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
-import { hermesActivityStore } from "../../lib/hermes-activity-store";
+import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
 import {
   hermesArtifactStore,
   // The store's record shape collides by name with this file's local
@@ -762,8 +763,6 @@ function reportableAgentErrorOptions(
   return { ...options, issueReport };
 }
 
-type HermesToolEventPhase = "start" | "progress" | "complete";
-
 type AgentWorkspaceError = {
   message: string;
   /** Null means the error belongs to the no-session workspace surface. */
@@ -874,26 +873,25 @@ type AgentWorkspaceProps = {
 // Mid-run continuity across remounts. While June is working, a session has
 // state that exists nowhere outside this component: the optimistic list entry
 // (title + preview), the just-sent user bubble Hermes hasn't persisted yet,
-// the working/waiting flags that drive the reconcile poll, the stored→runtime
-// session mapping, the buffered live events, the title override, and any
-// queued issue report draft, the review-ready report waiting for the user to
-// send, and the delayed diagnosis refresh that makes the final June answer
-// available to the report payload.
+// the stored→runtime session mapping, the buffered live events, the title
+// override, and any queued issue report draft, the review-ready report waiting
+// for the user to send, and the delayed diagnosis refresh that makes the final
+// June answer available to the report payload. Working/waiting/tool-call
+// display state lives in the module-global activity store, which survives this
+// workspace unmount.
 // Navigating away (e.g. to Settings) unmounts the workspace; without this
 // snapshot the remount restores only the selected id from localStorage, and a
 // session whose first turn hasn't persisted renders as an empty "Untitled
-// session" that nothing ever polls back to life. Captured on unmount for the
-// sessions with active work, hydrated by the next mount's state initializers
-// so the working poll picks the run straight back up.
+// session" that nothing ever polls back to life. Captured on unmount for
+// sessions with activity-store work or local pending/report state, hydrated by
+// the next mount's state initializers so the working poll picks the run
+// straight back up.
 type AgentSessionContinuity = {
   sessionItems: HermesSessionInfo[];
   pendingMessages: Record<string, HermesSessionMessage[]>;
-  workingSessionIds: string[];
-  waitingSessionIds: string[];
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, JuneHermesEvent[]>;
   titleOverrides: Record<string, string>;
-  activeToolCallsBySession: Record<string, Record<string, number>>;
   pendingIssueReports: Record<string, PendingIssueReport>;
   reviewableIssueReports: Record<string, PendingIssueReport>;
   diagnosisRefreshIssueReportSessionIds: string[];
@@ -1015,50 +1013,32 @@ function removeStoredNewSessionDraft() {
   }
 }
 
+function activeHermesActivitySessionIds() {
+  const activeIds = new Set<string>();
+  for (const record of hermesActivityStore.getRecords()) {
+    if (record.phase === "running" || record.phase === "waiting" || record.phase === "background") {
+      activeIds.add(record.sessionId);
+    }
+  }
+  return activeIds;
+}
+
 function shouldOpenNewSessionOnMount() {
   return hasPendingNewSessionRequest() || hasNewSessionComposerDraft();
-}
-
-function activeToolCallsRecord(
-  activeToolCallsBySession: Map<string, Map<string, number>>,
-): Record<string, Record<string, number>> {
-  return Object.fromEntries(
-    Array.from(activeToolCallsBySession.entries())
-      .filter(([, tools]) => tools.size > 0)
-      .map(([sessionId, tools]) => [sessionId, Object.fromEntries(tools)]),
-  );
-}
-
-function activeToolCallsMap(
-  activeToolCallsBySession: Record<string, Record<string, number>> | undefined,
-) {
-  return new Map(
-    Object.entries(activeToolCallsBySession ?? {}).map(([sessionId, tools]) => [
-      sessionId,
-      new Map(
-        Object.entries(tools).filter(
-          (entry): entry is [string, number] => Number.isFinite(entry[1]) && entry[1] > 0,
-        ),
-      ),
-    ]),
-  );
 }
 
 function captureSessionContinuity(state: {
   sessionItems: HermesSessionInfo[];
   pendingMessages: Record<string, HermesSessionMessage[]>;
-  workingSessionIds: Set<string>;
-  waitingSessionIds: Set<string>;
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, JuneHermesEvent[]>;
   titleOverrides: Record<string, string>;
-  activeToolCallsBySession: Record<string, Record<string, number>>;
   pendingIssueReports: Record<string, PendingIssueReport>;
   reviewableIssueReports: Record<string, PendingIssueReport>;
   diagnosisRefreshIssueReportSessionIds: Set<string>;
   submittingIssueReportSessionIds: Set<string>;
 }): AgentSessionContinuity | null {
-  const activeIds = new Set([...state.workingSessionIds, ...state.waitingSessionIds]);
+  const activeIds = activeHermesActivitySessionIds();
   for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
     if (pending.length > 0) activeIds.add(sessionId);
   }
@@ -1074,21 +1054,15 @@ function captureSessionContinuity(state: {
   for (const sessionId of state.submittingIssueReportSessionIds) {
     activeIds.add(sessionId);
   }
-  for (const sessionId of Object.keys(state.activeToolCallsBySession)) {
-    activeIds.add(sessionId);
-  }
   if (activeIds.size === 0) return null;
   const pick = <T,>(record: Record<string, T>) =>
     Object.fromEntries(Object.entries(record).filter(([sessionId]) => activeIds.has(sessionId)));
   return {
     sessionItems: state.sessionItems.filter((session) => activeIds.has(session.id)),
     pendingMessages: pick(state.pendingMessages),
-    workingSessionIds: [...state.workingSessionIds],
-    waitingSessionIds: [...state.waitingSessionIds],
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
-    activeToolCallsBySession: pick(state.activeToolCallsBySession),
     pendingIssueReports: pick(state.pendingIssueReports),
     reviewableIssueReports: pick(state.reviewableIssueReports),
     diagnosisRefreshIssueReportSessionIds: [...state.diagnosisRefreshIssueReportSessionIds].filter(
@@ -1192,12 +1166,9 @@ function updateContinuityAfterIssueReportDelivery(detail: IssueReportDeliverySet
   sessionContinuity = captureSessionContinuity({
     sessionItems: sessionContinuity.sessionItems,
     pendingMessages: sessionContinuity.pendingMessages,
-    workingSessionIds: new Set(sessionContinuity.workingSessionIds),
-    waitingSessionIds: new Set(sessionContinuity.waitingSessionIds),
     runtimeSessionIds: sessionContinuity.runtimeSessionIds,
     liveEvents: sessionContinuity.liveEvents,
     titleOverrides: sessionContinuity.titleOverrides,
-    activeToolCallsBySession: sessionContinuity.activeToolCallsBySession,
     pendingIssueReports,
     reviewableIssueReports,
     diagnosisRefreshIssueReportSessionIds,
@@ -1227,12 +1198,9 @@ function updateContinuityAfterIssueReportFollowUpSubmitFailed(
   sessionContinuity = captureSessionContinuity({
     sessionItems: sessionContinuity.sessionItems,
     pendingMessages: sessionContinuity.pendingMessages,
-    workingSessionIds: new Set(sessionContinuity.workingSessionIds),
-    waitingSessionIds: new Set(sessionContinuity.waitingSessionIds),
     runtimeSessionIds: sessionContinuity.runtimeSessionIds,
     liveEvents: sessionContinuity.liveEvents,
     titleOverrides: sessionContinuity.titleOverrides,
-    activeToolCallsBySession: sessionContinuity.activeToolCallsBySession,
     pendingIssueReports,
     reviewableIssueReports,
     diagnosisRefreshIssueReportSessionIds: new Set(
@@ -1310,6 +1278,9 @@ export function resetAgentSessionContinuity() {
   sessionContinuity = null;
   agentComposerDrafts.clear();
   removeStoredNewSessionDraft();
+  for (const record of hermesActivityStore.getRecords()) {
+    hermesActivityStore.clearSession(record.sessionId);
+  }
 }
 
 /** The catalog id that represents the current global generation selection:
@@ -1512,13 +1483,22 @@ export function AgentWorkspace({
   );
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(() => new Set());
-  const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
-    () => new Set(continuity?.workingSessionIds),
+  const activityStoreVersion = useSyncExternalStore(
+    hermesActivityStore.subscribe,
+    hermesActivityStore.getVersion,
+    hermesActivityStore.getVersion,
   );
+  const activityRecords = useMemo(
+    () => hermesActivityStore.getRecords(),
+    // `activityStoreVersion` is the change signal; the read returns live rows.
+    [activityStoreVersion],
+  );
+  const activityLevels = useMemo(
+    () => projectAgentActivityLevels(activityRecords),
+    [activityRecords],
+  );
+  const { toolCallSessionIds, waitingSessionIds, workingSessionIds } = activityLevels;
   const workingSessionIdsRef = useRef<Set<string>>(workingSessionIds);
-  const [toolCallSessionIds, setToolCallSessionIds] = useState<Set<string>>(
-    () => new Set(Object.keys(continuity?.activeToolCallsBySession ?? {})),
-  );
   const toolCallSessionIdsRef = useRef<Set<string>>(toolCallSessionIds);
   // Steers we've sent that Hermes may not have delivered yet. Hermes only
   // injects a steer into the next tool result, so a no-tool turn drops it; we
@@ -1527,12 +1507,6 @@ export function AgentWorkspace({
   const pendingSteerBySessionIdRef = useRef<
     Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
   >({});
-  const activeToolCallsBySessionRef = useRef<Map<string, Map<string, number>>>(
-    activeToolCallsMap(continuity?.activeToolCallsBySession),
-  );
-  const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
-    () => new Set(continuity?.waitingSessionIds),
-  );
   const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<Record<string, string>>(
     () => continuity?.runtimeSessionIds ?? {},
@@ -1833,7 +1807,7 @@ export function AgentWorkspace({
   }, [runtimeSessionIds]);
 
   useEffect(() => {
-    const restoredSessionIds = continuity?.workingSessionIds ?? [];
+    const restoredSessionIds = Array.from(workingSessionIdsRef.current);
     if (!restoredSessionIds.length) return;
     let cancelled = false;
 
@@ -1881,136 +1855,50 @@ export function AgentWorkspace({
     workingSessionIds,
   ]);
 
-  const setSessionToolCallActive = useCallback((sessionId: string, active: boolean) => {
-    setToolCallSessionIds((current) => {
-      const next = new Set(current);
-      if (active) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      toolCallSessionIdsRef.current = next;
-      return next;
-    });
-  }, []);
-
-  function clearSessionToolCalls(sessionId: string) {
-    activeToolCallsBySessionRef.current.delete(sessionId);
-    setSessionToolCallActive(sessionId, false);
+  function recordSessionRunningActivity(sessionId: string) {
+    hermesActivityStore.record(
+      { kind: "lifecycle", sessionId, status: "running", receivedAt: new Date().toISOString() },
+      hermesModeFor(sessionId),
+    );
   }
 
-  function updateSessionToolCallActivity(
-    sessionId: string,
-    event: HermesGatewayEvent,
-    phase: HermesToolEventPhase,
-  ) {
-    const eventKey = toolEventActivityKey(event);
-    const current = new Map(activeToolCallsBySessionRef.current.get(sessionId) ?? []);
-
-    if (phase === "progress" && eventKey === undefined) {
-      return current.size > 0;
-    }
-
-    const key = eventKey ?? "__anonymous_tool__";
-
-    if (phase === "start") {
-      current.set(key, (current.get(key) ?? 0) + 1);
-    } else if (phase === "progress") {
-      if (!current.has(key)) current.set(key, 1);
-    } else {
-      const count = current.get(key) ?? 0;
-      if (count > 1) {
-        current.set(key, count - 1);
-      } else {
-        current.delete(key);
-      }
-    }
-
-    if (current.size > 0) {
-      activeToolCallsBySessionRef.current.set(sessionId, current);
-      setSessionToolCallActive(sessionId, true);
-      return true;
-    }
-
-    activeToolCallsBySessionRef.current.delete(sessionId);
-    setSessionToolCallActive(sessionId, false);
-    return false;
+  function recordSessionErrorActivity(sessionId: string, message: string) {
+    hermesActivityStore.record(
+      { kind: "error", sessionId, message, receivedAt: new Date().toISOString() },
+      hermesModeFor(sessionId),
+    );
   }
 
-  const setSessionWorking = useCallback((sessionId: string, working: boolean) => {
-    setWorkingSessionIds((current) => {
-      const next = new Set(current);
-      if (working) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      workingSessionIdsRef.current = next;
-      return next;
-    });
+  const clearSessionActivity = useCallback((sessionId: string, status = "completed") => {
+    hermesActivityStore.record(
+      { kind: "lifecycle", sessionId, status, receivedAt: new Date().toISOString() },
+      hermesModeFor(sessionId),
+    );
+    return agentActivityCountsFromStore();
   }, []);
-
-  const setSessionWaiting = useCallback((sessionId: string, waiting: boolean) => {
-    setWaitingSessionIds((current) => {
-      const next = new Set(current);
-      if (waiting) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      waitingSessionIdsRef.current = next;
-      return next;
-    });
-  }, []);
-
-  const clearSessionActivity = useCallback(
-    (sessionId: string) => {
-      clearSessionToolCalls(sessionId);
-
-      const nextWorking = new Set(workingSessionIdsRef.current);
-      nextWorking.delete(sessionId);
-      workingSessionIdsRef.current = nextWorking;
-      setWorkingSessionIds(nextWorking);
-
-      const nextWaiting = new Set(waitingSessionIdsRef.current);
-      nextWaiting.delete(sessionId);
-      waitingSessionIdsRef.current = nextWaiting;
-      setWaitingSessionIds(nextWaiting);
-
-      return {
-        activeCount: nextWorking.size + nextWaiting.size,
-        needsUserCount: nextWaiting.size,
-      };
-    },
-    [setSessionToolCallActive],
-  );
 
   // Shared teardown for a session that is going away: its messages, pending
-  // sends, working/waiting flags, live gateway listener, and buffered live
-  // events. Both delete paths (sidebar event and session-bar menu) run this so
-  // neither leaves a phantom "working" session with a leaked listener behind.
-  const scrubHermesSessionState = useCallback(
-    (sessionId: string) => {
-      setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
-      setPendingHermesMessages((current) => {
-        const next = omitRecordKey(current, sessionId);
-        pendingHermesMessagesRef.current = next;
-        return next;
-      });
-      clearSessionActivity(sessionId);
-      // Feature 11: a deleted session has no activity to show, so drop its row
-      // from the activity drawer's store as well.
-      hermesActivityStore.clearSession(sessionId);
-      // Feature 14: likewise drop its artifact timeline.
-      hermesArtifactStore.clearSession(sessionId);
-      sessionGatewayUnlistenRef.current.get(sessionId)?.();
-      liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
-      setLiveEvents(liveEventsRef.current);
-      // A deleted session must not be the restore target on the next mount.
-      forgetLastOpenSessionId(sessionId);
-    },
-    [clearSessionActivity],
-  );
+  // sends, activity-store row, live gateway listener, and buffered live events.
+  // Both delete paths (sidebar event and session-bar menu) run this so neither
+  // leaves a phantom "working" session with a leaked listener behind.
+  const scrubHermesSessionState = useCallback((sessionId: string) => {
+    setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
+    setPendingHermesMessages((current) => {
+      const next = omitRecordKey(current, sessionId);
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    // Feature 11: a deleted session has no activity to show, so drop its row
+    // from the activity drawer's store as well.
+    hermesActivityStore.clearSession(sessionId);
+    // Feature 14: likewise drop its artifact timeline.
+    hermesArtifactStore.clearSession(sessionId);
+    sessionGatewayUnlistenRef.current.get(sessionId)?.();
+    liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
+    setLiveEvents(liveEventsRef.current);
+    // A deleted session must not be the restore target on the next mount.
+    forgetLastOpenSessionId(sessionId);
+  }, []);
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId),
@@ -2240,16 +2128,6 @@ export function AgentWorkspace({
   // this flag back to true to restore it.
   const ACTIVITY_DRAWER_ENABLED = false;
   const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
-  const activityStoreVersion = useSyncExternalStore(
-    hermesActivityStore.subscribe,
-    hermesActivityStore.getVersion,
-    hermesActivityStore.getVersion,
-  );
-  const activityRecords = useMemo(
-    () => hermesActivityStore.getRecords(),
-    // `activityStoreVersion` is the change signal; the read returns live rows.
-    [activityStoreVersion],
-  );
   // The store only knows the count once a session has reported activity; treat a
   // never-touched store as "loading" so the very first paint shows a spinner
   // copy rather than the empty state flashing before any event lands.
@@ -3045,7 +2923,7 @@ export function AgentWorkspace({
           // latest message is the user's, so re-arm working state — the
           // working-gated poll below picks the session back up and
           // reconciles it from persisted messages.
-          setSessionWorking(selectedHermesSessionId, true);
+          recordSessionRunningActivity(selectedHermesSessionId);
         }
         if (sessionHasAssistantAfterLatestUser(combined)) {
           promotePendingIssueReportToReview(selectedHermesSessionId, {
@@ -3148,12 +3026,9 @@ export function AgentWorkspace({
       sessionContinuity = captureSessionContinuity({
         sessionItems: hermesSessionItemsRef.current,
         pendingMessages: pendingHermesMessagesRef.current,
-        workingSessionIds: workingSessionIdsRef.current,
-        waitingSessionIds: waitingSessionIdsRef.current,
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
-        activeToolCallsBySession: activeToolCallsRecord(activeToolCallsBySessionRef.current),
         pendingIssueReports: Object.fromEntries(pendingIssueReportsRef.current),
         reviewableIssueReports: reviewableIssueReportsRef.current,
         diagnosisRefreshIssueReportSessionIds: diagnosisRefreshIssueReportSessionIdsRef.current,
@@ -4167,8 +4042,7 @@ export function AgentWorkspace({
       pendingHermesMessagesRef.current = next;
       return next;
     });
-    setSessionWorking(sessionId, true);
-    setSessionWaiting(sessionId, false);
+    recordSessionRunningActivity(sessionId);
     dispatchAgentSessionStatus({
       title,
       prompt: displayContent,
@@ -4223,18 +4097,8 @@ export function AgentWorkspace({
     });
     liveEventsRef.current = moveRecordKey(liveEventsRef.current, fromSessionId, toSessionId);
     setLiveEvents(liveEventsRef.current);
-    setWorkingSessionIds((current) => {
-      const next = new Set(current);
-      if (next.delete(fromSessionId)) next.add(toSessionId);
-      workingSessionIdsRef.current = next;
-      return next;
-    });
-    setWaitingSessionIds((current) => {
-      const next = new Set(current);
-      if (next.delete(fromSessionId)) next.add(toSessionId);
-      waitingSessionIdsRef.current = next;
-      return next;
-    });
+    hermesActivityStore.clearSession(fromSessionId);
+    recordSessionRunningActivity(toSessionId);
     selectedHermesSessionIdRef.current = toSessionId;
     setSelectedHermesSessionId(toSessionId);
   }
@@ -4261,18 +4125,7 @@ export function AgentWorkspace({
     for (const id of ids) nextLiveEvents = omitRecordKey(nextLiveEvents, id);
     liveEventsRef.current = nextLiveEvents;
     setLiveEvents(nextLiveEvents);
-    setWorkingSessionIds((current) => {
-      const next = new Set(current);
-      for (const id of ids) next.delete(id);
-      workingSessionIdsRef.current = next;
-      return next;
-    });
-    setWaitingSessionIds((current) => {
-      const next = new Set(current);
-      for (const id of ids) next.delete(id);
-      waitingSessionIdsRef.current = next;
-      return next;
-    });
+    for (const id of ids) hermesActivityStore.clearSession(id);
     const selectedSessionId = selectedHermesSessionIdRef.current;
     if (selectedSessionId && ids.has(selectedSessionId)) {
       selectedHermesSessionIdRef.current = undefined;
@@ -4301,7 +4154,7 @@ export function AgentWorkspace({
       // Classify the raw frame once at ingress. Stores and transcript rendering
       // consume the typed event; the raw frame remains only for trace capture
       // and the Stage B status helpers below.
-      const classified = classifyHermesEvent(liveEvent);
+      const classified = withStoredHermesSessionId(classifyHermesEvent(liveEvent), storedSessionId);
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -4352,8 +4205,10 @@ export function AgentWorkspace({
         [storedSessionId]: nextSessionEvents,
       };
       setLiveEvents(liveEventsRef.current);
-      const toolEventPhase = hermesToolEventPhase(event.type);
+      const toolEventPhase = classified.kind === "tool" ? classified.phase : undefined;
       if (toolEventPhase === "complete") {
+        // The classifier treats any tool.*complete* subtype as complete, a
+        // superset of the old exact tool.complete drain trigger.
         // Hermes drains every accepted steer into the tool result it just
         // produced (run_agent.steer). Mark the pending entries drained rather
         // than removing them here: whether a steer was ACCEPTED is settled
@@ -4367,21 +4222,10 @@ export function AgentWorkspace({
           for (const entry of list) entry.toolDrained = true;
         }
       }
-      const hasActiveToolCalls =
-        toolEventPhase !== undefined
-          ? updateSessionToolCallActivity(storedSessionId, event, toolEventPhase)
-          : toolCallSessionIdsRef.current.has(storedSessionId);
-      const status = agentStatusFromHermesEvent(event);
-      if (status === "waitingForUser") {
-        setSessionWorking(storedSessionId, false);
-        setSessionWaiting(storedSessionId, true);
-      } else if (status === "running") {
-        setSessionWaiting(storedSessionId, false);
-        setSessionWorking(storedSessionId, true);
-      }
+      const status = agentStatusFromHermesEvent(classified);
       const activityCounts =
         status === "completed" || status === "failed" || status === "cancelled"
-          ? clearSessionActivity(storedSessionId)
+          ? agentActivityCountsFromStore()
           : undefined;
       if (activityCounts) {
         // Feature 04: the session reached a terminal state (completed, a
@@ -4396,11 +4240,11 @@ export function AgentWorkspace({
           sessionId: storedSessionId,
           title: sessionDisplayTitle,
           status,
-          summary: agentStatusSummaryFromHermesEvent(event, status),
+          summary: agentStatusSummaryFromHermesEvent(classified, status),
           ...activityCounts,
         });
       }
-      if (isTerminalHermesEvent(event.type)) {
+      if (isTerminalHermesEvent(classified)) {
         unlisten();
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
@@ -4736,8 +4580,7 @@ export function AgentWorkspace({
     // the model is never called and no "working" loader competes with the
     // image's own in-thread loader.
     if (options?.skipPrompt) return storedSessionId;
-    setSessionWorking(storedSessionId, true);
-    setSessionWaiting(storedSessionId, false);
+    recordSessionRunningActivity(storedSessionId);
     dispatchAgentSessionStatus({
       sessionId: storedSessionId,
       title: sessionDisplayTitle,
@@ -4800,8 +4643,7 @@ export function AgentWorkspace({
         throw err;
       }
       sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
-      setSessionWorking(storedSessionId, false);
-      setSessionWaiting(storedSessionId, false);
+      recordSessionErrorActivity(storedSessionId, messageFromError(err));
       dispatchAgentSessionStatus({
         sessionId: storedSessionId,
         title: sessionDisplayTitle,
@@ -5476,6 +5318,13 @@ export function AgentWorkspace({
     } as HermesGatewayEvent & { receivedAt: string });
   }
 
+  function withStoredHermesSessionId(
+    event: JuneHermesEvent,
+    storedSessionId: string,
+  ): JuneHermesEvent {
+    return { ...event, sessionId: storedSessionId } as JuneHermesEvent;
+  }
+
   function pushLiveEvent(key: string, event: JuneHermesEvent) {
     const nextEvents = [...(liveEventsRef.current[key] ?? []), event].slice(-200);
     liveEventsRef.current = {
@@ -5723,7 +5572,7 @@ export function AgentWorkspace({
   }
 
   // Stops a running June turn: interrupts the runtime session over the
-  // gateway, then clears the local working/waiting flags regardless — the
+  // gateway, then records a terminal activity-store level regardless — the
   // user asked for it to stop, so the UI must not stay "thinking" even when
   // the RPC fails (gateway drop, runtime session already gone).
   async function stopHermesSession(sessionId: string) {
@@ -5744,15 +5593,7 @@ export function AgentWorkspace({
     // too -- otherwise a steer typed-then-stopped lingers and could auto-submit
     // as a follow-up after a later run in the same session.
     delete pendingSteerBySessionIdRef.current[sessionId];
-    const activityCounts = clearSessionActivity(sessionId);
-    // Feature 11: the per-session listener is gone, so no terminal frame will
-    // reach the activity store to retire this row. Record a synthetic terminal
-    // lifecycle so the drawer flips the session out of "running" the instant
-    // the user clicks stop (the row persists, now reading as complete).
-    hermesActivityStore.record(
-      { kind: "lifecycle", sessionId, status: "cancelled", receivedAt: new Date().toISOString() },
-      hermesModeFor(sessionId),
-    );
+    const activityCounts = clearSessionActivity(sessionId, "cancelled");
     dispatchAgentSessionStatus({
       sessionId,
       title:
@@ -5921,8 +5762,8 @@ export function AgentWorkspace({
 
   // Drops a deleted session from local state. Removing it from items fires
   // the sessions-changed effect, which syncs the sidebar; the shared scrub
-  // clears messages, pending sends, working/waiting flags, and live events so
-  // a running session doesn't linger as phantom "working" work.
+  // clears messages, pending sends, activity-store state, and live events so a
+  // running session doesn't linger as phantom "working" work.
   function removeHermesSessionLocally(sessionId: string, selectNext = true) {
     setHermesSessionItems((current) => {
       const next = current.filter((session) => session.id !== sessionId);
@@ -11388,8 +11229,11 @@ function renderInlineMarkdown(
   return nodes;
 }
 
-function eventText(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
+function payloadText(payloadValue: unknown) {
+  const payload =
+    payloadValue && typeof payloadValue === "object" && !Array.isArray(payloadValue)
+      ? (payloadValue as Record<string, unknown>)
+      : undefined;
   if (!payload) return "";
   for (const key of [
     "text",
@@ -11848,80 +11692,76 @@ function sessionHasActiveWork(
   );
 }
 
-function isTerminalHermesEvent(type: string) {
-  const normalized = type.toLowerCase();
-  return (
-    normalized === "error" ||
-    normalized === "message.complete" ||
-    normalized === "message.completed" ||
-    normalized === "turn.complete" ||
-    normalized === "turn.completed" ||
-    normalized === "session.complete" ||
-    normalized === "session.completed" ||
-    normalized === "background.complete" ||
-    normalized === "background.completed"
-  );
-}
+type AgentActivityLevelProjection = {
+  workingSessionIds: Set<string>;
+  waitingSessionIds: Set<string>;
+  toolCallSessionIds: Set<string>;
+};
 
-function hermesToolEventPhase(type: string): HermesToolEventPhase | undefined {
-  const normalized = type.toLowerCase();
-  if (normalized === "tool.complete") return "complete";
-  if (normalized === "tool.start") return "start";
-  if (normalized === "tool.progress") return "progress";
-  return undefined;
-}
-
-function toolEventActivityKey(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
-  return (
-    stringValue(payload?.tool_id) ??
-    stringValue(payload?.tool_call_id) ??
-    stringValue(payload?.call_id) ??
-    stringValue(payload?.id) ??
-    stringValue(payload?.request_id)
-  );
-}
-
-function agentStatusFromHermesEvent(event: HermesGatewayEvent): AgentSessionStatusKind | undefined {
-  if (event.type === "error") return "failed";
-  if (event.type === "clarify.request" || event.type === "approval.request") {
-    return "waitingForUser";
+function projectAgentActivityLevels(records: AgentActivityRecord[]): AgentActivityLevelProjection {
+  const workingSessionIds = new Set<string>();
+  const waitingSessionIds = new Set<string>();
+  const toolCallSessionIds = new Set<string>();
+  for (const record of records) {
+    if (record.phase === "running" || record.phase === "background") {
+      workingSessionIds.add(record.sessionId);
+    } else if (record.phase === "waiting") {
+      waitingSessionIds.add(record.sessionId);
+    }
+    if (record.currentTool) {
+      toolCallSessionIds.add(record.sessionId);
+    }
   }
-  if (event.type === "clarify.response" || event.type === "approval.response") {
-    return "running";
-  }
-  if (isTerminalHermesEvent(event.type)) return "completed";
+  return { toolCallSessionIds, waitingSessionIds, workingSessionIds };
+}
+
+function agentActivityCountsFromStore() {
+  const projection = projectAgentActivityLevels(hermesActivityStore.getRecords());
+  return {
+    activeCount: projection.workingSessionIds.size + projection.waitingSessionIds.size,
+    needsUserCount: projection.waitingSessionIds.size,
+  };
+}
+
+function lifecycleStatusLooksRunning(event: Extract<JuneHermesEvent, { kind: "lifecycle" }>) {
+  return event.rawType === "status.update";
+}
+
+function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusKind | undefined {
+  if (event.kind === "error") return "failed";
+  if (event.kind === "pending_action") return "waitingForUser";
+  if (event.kind === "pending_action_resolution") return "running";
+  if (isTerminalHermesEvent(event)) return "completed";
   if (
-    event.type === "message.start" ||
-    event.type === "thinking.delta" ||
-    event.type === "reasoning.delta" ||
-    event.type === "status.update" ||
-    event.type.startsWith("tool.")
+    event.kind === "tool" ||
+    event.kind === "reasoning" ||
+    // Only a turn START flips status (delta === undefined). Text deltas never
+    // re-dispatched status on the raw path either — per-chunk dispatch would
+    // churn app state on every streamed token.
+    (event.kind === "transcript" && !event.complete && event.delta === undefined) ||
+    (event.kind === "lifecycle" && lifecycleStatusLooksRunning(event))
   ) {
     return "running";
   }
   return undefined;
 }
 
-function agentStatusSummaryFromHermesEvent(
-  event: HermesGatewayEvent,
-  status: AgentSessionStatusKind,
-) {
+function agentStatusSummaryFromHermesEvent(event: JuneHermesEvent, status: AgentSessionStatusKind) {
   if (status === "waitingForUser") {
-    return event.type === "approval.request" ? "June needs approval." : "June has a question.";
+    if (event.kind !== "pending_action") return "June has a question.";
+    return event.action.kind === "clarify" ? "June has a question." : "June needs approval.";
   }
   if (status === "completed") return "June finished.";
-  if (status === "failed") return eventText(event) || "June hit a problem.";
-  if (event.type === "status.update") {
-    return eventText(event) || "June is working.";
+  if (status === "failed") {
+    return event.kind === "error" ? event.message || "June hit a problem." : "June hit a problem.";
   }
-  if (event.type.startsWith("tool.")) {
-    const payload = event.payload as Record<string, unknown> | undefined;
-    const name =
-      stringValue(payload?.name) ?? stringValue(payload?.tool_name) ?? stringValue(payload?.tool);
-    return toolActivitySentence(name, payload);
+  if (event.kind === "lifecycle") {
+    return payloadText(event.payload) || "June is working.";
   }
-  if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
+  if (event.kind === "tool") {
+    return toolActivitySentence(event.name, event.sanitizedPayload);
+  }
+  if (event.kind === "reasoning") {
     return "Thinking.";
   }
   return "June is working.";

@@ -31,6 +31,7 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     case "message.start":
     case "message.delta":
     case "message.complete":
+    case "message.completed":
       return classifyTranscript(type, sessionId, payload, receivedAt);
 
     case "thinking.delta":
@@ -85,6 +86,7 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     return {
       kind: "lifecycle",
       sessionId,
+      rawType: type,
       status: lifecycleStatus(type, payload),
       payload: payload ? sanitizePayload(payload) : undefined,
       receivedAt,
@@ -106,7 +108,7 @@ function classifyTranscript(
   payload: RawHermesPayload | undefined,
   receivedAt: string,
 ): JuneHermesEvent {
-  const complete = type === "message.complete";
+  const complete = type === "message.complete" || type === "message.completed";
   const delta =
     type === "message.delta" ? rawDeltaText(payload) : complete ? eventText(payload) : undefined;
   const failed = complete && stringValue(payload?.status)?.toLowerCase() === "error";
@@ -358,6 +360,12 @@ const LIFECYCLE_TYPES = new Set([
   "session.start",
   "session.complete",
   "session.completed",
+  // Workspace terminal detection predates the union; these raw frames are
+  // lifecycle-flavored terminals even though they are not session.* names.
+  "turn.complete",
+  "turn.completed",
+  "background.complete",
+  "background.completed",
 ]);
 
 function isLifecycleType(type: string): boolean {
