@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: production-desktop-windows
@@ -100,17 +101,57 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Windows packaging tools
+      - name: Install Windows packaging and signing tools
         shell: pwsh
         run: |
           choco install nsis 7zip -y --no-progress
           "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+          $nuget = Join-Path $env:RUNNER_TEMP "nuget.exe"
+          Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile $nuget
+
+          $sdkRoot = Join-Path $env:RUNNER_TEMP "windows-sdk-build-tools"
+          & $nuget install Microsoft.Windows.SDK.BuildTools -x -OutputDirectory $sdkRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install Microsoft.Windows.SDK.BuildTools."
+          }
+          $signTool = Get-ChildItem -Path $sdkRoot -Filter "signtool.exe" -Recurse -File |
+            Sort-Object `
+              @{ Expression = { if ($_.FullName -match "\\x64\\signtool\.exe$") { 0 } else { 1 } } },
+              FullName |
+            Select-Object -First 1
+          if ($null -eq $signTool) {
+            throw "signtool.exe was not found in Microsoft.Windows.SDK.BuildTools."
+          }
+          "WINDOWS_SIGNTOOL_PATH=$($signTool.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $artifactClientRoot = Join-Path $env:RUNNER_TEMP "artifact-signing-client"
+          & $nuget install Microsoft.ArtifactSigning.Client -x -OutputDirectory $artifactClientRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install Microsoft.ArtifactSigning.Client."
+          }
+          $dlib = Get-ChildItem -Path $artifactClientRoot -Filter "Azure.CodeSigning.Dlib.dll" -Recurse -File |
+            Sort-Object `
+              @{ Expression = { if ($_.FullName -match "\\x64\\Azure\.CodeSigning\.Dlib\.dll$") { 0 } else { 1 } } },
+              FullName |
+            Select-Object -First 1
+          if ($null -eq $dlib) {
+            throw "Azure.CodeSigning.Dlib.dll was not found in Microsoft.ArtifactSigning.Client."
+          }
+          "ARTIFACT_SIGNING_DLIB_PATH=$($dlib.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Validate release secrets
+        id: signing
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
           RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -121,8 +162,6 @@ jobs:
         run: |
           $missing = 0
           $required = @(
-            "WINDOWS_CERTIFICATE",
-            "WINDOWS_CERTIFICATE_PASSWORD",
             "TAURI_SIGNING_PRIVATE_KEY",
             "RELEASE_APP_ID",
             "RELEASE_APP_PRIVATE_KEY",
@@ -140,7 +179,44 @@ jobs:
             }
           }
 
+          $pfxNames = @("WINDOWS_CERTIFICATE", "WINDOWS_CERTIFICATE_PASSWORD")
+          $artifactNames = @(
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "ARTIFACT_SIGNING_ENDPOINT",
+            "ARTIFACT_SIGNING_ACCOUNT_NAME",
+            "ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME"
+          )
+          $pfxPresent = @($pfxNames | Where-Object { ![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          $artifactPresent = @($artifactNames | Where-Object { ![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+
+          if ($pfxPresent.Count -eq $pfxNames.Count -and $artifactPresent.Count -eq 0) {
+            "WINDOWS_SIGNING_MODE=pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "mode=pfx" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } elseif ($artifactPresent.Count -eq $artifactNames.Count -and $pfxPresent.Count -eq 0) {
+            "WINDOWS_SIGNING_MODE=artifact" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "mode=artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            Write-Host "::error::Configure either WINDOWS_CERTIFICATE/WINDOWS_CERTIFICATE_PASSWORD or all Azure Artifact Signing secrets, but not a partial mix."
+            foreach ($name in ($pfxNames + $artifactNames)) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ([string]::IsNullOrWhiteSpace($value)) {
+                Write-Host "::notice::$name is not set."
+              }
+            }
+            $missing = 1
+          }
+
           exit $missing
+
+      - name: Azure login for Artifact Signing
+        if: steps.signing.outputs.mode == 'artifact'
+        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a # v3.0.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Stamp clean release version
         shell: pwsh
@@ -174,6 +250,7 @@ jobs:
           "RELEASE_MANIFEST_PATH=$manifestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Write Windows signing certificate
+        if: steps.signing.outputs.mode == 'pfx'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -196,6 +273,9 @@ jobs:
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: |
           $binaries = Get-ChildItem ".tauri-hermes/hermes" -Recurse -File |
             Where-Object { $_.Extension -in @(".exe", ".dll", ".pyd") }
@@ -221,6 +301,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: pnpm tauri:build
 
       - name: Verify Windows signatures and payload
