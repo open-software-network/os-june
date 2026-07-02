@@ -123,6 +123,14 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       const frame = frameRef.current;
       if (!frame || !nextEditor || nextEditor.isDestroyed) return;
       const scroller = nextEditor.view.dom;
+      // A range selection paints a full-width highlight, and the edge fades
+      // shave it — which reads as the selection being clipped, not as content
+      // melting out of view. Drop the fades until the selection collapses.
+      if (!nextEditor.state.selection.empty) {
+        delete frame.dataset.fadeTop;
+        delete frame.dataset.fadeBottom;
+        return;
+      }
       const overflow = scroller.scrollHeight - scroller.clientHeight > 1;
       const atTop = scroller.scrollTop <= 1;
       const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
@@ -170,6 +178,23 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           "aria-label": "Message June",
           "aria-multiline": "true",
         },
+        handleScrollToSelection: (view) => {
+          // ProseMirror's own scrollIntoView walks every scrollable ancestor,
+          // and the composer is a DOM child of the chat scroller
+          // (.agent-scroll) — so growing the draft (Shift+Enter, paste)
+          // dragged the conversation behind the fixed box. Scroll only the
+          // editor's own scroller and stop the walk.
+          const scroller = view.dom;
+          const caret = view.coordsAtPos(view.state.selection.head);
+          const box = scroller.getBoundingClientRect();
+          const margin = 6; // the editor's own vertical padding
+          if (caret.top < box.top + margin) {
+            scroller.scrollTop -= box.top + margin - caret.top;
+          } else if (caret.bottom > box.bottom - margin) {
+            scroller.scrollTop += caret.bottom - (box.bottom - margin);
+          }
+          return true;
+        },
         handleKeyDown: (_view, event) => {
           if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
             return false;
@@ -193,6 +218,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           serializePlainText(editor.state.doc),
           categoryFromDoc(editor.state.doc),
         );
+        requestAnimationFrame(() => updateScrollFades(editor));
+      },
+      onSelectionUpdate: ({ editor }) => {
         requestAnimationFrame(() => updateScrollFades(editor));
       },
     });
