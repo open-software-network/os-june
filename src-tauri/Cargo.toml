@@ -78,13 +78,19 @@ window-vibrancy = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 # Meeting detection enumerates active WASAPI capture sessions (see
-# meeting_detection.rs). Keep the feature set minimal: WASAPI session APIs,
-# COM bootstrap, base handles, and pid -> executable name resolution.
+# meeting_detection.rs). Dictation (dictation/win.rs) adds the low-level
+# keyboard hook + message pump (WindowsAndMessaging), synthetic Ctrl+V and
+# key-state queries (Input_KeyboardAndMouse), and the clipboard round-trip
+# (DataExchange + Memory). Keep the feature set minimal.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Media_Audio",
     "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
