@@ -60,6 +60,18 @@ const ERR_TOKEN_EXPIRED: i64 = 3001;
 /// message text.
 const ERR_TOP_UP_REQUIRES_MAX: i64 = 3002;
 const TOP_UP_REQUIRES_MAX_CODE: &str = "top_up_requires_max";
+/// Numeric envelope codes for PATCH /billing/subscription (in-place plan
+/// change). 4201 reuses the accounts API's generic unprocessable code and
+/// 9001 its not-implemented code; on this endpoint they mean the plan slug
+/// was unknown / the plan is not enabled on the deployment.
+const ERR_SUBSCRIPTION_REQUIRED: i64 = 4002;
+const ERR_ALREADY_ON_PLAN: i64 = 4003;
+const ERR_UNKNOWN_PLAN: i64 = 4201;
+const ERR_PLAN_NOT_ENABLED: i64 = 9001;
+const SUBSCRIPTION_REQUIRED_CODE: &str = "subscription_required";
+const ALREADY_ON_PLAN_CODE: &str = "already_on_plan";
+const UNKNOWN_PLAN_CODE: &str = "unknown_plan";
+const PLAN_NOT_ENABLED_CODE: &str = "plan_not_enabled";
 /// Error code for a refresh that failed transiently (OS Accounts unreachable or
 /// wobbling), as opposed to a definitive rejection of the refresh token. A
 /// transient failure must NOT be treated as a sign-out: the user is still
@@ -132,6 +144,12 @@ struct SubscriptionWire {
     /// Absent on accounts APIs that don't expose it yet; the UI falls back to
     /// a pinned default.
     trial_period_days: Option<u32>,
+    /// Plan a downgrade is scheduled to switch to at the period end (additive,
+    /// plan-change endpoint only). Absent on older accounts APIs.
+    #[serde(default)]
+    scheduled_plan: Option<String>,
+    #[serde(default)]
+    scheduled_plan_credits: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -197,6 +215,12 @@ pub struct AccountSubscription {
     pub current_period_end: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trial_period_days: Option<u32>,
+    /// Plan a scheduled downgrade switches to at the period end (additive on
+    /// the plan-change endpoint). None everywhere else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_plan_credits: Option<i64>,
 }
 
 #[derive(Serialize, Default)]
@@ -277,6 +301,8 @@ impl From<SubscriptionWire> for AccountSubscription {
             trial_end: w.trial_end,
             current_period_end: w.current_period_end,
             trial_period_days: w.trial_period_days,
+            scheduled_plan: w.scheduled_plan,
+            scheduled_plan_credits: w.scheduled_plan_credits,
         }
     }
 }
@@ -417,6 +443,8 @@ fn local_dev_account_status() -> AccountStatus {
             trial_end: None,
             current_period_end: None,
             trial_period_days: None,
+            scheduled_plan: None,
+            scheduled_plan_credits: None,
         }),
         portal_url: None,
     }
@@ -1410,15 +1438,36 @@ async fn authed_patch<T: for<'de> Deserialize<'de>>(
 
 /// Map a failed accounts envelope to a structured AppError. Most failures keep
 /// the generic "request_failed" code, but envelope codes the UI must branch on
-/// (today: the Max top-up gate, 3002) become stable string codes so the
-/// frontend never has to match on message text. Extend the match as OS
-/// Accounts assigns numeric codes to more billing failures (plan-change codes
-/// are expected next).
+/// (the Max top-up gate and the plan-change rejections) become stable string
+/// codes so the frontend never has to match on message text. Canonical-copy
+/// fallbacks cover envelopes that omit the message.
 fn accounts_request_error(error_code: Option<i64>, message: Option<String>) -> AppError {
+    let stable = |code: &str, fallback: &str, message: Option<String>| {
+        AppError::new(code, message.unwrap_or_else(|| fallback.to_string()))
+    };
     match error_code {
-        Some(ERR_TOP_UP_REQUIRES_MAX) => AppError::new(
+        Some(ERR_TOP_UP_REQUIRES_MAX) => stable(
             TOP_UP_REQUIRES_MAX_CODE,
-            message.unwrap_or_else(|| "Buying credits requires the Max plan.".to_string()),
+            "Buying credits requires the Max plan.",
+            message,
+        ),
+        Some(ERR_SUBSCRIPTION_REQUIRED) => stable(
+            SUBSCRIPTION_REQUIRED_CODE,
+            "You need an active subscription to change plans.",
+            message,
+        ),
+        Some(ERR_ALREADY_ON_PLAN) => stable(
+            ALREADY_ON_PLAN_CODE,
+            "You are already on this plan.",
+            message,
+        ),
+        Some(ERR_UNKNOWN_PLAN) => {
+            stable(UNKNOWN_PLAN_CODE, "That plan is not recognized.", message)
+        }
+        Some(ERR_PLAN_NOT_ENABLED) => stable(
+            PLAN_NOT_ENABLED_CODE,
+            "That plan is not available yet.",
+            message,
         ),
         _ => AppError::new("request_failed", accounts_request_failed_message(message)),
     }
@@ -1850,6 +1899,46 @@ mod tests {
     }
 
     #[test]
+    fn accounts_error_maps_the_plan_change_codes_to_stable_identities() {
+        let cases: [(i64, &str); 4] = [
+            (ERR_SUBSCRIPTION_REQUIRED, SUBSCRIPTION_REQUIRED_CODE),
+            (ERR_ALREADY_ON_PLAN, ALREADY_ON_PLAN_CODE),
+            (ERR_UNKNOWN_PLAN, UNKNOWN_PLAN_CODE),
+            (ERR_PLAN_NOT_ENABLED, PLAN_NOT_ENABLED_CODE),
+        ];
+        for (numeric, stable) in cases {
+            // The server's message wins when present...
+            let error = accounts_request_error(Some(numeric), Some("server copy".to_string()));
+            assert_eq!(error.code, stable);
+            assert_eq!(error.message, "server copy");
+            // ...and a message-less envelope still carries canonical copy.
+            let error = accounts_request_error(Some(numeric), None);
+            assert_eq!(error.code, stable);
+            assert!(!error.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn plan_change_canonical_fallback_copy_is_user_facing() {
+        assert_eq!(
+            accounts_request_error(Some(ERR_SUBSCRIPTION_REQUIRED), None).message,
+            "You need an active subscription to change plans."
+        );
+        assert_eq!(
+            accounts_request_error(Some(ERR_ALREADY_ON_PLAN), None).message,
+            "You are already on this plan."
+        );
+        assert_eq!(
+            accounts_request_error(Some(ERR_UNKNOWN_PLAN), None).message,
+            "That plan is not recognized."
+        );
+        assert_eq!(
+            accounts_request_error(Some(ERR_PLAN_NOT_ENABLED), None).message,
+            "That plan is not available yet."
+        );
+    }
+
+    #[test]
     fn normalized_plan_trims_and_rejects_blanks() {
         assert_eq!(normalized_plan("  max  "), Some("max"));
         assert_eq!(normalized_plan("pro"), Some("pro"));
@@ -1867,6 +1956,8 @@ mod tests {
             trial_end: None,
             current_period_end: Some("2026-08-01T00:00:00Z".to_string()),
             trial_period_days: None,
+            scheduled_plan: Some("pro".to_string()),
+            scheduled_plan_credits: Some(10_000),
         };
 
         let subscription = AccountSubscription::from(wire);
@@ -1879,6 +1970,21 @@ mod tests {
             subscription.current_period_end.as_deref(),
             Some("2026-08-01T00:00:00Z")
         );
+        assert_eq!(subscription.scheduled_plan.as_deref(), Some("pro"));
+        assert_eq!(subscription.scheduled_plan_credits, Some(10_000));
+    }
+
+    #[test]
+    fn subscription_wire_tolerates_payloads_without_scheduled_fields() {
+        let subscription: SubscriptionWire = serde_json::from_value(serde_json::json!({
+            "subscribed": true,
+            "status": "active",
+            "plan": "pro",
+        }))
+        .expect("older payload without scheduled fields still parses");
+
+        assert!(subscription.scheduled_plan.is_none());
+        assert!(subscription.scheduled_plan_credits.is_none());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
 import { hasLiveSubscription } from "../../lib/account-gate";
+import { errorCode } from "../../lib/errors";
 import {
   BILLING_DEMO_FIXTURES,
   BILLING_DEMO_ORDER,
@@ -185,6 +186,21 @@ export function BillingSettingsSection({
       setBillingStatus(`You are now on ${planLabel}. Your new credits are ready.`);
       await onRefresh();
     } catch (error) {
+      const code = errorCode(error);
+      if (code === "already_on_plan") {
+        // Benign: the snapshot was stale and the subscription is already on
+        // the requested plan. Refresh to show the current plan, not an error.
+        setBillingStatus(`You are already on ${planLabel}.`);
+        await onRefresh();
+        return;
+      }
+      if (code === "subscription_required") {
+        // No active subscription server-side: refresh so the card falls back
+        // to the subscribe CTAs.
+        setBillingStatus(messageFromError(error));
+        await onRefresh();
+        return;
+      }
       setBillingStatus(messageFromError(error));
     }
   }

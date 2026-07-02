@@ -873,6 +873,39 @@ describe("AppSettings", () => {
     await waitFor(() => expect(onAccountRefresh).toHaveBeenCalled());
   });
 
+  it("treats already_on_plan as a benign refresh, not an error", async () => {
+    const user = userEvent.setup();
+    const onAccountRefresh = vi.fn(async () => undefined);
+    mocks.osAccountsChangePlan.mockRejectedValueOnce({
+      code: "already_on_plan",
+      message: "You are already on this plan.",
+    });
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+          subscription: { subscribed: true, status: "active", plan: "pro" },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={onAccountRefresh}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+
+    // Benign copy plus a refresh so the card shows the server's current plan.
+    expect(await screen.findByText("You are already on Max.")).toBeInTheDocument();
+    await waitFor(() => expect(onAccountRefresh).toHaveBeenCalled());
+    expect(screen.queryByText("You are already on this plan.")).toBeNull();
+  });
+
   it("shows Max subscribers only billing management, no upgrade path", async () => {
     const user = userEvent.setup();
     render(

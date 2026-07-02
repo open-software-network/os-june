@@ -505,10 +505,11 @@ export function App() {
   const handleTopUp = useCallback(() => {
     // Tier-aware: Max tops up, Pro upgrades in place to Max, Free subscribes.
     // changed_plan grants credits immediately with no browser round trip, so
-    // refresh to lift the funding gate. upgrade_required means the backend
-    // gated a top-up behind Max (our snapshot was stale): refresh so the
-    // depleted-balance surfaces re-render as the upgrade-to-Max prompt and the
-    // user chooses explicitly; no raw error, and never an automatic purchase.
+    // refresh to lift the funding gate. upgrade_required / subscribe_required
+    // mean the server proved our snapshot stale (top-up gated behind Max, or
+    // no active subscription): refresh so the depleted-balance surfaces
+    // re-render as the right prompt and the user chooses explicitly; no raw
+    // error, and never an automatic purchase.
     runDepletedBalanceAction(account)
       .then((outcome) => {
         if (outcome !== "opened_browser") void refreshAccount();

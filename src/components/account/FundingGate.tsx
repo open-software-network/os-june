@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { hasLiveSubscription, isOnMaxPlan } from "../../lib/account-gate";
+import { errorCode } from "../../lib/errors";
 import { osAccountsChangePlan, osAccountsOpenPortal, osAccountsUpgrade } from "../../lib/tauri";
 import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
@@ -115,6 +116,14 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
       await osAccountsChangePlan("max");
       await onRefresh();
     } catch (error) {
+      const code = errorCode(error);
+      if (code === "already_on_plan" || code === "subscription_required") {
+        // Stale snapshot: the server disagrees about the current plan.
+        // Refresh and let the gate re-derive the right prompt (top up or
+        // subscribe) instead of surfacing an error.
+        await onRefresh();
+        return;
+      }
       setPortalError(messageFromError(error));
     } finally {
       setUpgrading(false);

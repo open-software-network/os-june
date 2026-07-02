@@ -98,6 +98,40 @@ describe("runDepletedBalanceAction", () => {
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
   });
 
+  it("treats already_on_plan as a benign completed change (stale snapshot)", async () => {
+    mocks.osAccountsChangePlan.mockRejectedValueOnce({
+      code: "already_on_plan",
+      message: "You are already on this plan.",
+    });
+
+    const outcome = await runDepletedBalanceAction(
+      account({ subscription: { subscribed: true, status: "active", plan: "pro" } }),
+    );
+
+    // Caller refreshes and shows the current plan; nothing else is invoked.
+    expect(outcome).toBe("changed_plan");
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the subscribe prompt when the plan change needs a subscription", async () => {
+    mocks.osAccountsChangePlan.mockRejectedValueOnce({
+      code: "subscription_required",
+      message: "You need an active subscription to change plans.",
+    });
+
+    const outcome = await runDepletedBalanceAction(
+      account({ subscription: { subscribed: true, status: "active", plan: "pro" } }),
+    );
+
+    // No auto-checkout from the error handler: the caller refreshes and the
+    // surfaces re-render as the subscribe prompt for an explicit click.
+    expect(outcome).toBe("subscribe_required");
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
   it("rethrows other failures untouched", async () => {
     mocks.osAccountsUpgrade.mockRejectedValueOnce({ code: "network_error", message: "offline" });
 
@@ -105,6 +139,17 @@ describe("runDepletedBalanceAction", () => {
       runDepletedBalanceAction(account({ subscription: { subscribed: false } })),
     ).rejects.toMatchObject({ code: "network_error" });
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+
+    // Plan-change rejections that are not stale-state recoveries also rethrow.
+    mocks.osAccountsChangePlan.mockRejectedValueOnce({
+      code: "plan_not_enabled",
+      message: "That plan is not available yet.",
+    });
+    await expect(
+      runDepletedBalanceAction(
+        account({ subscription: { subscribed: true, status: "active", plan: "pro" } }),
+      ),
+    ).rejects.toMatchObject({ code: "plan_not_enabled" });
   });
 });
 

@@ -1479,6 +1479,10 @@ export type AccountSubscription = {
   /** Trial length from the Stripe price config, available pre-subscription.
    * Absent on accounts APIs that don't expose it yet. */
   trialPeriodDays?: number;
+  /** Plan a scheduled downgrade switches to at the period end. Additive on
+   * the plan-change endpoint; absent everywhere else. */
+  scheduledPlan?: SubscriptionPlan | (string & {});
+  scheduledPlanCredits?: number;
 };
 
 export type AccountStatus = {

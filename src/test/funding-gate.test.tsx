@@ -162,6 +162,33 @@ describe("FundingGate", () => {
     expect(onRefresh).toHaveBeenCalled();
   });
 
+  it("recovers a stale plan-change rejection by refreshing, not erroring", async () => {
+    const user = userEvent.setup();
+    const onRefresh = vi.fn(async () => baseAccount);
+    mocks.osAccountsChangePlan.mockRejectedValueOnce({
+      code: "already_on_plan",
+      message: "You are already on this plan.",
+    });
+    render(
+      <FundingGate
+        account={{
+          ...baseAccount,
+          balance: { credits: -1, usdMillis: -1 },
+          subscription: { subscribed: true, status: "active", plan: "pro" },
+        }}
+        onRefresh={onRefresh}
+        onSignOut={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+
+    // The gate refreshes and re-derives the right prompt; the stale-state
+    // rejection never surfaces as an error message.
+    expect(onRefresh).toHaveBeenCalled();
+    expect(screen.queryByText("You are already on this plan.")).toBeNull();
+  });
+
   it("does not show top-up copy for subscribed users with positive credits", async () => {
     const user = userEvent.setup();
     renderFundingGate({
