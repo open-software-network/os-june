@@ -195,13 +195,13 @@ impl DictationStyle {
     fn instruction(self) -> &'static str {
         match self {
             Self::Standard => {
-                "Writing style: standard. Preserve the speaker's natural tone and casing while producing clean dictated text."
+                "Writing style: standard. Standard sentence capitalization and punctuation. Keep the speaker's wording and tone exactly as dictated."
             }
             Self::CasualLowercase => {
-                "Writing style: casual lowercase. Write casually and conversationally. Use lowercase wherever grammatically possible, including the beginning of sentences, while preserving proper nouns, acronyms, brand names, and code exactly when capitalization matters."
+                "Writing style: casual lowercase. Use lowercase wherever grammatically possible, including the beginning of sentences, while preserving proper nouns, acronyms, brand names, and code exactly when capitalization matters. Keep the speaker's wording exactly as dictated."
             }
             Self::Formal => {
-                "Writing style: formal. Rewrite as polished, professional text with complete sentences, conventional capitalization, and a concise formal tone while preserving the speaker's meaning."
+                "Writing style: formal. Conventional capitalization and complete punctuation. Formality comes from clean casing and punctuation only: keep the speaker's own words and sentence structure, and do not reword, shorten, or polish their phrasing."
             }
         }
     }

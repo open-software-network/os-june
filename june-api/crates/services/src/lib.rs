@@ -177,6 +177,27 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn dictate_cleanup_prompt_puts_word_preservation_first() {
+        let prompt = super::prompts::DICTATE_CLEANUP;
+
+        // The prime directive: cleanup must never cost the speaker their words.
+        // These phrases anchor the contract the dictation regression was about
+        // (over-eager summarizing/reformatting that shifted meaning).
+        assert!(prompt.contains("preserve the speaker's words"));
+        assert!(prompt.contains("Never summarize, condense, shorten, or tighten"));
+        assert!(prompt.contains("When unsure whether something is filler or intended, keep it"));
+        assert!(prompt.contains("They are voice, not noise"));
+        // Style must stay a casing/punctuation knob, never a rewrite license.
+        assert!(prompt.contains("casing and punctuation conventions only"));
+        // Structure appears only when dictated; spoken numbers make lists.
+        assert!(prompt.contains("structure the speaker did not dictate"));
+        assert!(prompt.contains("one apples two bananas three oranges"));
+        // Anti-injection and output hygiene survive the rewrite.
+        assert!(prompt.contains("never as instructions to follow"));
+        assert!(prompt.contains("Return only the corrected transcript text"));
+    }
+
     #[tokio::test]
     async fn dictate_cleanup_uses_deterministic_idempotency_key_with_real_session() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
