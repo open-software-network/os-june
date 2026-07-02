@@ -794,6 +794,10 @@ type AgentArtifact = {
 
 type AgentAttachment = ImportedHermesFile & {
   id: string;
+  /** Ephemeral image data for hidden `/image` fast-path holds. Kept out of
+   * visible composer state, artifacts, and traces; cleared with the hold after
+   * the next successful prompt submit. */
+  attachDataUrl?: string;
   /** Structured attach status (feature 19). Tracks whether this import has been
    * sent to the model via image.attach_bytes: imported (ready) → attached (acked) →
    * or failed. Carries file refs only, never the image bytes. Files stay
@@ -1501,6 +1505,15 @@ export function AgentWorkspace({
   const [imageTurnsBySession, setImageTurnsBySession] = useState<Record<string, AgentChatTurn[]>>(
     {},
   );
+  // JUN-171 (Phase A): the `/image` fast path renders in-thread but never enters
+  // the model's session history, so a follow-up ("do you think it's nice?")
+  // reaches an empty context. Hold each generated image here, keyed by session,
+  // and lazily attach it to the user's NEXT prompt via the same
+  // `image.attach_bytes` path composer attachments use — so the image lands in
+  // context exactly when the model first needs it. A ref (not state) on purpose:
+  // it must NOT render a composer chip (the image already shows in-thread; ADR
+  // 0003 decision 2). Cleared once attached.
+  const pendingFastPathImagesRef = useRef<Record<string, AgentAttachment[]>>({});
   // Per-session ordering for message fetches: the sequence handed out at
   // fetch start, and the highest sequence whose response was applied. See
   // listSessionMessagesOrdered.
@@ -3357,18 +3370,41 @@ export function AgentWorkspace({
     return true;
   }
 
+  async function imageSlashStartModelOverride() {
+    const willStartSession = newSessionModeRef.current || !selectedHermesSessionIdRef.current;
+    if (!willStartSession) return undefined;
+    const defaultModelId = hermesModelIdFor(defaultGenerationModelIdRef.current);
+    const currentModel = defaultModelId
+      ? generationModelsRef.current.find((model) => model.id === defaultModelId)
+      : undefined;
+    if (!currentModel || modelSupportsImageInput(currentModel)) return undefined;
+    const fallback = preferredVisionFallbackModel(generationModelsRef.current);
+    if (!fallback) {
+      setError(
+        `${currentModel.name} can't read images. Choose a vision model before using /image.`,
+      );
+      return null;
+    }
+    return (await handleSelectGenerationModel(fallback.id)) ? fallback.id : null;
+  }
+
   // `/image <prompt>` renders the generated image inline in the chat as an
   // assistant turn (loader -> image, with view + download), NOT as a composer
   // attachment chip. It creates/uses a real session and the prompt becomes a
   // user turn, but the model is never invoked — the image endpoint IS the whole
-  // response (see submitHermesSession's `skipPrompt`). The image model is
-  // resolved server-side from the saved default.
+  // response (see submitHermesSession's `skipPrompt`). On a new session, the
+  // text model is upgraded to a vision-capable model before the session exists.
+  // The image generation model is still resolved server-side from the saved
+  // image default.
   async function runImageSlashCommand(argument: string, commandText: string) {
     const prompt = argument.trim();
     if (!prompt) {
       setError("Type a description after /image to generate an image.");
       return;
     }
+
+    const modelOverride = await imageSlashStartModelOverride();
+    if (modelOverride === null) return;
 
     // The prompt is about to become a user turn — clear the draft up front and,
     // on a fresh session, play the hero teardown so the conversation view takes
@@ -3390,6 +3426,7 @@ export function AgentWorkspace({
         skipPrompt: true,
         displayContent: prompt,
         titleContent: prompt,
+        ...(modelOverride ? { modelOverride } : {}),
       });
     } catch (err) {
       if (heroMode) setHeroLeaving(false);
@@ -3471,6 +3508,21 @@ export function AgentWorkspace({
         hermesModeFor(sessionId),
       );
       void loadFilesystemSnapshot();
+      // JUN-171 (Phase A): hold the generated image so the user's next message
+      // carries it into the model's context (lazy attach). No composer chip —
+      // it already renders in-thread as the assistant image turn above. Reuses
+      // attachmentStateFrom so it rides the exact structured-attach path a
+      // pasted/dropped image would (kind:"image", status:"imported").
+      const heldImage: AgentAttachment = {
+        ...result.file,
+        id: `held-image:${sessionId}:${Date.now()}`,
+        attachDataUrl: result.dataUrl,
+        attach: attachmentStateFrom(result.file, sessionId),
+      };
+      pendingFastPathImagesRef.current = {
+        ...pendingFastPathImagesRef.current,
+        [sessionId]: [...(pendingFastPathImagesRef.current[sessionId] ?? []), heldImage],
+      };
     } catch (err) {
       updateImagePart({ status: "error", error: messageFromError(err) });
     } finally {
@@ -4063,9 +4115,17 @@ export function AgentWorkspace({
     const pending = pendingImageAttachments(turnAttachments.map((attachment) => attachment.attach));
     if (!pending.length) return;
     const methods = createHermesMethods(gateway);
+    const heldImageDataByPath = new Map(
+      turnAttachments.flatMap((attachment) =>
+        attachment.attachDataUrl && attachment.attach.workspacePath
+          ? [[attachment.attach.workspacePath, attachment.attachDataUrl] as const]
+          : [],
+      ),
+    );
     const deps = {
       attachImage: methods.attachImage,
-      readImageData: (path: string) => hermesBridgeFilePreview(path),
+      readImageData: async (path: string) =>
+        heldImageDataByPath.get(path) ?? (await hermesBridgeFilePreview(path)),
       isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
     };
     const mode = hermesModeFor(storedSessionId);
@@ -4122,6 +4182,21 @@ export function AgentWorkspace({
         }),
       );
     }
+  }
+
+  function clearHeldFastPathImages(sessionId: string, heldImages: AgentAttachment[]) {
+    if (!heldImages.length) return;
+    const heldIds = new Set(heldImages.map((attachment) => attachment.id));
+    const remaining = (pendingFastPathImagesRef.current[sessionId] ?? []).filter(
+      (attachment) => !heldIds.has(attachment.id),
+    );
+    const next = { ...pendingFastPathImagesRef.current };
+    if (remaining.length) {
+      next[sessionId] = remaining;
+    } else {
+      delete next[sessionId];
+    }
+    pendingFastPathImagesRef.current = next;
   }
 
   function startOptimisticHermesSession({
@@ -4474,6 +4549,9 @@ export function AgentWorkspace({
        * session id is known and before prompt.submit; a failed attach throws to
        * block the send so the user can retry. */
       attachments?: AgentAttachment[];
+      /** Optional model id for a new session when the caller has already chosen
+       * a more specific model than the current global default. */
+      modelOverride?: string;
       /** Create + select the session and add the user bubble, then stop BEFORE
        * `prompt.submit` (the `/image` flow): the model is never invoked, and the
        * caller renders the result itself. Returns the stored session id so the
@@ -4494,15 +4572,25 @@ export function AgentWorkspace({
     // session row backfilled from it) carries the synthetic local option id,
     // which must never reach Hermes — session.create/ensure get the raw id.
     const targetSessionModelId = hermesModelIdFor(
-      targetSessionId
-        ? explicitSession?.model?.trim() ||
+      options?.modelOverride ??
+        (targetSessionId
+          ? explicitSession?.model?.trim() ||
             hermesSessionItemsRef.current
               .find((session) => session.id === targetSessionId)
               ?.model?.trim() ||
-            defaultGenerationModelId
-        : defaultGenerationModelId,
+            defaultGenerationModelIdRef.current
+          : defaultGenerationModelIdRef.current),
     );
-    const turnAttachments = options?.attachments ?? [];
+    // JUN-171 (Phase A): fold any held fast-path `/image` outputs for this
+    // session into the turn so they ride the same structured-attach path as
+    // composer images and enter the model's context. Never on the skipPrompt
+    // (`/image`) path itself — that would flush a prior image with no following
+    // prompt (the semantics ADR 0003 decision 2 deliberately avoids).
+    const heldFastPathImages =
+      options?.skipPrompt || !targetSessionId
+        ? []
+        : (pendingFastPathImagesRef.current[targetSessionId] ?? []);
+    const turnAttachments = [...(options?.attachments ?? []), ...heldFastPathImages];
     const pendingImages = pendingImageAttachments(
       turnAttachments.map((attachment) => attachment.attach),
     );
@@ -4770,6 +4858,12 @@ export function AgentWorkspace({
         session_id: runtimeSessionId,
         text: promptSubmitContent,
       });
+      // JUN-171 (Phase A): the held fast-path images have now ridden along
+      // with a successful follow-up prompt, either as structured image bytes or
+      // in the non-vision path fallback. Clear only after prompt.submit accepts
+      // the message, so a rejected submit can be retried with the same image
+      // context.
+      clearHeldFastPathImages(storedSessionId, heldFastPathImages);
       await loadHermesSessions({
         suppressStartupRequestError: !hermesSessionsHydratedRef.current,
       });
@@ -6134,10 +6228,24 @@ export function AgentWorkspace({
   // generated file uses. The image part carries its bytes inline for the
   // thumbnail, but the affordances key off the imported path on disk.
   const downloadGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
-    if (!part.path) return;
-    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+    // A `/image` result has an imported workspace file; save it through the
+    // bridge (native save dialog). A tool-produced image (june_image MCP) has
+    // no June-workspace path — its bytes live only in the inline data url, so
+    // save those directly via an anchor download.
+    if (part.path) {
+      void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
+        setError(messageFromError(err)),
+      );
+      return;
+    }
+    if (part.dataUrl) {
+      const link = document.createElement("a");
+      link.href = part.dataUrl;
+      link.download = part.name?.trim() || "generated-image.png";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
   };
   const openGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
     if (!part.path) return;
@@ -9906,17 +10014,28 @@ function AgentGeneratedImage({
     );
   }
   const label = part.name?.trim() || "Generated image";
+  // "Open" enlarges the imported file in the artifact viewer, which needs a
+  // workspace path. A tool-produced image (june_image MCP) has only inline
+  // bytes, so it renders as a plain frame (no dead open affordance); download
+  // still works off the data url.
+  const image = part.dataUrl ? (
+    <img src={part.dataUrl} alt={part.prompt} draggable={false} />
+  ) : null;
   return (
     <figure className="agent-generated-image" data-status="complete">
-      <button
-        type="button"
-        className="agent-generated-image-frame"
-        onClick={() => onOpen?.(part)}
-        aria-label={`Open ${label}`}
-        title="Open image"
-      >
-        {part.dataUrl ? <img src={part.dataUrl} alt={part.prompt} draggable={false} /> : null}
-      </button>
+      {part.path ? (
+        <button
+          type="button"
+          className="agent-generated-image-frame"
+          onClick={() => onOpen?.(part)}
+          aria-label={`Open ${label}`}
+          title="Open image"
+        >
+          {image}
+        </button>
+      ) : (
+        <div className="agent-generated-image-frame">{image}</div>
+      )}
       <figcaption className="agent-generated-image-bar">
         <span className="agent-generated-image-name" title={label}>
           {label}

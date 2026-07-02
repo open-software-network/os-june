@@ -183,6 +183,9 @@ export type ProviderModelSettingsDto = {
   imageModel: string;
   veniceApiKeyConfigured: boolean;
   localGeneration: LocalGenerationSettingsDto;
+  /** Venice safe mode for image generation/editing (blurs adult content). Off
+   * by default (privacy-first); the user opts in via Settings. */
+  imageSafeMode: boolean;
 };
 
 export type LocalGenerationSettingsDto = {
@@ -1562,6 +1565,14 @@ export async function setVeniceApiKey(apiKey: string) {
 
 export async function clearVeniceApiKey() {
   return invoke<ProviderModelSettingsDto>("clear_venice_api_key");
+}
+
+// Toggles Venice safe mode for image generation/editing. Off by default; when
+// on, Venice blurs adult content.
+export async function setImageSafeMode(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_image_safe_mode", {
+    request: { enabled },
+  });
 }
 
 // Generates an image from a prompt via the June API. `model` is optional; the

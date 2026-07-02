@@ -35,6 +35,18 @@ pub struct AppConfig {
     /// charged 20).
     #[serde(default = "default_image_pricing")]
     pub image_pricing: BTreeMap<String, u64>,
+    /// Flat credits charged per EDITED image, keyed by edit model id. Editing is
+    /// a separate Venice model catalog from generation (default
+    /// `firered-image-edit`), so it has its own price map. A model absent here is
+    /// rejected at the `/image/edit` boundary (`model_not_priced`). Same units as
+    /// `image_pricing`: Venice per-image cost with margin, `$1 = 1000 credits`.
+    #[serde(default = "default_image_edit_pricing")]
+    pub image_edit_pricing: BTreeMap<String, u64>,
+    /// The edit model used when a request names none — the image MCP never sends
+    /// one, so this on-server default governs every edit. Must be a key in
+    /// `image_edit_pricing`, or edits fail `model_not_priced`.
+    #[serde(default = "default_image_edit_model")]
+    pub default_image_edit_model: String,
 }
 
 impl Debug for AppConfig {
@@ -49,6 +61,8 @@ impl Debug for AppConfig {
             .field("issue_reports", &self.issue_reports)
             .field("pricing", &self.pricing)
             .field("image_pricing", &self.image_pricing)
+            .field("image_edit_pricing", &self.image_edit_pricing)
+            .field("default_image_edit_model", &self.default_image_edit_model)
             .finish()
     }
 }
@@ -536,6 +550,20 @@ fn default_image_pricing() -> BTreeMap<String, u64> {
     ])
 }
 
+/// Flat per-edit prices, keyed by Venice edit model id. Edit models are a
+/// separate catalog from generation. `firered-image-edit` costs ~$0.04 -> 80 at
+/// the same ~2x margin as generation (`$1 = 1000 credits`). Additional edit
+/// models get added here (with their own verified price) when offered.
+fn default_image_edit_pricing() -> BTreeMap<String, u64> {
+    BTreeMap::from([("firered-image-edit".to_string(), 80)])
+}
+
+/// The default Venice edit model — cheapest of the edit catalog, and the one
+/// every MCP-driven edit uses (the tool never names a model).
+fn default_image_edit_model() -> String {
+    "firered-image-edit".to_string()
+}
+
 fn text_model_config(model: TextModelFallback) -> ModelPriceConfig {
     ModelPriceConfig {
         unit: PriceUnit::Tokens,
@@ -608,6 +636,8 @@ impl Default for AppConfig {
             issue_reports: IssueReportsConfig::default(),
             pricing: default_pricing(),
             image_pricing: default_image_pricing(),
+            image_edit_pricing: default_image_edit_pricing(),
+            default_image_edit_model: default_image_edit_model(),
         }
     }
 }
@@ -752,16 +782,31 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// A zero per-image price would silently generate for free — reject it like the
-/// per-model rate validation so a misconfigured price fails fast.
+/// A zero per-image price would silently generate/edit for free — reject it like
+/// the per-model rate validation so a misconfigured price fails fast. Also
+/// guards that the default edit model is actually priced, since every MCP-driven
+/// edit uses it and an unpriced model would fail every edit at runtime.
 fn validate_image_pricing(config: &AppConfig) -> Result<(), ConfigError> {
-    for (model_id, credits) in &config.image_pricing {
+    for (model_id, credits) in config
+        .image_pricing
+        .iter()
+        .chain(config.image_edit_pricing.iter())
+    {
         if *credits == 0 {
             return Err(ConfigError::InvalidPricing {
                 model: model_id.clone(),
                 reason: "credits_per_image must be > 0".to_string(),
             });
         }
+    }
+    if !config
+        .image_edit_pricing
+        .contains_key(&config.default_image_edit_model)
+    {
+        return Err(ConfigError::InvalidPricing {
+            model: config.default_image_edit_model.clone(),
+            reason: "default_image_edit_model must be present in image_edit_pricing".to_string(),
+        });
     }
     Ok(())
 }

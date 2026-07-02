@@ -106,6 +106,7 @@ impl ImageGenerator for VeniceImageGenerator {
             format: IMAGE_FORMAT,
             width: request.width,
             height: request.height,
+            safe_mode: request.safe_mode,
         };
         let url = format!("{}/image/generate", self.base_url);
         let api_key = venice_api_key(&self.api_key, &request.provider_credentials);
@@ -168,6 +169,8 @@ struct VeniceImageRequest<'a> {
     width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_mode: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -207,6 +210,7 @@ mod tests {
             model: ModelId("venice-sd35".to_string()),
             width: Some(1024),
             height: Some(1024),
+            safe_mode: None,
             provider_credentials: ProviderCredentials::default(),
         }
     }

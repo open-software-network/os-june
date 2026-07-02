@@ -26,12 +26,15 @@ describe("agent composer built-in slash commands", () => {
     expect(parseBuiltinComposerSlashCommand("/Users/alex/Desktop/report.pdf summarize")).toBeNull();
   });
 
-  it("hides image generation from built-in slash suggestions", () => {
+  it("offers image generation in built-in slash suggestions", () => {
     expect(matchBuiltinComposerSlashCommands("")).toEqual([
       expect.objectContaining({ name: "model" }),
       expect.objectContaining({ name: "file" }),
+      expect.objectContaining({ name: "image" }),
     ]);
-    expect(matchBuiltinComposerSlashCommands("image")).toEqual([]);
+    expect(matchBuiltinComposerSlashCommands("image")).toEqual([
+      expect.objectContaining({ name: "image" }),
+    ]);
   });
 
   it("parses quoted file paths", () => {

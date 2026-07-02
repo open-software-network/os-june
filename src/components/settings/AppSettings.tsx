@@ -27,6 +27,7 @@ import {
   setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
+  setImageSafeMode,
   setVeniceApiKey,
   setVeniceModel,
 } from "../../lib/tauri";
@@ -209,6 +210,8 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
     modelId: "",
     apiKey: "",
   },
+  // Off by default (privacy-first), matching the Rust providers default.
+  imageSafeMode: false,
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -1001,6 +1004,20 @@ export function AppSettings({
     }
   }
 
+  async function toggleImageSafeMode(enabled: boolean) {
+    try {
+      const next = await setImageSafeMode(enabled);
+      setProviderSettings(next);
+      setStatus(
+        enabled
+          ? "Safe mode on: adult content is blurred."
+          : "Safe mode off: images are not filtered.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   async function selectLanguage(language: string) {
     try {
       const next = await setDictationLanguage(language || undefined);
@@ -1737,6 +1754,22 @@ export function AppSettings({
                       options={imageOptions}
                       onOpen={() => openModelPicker("image")}
                     />
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Safe mode</h3>
+                        <p className="settings-row-description">
+                          Blur adult content in generated and edited images. Off by default; your
+                          image work stays private either way.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <Switch
+                          checked={providerSettings.imageSafeMode}
+                          aria-label="Blur adult content in images"
+                          onCheckedChange={toggleImageSafeMode}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </section>
