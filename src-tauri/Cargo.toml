@@ -85,6 +85,14 @@ keyring = { version = "3", features = ["windows-native"] }
 # with a Secret Service has libdbus (it is the transport), so the AppImage
 # follows the standard exclude list and does not ship it.
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# System-audio capture on Linux records the default sink's monitor source
+# through libpulse. These bindings dynamically link the system libpulse
+# (`libpulse.so.0` + `libpulse-simple.so.0`), which every PulseAudio and
+# PipeWire (via pipewire-pulse) desktop ships, so this works on both. Build
+# hosts need `libpulse-dev`; the AppImage relies on the runtime library from the
+# host (libpulse is on the linuxdeploy exclude list, so it is not bundled).
+libpulse-binding = "2.30"
+libpulse-simple-binding = "2.29"
 
 [dev-dependencies]
 tempfile = "3.14"
