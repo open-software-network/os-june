@@ -2086,6 +2086,18 @@ pub async fn ensure_hermes_bridge_session(
     }
 }
 
+/// Builds the error message for a non-2xx Hermes REST response. Interpolates
+/// the numeric status rather than `reqwest::StatusCode`, whose `Display`
+/// already renders the reason phrase ("500 Internal Server Error"); against a
+/// bare-500 body (also "Internal Server Error") that duplicated the phrase and
+/// surfaced raw in the chat error banner (JUN-167). The `Hermes API returned
+/// <status>: ` prefix is a load-bearing contract: `hermes_api_status` matches
+/// it to swallow idempotent 404/405/409s, and the desktop admin transport
+/// (`rust-transport.ts`) parses it back into status + body.
+fn hermes_api_error_message(status: u16, body: &str) -> String {
+    format!("Hermes API returned {status}: {body}")
+}
+
 fn hermes_api_status(error: &AppError, status_code: u16) -> bool {
     error.code == "hermes_bridge_api_failed"
         && error
@@ -4788,7 +4800,7 @@ async fn hermes_connection_json(
     if !status.is_success() {
         return Err(AppError::new(
             "hermes_bridge_api_failed",
-            format!("Hermes API returned {status}: {text}"),
+            hermes_api_error_message(status.as_u16(), &text),
         ));
     }
     if text.trim().is_empty() {
@@ -6705,6 +6717,30 @@ mod tests {
             sandboxed: true,
             full_mode: false,
         }
+    }
+
+    #[test]
+    fn hermes_api_error_message_uses_numeric_status() {
+        // `reqwest::StatusCode` Display renders "500 Internal Server Error", and
+        // a bare 500 body is also "Internal Server Error"; interpolating the
+        // StatusCode duplicated the phrase and leaked raw to the user (JUN-167).
+        // The numeric status keeps the message to a single reason phrase.
+        assert_eq!(
+            hermes_api_error_message(500, "Internal Server Error"),
+            "Hermes API returned 500: Internal Server Error",
+        );
+    }
+
+    #[test]
+    fn hermes_api_status_still_matches_numeric_message() {
+        // The dedup must not break the idempotency swallow, which keys on the
+        // `Hermes API returned <status>` prefix (405/409 on unchanged updates).
+        let err = AppError::new(
+            "hermes_bridge_api_failed",
+            hermes_api_error_message(404, "Not Found"),
+        );
+        assert!(hermes_api_status(&err, 404));
+        assert!(!hermes_api_status(&err, 500));
     }
 
     #[test]

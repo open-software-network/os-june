@@ -37,6 +37,18 @@ export function isInsufficientCreditsMessage(message?: string) {
   );
 }
 
+/** Whether a Tauri error is a Hermes REST 5xx. The desktop bridge's session
+ * commands surface a non-2xx response as `Hermes API returned <status>: <body>`
+ * (see `hermes_bridge.rs`); a 5xx is a transient server-side fault worth a
+ * retry, unlike a 4xx (the caller's request) or a bridge-down connection error.
+ * String matching mirrors the other classifiers here — the wire string carries
+ * no structured code today. The `\b` after the status keeps the match anchored
+ * to the three-digit code regardless of the trailing `:` or reason phrase. */
+export function isHermesServerError(message?: string) {
+  if (!message) return false;
+  return /Hermes API returned 5\d\d\b/.test(message);
+}
+
 /** Whether an error message means the request outgrew the model's context (or
  * the agent request-size limit) — a hard size failure the user must act on
  * (trim the input, attach a smaller file, start a fresh session), NOT something

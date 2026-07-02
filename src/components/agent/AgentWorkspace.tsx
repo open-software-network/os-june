@@ -217,7 +217,11 @@ import {
   pricingLabel,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import { isHermesSessionsStartupRequestError, messageFromError } from "../../lib/errors";
+import {
+  isHermesServerError,
+  isHermesSessionsStartupRequestError,
+  messageFromError,
+} from "../../lib/errors";
 import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
@@ -314,6 +318,22 @@ const SESSION_GONE_MESSAGE = "This session has ended, so the request can no long
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
+}
+
+// A Hermes REST 5xx (`Hermes API returned 5xx: …`) is a transient server-side
+// fault, so session-load handlers show this friendly line instead of the raw
+// wire string — which read as a doubled "500 Internal Server Error: Internal
+// Server Error" before the bridge deduped it (JUN-167). Mirrors the admin
+// path's copy; the banner's own "Try again" button provides the retry, so the
+// message stays a plain description. `visibleErrorRetryable` keys off this
+// constant to offer that retry.
+const HERMES_SERVER_ERROR_MESSAGE = "Hermes ran into a problem with that request.";
+
+// Picks the banner text for a caught session-command error: a transient Hermes
+// 5xx becomes the friendly retryable line; anything else passes through raw.
+function describeAgentError(err: unknown): string {
+  const message = messageFromError(err);
+  return isHermesServerError(message) ? HERMES_SERVER_ERROR_MESSAGE : message;
 }
 
 // Dev-tools response gallery handle. Registered at module scope so
@@ -2134,6 +2154,13 @@ export function AgentWorkspace({
   const heroMode =
     !gallerySections && (newSessionMode || (!selectedHermesSessionId && !selectedTask));
   const visibleError = visibleAgentWorkspaceError(errorState, selectedHermesSessionId);
+  // The banner offers "Try again" for failures a reconnect-and-reload can clear:
+  // our own gateway/bridge connection errors, and a transient Hermes 5xx
+  // (HERMES_SERVER_ERROR_MESSAGE, JUN-167). retryGatewayConnection re-runs the
+  // session-management loads that produced either.
+  const visibleErrorRetryable =
+    visibleError != null &&
+    (GATEWAY_CONNECTION_ERROR.test(visibleError) || visibleError === HERMES_SERVER_ERROR_MESSAGE);
   const visibleIssueReportNotice =
     issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
@@ -2506,7 +2533,7 @@ export function AgentWorkspace({
           keepLoading = true;
           return "transient-startup-error";
         }
-        setError(messageFromError(err));
+        setError(describeAgentError(err));
         return "failed";
       } finally {
         if (!keepLoading) {
@@ -3022,7 +3049,7 @@ export function AgentWorkspace({
         // working-gated poll re-loads once it resolves — so don't flash it as
         // an error banner (JUN-116).
         if (isSessionGoneError(message)) return;
-        setError(message, { sessionId: selectedHermesSessionId });
+        setError(describeAgentError(err), { sessionId: selectedHermesSessionId });
       });
     return () => {
       cancelled = true;
@@ -3050,7 +3077,7 @@ export function AgentWorkspace({
         }
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(messageFromError(err));
+        if (!cancelled) setError(describeAgentError(err));
       });
     return () => {
       cancelled = true;
@@ -3072,7 +3099,7 @@ export function AgentWorkspace({
         if (cancelled) return;
         setBridge(status);
       } catch (err) {
-        if (!cancelled) setError(messageFromError(err));
+        if (!cancelled) setError(describeAgentError(err));
       }
     })();
     return () => {
@@ -4804,8 +4831,18 @@ export function AgentWorkspace({
     try {
       await ensureHermesGateway();
       await loadHermesSessions();
+      // Re-run the selected session's transcript load too: a friendly Hermes
+      // 5xx banner (JUN-167) can originate from that message fetch, and
+      // reconnecting alone would clear the banner without reloading the
+      // messages — the load effect is keyed on the session id, which does not
+      // change on retry, so it would not re-fire. refreshHermesSession handles
+      // its own errors (re-showing the friendly banner if the 5xx persists).
+      const sessionId = selectedHermesSessionIdRef.current;
+      if (sessionId && !isProvisionalHermesSessionId(sessionId)) {
+        await refreshHermesSession(sessionId);
+      }
     } catch (err) {
-      setError(messageFromError(err));
+      setError(describeAgentError(err));
     }
   }
 
@@ -5040,7 +5077,7 @@ export function AgentWorkspace({
       // "Session not found" 404 resolves on the next poll, so don't surface
       // it as an error banner (JUN-116).
       if (isSessionGoneError(message)) return;
-      setError(message, { sessionId });
+      setError(describeAgentError(err), { sessionId });
     }
   }
 
@@ -7144,11 +7181,7 @@ export function AgentWorkspace({
           {visibleError ? (
             <AgentErrorBanner
               message={visibleError}
-              onRetry={
-                GATEWAY_CONNECTION_ERROR.test(visibleError)
-                  ? () => void retryGatewayConnection()
-                  : undefined
-              }
+              onRetry={visibleErrorRetryable ? () => void retryGatewayConnection() : undefined}
               onDismiss={() => setError(null)}
             />
           ) : null}
@@ -7206,11 +7239,7 @@ export function AgentWorkspace({
               ) : visibleError ? (
                 <AgentErrorBanner
                   message={visibleError}
-                  onRetry={
-                    GATEWAY_CONNECTION_ERROR.test(visibleError)
-                      ? () => void retryGatewayConnection()
-                      : undefined
-                  }
+                  onRetry={visibleErrorRetryable ? () => void retryGatewayConnection() : undefined}
                   onDismiss={() => setError(null)}
                 />
               ) : null}

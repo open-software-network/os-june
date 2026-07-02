@@ -6810,6 +6810,59 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
   });
 
+  it("shows friendly, retryable copy for a Hermes 5xx from a session command (JUN-167)", async () => {
+    const user = userEvent.setup();
+    // A bare 500 reaches the bridge as `Hermes API returned 500: Internal
+    // Server Error` (deduped from the doubled StatusCode Display) — the raw
+    // string the user saw in the chat banner before this fix.
+    mocks.listHermesSessionMessages.mockRejectedValue(
+      new Error("Hermes API returned 500: Internal Server Error"),
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    // The banner shows the friendly line, never the raw wire error.
+    expect(
+      await screen.findByText("Hermes ran into a problem with that request."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Hermes API returned 500/)).toBeNull();
+    // A 5xx is a transient server fault, so the banner offers a retry (unlike a
+    // one-off 4xx, which only offers dismiss).
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Hermes ran into a problem with that request.")).toBeNull();
+  });
+
+  it("re-fetches the transcript when Try again is clicked on a Hermes 5xx banner (JUN-167)", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessionMessages.mockRejectedValue(
+      new Error("Hermes API returned 500: Internal Server Error"),
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Hermes ran into a problem with that request."),
+    ).toBeInTheDocument();
+
+    const callsBeforeRetry = mocks.listHermesSessionMessages.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    // The retry actually re-runs the failed transcript load — not just a
+    // reconnect that clears the banner and leaves the messages unfetched.
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(callsBeforeRetry),
+    );
+    // The 500 persists, so the friendly banner returns rather than leaving a
+    // silently-empty transcript; the raw wire string never appears.
+    expect(
+      await screen.findByText("Hermes ran into a problem with that request."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Hermes API returned 500/)).toBeNull();
+  });
+
   it("renders an out-of-credits notice with an upgrade action instead of the raw 402 error", async () => {
     const user = userEvent.setup();
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
