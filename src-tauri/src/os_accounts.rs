@@ -54,6 +54,20 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const ERR_TOKEN_EXPIRED: i64 = 3001;
+/// Error code for a refresh that failed transiently (OS Accounts unreachable or
+/// wobbling), as opposed to a definitive rejection of the refresh token. A
+/// transient failure must NOT be treated as a sign-out: the user is still
+/// signed in, so callers keep their session and surface a retriable error
+/// instead of discarding work.
+const AUTH_REFRESH_UNAVAILABLE_CODE: &str = "auth_refresh_unavailable";
+/// Total refresh attempts (1 initial + retries) when the upstream is transiently
+/// unavailable. Bounded so a genuine outage fails fast instead of hanging the
+/// caller. Each attempt re-acquires the refresh lock, so backoff sleeps happen
+/// with the lock released.
+const AUTH_REFRESH_MAX_ATTEMPTS: usize = 3;
+/// Base backoff between transient refresh retries; multiplied by the attempt
+/// number for a short linear backoff (0.3s, 0.6s).
+const AUTH_REFRESH_RETRY_BACKOFF: Duration = Duration::from_millis(300);
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static REFRESH_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
@@ -994,7 +1008,12 @@ async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
             return Err(AppError::new("signed_out", "Not signed in."));
         }
     };
-    let resp: Envelope<TokenPair> = http_client()
+    // Read status and body separately so a transient upstream failure (a
+    // Cloudflare/TEE 5xx or an outright connection error) is not conflated with
+    // a definitive rejection of the refresh token. reqwest does not error on a
+    // 5xx status, and a proxy error page is often non-JSON, so classify from the
+    // HTTP status plus whether the body parsed as an explicit rejection.
+    let response = match http_client()
         .post(format!(
             "{}/auth/refresh",
             cfg.api_url.trim_end_matches('/')
@@ -1002,18 +1021,101 @@ async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
         .json(&serde_json::json!({ "refresh_token": pair.refresh_token }))
         .send()
         .await
-        .map_err(net_error)?
-        .json()
-        .await
-        .map_err(net_error)?;
-    let fresh = resp
-        .data
-        .filter(|_| resp.success)
-        .ok_or_else(|| AppError::new("session_expired", "Your session expired. Sign in again."))?;
-    let access = fresh.access_token.clone();
-    store_tokens(&fresh).await?;
-    set_cached_signed_in(true);
-    Ok(access)
+    {
+        Ok(response) => response,
+        // No response at all: DNS, connection reset, timeout. Always transient.
+        Err(_) => return Err(auth_refresh_unavailable_error()),
+    };
+    let status = response.status().as_u16();
+    let body = match response.text().await {
+        Ok(body) => body,
+        // The body stream broke mid-read: treat like a lost response.
+        Err(_) => return Err(auth_refresh_unavailable_error()),
+    };
+    match serde_json::from_str::<Envelope<TokenPair>>(&body) {
+        Ok(envelope) if envelope.success => match envelope.data {
+            Some(fresh) => {
+                let access = fresh.access_token.clone();
+                store_tokens(&fresh).await?;
+                set_cached_signed_in(true);
+                Ok(access)
+            }
+            // success=true with no token pair is a malformed upstream response,
+            // not a rejection — retry rather than sign the user out.
+            None => Err(auth_refresh_unavailable_error()),
+        },
+        // A well-formed envelope with success=false is an explicit rejection
+        // (an expired or revoked refresh token) unless the status says the
+        // upstream itself wobbled.
+        Ok(_) => Err(classify_refresh_failure(status, true)),
+        // Body was not a JSON envelope (proxy error page, empty body): lean on
+        // the HTTP status to decide.
+        Err(_) => Err(classify_refresh_failure(status, false)),
+    }
+}
+
+/// Map a failed refresh response to a transient or definitive error. `status`
+/// is the HTTP status; `parsed_rejection` is true when the body was a
+/// well-formed envelope explicitly reporting failure.
+fn classify_refresh_failure(status: u16, parsed_rejection: bool) -> AppError {
+    if refresh_failure_is_transient(status, parsed_rejection) {
+        auth_refresh_unavailable_error()
+    } else {
+        session_expired_error()
+    }
+}
+
+/// Whether a failed refresh is worth retrying. Server/infra wobble (5xx) and
+/// rate limiting (429) are transient; an explicit 2xx/4xx rejection of the
+/// refresh token is definitive. A 2xx body we could not parse is treated as a
+/// proxy shim (transient).
+fn refresh_failure_is_transient(status: u16, parsed_rejection: bool) -> bool {
+    match status {
+        500..=599 | 429 => true,
+        _ if parsed_rejection => false,
+        400..=499 => false,
+        _ => true,
+    }
+}
+
+fn auth_refresh_unavailable_error() -> AppError {
+    AppError::new(
+        AUTH_REFRESH_UNAVAILABLE_CODE,
+        "Couldn't reach your account. Try again in a moment.",
+    )
+}
+
+fn session_expired_error() -> AppError {
+    AppError::new("session_expired", "Your session expired. Sign in again.")
+}
+
+/// True when an auth error is a transient upstream failure rather than a
+/// genuine sign-out. Callers use this to keep the user signed in and show a
+/// retriable error instead of discarding work or dropping to a signed-out UI.
+pub(crate) fn is_transient_auth_error(error: &AppError) -> bool {
+    error.code == AUTH_REFRESH_UNAVAILABLE_CODE
+}
+
+/// Refresh with a bounded retry on transient upstream failures. Each attempt
+/// calls `refresh_locked`, which re-acquires the refresh lock and re-reads the
+/// keychain, so the lock is released across the backoff sleep and a refresh
+/// completed by another caller during the wait is picked up for free. Stops
+/// immediately on success or a definitive rejection.
+async fn refresh_locked_with_retry(cfg: &Config) -> Result<String, AppError> {
+    let mut attempt = 0;
+    loop {
+        match refresh_locked(cfg).await {
+            Ok(access) => return Ok(access),
+            Err(error) => {
+                attempt += 1;
+                if attempt < AUTH_REFRESH_MAX_ATTEMPTS && is_transient_auth_error(&error) {
+                    tokio::time::sleep(AUTH_REFRESH_RETRY_BACKOFF * attempt as u32).await;
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
 }
 
 /// Read the current access token without refreshing.
@@ -1034,10 +1136,15 @@ pub async fn access_token() -> Result<String, AppError> {
     // 401) would burn a request before discovering the token was stale.
     if access_token_is_stale(&pair.access_token) {
         let cfg = Config::load();
-        return match refresh_locked(&cfg).await {
+        return match refresh_locked_with_retry(&cfg).await {
             Ok(access) => Ok(access),
             Err(error) => {
-                set_cached_signed_in(false);
+                // A transient upstream failure is not a sign-out: keep the
+                // cached signed-in state so callers surface a retriable error
+                // instead of discarding work and dropping to a signed-out UI.
+                if !is_transient_auth_error(&error) {
+                    set_cached_signed_in(false);
+                }
                 Err(error)
             }
         };
@@ -1076,10 +1183,14 @@ pub async fn refresh_access_token() -> Result<String, AppError> {
         return Ok(local_dev_bearer_token());
     }
     let cfg = Config::load();
-    match refresh_locked(&cfg).await {
+    match refresh_locked_with_retry(&cfg).await {
         Ok(access) => Ok(access),
         Err(error) => {
-            set_cached_signed_in(false);
+            // Preserve the session on a transient upstream failure; only a
+            // definitive rejection flips the cached state to signed-out.
+            if !is_transient_auth_error(&error) {
+                set_cached_signed_in(false);
+            }
             Err(error)
         }
     }
@@ -1582,5 +1693,60 @@ mod tests {
         };
 
         assert_eq!(accounts_browser_logout_url(&cfg), None);
+    }
+
+    #[test]
+    fn refresh_5xx_is_transient_even_with_a_rejection_body() {
+        // A TEE/proxy 5xx can still carry a JSON error body; the status wins.
+        assert!(refresh_failure_is_transient(500, true));
+        assert!(refresh_failure_is_transient(502, false));
+        assert!(refresh_failure_is_transient(503, true));
+    }
+
+    #[test]
+    fn refresh_rate_limit_is_transient() {
+        assert!(refresh_failure_is_transient(429, false));
+    }
+
+    #[test]
+    fn refresh_client_rejection_is_definitive() {
+        // An expired/revoked refresh token comes back as a 4xx with an explicit
+        // failure envelope — the user must sign in again.
+        assert!(!refresh_failure_is_transient(400, true));
+        assert!(!refresh_failure_is_transient(401, true));
+        // A 4xx with no parseable envelope is still a definitive rejection.
+        assert!(!refresh_failure_is_transient(403, false));
+    }
+
+    #[test]
+    fn refresh_explicit_2xx_rejection_is_definitive() {
+        // success=false on a 200 is an explicit rejection, not a wobble.
+        assert!(!refresh_failure_is_transient(200, true));
+    }
+
+    #[test]
+    fn refresh_unparseable_2xx_is_transient() {
+        // A 200 whose body is not our envelope (a proxy shim page) should be
+        // retried rather than logging the user out.
+        assert!(refresh_failure_is_transient(200, false));
+    }
+
+    #[test]
+    fn classify_refresh_failure_maps_to_the_right_code() {
+        assert_eq!(
+            classify_refresh_failure(502, false).code,
+            AUTH_REFRESH_UNAVAILABLE_CODE
+        );
+        assert_eq!(classify_refresh_failure(401, true).code, "session_expired");
+    }
+
+    #[test]
+    fn transient_auth_error_is_recognised() {
+        assert!(is_transient_auth_error(&auth_refresh_unavailable_error()));
+        assert!(!is_transient_auth_error(&session_expired_error()));
+        assert!(!is_transient_auth_error(&AppError::new(
+            "signed_out",
+            "Not signed in."
+        )));
     }
 }
