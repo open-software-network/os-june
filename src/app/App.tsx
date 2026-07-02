@@ -28,6 +28,7 @@ import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDi
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
+import { TrimRecordingDialog } from "../components/recorder/TrimRecordingDialog";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
 import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import { NotesList, type NotesListHandle } from "../components/notes-list/NotesList";
@@ -59,6 +60,7 @@ import {
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
+  prepareRecordingTrim,
   listNotes,
   listSessionFolders,
   openPrivacySettings,
@@ -125,6 +127,8 @@ import type {
   FolderDto,
   NoteDto,
   RecordingStatusDto,
+  RecordingTrimPreviewDto,
+  TrimRangeDto,
   AccountStatus,
   HermesSessionInfo,
 } from "../lib/tauri";
@@ -419,6 +423,22 @@ export function App() {
   const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
     useState<RecordingInactivityPrompt | null>(null);
   const [recordingInactivityNow, setRecordingInactivityNow] = useState(() => Date.now());
+  // The stop-and-trim modal. Set when the user presses Done; carries the
+  // finalized recording's waveform so they can trim before transcription.
+  const [trimSession, setTrimSession] = useState<{
+    sessionId: string;
+    noteId?: string;
+    preview?: RecordingTrimPreviewDto;
+    preparing: boolean;
+    finalizing: boolean;
+  } | null>(null);
+  // Ref mirror so the recording-start guard can see an open trim modal without
+  // re-creating its useCallback. Starting a new take while a recording is staged
+  // for trim would strand the staged audio, so we block it.
+  const trimSessionActiveRef = useRef(false);
+  useEffect(() => {
+    trimSessionActiveRef.current = trimSession !== null;
+  }, [trimSession]);
   const recordingStartInFlightRef = useRef(false);
   const [liveTranscriptEvents, setLiveTranscriptEvents] = useState<LiveTranscriptEventDto[]>([]);
   useEffect(() => {
@@ -492,6 +512,9 @@ export function App() {
   }, []);
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
   const finishingSessionsRef = useRef<Set<string>>(new Set());
+  // Sessions whose stop press is being staged for the trim modal; a synchronous
+  // guard against a double-click firing the prepare step twice.
+  const stoppingSessionsRef = useRef<Set<string>>(new Set());
   // A dev build without the OS Accounts env vars (fresh workspace, no .env)
   // can never complete sign-in, so the account gates would be dead
   // ends — skip them and let account-dependent features surface their own
@@ -2180,6 +2203,7 @@ export function App() {
       const startAlreadyClaimed = options.startAlreadyClaimed ?? false;
       if (
         recordingStatusRef.current ||
+        trimSessionActiveRef.current ||
         (!startAlreadyClaimed && recordingStartInFlightRef.current)
       ) {
         if (startAlreadyClaimed) {
@@ -2324,28 +2348,82 @@ export function App() {
     };
   }, [appBlocked, bootstrapped, handleStartMeetingDetectedRecording]);
 
+  // Pressing Done stops capture and opens the trim modal: the shell collapses
+  // immediately, then the finalized waveform loads so the user can cut silence
+  // or off-topic audio from either end before anything is transcribed.
   async function handleFinishRecording(sessionId: string) {
-    // The recorder bar stays mounted (and clickable) for the duration of its
-    // exit animation after the first stop click, so a fast double-click would
-    // fire finishRecording twice — the second call fails with a scary
-    // "recording not found" error. Gate per session until the call settles.
-    if (finishingSessionsRef.current.has(sessionId)) return;
-    finishingSessionsRef.current.add(sessionId);
-    // Collapse the shell back to idle the instant stop is pressed so it
-    // never lingers wide while the (potentially long) transcribe +
-    // generate pipeline runs. Processing is queued per note, so the record
-    // button stays available — you can stack another take while this one
-    // finishes — and the body shimmer ("Transcribing audio…" → "Generating
-    // notes…") plus a queued count tell the user work is still in flight.
+    // The recorder bar stays mounted (and clickable) during its exit animation,
+    // so a fast double-click could open the flow twice before `trimSession`
+    // re-renders. Guard synchronously on a ref; the trim session and finalize
+    // guards cover the slower paths.
+    if (
+      stoppingSessionsRef.current.has(sessionId) ||
+      trimSession ||
+      finishingSessionsRef.current.has(sessionId)
+    ) {
+      return;
+    }
+    stoppingSessionsRef.current.add(sessionId);
+    // Collapse the shell back to idle the instant stop is pressed so it never
+    // lingers wide while the trim modal (and the transcribe + generate pipeline
+    // behind it) runs. The owning note isn't necessarily the selected one — the
+    // user may have browsed elsewhere while recording — so capture it now.
     const owningNoteId = recordingNoteIdRef.current;
     dispatch({ type: "recordingStatusCleared" });
     setLiveTranscriptEvents([]);
     setRecordingNote(undefined);
     playRecordingSound("stop");
+    setTrimSession({
+      sessionId,
+      noteId: owningNoteId,
+      preparing: true,
+      finalizing: false,
+    });
+    try {
+      const preview = await prepareRecordingTrim(sessionId);
+      setTrimSession((current) =>
+        current && current.sessionId === sessionId
+          ? { ...current, preview, preparing: false }
+          : current,
+      );
+    } catch (err) {
+      // The waveform couldn't be built (e.g. a zero-length clip). Never strand
+      // the recording — finalize the full take immediately. The backend staged
+      // it before previewing, so this still goes through the normal pipeline.
+      setTrimSession(null);
+      if (!owningNoteId || !(await applyNoteScopedProcessingFailure(owningNoteId, err))) {
+        await finalizeRecording(sessionId, owningNoteId, null);
+      }
+    } finally {
+      // The modal (or its fallback) now owns this session; the Done button is
+      // gone, so the re-entry guard can release.
+      stoppingSessionsRef.current.delete(sessionId);
+    }
+  }
+
+  async function handleConfirmTrim(trim: TrimRangeDto | null) {
+    const session = trimSession;
+    if (!session || session.finalizing) return;
+    setTrimSession((current) => (current ? { ...current, finalizing: true } : current));
+    await finalizeRecording(session.sessionId, session.noteId, trim);
+    setTrimSession(null);
+  }
+
+  // Apply the optional trim, kick off transcription, and report progress on the
+  // owning note. Processing is queued per note, so the record button stays
+  // available — you can stack another take while this one finishes — and the
+  // body shimmer ("Transcribing audio…" → "Generating notes…") plus a queued
+  // count tell the user work is still in flight.
+  async function finalizeRecording(
+    sessionId: string,
+    owningNoteId: string | undefined,
+    trim: TrimRangeDto | null,
+  ) {
+    if (finishingSessionsRef.current.has(sessionId)) return;
+    finishingSessionsRef.current.add(sessionId);
     // Optimistically flip the note that owns this recording to transcribing.
-    // The selected note isn't necessarily that note — the user may have
-    // browsed elsewhere while recording — and stamping the wrong note as
-    // transcribing would lock its record button and shimmer forever.
+    // Stamping the wrong note would lock its record button and shimmer forever,
+    // so only do it when the selected note is the owning one.
     if (selectedNote && selectedNote.id === owningNoteId) {
       dispatch({
         type: "noteProcessingUpdated",
@@ -2353,7 +2431,7 @@ export function App() {
       });
     }
     try {
-      const result = await finishRecording(sessionId);
+      const result = await finishRecording(sessionId, trim ?? undefined);
       dispatch({ type: "noteProcessingUpdated", note: result.note });
     } catch (err) {
       if (!owningNoteId || !(await applyNoteScopedProcessingFailure(owningNoteId, err))) {
@@ -3208,6 +3286,13 @@ export function App() {
           </p>
         </div>
       </Dialog>
+      <TrimRecordingDialog
+        open={trimSession !== null}
+        preview={trimSession?.preview}
+        preparing={trimSession?.preparing ?? false}
+        busy={trimSession?.finalizing ?? false}
+        onConfirm={(trim) => void handleConfirmTrim(trim)}
+      />
       <MoveNoteToFolderDialog
         open={moveDialogNoteIds !== null}
         onClose={() => setMoveDialogNoteIds(null)}

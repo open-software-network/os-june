@@ -17644,6 +17644,195 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+/* Trim recording modal — waveform of the finalized clip with two draggable
+ * handles. The selected window keeps full-opacity brand bars; the trimmed
+ * ends dim under a scrim so the cut is obvious at a glance. */
+.trim-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: 140px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.trim-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.trim-track {
+  position: relative;
+  height: 132px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  overflow: hidden;
+  touch-action: none;
+}
+
+.trim-track[data-busy="true"] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.trim-waveform {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+}
+
+.trim-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 2px;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.trim-bar-muted {
+  background: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+}
+
+/* Dim the trimmed-away regions. Sit above the bars but below the handles. */
+.trim-shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  background: color-mix(in oklch, var(--card) 62%, transparent);
+  pointer-events: none;
+}
+
+.trim-shade-start {
+  left: 0;
+}
+
+.trim-shade-end {
+  right: 0;
+}
+
+.trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  transform: translateX(-50%);
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+/* The visible grip: a rounded brand pill centered in the hit area. */
+.trim-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 64%;
+  transform: translate(-50%, -50%);
+  border-radius: var(--r-pill);
+  background: var(--brand);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--card) 70%, transparent);
+}
+
+.trim-handle:hover::before {
+  background: color-mix(in oklch, var(--brand) 86%, var(--foreground));
+}
+
+.trim-handle:focus-visible {
+  outline: none;
+}
+
+.trim-handle:focus-visible::before {
+  box-shadow: 0 0 0 3px var(--ring-focus);
+}
+
+.trim-handle:disabled {
+  cursor: default;
+}
+
+.trim-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.trim-readout .trim-duration {
+  color: var(--foreground);
+}
+
+/* Playback head sweeping the waveform. Above the shades and handles so it stays
+ * visible over the trimmed-away regions. */
+.trim-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--foreground);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--card) 70%, transparent);
+  pointer-events: none;
+}
+
+.trim-transport {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.trim-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.trim-play:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
+}
+
+.trim-play:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring-focus);
+}
+
+.trim-play:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.trim-playhead-time {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Referral dialog — a 50/50 split. The left is a terracotta hero (brand
  * gradient + the app's fractal-noise grain, the same recipe as
  * .dictation-hint) that carries the offer; the right is the borderless
