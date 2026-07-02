@@ -66,12 +66,9 @@ function widestLineWidth(element: HTMLElement): number {
 
 // The anchor geometry captured at open time. The side is decided later, in the
 // measure pass, from the tip's real height — but once decided for a mounted
-// tip it stays put (see `side` below) so a re-hover never teleports the visible
-// card from bottom to top. `top`/`bottom` are the two candidate gap edges.
+// tip it stays put (see `sideRef`) so neither a re-hover nor a content swap
+// teleports the visible card. `top`/`bottom` are the two candidate gap edges.
 type TipAnchor = {
-  // The already-committed side for a still-mounted tip. Undefined on a fresh
-  // open, which lets the measure pass pick the side from the measured height.
-  side?: "top" | "bottom";
   centerX: number;
   // Y of the tip's leading edge for each side: below the anchor, or above it.
   bottom: number;
@@ -127,6 +124,11 @@ export function HoverTip({
   const tipRef = useRef<HTMLSpanElement | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  // The side committed by the first measure pass, held for the tip's whole
+  // mounted lifetime: a re-hover or a content swap (e.g. "Copy message" →
+  // "Copied") re-measures, and re-deciding the side then would visibly
+  // teleport the open card. Cleared on unmount so a fresh open decides anew.
+  const sideRef = useRef<"top" | "bottom" | undefined>(undefined);
   const tooltipId = useId();
   // The anchor geometry captured at open; drives the measure pass.
   const [anchor, setAnchor] = useState<TipAnchor>();
@@ -154,6 +156,7 @@ export function HoverTip({
 
   const unmount = useCallback(() => {
     cancelClose();
+    sideRef.current = undefined;
     setAnchor(undefined);
     setCoords(undefined);
     setPhase(undefined);
@@ -163,17 +166,12 @@ export function HoverTip({
     cancelClose();
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
-    setAnchor((current) => ({
-      // A re-hover while the tip is still mounted (open or mid-fade) keeps the
-      // side it already committed to: recomputing it here is what made the
-      // visible card teleport bottom→top. Only a fresh open (no current
-      // anchor) leaves `side` undefined so the measure pass can decide it.
-      side: current?.side ?? coords?.side,
+    setAnchor({
       centerX: rect.left + rect.width / 2,
       bottom: rect.bottom + TIP_GAP,
       top: rect.top - TIP_GAP,
       spaceBelow: window.innerHeight - rect.bottom,
-    }));
+    });
     // A re-entry mid-fade reuses the mounted node: re-assert the open phase so
     // the render before the measure effect lands shows "open", not a stale
     // mid-fade "closing" frame.
@@ -203,19 +201,26 @@ export function HoverTip({
   useLayoutEffect(() => {
     if (!anchor) return;
     const node = tipRef.current;
+    // Measure at the natural (max-width-capped) size, not the previously
+    // tightened one: a content swap while open re-runs this pass, and keeping
+    // the old applied width would stop a longer label from growing back.
+    // Restored below before React re-applies the freshly computed width.
+    const appliedWidth = node?.style.width ?? "";
+    if (node) node.style.width = "";
     const rect = node?.getBoundingClientRect();
     const tipHeight = rect?.height ?? 0;
 
     // Decide the side from the tip's real height once, on a fresh open. If the
     // tip fits below (its height plus the gap and a viewport margin), keep it
-    // below; otherwise flip above. A committed side (`anchor.side`) is honored
-    // so a re-hover on a mounted tip never flips the visible card. Before any
+    // below; otherwise flip above. A committed side (`sideRef`) is honored so
+    // neither a re-hover nor a content swap flips the visible card. Before any
     // real measurement (jsdom), fall back to the fixed threshold.
     const fitsBelow =
       tipHeight > 0
         ? anchor.spaceBelow >= tipHeight + TIP_GAP + VIEWPORT_MARGIN
         : anchor.spaceBelow >= MIN_SPACE_BELOW;
-    const side = anchor.side ?? (fitsBelow ? "bottom" : "top");
+    const side = sideRef.current ?? (fitsBelow ? "bottom" : "top");
+    sideRef.current = side;
 
     // Tighten the width to the widest wrapped line (plus horizontal padding) so
     // a two-line tip hugs its text instead of keeping the full cap. `text-wrap:
@@ -238,6 +243,11 @@ export function HoverTip({
         }
       }
     }
+
+    // Hand the width the DOM had back to React before the commit below: if the
+    // computed width comes out unchanged, React skips the style write and the
+    // cleared inline width would otherwise leak into the painted frame.
+    if (node) node.style.width = appliedWidth;
 
     // Clamp the centered box to the viewport using the final (tightened) width.
     const boxWidth = width ?? rect?.width ?? 0;
@@ -298,7 +308,7 @@ export function HoverTip({
               id={tooltipId}
               className={compact ? "hover-tip hover-tip-compact" : "hover-tip"}
               role="tooltip"
-              data-side={coords?.side ?? anchor.side ?? "bottom"}
+              data-side={coords?.side ?? "bottom"}
               // Hidden until measured: the enter animation runs only once the
               // final position is revealed, never while offscreen.
               data-state={coords ? phase : "measuring"}

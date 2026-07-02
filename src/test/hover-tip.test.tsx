@@ -205,6 +205,45 @@ describe("HoverTip", () => {
     }
   });
 
+  it("keeps its side when the tip content changes while mounted", () => {
+    // A content swap while open (e.g. "Copy message" → "Copied") re-runs the
+    // measure pass with the new height; the visible card must keep the side it
+    // committed to even when the new content would no longer fit there.
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectFor = (el: HTMLElement): DOMRect => {
+      if (el.getAttribute("role") === "tooltip") {
+        const height = el.textContent?.includes("much longer") ? 200 : 24;
+        return { top: 0, left: 0, right: 120, bottom: height, width: 120, height } as DOMRect;
+      }
+      // 40px below the anchor: the 24px tip fits there, the 200px one cannot.
+      return { top: 744, left: 100, right: 132, bottom: 760, width: 32, height: 16 } as DOMRect;
+    };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        return rectFor(this);
+      });
+    try {
+      const { rerender } = render(
+        <HoverTip tip="Copied" compact width={104} tabIndex={0}>
+          Copy
+        </HoverTip>,
+      );
+      fireEvent.focus(screen.getByText("Copy"));
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "bottom");
+
+      rerender(
+        <HoverTip tip="A much longer label swapped in while open" compact width={104} tabIndex={0}>
+          Copy
+        </HoverTip>,
+      );
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "bottom");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("cancels the exit when the anchor is re-entered mid-fade", () => {
     vi.useFakeTimers();
     try {
