@@ -1731,6 +1731,86 @@ describe("AppSettings", () => {
     }
   });
 
+  it("keeps the local model config collapsed behind More options until expanded", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    // The primary pickers are visible, but the local model config is hidden
+    // behind a collapsed "More options" disclosure by default.
+    const trigger = await screen.findByRole("button", { name: /More options/ });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("switch", { name: "Use local text model" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+
+    await user.click(trigger);
+
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
+  });
+
+  it("auto-expands More options when a local model is already enabled", async () => {
+    localState = {
+      baseUrl: "http://localhost:11434/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+      enabled: true,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "local",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "llama3.1:8b",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    // An active local model must never be hidden: the disclosure opens itself so
+    // the enabled toggle and endpoint config stay reachable.
+    expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /More options/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
   it("saves the draft then enables a local text model", async () => {
     const user = userEvent.setup();
     const modelChanged = vi.fn();
@@ -1751,7 +1831,9 @@ describe("AppSettings", () => {
       );
 
       await user.click(await screen.findByRole("tab", { name: "Models" }));
-      await user.type(screen.getByLabelText("Base URL"), "http://localhost:11434/v1");
+      // The local model config lives behind the "More options" disclosure.
+      await user.click(await screen.findByRole("button", { name: /More options/ }));
+      await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
       await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
       await user.type(screen.getByLabelText("API key"), "sk-test");
       await user.click(screen.getByRole("switch", { name: "Use local text model" }));
@@ -2067,7 +2149,9 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.type(screen.getByLabelText("Base URL"), "http://localhost:11434/v1");
+    // The local model config lives behind the "More options" disclosure.
+    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
     await user.click(screen.getByRole("button", { name: "Test connection" }));
 
     expect(mocks.probeLocalGenerationEndpoint).toHaveBeenCalledWith({
@@ -2099,7 +2183,9 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.type(screen.getByLabelText("Base URL"), "https://models.example.com/v1");
+    // The local model config lives behind the "More options" disclosure.
+    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.type(await screen.findByLabelText("Base URL"), "https://models.example.com/v1");
     await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
 
     // A remote endpoint surfaces an inline warning up front.

@@ -874,6 +874,9 @@ export function AppSettings({
     const baseUrl = providerSettings.localGeneration.baseUrl.trim();
     if (!isLoopbackUrl(baseUrl)) {
       setLocalEnableConfirm(true);
+      // The confirm affordance lives in the Local model section behind "More
+      // options"; reveal it so the status message's instruction is reachable.
+      setShowMoreModelOptions(true);
       setStatus(
         "This endpoint is not on this machine. Requests will leave your device. Confirm in the Local model section to enable it.",
       );
@@ -1022,6 +1025,15 @@ export function AppSettings({
   const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
   const localDraftBaseUrl = localGenerationDraft.baseUrl.trim();
   const localNonLoopback = localDraftBaseUrl.length > 0 && !isLoopbackUrl(localDraftBaseUrl);
+
+  // Advanced model settings (the Venice key and the local model) sit behind a
+  // collapsed "More options" disclosure. Auto-expand it when a local model is
+  // already enabled so the active toggle and endpoint config are never hidden
+  // behind the disclosure. It only ever expands: a manual collapse, or a later
+  // disable, is left as the user set it.
+  useEffect(() => {
+    if (localModelEnabled) setShowMoreModelOptions(true);
+  }, [localModelEnabled]);
 
   useEffect(() => {
     if (micOpen) updateMicrophonePopoverPlacement();
@@ -1489,7 +1501,7 @@ export function AppSettings({
                     type="button"
                     className="settings-row settings-more-options-trigger"
                     aria-expanded={showMoreModelOptions}
-                    aria-controls="models-more-options"
+                    aria-controls="models-more-options local-model-section"
                     onClick={() => setShowMoreModelOptions((open) => !open)}
                   >
                     <span className="settings-row-info">
@@ -1516,141 +1528,147 @@ export function AppSettings({
               </div>
             </section>
 
-            <section className="settings-group" aria-labelledby="local-model-heading">
-              <h2 id="local-model-heading" className="settings-group-heading">
-                Local model
-              </h2>
-              <p className="settings-group-description">
-                Advanced text generation through your own OpenAI-compatible endpoint.
-              </p>
-              <div className="settings-card">
-                <div className="settings-rows">
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Use local model</h3>
-                      <p className="settings-row-description">
-                        Generated notes and agent responses use your local text model while
-                        transcription stays on the selected speech-to-text model.
-                      </p>
-                    </div>
-                    <div className="settings-row-control">
-                      <Switch
-                        checked={localModelEnabled}
-                        aria-label="Use local text model"
-                        onCheckedChange={handleLocalToggle}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="settings-row settings-row-stack">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Endpoint</h3>
-                      <p className="settings-row-description">
-                        OpenAI-compatible base URL, model id, and an optional API key.
-                      </p>
-                    </div>
-                    <div className="settings-row-control settings-local-model-fields">
-                      <label className="settings-field">
-                        <span>Base URL</span>
-                        <input
-                          value={localGenerationDraft.baseUrl}
-                          onChange={(event) => {
-                            const baseUrl = event.currentTarget.value;
-                            setLocalGenerationDraft((draft) => ({
-                              ...draft,
-                              baseUrl,
-                            }));
-                            // A base-URL edit invalidates a pending remote
-                            // confirm.
-                            setLocalEnableConfirm(false);
-                          }}
-                          placeholder="http://localhost:11434/v1"
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          spellCheck={false}
-                        />
-                      </label>
-                      <label className="settings-field">
-                        <span>Model ID</span>
-                        <input
-                          value={localGenerationDraft.modelId}
-                          onChange={(event) => {
-                            const modelId = event.currentTarget.value;
-                            setLocalGenerationDraft((draft) => ({
-                              ...draft,
-                              modelId,
-                            }));
-                          }}
-                          placeholder="llama3.1:8b"
-                          list="local-generation-models"
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          spellCheck={false}
-                        />
-                        <datalist id="local-generation-models">
-                          {localProbeModels.map((id) => (
-                            <option key={id} value={id} />
-                          ))}
-                        </datalist>
-                      </label>
-                      <label className="settings-field">
-                        <span>API key</span>
-                        <input
-                          type="password"
-                          value={localGenerationDraft.apiKey}
-                          onChange={(event) => {
-                            const apiKey = event.currentTarget.value;
-                            setLocalGenerationDraft((draft) => ({
-                              ...draft,
-                              apiKey,
-                            }));
-                          }}
-                          placeholder="Optional"
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          spellCheck={false}
-                        />
-                      </label>
-                      {localNonLoopback ? (
-                        <p className="settings-local-model-warning" role="note">
-                          This endpoint is not on this machine. Requests will leave your device.
+            {showMoreModelOptions ? (
+              <section
+                id="local-model-section"
+                className="settings-group"
+                aria-labelledby="local-model-heading"
+              >
+                <h2 id="local-model-heading" className="settings-group-heading">
+                  Local model
+                </h2>
+                <p className="settings-group-description">
+                  Advanced text generation through your own OpenAI-compatible endpoint.
+                </p>
+                <div className="settings-card">
+                  <div className="settings-rows">
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Use local model</h3>
+                        <p className="settings-row-description">
+                          Generated notes and agent responses use your local text model while
+                          transcription stays on the selected speech-to-text model.
                         </p>
-                      ) : null}
-                      <div className="settings-local-model-actions">
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => void testLocalConnection()}
-                        >
-                          Test connection
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => void handleSaveLocalModel()}
-                        >
-                          Save local model
-                        </button>
                       </div>
-                      {localEnableConfirm ? (
-                        <div className="settings-local-model-confirm" role="alert">
-                          <p className="settings-row-error">
+                      <div className="settings-row-control">
+                        <Switch
+                          checked={localModelEnabled}
+                          aria-label="Use local text model"
+                          onCheckedChange={handleLocalToggle}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="settings-row settings-row-stack">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Endpoint</h3>
+                        <p className="settings-row-description">
+                          OpenAI-compatible base URL, model id, and an optional API key.
+                        </p>
+                      </div>
+                      <div className="settings-row-control settings-local-model-fields">
+                        <label className="settings-field">
+                          <span>Base URL</span>
+                          <input
+                            value={localGenerationDraft.baseUrl}
+                            onChange={(event) => {
+                              const baseUrl = event.currentTarget.value;
+                              setLocalGenerationDraft((draft) => ({
+                                ...draft,
+                                baseUrl,
+                              }));
+                              // A base-URL edit invalidates a pending remote
+                              // confirm.
+                              setLocalEnableConfirm(false);
+                            }}
+                            placeholder="http://localhost:11434/v1"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck={false}
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>Model ID</span>
+                          <input
+                            value={localGenerationDraft.modelId}
+                            onChange={(event) => {
+                              const modelId = event.currentTarget.value;
+                              setLocalGenerationDraft((draft) => ({
+                                ...draft,
+                                modelId,
+                              }));
+                            }}
+                            placeholder="llama3.1:8b"
+                            list="local-generation-models"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck={false}
+                          />
+                          <datalist id="local-generation-models">
+                            {localProbeModels.map((id) => (
+                              <option key={id} value={id} />
+                            ))}
+                          </datalist>
+                        </label>
+                        <label className="settings-field">
+                          <span>API key</span>
+                          <input
+                            type="password"
+                            value={localGenerationDraft.apiKey}
+                            onChange={(event) => {
+                              const apiKey = event.currentTarget.value;
+                              setLocalGenerationDraft((draft) => ({
+                                ...draft,
+                                apiKey,
+                              }));
+                            }}
+                            placeholder="Optional"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck={false}
+                          />
+                        </label>
+                        {localNonLoopback ? (
+                          <p className="settings-local-model-warning" role="note">
                             This endpoint is not on this machine. Requests will leave your device.
                           </p>
+                        ) : null}
+                        <div className="settings-local-model-actions">
                           <button
                             type="button"
                             className="btn btn-secondary"
-                            onClick={() => void enableLocalGeneration()}
+                            onClick={() => void testLocalConnection()}
                           >
-                            Enable anyway
+                            Test connection
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => void handleSaveLocalModel()}
+                          >
+                            Save local model
                           </button>
                         </div>
-                      ) : null}
+                        {localEnableConfirm ? (
+                          <div className="settings-local-model-confirm" role="alert">
+                            <p className="settings-row-error">
+                              This endpoint is not on this machine. Requests will leave your device.
+                            </p>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => void enableLocalGeneration()}
+                            >
+                              Enable anyway
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </section>
+              </section>
+            ) : null}
 
             {IMAGE_GENERATION_ENABLED ? (
               <section className="settings-group" aria-labelledby="image-generation-heading">
