@@ -585,10 +585,10 @@ pub fn get_platform_capabilities() -> PlatformCapabilities {
             target_os = "linux"
         )),
         meeting_detection: cfg!(any(target_os = "macos", target_os = "windows")),
-        // Dictation is macOS-only today. The Windows dictation backend is
-        // being implemented separately; it will add `target_os = "windows"`
-        // here when it lands.
-        dictation: cfg!(target_os = "macos"),
+        // macOS uses the Swift helper; Windows the in-process hook engine in
+        // dictation/win.rs. Linux is still unsupported (Wayland has no
+        // portable global-hotkey API).
+        dictation: cfg!(any(target_os = "macos", target_os = "windows")),
     }
 }
 

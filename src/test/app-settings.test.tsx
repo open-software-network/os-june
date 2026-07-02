@@ -1232,25 +1232,22 @@ describe("AppSettings", () => {
 
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
       // The system audio toggle keys on the capability plus live readiness,
-      // not the OS; the mic test stays macOS-only (it runs through the
-      // dictation helper binary).
+      // not the OS. The mic test and shortcut rows follow the dictation
+      // capability, which Windows now reports through its in-process engine.
       expect(
         screen.getByRole("switch", {
           name: "Capture system audio for notes",
         }),
       ).toBeInTheDocument();
       expect(
-        screen.queryByRole("button", {
+        screen.getByRole("button", {
           name: "Start test",
         }),
-      ).not.toBeInTheDocument();
+      ).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
-      expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
-      expect(
-        screen.getByText("Dictation is not available on this platform yet."),
-      ).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+      expect(await screen.findByText("Push to talk")).toBeInTheDocument();
+      expect(screen.queryByText("Dictation shortcuts unavailable")).toBeNull();
     } finally {
       restoreNavigator();
     }

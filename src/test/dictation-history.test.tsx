@@ -121,10 +121,10 @@ describe("DictationHistoryView", () => {
     await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
   });
 
-  it("does not advertise shortcut dictation on Windows", async () => {
+  it("does not advertise shortcut dictation on Linux", async () => {
     const restoreNavigator = stubNavigatorPlatform(
-      "Win32",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Linux x86_64",
+      "Mozilla/5.0 (X11; Linux x86_64)",
     );
     try {
       mocks.listDictationHistory.mockResolvedValue({

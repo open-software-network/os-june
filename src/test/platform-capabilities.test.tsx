@@ -71,7 +71,7 @@ describe("platformCapabilities", () => {
     await expect(platformCapabilities()).resolves.toEqual({
       systemAudio: true,
       meetingDetection: true,
-      dictation: false,
+      dictation: true,
     });
     // A failure is not cached, so the next read retries the backend.
     expect(cachedPlatformCapabilities()).toBeUndefined();

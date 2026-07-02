@@ -15,10 +15,11 @@ let pending: Promise<PlatformCapabilities> | undefined;
  */
 export function fallbackPlatformCapabilities(): PlatformCapabilities {
   const mac = isMacLikePlatform();
+  const windows = isWindowsLikePlatform();
   return {
     systemAudio: true,
-    meetingDetection: mac || isWindowsLikePlatform(),
-    dictation: mac,
+    meetingDetection: mac || windows,
+    dictation: mac || windows,
   };
 }
 

@@ -351,9 +351,6 @@ export function AppSettings({
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
   const capabilities = usePlatformCapabilities();
-  // Still needed for the mic test below: it runs through the macOS dictation
-  // helper binary, which is about the host OS, not a reported capability.
-  const macLikePlatform = isMacLikePlatform();
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -1276,7 +1273,7 @@ export function AppSettings({
                   </div>
                 </div>
 
-                {macLikePlatform ? (
+                {capabilities.dictation ? (
                   <MicTestControl
                     state={micTestState}
                     level={micTestLevel}
