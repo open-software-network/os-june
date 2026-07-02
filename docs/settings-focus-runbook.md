@@ -9,14 +9,15 @@ and their logic are all intact; only the nav entries are filtered out.
 
 Visible: the pre-PR tabs (**General, Billing, Shortcuts, Dictation, Audio,
 Models, Agent, Installed skills, About**) plus **External skill directories**
-(`external-dirs` is PR-new but verified working, so it's kept on).
+(`external-dirs` is PR-new but verified working, so it's kept on) and **MCP
+servers** (`mcp` — stabilized in JUN-137: add / test / toggle / edit / delete,
+with a non-destructive connection-field edit).
 
 Hidden (added by this PR, not yet stabilized):
 
 | id | label |
 |----|-------|
 | `skill-review` | Pending skill changes |
-| `mcp` | MCP servers |
 | `mcp-catalog` | MCP catalog |
 | `mcp-diagnostics` | MCP diagnostics |
 | `mcp-security` | MCP security |
@@ -75,7 +76,7 @@ const groups = localDev
 
 | id | known status |
 |----|--------------|
-| `mcp` | works (config-write contract fixed) |
+| `mcp` | shipped (JUN-137): unhidden; add / test / toggle / edit / delete verified. Edit is connection-field only (command/args/url) via a scoped, non-destructive `mcp_servers.<name>.<field>` config write; editing secrets/transport is a delete-and-re-add followup |
 | `mcp-security` | works (config-write contract fixed) |
 | `skills-hub` | search + loading fixed; install needs a GITHUB_TOKEN configured in June (Team skill taps), since the sandbox can't read the gh keyring |
 | `taps` | hosts the GITHUB_TOKEN secret setup |

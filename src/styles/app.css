@@ -13553,7 +13553,8 @@ input:focus-visible,
 /* MCP tool selection + filtering (spec 16). The per-server "Tools" panel: the
  * compare counts, the mode selector, the discovered-tool list, the utility
  * toggles, and the saved/restart notice. */
-.mcp-server-tools {
+.mcp-server-tools,
+.mcp-server-edit {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -13567,9 +13568,15 @@ input:focus-visible,
   cursor: pointer;
 }
 
-.mcp-server-tools:hover {
+.mcp-server-tools:hover,
+.mcp-server-edit:hover {
   border-color: var(--border);
   color: var(--foreground);
+}
+
+.mcp-server-edit:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .mcp-tools-form {

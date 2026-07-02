@@ -70,6 +70,10 @@ const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> = 
   "mcp.add": ["mcpServers", "toolsets"],
   "mcp.remove": ["mcpServers", "toolsets"],
   "mcp.setEnabled": ["mcpServers", "toolsets"],
+  // An edit rewrites `mcp_servers.<name>.<field>` in config.yaml; the server
+  // list reflects the new connection target and the toolset inventory it
+  // feeds, so both refresh (same rule as the tool-filter write).
+  "mcp.edit": ["mcpServers", "toolsets", "configTree"],
   // A tool-filter write changes config.yaml; the server list reflects the new
   // include/exclude policy and the toolset inventory it feeds, so both refresh.
   "mcp.setTools": ["mcpServers", "toolsets", "configTree"],

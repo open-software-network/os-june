@@ -33,6 +33,7 @@ export type AdminMutation =
   | "mcp.add"
   | "mcp.remove"
   | "mcp.setEnabled"
+  | "mcp.edit"
   | "mcp.setTools"
   | "mcp.test"
   | "mcp.oauthLogin"
@@ -75,6 +76,11 @@ const TIMING: Readonly<Record<AdminMutation, ApplicationTiming>> = Object.freeze
   "mcp.add": "gateway-restart",
   "mcp.remove": "gateway-restart",
   "mcp.setEnabled": "gateway-restart",
+  // Editing a server's connection fields writes `mcp_servers.<name>.<field>`
+  // in config.yaml, but Hermes rebuilds the server connection + tool inventory
+  // at gateway start, so the change only takes effect after a restart (like
+  // add/enable and the tool-filter write).
+  "mcp.edit": "gateway-restart",
   // A tool include/exclude/utility-toggle change is written to config.yaml
   // under `mcp_servers.<name>.tools`, but Hermes builds the registered tool
   // inventory at gateway start, so the filter only takes effect after a
@@ -149,6 +155,8 @@ export function mutationNotification(mutation: AdminMutation, subject: string): 
       return `Removed ${subject}. Restart Hermes gateway to drop its tools.`;
     case "mcp.setEnabled":
       return `Updated ${subject}. Restart Hermes gateway to apply it.`;
+    case "mcp.edit":
+      return `Saved ${subject}. Restart Hermes gateway to apply the changes.`;
     case "mcp.setTools":
       return `Tool filter saved. Restart Hermes gateway to refresh registered tools.`;
     case "mcp.test":

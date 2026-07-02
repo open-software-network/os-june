@@ -320,7 +320,6 @@ const SETTINGS_SIDEBAR_GROUPS: {
  */
 export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set<SettingsTab>([
   "skill-review",
-  "mcp",
   "mcp-catalog",
   "mcp-diagnostics",
   "mcp-security",

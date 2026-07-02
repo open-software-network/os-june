@@ -11,21 +11,26 @@ import { describe, expect, it, vi } from "vitest";
 import {
   McpServersController,
   authMeta,
+  canEditServer,
+  editFromServer,
   emptyDraft,
   filterServers,
   hasAvailableTools,
   isLocalSubprocess,
   isValidHttpUrl,
   parseMcpServer,
+  planServerEdit,
   redactedEnv,
   redactedHeaders,
   serverArgs,
   serverHaystack,
   statusMeta,
   transportMeta,
+  useMcpFilteringController,
   useMcpServersController,
   validateDraft,
   type HermesMcpServerInfo,
+  type McpFilteringState,
   type McpServerDraft,
   type McpServersEngine,
   type McpServersState,
@@ -265,6 +270,197 @@ describe("mcp servers — add-server validation", () => {
 // Controller mutations against the real client + fake server.
 // ---------------------------------------------------------------------------
 
+describe("mcp servers — edit plan (scoped, non-destructive)", () => {
+  const stdio = () =>
+    serverFromWire({
+      name: "sqlite",
+      enabled: true,
+      transport: "stdio",
+      command: "mcp-server-sqlite",
+      args: ["--db", "./data.db"],
+      env: { SQLITE_KEY: "secret" },
+    });
+
+  it("seeds the editable connection fields off a server", () => {
+    expect(editFromServer(stdio())).toEqual({
+      command: "mcp-server-sqlite",
+      args: ["--db", "./data.db"],
+      url: "",
+    });
+  });
+
+  it("allows editing stdio and http transports but not unknown", () => {
+    expect(canEditServer(stdio())).toBe(true);
+    expect(
+      canEditServer(serverFromWire({ name: "x", enabled: true, transport: "http-oauth" })),
+    ).toBe(true);
+    expect(canEditServer(serverFromWire({ name: "x", enabled: true, transport: "unknown" }))).toBe(
+      false,
+    );
+  });
+
+  it("writes only the changed command leaf, leaving args untouched", () => {
+    const plan = planServerEdit(stdio(), {
+      command: "mcp-server-sqlite-v2",
+      args: ["--db", "./data.db"],
+      url: "",
+    });
+    expect(plan).toEqual({
+      ok: true,
+      writes: [
+        {
+          op: "set",
+          segments: ["mcp_servers", "sqlite", "command"],
+          value: "mcp-server-sqlite-v2",
+        },
+      ],
+    });
+  });
+
+  it("deletes the args leaf when args are cleared", () => {
+    const plan = planServerEdit(stdio(), {
+      command: "mcp-server-sqlite",
+      args: [],
+      url: "",
+    });
+    expect(plan).toEqual({
+      ok: true,
+      writes: [{ op: "delete", segments: ["mcp_servers", "sqlite", "args"] }],
+    });
+  });
+
+  it("produces no writes when nothing changed", () => {
+    const plan = planServerEdit(stdio(), {
+      command: "mcp-server-sqlite",
+      args: ["--db", "./data.db"],
+      url: "",
+    });
+    expect(plan).toEqual({ ok: true, writes: [] });
+  });
+
+  it("writes the url leaf for an http server", () => {
+    const http = serverFromWire({
+      name: "linear",
+      enabled: true,
+      transport: "http-oauth",
+      url: "https://mcp.linear.app/sse",
+    });
+    const plan = planServerEdit(http, {
+      command: "",
+      args: [],
+      url: "https://mcp.linear.app/mcp",
+    });
+    expect(plan).toEqual({
+      ok: true,
+      writes: [
+        {
+          op: "set",
+          segments: ["mcp_servers", "linear", "url"],
+          value: "https://mcp.linear.app/mcp",
+        },
+      ],
+    });
+  });
+
+  it("rejects shell metacharacters and blank/invalid fields", () => {
+    const badCommand = planServerEdit(stdio(), {
+      command: "rm -rf / ; curl evil",
+      args: [],
+      url: "",
+    });
+    expect(badCommand.ok).toBe(false);
+    if (!badCommand.ok) expect(badCommand.errors.command).toBeTruthy();
+
+    const blank = planServerEdit(stdio(), { command: "", args: [], url: "" });
+    expect(blank.ok).toBe(false);
+
+    const http = serverFromWire({
+      name: "linear",
+      enabled: true,
+      transport: "http",
+      url: "https://mcp.linear.app",
+    });
+    const badUrl = planServerEdit(http, {
+      command: "",
+      args: [],
+      url: "not-a-url",
+    });
+    expect(badUrl.ok).toBe(false);
+    if (!badUrl.ok) expect(badUrl.errors.url).toBeTruthy();
+  });
+});
+
+describe("mcp servers — edit apply (config write preserves secrets)", () => {
+  function engineFor(config: Record<string, unknown>): McpServersEngine {
+    const harness = makeAdminHarness({ config });
+    return {
+      target: harness.target,
+      client: harness.client,
+      cache: harness.cache,
+      lifecycle: harness.lifecycle,
+    };
+  }
+
+  it("applies the changed leaf and preserves env + tools + unrelated config", async () => {
+    const engine = engineFor({
+      mcp_servers: {
+        sqlite: {
+          command: "old-cmd",
+          args: ["--db", "./data.db"],
+          env: { SQLITE_KEY: "env-ref" },
+          tools: { include: ["query"] },
+        },
+      },
+      skills: { external_dirs: ["~/team"] },
+    });
+    const { result } = renderHook(() => useMcpFilteringController(engine));
+    await waitFor(() => expect(result.current.status).not.toBe("loading"));
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.editServer("sqlite", [
+        {
+          op: "set",
+          segments: ["mcp_servers", "sqlite", "command"],
+          value: "new-cmd",
+        },
+      ]);
+    });
+    expect(ok).toBe(true);
+
+    const after = await engine.client.config.get();
+    const servers = (after.config as Record<string, unknown>).mcp_servers as Record<
+      string,
+      Record<string, unknown>
+    >;
+    // The command changed...
+    expect(servers.sqlite.command).toBe("new-cmd");
+    // ...but the secret env, the tool filter, and unrelated config all survived.
+    expect(servers.sqlite.env).toEqual({ SQLITE_KEY: "env-ref" });
+    expect(servers.sqlite.tools).toEqual({ include: ["query"] });
+    expect((after.config as Record<string, unknown>).skills).toEqual({
+      external_dirs: ["~/team"],
+    });
+    // The edit flips the restart-required banner and raises an mcp.edit notice.
+    expect(result.current.lifecycle.state).toBe("gateway-restart-required");
+    expect(result.current.notifications.some((n) => n.mutation === "mcp.edit")).toBe(true);
+  });
+
+  it("is a no-op success when there are no writes", async () => {
+    const engine = engineFor({ mcp_servers: { sqlite: { command: "cmd" } } });
+    const { result } = renderHook(() => useMcpFilteringController(engine));
+    await waitFor(() => expect(result.current.status).not.toBe("loading"));
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.editServer("sqlite", []);
+    });
+    expect(ok).toBe(true);
+    // Nothing changed -> no restart banner.
+    expect(result.current.lifecycle.state).toBe("clean");
+  });
+});
+
 describe("mcp servers — controller", () => {
   it("loads servers and exposes transport / status metadata", async () => {
     const harness = makeAdminHarness(mcpStdioWithToolsScenario());
@@ -426,7 +622,9 @@ const BASE_LIFECYCLE: McpServersState["lifecycle"] = {
   canRestart: false,
 };
 
-function stubState(overrides: Partial<McpServersState> = {}): McpServersState {
+function stubState(
+  overrides: Partial<McpFilteringState> = {},
+): McpServersState & Partial<McpFilteringState> {
   return {
     status: "ready",
     servers: [],
@@ -543,6 +741,38 @@ describe("McpServersView — component", () => {
     const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
     fireEvent.click(sqliteRow.getByRole("button", { name: /delete sqlite/i }));
     await waitFor(() => expect(screen.getByText(/currently exposes tools/i)).toBeInTheDocument());
+  });
+
+  it("shows no Edit action when the edit slice is not wired", () => {
+    render(<McpServersView state={stubState({ servers: VIEW_SERVERS })} />);
+    expect(screen.queryByRole("button", { name: /edit sqlite/i })).not.toBeInTheDocument();
+  });
+
+  it("edits a stdio server's command through a pre-filled dialog", async () => {
+    const editServer = vi.fn(() => Promise.resolve(true));
+    render(<McpServersView state={stubState({ servers: VIEW_SERVERS, editServer })} />);
+    const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
+    fireEvent.click(sqliteRow.getByRole("button", { name: /edit sqlite/i }));
+
+    // The dialog opens pre-filled with the current command.
+    await waitFor(() => expect(screen.getByText("Edit sqlite")).toBeInTheDocument());
+    const command = screen.getByLabelText("Command") as HTMLInputElement;
+    expect(command.value).toBe("mcp-server-sqlite");
+
+    fireEvent.change(command, {
+      target: { value: "mcp-server-sqlite-v2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(editServer).toHaveBeenCalledWith("sqlite", [
+        {
+          op: "set",
+          segments: ["mcp_servers", "sqlite", "command"],
+          value: "mcp-server-sqlite-v2",
+        },
+      ]),
+    );
   });
 
   it("opens the add-server dialog and validates before sending", async () => {

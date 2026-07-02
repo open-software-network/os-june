@@ -375,6 +375,143 @@ export function isValidHttpUrl(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Edit an existing server (scoped, non-destructive config write)
+// ---------------------------------------------------------------------------
+
+/**
+ * The config base path for one server: `mcp_servers.<name>`. Every scoped
+ * server-field write nests under here, exactly like the tool-filter write at
+ * `mcp_servers.<name>.tools`. Segments (not a dotted string) so a server name
+ * that contains a dot stays one key.
+ */
+export function serverConfigPath(name: string, ...fields: string[]): string[] {
+  return ["mcp_servers", name, ...fields];
+}
+
+/**
+ * The connection fields an edit can change. Secrets (env, headers, tokens) and
+ * tool filters are deliberately NOT here: the scoped write only touches the
+ * leaves that changed, so everything else under `mcp_servers.<name>` — including
+ * secret env-refs and the tool policy — is preserved by the read-modify-write.
+ * Changing a secret is still a delete-and-re-add (the listing never returns
+ * secret values, so June cannot round-trip them).
+ */
+export type McpServerEdit = {
+  /** stdio: the command (a single program name or absolute path). */
+  command: string;
+  /** stdio: positional args, one per row. */
+  args: string[];
+  /** http(-oauth): the server URL. */
+  url: string;
+};
+
+/** Reads the current editable connection fields off a parsed server, for
+ * pre-filling the edit form. Secrets are never read (they are not returned by
+ * the listing), so only the non-secret connection target is seeded. */
+export function editFromServer(server: HermesMcpServerInfo): McpServerEdit {
+  return {
+    command: server.command ?? "",
+    args: serverArgs(server),
+    url: server.url ?? "",
+  };
+}
+
+/** True when a server's connection target can be edited in place. Only the
+ * transports with a known, non-secret connection field (stdio command/args,
+ * http url) qualify; an `unknown` transport has nothing safe to edit. */
+export function canEditServer(server: HermesMcpServerInfo): boolean {
+  return (
+    server.transport === "stdio" || server.transport === "http" || server.transport === "http-oauth"
+  );
+}
+
+/** One scoped config write in an edit plan: set a value at a leaf, or delete a
+ * leaf (when a field is cleared). */
+export type McpEditWrite =
+  | { op: "set"; segments: string[]; value: unknown }
+  | { op: "delete"; segments: string[] };
+
+/** The validated outcome of an edit: the scoped writes to apply (only the
+ * leaves that actually changed), or a field -> message error map. A valid plan
+ * with an empty `writes` array means nothing changed (the caller can no-op). */
+export type McpServerEditPlan =
+  | { ok: true; writes: McpEditWrite[] }
+  | { ok: false; errors: Record<string, string> };
+
+/**
+ * Validates an edited draft against the original server and builds the scoped,
+ * non-destructive write plan. Only the leaves that changed are written (or
+ * deleted, when a field is cleared), so `env` / `headers` / `tools` and every
+ * other field under `mcp_servers.<name>` are preserved. Reuses the add flow's
+ * shell/path-injection guards so an edit can never smuggle in a metacharacter
+ * the add flow would reject. The server name (its config key) is fixed — a
+ * rename is a delete-and-re-add, not an edit.
+ */
+export function planServerEdit(
+  server: HermesMcpServerInfo,
+  next: McpServerEdit,
+): McpServerEditPlan {
+  const name = server.name;
+  const errors: Record<string, string> = {};
+  const writes: McpEditWrite[] = [];
+
+  if (server.transport === "stdio") {
+    const command = next.command.trim();
+    if (!command) {
+      errors.command = "Enter the command to run.";
+    } else if (SHELL_METACHARACTERS.test(command)) {
+      errors.command =
+        "Remove shell characters. Enter only the program path, with arguments below.";
+    }
+    next.args.forEach((arg, index) => {
+      if (SHELL_METACHARACTERS.test(arg)) {
+        errors[`args.${index}`] = "Remove shell characters from this argument.";
+      }
+    });
+    if (Object.keys(errors).length > 0) return { ok: false, errors };
+
+    if (command !== (server.command ?? "")) {
+      writes.push({
+        op: "set",
+        segments: serverConfigPath(name, "command"),
+        value: command,
+      });
+    }
+    const args = next.args.map((arg) => arg.trim()).filter((arg) => arg);
+    if (!stringListsEqual(args, serverArgs(server))) {
+      writes.push(
+        args.length > 0
+          ? { op: "set", segments: serverConfigPath(name, "args"), value: args }
+          : { op: "delete", segments: serverConfigPath(name, "args") },
+      );
+    }
+  } else {
+    const url = next.url.trim();
+    if (!url) {
+      errors.url = "Enter the server URL.";
+    } else if (!isValidHttpUrl(url)) {
+      errors.url = "Enter a valid http or https URL.";
+    }
+    if (Object.keys(errors).length > 0) return { ok: false, errors };
+
+    if (url !== (server.url ?? "")) {
+      writes.push({
+        op: "set",
+        segments: serverConfigPath(name, "url"),
+        value: url,
+      });
+    }
+  }
+
+  return { ok: true, writes };
+}
+
+/** Order-sensitive equality for two string lists (args are positional). */
+function stringListsEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+// ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
 

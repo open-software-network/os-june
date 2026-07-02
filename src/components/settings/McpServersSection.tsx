@@ -4,6 +4,7 @@ import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCircleX } from "central-icons/IconCircleX";
 import { IconCloud } from "central-icons/IconCloud";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconEditSmall1 } from "central-icons/IconEditSmall1";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconFilter2 } from "central-icons/IconFilter2";
@@ -17,7 +18,9 @@ import { useEffect, useId, useMemo, useState } from "react";
 import {
   ALLOWLIST_RECOMMENDATION,
   authMeta,
+  canEditServer,
   classifyServerRisk,
+  editFromServer,
   enableConfirmationFor,
   filterServers,
   hasAvailableTools,
@@ -25,6 +28,7 @@ import {
   isLocalSubprocess,
   oauthStateFor,
   oauthStatusMeta,
+  planServerEdit,
   redactedEnv,
   redactedHeaders,
   securityLabelsFor,
@@ -38,6 +42,7 @@ import {
   validateDraft,
   type HermesAdminMode,
   type HermesMcpServerInfo,
+  type McpEditWrite,
   type McpFilteringState,
   type McpOauthLoginState,
   type McpOauthState,
@@ -112,18 +117,29 @@ export function McpServersSection({ mode = "sandboxed" }: McpServersSectionProps
 /**
  * The render-only view, split out so component tests can drive it with a stubbed
  * {@link McpServersState} (no Tauri, no network) and assert search / add / test /
- * toggle / delete wiring. Owns only the local search + dialog state.
+ * toggle / edit / delete wiring. Owns only the local search + dialog state.
  */
 export function McpServersView({
   state,
   oauth,
   mode = "sandboxed",
 }: {
-  /** The servers state, optionally with the spec-16 tool-filtering slice. The
-   * filtering fields are optional so a component test can drive the list with a
-   * bare {@link McpServersState}; the Tools panel save no-ops without them. */
+  /** The servers state, optionally with the spec-16 tool-filtering slice and the
+   * connection-field edit slice. Those fields are optional so a component test
+   * can drive the list with a bare {@link McpServersState}; the Tools panel save
+   * no-ops and the Edit action is hidden without them. */
   state: McpServersState &
-    Partial<Pick<McpFilteringState, "savingServer" | "saveError" | "saveToolPolicy">>;
+    Partial<
+      Pick<
+        McpFilteringState,
+        | "savingServer"
+        | "saveError"
+        | "saveToolPolicy"
+        | "editingServer"
+        | "editError"
+        | "editServer"
+      >
+    >;
   /** The OAuth sign-in slice. Optional so a component test can drive the list
    * without it; the empty controller state is used when absent. */
   oauth?: McpOauthState;
@@ -132,6 +148,8 @@ export function McpServersView({
   const [query, setQuery] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [toDelete, setToDelete] = useState<HermesMcpServerInfo | undefined>();
+  // The server whose connection-field edit dialog is open, or undefined.
+  const [toEdit, setToEdit] = useState<HermesMcpServerInfo | undefined>();
   // A high-risk server enable is gated behind a confirmation. This holds the
   // server awaiting a confirmed enable; a disable or a low-risk enable applies
   // straight away.
@@ -254,6 +272,9 @@ export function McpServersView({
                   onSignIn={oauth ? () => oauth.signIn(server.name) : undefined}
                   onToggle={(enabled) => handleToggle(server, enabled)}
                   onTest={() => void state.test(server.name)}
+                  onEdit={
+                    state.editServer && canEditServer(server) ? () => setToEdit(server) : undefined
+                  }
                   onTools={() => setToolsFor(server)}
                   onDelete={() => setToDelete(server)}
                 />
@@ -272,6 +293,17 @@ export function McpServersView({
           const ok = await state.add(payload);
           if (ok) setAddOpen(false);
           return ok;
+        }}
+      />
+
+      <EditServerDialog
+        server={toEdit}
+        saving={Boolean(toEdit) && state.editingServer === toEdit?.name}
+        saveError={state.editError}
+        onClose={() => setToEdit(undefined)}
+        onSave={async (writes) => {
+          if (!toEdit || !state.editServer) return false;
+          return state.editServer(toEdit.name, writes);
         }}
       />
 
@@ -362,6 +394,7 @@ function ServerRow({
   onSignIn,
   onToggle,
   onTest,
+  onEdit,
   onTools,
   onDelete,
 }: {
@@ -372,6 +405,9 @@ function ServerRow({
   onSignIn?: () => void;
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
+  /** Opens the connection-field edit dialog. Absent when the surface has no
+   * edit slice wired or the transport has nothing safe to edit. */
+  onEdit?: () => void;
   onTools: () => void;
   onDelete: () => void;
 }) {
@@ -463,6 +499,19 @@ function ServerRow({
         <button type="button" className="mcp-server-test" disabled={test?.pending} onClick={onTest}>
           {test?.pending ? "Testing" : "Test"}
         </button>
+        {onEdit ? (
+          <button
+            type="button"
+            className="mcp-server-edit"
+            aria-label={`Edit ${server.name}`}
+            title="Edit connection"
+            disabled={pending}
+            onClick={onEdit}
+          >
+            <IconEditSmall1 size={14} ariaHidden />
+            Edit
+          </button>
+        ) : null}
         <button
           type="button"
           className="mcp-server-tools"
@@ -1140,6 +1189,166 @@ function PairEditor({
         {addLabel}
       </button>
     </fieldset>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit-server dialog (connection target only, non-destructive)
+// ---------------------------------------------------------------------------
+
+/**
+ * Edits an existing server's connection target: a stdio server's command + args,
+ * or an http(-oauth) server's URL. The write is scoped and non-destructive — the
+ * save applies only the leaves that changed under `mcp_servers.<name>` (via
+ * `planServerEdit`), so the server's secret env / headers, OAuth token, and tool
+ * filters are all preserved. Secrets are never shown or edited here (June cannot
+ * read them back), and the name / transport are fixed — changing either is a
+ * delete-and-re-add. Changes apply after the gateway restarts, like every other
+ * MCP mutation.
+ */
+function EditServerDialog({
+  server,
+  saving,
+  saveError,
+  onClose,
+  onSave,
+}: {
+  server?: HermesMcpServerInfo;
+  saving: boolean;
+  saveError?: string;
+  onClose: () => void;
+  onSave: (writes: McpEditWrite[]) => Promise<boolean>;
+}) {
+  const [command, setCommand] = useState("");
+  const [args, setArgs] = useState<ArgRow[]>([]);
+  const [url, setUrl] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Re-seed the form from the server each time a different one opens.
+  useEffect(() => {
+    if (!server) return;
+    const edit = editFromServer(server);
+    setCommand(edit.command);
+    setArgs(edit.args.map((value) => ({ id: newEditorRowId(), value })));
+    setUrl(edit.url);
+    setErrors({});
+  }, [server]);
+
+  const isStdio = server?.transport === "stdio";
+
+  async function handleSubmit() {
+    if (!server) return;
+    const plan = planServerEdit(server, {
+      command,
+      args: args.map((row) => row.value),
+      url,
+    });
+    if (!plan.ok) {
+      setErrors(plan.errors);
+      return;
+    }
+    setErrors({});
+    const ok = await onSave(plan.writes);
+    if (ok) onClose();
+  }
+
+  return (
+    <Dialog
+      open={Boolean(server)}
+      onClose={() => {
+        if (!saving) onClose();
+      }}
+      title={server ? `Edit ${server.name}` : "Edit server"}
+      description="Change the connection target. The server's secrets (environment variables, headers, and tokens) and tool filters are preserved. Changes apply after the Hermes gateway restarts."
+      width={560}
+      className="mcp-add-dialog"
+      footer={
+        <>
+          <button
+            type="button"
+            className="primary-action"
+            onClick={() => {
+              if (!saving) onClose();
+            }}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-action primary-solid"
+            onClick={() => void handleSubmit()}
+            disabled={saving}
+          >
+            {saving ? "Saving" : "Save changes"}
+          </button>
+        </>
+      }
+    >
+      {server ? (
+        <div className="mcp-add-form">
+          <p className="mcp-add-note">
+            <IconShield size={13} ariaHidden />
+            To change a secret or the transport, delete this server and add it again.
+          </p>
+
+          {isStdio ? (
+            <>
+              <fieldset className="mcp-add-field">
+                <label className="mcp-add-label" htmlFor="mcp-edit-command">
+                  Command
+                </label>
+                <input
+                  id="mcp-edit-command"
+                  type="text"
+                  className="mcp-add-input"
+                  value={command}
+                  placeholder="mcp-server-filesystem"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={Boolean(errors.command)}
+                  onChange={(event) => setCommand(event.currentTarget.value)}
+                />
+                {errors.command ? <p className="mcp-add-error">{errors.command}</p> : null}
+              </fieldset>
+
+              <ListEditor
+                legend="Arguments"
+                addLabel="Add argument"
+                values={args}
+                errorPrefix="args"
+                errors={errors}
+                onChange={setArgs}
+              />
+            </>
+          ) : (
+            <fieldset className="mcp-add-field">
+              <label className="mcp-add-label" htmlFor="mcp-edit-url">
+                URL
+              </label>
+              <input
+                id="mcp-edit-url"
+                type="url"
+                className="mcp-add-input"
+                value={url}
+                placeholder="https://example.com/mcp"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={Boolean(errors.url)}
+                onChange={(event) => setUrl(event.currentTarget.value)}
+              />
+              {errors.url ? <p className="mcp-add-error">{errors.url}</p> : null}
+            </fieldset>
+          )}
+
+          {saveError ? (
+            <p className="mcp-add-error" role="alert">
+              {saveError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </Dialog>
   );
 }
 
