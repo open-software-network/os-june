@@ -543,6 +543,13 @@ input:focus-visible,
   margin-top: var(--detail-bar-h);
 }
 
+/* The fixed composer is a DOM child of this scroller, so :focus-within holds
+ * for as long as a draft is being written — which kept the chat's scrollbar
+ * thumb painted behind the growing box. Reveal this thumb on hover only. */
+.agent-scroll:focus-within:not(:hover)::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
 .agent-main {
   display: flex;
   flex-direction: column;
@@ -4554,16 +4561,23 @@ input:focus-visible,
   max-width: min(var(--chat-max), var(--content-max));
   padding: var(--sp-1);
   --agent-composer-scroll-fade: var(--card);
-  border: 1px solid var(--border-subtle);
+  /* The edge is a hairline ring inside the shadow stack, not a border stroke,
+   * so it blends with the shadow instead of drawing a line (the transparent
+   * border only holds the layout box). Ring strength is a compromise, tuned
+   * by eye: --shadow-inset alone lost the top edge, full --border-subtle read
+   * as a stroke again. A variable so the hero/routines shadow overrides and
+   * the focus state recompose the stack instead of losing it. */
+  --composer-ring: 0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  border: 1px solid transparent;
   /* Squircle, not a pill — a calmer rounded-rect. */
   border-radius: var(--r-xl);
   background: var(--card);
-  box-shadow: var(--shadow-sm);
+  /* md at rest (not sm) so the box always sits off the page; focus only
+   * firms the ring, the elevation never changes. */
+  box-shadow: var(--shadow-md), var(--composer-ring);
   /* Keeps child focus rings and media clipped to the rounded surface. */
   overflow: hidden;
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
+  transition: box-shadow var(--t-med) var(--ease-out);
 }
 
 .agent-composer-toolbar {
@@ -5111,10 +5125,10 @@ input:focus-visible,
 }
 
 .agent-composer-box:focus-within {
-  /* A touch firmer than the resting border, not the full focus ring — the
-   * docked box is already the obvious locus, a stark outline overshoots. */
-  border-color: color-mix(in oklch, var(--ring-focus) 40%, var(--border-subtle));
-  box-shadow: var(--shadow-md);
+  /* Focus firms the hairline past full --border-subtle (rest is 60% of it)
+   * with a hint of --ring-focus — enough to register, well short of the 40%
+   * mix that read as a stark outline. The base box-shadow recomposes. */
+  --composer-ring: 0 0 0 1px color-mix(in oklch, var(--ring-focus) 20%, var(--border-subtle));
 }
 
 /* The ProseMirror composer (replaces the old textarea). The element sizes
@@ -5656,7 +5670,7 @@ input:focus-visible,
   /* Deliberately compact — the hero box is an invitation, not a reading
    * column, so it does not track --chat-max up on larger displays. */
   max-width: 640px;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md), var(--composer-ring);
 }
 
 /* Big-box at rest: same two-row anatomy as the docked composer, just a
@@ -7050,9 +7064,7 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: var(--popover);
   color: var(--popover-foreground);
-  box-shadow:
-    0 16px 36px oklch(0% 0 none / 12%),
-    0 2px 6px oklch(0% 0 none / 6%);
+  box-shadow: var(--shadow-lg);
 }
 
 .context-menu button {
@@ -7429,9 +7441,7 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: var(--popover);
   color: var(--popover-foreground);
-  box-shadow:
-    0 16px 36px oklch(0% 0 none / 12%),
-    0 2px 6px oklch(0% 0 none / 6%);
+  box-shadow: var(--shadow-lg);
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-app-region: no-drag;
@@ -10142,23 +10152,29 @@ input:focus-visible,
   padding: 0;
   border: 0;
   border-radius: var(--r-pill);
-  background: transparent;
+  /* Each tone tints its own pill — a bare icon on the row background was
+   * too easy to miss when scanning the permissions list. */
+  background: color-mix(in oklch, var(--muted-foreground) 12%, transparent);
   color: var(--muted-foreground);
 }
 
 .settings-permission-status[data-status="allowed"] {
+  background: color-mix(in oklch, var(--success) 14%, transparent);
   color: color-mix(in oklch, var(--success) 72%, var(--foreground));
 }
 
 .settings-permission-status[data-status="attention"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
   color: color-mix(in oklch, var(--warm-strong) 82%, var(--foreground));
 }
 
 .settings-permission-status[data-status="blocked"] {
+  background: var(--destructive-soft);
   color: var(--destructive);
 }
 
 .settings-permission-status[data-status="unsupported"] {
+  background: color-mix(in oklch, var(--muted-foreground) 10%, transparent);
   color: var(--muted-foreground);
 }
 
@@ -14099,9 +14115,7 @@ input:focus-visible,
   background: var(--popover);
   color: var(--popover-foreground);
   border: 1px solid var(--popover-border);
-  box-shadow:
-    0 12px 32px oklch(0% 0 none / 12%),
-    0 2px 6px oklch(0% 0 none / 6%);
+  box-shadow: var(--shadow-lg);
 }
 
 .select-popover[data-placement="below"],
@@ -15225,9 +15239,7 @@ input:focus-visible,
   bottom: auto;
   left: auto;
   min-width: 172px;
-  box-shadow:
-    0 12px 32px oklch(0% 0 none / 12%),
-    0 2px 6px oklch(0% 0 none / 6%);
+  box-shadow: var(--shadow-lg);
 }
 
 .routines-action-menu .destructive {
@@ -15275,7 +15287,7 @@ input:focus-visible,
 
 .routines-describe-composer .agent-composer-box {
   max-width: none;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-lg), var(--composer-ring);
 }
 
 /* Mirrors `.agent-composer textarea` — the box is reused outside the
@@ -16278,9 +16290,7 @@ input:focus-visible,
   border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
   background: var(--popover);
-  box-shadow:
-    0 12px 32px oklch(0% 0 none / 12%),
-    0 2px 6px oklch(0% 0 none / 6%);
+  box-shadow: var(--shadow-lg);
 }
 
 .folders-sort-item {
@@ -17637,9 +17647,7 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: var(--popover);
   color: var(--popover-foreground);
-  box-shadow:
-    0 12px 32px oklch(0% 0 none / 12%),
-    0 2px 6px oklch(0% 0 none / 6%);
+  box-shadow: var(--shadow-lg);
 }
 
 .folder-add-popover button {
@@ -18545,9 +18553,7 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: var(--popover);
   color: var(--popover-foreground);
-  box-shadow:
-    0 12px 32px oklch(0% 0 none / 12%),
-    0 2px 6px oklch(0% 0 none / 6%);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
@@ -19445,18 +19451,21 @@ input:focus-visible,
   flex-direction: column;
   gap: var(--sp-1);
   padding: var(--sp-1);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--r-xl);
   background: color-mix(in oklch, var(--card) 96%, white 4%);
-  box-shadow: var(--shadow-sm);
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
+  /* Same hairline-ring edge, resting elevation, and ring-only focus as
+   * .agent-composer-box. */
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  transition: box-shadow var(--t-med) var(--ease-out);
 }
 
 .onboarding-practice-composer:focus-within {
-  border-color: color-mix(in oklch, var(--ring-focus) 45%, var(--border-subtle));
-  box-shadow: var(--shadow-md);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--ring-focus) 20%, var(--border-subtle));
 }
 
 .onboarding-practice-toolbar {
