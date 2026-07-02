@@ -152,13 +152,40 @@ pub(crate) fn windows_shortcut_label(modifiers: &DictationShortcutModifiers, key
     label
 }
 
-/// Whether a stored shortcut can be matched by the Windows keyboard hook. The
-/// macOS bare-`Fn` and modifier-only chords have no Windows equivalent, and a
-/// shortcut with no modifier would be a global key eater; both are rejected so
-/// the hook only ever fires on a real, modified key combo.
+/// Save-time validation for a dictation shortcut on Windows, the single source
+/// of truth for what the keyboard hook can arm. The macOS bare-`Fn` and
+/// modifier-only chords have no Windows equivalent; Shift alone auto-repeats
+/// plain typing (Shift+D is just a capital D), so a chord needs Ctrl, Alt, or
+/// the Windows key. Rejecting here keeps the settings pane honest: a chord the
+/// hook would silently drop must never save as a "ready" shortcut. Errors
+/// carry user-facing messages the settings UI renders next to the shortcut row.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn validate_shortcut_for_windows(
+    code: &str,
+    modifiers: &DictationShortcutModifiers,
+) -> Result<(), crate::domain::types::AppError> {
+    use crate::domain::types::AppError;
+    if vk_for_code(code).is_none() {
+        return Err(AppError::new(
+            "dictation_shortcut_unsupported",
+            "This key can't be used for a dictation shortcut on Windows.",
+        ));
+    }
+    if !(modifiers.control || modifiers.option || modifiers.command) {
+        return Err(AppError::new(
+            "dictation_shortcut_modifier_required",
+            "This shortcut needs Ctrl, Alt, or the Windows key on Windows.",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a stored shortcut can be matched by the Windows keyboard hook.
+/// Defined via [`validate_shortcut_for_windows`] so the hook's arming rule and
+/// the save-time validation can never diverge.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn shortcut_is_supported(code: &str, modifiers: &DictationShortcutModifiers) -> bool {
-    vk_for_code(code).is_some() && (modifiers.control || modifiers.option || modifiers.command)
+    validate_shortcut_for_windows(code, modifiers).is_ok()
 }
 
 /// What the keyboard hook should do for one key event of a (potential)
@@ -528,22 +555,46 @@ mod windows_impl {
             if !injected && is_down && !is_modifier_vk(vk) {
                 guard.capturing = false;
                 let modifiers = current_modifiers();
-                if let Some(code) = code_for_vk(vk) {
-                    let key = key_label_for_vk(vk).unwrap_or_else(|| code.clone());
-                    let label = windows_shortcut_label(&modifiers, &key);
-                    dispatch_worker(WorkerMsg::Captured {
-                        code,
-                        label,
-                        modifiers,
-                    });
-                } else {
-                    dispatch_worker(WorkerMsg::Command(json!({
-                        "type": "__emit",
-                        "event": {
-                            "type": "shortcut_capture_error",
-                            "payload": { "message": "That key can't be used as a Windows shortcut." },
-                        },
-                    })));
+                // Validate against the same rule the save path enforces, so
+                // an unsupported chord (unknown key, or no Ctrl/Alt/Win) is
+                // rejected here with the user-facing message instead of
+                // reaching the auto-save just to be rejected there.
+                match code_for_vk(vk) {
+                    Some(code)
+                        if super::validate_shortcut_for_windows(&code, &modifiers).is_ok() =>
+                    {
+                        let key = key_label_for_vk(vk).unwrap_or_else(|| code.clone());
+                        let label = windows_shortcut_label(&modifiers, &key);
+                        dispatch_worker(WorkerMsg::Captured {
+                            code,
+                            label,
+                            modifiers,
+                        });
+                    }
+                    Some(code) => {
+                        let message = super::validate_shortcut_for_windows(&code, &modifiers)
+                            .err()
+                            .map(|error| error.message)
+                            .unwrap_or_else(|| {
+                                "This shortcut can't be used on Windows.".to_string()
+                            });
+                        dispatch_worker(WorkerMsg::Command(json!({
+                            "type": "__emit",
+                            "event": {
+                                "type": "shortcut_capture_error",
+                                "payload": { "message": message },
+                            },
+                        })));
+                    }
+                    None => {
+                        dispatch_worker(WorkerMsg::Command(json!({
+                            "type": "__emit",
+                            "event": {
+                                "type": "shortcut_capture_error",
+                                "payload": { "message": "This key can't be used for a dictation shortcut on Windows." },
+                            },
+                        })));
+                    }
                 }
                 return true;
             }
@@ -1285,9 +1336,9 @@ mod windows_impl {
 #[cfg(test)]
 mod tests {
     use super::{
-        code_for_vk, key_label_for_vk, shortcut_edge_action, shortcut_is_supported, vk_for_code,
-        windows_shortcut_label, DictationShortcutKind, DictationShortcutModifiers,
-        ShortcutEdgeAction,
+        code_for_vk, key_label_for_vk, shortcut_edge_action, shortcut_is_supported,
+        validate_shortcut_for_windows, vk_for_code, windows_shortcut_label, DictationShortcutKind,
+        DictationShortcutModifiers, ShortcutEdgeAction,
     };
 
     fn ctrl_alt() -> DictationShortcutModifiers {
@@ -1438,5 +1489,48 @@ mod tests {
         // macOS-only bare Fn / modifier-only chords have no Windows key.
         assert!(!shortcut_is_supported("Fn", &ctrl_alt()));
         assert!(!shortcut_is_supported("Modifiers", &ctrl_alt()));
+    }
+
+    #[test]
+    fn windows_save_validation_rejects_chords_the_hook_cannot_arm() {
+        // Shift-only passes the shared (macOS) validation, but the Windows
+        // hook can't arm it; the save path must reject with a user-facing
+        // message instead of saving a shortcut that never fires.
+        let shift_only = DictationShortcutModifiers {
+            shift: true,
+            ..DictationShortcutModifiers::default()
+        };
+        let error = validate_shortcut_for_windows("KeyD", &shift_only)
+            .expect_err("shift-only chord must be rejected on Windows");
+        assert_eq!(error.code, "dictation_shortcut_modifier_required");
+        assert_eq!(
+            error.message,
+            "This shortcut needs Ctrl, Alt, or the Windows key on Windows."
+        );
+
+        // Keys with no Windows virtual-key mapping are rejected too.
+        let error = validate_shortcut_for_windows("Fn", &ctrl_alt())
+            .expect_err("bare Fn has no Windows key");
+        assert_eq!(error.code, "dictation_shortcut_unsupported");
+        assert_eq!(
+            error.message,
+            "This key can't be used for a dictation shortcut on Windows."
+        );
+    }
+
+    #[test]
+    fn windows_save_validation_accepts_armable_chords() {
+        assert!(validate_shortcut_for_windows("KeyD", &ctrl_alt()).is_ok());
+        let ctrl_only = DictationShortcutModifiers {
+            control: true,
+            ..DictationShortcutModifiers::default()
+        };
+        assert!(validate_shortcut_for_windows("KeyT", &ctrl_only).is_ok());
+        let win_shift = DictationShortcutModifiers {
+            command: true,
+            shift: true,
+            ..DictationShortcutModifiers::default()
+        };
+        assert!(validate_shortcut_for_windows("Space", &win_shift).is_ok());
     }
 }

@@ -728,6 +728,13 @@ pub fn set_dictation_shortcut(
     shortcut: DictationShortcutInput,
 ) -> Result<DictationSettings, AppError> {
     let shortcut = shortcut.into_setting()?;
+    // The shared validation accepts any modifier combination (macOS can arm
+    // e.g. Shift-only chords through its event tap), but the Windows keyboard
+    // hook cannot. Reject at save time rather than silently saving a shortcut
+    // apply_set_shortcut would drop from the hook, leaving the settings pane
+    // showing a shortcut that never fires.
+    #[cfg(target_os = "windows")]
+    crate::dictation_windows::validate_shortcut_for_windows(&shortcut.code, &shortcut.modifiers)?;
     let current_settings = state
         .settings
         .lock()
@@ -4033,6 +4040,29 @@ mod tests {
         assert_eq!(shortcut.code, "KeyT");
         assert!(shortcut.modifiers.control);
         assert_eq!(shortcut.press_count, 1);
+    }
+
+    #[test]
+    fn shortcut_input_still_accepts_shift_only_chords_for_the_shared_path() {
+        // The shared validation (macOS behavior) accepts any modifier,
+        // including Shift alone. The Windows save gate in
+        // set_dictation_shortcut (dictation_windows::
+        // validate_shortcut_for_windows) is layered on top of this and must
+        // not change what the shared path accepts.
+        let shortcut = DictationShortcutInput {
+            code: "KeyD".to_string(),
+            modifiers: DictationShortcutModifiers {
+                shift: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Shift+D".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting()
+        .expect("shift-only chord passes the shared validation");
+
+        assert_eq!(shortcut.code, "KeyD");
+        assert!(shortcut.modifiers.shift);
     }
 
     #[test]
