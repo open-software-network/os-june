@@ -294,11 +294,13 @@ type InternalRecord = {
  * derived from event kind:
  * - `tool` (any phase)        -> running, and remember the tool name.
  * - `pending_action`          -> waiting (the agent is blocked on the user).
+ * - `pending_action_resolution`-> running (the user answered; the agent resumes).
  * - `background_activity`     -> background, and track the subagent's id/count.
  * - `error`                   -> error.
  * - `lifecycle`               -> complete when the status is terminal, else
  *                                running (the session is alive and progressing).
  * - `transcript` / `reasoning`-> running (the agent is producing output).
+ * - `steering`                -> no phase change (local transcript marker).
  * - `unsupported`             -> no phase change (don't let an unknown frame
  *                                misreport the session's state).
  */
@@ -308,10 +310,14 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "running";
       if (nonEmpty(event.name)) row.currentTool = event.name;
       // A finished tool call leaves no tool in flight.
-      if (event.phase === "complete") row.currentTool = undefined;
+      if (event.phase === "complete" || event.phase === "failed") row.currentTool = undefined;
       return;
     case "pending_action":
       row.phase = "waiting";
+      return;
+    case "pending_action_resolution":
+      // The user answered, so the run resumes unless a terminal event already won.
+      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
       return;
     case "background_activity":
       applyBackgroundActivity(row, event);
@@ -327,6 +333,9 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       // The agent is actively producing output — running, unless it has already
       // reached a terminal state this turn (a late delta shouldn't un-complete).
       if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
+      return;
+    case "steering":
+      // Steering is a local transcript marker, not evidence of new agent work.
       return;
     case "unsupported":
       // An event June can't model must not silently change the reported phase.
@@ -451,9 +460,7 @@ function sessionIdOf(event: JuneHermesEvent): string | undefined {
  * processed it). A bad ISO string falls back to now rather than NaN.
  */
 function eventTimestamp(event: JuneHermesEvent): number {
-  if (event.kind === "background_activity") {
-    const parsed = Date.parse(event.activity.lastEventAt);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
+  const parsed = Date.parse(event.receivedAt);
+  if (!Number.isNaN(parsed)) return parsed;
   return Date.now();
 }

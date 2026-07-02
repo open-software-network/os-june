@@ -27,7 +27,10 @@ raw HermesGatewayEvent ──▶ classifyHermesEvent() ──▶ JuneHermesEvent
                                                        ├─ tool
                                                        ├─ pending_action ─▶ PendingHermesAction
                                                        │                     (clarify | approval | sudo | secret)
+                                                       ├─ pending_action_resolution
+                                                       │                  └▶ PendingHermesActionResolution
                                                        ├─ background_activity ─▶ BackgroundHermesActivity
+                                                       ├─ steering       (local June event; never classified)
                                                        ├─ lifecycle
                                                        ├─ error
                                                        └─ unsupported   (anything unknown — never dropped)
@@ -38,8 +41,12 @@ typed call ──▶ createHermesMethods(request).<method>() ──▶ gateway.r
 - `classifyHermesEvent` is **total**: it returns exactly one `JuneHermesEvent`
   for every frame and never returns `undefined`. Consumers can `switch (e.kind)`
   exhaustively with no `default`.
+- Every normalized event carries `receivedAt`, the ISO timestamp when June
+  observed the raw frame or minted the local event.
 - Unknown raw types become `{ kind: "unsupported", rawType, sanitizedPayload }`
   so a Hermes upgrade that adds an event is **visible**, not silently ignored.
+- `createSteeringEvent(...)` is first-party June state for a sent steer. It is
+  never produced by `classifyHermesEvent` because steering is not a Hermes frame.
 - `HermesMode = "sandboxed" | "unrestricted"` is the canonical session-mode
   type. Derive it from a session id with `hermesModeFor(sessionId)` (absence =
   `sandboxed`, the safe default).

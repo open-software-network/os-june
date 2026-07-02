@@ -57,7 +57,9 @@ export type RawHermesEventName =
   | "approval.request"
   | "approval.response"
   | "sudo.request"
+  | "sudo.response"
   | "secret.request"
+  | "secret.response"
   // Subagents / background activity
   | "subagent.start"
   | "subagent.tool"

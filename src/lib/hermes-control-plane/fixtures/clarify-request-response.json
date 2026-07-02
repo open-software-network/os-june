@@ -3,7 +3,7 @@
   "hermesVersion": "v2026.6.19",
   "recordedFrom": "tui-gateway",
   "sanitized": true,
-  "_note": "A clarify prompt and its answer. clarify.request -> pending_action/clarify. clarify.response is not a new pending action; classifier routes it to unsupported today (locked as honest current behavior).",
+  "_note": "A clarify prompt and its answer. clarify.request -> pending_action/clarify. clarify.response -> pending_action_resolution/clarify.",
   "frames": [
     {
       "type": "clarify.request",

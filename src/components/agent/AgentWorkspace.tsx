@@ -5736,7 +5736,7 @@ export function AgentWorkspace({
     // lifecycle so the drawer flips the session out of "running" the instant
     // the user clicks stop (the row persists, now reading as complete).
     hermesActivityStore.record(
-      { kind: "lifecycle", sessionId, status: "cancelled" },
+      { kind: "lifecycle", sessionId, status: "cancelled", receivedAt: new Date().toISOString() },
       hermesModeFor(sessionId),
     );
     dispatchAgentSessionStatus({

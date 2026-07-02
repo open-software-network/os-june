@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { classifyHermesEvent } from "../lib/hermes-control-plane";
+import { classifyHermesEvent, createSteeringEvent } from "../lib/hermes-control-plane";
 import type { JuneHermesEvent } from "../lib/hermes-control-plane";
 import { ACTIVITY_SESSIONS_CAP, createHermesActivityStore } from "../lib/hermes-activity-store";
 
@@ -68,6 +68,49 @@ describe("createHermesActivityStore", () => {
     expect(record?.phase).toBe("waiting");
     // Count is pulled live from feature 04's store, not counted here.
     expect(record?.pendingActionCount).toBe(2);
+  });
+
+  it("a pending action resolution moves a non-terminal session back to running", () => {
+    const store = createHermesActivityStore();
+    store.record(
+      classified("clarify.request", "s1", {
+        request_id: "r1",
+        question: "Which file?",
+      }),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("waiting");
+
+    store.record(
+      classified("clarify.response", "s1", {
+        request_id: "r1",
+        answer: "vite.config.ts",
+      }),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("running");
+  });
+
+  it("a failed tool event clears the in-flight tool", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    expect(store.getRecord("s1")?.currentTool).toBe("bash");
+
+    store.record(classified("tool.error", "s1", { tool_name: "bash" }), "sandboxed");
+    const record = store.getRecord("s1");
+    expect(record?.phase).toBe("running");
+    expect(record?.currentTool).toBeUndefined();
+  });
+
+  it("a steering event is a no-op for activity phase", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    store.record(
+      createSteeringEvent("s1", "focus on tests", new Date().toISOString()),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.getRecord("s1")?.currentTool).toBe("bash");
   });
 
   it("completion flips the session to phase 'complete' but keeps the row", () => {
