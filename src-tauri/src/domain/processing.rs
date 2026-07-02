@@ -982,7 +982,16 @@ fn is_retryable_transcription_error(error: &AppError) -> bool {
             && (message == "authorization_denied"
                 || message == "timeout"
                 || message.contains("connection")
-                || message.contains("error sending request")))
+                || message.contains("error sending request")
+                // June API collapses a transient upstream (Venice ASR gateway,
+                // 502) or metering-provider outage (OS Accounts billing, 503)
+                // into a `june_request_failed` envelope carrying these messages.
+                // Both are transient service-dependency failures a short retry
+                // can clear — the same class as the `authorization_denied`
+                // concurrency-cap denial above — so route them through the
+                // bounded retry instead of failing the whole note on one blip.
+                || message.contains("upstream_provider_failed")
+                || message.contains("metering_provider_failed")))
 }
 
 fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
@@ -2134,93 +2143,130 @@ mod tests {
 
     #[tokio::test]
     async fn transient_invalid_turn_response_retries_before_failing() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let transcriber = {
-            let attempts = Arc::clone(&attempts);
-            Arc::new(move |request: TranscriptionRequest| {
+        // Every transient class June API can surface on one flaky attempt must
+        // recover on retry rather than fail the whole note: an invalid/empty
+        // envelope, a Venice ASR gateway failure (`upstream_provider_failed`,
+        // 502), and a metering-provider outage (`metering_provider_failed`,
+        // 503). See JUN-177 for the last two.
+        let transient_errors = [
+            AppError::new(
+                "june_api_response_invalid",
+                "The processing service returned an invalid response.",
+            ),
+            AppError::new("june_request_failed", "upstream_provider_failed"),
+            AppError::new("june_request_failed", "metering_provider_failed"),
+        ];
+
+        for transient_error in transient_errors {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let transcriber = {
                 let attempts = Arc::clone(&attempts);
-                Box::pin(async move {
-                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                        return Err(AppError::new(
-                            "june_api_response_invalid",
-                            "The processing service returned an invalid response.",
-                        ));
-                    }
-                    Ok(TranscriptionProviderResult {
-                        text: request.audio_path.to_string_lossy().to_string(),
-                        language: None,
-                        provider: "test".to_string(),
-                    })
-                }) as TranscriptionFuture
-            }) as TurnTranscriber
-        };
+                Arc::new(move |request: TranscriptionRequest| {
+                    let attempts = Arc::clone(&attempts);
+                    let transient_error = transient_error.clone();
+                    Box::pin(async move {
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return Err(transient_error);
+                        }
+                        Ok(TranscriptionProviderResult {
+                            text: request.audio_path.to_string_lossy().to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        })
+                    }) as TranscriptionFuture
+                }) as TurnTranscriber
+            };
 
-        let outcome = transcribe_turn_jobs_by_source_lane(
-            vec![test_job("m0", "microphone", 0)],
-            crate::providers::OPENAI_PROVIDER.to_string(),
-            "Meeting".to_string(),
-            None,
-            transcriber,
-        )
-        .await
-        .expect("transient invalid response should be retried");
+            let outcome = transcribe_turn_jobs_by_source_lane(
+                vec![test_job("m0", "microphone", 0)],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                transcriber,
+            )
+            .await
+            .expect("transient response should be retried");
 
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        assert_eq!(outcome.failures.len(), 0);
-        assert_eq!(outcome.candidates.len(), 1);
-        assert_eq!(outcome.candidates[0].input.text, "m0");
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(outcome.failures.len(), 0);
+            assert_eq!(outcome.candidates.len(), 1);
+            assert_eq!(outcome.candidates[0].input.text, "m0");
+        }
     }
 
     #[tokio::test]
     async fn exhausted_invalid_tail_turn_stays_visible_as_failure() {
-        let tail_attempts = Arc::new(AtomicUsize::new(0));
-        let transcriber = {
-            let tail_attempts = Arc::clone(&tail_attempts);
-            Arc::new(move |request: TranscriptionRequest| {
+        // When every retry of a turn is exhausted it stays a visible per-turn
+        // failure without dropping earlier successful turns — for each transient
+        // class, including the JUN-177 Venice gateway (502) and metering-provider
+        // (503) outages. The surfaced warning is user-facing copy, never the raw
+        // provider code.
+        let cases = [
+            (
+                AppError::new(
+                    "june_api_response_invalid",
+                    "The processing service returned an invalid response.",
+                ),
+                "The processing service returned an invalid response.",
+            ),
+            (
+                AppError::new("june_request_failed", "upstream_provider_failed"),
+                "The transcription provider could not process this audio.",
+            ),
+            (
+                AppError::new("june_request_failed", "metering_provider_failed"),
+                "Billing is temporarily unavailable. Please try again in a moment.",
+            ),
+        ];
+
+        for (tail_error, expected_warning) in cases {
+            let tail_attempts = Arc::new(AtomicUsize::new(0));
+            let transcriber = {
                 let tail_attempts = Arc::clone(&tail_attempts);
-                Box::pin(async move {
-                    if request.audio_path == std::path::Path::new("tail") {
-                        tail_attempts.fetch_add(1, Ordering::SeqCst);
-                        return Err(AppError::new(
-                            "june_api_response_invalid",
-                            "The processing service returned an invalid response.",
-                        ));
-                    }
-                    Ok(TranscriptionProviderResult {
-                        text: request.audio_path.to_string_lossy().to_string(),
-                        language: None,
-                        provider: "test".to_string(),
-                    })
-                }) as TranscriptionFuture
-            }) as TurnTranscriber
-        };
+                Arc::new(move |request: TranscriptionRequest| {
+                    let tail_attempts = Arc::clone(&tail_attempts);
+                    let tail_error = tail_error.clone();
+                    Box::pin(async move {
+                        if request.audio_path == std::path::Path::new("tail") {
+                            tail_attempts.fetch_add(1, Ordering::SeqCst);
+                            return Err(tail_error);
+                        }
+                        Ok(TranscriptionProviderResult {
+                            text: request.audio_path.to_string_lossy().to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        })
+                    }) as TranscriptionFuture
+                }) as TurnTranscriber
+            };
 
-        let outcome = transcribe_turn_jobs_by_source_lane(
-            vec![
-                test_job("intro", "microphone", 0),
-                test_job("tail", "microphone", 1),
-            ],
-            crate::providers::OPENAI_PROVIDER.to_string(),
-            "Meeting".to_string(),
-            None,
-            transcriber,
-        )
-        .await
-        .expect("source lanes should complete despite a failed tail turn");
+            let outcome = transcribe_turn_jobs_by_source_lane(
+                vec![
+                    test_job("intro", "microphone", 0),
+                    test_job("tail", "microphone", 1),
+                ],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                transcriber,
+            )
+            .await
+            .expect("source lanes should complete despite a failed tail turn");
 
-        assert_eq!(
-            tail_attempts.load(Ordering::SeqCst),
-            TRANSIENT_TRANSCRIPTION_ATTEMPTS
-        );
-        assert_eq!(outcome.candidates.len(), 1);
-        assert_eq!(outcome.failures.len(), 1);
-        assert_eq!(outcome.candidates[0].input.text, "intro");
-        assert_eq!(outcome.failures[0].input.source, "microphone");
-        assert_eq!(outcome.failures[0].input.turn_index, Some(1));
-        assert_eq!(
-            outcome.failures[0].input.warning.as_deref(),
-            Some("The processing service returned an invalid response.")
-        );
+            assert_eq!(
+                tail_attempts.load(Ordering::SeqCst),
+                TRANSIENT_TRANSCRIPTION_ATTEMPTS
+            );
+            assert_eq!(outcome.candidates.len(), 1);
+            assert_eq!(outcome.failures.len(), 1);
+            assert_eq!(outcome.candidates[0].input.text, "intro");
+            assert_eq!(outcome.failures[0].input.source, "microphone");
+            assert_eq!(outcome.failures[0].input.turn_index, Some(1));
+            assert_eq!(
+                outcome.failures[0].input.warning.as_deref(),
+                Some(expected_warning)
+            );
+        }
     }
 
     #[test]
@@ -2247,6 +2293,17 @@ mod tests {
         assert!(!is_retryable_transcription_error(&AppError::new(
             "june_request_failed",
             "operation timed out"
+        )));
+        // JUN-177: a transient Venice ASR gateway failure (502) and a
+        // metering-provider outage (503) both arrive as a `june_request_failed`
+        // envelope; both are transient and must retry, not fail the whole note.
+        assert!(is_retryable_transcription_error(&AppError::new(
+            "june_request_failed",
+            "upstream_provider_failed"
+        )));
+        assert!(is_retryable_transcription_error(&AppError::new(
+            "june_request_failed",
+            "metering_provider_failed"
         )));
     }
 
