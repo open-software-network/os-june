@@ -11,8 +11,9 @@ generation/edit is billed to the signed-in user automatically.
 
 Generated and edited images are written to a dedicated images directory (passed
 as the second argument) so the model can reference a prior image by a stable
-filename when it wants to edit it — the model cannot pass image bytes as a tool
-argument, only name a file this server produced.
+filename when it wants to edit it. Source images are resolved by bare filename
+from that directory and any extra read directories passed after it, such as
+Hermes's workspace uploads for `/image` fast-path and user-attached images.
 
 It depends only on the Python standard library so it can run inside the Hermes
 runtime venv without extra packaging.
@@ -71,14 +72,15 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Edit an existing image (image-to-image) and show the result in the "
             "conversation. Use this whenever the user asks to change, modify, "
-            "adjust, refine, or reframe an image you generated or edited "
-            "earlier — including reframing like wider, zoom out, bigger "
-            "perspective, or closer, plus recoloring, restyling, and adding or "
-            "removing elements. This transforms the image file directly: you do "
+            "adjust, refine, or reframe an image you generated, edited, or "
+            "received as an attachment earlier, including reframing like wider, "
+            "zoom out, bigger perspective, or closer, plus recoloring, "
+            "restyling, and adding or removing elements. This transforms the "
+            "image file directly: you do "
             "NOT need to see, analyze, or describe the image to edit it. "
-            "`source_filename` MUST be a filename a previous generate_image or "
-            "edit_image call returned. Returns the edited image inline plus a "
-            "new `filename` you can edit again."
+            "`source_filename` MUST be a filename from a previous image tool "
+            "result or an attached image in this conversation. Returns the "
+            "edited image inline plus a new `filename` you can edit again."
         ),
         "inputSchema": {
             "type": "object",
@@ -87,7 +89,8 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "The filename of the image to edit, exactly as returned "
-                        "by a prior generate_image or edit_image call."
+                        "by a prior image tool call or attached in this "
+                        "conversation."
                     ),
                 },
                 "instruction": {
@@ -103,10 +106,13 @@ TOOLS: list[dict[str, Any]] = [
 
 def main() -> None:
     if len(sys.argv) < 3:
-        raise SystemExit("Usage: june_image_mcp.py <proxy_base_url> <images_dir>")
+        raise SystemExit(
+            "Usage: june_image_mcp.py <proxy_base_url> <images_dir> [source_dir ...]"
+        )
 
     base_url = sys.argv[1].rstrip("/")
     images_dir = sys.argv[2]
+    source_dirs = [images_dir, *sys.argv[3:]]
     # The proxy token is passed via the environment rather than argv so it does
     # not show up in process listings.
     token = os.environ.get(TOKEN_ENV_VAR, "")
@@ -114,7 +120,9 @@ def main() -> None:
         message = read_message()
         if message is None:
             return
-        response_message = handle_message(base_url, images_dir, token, message)
+        response_message = handle_message(
+            base_url, images_dir, source_dirs, token, message
+        )
         if response_message is not None:
             write_message(response_message)
 
@@ -156,7 +164,11 @@ def write_message(payload: dict[str, Any]) -> None:
 
 
 def handle_message(
-    base_url: str, images_dir: str, token: str, message: dict[str, Any]
+    base_url: str,
+    images_dir: str,
+    source_dirs: list[str],
+    token: str,
+    message: dict[str, Any],
 ) -> dict[str, Any] | None:
     method = message.get("method")
     request_id = message.get("id")
@@ -178,7 +190,12 @@ def handle_message(
         return response(request_id, {"tools": TOOLS})
     if method == "tools/call":
         return call_tool(
-            base_url, images_dir, token, request_id, message.get("params") or {}
+            base_url,
+            images_dir,
+            source_dirs,
+            token,
+            request_id,
+            message.get("params") or {},
         )
 
     if request_id is None:
@@ -189,6 +206,7 @@ def handle_message(
 def call_tool(
     base_url: str,
     images_dir: str,
+    source_dirs: list[str],
     token: str,
     request_id: Any,
     params: dict[str, Any],
@@ -199,7 +217,7 @@ def call_tool(
         if name == "generate_image":
             result = generate_image(base_url, images_dir, token, arguments)
         elif name == "edit_image":
-            result = edit_image(base_url, images_dir, token, arguments)
+            result = edit_image(base_url, images_dir, source_dirs, token, arguments)
         else:
             return error_response(request_id, -32602, f"Unknown tool: {name}")
     except Exception as exc:
@@ -271,7 +289,11 @@ def generate_image(
 
 
 def edit_image(
-    base_url: str, images_dir: str, token: str, arguments: dict[str, Any]
+    base_url: str,
+    images_dir: str,
+    source_dirs: list[str],
+    token: str,
+    arguments: dict[str, Any],
 ) -> dict[str, Any]:
     source_filename = str(arguments.get("source_filename") or "").strip()
     instruction = str(arguments.get("instruction") or "").strip()
@@ -279,7 +301,7 @@ def edit_image(
         raise ValueError("source_filename is required")
     if not instruction:
         raise ValueError("instruction is required")
-    source_base64, source_mime = read_image(images_dir, source_filename)
+    source_base64, source_mime = read_image(source_dirs, source_filename)
     envelope = call_proxy(
         base_url,
         token,
@@ -319,16 +341,21 @@ def write_image(images_dir: str, image_base64: str, mime_type: str) -> str:
     return filename
 
 
-def read_image(images_dir: str, filename: str) -> tuple[str, str]:
-    # Guard against path traversal: only a bare filename inside images_dir is
-    # allowed, never a path that escapes it.
+def read_image(source_dirs: list[str], filename: str) -> tuple[str, str]:
+    # Guard against path traversal: only a bare filename inside the configured
+    # source dirs is allowed, never a path that escapes them.
     safe_name = os.path.basename(filename)
     if not safe_name or safe_name != filename:
         raise ValueError("source_filename must be a plain image filename.")
-    path = os.path.join(images_dir, safe_name)
-    if not os.path.isfile(path):
+    path = None
+    for source_dir in source_dirs:
+        candidate = os.path.join(source_dir, safe_name)
+        if os.path.isfile(candidate):
+            path = candidate
+            break
+    if path is None:
         raise ValueError(
-            f"No image named {safe_name}. Use a filename a prior image tool returned."
+            f"No image named {safe_name}. Use an image filename from this conversation."
         )
     with open(path, "rb") as handle:
         data = handle.read()
