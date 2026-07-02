@@ -113,7 +113,9 @@ _Avoid_: control plane, API.
 
 **Control plane**:
 The typed seam (`src/lib/hermes-control-plane/`) that turns raw Hermes frames
-into the total `JuneHermesEvent` union and typed outbound methods.
+into the total `JuneHermesEvent` union and typed outbound methods. The union
+also carries locally minted first-party events (see **Steer**) that the
+classifier never emits.
 _Avoid_: gateway, adapter.
 
 **Runtime mode**:
