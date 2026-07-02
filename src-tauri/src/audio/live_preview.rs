@@ -402,6 +402,8 @@ fn trim_stale_system_backlog(buffer: &mut Vec<i16>, chunk_samples: usize) -> usi
     // Round the excess up to a whole number of chunks so we never leave a
     // partial chunk that would shift every later frame boundary.
     let excess_chunks = excess.div_ceil(chunk_samples);
+    // The .min is defensive only: with max_len = 2 * chunk_samples the excess
+    // rounded up to whole chunks always fits inside the buffer.
     let drop = excess_chunks
         .saturating_mul(chunk_samples)
         .min(buffer.len());
@@ -541,7 +543,7 @@ fn read_wav_layout(path: &Path) -> std::io::Result<Option<WavLayout>> {
         }
 
         if chunk_id == b"fmt " {
-            if chunk_data_start + 16 > file_len {
+            if chunk_data_start.saturating_add(16) > file_len {
                 return Ok(None);
             }
             let mut fmt = [0_u8; 16];
