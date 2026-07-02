@@ -199,6 +199,8 @@ pub struct GenerationRequest {
 pub struct CleanupRequest {
     pub text: String,
     pub dictionary_context: Option<String>,
+    /// Recognized insertion-surface slug ("email"); shapes output layout.
+    pub app_context: Option<String>,
     pub style: String,
     pub model: ModelId,
     pub system_prompt: String,

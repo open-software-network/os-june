@@ -27,6 +27,21 @@ use tauri::{
 
 const DICTATION_TRANSCRIPTION_CONTEXT: &str = "Transcribe this as clean hands-free dictation for direct insertion into the active app. Preserve the speaker's intended words, language, and meaning. Remove filler sounds and accidental false starts when they are not meaningful, especially um, uh, ah, er, and a... stutters. Do not remove intentional articles such as a or an when they are grammatically needed. Convert spoken punctuation and formatting into text punctuation, including comma, period, question mark, exclamation point, colon, semicolon, dash, newline, and new paragraph. Convert quote/unquote, open quote/close quote, and start quote/end quote into actual quotation marks around the quoted words. Output only the dictated text.";
 const DICTATION_CLEANUP_TIMEOUT_MS: u64 = 15_000;
+/// App-context slug sent with dictation cleanup when the paste target is a
+/// known kind of app, so the cleaned text is laid out for that surface.
+/// Email is the only recognized context today.
+const APP_CONTEXT_EMAIL: &str = "email";
+/// Native email clients by bundle id. Browser webmail (Gmail, Outlook web)
+/// needs focused-tab detection and is a deliberate follow-up.
+const EMAIL_APP_BUNDLE_IDS: &[&str] = &[
+    "com.apple.mail",
+    "com.microsoft.Outlook",
+    "com.readdle.SparkDesktop",
+    "com.readdle.smartemail-Mac",
+    "it.bloop.airmail2",
+    "com.mimestream.Mimestream",
+    "com.superhuman.electron",
+];
 const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 const DICTATION_EVENT_LOG: &str = "dictation-events.log";
 
@@ -2273,6 +2288,9 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let style = current_settings.style;
     let language = current_settings.language;
     let dictionary_context = dictionary_context_for_app(&app).await;
+    // Read the paste target now: the frontmost app when dictation stops is
+    // where the cleaned text lands.
+    let app_context = frontmost_app_context();
     let session_id = dictation_session_id();
     let utterance_id = uuid::Uuid::new_v4().to_string();
     let transcription_context = merge_transcription_context(
@@ -2292,6 +2310,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         &provider,
         result,
         dictionary_context,
+        app_context,
         style,
         session_id,
         utterance_id,
@@ -2336,6 +2355,34 @@ fn dictation_transcription_context(style: DictationStyle) -> String {
     )
 }
 
+fn is_email_app_bundle(bundle_id: &str) -> bool {
+    EMAIL_APP_BUNDLE_IDS
+        .iter()
+        .any(|known| bundle_id.eq_ignore_ascii_case(known))
+}
+
+/// The app-context slug for the app the user is dictating into, read when
+/// dictation stops (the frontmost app is the paste target). None when the
+/// frontmost app is not a recognized context or cannot be determined.
+#[cfg(target_os = "macos")]
+fn frontmost_app_context() -> Option<String> {
+    let bundle_id = frontmost_bundle_id()?;
+    is_email_app_bundle(&bundle_id).then(|| APP_CONTEXT_EMAIL.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn frontmost_app_context() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_bundle_id() -> Option<String> {
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    let front = workspace.frontmostApplication()?;
+    let bundle_id = front.bundleIdentifier()?;
+    Some(bundle_id.to_string())
+}
+
 async fn dictionary_context_for_app(app: &AppHandle) -> Option<String> {
     let repos = crate::commands::repositories(app).await.ok()?;
     let entries = repos.list_dictionary_entries().await.ok()?;
@@ -2347,6 +2394,7 @@ async fn maybe_cleanup_dictation_result(
     provider: &str,
     result: Result<TranscriptionProviderResult, AppError>,
     dictionary_context: Option<String>,
+    app_context: Option<String>,
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
@@ -2358,11 +2406,13 @@ async fn maybe_cleanup_dictation_result(
     tracing::info!(
         provider,
         style = ?style,
+        app_context = app_context.as_deref(),
         "dictation cleanup starting",
     );
     match cleanup_dictation_text(
         &transcript.text,
         dictionary_context.as_deref(),
+        app_context,
         style,
         session_id,
         utterance_id,
@@ -2385,6 +2435,7 @@ async fn maybe_cleanup_dictation_result(
 async fn cleanup_dictation_text(
     text: &str,
     dictionary_context: Option<&str>,
+    app_context: Option<String>,
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
@@ -2398,6 +2449,7 @@ async fn cleanup_dictation_text(
         cleanup_text(DictateCleanupRequestParams {
             text: text.to_string(),
             dictionary_context: dictionary_context.map(str::to_string),
+            app_context,
             style: style.instruction().to_string(),
             session_id,
             utterance_id,
@@ -4394,6 +4446,15 @@ mod tests {
             clean_dictation_fillers("I said, um, \"hello\".", DictationStyle::Standard),
             "I said \"hello\"."
         );
+    }
+
+    #[test]
+    fn email_app_bundles_map_to_the_email_context() {
+        assert!(is_email_app_bundle("com.apple.mail"));
+        assert!(is_email_app_bundle("COM.APPLE.MAIL"));
+        assert!(is_email_app_bundle("com.microsoft.Outlook"));
+        assert!(!is_email_app_bundle("com.google.Chrome"));
+        assert!(!is_email_app_bundle(""));
     }
 
     #[test]
