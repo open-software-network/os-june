@@ -45,7 +45,9 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases
+          # homebrew-tap: the tap cask bump below pushes as this same release
+          # App, so the App must be installed on that repo too.
+          repositories: os-june,os-june-releases,homebrew-tap
 
       # Read the rc build manifest first (no checkout needed) to learn which
       # version + source commit to promote, then check that commit out below.
@@ -370,6 +372,55 @@ jobs:
             "$stable_build_json" \
             --repo open-software-network/os-june-releases \
             --clobber
+
+      # Keep the org tap cask (open-software-network/homebrew-tap, Casks/june.rb)
+      # pointing at the stable DMG published above; a stale tap ships users an
+      # old build, so any failure here must fail the promote loudly. Only the
+      # org tap is maintained here; the homebrew/homebrew-cask entry is bumped
+      # by BrewTestBot once that submission lands.
+      - name: Bump Homebrew tap cask
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          dmg="$RUNNER_TEMP/stable-release-assets/June_universal.dmg"
+          sha="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+
+          tap_dir="$RUNNER_TEMP/homebrew-tap"
+          rm -rf "$tap_dir"
+          git clone --depth 1 \
+            "https://x-access-token:${TOKEN}@github.com/open-software-network/homebrew-tap.git" \
+            "$tap_dir"
+          cask="$tap_dir/Casks/june.rb"
+
+          # Parse before rewriting so a cask that drifted from the expected
+          # two-space `version`/`sha256` lines fails here instead of being
+          # silently left stale by a non-matching sed.
+          current_version="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask")"
+          current_sha="$(sed -n 's/^  sha256 "\(.*\)"$/\1/p' "$cask")"
+          if [ -z "$current_version" ] || [ -z "$current_sha" ]; then
+            echo "::error::Casks/june.rb is missing the expected version/sha256 lines."
+            exit 1
+          fi
+          # Idempotent on rerun: a promote retried after the tap push already
+          # landed must not fail the whole workflow.
+          if [ "$current_version" = "$VERSION" ] && [ "$current_sha" = "$sha" ]; then
+            echo "Tap cask already at v$VERSION with matching sha256; nothing to bump."
+            exit 0
+          fi
+
+          sed -i '' \
+            -e "s/^  version \".*\"\$/  version \"$VERSION\"/" \
+            -e "s/^  sha256 \".*\"\$/  sha256 \"$sha\"/" \
+            "$cask"
+          grep -Fqx "  version \"$VERSION\"" "$cask"
+          grep -Fqx "  sha256 \"$sha\"" "$cask"
+
+          git -C "$tap_dir" config user.name "github-actions[bot]"
+          git -C "$tap_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$tap_dir" add "$cask"
+          git -C "$tap_dir" commit -m "june v$VERSION"
+          git -C "$tap_dir" push origin HEAD:main
 
       # Record the released version on main so its version files advance and the
       # next changelog can find this release. Runs only after the stable release

@@ -332,7 +332,7 @@ pub async fn process_saved_audio(
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await?;
     let generated = match generate_note_from_transcript(GenerationRequest {
-        provider: crate::providers::configured_provider(),
+        provider: crate::providers::generation_provider(),
         operation_id: Some(note_id.to_string()),
         title,
         existing_generated_note,
@@ -396,7 +396,27 @@ pub async fn process_saved_source_audio(
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let processing_started = Instant::now();
     let detection_started = Instant::now();
-    let sources = drop_silent_system_sources(sources);
+    let SilentSystemDropOutcome {
+        kept: sources,
+        dropped,
+    } = partition_silent_system_sources(sources);
+    for drop in &dropped {
+        repos
+            .add_source_checkpoint(
+                session_id,
+                Some(drop.artifact_id.as_str()),
+                Some(drop.source.as_str()),
+                "silent_source_dropped",
+                Some(
+                    serde_json::json!({
+                        "source": drop.source,
+                        "maxRms": drop.max_rms,
+                    })
+                    .to_string(),
+                ),
+            )
+            .await?;
+    }
     let turns = detect_turns(
         &sources
             .iter()
@@ -644,7 +664,7 @@ pub async fn process_saved_source_audio(
         .await?;
     let generation_started = Instant::now();
     let generated = match generate_note_from_transcript(GenerationRequest {
-        provider: crate::providers::configured_provider(),
+        provider: crate::providers::generation_provider(),
         operation_id: Some(note_id.to_string()),
         title,
         existing_generated_note,
@@ -1457,33 +1477,73 @@ fn blocking_transcription_failure_summary(
     source_failure_summary(&blocking_failures)
 }
 
-/// Remove system-audio sources whose track is effectively silent, but only when
-/// another source remains to carry the recording. Keeping the last source — even
-/// a silent one — preserves the "no speech" failure for system-only captures.
+struct DroppedSource {
+    artifact_id: String,
+    source: String,
+    max_rms: f32,
+}
+
+struct SilentSystemDropOutcome {
+    kept: Vec<(String, String, PathBuf)>,
+    dropped: Vec<DroppedSource>,
+}
+
+#[cfg(test)]
 fn drop_silent_system_sources(
     sources: Vec<(String, String, PathBuf)>,
 ) -> Vec<(String, String, PathBuf)> {
+    partition_silent_system_sources(sources).kept
+}
+
+/// Remove system-audio sources whose track is effectively silent, but only when
+/// another source remains to carry the recording. Keeping the last source — even
+/// a silent one — preserves the "no speech" failure for system-only captures.
+///
+/// A system track is only dropped when it falls below what the system lane's
+/// turn detection could still find (`SYSTEM_DETECTION_MIN_RMS`). A higher floor
+/// would strand quiet-but-real tracks before the full-source fallback ever runs,
+/// transcribing mic-only.
+fn partition_silent_system_sources(
+    sources: Vec<(String, String, PathBuf)>,
+) -> SilentSystemDropOutcome {
     let has_other_source = sources
         .iter()
         .any(|(_, source, _)| source.as_str() != "system");
     if !has_other_source {
-        return sources;
+        return SilentSystemDropOutcome {
+            kept: sources,
+            dropped: Vec::new(),
+        };
     }
-    sources
-        .into_iter()
-        .filter(|(_, source, path)| {
-            let silent = source.as_str() == "system"
-                && crate::audio::turns::source_is_effectively_silent(path);
-            if silent {
-                tracing::info!(
-                    %source,
-                    path = %path.display(),
-                    "skipping silent system source — no transcribable audio"
-                );
-            }
-            !silent
-        })
-        .collect()
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for (artifact_id, source, path) in sources {
+        // Decode once: `source_max_rms` is `None` when the file can't be read,
+        // which must mean "keep" (matching the old read-failure semantics).
+        let max_rms = if source.as_str() == "system" {
+            crate::audio::turns::source_max_rms(&path)
+        } else {
+            None
+        };
+        let silent = max_rms.is_some_and(|rms| rms < crate::audio::turns::SYSTEM_DETECTION_MIN_RMS);
+        if silent {
+            let max_rms = max_rms.unwrap_or(0.0);
+            tracing::info!(
+                %source,
+                path = %path.display(),
+                max_rms,
+                "skipping silent system source — no transcribable audio"
+            );
+            dropped.push(DroppedSource {
+                artifact_id,
+                source,
+                max_rms,
+            });
+        } else {
+            kept.push((artifact_id, source, path));
+        }
+    }
+    SilentSystemDropOutcome { kept, dropped }
 }
 
 fn add_full_source_turns_for_missing_sources(
@@ -2074,93 +2134,126 @@ mod tests {
 
     #[tokio::test]
     async fn transient_invalid_turn_response_retries_before_failing() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let transcriber = {
-            let attempts = Arc::clone(&attempts);
-            Arc::new(move |request: TranscriptionRequest| {
+        // Every transient class June API can surface without a provider result
+        // must recover on retry rather than fail the whole note: an
+        // invalid/empty envelope and explicit transient request failures.
+        let transient_errors = [
+            AppError::new(
+                "june_api_response_invalid",
+                "The processing service returned an invalid response.",
+            ),
+            AppError::new("june_request_failed", "authorization_denied"),
+        ];
+
+        for transient_error in transient_errors {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let transcriber = {
                 let attempts = Arc::clone(&attempts);
-                Box::pin(async move {
-                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                        return Err(AppError::new(
-                            "june_api_response_invalid",
-                            "The processing service returned an invalid response.",
-                        ));
-                    }
-                    Ok(TranscriptionProviderResult {
-                        text: request.audio_path.to_string_lossy().to_string(),
-                        language: None,
-                        provider: "test".to_string(),
-                    })
-                }) as TranscriptionFuture
-            }) as TurnTranscriber
-        };
+                Arc::new(move |request: TranscriptionRequest| {
+                    let attempts = Arc::clone(&attempts);
+                    let transient_error = transient_error.clone();
+                    Box::pin(async move {
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return Err(transient_error);
+                        }
+                        Ok(TranscriptionProviderResult {
+                            text: request.audio_path.to_string_lossy().to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        })
+                    }) as TranscriptionFuture
+                }) as TurnTranscriber
+            };
 
-        let outcome = transcribe_turn_jobs_by_source_lane(
-            vec![test_job("m0", "microphone", 0)],
-            crate::providers::OPENAI_PROVIDER.to_string(),
-            "Meeting".to_string(),
-            None,
-            transcriber,
-        )
-        .await
-        .expect("transient invalid response should be retried");
+            let outcome = transcribe_turn_jobs_by_source_lane(
+                vec![test_job("m0", "microphone", 0)],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                transcriber,
+            )
+            .await
+            .expect("transient response should be retried");
 
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        assert_eq!(outcome.failures.len(), 0);
-        assert_eq!(outcome.candidates.len(), 1);
-        assert_eq!(outcome.candidates[0].input.text, "m0");
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(outcome.failures.len(), 0);
+            assert_eq!(outcome.candidates.len(), 1);
+            assert_eq!(outcome.candidates[0].input.text, "m0");
+        }
     }
 
     #[tokio::test]
     async fn exhausted_invalid_tail_turn_stays_visible_as_failure() {
-        let tail_attempts = Arc::new(AtomicUsize::new(0));
-        let transcriber = {
-            let tail_attempts = Arc::clone(&tail_attempts);
-            Arc::new(move |request: TranscriptionRequest| {
+        // When a turn fails after the allowed attempt budget, or fails with a
+        // non-retryable provider/metering error, it stays a visible per-turn
+        // failure without dropping earlier successful turns. The surfaced
+        // warning is user-facing copy, never the raw provider code.
+        let cases = [
+            (
+                AppError::new(
+                    "june_api_response_invalid",
+                    "The processing service returned an invalid response.",
+                ),
+                "The processing service returned an invalid response.",
+                TRANSIENT_TRANSCRIPTION_ATTEMPTS,
+            ),
+            (
+                AppError::new("june_request_failed", "upstream_provider_failed"),
+                "The transcription provider could not process this audio.",
+                1,
+            ),
+            (
+                AppError::new("june_request_failed", "metering_provider_failed"),
+                "Billing is temporarily unavailable. Please try again in a moment.",
+                1,
+            ),
+        ];
+
+        for (tail_error, expected_warning, expected_attempts) in cases {
+            let tail_attempts = Arc::new(AtomicUsize::new(0));
+            let transcriber = {
                 let tail_attempts = Arc::clone(&tail_attempts);
-                Box::pin(async move {
-                    if request.audio_path == std::path::Path::new("tail") {
-                        tail_attempts.fetch_add(1, Ordering::SeqCst);
-                        return Err(AppError::new(
-                            "june_api_response_invalid",
-                            "The processing service returned an invalid response.",
-                        ));
-                    }
-                    Ok(TranscriptionProviderResult {
-                        text: request.audio_path.to_string_lossy().to_string(),
-                        language: None,
-                        provider: "test".to_string(),
-                    })
-                }) as TranscriptionFuture
-            }) as TurnTranscriber
-        };
+                Arc::new(move |request: TranscriptionRequest| {
+                    let tail_attempts = Arc::clone(&tail_attempts);
+                    let tail_error = tail_error.clone();
+                    Box::pin(async move {
+                        if request.audio_path == std::path::Path::new("tail") {
+                            tail_attempts.fetch_add(1, Ordering::SeqCst);
+                            return Err(tail_error);
+                        }
+                        Ok(TranscriptionProviderResult {
+                            text: request.audio_path.to_string_lossy().to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        })
+                    }) as TranscriptionFuture
+                }) as TurnTranscriber
+            };
 
-        let outcome = transcribe_turn_jobs_by_source_lane(
-            vec![
-                test_job("intro", "microphone", 0),
-                test_job("tail", "microphone", 1),
-            ],
-            crate::providers::OPENAI_PROVIDER.to_string(),
-            "Meeting".to_string(),
-            None,
-            transcriber,
-        )
-        .await
-        .expect("source lanes should complete despite a failed tail turn");
+            let outcome = transcribe_turn_jobs_by_source_lane(
+                vec![
+                    test_job("intro", "microphone", 0),
+                    test_job("tail", "microphone", 1),
+                ],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                transcriber,
+            )
+            .await
+            .expect("source lanes should complete despite a failed tail turn");
 
-        assert_eq!(
-            tail_attempts.load(Ordering::SeqCst),
-            TRANSIENT_TRANSCRIPTION_ATTEMPTS
-        );
-        assert_eq!(outcome.candidates.len(), 1);
-        assert_eq!(outcome.failures.len(), 1);
-        assert_eq!(outcome.candidates[0].input.text, "intro");
-        assert_eq!(outcome.failures[0].input.source, "microphone");
-        assert_eq!(outcome.failures[0].input.turn_index, Some(1));
-        assert_eq!(
-            outcome.failures[0].input.warning.as_deref(),
-            Some("The processing service returned an invalid response.")
-        );
+            assert_eq!(tail_attempts.load(Ordering::SeqCst), expected_attempts);
+            assert_eq!(outcome.candidates.len(), 1);
+            assert_eq!(outcome.failures.len(), 1);
+            assert_eq!(outcome.candidates[0].input.text, "intro");
+            assert_eq!(outcome.failures[0].input.source, "microphone");
+            assert_eq!(outcome.failures[0].input.turn_index, Some(1));
+            assert_eq!(
+                outcome.failures[0].input.warning.as_deref(),
+                Some(expected_warning)
+            );
+        }
     }
 
     #[test]
@@ -2187,6 +2280,19 @@ mod tests {
         assert!(!is_retryable_transcription_error(&AppError::new(
             "june_request_failed",
             "operation timed out"
+        )));
+        // `upstream_provider_failed` is not precise enough for desktop retry:
+        // June API uses the same envelope for transient 5xxs and deterministic
+        // provider 4xxs after taking a Hold.
+        assert!(!is_retryable_transcription_error(&AppError::new(
+            "june_request_failed",
+            "upstream_provider_failed"
+        )));
+        // `metering_provider_failed` can come from a post-ASR charge failure;
+        // replaying the desktop request would redo paid upstream work.
+        assert!(!is_retryable_transcription_error(&AppError::new(
+            "june_request_failed",
+            "metering_provider_failed"
         )));
     }
 
@@ -2646,6 +2752,36 @@ mod tests {
         // System-only capture of silence must survive so its "no speech"
         // failure still reaches the user.
         assert_eq!(kept.len(), 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keeps_quiet_system_source_between_detection_and_silence_floors() {
+        let dir =
+            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+        write_test_wav(&mic_path, &[20_000, -18_000]);
+        // ~0.008 RMS: detectable by the system lane (min_rms 0.006) but under the
+        // 0.012 normalized-chunk silence floor. Must survive the pre-filter so the
+        // full-source fallback can still transcribe it.
+        let amplitude = (0.008 * i16::MAX as f32).round() as i16;
+        let quiet = vec![amplitude; 48_000];
+        write_test_wav(&system_path, &quiet);
+
+        let kept = drop_silent_system_sources(vec![
+            ("mic".to_string(), "microphone".to_string(), mic_path),
+            ("sys".to_string(), "system".to_string(), system_path.clone()),
+        ]);
+
+        assert_eq!(kept.len(), 2);
+        // The old 0.012 floor still judges it silent — the chunk-skip guard is
+        // intentionally left stricter than the pre-filter.
+        assert!(crate::audio::turns::source_is_effectively_silent(
+            &system_path
+        ));
 
         let _ = std::fs::remove_dir_all(dir);
     }

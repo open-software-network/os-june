@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   BranchFromHereAction,
+  agentWorkspaceErrorStateForMessage,
   branchSourceSessionIdForTurn,
 } from "../components/agent/AgentWorkspace";
 import { createHermesMethods } from "../lib/hermes-control-plane";
@@ -43,6 +44,15 @@ describe("parseBranchSessionResult", () => {
     expect(result?.sessionId).toBe("fork");
     expect(result?.sourceSessionId).toBe("caller-src");
     expect(result?.sourceMessageId).toBe("m-9");
+  });
+
+  it("preserves a separate branch runtime id when the result returns one", () => {
+    const result = parseBranchSessionResult(
+      { new_session_id: "fork", session_id: "runtime-fork" },
+      { sourceSessionId: "caller-src", sourceMessageId: "m-9" },
+    );
+    expect(result?.sessionId).toBe("fork");
+    expect(result?.runtimeSessionId).toBe("runtime-fork");
   });
 
   it("prefers the result's own source ids over the fallback", () => {
@@ -158,6 +168,15 @@ describe("branchSourceSessionIdForTurn", () => {
   });
 });
 
+describe("agentWorkspaceErrorStateForMessage", () => {
+  it("normalizes raw session-not-found errors", () => {
+    expect(agentWorkspaceErrorStateForMessage("session not found", "source")).toEqual({
+      message: "This session is no longer available. Open another conversation or start a new one.",
+      sessionId: "source",
+    });
+  });
+});
+
 describe("BranchFromHereAction", () => {
   it("sends session.branch with the session and from_message_id when clicked", async () => {
     const request = vi.fn().mockResolvedValue({
@@ -201,23 +220,26 @@ describe("BranchFromHereAction", () => {
     });
   });
 
-  it("disables the action and explains why when message identity is insufficient", () => {
+  it("keeps live assistant rows clickable so the workspace can choose the saved fork point", async () => {
     const onBranch = vi.fn();
     render(
       <BranchFromHereAction messageId="assistant:2026-06-24T00:00:00Z:2" onBranch={onBranch} />,
     );
     const button = screen.getByRole("button", { name: /branch from here/i });
-    expect(button).toBeDisabled();
-    // The title/explanation makes the gating honest rather than silent.
-    expect(button).toHaveAttribute(
-      "title",
-      expect.stringMatching(/available once the message is saved/i),
-    );
+    expect(button).not.toBeDisabled();
+    expect(button).not.toHaveAttribute("aria-disabled");
+    fireEvent.focus(button.parentElement as HTMLElement);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/branch from here/i);
+    // The click reaches onBranch, where AgentWorkspace resolves the synthetic
+    // live row to the nearest persisted message before calling session.branch.
+    await userEvent.click(button);
+    expect(onBranch).toHaveBeenCalledWith("assistant:2026-06-24T00:00:00Z:2", undefined);
   });
 
   it("shows a spinning/disabled state while a branch is in flight", () => {
     const onBranch = vi.fn();
     render(<BranchFromHereAction messageId="m-3" onBranch={onBranch} submitting />);
-    expect(screen.getByRole("button", { name: /branch from here/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /creating branch/i })).toBeDisabled();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 });

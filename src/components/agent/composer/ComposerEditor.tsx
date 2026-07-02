@@ -18,9 +18,10 @@ export type ComposerEditorHandle = {
   focus: () => void;
   clear: () => void;
   /** Replaces the whole document with plain text plus an optional leading
-   * category chip. Used to prefill (run shortcuts, HUD replies) and to restore
+   * category chip. Used to prefill (hero shortcuts, HUD replies) and to restore
    * the composer after a failed send. With `selectPlaceholder`, the first
-   * `<placeholder>` token is selected so the user can overtype it in place. */
+   * `<placeholder>` token's brackets are stripped and the bare phrase left
+   * selected so the user can overtype it in place. */
   setContent: (
     text: string,
     category?: ReportCategory | null,
@@ -61,15 +62,21 @@ function focusEnd(editor: Editor | null) {
   editor.view.focus();
 }
 
-/** Maps the first `<placeholder>` token in a prefilled single-paragraph prompt
- * to its ProseMirror selection range, so a run shortcut can highlight it. The
- * paragraph's opening boundary occupies position 0, so a string index `i` maps
- * to document position `i + 1`; the range spans `<` through `>` inclusive. */
-export function placeholderSelection(text: string): { from: number; to: number } | null {
+/** Prepares a prefilled single-paragraph prompt for staging: strips the angle
+ * brackets off the first `<placeholder>` token (authoring syntax that should
+ * never reach the user's eyes) and maps the bare phrase to its ProseMirror
+ * selection range so a hero shortcut can highlight it for overtyping. The
+ * paragraph's opening boundary occupies position 0, so a string index `i`
+ * maps to document position `i + 1`. Null when there is no placeholder. */
+export function stripPlaceholder(text: string): { text: string; from: number; to: number } | null {
   const start = text.indexOf("<");
   const end = text.indexOf(">");
   if (start < 0 || end <= start) return null;
-  return { from: start + 1, to: end + 2 };
+  return {
+    text: text.slice(0, start) + text.slice(start + 1, end) + text.slice(end + 1),
+    from: start + 1,
+    to: end,
+  };
 }
 
 function buildDoc(text: string, category?: ReportCategory | null) {
@@ -218,12 +225,15 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         clear: () => editor?.commands.clearContent(true),
         setContent: (text, category, options) => {
           if (!editor) return;
-          editor.commands.setContent(buildDoc(text, category), {
+          const staged = options?.selectPlaceholder && !category ? stripPlaceholder(text) : null;
+          editor.commands.setContent(buildDoc(staged?.text ?? text, category), {
             emitUpdate: true,
           });
-          // A run shortcut prefills a "<placeholder>" token; select it (rather
-          // than parking the caret at the end) so typing overtypes it in place.
-          const range = options?.selectPlaceholder && !category ? placeholderSelection(text) : null;
+          // A hero shortcut authors a "<placeholder>" token; the brackets are
+          // stripped before the text hits the document and the bare phrase left
+          // selected (rather than parking the caret at the end) so typing
+          // overtypes it in place.
+          const range = staged ? { from: staged.from, to: staged.to } : null;
           const shouldFocus = options?.focus !== false;
           if (range) {
             editor.commands.setTextSelection(range);

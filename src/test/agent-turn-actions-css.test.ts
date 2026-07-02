@@ -30,9 +30,43 @@ describe("agent turn action styles", () => {
     expect(appCss).toContain(`.agent-user-turn:hover .agent-turn-actions,
 .agent-user-turn:focus-within .agent-turn-actions,
 .agent-assistant-turn:hover .agent-turn-actions,
-.agent-assistant-turn:focus-within .agent-turn-actions {
+.agent-assistant-turn:focus-within .agent-turn-actions,
+.agent-turn-actions[data-branching="true"] {
   opacity: 1;
   pointer-events: auto;
 }`);
+  });
+
+  it("reserves an inter-turn gap at least as tall as the out-of-flow row", () => {
+    // The row is positioned into the space below each turn (inset-block-start:
+    // 100%), so the standing gap between turns must clear the row's full
+    // height or a revealed row overlaps the next turn's "Thought" summary.
+    // Both derive from --agent-turn-actions-h so they can't drift apart.
+    const timeline = cssRuleFor(".agent-timeline");
+    const rowHeightVar = "--agent-turn-actions-h: calc(var(--sp-8) + var(--sp-px));";
+    expect(timeline).toContain(rowHeightVar);
+    // The gap adds breathing room on top of the row height, never less than it.
+    expect(timeline).toContain("gap: calc(var(--agent-turn-actions-h) + var(--sp-2));");
+
+    // The row itself sizes off the same tokens the gap budgets for: an sp-8
+    // button plus its sp-px padding-top.
+    const actionButton = cssRuleFor(".agent-turn-action");
+    expect(actionButton).toContain("block-size: var(--sp-8);");
+    const inner = cssRuleFor(".agent-turn-actions-inner");
+    expect(inner).toContain("padding-top: var(--sp-px);");
+  });
+
+  it("keeps the action row chromeless and alignable to the message edge", () => {
+    const inner = cssRuleFor(".agent-turn-actions-inner");
+    // A quiet icon row: any bg/border here fights the message bubble above it.
+    expect(inner).not.toContain("background:");
+    expect(inner).not.toContain("border:");
+    expect(inner).toContain("width: fit-content;");
+    // Block-level flex, not inline-flex: the user-turn variant right-aligns
+    // with an auto margin, which resolves to 0 on an inline-level box.
+    expect(inner).toContain("display: flex;");
+    expect(cssRuleFor(".agent-user-turn .agent-turn-actions-inner")).toContain(
+      "margin-inline-start: auto;",
+    );
   });
 });

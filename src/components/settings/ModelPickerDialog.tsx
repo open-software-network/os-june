@@ -167,6 +167,10 @@ export function ModelPickerDialog({
           // catalog hasn't loaded yet has no capability data to judge by.
           const noTools =
             mode === "generation" && Boolean(model.provider) && !modelSupportsTools(model);
+          // A local (bring-your-own) endpoint is selectable, but its tool
+          // support can't be verified from here, so it carries a non-blocking
+          // caveat rather than the disabling no-tools treatment.
+          const localCaveat = mode === "generation" && model.provider === "local";
           return (
             <button
               key={model.id}
@@ -193,6 +197,19 @@ export function ModelPickerDialog({
               </span>
               <span className="model-picker-meta">
                 {noTools ? <span className="model-picker-no-tools">No tools</span> : null}
+                {localCaveat ? (
+                  <HoverTip
+                    tip="Tool support depends on your local model."
+                    className="model-picker-tools-caveat"
+                    compact
+                    width={220}
+                    tabIndex={0}
+                    aria-label="Tools not verified. Tool support depends on your local model."
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    Tools not verified
+                  </HoverTip>
+                ) : null}
                 <ModelMeta model={model} />
               </span>
               {reason ? <span className="model-picker-reason">{reason}</span> : null}

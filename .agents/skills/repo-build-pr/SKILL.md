@@ -4,6 +4,9 @@ description: >-
   Use when the user invokes /repo-build-pr (or $repo-build-pr in Codex), or asks
   to build, implement, ship, or fix something in os-june from a feature prompt,
   bug report, screenshot, PR comment, or freeform repo task: study the prompt,
+  ask the clarifying questions that change what gets built up front,
+  plan and architect on the most capable model while delegating bulk
+  implementation to cheaper strong models,
   work in one or more git worktrees based on complexity, validate changes with
   deterministic checks plus agent-driven live app walkthroughs when useful,
   record, upload through os-platform, and attach reviewer-friendly QA video URLs
@@ -26,11 +29,51 @@ Treat everything after `/repo-build-pr` (or `$repo-build-pr` in Codex) as the bu
    - `AGENTS.md`
    - `CLAUDE.md`
    - any referenced project plan or spec relevant to the task
-3. Inspect the current checkout with `git status -sb`. Do not implement from a dirty or stale main checkout.
+3. Inspect the current checkout with `git status -sb`. A dirty checkout is fine, but never implement in it: all work happens in a worktree branched from freshly fetched `origin/main` (see Worktree strategy).
 4. Fetch the target base branch. Use `origin/main` unless the user explicitly names another base.
 5. Search the codebase with `rg` and read the narrowest relevant files before deciding on the implementation.
 
-If the prompt is ambiguous but a conservative implementation path is clear, proceed and document the assumption. Ask the user only when the missing detail changes the product behavior or could waste substantial work.
+### Clarifying questions
+
+Before writing any code, ask the questions whose answers change what gets built. A wrong guess at this stage costs an entire build-review cycle; a question costs the user seconds. Ask them as ONE batch up front (AskUserQuestion in Claude Code, a single numbered list in Codex), with a recommended option per question so the user can mostly confirm.
+
+Worth asking:
+
+- product behavior or UX choices with more than one defensible shape (what should the user see, where does the control live, what happens on failure)
+- scope boundaries: what is explicitly in and out, one PR or several, feature-complete or minimal first cut
+- acceptance criteria when the prompt implies but does not state them (what makes this done, what must keep working)
+- anything irreversible or outward-facing: schema migrations, API contract changes, billing, released-channel behavior, data deletion
+- conflicts between the prompt and what the code or tracker Issue actually says
+
+Not worth asking:
+
+- anything the repo, issue, or git history already answers - look first
+- choices with an obvious conventional default - pick it and note it in the PR
+- details that do not change the diff
+
+Do not trickle questions throughout the build; front-load them. If answers do not come or the task is explicitly AFK, take the conservative path, state each assumption prominently in the PR body, and flag the ones a reviewer should double-check.
+
+## Model orchestration
+
+Assume the session is running on the most capable model available (for example Fable 5 in Claude Code, GPT-5.6 in Codex). That model is expensive, so spend it where capability compounds and delegate everything else.
+
+The top model keeps the work that determines whether the PR is right:
+
+- intake, scoping, and the implementation plan
+- architecture and the contracts between parallel tracks (command names, request/response shapes, file ownership)
+- judgment calls: review-feedback triage, tradeoffs, anything ambiguous or irreversible
+- verification: reading delegated diffs, adversarially re-checking claimed results, deciding what is actually done
+
+Delegate the bulk of the implementation to strong but cheaper models (for example Opus 4.8 subagents via the Agent tool's `model` option in Claude Code, GPT-5.5 in Codex): writing code against a specified contract, test authoring, mechanical refactors, merge-conflict resolution with clear instructions, QA recording, and PR housekeeping.
+
+Delegation rules:
+
+- Write each brief like a contract: exact scope and file ownership, the interface to build against, validation commands that must pass, repo conventions to follow, and an instruction to report deviations instead of improvising around them.
+- Run implementers in parallel only when their file ownership does not overlap; define shared contracts up front so independently built halves meet.
+- Never trust a delegated report on its own. Verify against the diff and test output, and route confirmed defects back to the agent that owns that code with the evidence.
+- Right-size the overhead: if the brief would be longer than the diff, skip delegation and do the work directly on the top model.
+- Expect subagents to die on transient failures (API overload, timeouts). Resume the same agent so it keeps its context instead of respawning from scratch; the same applies when sending follow-up scope or defect reports to an agent that already knows the code.
+- Do not delegate the plan, the contracts, or the final go/no-go. If the orchestrating model finds itself writing bulk code, delegate; if a subagent starts making architectural decisions, pull them back up.
 
 ## Worktree strategy
 
@@ -126,6 +169,16 @@ Record, compress, upload the compressed video to os-platform, and attach the res
 
 The upload reads the os-platform API key from `june-api/.env` (`JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` or `OS_PLATFORM_API_KEY`), falling back to that file when the env vars are unset. Because `june-api/.env` is gitignored and absent from fresh worktrees, either copy it into the worktree (see Worktree strategy) or run `prepare_qa_video.py` with the working directory set to the main checkout while passing the worktree's raw recording path as input. If the key is still missing, the upload fails with a "set OS_PLATFORM_API_KEY" error; record that as a `BLOCKED` upload and keep the local video path in the evidence.
 
+### Pre-publish review pass
+
+Green checks and a passing walkthrough are necessary, not sufficient: they prove the code does what its tests say, not that the diff is free of defects the tests never imagined. For any non-trivial diff, run an independent review pass before opening the draft PR:
+
+1. Fan out a few cheap finder agents over the final diff, each with a distinct lens: line-by-line correctness, removed-behavior audit, cross-file callers and contracts, repo conventions.
+2. Verify every candidate finding to a CONFIRMED or REFUTED verdict with file:line evidence. Discard what does not survive verification; plausible-sounding findings that cannot name a failure scenario are noise.
+3. Route confirmed defects back to the implementer agent that owns the code, with the evidence, then re-run the relevant validation and re-review the changed area.
+
+Skip this only for trivial diffs (docs, one-line fixes) and say so in the PR validation notes.
+
 ## Publish
 
 Use a draft PR for the first publish.
@@ -143,6 +196,7 @@ Use a draft PR for the first publish.
    - why it changed
    - validation run
    - live agent walkthrough evidence, os-platform video URLs or PR comments, or the reason no live walkthrough was useful
+   - assumptions taken on clarifying questions that went unanswered, flagged for reviewer attention
    - known gaps or skipped checks
 6. Watch initial CI with:
    ```bash

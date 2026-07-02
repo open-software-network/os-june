@@ -46,7 +46,15 @@ type ModelPrivacySignals = Pick<VeniceModelDto, "privacy" | "traits"> &
  * inference can't expose tools. The capability name comes from Venice's
  * catalog (`supportsFunctionCalling`); match defensively on the normalized
  * name so a rename to snake_case or "tool calling" keeps working. */
-export function modelSupportsTools(model: Partial<Pick<VeniceModelDto, "capabilities">>) {
+export function modelSupportsTools(
+  model: Partial<Pick<VeniceModelDto, "capabilities" | "provider">>,
+) {
+  // A bring-your-own local endpoint can't be probed for function-calling
+  // support from the catalog, and hard-blocking it would make the feature
+  // unusable. Tool support is unverifiable and depends on the user's own
+  // model, so we treat local as capable and surface a non-blocking caveat in
+  // the picker instead of disabling selection.
+  if (model.provider === "local") return true;
   return (model.capabilities ?? []).some((capability) => {
     const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
     return normalized.includes("functioncalling") || normalized.includes("toolcalling");

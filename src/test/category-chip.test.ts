@@ -8,10 +8,7 @@ import {
   categoryFromDoc,
   insertReportCategory,
 } from "../components/agent/composer/categoryChip";
-import {
-  placeholderSelection,
-  serializePlainText,
-} from "../components/agent/composer/ComposerEditor";
+import { serializePlainText, stripPlaceholder } from "../components/agent/composer/ComposerEditor";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 let editor: Editor | null = null;
@@ -60,20 +57,17 @@ describe("category chip insertion", () => {
   });
 });
 
-describe("run-shortcut placeholder selection", () => {
-  it("maps the <placeholder> token to its document range", () => {
-    // "Research <topic>" — the doc range must span "<topic>" inclusive so a run
-    // shortcut highlights it for the user to overtype.
-    const prompt = "Research <topic>";
-    const range = placeholderSelection(prompt);
-    expect(range).toEqual({ from: 10, to: 17 });
-    // The selected slice (positions shifted back by the paragraph boundary) is
-    // exactly the placeholder token.
-    expect(prompt.slice(range!.from - 1, range!.to - 1)).toBe("<topic>");
+describe("hero-shortcut placeholder staging", () => {
+  it("strips the brackets and maps the bare phrase to its document range", () => {
+    const staged = stripPlaceholder("Research <a topic> and summarize it");
+    expect(staged?.text).toBe("Research a topic and summarize it");
+    // The selected slice (positions shifted back by the paragraph boundary)
+    // is exactly the bare phrase, no brackets.
+    expect(staged!.text.slice(staged!.from - 1, staged!.to - 1)).toBe("a topic");
   });
 
-  it("returns null when there is no placeholder to select", () => {
-    expect(placeholderSelection("Summarize my notes")).toBeNull();
-    expect(placeholderSelection("a > b but no opener")).toBeNull();
+  it("returns null when there is no placeholder", () => {
+    expect(stripPlaceholder("Summarize my notes")).toBeNull();
+    expect(stripPlaceholder("a > b but no opener")).toBeNull();
   });
 });

@@ -24,3 +24,19 @@ describe("isAccessibilityBlocked", () => {
     expect(isAccessibilityBlocked("restricted")).toBe(true);
   });
 });
+
+// JUN-185: the helper now polls AXIsProcessTrusted() and re-emits
+// permission_status on change. The app maps each emitted status through
+// isAccessibilityBlocked, so this guards the granted/missing/granted mapping
+// used by the banner without exercising the full IPC event pipeline.
+describe("accessibility banner across proactive status changes", () => {
+  it("maps revoke and re-grant status changes to banner visibility", () => {
+    // Trusted at launch: no banner.
+    expect(isAccessibilityBlocked("granted")).toBe(false);
+    // Grant revoked in System Settings mid-session (helper timer/wake poll
+    // re-emits): banner appears with no dictation attempt.
+    expect(isAccessibilityBlocked("missing")).toBe(true);
+    // Re-granted (next change event): banner clears.
+    expect(isAccessibilityBlocked("granted")).toBe(false);
+  });
+});

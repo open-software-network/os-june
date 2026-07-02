@@ -2,7 +2,7 @@
   <!-- Neutral June mark: brand terracotta tile with a sparkle. Stands in for
        the retired pangolin mascot wherever a standalone brand image is
        needed (e.g. the floating mascot window's avatar). -->
-  <rect width="64" height="64" rx="16" fill="#936862" />
+  <rect width="64" height="64" rx="16" fill="#b5551f" />
   <path
     d="M32 11 C33.4 25.4 38.6 30.6 53 32 C38.6 33.4 33.4 38.6 32 53 C30.6 38.6 25.4 33.4 11 32 C25.4 30.6 30.6 25.4 32 11 Z"
     fill="#fff7f0"

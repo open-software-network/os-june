@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { IconArrowDown } from "central-icons/IconArrowDown";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
@@ -6,6 +7,7 @@ import { IconBolt } from "central-icons/IconBolt";
 import { IconBranchSimple } from "central-icons/IconBranchSimple";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
+import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
 import { IconClipboard } from "central-icons/IconClipboard";
@@ -36,15 +38,15 @@ import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal
 import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
 import { IconGauge } from "central-icons/IconGauge";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
-import { IconHistory } from "central-icons/IconHistory";
-import { IconListBullets } from "central-icons/IconListBullets";
 import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconNotes } from "central-icons/IconNotes";
+import { IconPageTextSearch } from "central-icons/IconPageTextSearch";
 import { IconPencil } from "central-icons/IconPencil";
-import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
@@ -80,6 +82,7 @@ import {
   cancelAgentTask,
   dictationHelperCommand,
   explainAgentApproval,
+  finalizeHermesBridgeBranch,
   getAgentTask,
   getHermesBridgeSkill,
   ensureHermesBridgeSession,
@@ -102,6 +105,7 @@ import {
   providerModelSettings,
   retryAgentTask,
   setHermesAgentCliAccess,
+  setLocalGenerationEnabled,
   setVeniceModel,
   startHermesBridge,
   submitIssueReport,
@@ -122,6 +126,8 @@ import {
   type HermesSkillDocument,
   type HermesSkillInfo,
   type HermesToolsetInfo,
+  type LocalGenerationSettingsDto,
+  type ProviderModelSettingsDto,
   type VeniceModelDto,
 } from "../../lib/tauri";
 import {
@@ -199,6 +205,13 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
+import {
+  LOCAL_GENERATION_OPTION_ID_PREFIX,
+  isLoopbackUrl,
+  localGenerationOptionId,
+  rawLocalGenerationModelId,
+  withLocalGenerationOption,
+} from "../../lib/local-generation";
 import { preferredVisionFallbackModel, suggestedModelsForMode } from "../../lib/suggested-models";
 import {
   contextLabel,
@@ -206,7 +219,11 @@ import {
   pricingLabel,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import { isHermesSessionsStartupRequestError, messageFromError } from "../../lib/errors";
+import {
+  isHermesServerError,
+  isHermesSessionsStartupRequestError,
+  messageFromError,
+} from "../../lib/errors";
 import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
@@ -232,7 +249,11 @@ import {
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage } from "../../lib/chat-image-generation";
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
-import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+  stripPlaceholder,
+} from "./composer/ComposerEditor";
 import { CategoryIcon } from "./composer/CategoryIcon";
 import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
 import {
@@ -300,9 +321,27 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 // terminal: it retires the dead-end card and shows SESSION_GONE_MESSAGE rather
 // than leaking the raw "Hermes API returned 404 ... Session not found" error.
 const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
+const SESSION_NOT_AVAILABLE_MESSAGE =
+  "This session is no longer available. Open another conversation or start a new one.";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
+}
+
+// A Hermes REST 5xx (`Hermes API returned 5xx: …`) is a transient server-side
+// fault, so session-load handlers show this June-branded line instead of the raw
+// wire string — which read as a doubled "500 Internal Server Error: Internal
+// Server Error" before the bridge deduped it (JUN-167). The banner's own
+// "Try again" button provides the retry, so the message stays a plain
+// description. `visibleErrorRetryable` keys off this
+// constant to offer that retry.
+const HERMES_SERVER_ERROR_MESSAGE = "June ran into a problem with that request.";
+
+// Picks the banner text for a caught session-command error: a transient Hermes
+// 5xx becomes the friendly retryable line; anything else passes through raw.
+function describeAgentError(err: unknown): string {
+  const message = messageFromError(err);
+  return isHermesServerError(message) ? HERMES_SERVER_ERROR_MESSAGE : message;
 }
 
 // Dev-tools response gallery handle. Registered at module scope so
@@ -522,20 +561,26 @@ type AgentShortcut = {
   description: string;
   prompt: string;
   /**
-   * "run" submits the prompt immediately; "prefill" drops it into the
-   * composer for the user to finish (selecting the <placeholder> if there is
-   * one); "attach" prefills and opens the file picker.
+   * "prefill" drops the prompt into the composer for the user to finish; the
+   * first `<placeholder>` token arrives as its bare phrase, selected for
+   * overtyping — the angle brackets are authoring syntax and never reach the
+   * composer. "attach" prefills and
+   * opens the file picker. There is deliberately no action that submits on
+   * click: every preset lands in the composer first, so the person sees
+   * exactly what will run — and approves the spend — before it costs tokens.
    */
-  action: "run" | "prefill" | "attach";
+  action: "prefill" | "attach";
 };
 
 /**
  * Suggestion pool for the new-session hero. Shown HERO_SHORTCUT_COUNT at a
  * time and reshuffled on each visit, so the entry point stays a handful of
  * fresh ideas instead of a wall of ten cards. Pool order matters: the leading
- * window is the curated first-impression mix (an instant run, a prefill, an
- * attach flow, and a health check) that shows when the shuffle is identity
- * (e.g. in tests with Math.random mocked to 0).
+ * window is the curated first-impression mix (a note-native ready-to-send
+ * prompt, a placeholder prefill, an attach flow) that shows when the shuffle
+ * is identity (e.g. in tests with Math.random mocked to 0). At least one
+ * chip in that window should be something only June can do — recapping your
+ * own notes — not a generic computer chore.
  *
  * Every suggestion must succeed inside the default write-jail: reads are
  * broad, but writes land only in the agent workspace. Don't add shortcuts
@@ -545,20 +590,21 @@ type AgentShortcut = {
  */
 const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
-    key: "recent-files",
-    icon: <IconHistory size={18} />,
-    title: "Catch up on recent files",
-    description: "A quick rundown of what's new across your folders.",
+    key: "recap-notes",
+    icon: <IconNotes size={18} />,
+    title: "Recap my notes",
+    description: "What happened, what got decided, what's still open.",
     prompt:
-      "Look through my Desktop, Documents, and Downloads folders for files added or changed in the last week and give me a quick rundown of what's new, grouped by what they seem to be for. Don't move or change anything.",
-    action: "run",
+      "Look through my recent meeting notes and give me a quick recap: what happened, what got decided, and any action items still open. Keep it brief.",
+    action: "prefill",
   },
   {
     key: "research",
     icon: <IconDeepSearch size={18} />,
     title: "Research a topic",
     description: "Get a short, sourced write-up on anything.",
-    prompt: "Research <topic> and write a short summary of what you find, with sources.",
+    prompt:
+      "Research <a topic> and write a short summary (a few paragraphs) of what you find, with sources.",
     action: "prefill",
   },
   {
@@ -572,18 +618,28 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
     key: "health-check",
     icon: <IconHeartBeat size={18} />,
-    title: "Check my computer's health",
+    title: "Check my Mac's health",
     description: "Disk, memory, and login items that need attention.",
     prompt:
       "Give my computer a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
-    action: "run",
+    action: "prefill",
+  },
+  {
+    key: "draft-follow-up",
+    icon: <IconEmail1Sparkle size={18} />,
+    title: "Draft a follow-up",
+    description: "Turn your latest meeting note into a follow-up message.",
+    prompt:
+      "From my most recent meeting note, draft a short follow-up message covering the decisions and next steps.",
+    action: "prefill",
   },
   {
     key: "find-file",
     icon: <IconMagnifyingGlass size={18} />,
     title: "Find a file",
     description: "Describe what you remember; June tracks it down.",
-    prompt: "Find <a file I half-remember> on my computer and tell me where it is.",
+    prompt:
+      "Find <a file I half-remember> on my computer and tell me where it is. If several candidates match, list them with paths and dates.",
     action: "prefill",
   },
   {
@@ -596,20 +652,12 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "attach",
   },
   {
-    key: "extract-text",
-    icon: <IconFileText size={18} />,
-    title: "Extract text from a file",
-    description: "Pull clean text out of a PDF, image, or scan.",
-    prompt: "Extract all the text from the attached file and clean it up into tidy Markdown.",
-    action: "attach",
-  },
-  {
-    key: "plan-project",
-    icon: <IconListBullets size={18} />,
-    title: "Plan a project",
-    description: "Turn a vague goal into concrete first steps.",
+    key: "search-notes",
+    icon: <IconPageTextSearch size={18} />,
+    title: "Search my notes",
+    description: "Find where something came up across your meetings.",
     prompt:
-      "Help me plan <a project>: break it into concrete steps, flag the risks, and suggest what to tackle first.",
+      "Search my notes and transcripts for <what I'm trying to remember> and show me where it came up.",
     action: "prefill",
   },
 ];
@@ -705,22 +753,65 @@ type PendingIssueReport = {
   diagnosisStartedAt?: string;
 };
 
+function hermesServerErrorIssueReport(err: unknown): PendingIssueReport | undefined {
+  const rawMessage = messageFromError(err).trim();
+  if (!isHermesServerError(rawMessage)) return undefined;
+  return {
+    category: "bug",
+    description: [
+      "June hit a Hermes server error while loading this agent session.",
+      "",
+      "Raw error:",
+      rawMessage,
+    ].join("\n"),
+    followUps: [],
+    attachmentNames: [],
+    attachmentPaths: [],
+  };
+}
+
+function reportableAgentErrorOptions(
+  err: unknown,
+  options: AgentWorkspaceErrorOptions = {},
+): AgentWorkspaceErrorOptions {
+  const issueReport = hermesServerErrorIssueReport(err);
+  if (!issueReport) return options;
+  return { ...options, issueReport };
+}
+
 type HermesToolEventPhase = "start" | "progress" | "complete";
 
 type AgentWorkspaceError = {
   message: string;
   /** Null means the error belongs to the no-session workspace surface. */
   sessionId: string | null;
+  issueReport?: PendingIssueReport;
 };
 
 type AgentWorkspaceErrorOptions = {
   sessionId?: string | null;
+  issueReport?: PendingIssueReport;
 };
 
 type AgentWorkspaceNotice = {
   message: string;
-  sessionId: string;
+  sessionId: string | null;
 };
+
+export function agentWorkspaceErrorStateForMessage(
+  message: string,
+  sessionId: string | null,
+  issueReport?: PendingIssueReport,
+): AgentWorkspaceError | null {
+  if (isSessionGoneError(message)) {
+    return {
+      message: SESSION_NOT_AVAILABLE_MESSAGE,
+      sessionId,
+      ...(issueReport ? { issueReport } : {}),
+    };
+  }
+  return { message, sessionId, ...(issueReport ? { issueReport } : {}) };
+}
 
 type AgentDeleteSessionDetail = {
   sessionId: string;
@@ -862,6 +953,8 @@ const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY = "june:agent:reviewable-issue-report
 const ISSUE_REPORT_DELIVERY_SETTLED_EVENT = "june-agent-issue-report-delivery-settled";
 const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
+const ISSUE_REPORT_SENT_MESSAGE =
+  "Your report was sent to the June team. Thank you for helping improve June.";
 const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
 const ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS = 1500;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
@@ -1251,6 +1344,28 @@ export function resetAgentSessionContinuity() {
   removeStoredNewSessionDraft();
 }
 
+/** The catalog id that represents the current global generation selection:
+ * the synthetic "Local: <id>" option when local generation is the active
+ * provider, otherwise the configured remote model id. Pure so it can back both
+ * the mount fetch and the model-switch handler. */
+function generationSelectionId(settings: ProviderModelSettingsDto, fallbackModelId = ""): string {
+  const localModelId = settings.localGeneration?.modelId?.trim();
+  if (settings.generationProvider === "local" && localModelId) {
+    return localGenerationOptionId(localModelId);
+  }
+  return settings.generationModel || fallbackModelId;
+}
+
+/** Translates a catalog model id to the id Hermes understands: the synthetic
+ * local option id becomes the raw local model id (the only id the provider
+ * proxy advertises on /v1/models); every other id passes through. Every model
+ * id sent to Hermes — session.create, session ensure, /model dispatch — must
+ * cross this boundary, or a session would carry the prefixed synthetic id
+ * that no provider recognizes once local mode is off. */
+function hermesModelIdFor(modelId: string): string {
+  return rawLocalGenerationModelId(modelId) ?? modelId;
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
@@ -1292,6 +1407,7 @@ export function AgentWorkspace({
   // Confirmation that a submitted issue report reached the June team; shown
   // in the composer notice slot until dismissed by the next send.
   const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
+  const [submittingErrorIssueReport, setSubmittingErrorIssueReport] = useState(false);
   const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
     null,
   );
@@ -1313,9 +1429,12 @@ export function AgentWorkspace({
     sessionId: string;
     sourceTitle: string;
   } | null>(null);
+  const branchedNoticeRef = useRef(branchedNotice);
+  const [branchingNotice, setBranchingNotice] = useState<{ sourceTitle: string } | null>(null);
   // Which message a branch is currently in flight for, so its action shows a
   // disabled/working state and double-clicks can't fork twice.
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null);
+  const branchingMessageIdRef = useRef<string | null>(null);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -1369,13 +1488,15 @@ export function AgentWorkspace({
         setErrorState(null);
         return;
       }
-      setErrorState({
-        message,
-        sessionId:
-          options.sessionId === undefined
-            ? (selectedHermesSessionIdRef.current ?? null)
-            : options.sessionId,
-      });
+      const sessionId =
+        options.sessionId === undefined
+          ? (selectedHermesSessionIdRef.current ?? null)
+          : options.sessionId;
+      const nextError = agentWorkspaceErrorStateForMessage(message, sessionId, options.issueReport);
+      if (!nextError) {
+        return;
+      }
+      setErrorState(nextError);
     },
     [],
   );
@@ -1468,6 +1589,26 @@ export function AgentWorkspace({
   const sessionModelOverridesRef = useRef<Record<string, string>>({});
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
+  // Bring-your-own local text generation. When the global provider is "local"
+  // the model catalog carries a synthetic "Local: <id>" option and the pill
+  // resolves to it, so the composer never shows a raw local id or silently
+  // reverts the app to metered remote generation. Kept as refs too because the
+  // async model-switch handler reads the latest values.
+  const [localGeneration, setLocalGeneration] = useState<LocalGenerationSettingsDto>({
+    baseUrl: "",
+    modelId: "",
+    apiKey: "",
+  });
+  const localGenerationRef = useRef(localGeneration);
+  const [generationProvider, setGenerationProvider] = useState("venice");
+  const generationProviderRef = useRef("venice");
+  // Two-step confirm for enabling a NON-loopback local endpoint from the
+  // composer (requests would leave the device, so no path may enable one
+  // silently — Settings has the same invariant with its "Enable anyway"
+  // affordance). Holds the exact base URL the warning was shown for: a second
+  // selection only proceeds while the saved URL still matches, so editing the
+  // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
+  const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] = useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
@@ -1921,16 +2062,45 @@ export function AgentWorkspace({
     onSessionSelected?.(selectedHermesSession);
   }, [onSessionSelected, selectedHermesSession, selectedHermesSessionId]);
   const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(selectedHermesSessionId);
-  const activeGenerationModelId =
+  // When local generation is the active provider, the pill/selection is the
+  // synthetic local option so it renders "Local: <id>" and never a raw id or a
+  // stale remote override. Every session routes through the local endpoint.
+  const localOptionId =
+    localGeneration.modelId.trim().length > 0
+      ? localGenerationOptionId(localGeneration.modelId)
+      : "";
+  const localGenerationActive = generationProvider === "local" && localOptionId.length > 0;
+  const sessionOrDefaultModelId =
     selectedHermesSessionId && !newSessionMode
       ? selectedHermesSession?.model?.trim() || defaultGenerationModelId
       : defaultGenerationModelId;
+  // A local model id (synthetic or raw) can linger on a session row after
+  // local is turned off; fall back to the remote default so the pill matches
+  // what the remote proxy actually serves (its stale-local guard degrades
+  // exactly these ids to the global model).
+  const staleLocalModelId =
+    !localGenerationActive &&
+    (sessionOrDefaultModelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX) ||
+      (localGeneration.modelId.trim().length > 0 &&
+        sessionOrDefaultModelId === localGeneration.modelId.trim()));
+  const activeGenerationModelId = localGenerationActive
+    ? localOptionId
+    : staleLocalModelId
+      ? defaultGenerationModelId
+      : sessionOrDefaultModelId;
+  // Catalog surfaced in the composer picker: the remote models plus, when a
+  // local endpoint is configured, the synthetic local option (even while
+  // remote is active, so the user can switch to local from the composer).
+  const generationModelOptions = useMemo(
+    () => withLocalGenerationOption(generationModels, localGeneration),
+    [generationModels, localGeneration],
+  );
   const generationModel = useMemo(
     () =>
       activeGenerationModelId
-        ? selectedModelOption(generationModels, activeGenerationModelId)
+        ? selectedModelOption(generationModelOptions, activeGenerationModelId)
         : undefined,
-    [activeGenerationModelId, generationModels],
+    [activeGenerationModelId, generationModelOptions],
   );
   const generationPrivacyBadge = generationModel ? modelPrivacyBadge(generationModel) : undefined;
   // The model the image-attach banner offers to switch to: a vision + tool
@@ -2062,9 +2232,17 @@ export function AgentWorkspace({
   // because the composer auto-grow effect below needs it as a dependency.
   const heroMode =
     !gallerySections && (newSessionMode || (!selectedHermesSessionId && !selectedTask));
-  const visibleError = visibleAgentWorkspaceError(errorState, selectedHermesSessionId);
+  const visibleErrorState = visibleAgentWorkspaceError(errorState, selectedHermesSessionId);
+  const visibleError = visibleErrorState?.message ?? null;
+  // The banner offers "Try again" for failures a reconnect-and-reload can clear:
+  // our own gateway/bridge connection errors, and a transient Hermes 5xx
+  // (HERMES_SERVER_ERROR_MESSAGE, JUN-167). retryGatewayConnection re-runs the
+  // session-management loads that produced either.
+  const visibleErrorRetryable =
+    visibleError != null &&
+    (GATEWAY_CONNECTION_ERROR.test(visibleError) || visibleError === HERMES_SERVER_ERROR_MESSAGE);
   const visibleIssueReportNotice =
-    issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
+    issueReportNotice && issueReportNotice.sessionId === (selectedHermesSessionId ?? null)
       ? issueReportNotice.message
       : null;
   // The model-switch notice (feature 10) shows on the session it acted on; a
@@ -2373,7 +2551,9 @@ export function AgentWorkspace({
   }, []);
 
   const loadHermesSessions = useCallback(
-    async (options: { suppressStartupRequestError?: boolean } = {}) => {
+    async (
+      options: { suppressStartupRequestError?: boolean; suppressSessionGoneError?: boolean } = {},
+    ) => {
       if (!bridge.running) return "skipped";
       let keepLoading = false;
       setHermesSessionsLoading(true);
@@ -2427,6 +2607,7 @@ export function AgentWorkspace({
         // moments after it appeared. The banner is dismissable instead.
         return "loaded";
       } catch (err) {
+        const message = messageFromError(err);
         if (
           options.suppressStartupRequestError &&
           !hermesSessionsHydratedRef.current &&
@@ -2435,7 +2616,10 @@ export function AgentWorkspace({
           keepLoading = true;
           return "transient-startup-error";
         }
-        setError(messageFromError(err));
+        if (options.suppressSessionGoneError && isSessionGoneError(message)) {
+          return "failed";
+        }
+        setError(describeAgentError(err), reportableAgentErrorOptions(err));
         return "failed";
       } finally {
         if (!keepLoading) {
@@ -2450,6 +2634,30 @@ export function AgentWorkspace({
     void loadTasks();
   }, [loadTasks]);
 
+  // Reflects a provider/model settings change into the composer state: the
+  // active provider, the saved local endpoint, and the pill selection (the
+  // synthetic local option when local is active). Shared by the mount fetch
+  // and the model-switch handler so both stay in lockstep with the backend.
+  const commitGenerationSettings = useCallback(
+    (settings: ProviderModelSettingsDto, fallbackModelId = "") => {
+      const local = settings.localGeneration ?? {
+        baseUrl: "",
+        modelId: "",
+        apiKey: "",
+      };
+      const provider = settings.generationProvider || "venice";
+      const selectedModelId = generationSelectionId(settings, fallbackModelId);
+      localGenerationRef.current = local;
+      setLocalGeneration(local);
+      generationProviderRef.current = provider;
+      setGenerationProvider(provider);
+      defaultGenerationModelIdRef.current = selectedModelId;
+      setDefaultGenerationModelId(selectedModelId);
+      return selectedModelId;
+    },
+    [],
+  );
+
   // Out-of-order responses (a slow mount fetch landing after a settings
   // change refresh) must not clobber the newer result.
   const generationModelRequestSequence = useRef(0);
@@ -2460,13 +2668,14 @@ export function AgentWorkspace({
         providerModelSettings(),
         listVeniceModels("generation"),
       ]);
-      const selectedModelId =
-        settingsResponse.settings.generationModel || modelsResponse.selectedModel;
+      const selectedModelId = generationSelectionId(
+        settingsResponse.settings,
+        modelsResponse.selectedModel,
+      );
       if (requestId === generationModelRequestSequence.current) {
-        defaultGenerationModelIdRef.current = selectedModelId;
         generationModelsRef.current = modelsResponse.models;
         setGenerationModels(modelsResponse.models);
-        setDefaultGenerationModelId(selectedModelId);
+        commitGenerationSettings(settingsResponse.settings, modelsResponse.selectedModel);
       }
       return { models: modelsResponse.models, selectedModelId };
     } catch {
@@ -2477,7 +2686,7 @@ export function AgentWorkspace({
       }
       return null;
     }
-  }, []);
+  }, [commitGenerationSettings]);
 
   useEffect(() => {
     defaultGenerationModelIdRef.current = defaultGenerationModelId;
@@ -2525,15 +2734,113 @@ export function AgentWorkspace({
     void loadGenerationModel();
   }
 
-  // Switching the model always writes the global text-model default (Settings'
+  // Enables the saved local endpoint as the global generation provider. The
+  // local provider proxy routes EVERY request by the global provider and
+  // rewrites the model to the local id, so flipping the provider is what moves
+  // a running session onto local — a per-chat override could not. That makes
+  // the "switched this session" claim honest here without waiting on the
+  // /model ack; the dispatch is best effort, only to keep Hermes' own session
+  // model aligned (the local id is advertised on /v1/models once local is on).
+  // Reflects the global generation selection into composer state directly (not
+  // via the backend return value, which tests stub out): the remote flip and
+  // the mount fetch already round-trip through commitGenerationSettings.
+  function markRemoteGenerationSelected(modelId: string) {
+    generationProviderRef.current = "venice";
+    setGenerationProvider("venice");
+    defaultGenerationModelIdRef.current = modelId;
+    setDefaultGenerationModelId(modelId);
+  }
+
+  async function selectLocalGeneration(sessionId: string | undefined) {
+    const localModelId = localGenerationRef.current.modelId.trim();
+    const modelName = localModelId ? `Local: ${localModelId}` : "the local model";
+    const selectedModelId = localModelId ? localGenerationOptionId(localModelId) : "";
+    // An off-device endpoint takes a deliberate second step, same invariant as
+    // the Settings toggle: the first selection warns instead of enabling.
+    // Loopback endpoints enable in one step.
+    const baseUrl = localGenerationRef.current.baseUrl.trim();
+    if (!isLoopbackUrl(baseUrl)) {
+      if (localEnableConfirmArmedForRef.current !== baseUrl) {
+        localEnableConfirmArmedForRef.current = baseUrl;
+        setModelSwitchNotice({
+          message:
+            "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+          sessionId: sessionId ?? null,
+        });
+        return false;
+      }
+      localEnableConfirmArmedForRef.current = null;
+    }
+    try {
+      await setLocalGenerationEnabled(true);
+      generationProviderRef.current = "local";
+      setGenerationProvider("local");
+      defaultGenerationModelIdRef.current = selectedModelId;
+      setDefaultGenerationModelId(selectedModelId);
+      dispatchProviderModelSettingsChanged({
+        mode: "generation",
+        modelId: selectedModelId,
+      });
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+      return false;
+    }
+    if (!sessionId) {
+      setModelSwitchNotice({
+        message: resolveModelSwitchOutcome({
+          hasActiveSession: false,
+          dispatchSucceeded: false,
+          modelName,
+        }).notice,
+        sessionId: null,
+      });
+      return true;
+    }
+    const rawLocalModelId = localGenerationRef.current.modelId.trim();
+    if (rawLocalModelId) {
+      try {
+        const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+        await createHermesMethods(gateway).switchActiveSessionModel({
+          mode: hermesModeFor(sessionId),
+          sessionId,
+          model: rawLocalModelId,
+        });
+      } catch {
+        // Best effort: the proxy already serves this session from local.
+      }
+    }
+    setModelSwitchNotice({
+      message: resolveModelSwitchOutcome({
+        hasActiveSession: true,
+        dispatchSucceeded: true,
+        modelName,
+      }).notice,
+      sessionId,
+    });
+    return true;
+  }
+
+  // Switching the model always writes the global text-model selection (Settings'
   // model rows and this pill refresh through the same changed event). When a
   // session is open, it ALSO switches that live session via Hermes
-  // command.dispatch (/model …) — and the UI only claims the running session
-  // moved when Hermes accepts the dispatch (feature 10). The gateway result is
-  // the source of truth: raw model.switch/model.changed frames classify as
-  // unsupported, so there is no confirming event to wait on.
+  // command.dispatch (/model …), and the UI only claims the running session
+  // moved when Hermes accepts the dispatch (feature 10) — except when the
+  // switch flips the global provider (local <-> remote), where the provider
+  // proxy decides the model for every request and so guarantees the claim.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
+    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
+
+    // Local is a synthetic catalog option (prefixed id), so it routes through
+    // the provider switch rather than a remote model set.
+    if (modelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
+      return selectLocalGeneration(sessionId);
+    }
+    // Picking anything else stands down a pending off-device confirm: the
+    // next local selection warns afresh instead of enabling in one step.
+    localEnableConfirmArmedForRef.current = null;
+
     const chosen = generationModelsRef.current.find((model) => model.id === modelId);
     // Defense in depth: the picker already hides tool-less models, but the
     // agent bricks without function calling, so refuse one rather than switch.
@@ -2542,14 +2849,18 @@ export function AgentWorkspace({
       return false;
     }
     const modelName = chosen?.name ?? modelId;
-    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
+    // Selecting a remote model while local is active is an informed switch back
+    // to metered remote generation (the picker showed "Local: …" as current).
+    // The local proxy routes by the GLOBAL provider, so a per-chat override
+    // alone could not move this session off local: flip the global provider
+    // too, or the pill would claim a model the responses do not come from.
+    const wasLocalActive = generationProviderRef.current === "local";
 
     // No open chat: changing the model updates the global generation default.
     if (!sessionId) {
       try {
         await setVeniceModel("generation", modelId);
-        defaultGenerationModelIdRef.current = modelId;
-        setDefaultGenerationModelId(modelId);
+        markRemoteGenerationSelected(modelId);
         dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
         setError(null);
       } catch (err) {
@@ -2567,10 +2878,24 @@ export function AgentWorkspace({
       return true;
     }
 
-    // Open chat: override the model for THIS chat only (never the global
-    // default), then dispatch /model to the live session so the running turn
-    // switches immediately. Hermes session metadata updates are title-only, so
-    // the local per-chat override is the source of truth for this row.
+    // Open chat coming off local: flip the global provider to remote first so
+    // the running session actually leaves the local endpoint before we claim it
+    // did. (In remote mode this is skipped — the switch stays per-chat.)
+    if (wasLocalActive) {
+      try {
+        await setVeniceModel("generation", modelId);
+        markRemoteGenerationSelected(modelId);
+        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
+      } catch (err) {
+        setError(messageFromError(err));
+        return false;
+      }
+    }
+
+    // Open chat: override the model for THIS chat, then dispatch /model to the
+    // live session so the running turn switches immediately. Hermes session
+    // metadata updates are title-only, so the per-chat override is the source
+    // of truth for this row.
     sessionModelOverridesRef.current = {
       ...sessionModelOverridesRef.current,
       [sessionId]: modelId,
@@ -2810,7 +3135,10 @@ export function AgentWorkspace({
         // working-gated poll re-loads once it resolves — so don't flash it as
         // an error banner (JUN-116).
         if (isSessionGoneError(message)) return;
-        setError(message, { sessionId: selectedHermesSessionId });
+        setError(
+          describeAgentError(err),
+          reportableAgentErrorOptions(err, { sessionId: selectedHermesSessionId }),
+        );
       });
     return () => {
       cancelled = true;
@@ -2838,7 +3166,7 @@ export function AgentWorkspace({
         }
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(messageFromError(err));
+        if (!cancelled) setError(describeAgentError(err), reportableAgentErrorOptions(err));
       });
     return () => {
       cancelled = true;
@@ -2860,7 +3188,7 @@ export function AgentWorkspace({
         if (cancelled) return;
         setBridge(status);
       } catch (err) {
-        if (!cancelled) setError(messageFromError(err));
+        if (!cancelled) setError(describeAgentError(err), reportableAgentErrorOptions(err));
       }
     })();
     return () => {
@@ -3347,9 +3675,9 @@ export function AgentWorkspace({
       ? reviewableIssueReportsRef.current[reportFollowUpSessionId]
       : undefined;
     const submittedDraftKey = composerDraftKeyRef.current;
-    // A typed hero submit plays the same teardown as a run shortcut: greeting
-    // up, suggestions down during the session-create latency. Without it they
-    // sit frozen through the wait and then vanish in a single frame when the
+    // A hero submit plays the teardown transition: greeting up, suggestions
+    // down during the session-create latency. Without it they sit frozen
+    // through the wait and then vanish in a single frame when the
     // conversation takes over.
     if (heroMode) setHeroLeaving(true);
     setSubmitting(true);
@@ -3660,6 +3988,10 @@ export function AgentWorkspace({
     setIssueReportNotice(null);
   }, [selectedHermesSessionId]);
 
+  useEffect(() => {
+    branchedNoticeRef.current = branchedNotice;
+  }, [branchedNotice]);
+
   /** Sends the captured report plus June's diagnostic reply (the last
    * assistant message of the turn) to the June team. The diagnosis fetch is
    * best-effort: a report without June's assessment still beats no report. */
@@ -3692,7 +4024,7 @@ export function AgentWorkspace({
       clearErrorForSession(sessionId);
       if (selectedHermesSessionIdRef.current === sessionId) {
         setIssueReportNotice({
-          message: "Your report was sent to the June team. Thank you for helping improve June.",
+          message: ISSUE_REPORT_SENT_MESSAGE,
           sessionId,
         });
       }
@@ -3725,6 +4057,45 @@ export function AgentWorkspace({
       if (result) {
         dispatchIssueReportDeliverySettled({ sessionId, report, result });
       }
+    }
+  }
+
+  async function sendErrorIssueReport(error: AgentWorkspaceError) {
+    const report = error.issueReport;
+    if (!report || submittingErrorIssueReport) return;
+    const sessionId = error.sessionId ?? selectedHermesSessionIdRef.current;
+    setSubmittingErrorIssueReport(true);
+    try {
+      await submitIssueReport({
+        category: report.category,
+        description: issueReportDescription(report),
+        agentDiagnosis: undefined,
+        attachmentNames: report.attachmentNames,
+        attachmentPaths: report.attachmentPaths,
+        ...(sessionId ? { sessionId } : {}),
+      });
+      if (sessionId) {
+        clearErrorForSession(sessionId);
+        if (selectedHermesSessionIdRef.current === sessionId) {
+          setIssueReportNotice({
+            message: ISSUE_REPORT_SENT_MESSAGE,
+            sessionId,
+          });
+        }
+      } else {
+        setError(null);
+        setIssueReportNotice({
+          message: ISSUE_REPORT_SENT_MESSAGE,
+          sessionId: null,
+        });
+      }
+    } catch (err) {
+      setError(`The issue report could not be sent. ${messageFromError(err)}`, {
+        sessionId: sessionId ?? null,
+        issueReport: report,
+      });
+    } finally {
+      setSubmittingErrorIssueReport(false);
     }
   }
 
@@ -4173,13 +4544,18 @@ export function AgentWorkspace({
       : newSessionModeRef.current
         ? undefined
         : selectedHermesSessionId;
-    const targetSessionModelId = targetSessionId
-      ? explicitSession?.model?.trim() ||
-        hermesSessionItemsRef.current
-          .find((session) => session.id === targetSessionId)
-          ?.model?.trim() ||
-        defaultGenerationModelId
-      : defaultGenerationModelId;
+    // hermesModelIdFor: when local generation is active the default (and any
+    // session row backfilled from it) carries the synthetic local option id,
+    // which must never reach Hermes — session.create/ensure get the raw id.
+    const targetSessionModelId = hermesModelIdFor(
+      targetSessionId
+        ? explicitSession?.model?.trim() ||
+            hermesSessionItemsRef.current
+              .find((session) => session.id === targetSessionId)
+              ?.model?.trim() ||
+            defaultGenerationModelId
+        : defaultGenerationModelId,
+    );
     const turnAttachments = options?.attachments ?? [];
     const pendingImages = pendingImageAttachments(
       turnAttachments.map((attachment) => attachment.attach),
@@ -4320,7 +4696,7 @@ export function AgentWorkspace({
     try {
       runtimeSessionId =
         created?.session_id ??
-        runtimeSessionIds[storedSessionId] ??
+        runtimeSessionIdsRef.current[storedSessionId] ??
         (
           await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
             session_id: storedSessionId,
@@ -4587,8 +4963,18 @@ export function AgentWorkspace({
     try {
       await ensureHermesGateway();
       await loadHermesSessions();
+      // Re-run the selected session's transcript load too: a friendly Hermes
+      // 5xx banner (JUN-167) can originate from that message fetch, and
+      // reconnecting alone would clear the banner without reloading the
+      // messages — the load effect is keyed on the session id, which does not
+      // change on retry, so it would not re-fire. refreshHermesSession handles
+      // its own errors (re-showing the friendly banner if the 5xx persists).
+      const sessionId = selectedHermesSessionIdRef.current;
+      if (sessionId && !isProvisionalHermesSessionId(sessionId)) {
+        await refreshHermesSession(sessionId);
+      }
     } catch (err) {
-      setError(messageFromError(err));
+      setError(describeAgentError(err), reportableAgentErrorOptions(err));
     }
   }
 
@@ -4823,7 +5209,7 @@ export function AgentWorkspace({
       // "Session not found" 404 resolves on the next poll, so don't surface
       // it as an error banner (JUN-116).
       if (isSessionGoneError(message)) return;
-      setError(message, { sessionId });
+      setError(describeAgentError(err), reportableAgentErrorOptions(err, { sessionId }));
     }
   }
 
@@ -5055,34 +5441,174 @@ export function AgentWorkspace({
     fromMessageId: string,
     modeSessionId = sessionId,
   ) {
-    if (branchingMessageId) return;
+    if (branchingMessageIdRef.current) return;
     if (!sessionId) {
       setError("Cannot branch from this message because its session is unavailable.", {
         sessionId: modeSessionId ?? null,
       });
       return;
     }
+    branchingMessageIdRef.current = fromMessageId;
     setBranchingMessageId(fromMessageId);
     const sourceTitle =
       hermesSessionItems.find((session) => session.id === sessionId || session.id === modeSessionId)
         ?.title ?? "this session";
+    setBranchingNotice({ sourceTitle });
     const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
-      const raw = await createHermesMethods(gateway).branchSession({
-        sessionId,
-        fromMessageId,
-      });
+      const methods = createHermesMethods(gateway);
+      const sourceMessages = hermesSessionMessages[sessionId] ?? [];
+      const sourcePendingMessages = pendingHermesMessagesRef.current[sessionId] ?? [];
+      const clickedMessageIndex = sourceMessages.findIndex(
+        (message) => message.id === fromMessageId,
+      );
+      const clickedPersistedMessage =
+        clickedMessageIndex >= 0 ? sourceMessages[clickedMessageIndex] : undefined;
+      const clickedPendingMessage = sourcePendingMessages.find(
+        (message) => message.id === fromMessageId,
+      );
+      const clickedMessage = clickedPersistedMessage ?? clickedPendingMessage;
+      let branchAfterMessageIndex = -1;
+      let branchRequestMessageId: string | undefined;
+      let branchComposerText = "";
+
+      if (clickedMessage?.role === "user") {
+        const beforeIndex = clickedPersistedMessage ? clickedMessageIndex : sourceMessages.length;
+        branchAfterMessageIndex = previousBranchableMessageIndex(sourceMessages, beforeIndex);
+        branchRequestMessageId =
+          branchAfterMessageIndex >= 0 ? sourceMessages[branchAfterMessageIndex]?.id : undefined;
+        branchComposerText = visibleHermesMessageText(clickedMessage).trim();
+      } else if (clickedPersistedMessage) {
+        branchAfterMessageIndex = clickedMessageIndex;
+        branchRequestMessageId = sourceMessages[branchAfterMessageIndex]?.id;
+      } else if (isLiveAssistantTurnId(fromMessageId)) {
+        branchAfterMessageIndex = liveAssistantBranchPointIndex(
+          sourceMessages,
+          sourcePendingMessages,
+        );
+        if (branchAfterMessageIndex < 0) {
+          setError("Branching is available once the response is saved.", {
+            sessionId: modeSessionId ?? null,
+          });
+          return;
+        }
+        branchRequestMessageId =
+          branchAfterMessageIndex >= 0 ? sourceMessages[branchAfterMessageIndex]?.id : undefined;
+      } else if (isBranchableMessageId(fromMessageId)) {
+        branchRequestMessageId = fromMessageId;
+      } else {
+        setError("Branching is available once the message is saved.", {
+          sessionId: modeSessionId ?? null,
+        });
+        return;
+      }
+
+      const branchSeedMessages =
+        branchAfterMessageIndex >= 0 ? sourceMessages.slice(0, branchAfterMessageIndex + 1) : [];
+      const branchVia = (runtimeId: string) =>
+        methods.branchSession({ sessionId: runtimeId, fromMessageId: branchRequestMessageId });
+      // Historical branches must start from the STORED source id first. Using a
+      // cached live runtime id can branch from the current in-memory tip and
+      // persist later messages past from_message_id. If the stored id is not
+      // accepted by this Hermes pin, fall back to the live runtime path.
+      let raw: unknown = undefined;
+      try {
+        raw = await branchVia(sessionId);
+      } catch (err) {
+        if (!isSessionGoneError(messageFromError(err))) throw err;
+        let runtimeSessionId: string | undefined = runtimeSessionIdsRef.current[sessionId];
+        if (runtimeSessionId) {
+          try {
+            raw = await branchVia(runtimeSessionId);
+          } catch (runtimeErr) {
+            if (!isSessionGoneError(messageFromError(runtimeErr))) throw runtimeErr;
+            runtimeSessionId = undefined;
+          }
+        }
+        if (!runtimeSessionId) {
+          const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+            session_id: sessionId,
+            cols: 96,
+          });
+          runtimeSessionId = resumed.session_id;
+          if (!runtimeSessionId) {
+            throw new Error("Hermes did not resume the session.");
+          }
+          const resumedRuntimeSessionId = runtimeSessionId;
+          setRuntimeSessionIds((current) => ({
+            ...current,
+            [sessionId]: resumedRuntimeSessionId,
+          }));
+          raw = await branchVia(resumedRuntimeSessionId);
+        }
+      }
       const result: BranchSessionResult | undefined = parseBranchSessionResult(raw, {
         sourceSessionId: sessionId,
-        sourceMessageId: fromMessageId,
+        sourceMessageId: branchRequestMessageId,
       });
       if (!result) {
         throw new Error("Hermes did not return a branched session.");
       }
+      let branchRuntimeSessionId = result.runtimeSessionId ?? result.sessionId;
+      await finalizeHermesBridgeBranch({
+        branchSessionId: result.sessionId,
+        sourceSessionId: sessionId,
+        keepMessageCount: branchSeedMessages.length,
+        ...(branchRequestMessageId ? { throughMessageId: branchRequestMessageId } : {}),
+      });
+      try {
+        const resumedBranch = await gateway.request<HermesRuntimeSessionResponse>(
+          "session.resume",
+          {
+            session_id: result.sessionId,
+            cols: 96,
+          },
+        );
+        if (resumedBranch.session_id) {
+          branchRuntimeSessionId = resumedBranch.session_id;
+        }
+      } catch (err) {
+        if (!isSessionGoneError(messageFromError(err))) throw err;
+      }
+      setRuntimeSessionIds((current) => {
+        const next = {
+          ...current,
+          [result.sessionId]: branchRuntimeSessionId,
+        };
+        runtimeSessionIdsRef.current = next;
+        return next;
+      });
       // Carry the source session's write-access mode onto the fork so its
       // follow-ups route to the matching runtime (mirrors session.create).
       rememberSessionMode(result.sessionId, unrestricted);
+      const branchDraftKey = sessionComposerDraftKey(result.sessionId);
+      composerDraftKeyRef.current = branchDraftKey;
+      restoredComposerDraftKeyRef.current = branchDraftKey;
+      rememberComposerDraft(branchDraftKey, branchComposerText, null);
+      draftRef.current = branchComposerText;
+      categoryRef.current = null;
+      attachmentsRef.current = [];
+      setDraft(branchComposerText);
+      setCategory(null);
+      setAttachments([]);
+      setHermesSessionMessages((current) => ({
+        ...current,
+        [result.sessionId]: branchSeedMessages,
+      }));
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [result.sessionId]: [],
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+      liveEventsRef.current = {
+        ...liveEventsRef.current,
+        [result.sessionId]: [],
+      };
+      setLiveEvents(liveEventsRef.current);
       // Open the fork. Selecting it triggers the message-fetch effect, which
       // fills the forked transcript. The source session is left untouched.
       newSessionModeRef.current = false;
@@ -5091,14 +5617,29 @@ export function AgentWorkspace({
       selectedHermesSessionIdRef.current = result.sessionId;
       setSelectedHermesSessionId(result.sessionId);
       setActivePanel("chat");
-      setBranchedNotice({ sessionId: result.sessionId, sourceTitle });
+      const nextBranchedNotice = { sessionId: result.sessionId, sourceTitle };
+      branchedNoticeRef.current = nextBranchedNotice;
+      setBranchedNotice(nextBranchedNotice);
+      composerEditorRef.current?.setContent(branchComposerText, null);
       setError(null);
-      await loadHermesSessions();
+      await loadHermesSessions({ suppressSessionGoneError: true });
+      window.requestAnimationFrame(() => composerEditorRef.current?.focus());
     } catch (err) {
       // Leave the UI in the source session; surface the failure there.
-      setError(messageFromError(err), { sessionId });
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        void loadHermesSessions({ suppressSessionGoneError: true });
+        setError(
+          "Cannot branch from this message because the live session ended. Try again from the saved transcript.",
+          { sessionId },
+        );
+      } else {
+        setError(message, { sessionId });
+      }
     } finally {
+      branchingMessageIdRef.current = null;
       setBranchingMessageId(null);
+      setBranchingNotice(null);
     }
   }
 
@@ -5243,16 +5784,6 @@ export function AgentWorkspace({
     });
   }
 
-  function editUserPrompt(text: string) {
-    composerEditorRef.current?.setContent(text, null);
-    setDraft(text);
-    setCategory(null);
-    draftRef.current = text;
-    categoryRef.current = null;
-    setComposerAttachments([]);
-    rememberComposerDraft(composerDraftKeyRef.current, text, null, []);
-  }
-
   function setComposerAttachments(
     nextValue: AgentAttachment[] | ((current: AgentAttachment[]) => AgentAttachment[]),
   ) {
@@ -5297,46 +5828,10 @@ export function AgentWorkspace({
     }
   }
 
-  // Run shortcuts fire the session directly — the prompt never touches the
-  // composer, so there's no flash of text + send button before the submit.
-  // The hero plays its exit transition during the session-create latency.
-  async function launchShortcutSession(prompt: string) {
-    if (submitting || importingFiles) return;
-    setHeroLeaving(true);
-    dispatchAgentSessionStatus({
-      prompt,
-      title: titleFromPrompt(prompt),
-      status: "starting",
-      summary: "Starting June.",
-    });
-    setSubmitting(true);
-    try {
-      await submitHermesSession(prompt);
-      setError(null);
-    } catch (err) {
-      // Bring the hero back and park the prompt in the composer so the user
-      // can see what would have run and retry it.
-      if (composerEditorRef.current?.isEmpty() ?? true) {
-        composerEditorRef.current?.setContent(prompt);
-      }
-      setError(messageFromError(err));
-      dispatchAgentSessionStatus({
-        prompt,
-        title: titleFromPrompt(prompt),
-        status: "failed",
-        summary: messageFromError(err),
-      });
-    } finally {
-      setSubmitting(false);
-      setHeroLeaving(false);
-    }
-  }
-
+  // Shortcuts never submit on click — they stage the prompt in the composer
+  // so the person reads what will run and sends it themselves. The click is
+  // free; only the explicit send spends tokens.
   function runShortcut(shortcut: AgentShortcut) {
-    if (shortcut.action === "run") {
-      void launchShortcutSession(shortcut.prompt);
-      return;
-    }
     if (shortcut.action === "attach") {
       rememberComposerDraft(composerDraftKeyRef.current, shortcut.prompt, null);
       composerEditorRef.current?.setContent(shortcut.prompt);
@@ -5348,7 +5843,11 @@ export function AgentWorkspace({
     composerEditorRef.current?.setContent(shortcut.prompt, null, {
       selectPlaceholder: true,
     });
-    rememberComposerDraft(composerDraftKeyRef.current, shortcut.prompt, null);
+    rememberComposerDraft(
+      composerDraftKeyRef.current,
+      stripPlaceholder(shortcut.prompt)?.text ?? shortcut.prompt,
+      null,
+    );
   }
 
   async function cancelTask(taskId: string) {
@@ -5536,7 +6035,9 @@ export function AgentWorkspace({
       // changes, so a success would wipe an unrelated banner (e.g. a failed
       // send). The banner is dismissable instead.
     } catch (err) {
-      setError(messageFromError(err), { sessionId });
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) return;
+      setError(message, { sessionId });
     } finally {
       setFilesystemLoading(false);
     }
@@ -5944,6 +6445,34 @@ export function AgentWorkspace({
     transcriptShouldStickToBottomRef.current = true;
   }, [renderedTurnsSignature, selectedHermesSessionId, selectedHistoryLoaded, selectedTaskId]);
 
+  // Jump back to the live edge from the floating pill. Glide the same way the
+  // auto-scroll effect does — arm the programmatic-scroll ref + timeout so the
+  // scroll handler reads the glide as ours, not a user scroll that would
+  // release follow mode.
+  const scrollTranscriptToLatest = useCallback(() => {
+    const scroller = agentScrollRef.current;
+    if (!scroller) return;
+    if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
+    transcriptShouldStickToBottomRef.current = true;
+    transcriptLastScrollTopRef.current = scroller.scrollTop;
+    transcriptProgrammaticScrollRef.current = true;
+    if (transcriptProgrammaticScrollTimeoutRef.current !== undefined) {
+      window.clearTimeout(transcriptProgrammaticScrollTimeoutRef.current);
+    }
+    transcriptProgrammaticScrollTimeoutRef.current = window.setTimeout(() => {
+      transcriptProgrammaticScrollRef.current = false;
+      transcriptShouldStickToBottomRef.current = isAgentTranscriptNearBottom(scroller);
+      transcriptProgrammaticScrollTimeoutRef.current = undefined;
+    }, 800);
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+  }, []);
+
   // Reshuffle the deck each time the hero comes back, so repeat visits start
   // from a fresh hand instead of wherever the last rotation left off.
   useEffect(() => {
@@ -6083,6 +6612,12 @@ export function AgentWorkspace({
         onDrop={handleComposerDrop}
         onPaste={handleComposerPaste}
       >
+        {/* Anchored inside the fixed composer column so it rides the box's
+            real height (multi-line drafts, stacked notices) instead of
+            guessing a clearance from the card edge. */}
+        {heroMode ? null : (
+          <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
+        )}
         <AnimatePresence>
           {busyNotice || galleryErrors ? (
             // Same fade as the recording-consent note, so the pill dissolves
@@ -6448,7 +6983,7 @@ export function AgentWorkspace({
           <ComposerModelPopover
             flyout={composerModelFlyout}
             model={generationModel}
-            options={modelOptions(generationModels, generationModel?.id ?? "")}
+            options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
@@ -6642,7 +7177,6 @@ export function AgentWorkspace({
             )
           }
           branchingMessageId={branchingMessageId}
-          onEditUserPrompt={editUserPrompt}
         />
       ))}
       {workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user" ? (
@@ -6746,7 +7280,6 @@ export function AgentWorkspace({
                 sessionUnrestricted(selectedTask.hermesSessionId),
               );
             }}
-            onEditUserPrompt={editUserPrompt}
           />
         ))}
         {workingTaskIds.has(selectedTask.id) && taskTurns.at(-1)?.role === "user" ? (
@@ -6878,11 +7411,13 @@ export function AgentWorkspace({
           {visibleError ? (
             <AgentErrorBanner
               message={visibleError}
-              onRetry={
-                GATEWAY_CONNECTION_ERROR.test(visibleError)
-                  ? () => void retryGatewayConnection()
+              onRetry={visibleErrorRetryable ? () => void retryGatewayConnection() : undefined}
+              onReportBug={
+                visibleErrorState?.issueReport
+                  ? () => void sendErrorIssueReport(visibleErrorState)
                   : undefined
               }
+              reportBugSubmitting={submittingErrorIssueReport}
               onDismiss={() => setError(null)}
             />
           ) : null}
@@ -6892,9 +7427,15 @@ export function AgentWorkspace({
           {composer}
           {activePanel === "chat" ? (
             <div className="agent-hero-suggestions">
+              {/* The chips bow out while the composer holds a draft: staging a
+                  chip runs setContent, which replaces the whole composer
+                  document, so a click here would clobber what the person
+                  typed. Once they're typing, the suggestions have done their
+                  job. They return when the field is cleared. */}
               <div
                 className="agent-hero-chips"
                 data-phase={heroChipPhase}
+                data-hidden={draft.trim() ? "true" : undefined}
                 onMouseEnter={() => {
                   heroChipsHoverRef.current = true;
                 }}
@@ -6940,11 +7481,13 @@ export function AgentWorkspace({
               ) : visibleError ? (
                 <AgentErrorBanner
                   message={visibleError}
-                  onRetry={
-                    GATEWAY_CONNECTION_ERROR.test(visibleError)
-                      ? () => void retryGatewayConnection()
+                  onRetry={visibleErrorRetryable ? () => void retryGatewayConnection() : undefined}
+                  onReportBug={
+                    visibleErrorState?.issueReport
+                      ? () => void sendErrorIssueReport(visibleErrorState)
                       : undefined
                   }
+                  reportBugSubmitting={submittingErrorIssueReport}
                   onDismiss={() => setError(null)}
                 />
               ) : null}
@@ -6953,6 +7496,9 @@ export function AgentWorkspace({
                   sourceTitle={branchedNotice.sourceTitle}
                   onDismiss={() => setBranchedNotice(null)}
                 />
+              ) : null}
+              {branchingNotice ? (
+                <AgentBranchingBanner sourceTitle={branchingNotice.sourceTitle} />
               ) : null}
               {detailContent}
               {composer}
@@ -8604,12 +9150,68 @@ function chatTurnsSignature(turns: AgentChatTurn[]) {
   );
 }
 
+// Deliberate-tooltip delay for the icon-only turn actions, matching the tab
+// bar's shortcut tips — slower than the shared hover-intent debounce so
+// sweeping across the row doesn't pop a trail of labels.
+const TURN_ACTION_TIP_DELAY_MS = 550;
+
 const AGENT_TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
 
 function isAgentTranscriptNearBottom(scroller: HTMLElement) {
   return (
     scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <=
     AGENT_TRANSCRIPT_BOTTOM_THRESHOLD_PX
+  );
+}
+
+// Self-contained so scroll-driven visibility never re-renders the huge
+// AgentWorkspace: only this leaf flips on its own scroll + resize signals.
+// While the reader is parked up-thread, streamed turns grow the content
+// WITHOUT firing a scroll event, so the ResizeObserver watches the content
+// column (not just the scroller) to catch that growth.
+export function AgentScrollToLatestButton({
+  scrollRef,
+  onJump,
+}: {
+  scrollRef: RefObject<HTMLDivElement | null>;
+  onJump: () => void;
+}) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const recheck = () => {
+      const nothingToScroll = scroller.scrollHeight <= scroller.clientHeight;
+      const next = !nothingToScroll && !isAgentTranscriptNearBottom(scroller);
+      setVisible((current) => (current === next ? current : next));
+    };
+    recheck();
+    scroller.addEventListener("scroll", recheck, { passive: true });
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(recheck) : undefined;
+    observer?.observe(scroller);
+    // The scroller box itself never resizes when content grows (fixed height,
+    // overflow scroll), so watch its children — all of them, not a presumed
+    // single content column — since their growth is what moves scrollHeight.
+    for (const child of Array.from(scroller.children)) observer?.observe(child);
+    return () => {
+      scroller.removeEventListener("scroll", recheck);
+      observer?.disconnect();
+    };
+  }, [scrollRef]);
+
+  return (
+    <button
+      type="button"
+      className="agent-scroll-to-latest"
+      data-visible={visible ? "true" : undefined}
+      aria-label="Scroll to latest"
+      aria-hidden={visible ? undefined : true}
+      tabIndex={visible ? undefined : -1}
+      onClick={onJump}
+    >
+      <IconArrowDown size={16} ariaHidden />
+    </button>
   );
 }
 
@@ -8623,6 +9225,7 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
     turn.parts.every((part) => part.type === "reasoning" || part.type === "tool");
   const rebuild = (turn: AgentChatTurn, parts: AgentChatPart[]): AgentChatTurn => ({
     id: turn.id,
+    branchMessageId: turn.branchMessageId,
     role: turn.role,
     createdAt: turn.createdAt,
     status: turn.status,
@@ -8747,7 +9350,6 @@ function AgentChatTurnRow({
   onTopUp,
   topUpLabel,
   onBranch,
-  onEditUserPrompt,
   branchingMessageId,
   turn,
 }: {
@@ -8777,7 +9379,6 @@ function AgentChatTurnRow({
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
-  onEditUserPrompt?: (text: string) => void;
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
    * omit it, so the action is absent there. */
@@ -8850,7 +9451,6 @@ function AgentChatTurnRow({
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const copyText = copyableTextForTurn(turn);
-  const userPromptText = turn.role === "user" ? copyText : "";
 
   async function copyTurn() {
     if (!copyText) return;
@@ -8871,54 +9471,72 @@ function AgentChatTurnRow({
   }
 
   // Per-turn transcript actions. Branch is rendered only on Hermes-session rows
-  // (which pass `onBranch`); it self-disables when the turn id is not a
-  // persisted message id (see isBranchableMessageId).
+  // (which pass `onBranch`); pending user prompts and live assistant rows route
+  // to the nearest saved fork point, while other synthetic rows still explain
+  // that they need to be saved first.
   const branchSessionId = branchSourceSessionIdForTurn(turn);
+  const branchMessageId = turn.branchMessageId ?? turn.id;
+  const branchSubmitting = branchingMessageId === branchMessageId;
   const branchAction = onBranch ? (
     <BranchFromHereAction
-      messageId={turn.id}
+      messageId={branchMessageId}
       sessionId={branchSessionId}
       onBranch={onBranch}
-      submitting={branchingMessageId === turn.id}
+      submitting={branchSubmitting}
     />
   ) : null;
   const copyAction = copyText ? (
-    <button
-      type="button"
-      className="agent-turn-action"
-      aria-label={copied ? "Copied message" : "Copy message"}
-      title={copied ? "Copied" : "Copy message"}
-      data-copied={copied ? "true" : undefined}
-      onClick={() => void copyTurn()}
+    <HoverTip
+      compact
+      width={104}
+      delay={TURN_ACTION_TIP_DELAY_MS}
+      tip={copied ? "Copied" : "Copy message"}
+      className="agent-turn-action-tip"
     >
-      {copied ? (
-        <IconCheckmark1Small size={13} aria-hidden />
-      ) : (
-        <IconClipboard size={13} aria-hidden />
-      )}
-      <span>{copied ? "Copied" : "Copy"}</span>
-    </button>
-  ) : null;
-  const editAction =
-    turn.role === "user" && !turn.isScheduledRun && userPromptText && onEditUserPrompt ? (
       <button
         type="button"
         className="agent-turn-action"
-        aria-label="Edit message"
-        title="Edit message"
-        onClick={() => onEditUserPrompt(userPromptText)}
+        aria-label={copied ? "Copied message" : "Copy message"}
+        data-copied={copied ? "true" : undefined}
+        onClick={() => void copyTurn()}
       >
-        <IconPencilLine size={13} aria-hidden />
-        <span>Edit</span>
+        {copied ? (
+          // Medium checkmark: the small variant reads too slight as the only
+          // confirmation left now that the label is gone.
+          <IconCheckmark1Medium size={14} aria-hidden />
+        ) : (
+          <IconClipboard size={14} aria-hidden />
+        )}
       </button>
-    ) : null;
+    </HoverTip>
+  ) : null;
+  // Timestamp for the row. relativeDate returns "" for an unparseable value, so
+  // we only render the <time> when there's a real date to show.
+  const timestampLabel = relativeDate(turn.createdAt);
+  const timestampAction = timestampLabel ? (
+    <HoverTip
+      compact
+      width={200}
+      delay={TURN_ACTION_TIP_DELAY_MS}
+      tip={new Date(turn.createdAt).toLocaleString()}
+      className="agent-turn-action-tip"
+    >
+      <time className="agent-turn-timestamp" dateTime={turn.createdAt}>
+        {timestampLabel}
+      </time>
+    </HoverTip>
+  ) : null;
   const turnActions =
-    copyAction || editAction || branchAction ? (
-      <div className="agent-turn-actions">
+    copyAction || branchAction || timestampAction ? (
+      <div className="agent-turn-actions" data-branching={branchSubmitting ? "true" : undefined}>
         <div className="agent-turn-actions-inner">
+          {/* The timestamp sits on the outer/far side of the row: before the
+           * icons on right-aligned user turns, after them on left-aligned
+           * assistant turns, so the icons always stay nearest the message. */}
+          {turn.role === "user" ? timestampAction : null}
           {copyAction}
-          {editAction}
           {branchAction}
+          {turn.role === "user" ? null : timestampAction}
         </div>
       </div>
     ) : null;
@@ -9293,11 +9911,15 @@ function CompactSuccess({ result }: { result: CompressSessionResult | null }) {
 function AgentErrorBanner({
   message,
   onDismiss,
+  onReportBug,
   onRetry,
+  reportBugSubmitting = false,
 }: {
   message: string;
   onDismiss: () => void;
+  onReportBug?: () => void;
   onRetry?: () => void;
+  reportBugSubmitting?: boolean;
 }) {
   return (
     <div className="error-banner agent-error-banner" role="alert">
@@ -9306,6 +9928,11 @@ function AgentErrorBanner({
         {onRetry ? (
           <button type="button" onClick={onRetry}>
             Try again
+          </button>
+        ) : null}
+        {onReportBug ? (
+          <button type="button" onClick={onReportBug} disabled={reportBugSubmitting}>
+            {reportBugSubmitting ? "Sending" : "Send bug report"}
           </button>
         ) : null}
         <button type="button" aria-label="Dismiss" onClick={onDismiss}>
@@ -9337,13 +9964,22 @@ function AgentBranchedBanner({
   );
 }
 
+function AgentBranchingBanner({ sourceTitle }: { sourceTitle: string }) {
+  return (
+    <div className="agent-branching-banner" role="status" aria-live="polite">
+      <DotSpinner className="agent-branching-banner-spinner" />
+      <p>Creating branch from {sourceTitle}</p>
+    </div>
+  );
+}
+
 function visibleAgentWorkspaceError(
   error: AgentWorkspaceError | null,
   selectedSessionId: string | undefined,
 ) {
   if (!error) return null;
-  if (!error.sessionId) return selectedSessionId ? null : error.message;
-  return error.sessionId === selectedSessionId ? error.message : null;
+  if (!error.sessionId) return selectedSessionId ? null : error;
+  return error.sessionId === selectedSessionId ? error : null;
 }
 
 // The raw billing failure ("Error: Error code: 402 - …") never reaches the
@@ -9835,13 +10471,57 @@ export function branchSourceSessionIdForTurn(turn: Pick<AgentChatTurn, "parts">)
   return undefined;
 }
 
+function previousBranchableMessageIndex(messages: HermesSessionMessage[], beforeIndex: number) {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && message.role !== "tool" && isBranchableMessageId(message.id)) return index;
+  }
+  return -1;
+}
+
+function lastBranchableMessageIndex(messages: HermesSessionMessage[]) {
+  return previousBranchableMessageIndex(messages, messages.length);
+}
+
+function latestBranchableUserMessageIndex(messages: HermesSessionMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user" && isBranchableMessageId(message.id)) return index;
+  }
+  return -1;
+}
+
+function liveAssistantBranchPointIndex(
+  messages: HermesSessionMessage[],
+  pendingMessages: HermesSessionMessage[],
+) {
+  if (pendingMessages.some((message) => message.role === "user")) {
+    return lastBranchableMessageIndex(messages);
+  }
+  const latestUserIndex = latestBranchableUserMessageIndex(messages);
+  if (latestUserIndex >= 0) {
+    return previousBranchableMessageIndex(messages, latestUserIndex);
+  }
+  return lastBranchableMessageIndex(messages);
+}
+
+function isLiveAssistantTurnId(id: string) {
+  return id.startsWith("assistant:");
+}
+
+function canRequestBranchFromTurnId(id: string) {
+  return isBranchableMessageId(id) || id.startsWith("pending:user:") || isLiveAssistantTurnId(id);
+}
+
 /** The per-message "Branch from here" action (feature 07). Forks the
  * conversation into a NEW session that starts from this message, leaving the
- * source session untouched. Message-level branching is honest only when the
- * turn is backed by a persisted Hermes message id; for in-flight/synthetic
- * turns the button is disabled and explains that the fork point is available
- * once the message is saved (see {@link isBranchableMessageId}). The branch
- * itself flows through the typed `branchSession` method via `onBranch`. */
+ * source session untouched. Persisted turns branch exactly at their Hermes
+ * message id; pending user prompts and live assistant rows are still actionable
+ * because the workspace can resolve them to the nearest saved fork point.
+ * Other synthetic rows stay clickable but announce why branching is not
+ * available yet instead of swallowing the click as a silent no-op (JUN-182).
+ * The branch itself flows through the typed `branchSession` method via
+ * `onBranch`. */
 export function BranchFromHereAction({
   messageId,
   onBranch,
@@ -9853,22 +10533,46 @@ export function BranchFromHereAction({
   sessionId?: string;
   submitting?: boolean;
 }) {
-  const branchable = isBranchableMessageId(messageId);
-  const disabled = submitting || !branchable;
-  return (
+  const branchable = canRequestBranchFromTurnId(messageId);
+  const action = (
     <button
       type="button"
       className="agent-turn-action"
-      // The disabled reason is honest, not silent: a synthetic/in-flight turn
-      // has no persisted id Hermes can fork from yet.
-      title={branchable ? "Branch from here" : "Branching is available once the message is saved"}
-      aria-label="Branch from here"
-      disabled={disabled}
+      aria-label={submitting ? "Creating branch" : "Branch from here"}
+      // Truly inert only while a fork is in flight. A non-branchable turn
+      // announces itself disabled but stays clickable, so the click still
+      // reaches onBranch and the handler explains why branching isn't
+      // available yet instead of failing silently (JUN-182).
+      aria-disabled={!branchable || undefined}
+      aria-busy={submitting || undefined}
+      disabled={submitting}
       onClick={() => onBranch(messageId, sessionId)}
     >
-      <IconBranchSimple size={13} aria-hidden />
-      <span>Branch from here</span>
+      {submitting ? (
+        <DotSpinner className="agent-turn-action-spinner" />
+      ) : (
+        <IconBranchSimple size={14} aria-hidden />
+      )}
     </button>
+  );
+
+  if (submitting) {
+    return action;
+  }
+
+  const tip = branchable ? "Branch from here" : "Branching is available once the message is saved";
+  return (
+    <HoverTip
+      compact
+      width={branchable ? 136 : 216}
+      delay={TURN_ACTION_TIP_DELAY_MS}
+      // The unavailable reason is honest, not silent: a synthetic/in-flight
+      // turn has no persisted id Hermes can fork from yet.
+      tip={tip}
+      className="agent-turn-action-tip"
+    >
+      {action}
+    </HoverTip>
   );
 }
 
@@ -11449,7 +12153,8 @@ function agentStatusSummaryFromHermesEvent(
   return "June is working.";
 }
 
-function visibleHermesMessageText(message: HermesSessionMessage) {
+function visibleHermesMessageText(message: HermesSessionMessage | undefined) {
+  if (!message) return "";
   const text = textFromHermesContent(message.content) ?? textFromHermesContent(message.text) ?? "";
   return displayedComposerUserMessageText(stripHermesVisibleContext(text));
 }

@@ -162,6 +162,7 @@ export type DictationHelperEvent = {
     selectedID?: string;
     shortcut?: DictationShortcutSetting;
     message?: string;
+    reason?: string;
     code?: string;
     path?: string;
     durationMs?: number | string;
@@ -175,10 +176,19 @@ export type ProviderModelMode = "transcription" | "generation" | "image";
 
 export type ProviderModelSettingsDto = {
   transcriptionProvider: string;
+  generationProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  remoteGenerationModel: string;
   imageModel: string;
   veniceApiKeyConfigured: boolean;
+  localGeneration: LocalGenerationSettingsDto;
+};
+
+export type LocalGenerationSettingsDto = {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
 };
 
 export type GeneratedImageDto = {
@@ -830,6 +840,23 @@ export async function submitIssueReport(request: SubmitIssueReportRequest) {
   return invoke<SubmitIssueReportResponse>("submit_issue_report", { request });
 }
 
+export type FinalizeHermesBranchResponse = {
+  branchSessionId: string;
+  keptMessageCount: number;
+  removedMessageCount: number;
+};
+
+export async function finalizeHermesBridgeBranch(input: {
+  branchSessionId: string;
+  sourceSessionId: string;
+  throughMessageId?: string;
+  keepMessageCount?: number;
+}) {
+  return invoke<FinalizeHermesBranchResponse>("finalize_hermes_bridge_branch", {
+    request: input,
+  });
+}
+
 export type ExplainAgentApprovalResponse = {
   explanation: string;
 };
@@ -1436,9 +1463,14 @@ export type AccountBalance = {
   usdMillis: number;
 };
 
+export type SubscriptionPlan = "pro" | "max";
+
 export type AccountSubscription = {
   subscribed: boolean;
   status?: "trialing" | "active" | "past_due" | "canceled" | (string & {});
+  /** Plan slug from OS Accounts. Absent on accounts APIs that predate plan
+   * tiers and on legacy subscription rows, which are all Pro. */
+  plan?: SubscriptionPlan | (string & {});
   /** Monthly plan credits returned by OS Accounts. Used as a fallback for
    * deployments whose balance endpoint does not expose usageRemainingPercent. */
   planCredits?: number;
@@ -1495,8 +1527,10 @@ export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
   });
 }
 
-export async function osAccountsUpgrade() {
-  return invoke<void>("os_accounts_upgrade");
+/** Opens subscription checkout in the browser. Omitting `plan` keeps the
+ * accounts-API default (Pro). */
+export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
+  return invoke<void>("os_accounts_upgrade", { plan });
 }
 
 /** Opens the accounts portal in the default browser — the webview swallows
@@ -1552,6 +1586,36 @@ export async function clearVeniceApiKey() {
 export async function generateImage(prompt: string, model?: string) {
   return invoke<GeneratedImageDto>("generate_image", {
     request: { prompt, model },
+  });
+}
+
+/** Persists the local endpoint, model id, and optional API key. Strictly
+ * validated backend-side (any http/https URL with a host is accepted) and it
+ * never changes the active provider — enabling is a separate step. */
+export async function saveLocalGenerationSettings(input: {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
+}) {
+  return invoke<ProviderModelSettingsDto>("save_local_generation_settings", {
+    request: input,
+  });
+}
+
+/** Flips generation between the saved local endpoint and the remote model.
+ * Enabling requires saved settings (the backend errors otherwise); disabling
+ * restores the remote provider without touching the stored local fields. */
+export async function setLocalGenerationEnabled(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_local_generation_enabled", {
+    request: { enabled },
+  });
+}
+
+/** GETs {baseUrl}/models with an optional bearer token (~10s timeout) and
+ * returns the advertised model ids, for the settings "Test connection" flow. */
+export async function probeLocalGenerationEndpoint(input: { baseUrl: string; apiKey: string }) {
+  return invoke<{ models: string[] }>("probe_local_generation_endpoint", {
+    request: input,
   });
 }
 

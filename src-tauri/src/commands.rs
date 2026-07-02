@@ -40,6 +40,7 @@ use crate::{
     },
 };
 use chrono::{TimeZone, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::query::query;
 use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
@@ -49,10 +50,10 @@ use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 use std::{
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tauri::AppHandle;
-use tokio::sync::OnceCell;
+use tokio::{sync::OnceCell, time::sleep};
 
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
@@ -436,6 +437,204 @@ pub async fn submit_issue_report(
 ) -> Result<SubmitIssueReportResponse, AppError> {
     let app_version = app.package_info().version.to_string();
     crate::june_api::submit_issue_report(&request, &app_version).await
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalizeHermesBranchRequest {
+    pub branch_session_id: String,
+    pub source_session_id: String,
+    pub through_message_id: Option<String>,
+    pub keep_message_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalizeHermesBranchResponse {
+    pub branch_session_id: String,
+    pub kept_message_count: i64,
+    pub removed_message_count: i64,
+}
+
+#[tauri::command]
+pub async fn finalize_hermes_bridge_branch(
+    app: AppHandle,
+    request: FinalizeHermesBranchRequest,
+) -> Result<FinalizeHermesBranchResponse, AppError> {
+    let branch_session_id = request.branch_session_id.trim().to_string();
+    let source_session_id = request.source_session_id.trim().to_string();
+    if branch_session_id.is_empty() || source_session_id.is_empty() {
+        return Err(AppError::new(
+            "hermes_branch_session_id_required",
+            "A source and branch session id are required.",
+        ));
+    }
+
+    if let Some(keep_message_count) = request.keep_message_count {
+        if keep_message_count < 0 {
+            return Err(AppError::new(
+                "hermes_branch_keep_count_invalid",
+                "The branch keep count cannot be negative.",
+            ));
+        }
+    }
+
+    let through_message_id = request
+        .through_message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let paths = app_paths(&app)?;
+    let hermes_db_path = paths.data_dir.join("hermes").join("state.db");
+    if !hermes_db_path.exists() {
+        return Err(AppError::new(
+            "hermes_state_unavailable",
+            "Hermes state database is not available.",
+        ));
+    }
+    let pool = hermes_state_pool(&hermes_db_path).await?;
+
+    let keep_count = if let Some(through_message_id) = through_message_id {
+        let cutoff = query(
+            "SELECT id, timestamp
+             FROM messages
+             WHERE session_id = ?
+               AND active = 1
+               AND (CAST(id AS TEXT) = ? OR platform_message_id = ?)
+             ORDER BY timestamp ASC, id ASC
+             LIMIT 1",
+        )
+        .bind(&source_session_id)
+        .bind(&through_message_id)
+        .bind(&through_message_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+
+        let Some(cutoff) = cutoff else {
+            return Err(AppError::new(
+                "hermes_branch_source_message_not_found",
+                "Could not find the source message to finalize the branch.",
+            ));
+        };
+        let cutoff_id: i64 = cutoff.get("id");
+        let cutoff_timestamp: f64 = cutoff.get("timestamp");
+
+        let keep_count_row = query(
+            "SELECT COUNT(*) AS count
+             FROM messages
+             WHERE session_id = ?
+               AND active = 1
+               AND (timestamp < ? OR (timestamp = ? AND id <= ?))",
+        )
+        .bind(&source_session_id)
+        .bind(cutoff_timestamp)
+        .bind(cutoff_timestamp)
+        .bind(cutoff_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+        let keep_count: i64 = keep_count_row.get("count");
+        if keep_count <= 0 {
+            return Err(AppError::new(
+                "hermes_branch_empty_cutoff",
+                "Could not determine the branch cutoff.",
+            ));
+        }
+        keep_count
+    } else if let Some(keep_message_count) = request.keep_message_count {
+        keep_message_count
+    } else {
+        return Ok(FinalizeHermesBranchResponse {
+            branch_session_id,
+            kept_message_count: 0,
+            removed_message_count: 0,
+        });
+    };
+
+    let minimum_materialized_count = if keep_count == 0 { 1 } else { keep_count };
+
+    let branch_count_query = "SELECT COUNT(*) AS count
+         FROM messages
+         WHERE session_id = ?
+           AND active = 1";
+    let wait_started = Instant::now();
+    let branch_count = loop {
+        let branch_count_row = query(branch_count_query)
+            .bind(&branch_session_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+        let count: i64 = branch_count_row.get("count");
+        if count >= minimum_materialized_count || wait_started.elapsed() >= Duration::from_secs(2) {
+            break count;
+        }
+        sleep(Duration::from_millis(50)).await;
+    };
+    if branch_count <= keep_count {
+        return Ok(FinalizeHermesBranchResponse {
+            branch_session_id,
+            kept_message_count: branch_count,
+            removed_message_count: 0,
+        });
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+    let delete_result = query(
+        "DELETE FROM messages
+         WHERE id IN (
+             SELECT id
+             FROM messages
+             WHERE session_id = ?
+               AND active = 1
+             ORDER BY timestamp ASC, id ASC
+             LIMIT -1 OFFSET ?
+         )",
+    )
+    .bind(&branch_session_id)
+    .bind(keep_count)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+
+    query(
+        "UPDATE sessions
+         SET message_count = (
+                 SELECT COUNT(*)
+                 FROM messages
+                 WHERE session_id = ?
+                   AND active = 1
+             ),
+             tool_call_count = (
+                 SELECT COUNT(*)
+                 FROM messages
+                 WHERE session_id = ?
+                   AND active = 1
+                   AND role = 'tool'
+             )
+         WHERE id = ?",
+    )
+    .bind(&branch_session_id)
+    .bind(&branch_session_id)
+    .bind(&branch_session_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+
+    Ok(FinalizeHermesBranchResponse {
+        branch_session_id,
+        kept_message_count: keep_count,
+        removed_message_count: i64::try_from(delete_result.rows_affected()).unwrap_or(i64::MAX),
+    })
 }
 
 #[tauri::command]
@@ -1463,6 +1662,11 @@ fn recovery_validation_expected_duration_ms(path: &Path, stored_duration_ms: i64
     if stored_duration_ms > 1 {
         return stored_duration_ms;
     }
+    // Pending source rows persist expected_duration_ms = 0, so the expectation
+    // is derived from the WAV itself. Repair a stale header first — otherwise a
+    // SIGKILLed long capture yields a short expected duration that its own
+    // repaired (true) duration then fails as "stale long audio".
+    let _ = crate::audio::validation::repair_stale_wav_header_in_place(path);
     wav_duration_ms(path).unwrap_or_else(|| stored_duration_ms.max(1))
 }
 
@@ -1856,6 +2060,46 @@ mod tests {
         let (_dir, path) = write_one_second_flushed_wav();
 
         assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 1_000);
+    }
+
+    #[test]
+    fn recovered_wav_duration_repairs_stale_header_before_deriving() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        // 10s of samples with a SIGKILL-stale header claiming ~1s. Without an
+        // up-front repair the expectation would be ~1s while validation's own
+        // repaired duration is 10s, failing the source as stale-long audio.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).expect("writer");
+        for _ in 0..160_000 {
+            writer.write_sample(0_i16).expect("sample");
+        }
+        writer.finalize().expect("finalize");
+
+        let stale_data_size: u32 = 16_000 * 2;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open");
+        // data chunk size field sits at byte 40 for a canonical 16-bit PCM WAV;
+        // RIFF size at byte 4.
+        file.seek(SeekFrom::Start(4)).expect("seek");
+        file.write_all(&(36 + stale_data_size).to_le_bytes())
+            .expect("write riff size");
+        file.seek(SeekFrom::Start(40)).expect("seek");
+        file.write_all(&stale_data_size.to_le_bytes())
+            .expect("write data size");
+        file.flush().expect("flush");
+        drop(file);
+
+        assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 10_000);
     }
 
     #[test]

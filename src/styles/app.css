@@ -708,7 +708,14 @@ input:focus-visible,
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: var(--sp-6);
+  /* The per-turn actions row (copy/branch/timestamp) is positioned out of flow
+   * into the space below each turn (see .agent-turn-actions). The inter-turn
+   * gap must be at least the row's own height, plus a little breathing room,
+   * so a revealed row never overlaps the next turn's "Thought" summary. Both
+   * the row and this gap size off --agent-turn-actions-h, so they stay in sync
+   * if the button size changes. */
+  --agent-turn-actions-h: calc(var(--sp-8) + var(--sp-px));
+  gap: calc(var(--agent-turn-actions-h) + var(--sp-2));
   /* Align the thread rail with the composer's text line, not its outer
    * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
    * User turns stay right-aligned inside this rail. */
@@ -1683,13 +1690,20 @@ input:focus-visible,
 }
 
 .agent-turn-actions-inner {
+  /* No chrome of its own: a quiet icon row sitting in the inter-turn gap.
+   * Anything heavier (bg, border) fights the message bubbles above it.
+   * Block-level flex, not inline-flex: the user-turn variant right-aligns
+   * with an auto margin, which resolves to 0 on an inline-level box. */
   display: flex;
+  align-items: center;
   gap: var(--sp-1);
+  width: fit-content;
   padding-top: var(--sp-px);
 }
 
 .agent-user-turn .agent-turn-actions-inner {
-  justify-content: flex-end;
+  /* User turns are right-aligned, so push the row to the message's edge. */
+  margin-inline-start: auto;
 }
 
 .agent-assistant-turn-body {
@@ -1699,27 +1713,38 @@ input:focus-visible,
 .agent-user-turn:hover .agent-turn-actions,
 .agent-user-turn:focus-within .agent-turn-actions,
 .agent-assistant-turn:hover .agent-turn-actions,
-.agent-assistant-turn:focus-within .agent-turn-actions {
+.agent-assistant-turn:focus-within .agent-turn-actions,
+.agent-turn-actions[data-branching="true"] {
   opacity: 1;
   pointer-events: auto;
 }
 
+/* Icon-only square targets; the tooltip/title carries the label. */
 .agent-turn-action {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: var(--sp-px) var(--sp-1);
+  justify-content: center;
+  inline-size: var(--sp-8);
+  block-size: var(--sp-8);
+  padding: 0;
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-weight: 500;
   line-height: 1;
   cursor: pointer;
 }
 
-.agent-turn-action:hover:not(:disabled) {
+/* Muted timestamp riding on the outer edge of the pill. */
+.agent-turn-timestamp {
+  padding-inline: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.agent-turn-action:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--accent);
   color: var(--accent-foreground);
 }
@@ -1728,11 +1753,26 @@ input:focus-visible,
   color: var(--success);
 }
 
-.agent-turn-action:disabled {
-  /* Keep it visible-but-inert so the explanatory title still reaches the user
-   * (a fully hidden control can't explain why it's unavailable). */
+/* HoverTip anchor around each action: a real box (never display: contents —
+ * the tip positions off the anchor's rect) that hugs its button. */
+.agent-turn-action-tip {
+  display: inline-flex;
+}
+
+.agent-turn-action:disabled,
+.agent-turn-action[aria-disabled="true"] {
+  /* Muted so an unavailable action doesn't read as a primary control, while
+   * the HoverTip can still explain why (a fully hidden control can't). */
   cursor: default;
   opacity: 0.55;
+}
+
+.agent-turn-action:disabled {
+  /* In-flight only: truly inert. pointer-events: none lets the hover reach the
+   * tip anchor — disabled buttons swallow mouse events. The aria-disabled
+   * (not-yet-branchable) state keeps pointer events so its click can surface
+   * why the action is unavailable instead of failing silently (JUN-182). */
+  pointer-events: none;
 }
 
 .agent-assistant-empty {
@@ -1953,12 +1993,16 @@ input:focus-visible,
 
 /* Feature 06: the "Steering" system item recording a mid-run instruction. Quiet
  * one-line row in the same muted register as the context-compaction summary, so
- * a redirect reads as a beat in the transcript rather than a message bubble. */
+ * a redirect reads as a beat in the transcript rather than a message bubble —
+ * but it IS something the user sent, so it sits on the sender's side of the
+ * column like the user bubbles do. */
 .agent-steering-item {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  width: min(760px, 100%);
+  width: fit-content;
+  max-width: min(760px, 100%);
+  margin-inline-start: auto;
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
   font-size: var(--fs-lg);
@@ -3983,6 +4027,61 @@ input:focus-visible,
   background: linear-gradient(to bottom, transparent, var(--card) 72%);
 }
 
+/* Floating "jump to live edge" pill. Absolute (never fixed on its own: a
+ * composited fixed element gets clipped by the overflow-hidden card in
+ * WKWebView), anchored inside the fixed .agent-composer column so it hovers
+ * just above the box's real top edge — multi-line drafts and stacked notices
+ * push it up instead of colliding with it. Hidden at rest and inert so it
+ * never steals a click or a tab stop when there's nothing to jump to. */
+.agent-scroll-to-latest {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + var(--sp-2));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--sp-10);
+  block-size: var(--sp-10);
+  padding: 0;
+  /* The composer box's hairline border, but the big soft system shadow — the
+   * pill floats over transcript prose, so it needs real elevation to lift off
+   * the text underneath it. */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+  color: var(--brand);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, var(--sp-2));
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-scroll-to-latest[data-visible="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+
+.agent-scroll-to-latest:hover {
+  /* The canonical quiet-hover accent tint (not the near-neutral --accent,
+   * which reads as a grey flicker here). Tracks the selected accent and
+   * adapts to dark mode through var(--card). The border stays put. */
+  background: var(--brand-tint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-scroll-to-latest {
+    transition: none;
+    transform: translate(-50%, 0);
+  }
+}
+
 /* In a session the docked box is near-opaque frost: a whisper of the
  * conversation ghosts through as it scrolls beneath the input, then melts
  * into the dissolve below. The effect should sit at the edge of perception —
@@ -5595,7 +5694,9 @@ input:focus-visible,
   gap: var(--sp-2);
   height: var(--control-lg);
   padding: 0 var(--sp-5);
-  border: 1px solid var(--border-subtle);
+  /* Accent-family line rather than neutral grey, so the chip reads themed at
+   * rest the way its icon does; hover deepens the same recipe. */
+  border: 1px solid var(--brand-line);
   /* Squircle, not a pill — consistent with the composer it sits under. */
   border-radius: var(--r-lg);
   background: none;
@@ -5627,11 +5728,33 @@ input:focus-visible,
   transition-delay: 0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
 }
 
+/* Composer holds a draft: the chips bow out. The suggestions have done
+ * their job once the person is typing, and a click here would stage over
+ * (replace) what they typed — see runShortcut. Same wave as the rotation's
+ * exit; visibility flips after the fade so the invisible buttons also
+ * leave the tab order and the accessibility tree. Coming back (field
+ * cleared), the base transition runs and visibility snaps on instantly. */
+.agent-hero-chips[data-hidden="true"] .agent-hero-chip {
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    opacity 300ms var(--ease-in-out),
+    transform 300ms var(--ease-in-out),
+    visibility 0s linear;
+  transition-delay:
+    0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms),
+    calc(var(--chip-i, 0) * 90ms + 300ms);
+}
+
 .agent-hero-chip:hover:not(:disabled) {
   /* Soft dusty wash in the brand family (not neutral grey) so the backdrop
      echoes the accent the chip's icon already carries. */
   background: var(--brand-tint);
-  border-color: color-mix(in oklch, var(--brand) 25%, var(--border));
+  border-color: var(--brand-line-strong);
 }
 
 .agent-hero-chip:disabled {
@@ -9195,11 +9318,13 @@ input:focus-visible,
 /* Feature 07: the calm "Branched from <title>" confirmation. Neutral-toned
  * (this is reassurance, not an error) and laid out like the error banner so
  * the two read as a consistent family. */
-.agent-main > .agent-branched-banner {
+.agent-main > .agent-branched-banner,
+.agent-main > .agent-branching-banner {
   margin-top: var(--sp-5);
 }
 
-.agent-branched-banner {
+.agent-branched-banner,
+.agent-branching-banner {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -9211,12 +9336,14 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.agent-branched-banner svg {
+.agent-branched-banner svg,
+.agent-branching-banner-spinner {
   flex-shrink: 0;
   color: var(--muted-foreground);
 }
 
-.agent-branched-banner p {
+.agent-branched-banner p,
+.agent-branching-banner p {
   margin: 0;
   min-width: 0;
   flex: 1;
@@ -9239,6 +9366,10 @@ input:focus-visible,
 
 .agent-branched-banner button:hover {
   background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+.agent-turn-action-spinner {
+  color: var(--warm-strong);
 }
 
 .agent-error-banner {
@@ -9282,6 +9413,15 @@ input:focus-visible,
 
 .agent-error-banner-actions button:hover {
   background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+.agent-error-banner-actions button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.agent-error-banner-actions button:disabled:hover {
+  background: transparent;
 }
 
 /* Out-of-credits card in the transcript: no title, just the tone-colored
@@ -9724,164 +9864,78 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
-.settings-row-mic-test {
+.settings-row-stack {
   align-items: start;
 }
 
-/* Accent picker — the 20px trigger dot persists while a 5-wedge wheel blooms
- * behind it. Closed, it's just the current accent as a dot. */
-.accent-wheel {
-  position: relative;
-  width: 20px;
-  height: 20px;
+.settings-local-model-fields {
+  display: grid;
+  width: min(420px, 46vw);
+  gap: var(--sp-3);
 }
 
-.accent-wheel-trigger {
-  position: relative;
-  z-index: 70;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: none;
-  border-radius: var(--r-pill);
-  background-color: var(--swatch);
-  cursor: pointer;
-  box-shadow:
-    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 16%, transparent),
-    var(--shadow-sm);
+.settings-field {
+  display: grid;
+  gap: var(--sp-1);
+  width: 100%;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.settings-field input {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  outline: 0;
   transition:
-    background-color var(--t-med) var(--ease-out),
-    opacity var(--t-med) var(--ease-out),
-    transform var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
     box-shadow var(--t-fast) var(--ease-out);
 }
 
-.accent-wheel-trigger:active {
-  transform: scale(0.96);
+.settings-field input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 4px var(--focus-ring);
 }
 
-.accent-wheel-trigger:focus-visible {
-  outline: none;
-  box-shadow:
-    0 0 0 2px var(--card),
-    0 0 0 4px var(--ring-focus);
-}
-
-/* The wheel overlays right where the dot is, centered behind the trigger. */
-.accent-wheel-pop {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 60;
-  /* No CSS filter here on purpose — the wheel's shadow is an SVG feDropShadow
-     on the disc. A parent filter over a will-change'd animating child flashes
-     white on repaint in WebKit. */
-}
-
-.accent-wheel-pop[data-phase="closing"] {
-  pointer-events: none;
-}
-
-.accent-wheel-bloom {
-  transform-box: fill-box;
-  transform-origin: center;
-}
-
-.accent-wheel-pop[data-phase="open"] .accent-wheel-bloom {
-  animation: accent-bloom-in 300ms var(--ease-spring) both;
-}
-
-/* Use a distinct exit keyframe name instead of reversing the completed entry
- * animation; WebKit can otherwise skip the restart and make the wheel vanish. */
-.accent-wheel-pop[data-phase="closing"] .accent-wheel-bloom {
-  animation: accent-bloom-out 300ms var(--ease-spring) both;
-}
-
-.accent-wheel-pop[data-phase="closing"] .accent-wheel-wedge {
-  transition: none;
-}
-
-@keyframes accent-bloom-in {
-  from {
-    opacity: 0;
-    transform: scale(0.5);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes accent-bloom-out {
-  from {
-    opacity: 1;
-    transform: scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.5);
-  }
-}
-
-.accent-wheel-svg {
-  display: block;
-  overflow: visible;
-}
-
-/* The white wheel the wedges sit on. */
-.accent-wheel-disc {
-  fill: var(--card);
-}
-
-.accent-wheel-wedge {
-  cursor: pointer;
-  /* Corners are rounded in the path geometry; this is just a crisp white edge
-     so each wedge separates cleanly from the disc and its neighbours. */
-  fill: color-mix(in oklch, var(--wedge) 58%, var(--card));
-  stroke: var(--card);
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-  transition: fill 160ms var(--ease-out);
-}
-
-.accent-wheel-wedge:hover,
-.accent-wheel-wedge:focus-visible {
-  outline: none;
-  fill: var(--wedge);
-}
-
-.accent-wheel-wedge[data-selected="true"] {
-  fill: var(--wedge);
-}
-
-/* Debounced name tooltip, positioned by inline style just outside the hovered
- * wedge (see tipStyle in AccentWheel). The inline transform anchors it, so the
- * fade-in animates opacity only to avoid clobbering that transform. */
-.accent-wheel-tip {
-  position: absolute;
-  padding: 2px 8px;
-  border-radius: var(--r-sm);
-  background: var(--popover);
-  color: var(--popover-foreground);
-  border: 1px solid var(--popover-border);
-  box-shadow: var(--shadow-md);
+.settings-local-model-warning {
+  margin: 0;
+  color: color-mix(in oklch, var(--warm-strong) 82%, var(--foreground));
   font-size: var(--fs-sm);
   line-height: 1.4;
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 1;
-  animation: accent-tip-in 120ms var(--ease-out) both;
 }
 
-@keyframes accent-tip-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+.settings-local-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.settings-local-model-confirm {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border-subtle));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 10%, transparent);
+}
+
+.settings-local-model-confirm .settings-row-error {
+  color: color-mix(in oklch, var(--warm-strong) 82%, var(--foreground));
+}
+
+.settings-local-model-confirm .btn {
+  justify-self: start;
+}
+
+.settings-row-mic-test {
+  align-items: start;
 }
 
 .settings-mic-test-control {
@@ -9982,7 +10036,9 @@ input:focus-visible,
 }
 
 .billing-plan-control {
+  display: inline-flex;
   flex: none;
+  gap: var(--sp-2);
 }
 
 .billing-usage {
@@ -14065,6 +14121,9 @@ input:focus-visible,
   gap: var(--sp-3);
   width: 100%;
   min-height: 28px;
+  /* Popover inset (sp-1) + row padding (sp-1) = the trigger's sp-3, so a
+   * row's content sits exactly over the trigger's when the popover opens
+   * aligned on the selected option — no horizontal jump. */
   padding: 0 var(--sp-1);
   border: 0;
   border-radius: var(--r-sm);
@@ -14089,6 +14148,41 @@ input:focus-visible,
   place-items: center;
   width: 16px;
   color: var(--foreground);
+}
+
+/* Leading color chip for color selects (Appearance accent). A slightly rounded
+ * square that fits inside the row; text selects (Language, Microphone) pass no
+ * color and render nothing. */
+.select-swatch {
+  width: 14px;
+  height: 14px;
+  justify-self: center;
+  border-radius: var(--r-xs);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 16%, transparent);
+}
+
+/* The trigger label owns `.select-trigger > span:first-child` (flex: 1 +
+ * ellipsis); a leading swatch would otherwise inherit that and stretch. Higher
+ * specificity than that rule so it stays a fixed square. */
+.select-trigger > .select-swatch:first-child {
+  flex: none;
+  margin-right: var(--sp-2);
+  overflow: visible;
+}
+
+/* Option rows gain a leading track for the swatch ahead of label + check. The
+ * track matches the swatch (14px) and the sp-2 column gap mirrors the trigger
+ * swatch's margin, so swatch and label both overlay their trigger twins when
+ * the popover opens in place. */
+.select-popover button.has-swatch {
+  grid-template-columns: 14px minmax(0, 1fr) 16px;
+  column-gap: var(--sp-2);
+}
+
+/* Accent picker only: short labels, so shrink from the default 220px to roughly
+ * the widest label plus a little room (other selects keep their width). */
+.accent-select .select-trigger {
+  min-width: 128px;
 }
 
 /* Trigger button mirrors a picker row: stacked name/meta with a subtle
@@ -14203,21 +14297,45 @@ input:focus-visible,
   line-height: 1.5;
   text-align: left;
   white-space: normal;
+  /* Split a wrapped tip's lines evenly so a two-line tip reads as a balanced
+   * block. HoverTip measures the line boxes AFTER this applies and tightens the
+   * box width to hug the widest line, so the box edges match the text edges. */
+  text-wrap: balance;
   pointer-events: none;
+}
+
+/* First frame: rendered hidden so its content width can be measured before the
+ * clamped position is set. No animation runs in this state. */
+.hover-tip[data-state="measuring"] {
+  visibility: hidden;
+}
+
+.hover-tip[data-state="open"] {
   animation: hover-tip-in 120ms var(--ease-out);
+}
+
+/* Exit fade — flipped to on hide, then the node unmounts after the fade. */
+.hover-tip[data-state="closing"] {
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease-out);
 }
 
 .hover-tip[data-side="top"] {
   transform: translateY(-100%);
 }
 
-/* Compact one-line tip (e.g. a shortcut hint): a little more padding than a
- * bare chip, and it springs out like a small popover rather than just fading. */
+/* Compact one-line tip (e.g. a shortcut hint or icon label): a tight chip on
+ * the popover surface, so a label reads as annotation next to the wider
+ * explainer cards above. It springs out like a small popover rather than just
+ * fading. */
 .hover-tip-compact {
-  padding: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
   line-height: 1.3;
   text-align: center;
   transform-origin: top center;
+}
+
+.hover-tip-compact[data-state="open"] {
   animation: hover-tip-pop var(--t-med) var(--ease-spring);
 }
 
@@ -14242,6 +14360,17 @@ input:focus-visible,
   }
   to {
     opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-tip[data-state="open"],
+  .hover-tip-compact[data-state="open"] {
+    animation: none;
+  }
+
+  .hover-tip[data-state="closing"] {
+    transition: none;
   }
 }
 
@@ -14419,6 +14548,18 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   white-space: nowrap;
+}
+
+.model-picker-tools-caveat {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: color-mix(in oklch, var(--warm-strong) 82%, var(--foreground));
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: help;
 }
 
 .model-picker-logo {

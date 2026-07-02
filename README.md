@@ -130,6 +130,12 @@ in-app. It is free to start.
 - [Download for macOS](https://opensoftware.co/download/mac)
 - [All releases and changelog source](https://github.com/open-software-network/os-june-releases)
 
+If you use Homebrew, this is the recommended way to install:
+
+```sh
+brew install --cask open-software-network/tap/june
+```
+
 Windows builds cover the app shell, sign-in, microphone recording, notes, and
 the bundled agent runtime, but not global dictation paste, system audio
 capture, or the macOS sandbox. macOS is the primary target.

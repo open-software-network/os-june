@@ -265,6 +265,74 @@ async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), B
 }
 
 #[tokio::test]
+async fn integration_dictate_fills_language_when_provider_returns_none()
+-> Result<(), Box<dyn Error>> {
+    // Venice ASR never returns a detected language, so the provider yields
+    // `None` and the service must fill it in from the transcript text (JUN-180).
+    let state = test_state_with_sinks_and_transcriber(
+        Arc::new(RecordingIssueReportSink::default()),
+        test_attestation(),
+        Arc::new(LanguagelessTranscriber),
+    );
+    let response = match router(state)
+        .oneshot(multipart_request(
+            "/v1/dictate",
+            multipart_body([
+                text_part("model", "asr-model"),
+                text_part("sessionId", "session-1"),
+                text_part("utteranceId", "utterance-1"),
+                file_part("audio", "dictation.wav", valid_wav()),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["language"], "en");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_dictate_prefers_requested_language_over_detection()
+-> Result<(), Box<dyn Error>> {
+    // When the user configured a dictation language, that explicit choice must
+    // reach enrichment and win over text detection (JUN-180 P2). The transcript
+    // text is English, but the request asks for Polish.
+    let state = test_state_with_sinks_and_transcriber(
+        Arc::new(RecordingIssueReportSink::default()),
+        test_attestation(),
+        Arc::new(LanguagelessTranscriber),
+    );
+    let response = match router(state)
+        .oneshot(multipart_request(
+            "/v1/dictate",
+            multipart_body([
+                text_part("model", "asr-model"),
+                text_part("sessionId", "session-1"),
+                text_part("utteranceId", "utterance-1"),
+                text_part("language", "pl"),
+                file_part("audio", "dictation.wav", valid_wav()),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["language"], "pl");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/dictate/cleanup",
@@ -618,9 +686,16 @@ fn test_state_with_sinks(
     issue_reports: Arc<dyn IssueReportSink>,
     attestation: AttestationInfo,
 ) -> ApiState {
+    test_state_with_sinks_and_transcriber(issue_reports, attestation, Arc::new(FakeTranscriber))
+}
+
+fn test_state_with_sinks_and_transcriber(
+    issue_reports: Arc<dyn IssueReportSink>,
+    attestation: AttestationInfo,
+    transcriber: Arc<dyn Transcriber>,
+) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
     let os_accounts = Arc::new(FakeOsAccounts);
-    let transcriber = Arc::new(FakeTranscriber);
     let generator = Arc::new(FakeGenerator);
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
@@ -947,6 +1022,22 @@ impl Transcriber for FakeTranscriber {
         Ok(Transcript {
             text: "Transcribed audio".to_string(),
             language: request.language,
+            provider: "fake-transcriber".to_string(),
+        })
+    }
+}
+
+/// Mirrors Venice ASR: returns a real transcript but never a detected language,
+/// so the service layer must fill it in from the text.
+struct LanguagelessTranscriber;
+
+#[async_trait]
+impl Transcriber for LanguagelessTranscriber {
+    async fn transcribe(&self, _request: TranscriptionRequest) -> Result<Transcript, DomainError> {
+        Ok(Transcript {
+            text: "Let us schedule a call for next week to discuss the project roadmap and the budget."
+                .to_string(),
+            language: None,
             provider: "fake-transcriber".to_string(),
         })
     }

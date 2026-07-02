@@ -157,6 +157,9 @@ export type AgentChatPart =
 
 export type AgentChatTurn = {
   id: string;
+  /** Persisted Hermes message id to fork from. Synthetic/live rows keep this
+   * unset so the workspace can resolve them to the nearest saved branch point. */
+  branchMessageId?: string;
   role: "user" | "assistant" | "system";
   createdAt: string;
   status: "running" | "complete";
@@ -216,6 +219,7 @@ export function buildHermesSessionChatTurns(
 
     const turn: AgentChatTurn = {
       id: message.id,
+      branchMessageId: message.id,
       role: contextPart
         ? "system"
         : message.role === "assistant"

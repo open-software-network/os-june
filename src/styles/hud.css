@@ -25,7 +25,7 @@
   --destructive: oklch(0.704 0.191 22.216);
   /* The selected accent (default dusty rose), overridden + live-synced by
    * subscribeBrand() in src/lib/brand.ts. */
-  --brand: #936862;
+  --brand: #b5551f;
   /* The accent lifted for the dark glass — same derivation the agent HUD uses
    * for its "needs input" mark, so the meeting prompt speaks the same color
    * language and follows the selected accent. */

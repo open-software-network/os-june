@@ -10,6 +10,7 @@ import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
+  dictationHotkeyStatus: vi.fn(),
   dictationHelperCommand: vi.fn(),
   localAudioFileSrc: vi.fn(),
   providerModelSettings: vi.fn(),
@@ -17,6 +18,9 @@ const mocks = vi.hoisted(() => ({
   setVeniceModel: vi.fn(),
   setVeniceApiKey: vi.fn(),
   clearVeniceApiKey: vi.fn(),
+  saveLocalGenerationSettings: vi.fn(),
+  setLocalGenerationEnabled: vi.fn(),
+  probeLocalGenerationEndpoint: vi.fn(),
   openPrivacySettings: vi.fn(),
   setDictationShortcut: vi.fn(),
   setDictationMicrophone: vi.fn(),
@@ -65,6 +69,7 @@ vi.mock("../app/build-info", () => ({
 
 vi.mock("../lib/tauri", () => ({
   JUNE_COMMUNITY_URL: "https://t.me/osjune",
+  dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
   localAudioFileSrc: mocks.localAudioFileSrc,
@@ -73,6 +78,9 @@ vi.mock("../lib/tauri", () => ({
   setVeniceModel: mocks.setVeniceModel,
   setVeniceApiKey: mocks.setVeniceApiKey,
   clearVeniceApiKey: mocks.clearVeniceApiKey,
+  saveLocalGenerationSettings: mocks.saveLocalGenerationSettings,
+  setLocalGenerationEnabled: mocks.setLocalGenerationEnabled,
+  probeLocalGenerationEndpoint: mocks.probeLocalGenerationEndpoint,
   openPrivacySettings: mocks.openPrivacySettings,
   setDictationShortcut: mocks.setDictationShortcut,
   setDictationMicrophone: mocks.setDictationMicrophone,
@@ -149,6 +157,35 @@ const signedInAccount = {
   balance: { usdMillis: 1200, usageRemainingPercent: 100 },
 };
 
+// Mirrors the backend's local-generation state across the split
+// save/enable/disable commands so the mocks can return a coherent settings
+// snapshot regardless of call order.
+type LocalGenerationState = {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
+  enabled: boolean;
+};
+
+let localState: LocalGenerationState;
+
+function buildProviderSettings() {
+  return {
+    transcriptionProvider: "venice",
+    generationProvider: localState.enabled ? "local" : "venice",
+    transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+    generationModel: localState.enabled ? localState.modelId : "zai-org-glm-5-2",
+    remoteGenerationModel: "zai-org-glm-5-2",
+    imageModel: "venice-sd35",
+    veniceApiKeyConfigured: false,
+    localGeneration: {
+      baseUrl: localState.baseUrl,
+      modelId: localState.modelId,
+      apiKey: localState.apiKey,
+    },
+  };
+}
+
 function stubNavigatorPlatform(platform: string, userAgent: string) {
   const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
   const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
@@ -178,8 +215,13 @@ describe("AppSettings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
     mocks.eventHandler = undefined;
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
+    mocks.dictationHotkeyStatus.mockResolvedValue({
+      type: "hotkey_trigger_ready",
+      payload: { shortcut: baseSettings.pushToTalkShortcut },
+    });
     mocks.localAudioFileSrc.mockImplementation((path) => `asset://${path}`);
     mocks.setDictationLanguage.mockImplementation(async (language) => ({
       ...baseSettings,
@@ -194,10 +236,17 @@ describe("AppSettings", () => {
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
+        generationProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
         generationModel: "zai-org-glm-5-2",
+        remoteGenerationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
         veniceApiKeyConfigured: false,
+        localGeneration: {
+          baseUrl: "",
+          modelId: "",
+          apiKey: "",
+        },
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -329,25 +378,35 @@ describe("AppSettings", () => {
     mocks.setVeniceModel.mockImplementation(async (mode, modelId) => ({
       transcriptionProvider:
         mode === "transcription" && modelId.startsWith("gpt-") ? "openai" : "venice",
+      generationProvider: "venice",
       transcriptionModel: mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
+      remoteGenerationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       imageModel: mode === "image" ? modelId : "venice-sd35",
       veniceApiKeyConfigured: false,
+      localGeneration: {
+        baseUrl: localState.baseUrl,
+        modelId: localState.modelId,
+        apiKey: localState.apiKey,
+      },
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
-      transcriptionProvider: "venice",
-      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: "zai-org-glm-5-2",
-      imageModel: "venice-sd35",
+      ...buildProviderSettings(),
       veniceApiKeyConfigured: true,
     });
     mocks.clearVeniceApiKey.mockResolvedValue({
-      transcriptionProvider: "venice",
-      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: "zai-org-glm-5-2",
-      imageModel: "venice-sd35",
+      ...buildProviderSettings(),
       veniceApiKeyConfigured: false,
     });
+    mocks.saveLocalGenerationSettings.mockImplementation(async ({ baseUrl, modelId, apiKey }) => {
+      localState = { ...localState, baseUrl, modelId, apiKey };
+      return buildProviderSettings();
+    });
+    mocks.setLocalGenerationEnabled.mockImplementation(async (enabled: boolean) => {
+      localState = { ...localState, enabled };
+      return buildProviderSettings();
+    });
+    mocks.probeLocalGenerationEndpoint.mockResolvedValue({ models: [] });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsLogin.mockResolvedValue(signedInAccount);
@@ -433,8 +492,30 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
-    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("pro");
+  });
+
+  it("opens Max checkout from Upgrade to Max in billing settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("max");
   });
 
   it("shows usage remaining as a percentage instead of dollars", async () => {
@@ -472,7 +553,7 @@ describe("AppSettings", () => {
     expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
   });
 
-  it("shows an accent reset button after choosing a non-default accent", () => {
+  it("changes the accent color through the appearance picker", () => {
     vi.useFakeTimers();
     try {
       render(
@@ -488,44 +569,32 @@ describe("AppSettings", () => {
         />,
       );
 
-      expect(
-        screen.queryByRole("button", {
-          name: "Reset accent color to default",
-        }),
-      ).not.toBeInTheDocument();
+      // The accessible name carries the current selection so screen readers
+      // announce the active accent, not just the static "Accent color" label.
+      const trigger = (label: string) =>
+        screen.getByRole("button", { name: `Accent color: ${label}` });
+      expect(trigger("Clay")).toHaveTextContent("Clay");
 
-      fireEvent.click(screen.getByRole("button", { name: "Accent color: Rose. Change" }));
-      fireEvent.click(screen.getByRole("radio", { name: "Clay" }));
-
+      // Pick a non-default accent from the shared select popover.
+      fireEvent.click(trigger("Clay"));
+      fireEvent.click(screen.getByRole("option", { name: "Rose" }));
       act(() => {
-        vi.advanceTimersByTime(316);
+        vi.advanceTimersByTime(320);
+      });
+
+      expect(localStorage.getItem("os-june:brand")).toBe("rose");
+      expect(trigger("Rose")).toHaveTextContent("Rose");
+
+      // Re-selecting the default from the list is the reset (no separate
+      // button), mirroring how the language picker's "Auto-detect" works.
+      fireEvent.click(trigger("Rose"));
+      fireEvent.click(screen.getByRole("option", { name: "Clay" }));
+      act(() => {
+        vi.advanceTimersByTime(320);
       });
 
       expect(localStorage.getItem("os-june:brand")).toBe("clay");
-      expect(
-        screen.getByRole("button", { name: "Accent color: Clay. Change" }),
-      ).toBeInTheDocument();
-      const resetButton = screen.getByRole("button", {
-        name: "Reset accent color to default",
-      });
-      const accentButton = screen.getByRole("button", {
-        name: "Accent color: Clay. Change",
-      });
-      expect(
-        resetButton.compareDocumentPosition(accentButton) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-
-      fireEvent.click(resetButton);
-
-      expect(localStorage.getItem("os-june:brand")).toBe("rose");
-      expect(
-        screen.getByRole("button", { name: "Accent color: Rose. Change" }),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", {
-          name: "Reset accent color to default",
-        }),
-      ).not.toBeInTheDocument();
+      expect(trigger("Clay")).toHaveTextContent("Clay");
     } finally {
       vi.useRealTimers();
     }
@@ -574,8 +643,8 @@ describe("AppSettings", () => {
         account={{
           ...signedInAccount,
           balance: {
-            credits: 4857,
-            usdMillis: 4857,
+            credits: 1943,
+            usdMillis: 1943,
           },
           subscription: {
             subscribed: false,
@@ -760,7 +829,41 @@ describe("AppSettings", () => {
 
     expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Upgrade" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade to/ })).not.toBeInTheDocument();
+  });
+
+  it("labels max subscriptions as the Max plan", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: {
+            credits: 51200,
+            usdMillis: 51200,
+            usageRemainingPercent: 64,
+          },
+          subscription: {
+            subscribed: true,
+            status: "active",
+            plan: "max",
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(screen.getByRole("heading", { name: "Max plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade to/ })).not.toBeInTheDocument();
   });
 
   it("hides billing and sign-out controls in local mode", () => {
@@ -1445,6 +1548,128 @@ describe("AppSettings", () => {
     });
   });
 
+  it("shows a restarting notice when the dictation helper goes unavailable", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Shortcuts" }));
+    expect(await screen.findByText("Push to talk")).toBeInTheDocument();
+
+    act(() => {
+      mocks.eventHandler?.({
+        payload: JSON.stringify({
+          type: "helper_unavailable",
+          payload: { reason: "restarting", message: "Dictation stopped and is restarting." },
+        }),
+      });
+    });
+
+    const notice = await screen.findByRole("alert", { name: "Dictation unavailable" });
+    expect(within(notice).getByText("Dictation stopped and is restarting.")).toBeInTheDocument();
+    // Without a staged update there is no relaunch action.
+    expect(screen.queryByRole("button", { name: "Relaunch June" })).not.toBeInTheDocument();
+
+    // The helper re-arming the hotkey clears the notice.
+    act(() => {
+      mocks.eventHandler?.({
+        payload: JSON.stringify({
+          type: "hotkey_trigger_ready",
+          payload: { shortcut: "Ctrl+Opt+D" },
+        }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alert", { name: "Dictation unavailable" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("shows persisted helper downtime when Settings opens after retries exhaust", async () => {
+    const user = userEvent.setup();
+    mocks.dictationHotkeyStatus.mockResolvedValue({
+      type: "helper_unavailable",
+      payload: {
+        reason: "exhausted",
+        message: "Dictation stopped and could not restart. Relaunch June to restore it.",
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Shortcuts" }));
+
+    const notice = await screen.findByRole("alert", { name: "Dictation unavailable" });
+    expect(
+      within(notice).getByText(
+        "Dictation stopped and could not restart. Relaunch June to restore it.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("prompts a relaunch to finish updating when the helper is down mid-update", async () => {
+    const user = userEvent.setup();
+    const onRelaunch = vi.fn();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        updateReadyToRelaunch
+        onRelaunch={onRelaunch}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Shortcuts" }));
+    expect(await screen.findByText("Push to talk")).toBeInTheDocument();
+
+    act(() => {
+      mocks.eventHandler?.({
+        payload: JSON.stringify({
+          type: "helper_unavailable",
+          payload: { reason: "restarting", message: "Dictation stopped and is restarting." },
+        }),
+      });
+    });
+
+    const notice = await screen.findByRole("alert", { name: "Dictation unavailable" });
+    expect(within(notice).getByText("Relaunch to finish updating")).toBeInTheDocument();
+    expect(
+      within(notice).getByText("Dictation is paused until you relaunch to finish updating."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Relaunch June" }));
+    expect(onRelaunch).toHaveBeenCalledTimes(1);
+  });
+
   it("resets customized dictation shortcuts and hides reset for defaults", async () => {
     const user = userEvent.setup();
     mocks.dictationSettings.mockResolvedValue({
@@ -1634,8 +1859,494 @@ describe("AppSettings", () => {
     }
   });
 
+  it("keeps the local model config collapsed behind More options until expanded", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    // The primary pickers are visible, but the local model config is hidden
+    // behind a collapsed "More options" disclosure by default.
+    const trigger = await screen.findByRole("button", { name: /More options/ });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("switch", { name: "Use local text model" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+
+    await user.click(trigger);
+
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
+  });
+
+  it("auto-expands More options when a local model is already enabled", async () => {
+    localState = {
+      baseUrl: "http://localhost:11434/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+      enabled: true,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "local",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "llama3.1:8b",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    // An active local model must never be hidden: the disclosure opens itself so
+    // the enabled toggle and endpoint config stay reachable.
+    expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /More options/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("saves the draft then enables a local text model", async () => {
+    const user = userEvent.setup();
+    const modelChanged = vi.fn();
+    window.addEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
+
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      await user.click(await screen.findByRole("tab", { name: "Models" }));
+      // The local model config lives behind the "More options" disclosure.
+      await user.click(await screen.findByRole("button", { name: /More options/ }));
+      await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
+      await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
+      await user.type(screen.getByLabelText("API key"), "sk-test");
+      await user.click(screen.getByRole("switch", { name: "Use local text model" }));
+
+      // A dirty, loopback draft is persisted first, then the provider flips —
+      // enabling reads the saved settings, never the live draft.
+      expect(mocks.saveLocalGenerationSettings).toHaveBeenCalledWith({
+        baseUrl: "http://localhost:11434/v1",
+        modelId: "llama3.1:8b",
+        apiKey: "sk-test",
+      });
+      expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(true);
+      expect(modelChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: {
+            mode: "generation",
+            modelId: "llama3.1:8b",
+          },
+        }),
+      );
+      expect(await screen.findByText("Local: llama3.1:8b")).toBeInTheDocument();
+    } finally {
+      window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
+    }
+  });
+
+  it("disables a local text model without saving and keeps its fields", async () => {
+    localState = {
+      baseUrl: "http://localhost:11434/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+      enabled: true,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "local",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "llama3.1:8b",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const modelChanged = vi.fn();
+    window.addEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
+
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      await user.click(await screen.findByRole("tab", { name: "Models" }));
+      await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
+
+      // Toggle-off is a pure provider flip: it never persists the draft, so
+      // the stored config survives (finding: toggle-off used to wipe it).
+      expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(false);
+      expect(mocks.saveLocalGenerationSettings).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("Base URL")).toHaveValue("http://localhost:11434/v1");
+      expect(screen.getByLabelText("Model ID")).toHaveValue("llama3.1:8b");
+      expect(modelChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: {
+            mode: "generation",
+            modelId: "zai-org-glm-5-2",
+          },
+        }),
+      );
+    } finally {
+      window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
+    }
+  });
+
+  it("does not duplicate the local model as a bare picker entry", async () => {
+    localState = {
+      baseUrl: "http://localhost:11434/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+      enabled: true,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "local",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "llama3.1:8b",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
+    await user.click(await screen.findByRole("tab", { name: "All" }));
+
+    // Exactly one option references the local model id, and it is the
+    // prefixed "Local:" entry — never a bare duplicate that would persist the
+    // local id as the remote model (finding 1).
+    const llamaOptions = screen
+      .getAllByRole("option")
+      .filter((option) => option.textContent?.includes("llama3.1:8b"));
+    expect(llamaOptions).toHaveLength(1);
+    expect(llamaOptions[0].textContent).toContain("Local:");
+  });
+
+  it("keeps remote text options selectable when local model IDs collide", async () => {
+    localState = {
+      baseUrl: "http://localhost:11434/v1",
+      modelId: "venice-uncensored",
+      apiKey: "",
+      enabled: false,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "venice-uncensored",
+        remoteGenerationModel: "venice-uncensored",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "venice-uncensored",
+          apiKey: "",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    expect(await screen.findByText("Venice Uncensored")).toBeInTheDocument();
+    expect(screen.queryByText("Local: venice-uncensored")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Change text model" }));
+    await user.click(screen.getByRole("tab", { name: "All" }));
+    expect(
+      await screen.findByRole("option", { name: /Local: venice-uncensored/ }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
+
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
+    expect(mocks.saveLocalGenerationSettings).not.toHaveBeenCalled();
+    expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+  });
+
+  it("enables the local model from the picker without saving the draft", async () => {
+    localState = {
+      baseUrl: "http://localhost:11434/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+      enabled: false,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "Change text model" }));
+    await user.click(screen.getByRole("tab", { name: "All" }));
+    await user.click(await screen.findByRole("option", { name: /Local: llama3\.1:8b/ }));
+
+    // The picker option is built from the saved settings, so selecting it
+    // enables from them (finding 3) rather than committing the draft.
+    expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(true);
+    expect(mocks.saveLocalGenerationSettings).not.toHaveBeenCalled();
+  });
+
+  it("routes a non-loopback picker enable through the confirm step", async () => {
+    localState = {
+      baseUrl: "http://192.168.1.5:11434/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+      enabled: false,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        localGeneration: {
+          baseUrl: "http://192.168.1.5:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "Change text model" }));
+    await user.click(screen.getByRole("tab", { name: "All" }));
+    await user.click(await screen.findByRole("option", { name: /Local: llama3\.1:8b/ }));
+
+    // An off-device endpoint is never enabled silently: the picker reveals
+    // the confirm affordance in the Local model section instead.
+    expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        "This endpoint is not on this machine. Requests will leave your device. Confirm in the Local model section to enable it.",
+      ),
+    ).toBeInTheDocument();
+    const confirm = await screen.findByRole("button", {
+      name: "Enable anyway",
+    });
+
+    // Confirming from the section proceeds with the saved settings.
+    await user.click(confirm);
+    expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(true);
+    expect(mocks.saveLocalGenerationSettings).not.toHaveBeenCalled();
+  });
+
+  it("lists probed models in the Model ID datalist after a connection test", async () => {
+    mocks.probeLocalGenerationEndpoint.mockResolvedValue({
+      models: ["llama3.1:8b", "qwen2.5:7b"],
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    // The local model config lives behind the "More options" disclosure.
+    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+
+    expect(mocks.probeLocalGenerationEndpoint).toHaveBeenCalledWith({
+      baseUrl: "http://localhost:11434/v1",
+      apiKey: "",
+    });
+    expect(await screen.findByText("Connected. 2 models available.")).toBeInTheDocument();
+    const datalist = document.getElementById("local-generation-models");
+    const values = Array.from(datalist?.querySelectorAll("option") ?? []).map((option) =>
+      option.getAttribute("value"),
+    );
+    expect(values).toEqual(["llama3.1:8b", "qwen2.5:7b"]);
+  });
+
+  it("warns and requires a confirm step for a non-loopback endpoint", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    // The local model config lives behind the "More options" disclosure.
+    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.type(await screen.findByLabelText("Base URL"), "https://models.example.com/v1");
+    await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
+
+    // A remote endpoint surfaces an inline warning up front.
+    expect(
+      screen.getAllByText("This endpoint is not on this machine. Requests will leave your device.")
+        .length,
+    ).toBeGreaterThan(0);
+
+    // The first flip reveals the confirm affordance without enabling, and the
+    // switch stays visually off.
+    await user.click(screen.getByRole("switch", { name: "Use local text model" }));
+    expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+    expect(screen.getByRole("switch", { name: "Use local text model" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "Enable anyway",
+    });
+
+    // Confirming proceeds: the draft is saved, then the provider flips.
+    await user.click(confirm);
+    expect(mocks.saveLocalGenerationSettings).toHaveBeenCalledWith({
+      baseUrl: "https://models.example.com/v1",
+      modelId: "llama3.1:8b",
+      apiKey: "",
+    });
+    expect(mocks.setLocalGenerationEnabled).toHaveBeenCalledWith(true);
+  });
+
   it("saves and removes a Venice API key without displaying it", async () => {
     const user = userEvent.setup();
+
     render(
       <AppSettings
         account={signedInAccount}

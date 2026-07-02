@@ -53,7 +53,7 @@ describe("scheduled-run helpers", () => {
     });
     const session = sessions[0];
     expect(isScheduledRunSession(session as HermesSessionInfo)).toBe(true);
-    expect(session?.title).toBe("Summarize Github Activity for the Team");
+    expect(session?.title).toBe("Summarize GitHub activity for the team");
     expect(session?.title).not.toContain("IMPORTANT");
     expect(session?.preview?.startsWith("Summarize GitHub activity")).toBe(true);
   });
@@ -70,7 +70,7 @@ describe("scheduled-run helpers", () => {
         },
       ],
     });
-    expect(sessions[0]?.title).toBe("Post the Weekly Metrics Digest");
+    expect(sessions[0]?.title).toBe("Post the weekly metrics digest");
   });
 
   it("derives the title when the cron session still has the placeholder title", () => {
@@ -85,7 +85,7 @@ describe("scheduled-run helpers", () => {
         },
       ],
     });
-    expect(sessions[0]?.title).toBe("Prepare the Morning Brief for Today");
+    expect(sessions[0]?.title).toBe("Prepare the morning brief for today");
   });
 
   it("extracts the routine job id from a cron run session id", () => {
@@ -393,16 +393,16 @@ describe("Hermes adapter", () => {
         last_active: 1_780_603_200 as unknown as string,
       }),
     ).toBe("2026-06-04T20:00:00.000Z");
-    expect(titleFromPrompt("  Write   a note  ")).toBe("Write a Note");
+    expect(titleFromPrompt("  Write   a note  ")).toBe("Write a note");
     expect(titleFromPrompt("I want you to keep this running in my CLI")).toBe(
-      "Keep This Running in My CLI",
+      "Keep this running in my CLI",
     );
-    expect(titleFromPrompt("Help me to organize files")).toBe("Organize Files");
+    expect(titleFromPrompt("Help me to organize files")).toBe("Organize files");
     expect(
       titleFromPrompt(
         "please summarize the key points from today's standup\n\n--- Attached Context ---\n{}",
       ),
-    ).toBe("Summarize the Key Points from Today's");
+    ).toBe("Summarize the key points from today's");
     expect(titleFromPrompt("")).toBe("Untitled session");
   });
 });
