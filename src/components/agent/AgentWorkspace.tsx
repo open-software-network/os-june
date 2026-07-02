@@ -5388,6 +5388,15 @@ export function AgentWorkspace({
     modeSessionId = sessionId,
   ) {
     if (branchingMessageId) return;
+    // A synthetic/in-flight turn carries no persisted Hermes message id to fork
+    // from. The action now stays clickable (JUN-182), so explain why the fork
+    // point isn't available yet instead of no-oping silently.
+    if (!isBranchableMessageId(fromMessageId)) {
+      setError("Branching is available once the message is saved.", {
+        sessionId: modeSessionId ?? null,
+      });
+      return;
+    }
     if (!sessionId) {
       setError("Cannot branch from this message because its session is unavailable.", {
         sessionId: modeSessionId ?? null,
@@ -10297,9 +10306,11 @@ export function branchSourceSessionIdForTurn(turn: Pick<AgentChatTurn, "parts">)
  * conversation into a NEW session that starts from this message, leaving the
  * source session untouched. Message-level branching is honest only when the
  * turn is backed by a persisted Hermes message id; for in-flight/synthetic
- * turns the button is disabled and explains that the fork point is available
- * once the message is saved (see {@link isBranchableMessageId}). The branch
- * itself flows through the typed `branchSession` method via `onBranch`. */
+ * turns the button stays clickable but is marked `aria-disabled`, and the
+ * click reaches `onBranch` so the handler can surface why branching isn't
+ * available yet (rather than swallowing the click as a silent no-op — JUN-182)
+ * (see {@link isBranchableMessageId}). The branch itself flows through the
+ * typed `branchSession` method via `onBranch`. */
 export function BranchFromHereAction({
   messageId,
   onBranch,
@@ -10312,14 +10323,13 @@ export function BranchFromHereAction({
   submitting?: boolean;
 }) {
   const branchable = isBranchableMessageId(messageId);
-  const disabled = submitting || !branchable;
   return (
     <HoverTip
       compact
       width={branchable ? 136 : 216}
       delay={TURN_ACTION_TIP_DELAY_MS}
-      // The disabled reason is honest, not silent: a synthetic/in-flight turn
-      // has no persisted id Hermes can fork from yet.
+      // The unavailable reason is honest, not silent: a synthetic/in-flight
+      // turn has no persisted id Hermes can fork from yet.
       tip={branchable ? "Branch from here" : "Branching is available once the message is saved"}
       className="agent-turn-action-tip"
     >
@@ -10327,7 +10337,12 @@ export function BranchFromHereAction({
         type="button"
         className="agent-turn-action"
         aria-label="Branch from here"
-        disabled={disabled}
+        // Truly inert only while a fork is in flight. A non-branchable turn
+        // announces itself disabled but stays clickable, so the click still
+        // reaches onBranch and the handler explains why branching isn't
+        // available yet instead of failing silently (JUN-182).
+        aria-disabled={!branchable || undefined}
+        disabled={submitting}
         onClick={() => onBranch(messageId, sessionId)}
       >
         <IconBranchSimple size={14} aria-hidden />

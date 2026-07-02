@@ -1726,7 +1726,7 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-turn-action:hover:not(:disabled) {
+.agent-turn-action:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--accent);
   color: var(--accent-foreground);
 }
@@ -1741,12 +1741,19 @@ input:focus-visible,
   display: inline-flex;
 }
 
-.agent-turn-action:disabled {
-  /* Visible-but-inert so the HoverTip can still explain why it's unavailable
-   * (a fully hidden control can't). pointer-events: none lets the hover reach
-   * the tip anchor — disabled buttons swallow mouse events. */
+.agent-turn-action:disabled,
+.agent-turn-action[aria-disabled="true"] {
+  /* Muted so an unavailable action doesn't read as a primary control, while
+   * the HoverTip can still explain why (a fully hidden control can't). */
   cursor: default;
   opacity: 0.55;
+}
+
+.agent-turn-action:disabled {
+  /* In-flight only: truly inert. pointer-events: none lets the hover reach the
+   * tip anchor — disabled buttons swallow mouse events. The aria-disabled
+   * (not-yet-branchable) state keeps pointer events so its click can surface
+   * why the action is unavailable instead of failing silently (JUN-182). */
   pointer-events: none;
 }
 

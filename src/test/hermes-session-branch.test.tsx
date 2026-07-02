@@ -201,17 +201,24 @@ describe("BranchFromHereAction", () => {
     });
   });
 
-  it("disables the action and explains why when message identity is insufficient", () => {
+  it("stays clickable and forwards the click when message identity is insufficient", async () => {
     const onBranch = vi.fn();
     render(
       <BranchFromHereAction messageId="assistant:2026-06-24T00:00:00Z:2" onBranch={onBranch} />,
     );
     const button = screen.getByRole("button", { name: /branch from here/i });
-    expect(button).toBeDisabled();
-    // The gating stays honest rather than silent: the HoverTip anchor around
-    // the inert disabled button explains why on hover/focus.
+    // JUN-182: not truly `disabled` (that swallows the click as a silent
+    // no-op). It announces itself disabled but stays clickable.
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    // The gating stays honest rather than silent: the HoverTip anchor explains
+    // why on hover/focus.
     fireEvent.focus(button.parentElement as HTMLElement);
     expect(screen.getByRole("tooltip")).toHaveTextContent(/available once the message is saved/i);
+    // And the click reaches onBranch, so the branch handler can surface the
+    // reason instead of the click vanishing.
+    await userEvent.click(button);
+    expect(onBranch).toHaveBeenCalledWith("assistant:2026-06-24T00:00:00Z:2", undefined);
   });
 
   it("shows a spinning/disabled state while a branch is in flight", () => {
