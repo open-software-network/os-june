@@ -1696,7 +1696,8 @@ input:focus-visible,
 .agent-user-turn:hover .agent-turn-actions,
 .agent-user-turn:focus-within .agent-turn-actions,
 .agent-assistant-turn:hover .agent-turn-actions,
-.agent-assistant-turn:focus-within .agent-turn-actions {
+.agent-assistant-turn:focus-within .agent-turn-actions,
+.agent-turn-actions[data-branching="true"] {
   opacity: 1;
   pointer-events: auto;
 }
@@ -9090,11 +9091,13 @@ input:focus-visible,
 /* Feature 07: the calm "Branched from <title>" confirmation. Neutral-toned
  * (this is reassurance, not an error) and laid out like the error banner so
  * the two read as a consistent family. */
-.agent-main > .agent-branched-banner {
+.agent-main > .agent-branched-banner,
+.agent-main > .agent-branching-banner {
   margin-top: var(--sp-5);
 }
 
-.agent-branched-banner {
+.agent-branched-banner,
+.agent-branching-banner {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -9106,12 +9109,14 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.agent-branched-banner svg {
+.agent-branched-banner svg,
+.agent-branching-banner-spinner {
   flex-shrink: 0;
   color: var(--muted-foreground);
 }
 
-.agent-branched-banner p {
+.agent-branched-banner p,
+.agent-branching-banner p {
   margin: 0;
   min-width: 0;
   flex: 1;
@@ -9134,6 +9139,10 @@ input:focus-visible,
 
 .agent-branched-banner button:hover {
   background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+.agent-turn-action-spinner {
+  color: var(--warm-strong);
 }
 
 .agent-error-banner {

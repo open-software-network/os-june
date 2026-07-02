@@ -82,6 +82,7 @@ import {
   cancelAgentTask,
   dictationHelperCommand,
   explainAgentApproval,
+  finalizeHermesBridgeBranch,
   getAgentTask,
   getHermesBridgeSkill,
   ensureHermesBridgeSession,
@@ -315,6 +316,8 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 // terminal: it retires the dead-end card and shows SESSION_GONE_MESSAGE rather
 // than leaking the raw "Hermes API returned 404 ... Session not found" error.
 const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
+const SESSION_NOT_AVAILABLE_MESSAGE =
+  "This session is no longer available. Open another conversation or start a new one.";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
@@ -780,6 +783,21 @@ type AgentWorkspaceNotice = {
   message: string;
   sessionId: string | null;
 };
+
+export function agentWorkspaceErrorStateForMessage(
+  message: string,
+  sessionId: string | null,
+  issueReport?: PendingIssueReport,
+): AgentWorkspaceError | null {
+  if (isSessionGoneError(message)) {
+    return {
+      message: SESSION_NOT_AVAILABLE_MESSAGE,
+      sessionId,
+      ...(issueReport ? { issueReport } : {}),
+    };
+  }
+  return { message, sessionId, ...(issueReport ? { issueReport } : {}) };
+}
 
 type AgentDeleteSessionDetail = {
   sessionId: string;
@@ -1397,9 +1415,12 @@ export function AgentWorkspace({
     sessionId: string;
     sourceTitle: string;
   } | null>(null);
+  const branchedNoticeRef = useRef(branchedNotice);
+  const [branchingNotice, setBranchingNotice] = useState<{ sourceTitle: string } | null>(null);
   // Which message a branch is currently in flight for, so its action shows a
   // disabled/working state and double-clicks can't fork twice.
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null);
+  const branchingMessageIdRef = useRef<string | null>(null);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -1453,17 +1474,15 @@ export function AgentWorkspace({
         setErrorState(null);
         return;
       }
-      const next: AgentWorkspaceError = {
-        message,
-        sessionId:
-          options.sessionId === undefined
-            ? (selectedHermesSessionIdRef.current ?? null)
-            : options.sessionId,
-      };
-      if (options.issueReport) {
-        next.issueReport = options.issueReport;
+      const sessionId =
+        options.sessionId === undefined
+          ? (selectedHermesSessionIdRef.current ?? null)
+          : options.sessionId;
+      const nextError = agentWorkspaceErrorStateForMessage(message, sessionId, options.issueReport);
+      if (!nextError) {
+        return;
       }
-      setErrorState(next);
+      setErrorState(nextError);
     },
     [],
   );
@@ -2507,7 +2526,9 @@ export function AgentWorkspace({
   }, []);
 
   const loadHermesSessions = useCallback(
-    async (options: { suppressStartupRequestError?: boolean } = {}) => {
+    async (
+      options: { suppressStartupRequestError?: boolean; suppressSessionGoneError?: boolean } = {},
+    ) => {
       if (!bridge.running) return "skipped";
       let keepLoading = false;
       setHermesSessionsLoading(true);
@@ -2561,6 +2582,7 @@ export function AgentWorkspace({
         // moments after it appeared. The banner is dismissable instead.
         return "loaded";
       } catch (err) {
+        const message = messageFromError(err);
         if (
           options.suppressStartupRequestError &&
           !hermesSessionsHydratedRef.current &&
@@ -2568,6 +2590,9 @@ export function AgentWorkspace({
         ) {
           keepLoading = true;
           return "transient-startup-error";
+        }
+        if (options.suppressSessionGoneError && isSessionGoneError(message)) {
+          return "failed";
         }
         setError(describeAgentError(err), reportableAgentErrorOptions(err));
         return "failed";
@@ -3938,6 +3963,10 @@ export function AgentWorkspace({
     setIssueReportNotice(null);
   }, [selectedHermesSessionId]);
 
+  useEffect(() => {
+    branchedNoticeRef.current = branchedNotice;
+  }, [branchedNotice]);
+
   /** Sends the captured report plus June's diagnostic reply (the last
    * assistant message of the turn) to the June team. The diagnosis fetch is
    * best-effort: a report without June's assessment still beats no report. */
@@ -4642,7 +4671,7 @@ export function AgentWorkspace({
     try {
       runtimeSessionId =
         created?.session_id ??
-        runtimeSessionIds[storedSessionId] ??
+        runtimeSessionIdsRef.current[storedSessionId] ??
         (
           await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
             session_id: storedSessionId,
@@ -5387,70 +5416,174 @@ export function AgentWorkspace({
     fromMessageId: string,
     modeSessionId = sessionId,
   ) {
-    if (branchingMessageId) return;
-    // A synthetic/in-flight turn carries no persisted Hermes message id to fork
-    // from. The action now stays clickable (JUN-182), so explain why the fork
-    // point isn't available yet instead of no-oping silently.
-    if (!isBranchableMessageId(fromMessageId)) {
-      setError("Branching is available once the message is saved.", {
-        sessionId: modeSessionId ?? null,
-      });
-      return;
-    }
+    if (branchingMessageIdRef.current) return;
     if (!sessionId) {
       setError("Cannot branch from this message because its session is unavailable.", {
         sessionId: modeSessionId ?? null,
       });
       return;
     }
+    branchingMessageIdRef.current = fromMessageId;
     setBranchingMessageId(fromMessageId);
     const sourceTitle =
       hermesSessionItems.find((session) => session.id === sessionId || session.id === modeSessionId)
         ?.title ?? "this session";
+    setBranchingNotice({ sourceTitle });
     const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
       const methods = createHermesMethods(gateway);
+      const sourceMessages = hermesSessionMessages[sessionId] ?? [];
+      const sourcePendingMessages = pendingHermesMessagesRef.current[sessionId] ?? [];
+      const clickedMessageIndex = sourceMessages.findIndex(
+        (message) => message.id === fromMessageId,
+      );
+      const clickedPersistedMessage =
+        clickedMessageIndex >= 0 ? sourceMessages[clickedMessageIndex] : undefined;
+      const clickedPendingMessage = sourcePendingMessages.find(
+        (message) => message.id === fromMessageId,
+      );
+      const clickedMessage = clickedPersistedMessage ?? clickedPendingMessage;
+      let branchAfterMessageIndex = -1;
+      let branchRequestMessageId: string | undefined;
+      let branchComposerText = "";
+
+      if (clickedMessage?.role === "user") {
+        const beforeIndex = clickedPersistedMessage ? clickedMessageIndex : sourceMessages.length;
+        branchAfterMessageIndex = previousBranchableMessageIndex(sourceMessages, beforeIndex);
+        branchRequestMessageId =
+          branchAfterMessageIndex >= 0 ? sourceMessages[branchAfterMessageIndex]?.id : undefined;
+        branchComposerText = visibleHermesMessageText(clickedMessage).trim();
+      } else if (clickedPersistedMessage) {
+        branchAfterMessageIndex = clickedMessageIndex;
+        branchRequestMessageId = sourceMessages[branchAfterMessageIndex]?.id;
+      } else if (isLiveAssistantTurnId(fromMessageId)) {
+        branchAfterMessageIndex = liveAssistantBranchPointIndex(
+          sourceMessages,
+          sourcePendingMessages,
+        );
+        if (branchAfterMessageIndex < 0) {
+          setError("Branching is available once the response is saved.", {
+            sessionId: modeSessionId ?? null,
+          });
+          return;
+        }
+        branchRequestMessageId =
+          branchAfterMessageIndex >= 0 ? sourceMessages[branchAfterMessageIndex]?.id : undefined;
+      } else if (isBranchableMessageId(fromMessageId)) {
+        branchRequestMessageId = fromMessageId;
+      } else {
+        setError("Branching is available once the message is saved.", {
+          sessionId: modeSessionId ?? null,
+        });
+        return;
+      }
+
+      const branchSeedMessages =
+        branchAfterMessageIndex >= 0 ? sourceMessages.slice(0, branchAfterMessageIndex + 1) : [];
       const branchVia = (runtimeId: string) =>
-        methods.branchSession({ sessionId: runtimeId, fromMessageId });
-      // session.branch targets the LIVE runtime id, not the stored id the turn
-      // carries — a stored (or stale runtime) id answers "Session not found"
-      // once the runtime that minted it is gone. Resolution keys off the
-      // SOURCE session being branched (a delegated turn carries its own
-      // session id; the parent's runtime must never be asked to fork a
-      // child's message) — modeSessionId only picks the gateway. Try the
-      // freshest id we know; if that runtime has been torn down, resume the
-      // source session for a new runtime and retry once. Mirrors
-      // fetchSessionUsage.
-      let raw: unknown;
+        methods.branchSession({ sessionId: runtimeId, fromMessageId: branchRequestMessageId });
+      // Historical branches must start from the STORED source id first. Using a
+      // cached live runtime id can branch from the current in-memory tip and
+      // persist later messages past from_message_id. If the stored id is not
+      // accepted by this Hermes pin, fall back to the live runtime path.
+      let raw: unknown = undefined;
       try {
-        raw = await branchVia(runtimeSessionIdsRef.current[sessionId] ?? sessionId);
+        raw = await branchVia(sessionId);
       } catch (err) {
         if (!isSessionGoneError(messageFromError(err))) throw err;
-        const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-          session_id: sessionId,
-          cols: 96,
-        });
-        const runtimeSessionId = resumed.session_id;
-        if (!runtimeSessionId) {
-          throw new Error("Hermes did not resume the session.");
+        let runtimeSessionId: string | undefined = runtimeSessionIdsRef.current[sessionId];
+        if (runtimeSessionId) {
+          try {
+            raw = await branchVia(runtimeSessionId);
+          } catch (runtimeErr) {
+            if (!isSessionGoneError(messageFromError(runtimeErr))) throw runtimeErr;
+            runtimeSessionId = undefined;
+          }
         }
-        setRuntimeSessionIds((current) => ({
-          ...current,
-          [sessionId]: runtimeSessionId,
-        }));
-        raw = await branchVia(runtimeSessionId);
+        if (!runtimeSessionId) {
+          const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+            session_id: sessionId,
+            cols: 96,
+          });
+          runtimeSessionId = resumed.session_id;
+          if (!runtimeSessionId) {
+            throw new Error("Hermes did not resume the session.");
+          }
+          const resumedRuntimeSessionId = runtimeSessionId;
+          setRuntimeSessionIds((current) => ({
+            ...current,
+            [sessionId]: resumedRuntimeSessionId,
+          }));
+          raw = await branchVia(resumedRuntimeSessionId);
+        }
       }
       const result: BranchSessionResult | undefined = parseBranchSessionResult(raw, {
         sourceSessionId: sessionId,
-        sourceMessageId: fromMessageId,
+        sourceMessageId: branchRequestMessageId,
       });
       if (!result) {
         throw new Error("Hermes did not return a branched session.");
       }
+      let branchRuntimeSessionId = result.runtimeSessionId ?? result.sessionId;
+      await finalizeHermesBridgeBranch({
+        branchSessionId: result.sessionId,
+        sourceSessionId: sessionId,
+        keepMessageCount: branchSeedMessages.length,
+        ...(branchRequestMessageId ? { throughMessageId: branchRequestMessageId } : {}),
+      });
+      try {
+        const resumedBranch = await gateway.request<HermesRuntimeSessionResponse>(
+          "session.resume",
+          {
+            session_id: result.sessionId,
+            cols: 96,
+          },
+        );
+        if (resumedBranch.session_id) {
+          branchRuntimeSessionId = resumedBranch.session_id;
+        }
+      } catch (err) {
+        if (!isSessionGoneError(messageFromError(err))) throw err;
+      }
+      setRuntimeSessionIds((current) => {
+        const next = {
+          ...current,
+          [result.sessionId]: branchRuntimeSessionId,
+        };
+        runtimeSessionIdsRef.current = next;
+        return next;
+      });
       // Carry the source session's write-access mode onto the fork so its
       // follow-ups route to the matching runtime (mirrors session.create).
       rememberSessionMode(result.sessionId, unrestricted);
+      const branchDraftKey = sessionComposerDraftKey(result.sessionId);
+      composerDraftKeyRef.current = branchDraftKey;
+      restoredComposerDraftKeyRef.current = branchDraftKey;
+      rememberComposerDraft(branchDraftKey, branchComposerText, null);
+      draftRef.current = branchComposerText;
+      categoryRef.current = null;
+      attachmentsRef.current = [];
+      setDraft(branchComposerText);
+      setCategory(null);
+      setAttachments([]);
+      setHermesSessionMessages((current) => ({
+        ...current,
+        [result.sessionId]: branchSeedMessages,
+      }));
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [result.sessionId]: [],
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+      liveEventsRef.current = {
+        ...liveEventsRef.current,
+        [result.sessionId]: [],
+      };
+      setLiveEvents(liveEventsRef.current);
       // Open the fork. Selecting it triggers the message-fetch effect, which
       // fills the forked transcript. The source session is left untouched.
       newSessionModeRef.current = false;
@@ -5459,14 +5592,29 @@ export function AgentWorkspace({
       selectedHermesSessionIdRef.current = result.sessionId;
       setSelectedHermesSessionId(result.sessionId);
       setActivePanel("chat");
-      setBranchedNotice({ sessionId: result.sessionId, sourceTitle });
+      const nextBranchedNotice = { sessionId: result.sessionId, sourceTitle };
+      branchedNoticeRef.current = nextBranchedNotice;
+      setBranchedNotice(nextBranchedNotice);
+      composerEditorRef.current?.setContent(branchComposerText, null);
       setError(null);
-      await loadHermesSessions();
+      await loadHermesSessions({ suppressSessionGoneError: true });
+      window.requestAnimationFrame(() => composerEditorRef.current?.focus());
     } catch (err) {
       // Leave the UI in the source session; surface the failure there.
-      setError(messageFromError(err), { sessionId });
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        void loadHermesSessions({ suppressSessionGoneError: true });
+        setError(
+          "Cannot branch from this message because the live session ended. Try again from the saved transcript.",
+          { sessionId },
+        );
+      } else {
+        setError(message, { sessionId });
+      }
     } finally {
+      branchingMessageIdRef.current = null;
       setBranchingMessageId(null);
+      setBranchingNotice(null);
     }
   }
 
@@ -5894,7 +6042,9 @@ export function AgentWorkspace({
       // changes, so a success would wipe an unrelated banner (e.g. a failed
       // send). The banner is dismissable instead.
     } catch (err) {
-      setError(messageFromError(err), { sessionId });
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) return;
+      setError(message, { sessionId });
     } finally {
       setFilesystemLoading(false);
     }
@@ -7347,6 +7497,9 @@ export function AgentWorkspace({
                   sourceTitle={branchedNotice.sourceTitle}
                   onDismiss={() => setBranchedNotice(null)}
                 />
+              ) : null}
+              {branchingNotice ? (
+                <AgentBranchingBanner sourceTitle={branchingNotice.sourceTitle} />
               ) : null}
               {detailContent}
               {composer}
@@ -9069,6 +9222,7 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
     turn.parts.every((part) => part.type === "reasoning" || part.type === "tool");
   const rebuild = (turn: AgentChatTurn, parts: AgentChatPart[]): AgentChatTurn => ({
     id: turn.id,
+    branchMessageId: turn.branchMessageId,
     role: turn.role,
     createdAt: turn.createdAt,
     status: turn.status,
@@ -9314,15 +9468,18 @@ function AgentChatTurnRow({
   }
 
   // Per-turn transcript actions. Branch is rendered only on Hermes-session rows
-  // (which pass `onBranch`); it self-disables when the turn id is not a
-  // persisted message id (see isBranchableMessageId).
+  // (which pass `onBranch`); pending user prompts and live assistant rows route
+  // to the nearest saved fork point, while other synthetic rows still explain
+  // that they need to be saved first.
   const branchSessionId = branchSourceSessionIdForTurn(turn);
+  const branchMessageId = turn.branchMessageId ?? turn.id;
+  const branchSubmitting = branchingMessageId === branchMessageId;
   const branchAction = onBranch ? (
     <BranchFromHereAction
-      messageId={turn.id}
+      messageId={branchMessageId}
       sessionId={branchSessionId}
       onBranch={onBranch}
-      submitting={branchingMessageId === turn.id}
+      submitting={branchSubmitting}
     />
   ) : null;
   const copyAction = copyText ? (
@@ -9368,7 +9525,7 @@ function AgentChatTurnRow({
   ) : null;
   const turnActions =
     copyAction || branchAction || timestampAction ? (
-      <div className="agent-turn-actions">
+      <div className="agent-turn-actions" data-branching={branchSubmitting ? "true" : undefined}>
         <div className="agent-turn-actions-inner">
           {/* The timestamp sits on the outer/far side of the row: before the
            * icons on right-aligned user turns, after them on left-aligned
@@ -9800,6 +9957,15 @@ function AgentBranchedBanner({
       <button type="button" aria-label="Dismiss" onClick={onDismiss}>
         <IconCrossMedium size={14} />
       </button>
+    </div>
+  );
+}
+
+function AgentBranchingBanner({ sourceTitle }: { sourceTitle: string }) {
+  return (
+    <div className="agent-branching-banner" role="status" aria-live="polite">
+      <DotSpinner className="agent-branching-banner-spinner" />
+      <p>Creating branch from {sourceTitle}</p>
     </div>
   );
 }
@@ -10302,15 +10468,57 @@ export function branchSourceSessionIdForTurn(turn: Pick<AgentChatTurn, "parts">)
   return undefined;
 }
 
+function previousBranchableMessageIndex(messages: HermesSessionMessage[], beforeIndex: number) {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && message.role !== "tool" && isBranchableMessageId(message.id)) return index;
+  }
+  return -1;
+}
+
+function lastBranchableMessageIndex(messages: HermesSessionMessage[]) {
+  return previousBranchableMessageIndex(messages, messages.length);
+}
+
+function latestBranchableUserMessageIndex(messages: HermesSessionMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user" && isBranchableMessageId(message.id)) return index;
+  }
+  return -1;
+}
+
+function liveAssistantBranchPointIndex(
+  messages: HermesSessionMessage[],
+  pendingMessages: HermesSessionMessage[],
+) {
+  if (pendingMessages.some((message) => message.role === "user")) {
+    return lastBranchableMessageIndex(messages);
+  }
+  const latestUserIndex = latestBranchableUserMessageIndex(messages);
+  if (latestUserIndex >= 0) {
+    return previousBranchableMessageIndex(messages, latestUserIndex);
+  }
+  return lastBranchableMessageIndex(messages);
+}
+
+function isLiveAssistantTurnId(id: string) {
+  return id.startsWith("assistant:");
+}
+
+function canRequestBranchFromTurnId(id: string) {
+  return isBranchableMessageId(id) || id.startsWith("pending:user:") || isLiveAssistantTurnId(id);
+}
+
 /** The per-message "Branch from here" action (feature 07). Forks the
  * conversation into a NEW session that starts from this message, leaving the
- * source session untouched. Message-level branching is honest only when the
- * turn is backed by a persisted Hermes message id; for in-flight/synthetic
- * turns the button stays clickable but is marked `aria-disabled`, and the
- * click reaches `onBranch` so the handler can surface why branching isn't
- * available yet (rather than swallowing the click as a silent no-op — JUN-182)
- * (see {@link isBranchableMessageId}). The branch itself flows through the
- * typed `branchSession` method via `onBranch`. */
+ * source session untouched. Persisted turns branch exactly at their Hermes
+ * message id; pending user prompts and live assistant rows are still actionable
+ * because the workspace can resolve them to the nearest saved fork point.
+ * Other synthetic rows stay clickable but announce why branching is not
+ * available yet instead of swallowing the click as a silent no-op (JUN-182).
+ * The branch itself flows through the typed `branchSession` method via
+ * `onBranch`. */
 export function BranchFromHereAction({
   messageId,
   onBranch,
@@ -10322,7 +10530,34 @@ export function BranchFromHereAction({
   sessionId?: string;
   submitting?: boolean;
 }) {
-  const branchable = isBranchableMessageId(messageId);
+  const branchable = canRequestBranchFromTurnId(messageId);
+  const action = (
+    <button
+      type="button"
+      className="agent-turn-action"
+      aria-label={submitting ? "Creating branch" : "Branch from here"}
+      // Truly inert only while a fork is in flight. A non-branchable turn
+      // announces itself disabled but stays clickable, so the click still
+      // reaches onBranch and the handler explains why branching isn't
+      // available yet instead of failing silently (JUN-182).
+      aria-disabled={!branchable || undefined}
+      aria-busy={submitting || undefined}
+      disabled={submitting}
+      onClick={() => onBranch(messageId, sessionId)}
+    >
+      {submitting ? (
+        <DotSpinner className="agent-turn-action-spinner" />
+      ) : (
+        <IconBranchSimple size={14} aria-hidden />
+      )}
+    </button>
+  );
+
+  if (submitting) {
+    return action;
+  }
+
+  const tip = branchable ? "Branch from here" : "Branching is available once the message is saved";
   return (
     <HoverTip
       compact
@@ -10330,23 +10565,10 @@ export function BranchFromHereAction({
       delay={TURN_ACTION_TIP_DELAY_MS}
       // The unavailable reason is honest, not silent: a synthetic/in-flight
       // turn has no persisted id Hermes can fork from yet.
-      tip={branchable ? "Branch from here" : "Branching is available once the message is saved"}
+      tip={tip}
       className="agent-turn-action-tip"
     >
-      <button
-        type="button"
-        className="agent-turn-action"
-        aria-label="Branch from here"
-        // Truly inert only while a fork is in flight. A non-branchable turn
-        // announces itself disabled but stays clickable, so the click still
-        // reaches onBranch and the handler explains why branching isn't
-        // available yet instead of failing silently (JUN-182).
-        aria-disabled={!branchable || undefined}
-        disabled={submitting}
-        onClick={() => onBranch(messageId, sessionId)}
-      >
-        <IconBranchSimple size={14} aria-hidden />
-      </button>
+      {action}
     </HoverTip>
   );
 }
@@ -11928,7 +12150,8 @@ function agentStatusSummaryFromHermesEvent(
   return "June is working.";
 }
 
-function visibleHermesMessageText(message: HermesSessionMessage) {
+function visibleHermesMessageText(message: HermesSessionMessage | undefined) {
+  if (!message) return "";
   const text = textFromHermesContent(message.content) ?? textFromHermesContent(message.text) ?? "";
   return displayedComposerUserMessageText(stripHermesVisibleContext(text));
 }

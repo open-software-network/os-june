@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
+  finalizeHermesBridgeBranch: vi.fn(),
   generateImage: vi.fn(),
   getAgentTask: vi.fn(),
   getHermesBridgeSkill: vi.fn(),
@@ -89,6 +90,7 @@ vi.mock("../lib/tauri", () => ({
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
+  finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
   generateImage: mocks.generateImage,
   getAgentTask: mocks.getAgentTask,
   getHermesBridgeSkill: mocks.getHermesBridgeSkill,
@@ -309,6 +311,11 @@ describe("AgentWorkspace", () => {
     }));
     mocks.downloadHermesBridgeFile.mockResolvedValue("/Users/alex/Downloads/sample.pdf");
     mocks.ensureHermesBridgeSession.mockResolvedValue({});
+    mocks.finalizeHermesBridgeBranch.mockResolvedValue({
+      branchSessionId: "session-fork",
+      keptMessageCount: 2,
+      removedMessageCount: 0,
+    });
     mocks.deleteHermesSession.mockResolvedValue(undefined);
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
@@ -3166,8 +3173,8 @@ describe("AgentWorkspace", () => {
     mocks.gatewayRequest.mockImplementation((method: string, params?: { session_id?: string }) => {
       if (method === "session.branch") {
         branchTargets.push(params?.session_id ?? "");
-        // session.branch is keyed by the LIVE runtime id: the stored id the
-        // turn carries 404s once its runtime is gone.
+        // Older Hermes pins may reject the stored id for session.branch, so the
+        // workspace resumes and retries against the live runtime id.
         if (params?.session_id !== "runtime-fresh") {
           return Promise.reject(
             new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}'),
@@ -3176,7 +3183,9 @@ describe("AgentWorkspace", () => {
         return Promise.resolve({ new_session_id: "session-fork" });
       }
       if (method === "session.resume") {
-        return Promise.resolve({ session_id: "runtime-fresh" });
+        return Promise.resolve({
+          session_id: params?.session_id === "session-fork" ? "runtime-fork" : "runtime-fresh",
+        });
       }
       return Promise.resolve({});
     });
@@ -3200,6 +3209,714 @@ describe("AgentWorkspace", () => {
     });
     // The fork opened instead of surfacing the raw 404.
     expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+  });
+
+  it("ignores duplicate branch clicks while the first fork is still in flight", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "Draft the launch plan",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here is the launch plan.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+    let resolveBranch: ((value: { new_session_id: string }) => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.branch") {
+        return new Promise<{ new_session_id: string }>((resolve) => {
+          resolveBranch = resolve;
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const answerTurn = (await screen.findByText("Here is the launch plan.")).closest("article");
+    expect(answerTurn).not.toBeNull();
+    const branchButton = within(answerTurn as HTMLElement).getByRole("button", {
+      name: "Branch from here",
+    });
+    fireEvent.click(branchButton);
+    fireEvent.click(branchButton);
+
+    await waitFor(() => expect(mocks.gatewayRequest).toHaveBeenCalledTimes(1));
+    const actionRow = (answerTurn as HTMLElement).querySelector(".agent-turn-actions");
+    expect(actionRow).toHaveAttribute("data-branching", "true");
+    expect(
+      within(answerTurn as HTMLElement).getByRole("button", { name: "Copy message" }),
+    ).toBeInTheDocument();
+    expect(
+      within(answerTurn as HTMLElement).getByRole("button", { name: "Creating branch" }),
+    ).toBeDisabled();
+    expect(await screen.findByText("Creating branch from Existing session")).toBeInTheDocument();
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.branch", {
+      session_id: "session-1",
+      from_message_id: "a1",
+    });
+    resolveBranch?.({ new_session_id: "session-fork" });
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+  });
+
+  it("does not leak raw session-not-found errors when a stale session cannot branch", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "Draft the launch plan",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here is the launch plan.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.branch" || method === "session.resume") {
+        return Promise.reject(
+          new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}'),
+        );
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const answerTurn = (await screen.findByText("Here is the launch plan.")).closest("article");
+    expect(answerTurn).not.toBeNull();
+    await user.click(
+      within(answerTurn as HTMLElement).getByRole("button", {
+        name: "Branch from here",
+      }),
+    );
+
+    expect(
+      await screen.findByText(/Cannot branch from this message because the live session ended/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/session not found/i)).not.toBeInTheDocument();
+  });
+
+  it("branches from the first user message with an empty transcript and prefilled composer", async () => {
+    const sourceMessages = [
+      {
+        id: "u1",
+        role: "user",
+        content: "Hi",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Hello! I'm June.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+      {
+        id: "u2",
+        role: "user",
+        content: "What is the weather in Poland today?",
+        timestamp: "2026-06-12T10:01:00Z",
+      },
+      {
+        id: "a2",
+        role: "assistant",
+        content: "It is sunny in Warsaw.",
+        timestamp: "2026-06-12T10:01:05Z",
+      },
+    ];
+    let branchMessages = sourceMessages;
+    mocks.listHermesSessionMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "session-1") return Promise.resolve(sourceMessages);
+      if (sessionId === "session-fork") return Promise.resolve(branchMessages);
+      return Promise.resolve([]);
+    });
+    mocks.finalizeHermesBridgeBranch.mockImplementation(async () => {
+      branchMessages = [];
+      return {
+        branchSessionId: "session-fork",
+        keptMessageCount: 0,
+        removedMessageCount: sourceMessages.length,
+      };
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.branch") {
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      if (method === "session.resume") {
+        return Promise.reject(
+          new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}'),
+        );
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const firstPromptTurn = (await screen.findByText("Hi")).closest("article");
+    expect(firstPromptTurn).not.toBeNull();
+    await user.click(
+      within(firstPromptTurn as HTMLElement).getByRole("button", {
+        name: "Branch from here",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.branch", {
+        session_id: "session-1",
+      }),
+    );
+    expect(mocks.finalizeHermesBridgeBranch).toHaveBeenCalledWith({
+      branchSessionId: "session-fork",
+      sourceSessionId: "session-1",
+      keepMessageCount: 0,
+    });
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+    expect(screen.queryByText("Hello! I'm June.")).not.toBeInTheDocument();
+    expect(screen.queryByText("What is the weather in Poland today?")).not.toBeInTheDocument();
+    expect(screen.queryByText("It is sunny in Warsaw.")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox").textContent ?? "").toContain("Hi"));
+    expect(screen.queryByText("session not found")).not.toBeInTheDocument();
+  });
+
+  it("branches from a user message by keeping prior context and prefilling that message", async () => {
+    const sourceMessages = [
+      {
+        id: "u1",
+        role: "user",
+        content: "Hi",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Hello! I'm June.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+      {
+        id: "u2",
+        role: "user",
+        content: "What is the weather in Poland today?",
+        timestamp: "2026-06-12T10:01:00Z",
+      },
+      {
+        id: "a2",
+        role: "assistant",
+        content: "It is sunny in Warsaw.",
+        timestamp: "2026-06-12T10:01:05Z",
+      },
+    ];
+    mocks.listHermesSessionMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "session-1") return Promise.resolve(sourceMessages);
+      if (sessionId === "session-fork") return Promise.reject(new Error("session not found"));
+      return Promise.resolve([]);
+    });
+    mocks.gatewayRequest.mockImplementation((method: string, _params?: { session_id?: string }) => {
+      if (method === "session.branch") {
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const promptTurn = (await screen.findByText("What is the weather in Poland today?")).closest(
+      "article",
+    );
+    expect(promptTurn).not.toBeNull();
+    await user.click(
+      within(promptTurn as HTMLElement).getByRole("button", {
+        name: "Branch from here",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.branch", {
+        session_id: "session-1",
+        from_message_id: "a1",
+      }),
+    );
+    expect(mocks.finalizeHermesBridgeBranch).toHaveBeenCalledWith({
+      branchSessionId: "session-fork",
+      sourceSessionId: "session-1",
+      throughMessageId: "a1",
+      keepMessageCount: 2,
+    });
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+    expect(screen.getByText("Hi")).toBeInTheDocument();
+    expect(screen.getByText("Hello! I'm June.")).toBeInTheDocument();
+    expect(screen.queryByText("It is sunny in Warsaw.")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent ?? "").toContain(
+        "What is the weather in Poland today?",
+      ),
+    );
+    expect(screen.queryByText("session not found")).not.toBeInTheDocument();
+  });
+
+  it("finalizes an earlier assistant branch before later source messages can leak in", async () => {
+    const sourceMessages = [
+      {
+        id: "u1",
+        role: "user",
+        content: "I want to use GLM5.2, what providers can I use?",
+        timestamp: "2026-07-02T12:31:00Z",
+      },
+      {
+        id: "a-empty",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-07-02T12:31:01Z",
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        content: "web results",
+        timestamp: "2026-07-02T12:31:02Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here are the providers for GLM 5.2.",
+        timestamp: "2026-07-02T12:31:05Z",
+      },
+      {
+        id: "u2",
+        role: "user",
+        content: "I want to use it for coding. So Venice is not the cheapest option here",
+        timestamp: "2026-07-02T12:33:00Z",
+      },
+      {
+        id: "a2",
+        role: "assistant",
+        content: "For coding specifically, there are cheaper options.",
+        timestamp: "2026-07-02T12:33:05Z",
+      },
+    ];
+    let branchMessages = sourceMessages;
+    mocks.listHermesSessionMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "session-1") return Promise.resolve(sourceMessages);
+      if (sessionId === "session-fork") return Promise.resolve(branchMessages);
+      return Promise.resolve([]);
+    });
+    mocks.finalizeHermesBridgeBranch.mockImplementation(async () => {
+      branchMessages = sourceMessages.slice(0, 4);
+      return {
+        branchSessionId: "session-fork",
+        keptMessageCount: 4,
+        removedMessageCount: 2,
+      };
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.branch") {
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      if (method === "session.resume") {
+        return Promise.reject(
+          new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}'),
+        );
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const firstAnswerTurn = (
+      await screen.findByText("Here are the providers for GLM 5.2.")
+    ).closest("article");
+    expect(firstAnswerTurn).not.toBeNull();
+    await user.click(
+      within(firstAnswerTurn as HTMLElement).getByRole("button", {
+        name: "Branch from here",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.finalizeHermesBridgeBranch).toHaveBeenCalledWith({
+        branchSessionId: "session-fork",
+        sourceSessionId: "session-1",
+        throughMessageId: "a1",
+        keepMessageCount: 4,
+      }),
+    );
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+    expect(screen.getByText("I want to use GLM5.2, what providers can I use?")).toBeInTheDocument();
+    expect(screen.getByText("Here are the providers for GLM 5.2.")).toBeInTheDocument();
+    expect(screen.queryByText(/Venice is not the cheapest option/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/cheaper options/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
+    expect(screen.getByRole("textbox").textContent?.trim()).toBe("");
+
+    await user.type(screen.getByRole("textbox"), "Nice, can I use Venice for coding?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "session-fork",
+        text: "Nice, can I use Venice for coding?",
+      }),
+    );
+    expect(screen.queryByText(/This session is no longer available/i)).not.toBeInTheDocument();
+  });
+
+  it("does not broadcast a locally titled duplicate branch before the persisted fork loads", async () => {
+    const sourceMessages = [
+      {
+        id: "u1",
+        role: "user",
+        content: "I want to use GLM5.2, what providers can I use?",
+        timestamp: "2026-07-02T12:31:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here are the providers for GLM 5.2.",
+        timestamp: "2026-07-02T12:31:05Z",
+      },
+    ];
+    const persistedFork = {
+      id: "session-fork",
+      title: "Use It for Coding #5",
+      preview: "Here are the providers for GLM 5.2.",
+      started_at: "2026-07-02T13:37:33Z",
+      message_count: 2,
+    };
+    const sourceSession = {
+      ...existingSession,
+      title: "Use It for Coding #4",
+      started_at: "2026-07-02T12:57:19Z",
+    };
+    let resolveBranchLoad: ((sessions: (typeof persistedFork)[]) => void) | undefined;
+    const branchLoad = new Promise<(typeof persistedFork)[]>((resolve) => {
+      resolveBranchLoad = resolve;
+    });
+    let sessionListCalls = 0;
+    mocks.listHermesSessions.mockImplementation(() => {
+      sessionListCalls += 1;
+      if (sessionListCalls === 1) return Promise.resolve([sourceSession]);
+      return branchLoad;
+    });
+    mocks.listHermesSessionMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "session-1" || sessionId === "session-fork") {
+        return Promise.resolve(sourceMessages);
+      }
+      return Promise.resolve([]);
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.branch") {
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      if (method === "session.resume") {
+        return Promise.reject(
+          new Error('Hermes API returned 404 Not Found: {"detail":"Session not found"}'),
+        );
+      }
+      return Promise.resolve({});
+    });
+    const events: AgentSessionsChangedDetail[] = [];
+    const listener = (event: Event) => {
+      events.push((event as CustomEvent<AgentSessionsChangedDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, listener);
+    const user = userEvent.setup();
+
+    try {
+      render(<AgentWorkspace initialSession={sourceSession} />);
+
+      const firstAnswerTurn = (
+        await screen.findByText("Here are the providers for GLM 5.2.")
+      ).closest("article");
+      expect(firstAnswerTurn).not.toBeNull();
+      await waitFor(() =>
+        expect(
+          events.some((event) => event.sessions.some((session) => session.id === "session-1")),
+        ).toBe(true),
+      );
+
+      await user.click(
+        within(firstAnswerTurn as HTMLElement).getByRole("button", {
+          name: "Branch from here",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.branch", {
+          session_id: "session-1",
+          from_message_id: "a1",
+        }),
+      );
+      await waitFor(() =>
+        expect(events.some((event) => event.selectedSessionId === "session-fork")).toBe(true),
+      );
+      expect(
+        events
+          .filter((event) => event.selectedSessionId === "session-fork")
+          .some((event) => event.sessions.some((session) => session.id === "session-fork")),
+      ).toBe(false);
+
+      resolveBranchLoad?.([persistedFork]);
+
+      await waitFor(() =>
+        expect(
+          events.some(
+            (event) =>
+              event.sessions.filter((session) => session.id === "session-fork").length === 1 &&
+              event.sessions.find((session) => session.id === "session-fork")?.title ===
+                "Use It for Coding #5",
+          ),
+        ).toBe(true),
+      );
+    } finally {
+      window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, listener);
+    }
+  });
+
+  it("branches from an assistant message with the full transcript and an empty focused composer", async () => {
+    const sourceMessages = [
+      {
+        id: "u1",
+        role: "user",
+        content: "Hi",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Hello! I'm June.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+      {
+        id: "u2",
+        role: "user",
+        content: "What is the weather in Poland today?",
+        timestamp: "2026-06-12T10:01:00Z",
+      },
+      {
+        id: "a2",
+        role: "assistant",
+        content: "It is sunny in Warsaw.",
+        timestamp: "2026-06-12T10:01:05Z",
+      },
+    ];
+    mocks.listHermesSessionMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "session-1") return Promise.resolve(sourceMessages);
+      if (sessionId === "session-fork") return Promise.reject(new Error("session not found"));
+      return Promise.resolve([]);
+    });
+    mocks.gatewayRequest.mockImplementation((method: string, _params?: { session_id?: string }) => {
+      if (method === "session.branch") {
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const answerTurn = (await screen.findByText("It is sunny in Warsaw.")).closest("article");
+    expect(answerTurn).not.toBeNull();
+    await user.click(
+      within(answerTurn as HTMLElement).getByRole("button", {
+        name: "Branch from here",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.branch", {
+        session_id: "session-1",
+        from_message_id: "a2",
+      }),
+    );
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+    expect(screen.getByText("What is the weather in Poland today?")).toBeInTheDocument();
+    expect(screen.getByText("It is sunny in Warsaw.")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox");
+    await waitFor(() => expect(composer).toHaveFocus());
+    expect(composer.textContent?.trim()).toBe("");
+    expect(screen.queryByText("session not found")).not.toBeInTheDocument();
+  });
+
+  it("branches from a pending user prompt during a live response without carrying the source stream", async () => {
+    const sourceMessages = [
+      {
+        id: "u1",
+        role: "user",
+        content: "Hi",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Hello! I'm June.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ];
+    mocks.listHermesSessionMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "session-1") return Promise.resolve(sourceMessages);
+      if (sessionId === "session-fork") return Promise.reject(new Error("session not found"));
+      return Promise.resolve([]);
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.branch") {
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Hello! I'm June.")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox");
+    await user.type(composer, "What is the weather in SF?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "What is the weather in SF?",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-1",
+          payload: {},
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-1",
+          payload: { delta: "Same live answer" },
+        });
+      }
+    });
+    expect(await screen.findByText("Same live answer")).toBeInTheDocument();
+
+    const pendingPromptTurn = screen.getByText("What is the weather in SF?").closest("article");
+    expect(pendingPromptTurn).not.toBeNull();
+    await user.click(
+      within(pendingPromptTurn as HTMLElement).getByRole("button", {
+        name: "Branch from here",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.branch", {
+        session_id: "session-1",
+        from_message_id: "a1",
+      }),
+    );
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+    expect(screen.getByText("Hi")).toBeInTheDocument();
+    expect(screen.getByText("Hello! I'm June.")).toBeInTheDocument();
+    expect(screen.queryByText("Same live answer")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent ?? "").toContain("What is the weather in SF?"),
+    );
+    expect(screen.queryByText("session not found")).not.toBeInTheDocument();
+  });
+
+  it("branches from a live assistant response at the saved context with an empty focused composer", async () => {
+    const sourceMessages = [
+      {
+        id: "u1",
+        role: "user",
+        content: "Hi",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Hello! I'm June.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ];
+    mocks.listHermesSessionMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "session-1") return Promise.resolve(sourceMessages);
+      if (sessionId === "session-fork") return Promise.reject(new Error("session not found"));
+      return Promise.resolve([]);
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.branch") {
+        return Promise.resolve({ new_session_id: "session-fork" });
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Hello! I'm June.")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox");
+    await user.type(composer, "What is the weather in SF?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "What is the weather in SF?",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-1",
+          payload: {},
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-1",
+          payload: { delta: "Same live answer" },
+        });
+      }
+    });
+    expect(await screen.findByText("Same live answer")).toBeInTheDocument();
+
+    const liveAnswerTurn = screen.getByText("Same live answer").closest("article");
+    expect(liveAnswerTurn).not.toBeNull();
+    await user.click(
+      within(liveAnswerTurn as HTMLElement).getByRole("button", {
+        name: "Branch from here",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.branch", {
+        session_id: "session-1",
+        from_message_id: "a1",
+      }),
+    );
+    expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
+    expect(screen.getByText("Hi")).toBeInTheDocument();
+    expect(screen.getByText("Hello! I'm June.")).toBeInTheDocument();
+    expect(screen.queryByText("Same live answer")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
+    expect(screen.getByRole("textbox").textContent?.trim()).toBe("");
+    expect(screen.queryByText("session not found")).not.toBeInTheDocument();
   });
 
   it("repairs gateway-glued contractions in assistant prose but not code or user text", async () => {

@@ -162,6 +162,7 @@ pub fn run() {
             commands::save_agent_hermes_session,
             commands::suggest_agent_session_title,
             commands::submit_issue_report,
+            commands::finalize_hermes_bridge_branch,
             commands::explain_agent_approval,
             commands::cancel_agent_task,
             commands::retry_agent_task,

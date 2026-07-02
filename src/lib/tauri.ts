@@ -840,6 +840,23 @@ export async function submitIssueReport(request: SubmitIssueReportRequest) {
   return invoke<SubmitIssueReportResponse>("submit_issue_report", { request });
 }
 
+export type FinalizeHermesBranchResponse = {
+  branchSessionId: string;
+  keptMessageCount: number;
+  removedMessageCount: number;
+};
+
+export async function finalizeHermesBridgeBranch(input: {
+  branchSessionId: string;
+  sourceSessionId: string;
+  throughMessageId?: string;
+  keepMessageCount?: number;
+}) {
+  return invoke<FinalizeHermesBranchResponse>("finalize_hermes_bridge_branch", {
+    request: input,
+  });
+}
+
 export type ExplainAgentApprovalResponse = {
   explanation: string;
 };

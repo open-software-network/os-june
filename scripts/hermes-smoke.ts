@@ -512,7 +512,7 @@ async function stopChild(child: ReturnType<typeof spawn>, alreadyExited: boolean
 function writeArtifact(log: string[]): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const path = join(REPO_ROOT, `hermes-smoke-failure-${stamp}.log`);
-  writeFileSync(path, log.join("\n") + "\n", "utf8");
+  writeFileSync(path, `${log.join("\n")}\n`, "utf8");
   return path;
 }
 

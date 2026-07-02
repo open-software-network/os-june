@@ -30,7 +30,8 @@ describe("agent turn action styles", () => {
     expect(appCss).toContain(`.agent-user-turn:hover .agent-turn-actions,
 .agent-user-turn:focus-within .agent-turn-actions,
 .agent-assistant-turn:hover .agent-turn-actions,
-.agent-assistant-turn:focus-within .agent-turn-actions {
+.agent-assistant-turn:focus-within .agent-turn-actions,
+.agent-turn-actions[data-branching="true"] {
   opacity: 1;
   pointer-events: auto;
 }`);
