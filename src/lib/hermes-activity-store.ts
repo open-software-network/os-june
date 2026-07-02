@@ -40,7 +40,7 @@ import type {
   HermesMode,
   JuneHermesEvent,
 } from "./hermes-control-plane";
-import { nonEmpty } from "./hermes-control-plane";
+import { isTerminalHermesLifecycleStatus, nonEmpty } from "./hermes-control-plane";
 import { pendingActionStore } from "./hermes-pending-actions";
 
 /**
@@ -299,7 +299,8 @@ type InternalRecord = {
  * - `error`                   -> error.
  * - `lifecycle`               -> complete when the status is terminal, else
  *                                running (the session is alive and progressing).
- * - `transcript` / `reasoning`-> running (the agent is producing output).
+ * - `transcript`              -> complete on message completion, else running.
+ * - `reasoning`               -> running (the agent is producing output).
  * - `steering`                -> no phase change (local transcript marker).
  * - `unsupported`             -> no phase change (don't let an unknown frame
  *                                misreport the session's state).
@@ -326,9 +327,18 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "error";
       return;
     case "lifecycle":
-      row.phase = isTerminalLifecycleStatus(event.status) ? "complete" : "running";
+      row.phase = isTerminalHermesLifecycleStatus(event.status) ? "complete" : "running";
       return;
     case "transcript":
+      if (event.complete) {
+        row.phase = "complete";
+        row.currentTool = undefined;
+        return;
+      }
+      // The agent is actively producing output — running, unless it has already
+      // reached a terminal state this turn (a late delta shouldn't un-complete).
+      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
+      return;
     case "reasoning":
       // The agent is actively producing output — running, unless it has already
       // reached a terminal state this turn (a late delta shouldn't un-complete).
@@ -422,27 +432,6 @@ function countActiveSubagents(subagents: Map<string, BackgroundHermesActivity>):
     if (!isTerminalSubagentPhase(subagent.phase)) count += 1;
   }
   return count;
-}
-
-/**
- * Whether a lifecycle status string means the session is done. The classifier
- * sets `status` to the payload's status field or the raw type (e.g.
- * `session.complete`), so match terminal-flavored strings defensively. Mirrors
- * the spirit of AgentWorkspace's `isTerminalHermesEvent`.
- */
-function isTerminalLifecycleStatus(status: string | undefined): boolean {
-  if (typeof status !== "string") return false;
-  const normalized = status.toLowerCase();
-  return (
-    normalized === "complete" ||
-    normalized === "completed" ||
-    normalized === "done" ||
-    normalized === "finished" ||
-    normalized === "cancelled" ||
-    normalized === "canceled" ||
-    normalized.endsWith(".complete") ||
-    normalized.endsWith(".completed")
-  );
 }
 
 /**

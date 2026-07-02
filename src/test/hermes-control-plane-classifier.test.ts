@@ -3,6 +3,7 @@ import type { HermesGatewayEvent } from "../lib/hermes-gateway";
 import {
   classifyHermesEvent,
   createSteeringEvent,
+  isTerminalHermesEvent,
   isSensitiveKey,
   parseHermesMode,
   sanitizePayload,
@@ -136,6 +137,15 @@ describe("classifyHermesEvent — transcript", () => {
     if (complete.kind === "transcript") {
       expect(complete.delta).toBe("Hello");
     }
+
+    const completed = classifyHermesEvent(
+      event("message.completed", { message_id: "m1", text: "Hello again" }),
+    );
+    expect(completed).toMatchObject({
+      kind: "transcript",
+      complete: true,
+      failed: false,
+    });
   });
 
   it("preserves whitespace-only deltas verbatim", () => {
@@ -493,6 +503,22 @@ describe("classifyHermesEvent — lifecycle", () => {
       expect(result.kind, `expected lifecycle for ${name}`).toBe("lifecycle");
       if (result.kind === "lifecycle") {
         expect(result.status).toBeTruthy();
+      }
+    }
+  });
+
+  it("maps turn/background completion aliases to terminal lifecycle events", () => {
+    for (const name of [
+      "turn.complete",
+      "turn.completed",
+      "background.complete",
+      "background.completed",
+    ]) {
+      const result = classifyHermesEvent(event(name, {}));
+      expect(result.kind, `expected lifecycle for ${name}`).toBe("lifecycle");
+      if (result.kind === "lifecycle") {
+        expect(result.status).toBe(name);
+        expect(isTerminalHermesEvent(result)).toBe(true);
       }
     }
   });

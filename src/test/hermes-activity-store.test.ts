@@ -129,6 +129,17 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(0);
   });
 
+  it("message completion flips the session to phase 'complete'", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("message.start", "s1"), "sandboxed");
+    expect(store.getRecord("s1")?.phase).toBe("running");
+
+    store.record(classified("message.complete", "s1", { text: "Done" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("complete");
+    expect(store.activeCount()).toBe(0);
+  });
+
   it("an error frame moves the session to phase 'error'", () => {
     const store = createHermesActivityStore();
     store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
