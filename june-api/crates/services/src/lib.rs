@@ -435,14 +435,16 @@ mod tests {
         // restructure the speaker's content.
         let prompt = crate::prompts::DICTATE_CLEANUP;
 
-        assert!(prompt.contains(
-            "Do not summarize, condense, shorten, paraphrase, reorder, restructure, bullet"
-        ));
         assert!(
-            prompt.contains(
-                "keep every point the speaker made, in their own words and original order"
-            )
+            prompt
+                .contains("Do not summarize, condense, shorten, reorder, bullet, add new content")
         );
+        assert!(
+            prompt.contains("keep every point the speaker made, in the speaker's original order")
+        );
+        // Wording latitude belongs to the style instructions (standard forbids
+        // rephrasing, formal grants it), so the global prompt must defer.
+        assert!(prompt.contains("only as far as the provided writing style explicitly directs"));
         assert!(prompt.contains(
             "grouping only inserts blank lines and must never drop, condense, reorder, or reword"
         ));
