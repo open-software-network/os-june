@@ -193,7 +193,8 @@ mod tests {
         assert!(prompt.contains("never licenses rewording, restructuring, shortening"));
         // Structure appears only when dictated; spoken numbers make lists.
         assert!(prompt.contains("structure the speaker did not dictate"));
-        assert!(prompt.contains("one problems two solutions three pricing"));
+        assert!(prompt.contains("one apple two carrot three potato"));
+        assert!(prompt.contains("stay prose exactly as spoken"));
         // Technical dictation renders compact tokens, but only on clear cues.
         assert!(prompt.contains("package dot json"));
         assert!(prompt.contains("Apply these renderings only on clear technical cues"));
