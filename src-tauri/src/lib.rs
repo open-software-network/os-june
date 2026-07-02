@@ -218,6 +218,7 @@ pub fn run() {
             hermes_bridge::set_hermes_agent_cli_access,
             hermes_bridge::open_hermes_tui_debug,
             commands::get_microphone_permission_state,
+            commands::get_platform_capabilities,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
             commands::june_open_verify_page,

@@ -73,6 +73,7 @@ import {
   setReleaseChannel,
   type ReleaseChannel,
 } from "../../lib/updater";
+import { usePlatformCapabilities } from "../../lib/capabilities";
 import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -349,6 +350,9 @@ export function AppSettings({
   const settingsTabs = account.localDev
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
+  const capabilities = usePlatformCapabilities();
+  // Still needed for the mic test below: it runs through the macOS dictation
+  // helper binary, which is about the host OS, not a reported capability.
   const macLikePlatform = isMacLikePlatform();
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
@@ -366,7 +370,10 @@ export function AppSettings({
   );
   const systemState = systemReadiness?.permissionState;
   const systemDenied = systemState === "denied" || systemState === "restricted";
-  const systemUnavailable = !macLikePlatform || systemState === "unsupported";
+  // Capability says whether this build can capture system audio at all;
+  // "unsupported" from the live readiness probe covers a capable build on an
+  // OS that cannot deliver it (e.g. macOS older than 14.2).
+  const systemUnavailable = !capabilities.systemAudio || systemState === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
@@ -1093,7 +1100,7 @@ export function AppSettings({
             </h2>
             <div className="settings-card">
               <div className="settings-rows">
-                {macLikePlatform ? (
+                {capabilities.dictation ? (
                   <>
                     <ShortcutRow
                       title="Push to talk"
@@ -1128,7 +1135,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Dictation shortcuts unavailable</h3>
                       <p className="settings-row-description">
-                        Global dictation shortcuts are only supported on macOS.
+                        Dictation is not available on this platform yet.
                       </p>
                     </div>
                   </div>
@@ -1646,16 +1653,24 @@ function PermissionsSettingsSection({
   onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
 }) {
-  const macLikePlatform = isMacLikePlatform();
+  const capabilities = usePlatformCapabilities();
+  // Accessibility is a macOS TCC concept (June pastes dictated text through
+  // the AX APIs), so the row stays platform-sniffed on purpose: keying it on
+  // capabilities.dictation would wrongly grow an accessibility row on
+  // Windows once dictation ships there.
+  const showAccessibility = isMacLikePlatform();
+  const showSystemAudio = capabilities.systemAudio;
   return (
     <section className="settings-group" aria-labelledby="permissions-heading">
       <h2 id="permissions-heading" className="settings-group-heading">
         System permissions
       </h2>
       <p className="settings-group-description">
-        {macLikePlatform
+        {showAccessibility
           ? "macOS access used for recording audio, pasting dictation, and capturing system sound."
-          : "Access used for recording audio."}
+          : showSystemAudio
+            ? "Access used for recording audio and capturing system sound."
+            : "Access used for recording audio."}
       </p>
       <div className="settings-card">
         <div className="settings-rows">
@@ -1668,22 +1683,22 @@ function PermissionsSettingsSection({
             onManage={onEnableMicrophone}
           />
 
-          {macLikePlatform ? (
-            <>
-              <PermissionRow
-                title="Accessibility"
-                description="Paste dictated text into the active app."
-                status={permissionStatus(accessibilityPermissionStatus)}
-                onManage={onEnableAccessibility}
-              />
+          {showAccessibility ? (
+            <PermissionRow
+              title="Accessibility"
+              description="Paste dictated text into the active app."
+              status={permissionStatus(accessibilityPermissionStatus)}
+              onManage={onEnableAccessibility}
+            />
+          ) : null}
 
-              <PermissionRow
-                title="System audio"
-                description="Record audio from other apps when system audio is enabled."
-                status={sourcePermissionStatus(systemReadiness)}
-                onManage={onEnableSystemAudio}
-              />
-            </>
+          {showSystemAudio ? (
+            <PermissionRow
+              title="System audio"
+              description="Record audio from other apps when system audio is enabled."
+              status={sourcePermissionStatus(systemReadiness)}
+              onManage={onEnableSystemAudio}
+            />
           ) : null}
         </div>
       </div>

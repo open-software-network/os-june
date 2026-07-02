@@ -1149,7 +1149,7 @@ describe("AppSettings", () => {
     expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
   });
 
-  it("only lists microphone permissions on Windows", async () => {
+  it("lists microphone and system audio permissions but no accessibility on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -1201,10 +1201,14 @@ describe("AppSettings", () => {
         />,
       );
 
-      expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
+      expect(
+        screen.getByText("Access used for recording audio and capturing system sound."),
+      ).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
-      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+      // Windows captures system audio now (WASAPI loopback), so its
+      // permission row is listed alongside the microphone.
+      expect(screen.getByText("System audio")).toBeInTheDocument();
 
       const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
       expect(microphoneRow).not.toBeNull();
@@ -1214,16 +1218,27 @@ describe("AppSettings", () => {
         }),
       );
 
+      const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
+      expect(systemAudioRow).not.toBeNull();
+      await userEvent.click(
+        within(systemAudioRow as HTMLElement).getByRole("button", {
+          name: "Manage System audio permission",
+        }),
+      );
+
       expect(onEnableMicrophone).toHaveBeenCalledTimes(1);
       expect(onEnableAccessibility).not.toHaveBeenCalled();
-      expect(onEnableSystemAudio).not.toHaveBeenCalled();
+      expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
 
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
+      // The system audio toggle keys on the capability plus live readiness,
+      // not the OS; the mic test stays macOS-only (it runs through the
+      // dictation helper binary).
       expect(
-        screen.queryByRole("switch", {
+        screen.getByRole("switch", {
           name: "Capture system audio for notes",
         }),
-      ).not.toBeInTheDocument();
+      ).toBeInTheDocument();
       expect(
         screen.queryByRole("button", {
           name: "Start test",
@@ -1232,6 +1247,9 @@ describe("AppSettings", () => {
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
       expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
+      expect(
+        screen.getByText("Dictation is not available on this platform yet."),
+      ).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     } finally {
       restoreNavigator();

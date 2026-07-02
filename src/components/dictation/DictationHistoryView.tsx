@@ -33,7 +33,7 @@ import {
 } from "../../lib/tauri";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
-import { isMacLikePlatform } from "../../lib/platform";
+import { usePlatformCapabilities } from "../../lib/capabilities";
 
 const NO_DICTATIONS: DictationHistoryItemDto[] = [];
 
@@ -88,7 +88,9 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
   const [dictionaryCount, setDictionaryCount] = useState<number | null>(null);
   const [hintDismissed, setHintDismissed] = useState(readHintDismissed);
   const [pendingDelete, setPendingDelete] = useState<DictationHistoryItemDto | null>(null);
-  const dictationAvailable = isMacLikePlatform();
+  // Backend-reported capability: flips on automatically when a platform's
+  // dictation backend ships, instead of tracking an OS allowlist here.
+  const dictationAvailable = usePlatformCapabilities().dictation;
 
   const loadHistory = useCallback(async () => {
     try {
@@ -241,7 +243,9 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
           label={dictationAvailable ? "Start dictating" : "Dictation unavailable"}
           icon={<IconMicrophoneSparkleFilled size={28} />}
           title={
-            dictationAvailable ? "Start dictating anywhere" : "Dictation is only supported on macOS"
+            dictationAvailable
+              ? "Start dictating anywhere"
+              : "Dictation is not available on this platform yet"
           }
           description={
             dictationAvailable
