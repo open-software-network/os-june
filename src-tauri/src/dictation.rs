@@ -14,7 +14,10 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Mutex, OnceLock,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -36,6 +39,22 @@ pub struct HelperProcess {
 
 pub struct HelperState {
     process: Mutex<Option<HelperProcess>>,
+    /// Set only on intentional teardown (app quit / [`stop_helper`]) so the
+    /// supervisor can tell a deliberate stop from a crash and skip respawning.
+    shutting_down: AtomicBool,
+    /// Consecutive rapid respawn attempts, used to cap a crash loop. Reset once
+    /// a respawned helper survives long enough to be considered healthy.
+    respawn_failures: AtomicU32,
+}
+
+impl Default for HelperState {
+    fn default() -> Self {
+        Self {
+            process: Mutex::new(None),
+            shutting_down: AtomicBool::new(false),
+            respawn_failures: AtomicU32::new(0),
+        }
+    }
 }
 
 pub struct LastDictationEvent {
@@ -607,6 +626,7 @@ pub fn setup(app: &mut tauri::App) {
     let helper = spawn_helper(app.handle()).ok();
     app.manage(HelperState {
         process: Mutex::new(helper),
+        ..HelperState::default()
     });
 
     {
@@ -1241,7 +1261,6 @@ fn rect_contains(
 /// are registered.
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
-        use std::sync::atomic::Ordering;
         let tick = Duration::from_millis(33);
         loop {
             thread::sleep(tick);
@@ -1337,17 +1356,16 @@ fn spawn_hud_hover_thread(app: AppHandle) {
 
 pub fn stop_helper(app: &AppHandle) {
     let state = app.state::<HelperState>();
-    let Ok(mut guard) = state.process.lock() else {
-        return;
-    };
-    let Some(mut process) = guard.take() else {
-        return;
-    };
-
-    let _ = process.stdin.write_all(b"{\"type\":\"shutdown\"}\n");
-    let _ = process.stdin.flush();
-    let _ = process.child.kill();
-    let _ = process.child.wait();
+    // Mark the teardown as intentional before killing so the supervisor thread
+    // (woken by the resulting stdout EOF) skips respawning instead of fighting
+    // app quit.
+    state.shutting_down.store(true, Ordering::SeqCst);
+    // Take the helper out from under the lock, then kill outside it so the
+    // blocking wait() cannot stall a concurrent command thread.
+    let helper = state.process.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(helper) = helper {
+        abandon_helper(helper);
+    }
 }
 
 pub(crate) fn dictation_helper_pid(app: &AppHandle) -> Option<u32> {
@@ -1844,12 +1862,21 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
         )
     })?;
 
+    // Recorded before handing stdout to the reader so the supervisor can tell a
+    // healthy helper (ran a while, then died) from a crash loop.
+    let spawn_instant = Instant::now();
+
     let output_app = app.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
             handle_helper_event_line(&output_app, line);
         }
+        // The helper's event stream lives for the whole process lifetime, so
+        // stdout closing means the helper exited (crash, SIGKILL after an
+        // update swaps the bundle, or an intentional stop). Hand off to the
+        // supervisor to reap it and decide whether to respawn.
+        supervise_helper_exit(&output_app, spawn_instant);
     });
 
     let error_app = app.clone();
@@ -1861,6 +1888,241 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
     });
 
     Ok(HelperProcess { child, stdin })
+}
+
+/// How many consecutive rapid respawns we attempt before giving up and showing
+/// the "relaunch to recover" notice. Bounds a genuine crash loop so it can't
+/// burn CPU forever, while still recovering from any isolated helper death.
+const HELPER_MAX_RESPAWN_ATTEMPTS: u32 = 5;
+/// Backoff before the first respawn; doubles each attempt up to the cap below.
+const HELPER_RESPAWN_BASE_BACKOFF: Duration = Duration::from_millis(500);
+const HELPER_RESPAWN_MAX_BACKOFF: Duration = Duration::from_secs(8);
+/// A helper that ran at least this long before dying is treated as healthy: its
+/// death starts a fresh failure count instead of counting toward the cap, so
+/// repeated manual kills (or a death long after launch) always recover.
+const HELPER_HEALTHY_RUNTIME: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy)]
+struct RespawnPolicy {
+    max_attempts: u32,
+    base_backoff: Duration,
+    max_backoff: Duration,
+    healthy_runtime: Duration,
+}
+
+impl Default for RespawnPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: HELPER_MAX_RESPAWN_ATTEMPTS,
+            base_backoff: HELPER_RESPAWN_BASE_BACKOFF,
+            max_backoff: HELPER_RESPAWN_MAX_BACKOFF,
+            healthy_runtime: HELPER_HEALTHY_RUNTIME,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RespawnAction {
+    /// Intentional shutdown: leave the helper down.
+    Skip,
+    /// Relaunch the helper after `backoff`. `attempt` is 1-based.
+    Respawn { attempt: u32, backoff: Duration },
+    /// Too many rapid failures: surface the unavailable notice and stop trying.
+    GiveUp,
+}
+
+/// Pure decision for what to do after the dictation helper process exits.
+///
+/// `prior_failures` is the count of consecutive rapid respawns so far;
+/// `survived` is how long the process that just exited had been running.
+/// Returns the action to take plus the new consecutive-failure count to persist
+/// (so the caller stays a thin, side-effecting shell around this logic).
+fn decide_respawn(
+    shutting_down: bool,
+    prior_failures: u32,
+    survived: Duration,
+    policy: &RespawnPolicy,
+) -> (RespawnAction, u32) {
+    if shutting_down {
+        return (RespawnAction::Skip, prior_failures);
+    }
+    let attempt = if survived >= policy.healthy_runtime {
+        1
+    } else {
+        prior_failures.saturating_add(1)
+    };
+    if attempt > policy.max_attempts {
+        return (RespawnAction::GiveUp, attempt);
+    }
+    (
+        RespawnAction::Respawn {
+            attempt,
+            backoff: respawn_backoff(attempt, policy),
+        },
+        attempt,
+    )
+}
+
+fn respawn_backoff(attempt: u32, policy: &RespawnPolicy) -> Duration {
+    // 1-based attempts: the first respawn waits `base_backoff`, each later one
+    // doubles, all clamped to `max_backoff`.
+    let shift = attempt.saturating_sub(1).min(16);
+    policy
+        .base_backoff
+        .checked_mul(1u32 << shift)
+        .unwrap_or(policy.max_backoff)
+        .min(policy.max_backoff)
+}
+
+fn helper_unavailable_event(reason: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "helper_unavailable",
+        "payload": {
+            "reason": reason,
+            "message": message,
+        },
+    })
+}
+
+/// Runs on the helper's stdout reader thread once that stream closes (the helper
+/// exited or was killed). Reaps the child, then respawns with backoff unless the
+/// exit was an intentional shutdown or the retry cap is exhausted. A successful
+/// respawn re-applies settings and re-arms the hotkey, and its own reader thread
+/// takes over supervision, so this thread simply returns.
+fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
+    let Some(state) = app.try_state::<HelperState>() else {
+        return;
+    };
+
+    // Reap the exited child so it does not linger as a zombie, and clear the
+    // stale handle so commands correctly see the helper as unavailable while
+    // it is down.
+    reap_exited_helper(&state);
+
+    let policy = RespawnPolicy::default();
+    let mut survived = spawn_instant.elapsed();
+    loop {
+        let shutting_down = state.shutting_down.load(Ordering::SeqCst);
+        let prior = state.respawn_failures.load(Ordering::SeqCst);
+        let (action, next_failures) = decide_respawn(shutting_down, prior, survived, &policy);
+        state.respawn_failures.store(next_failures, Ordering::SeqCst);
+
+        match action {
+            RespawnAction::Skip => return,
+            RespawnAction::GiveUp => {
+                tracing::error!(
+                    attempts = next_failures,
+                    "dictation helper kept exiting; giving up until relaunch"
+                );
+                emit_dictation_event_value(
+                    app,
+                    helper_unavailable_event(
+                        "exhausted",
+                        "Dictation stopped and could not restart. Relaunch June to restore it.",
+                    ),
+                );
+                return;
+            }
+            RespawnAction::Respawn { attempt, backoff } => {
+                tracing::warn!(
+                    attempt,
+                    ?backoff,
+                    "dictation helper exited unexpectedly; respawning"
+                );
+                // Surface the notice while the helper is down so the hotkey is
+                // never silently dead; a successful respawn clears it by
+                // re-emitting the hotkey-ready event.
+                emit_dictation_event_value(
+                    app,
+                    helper_unavailable_event("restarting", "Dictation stopped and is restarting."),
+                );
+                thread::sleep(backoff);
+                if state.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                match spawn_helper(app) {
+                    Ok(helper) => {
+                        if store_respawned_helper(&state, helper) {
+                            reapply_helper_settings(app);
+                        }
+                        // Either the new helper is live (its reader thread now
+                        // supervises) or shutdown raced us and it was stopped.
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error.message,
+                            "failed to respawn dictation helper; retrying"
+                        );
+                        // A spawn failure (e.g. the bundle is still mid-swap)
+                        // counts as an immediate, unhealthy failure so the cap
+                        // still applies.
+                        survived = Duration::ZERO;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn reap_exited_helper(state: &HelperState) {
+    if let Ok(mut guard) = state.process.lock() {
+        if let Some(mut process) = guard.take() {
+            let _ = process.child.wait();
+        }
+    }
+}
+
+/// Installs a freshly respawned helper as the active process, unless an
+/// intentional shutdown raced in first, in which case the new helper is stopped
+/// so it does not leak. Returns true when the helper was stored and is live.
+fn store_respawned_helper(state: &HelperState, helper: HelperProcess) -> bool {
+    let Ok(mut guard) = state.process.lock() else {
+        // Poisoned lock: stop the orphan we just created rather than leak it.
+        abandon_helper(helper);
+        return false;
+    };
+    if state.shutting_down.load(Ordering::SeqCst) {
+        // Shutdown won the race. Drop the lock before the blocking kill so
+        // other command threads are not stalled on wait().
+        drop(guard);
+        abandon_helper(helper);
+        return false;
+    }
+    *guard = Some(helper);
+    true
+}
+
+/// Stops a helper we spawned but will not install (shutdown raced the respawn).
+/// Dropping a [`Child`] only detaches it, so we kill explicitly to avoid an
+/// orphaned helper holding the global hotkey tap.
+fn abandon_helper(mut helper: HelperProcess) {
+    let _ = helper.stdin.write_all(b"{\"type\":\"shutdown\"}\n");
+    let _ = helper.stdin.flush();
+    let _ = helper.child.kill();
+    let _ = helper.child.wait();
+}
+
+/// Re-applies the persisted microphone and shortcut settings to a just-respawned
+/// helper and re-arms the hotkey, mirroring the one-time wiring in [`setup`]. The
+/// hotkey-ready event also clears the "dictation restarting" notice in the UI.
+fn reapply_helper_settings(app: &AppHandle) {
+    let Some(helper_state) = app.try_state::<HelperState>() else {
+        return;
+    };
+    let settings = app
+        .try_state::<DictationSettingsState>()
+        .and_then(|state| state.settings.lock().ok().map(|settings| settings.clone()));
+    let Some(settings) = settings else {
+        return;
+    };
+    let _ = apply_microphone_setting(&helper_state, &settings.microphone);
+    let _ = apply_shortcut_settings(&helper_state, &settings);
+    let event = hotkey_ready_event(&settings);
+    if let Some(status) = app.try_state::<HotkeyStatus>() {
+        set_hotkey_status(&status, event.clone());
+    }
+    emit_dictation_event_value(app, event);
 }
 
 fn handle_helper_event_line(app: &AppHandle, line: String) {
@@ -3227,6 +3489,92 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_policy() -> RespawnPolicy {
+        RespawnPolicy {
+            max_attempts: 3,
+            base_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(1),
+            healthy_runtime: Duration::from_secs(30),
+        }
+    }
+
+    #[test]
+    fn intentional_shutdown_never_respawns() {
+        let policy = test_policy();
+        let (action, failures) = decide_respawn(true, 0, Duration::ZERO, &policy);
+        assert_eq!(action, RespawnAction::Skip);
+        // The failure count is left untouched on an intentional stop.
+        assert_eq!(failures, 0);
+
+        // Even mid-crash-loop, a shutdown wins and stops respawning.
+        let (action, _) = decide_respawn(true, 2, Duration::ZERO, &policy);
+        assert_eq!(action, RespawnAction::Skip);
+    }
+
+    #[test]
+    fn unexpected_exit_respawns_and_counts_up() {
+        let policy = test_policy();
+        let (action, failures) = decide_respawn(false, 0, Duration::ZERO, &policy);
+        assert_eq!(
+            action,
+            RespawnAction::Respawn {
+                attempt: 1,
+                backoff: Duration::from_millis(100),
+            }
+        );
+        assert_eq!(failures, 1);
+
+        let (action, failures) = decide_respawn(false, 1, Duration::ZERO, &policy);
+        assert_eq!(
+            action,
+            RespawnAction::Respawn {
+                attempt: 2,
+                backoff: Duration::from_millis(200),
+            }
+        );
+        assert_eq!(failures, 2);
+    }
+
+    #[test]
+    fn retry_cap_exhaustion_gives_up() {
+        let policy = test_policy();
+        // The last allowed attempt still respawns.
+        let (action, failures) = decide_respawn(false, 2, Duration::ZERO, &policy);
+        assert!(matches!(action, RespawnAction::Respawn { attempt: 3, .. }));
+        assert_eq!(failures, 3);
+
+        // One past the cap gives up instead of respawning.
+        let (action, _) = decide_respawn(false, 3, Duration::ZERO, &policy);
+        assert_eq!(action, RespawnAction::GiveUp);
+    }
+
+    #[test]
+    fn healthy_runtime_resets_the_failure_count() {
+        let policy = test_policy();
+        // A helper that had exhausted its retries but then ran healthily is
+        // treated as a fresh first failure, so an isolated later kill recovers.
+        let (action, failures) =
+            decide_respawn(false, 3, policy.healthy_runtime + Duration::from_secs(1), &policy);
+        assert_eq!(
+            action,
+            RespawnAction::Respawn {
+                attempt: 1,
+                backoff: Duration::from_millis(100),
+            }
+        );
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn respawn_backoff_doubles_and_clamps() {
+        let policy = test_policy();
+        assert_eq!(respawn_backoff(1, &policy), Duration::from_millis(100));
+        assert_eq!(respawn_backoff(2, &policy), Duration::from_millis(200));
+        assert_eq!(respawn_backoff(3, &policy), Duration::from_millis(400));
+        // Clamped to max_backoff once doubling would overshoot it.
+        assert_eq!(respawn_backoff(20, &policy), policy.max_backoff);
+    }
 
     #[test]
     fn default_settings_use_keyboard_shortcuts_without_bare_fn() {

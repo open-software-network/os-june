@@ -2777,6 +2777,8 @@ export function App() {
                   activeTab={settingsTab}
                   onTabChange={setSettingsTab}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
+                  updateReadyToRelaunch={readyUpdate != null}
+                  onRelaunch={handleRelaunchUpdate}
                   onReconcileToStable={handleReconcileToStable}
                   onReportIssue={handleReportIssue}
                   onStartBundleChat={handleStartBundleChat}

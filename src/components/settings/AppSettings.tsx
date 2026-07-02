@@ -283,6 +283,12 @@ type AppSettingsProps = {
   onTabChange?: (tab: SettingsTab) => void;
   // Runs the app updater's manual check flow.
   onCheckForUpdates?: () => void;
+  // True when an update is downloaded and waiting for a relaunch. The bundle
+  // swap is what can kill the dictation helper, so the "dictation paused"
+  // notice points the user at the relaunch that finishes the update.
+  updateReadyToRelaunch?: boolean;
+  // Relaunches June to finish a staged update (also restores the helper).
+  onRelaunch?: () => void;
   // Confirmed leave-rc reconcile: downloads and installs the current stable,
   // even if it is older than the running prerelease build (Q4-Q8).
   onReconcileToStable?: () => void;
@@ -309,6 +315,8 @@ export function AppSettings({
   activeTab: controlledTab,
   onTabChange,
   onCheckForUpdates,
+  updateReadyToRelaunch,
+  onRelaunch,
   onReconcileToStable,
   onReportIssue,
   onStartBundleChat,
@@ -340,6 +348,13 @@ export function AppSettings({
   const capturingShortcutRef = useRef<DictationShortcutKind>();
   const [shortcutError, setShortcutError] = useState<string>();
   const [status, setStatus] = useState<string>();
+  // Set when the dictation helper dies (crash or the bundle swap after an
+  // update) and cleared once it re-arms the hotkey, so the shortcuts pane never
+  // silently shows a dead hotkey.
+  const [helperUnavailable, setHelperUnavailable] = useState<{
+    reason: string;
+    message: string;
+  }>();
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
@@ -661,6 +676,18 @@ export function AppSettings({
     }
     if (helperEvent.type === "fn_monitor_unavailable") {
       setStatus(helperEvent.payload?.message ?? "Global shortcut monitoring is unavailable.");
+      return;
+    }
+    if (helperEvent.type === "helper_unavailable") {
+      setHelperUnavailable({
+        reason: stringPayload(helperEvent.payload?.reason) ?? "restarting",
+        message: helperEvent.payload?.message ?? "Dictation stopped and is restarting.",
+      });
+      return;
+    }
+    if (helperEvent.type === "hotkey_trigger_ready") {
+      // The helper re-armed the hotkey, so it is back: clear any down notice.
+      setHelperUnavailable(undefined);
       return;
     }
     if (helperEvent.type === "shortcut_capture_started") {
@@ -1220,6 +1247,25 @@ export function AppSettings({
             <h2 id="shortcuts-heading" className="settings-group-heading">
               Shortcuts
             </h2>
+            {helperUnavailable ? (
+              <InlineNotice
+                role="alert"
+                aria-label="Dictation unavailable"
+                eyebrow={updateReadyToRelaunch ? "Relaunch to finish updating" : "Dictation paused"}
+                body={
+                  updateReadyToRelaunch
+                    ? "Dictation is paused until you relaunch to finish updating."
+                    : helperUnavailable.message
+                }
+                actions={
+                  updateReadyToRelaunch && onRelaunch ? (
+                    <button type="button" className="btn btn-secondary" onClick={onRelaunch}>
+                      Relaunch June
+                    </button>
+                  ) : undefined
+                }
+              />
+            ) : null}
             <div className="settings-card">
               <div className="settings-rows">
                 {macLikePlatform ? (

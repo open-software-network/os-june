@@ -162,6 +162,7 @@ export type DictationHelperEvent = {
     selectedID?: string;
     shortcut?: DictationShortcutSetting;
     message?: string;
+    reason?: string;
     code?: string;
     path?: string;
     durationMs?: number | string;
