@@ -129,6 +129,7 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libdbus-1-dev \
+            libpulse-dev \
             libfuse2
 
       - name: Install uv
