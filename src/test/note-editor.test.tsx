@@ -239,9 +239,7 @@ describe("NoteEditor", () => {
     // alongside the microphone turn, not be dropped or mislabelled.
     expect(screen.getByText("What the meeting played back")).toBeInTheDocument();
     expect(screen.getByText("What I said into the mic")).toBeInTheDocument();
-    expect(
-      screen.getByText("System", { selector: ".transcript-turn-source" }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("System", { selector: ".transcript-turn-source" })).toBeInTheDocument();
   });
 
   it("only shows the live preview waiting state when preview is enabled", () => {
