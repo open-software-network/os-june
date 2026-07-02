@@ -1463,6 +1463,11 @@ fn recovery_validation_expected_duration_ms(path: &Path, stored_duration_ms: i64
     if stored_duration_ms > 1 {
         return stored_duration_ms;
     }
+    // Pending source rows persist expected_duration_ms = 0, so the expectation
+    // is derived from the WAV itself. Repair a stale header first — otherwise a
+    // SIGKILLed long capture yields a short expected duration that its own
+    // repaired (true) duration then fails as "stale long audio".
+    let _ = crate::audio::validation::repair_stale_wav_header_in_place(path);
     wav_duration_ms(path).unwrap_or_else(|| stored_duration_ms.max(1))
 }
 
@@ -1856,6 +1861,46 @@ mod tests {
         let (_dir, path) = write_one_second_flushed_wav();
 
         assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 1_000);
+    }
+
+    #[test]
+    fn recovered_wav_duration_repairs_stale_header_before_deriving() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        // 10s of samples with a SIGKILL-stale header claiming ~1s. Without an
+        // up-front repair the expectation would be ~1s while validation's own
+        // repaired duration is 10s, failing the source as stale-long audio.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).expect("writer");
+        for _ in 0..160_000 {
+            writer.write_sample(0_i16).expect("sample");
+        }
+        writer.finalize().expect("finalize");
+
+        let stale_data_size: u32 = 16_000 * 2;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open");
+        // data chunk size field sits at byte 40 for a canonical 16-bit PCM WAV;
+        // RIFF size at byte 4.
+        file.seek(SeekFrom::Start(4)).expect("seek");
+        file.write_all(&(36 + stale_data_size).to_le_bytes())
+            .expect("write riff size");
+        file.seek(SeekFrom::Start(40)).expect("seek");
+        file.write_all(&stale_data_size.to_le_bytes())
+            .expect("write data size");
+        file.flush().expect("flush");
+        drop(file);
+
+        assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 10_000);
     }
 
     #[test]
