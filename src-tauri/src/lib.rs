@@ -349,9 +349,17 @@ fn setup_recordings_asset_scope(app: &tauri::App) {
     let Ok(paths) = crate::app_paths::AppPaths::from_data_dir(data_dir) else {
         return;
     };
+    // Canonicalize so the scope matches the paths Tauri resolves when serving:
+    // it canonicalizes an asset path before the scope check (as
+    // `contained_recording_file` does), so a symlinked data dir would otherwise
+    // block playback. Fall back to the raw path if canonicalization fails.
+    let recordings_dir = paths
+        .recordings_dir
+        .canonicalize()
+        .unwrap_or(paths.recordings_dir);
     if let Err(error) = app
         .asset_protocol_scope()
-        .allow_directory(&paths.recordings_dir, true)
+        .allow_directory(&recordings_dir, true)
     {
         eprintln!("failed to allow recordings dir for asset protocol: {error}");
     }

@@ -54,9 +54,18 @@ pub fn trim_source_wav(path: &Path, start_ms: i64, end_ms: i64) -> Result<i64, A
     let channels = spec.channels.max(1) as usize;
     let sample_rate = spec.sample_rate.max(1) as i64;
     let total_frames = reader.duration() as i64;
-    let start_frame = ((start_ms.max(0) * sample_rate) / 1000).clamp(0, total_frames);
-    let end_frame = ((end_ms.max(0) * sample_rate) / 1000).clamp(start_frame, total_frames);
+    // saturating_mul so a garbage-large ms value clamps to the clip instead of
+    // overflowing i64 (which panics under debug overflow-checks).
+    let start_frame = (start_ms.max(0).saturating_mul(sample_rate) / 1000).clamp(0, total_frames);
+    let end_frame =
+        (end_ms.max(0).saturating_mul(sample_rate) / 1000).clamp(start_frame, total_frames);
     let frame_count = (end_frame - start_frame) as usize;
+    if frame_count == 0 {
+        // Degenerate window (start == end, or a start past this source's end, as
+        // can happen when one source is shorter than the shared timeline). Leave
+        // the file untouched rather than writing an empty WAV over it.
+        return Ok((total_frames * 1000) / sample_rate);
+    }
     let sample_count = frame_count.saturating_mul(channels);
 
     let start_frame_u32 = u32::try_from(start_frame)
@@ -107,7 +116,7 @@ fn accumulate_peaks(path: &Path, timeline_ms: i64, peaks: &mut [f32]) -> Result<
     let mut frame_peak = 0.0_f32;
     for sample in reader.samples::<i16>() {
         let sample = sample.unwrap_or(0);
-        let normalized = (sample as f32 / i16::MAX as f32).abs();
+        let normalized = crate::audio::waveform::normalize_peak(sample);
         frame_peak = frame_peak.max(normalized);
         channel += 1;
         if channel >= channels {
@@ -165,6 +174,22 @@ mod tests {
         assert_eq!(trimmed.len(), 500);
         assert_eq!(trimmed.first().copied(), Some(200));
         assert_eq!(trimmed.last().copied(), Some(699));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn degenerate_window_leaves_the_source_untouched() {
+        let dir = std::env::temp_dir().join(format!("june-trim0-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("microphone.wav");
+        let samples: Vec<i16> = (0..1000).map(|i| i as i16).collect();
+        write_wav(&path, 1000, 1, &samples);
+
+        // A start at/after the source end yields a zero-frame window: keep the
+        // full clip rather than writing an empty WAV over it.
+        let duration = trim_source_wav(&path, 1000, 1000).unwrap();
+        assert_eq!(duration, 1000);
+        assert_eq!(read_samples(&path).len(), 1000);
         std::fs::remove_dir_all(&dir).ok();
     }
 

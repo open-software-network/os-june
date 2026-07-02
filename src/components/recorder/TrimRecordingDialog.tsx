@@ -52,7 +52,8 @@ export function TrimRecordingDialog({
   const scrubbingRef = useRef(false);
   // Mic + system are captured to separate WAVs aligned on the same wall clock,
   // so we play them together (the browser mixes their output) to reproduce what
-  // the user heard. Element 0 is the "clock" that drives the playhead.
+  // the user heard. The playhead follows the furthest-along element (see
+  // handleTimeUpdate) so an early-ending source doesn't freeze it.
   const audioEls = useRef<(HTMLAudioElement | null)[]>([]);
   const sources = useMemo(() => preview?.sources ?? [], [preview]);
 
@@ -127,8 +128,13 @@ export function TrimRecordingDialog({
     forEachAudio,
   ]);
 
-  function handleTimeUpdate(event: React.SyntheticEvent<HTMLAudioElement>) {
-    const ms = event.currentTarget.currentTime * 1000;
+  function handleTimeUpdate() {
+    // Don't fight an active scrub: seekMs already set the playhead there.
+    if (scrubbingRef.current) return;
+    // Drive the playhead from the furthest-along source. Sources can differ in
+    // length (mic vs system) and `duration` is their max, so keying off a single
+    // (possibly shorter) element would freeze the playhead before endMs.
+    const ms = Math.max(0, ...audioEls.current.map((el) => el?.currentTime ?? 0)) * 1000;
     // Stop at the end handle so playback previews exactly the kept audio.
     if (playing && ms >= endMs) {
       pausePlayback();
@@ -138,12 +144,25 @@ export function TrimRecordingDialog({
     setPlayheadMs(ms);
   }
 
+  // Natural end: only stop once every source has finished, so the longer source
+  // isn't cut off when a shorter one ends first.
+  function handleEnded() {
+    if (audioEls.current.every((el) => !el || el.ended || el.paused)) {
+      pausePlayback();
+      seekMs(endMs);
+    }
+  }
+
+  // Clamp the min-selection offsets to [0, duration] too, so a clip shorter than
+  // MIN_SELECTION_MS can't invert the bounds into a negative start or an end past
+  // the clip (the handles just stop moving instead).
   const clampStart = useCallback(
-    (value: number) => Math.min(Math.max(0, value), endMs - MIN_SELECTION_MS),
+    (value: number) => Math.min(Math.max(0, value), Math.max(0, endMs - MIN_SELECTION_MS)),
     [endMs],
   );
   const clampEnd = useCallback(
-    (value: number) => Math.max(Math.min(duration, value), startMs + MIN_SELECTION_MS),
+    (value: number) =>
+      Math.max(Math.min(duration, value), Math.min(duration, startMs + MIN_SELECTION_MS)),
     [duration, startMs],
   );
 
@@ -256,7 +275,7 @@ export function TrimRecordingDialog({
             type="button"
             className="primary-action"
             onClick={() => onConfirm(null)}
-            disabled={busy}
+            disabled={busy || preparing}
           >
             Use full recording
           </button>
@@ -288,8 +307,8 @@ export function TrimRecordingDialog({
               }}
               src={localAudioFileSrc(source.path)}
               preload="auto"
-              onTimeUpdate={index === 0 ? handleTimeUpdate : undefined}
-              onEnded={index === 0 ? pausePlayback : undefined}
+              onTimeUpdate={handleTimeUpdate}
+              onEnded={handleEnded}
             />
           ))}
           <div

@@ -817,7 +817,7 @@ pub async fn finish_recording(
         None => finish_capture(&request.session_id)?,
     };
     if let Some(trim) = request.trim {
-        apply_trim(&mut finished, trim)?;
+        apply_trim(&mut finished, trim);
     }
     finish_recording_session(&repos, finished, finalization_started).await
 }
@@ -825,26 +825,36 @@ pub async fn finish_recording(
 /// Rewrite every source WAV to the selected `[start_ms, end_ms]` window and
 /// update the recording's elapsed timings so validation compares against the
 /// trimmed duration. A no-op (or inverted) range leaves the audio untouched.
+///
+/// Best-effort by design: `finish_recording` has already consumed the staged
+/// recording by the time this runs, so a propagated error would strand the
+/// captured audio. If a source fails to trim, keep it untrimmed and still
+/// finalize it — `trim_source_wav` writes via a temp file + rename, so a failure
+/// leaves the original intact.
 fn apply_trim(
     finished: &mut crate::audio::capture::FinishedRecording,
     trim: crate::domain::types::TrimRange,
-) -> Result<(), AppError> {
+) {
     let start_ms = trim.start_ms.max(0);
     let end_ms = trim.end_ms.max(start_ms);
     let trims_start = start_ms > 0;
     let trims_end = end_ms < finished.elapsed_ms;
     if !trims_start && !trims_end {
-        return Ok(());
+        return;
     }
     let mut max_duration = 0;
     for source in &mut finished.sources {
-        let duration = trim_source_wav(&source.final_path, start_ms, end_ms)?;
-        source.elapsed_ms = duration;
-        max_duration = max_duration.max(duration);
+        match trim_source_wav(&source.final_path, start_ms, end_ms) {
+            Ok(duration) => source.elapsed_ms = duration,
+            Err(error) => eprintln!(
+                "trim failed for {:?}, keeping the full source: {}",
+                source.source, error.message
+            ),
+        }
+        max_duration = max_duration.max(source.elapsed_ms);
     }
     finished.elapsed_ms = max_duration;
     finished.recording.elapsed_ms = max_duration;
-    Ok(())
 }
 
 async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {
