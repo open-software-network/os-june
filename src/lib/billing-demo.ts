@@ -18,14 +18,7 @@ const BILLING_DEMO_EVENT = "june:billing-demo-changed";
 /** A single forced variant, or "all" for the stacked gallery. */
 export type BillingDemoPlan = BillingDemoKey | "all";
 
-export type BillingDemoKey =
-  | "free"
-  | "freeLow"
-  | "pro"
-  | "max"
-  | "trial"
-  | "pastDue"
-  | "signedOut";
+export type BillingDemoKey = "free" | "freeLow" | "pro" | "max" | "trial" | "pastDue" | "signedOut";
 
 type BillingDemoFixture = {
   label: string;
