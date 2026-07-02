@@ -4,6 +4,7 @@ description: >-
   Use when the user invokes /repo-build-pr (or $repo-build-pr in Codex), or asks
   to build, implement, ship, or fix something in os-june from a feature prompt,
   bug report, screenshot, PR comment, or freeform repo task: study the prompt,
+  ask the clarifying questions that change what gets built up front,
   plan and architect on the most capable model while delegating bulk
   implementation to cheaper strong models,
   work in one or more git worktrees based on complexity, validate changes with
@@ -32,7 +33,25 @@ Treat everything after `/repo-build-pr` (or `$repo-build-pr` in Codex) as the bu
 4. Fetch the target base branch. Use `origin/main` unless the user explicitly names another base.
 5. Search the codebase with `rg` and read the narrowest relevant files before deciding on the implementation.
 
-If the prompt is ambiguous but a conservative implementation path is clear, proceed and document the assumption. Ask the user only when the missing detail changes the product behavior or could waste substantial work.
+### Clarifying questions
+
+Before writing any code, ask the questions whose answers change what gets built. A wrong guess at this stage costs an entire build-review cycle; a question costs the user seconds. Ask them as ONE batch up front (AskUserQuestion in Claude Code, a single numbered list in Codex), with a recommended option per question so the user can mostly confirm.
+
+Worth asking:
+
+- product behavior or UX choices with more than one defensible shape (what should the user see, where does the control live, what happens on failure)
+- scope boundaries: what is explicitly in and out, one PR or several, feature-complete or minimal first cut
+- acceptance criteria when the prompt implies but does not state them (what makes this done, what must keep working)
+- anything irreversible or outward-facing: schema migrations, API contract changes, billing, released-channel behavior, data deletion
+- conflicts between the prompt and what the code or tracker Issue actually says
+
+Not worth asking:
+
+- anything the repo, issue, or git history already answers - look first
+- choices with an obvious conventional default - pick it and note it in the PR
+- details that do not change the diff
+
+Do not trickle questions throughout the build; front-load them. If answers do not come or the task is explicitly AFK, take the conservative path, state each assumption prominently in the PR body, and flag the ones a reviewer should double-check.
 
 ## Model orchestration
 
