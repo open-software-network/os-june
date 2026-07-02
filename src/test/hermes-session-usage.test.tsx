@@ -165,6 +165,8 @@ describe("SessionUsagePanel", () => {
     const disclosure = container.querySelector(".agent-usage-disclosure");
     expect(disclosure).not.toBeNull();
     expect(disclosure).not.toHaveAttribute("data-open");
+    const disclosureInner = container.querySelector(".agent-usage-disclosure-inner");
+    expect(disclosureInner).toHaveAttribute("aria-hidden", "true");
 
     // Expand: the token rows, tool costs, and estimated cost appear.
     fireEvent.click(toggle);
@@ -173,6 +175,7 @@ describe("SessionUsagePanel", () => {
       "true",
     );
     expect(disclosure).toHaveAttribute("data-open", "true");
+    expect(disclosureInner).toHaveAttribute("aria-hidden", "false");
     expect(screen.getByText(/1,?200/)).toBeInTheDocument();
     expect(screen.getByText(/^800$/)).toBeInTheDocument();
     expect(screen.getByText(/2,?000/)).toBeInTheDocument();
@@ -188,6 +191,7 @@ describe("SessionUsagePanel", () => {
       "false",
     );
     expect(disclosure).not.toHaveAttribute("data-open");
+    expect(disclosureInner).toHaveAttribute("aria-hidden", "true");
   });
 
   it('renders the "Usage" title heading', async () => {

@@ -244,7 +244,11 @@ function UsageContent({
             {/* The clipped inner wrapper drives the grid-rows reveal; the detail
                 rows sit inside it (no backdrop) with a padding-top so the reveal
                 keeps its internal spacing as it animates open. */}
-            <div className="agent-usage-disclosure-inner" id={disclosureId}>
+            <div
+              className="agent-usage-disclosure-inner"
+              id={disclosureId}
+              aria-hidden={!expanded}
+            >
               <div className="agent-usage-rows agent-usage-detail-rows">
                 <TokenRow label="Input" value={usage.promptTokens} />
                 <TokenRow label="Output" value={usage.completionTokens} />
