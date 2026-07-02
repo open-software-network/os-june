@@ -2254,6 +2254,10 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 }
 
 async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
+    // Read the paste target before the first await: the frontmost app at the
+    // moment dictation stops is where the cleaned text lands, and any yield
+    // point would let the user focus a different app before we look.
+    let app_context = frontmost_app_context();
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
@@ -2288,9 +2292,6 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let style = current_settings.style;
     let language = current_settings.language;
     let dictionary_context = dictionary_context_for_app(&app).await;
-    // Read the paste target now: the frontmost app when dictation stops is
-    // where the cleaned text lands.
-    let app_context = frontmost_app_context();
     let session_id = dictation_session_id();
     let utterance_id = uuid::Uuid::new_v4().to_string();
     let transcription_context = merge_transcription_context(
