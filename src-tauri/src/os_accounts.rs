@@ -102,6 +102,9 @@ struct CheckoutSessionWire {
 struct SubscriptionWire {
     subscribed: bool,
     status: Option<String>,
+    /// Plan slug ("pro", "max"). Absent on accounts APIs that predate plan
+    /// tiers and on legacy subscription rows.
+    plan: Option<String>,
     plan_credits: Option<i64>,
     trial_end: Option<String>,
     current_period_end: Option<String>,
@@ -164,6 +167,8 @@ pub struct AccountSubscription {
     pub subscribed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_credits: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -373,6 +378,7 @@ fn local_dev_account_status() -> AccountStatus {
         subscription: Some(AccountSubscription {
             subscribed: true,
             status: Some("active".to_string()),
+            plan: None,
             plan_credits: Some(0),
             trial_end: None,
             current_period_end: None,
@@ -567,7 +573,7 @@ fn accounts_browser_logout_url(cfg: &Config) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn os_accounts_upgrade() -> Result<(), AppError> {
+pub async fn os_accounts_upgrade(plan: Option<String>) -> Result<(), AppError> {
     if local_dev_enabled() {
         return Ok(());
     }
@@ -581,7 +587,7 @@ pub async fn os_accounts_upgrade() -> Result<(), AppError> {
     let session: CheckoutSessionWire = authed_post(
         &cfg,
         "/billing/subscription",
-        subscription_checkout_request(),
+        subscription_checkout_request(plan.as_deref()),
     )
     .await?;
     let url = session.url.trim();
@@ -594,10 +600,19 @@ pub async fn os_accounts_upgrade() -> Result<(), AppError> {
     open_in_browser(url)
 }
 
-fn subscription_checkout_request() -> serde_json::Value {
-    serde_json::json!({
-        "allow_promotion_codes": true,
-    })
+/// Omitting `plan` keeps the accounts-API default (Pro), so June stays
+/// compatible with deployments that predate plan tiers.
+fn subscription_checkout_request(plan: Option<&str>) -> serde_json::Value {
+    let plan = plan.map(str::trim).filter(|plan| !plan.is_empty());
+    match plan {
+        Some(plan) => serde_json::json!({
+            "allow_promotion_codes": true,
+            "plan": plan,
+        }),
+        None => serde_json::json!({
+            "allow_promotion_codes": true,
+        }),
+    }
 }
 
 /// Opens the accounts portal in the default browser. The webview swallows
@@ -1192,6 +1207,7 @@ async fn fetch_snapshot(
         .map(|w| AccountSubscription {
             subscribed: w.subscribed,
             status: w.status,
+            plan: w.plan,
             plan_credits: w.plan_credits,
             trial_end: w.trial_end,
             current_period_end: w.current_period_end,
@@ -1522,7 +1538,21 @@ mod tests {
     #[test]
     fn subscription_checkout_request_allows_promotion_codes() {
         assert_eq!(
-            subscription_checkout_request(),
+            subscription_checkout_request(None),
+            serde_json::json!({ "allow_promotion_codes": true })
+        );
+    }
+
+    #[test]
+    fn subscription_checkout_request_carries_the_chosen_plan() {
+        assert_eq!(
+            subscription_checkout_request(Some("max")),
+            serde_json::json!({ "allow_promotion_codes": true, "plan": "max" })
+        );
+        // Blank input degrades to the accounts-API default instead of sending
+        // an empty slug the server would reject.
+        assert_eq!(
+            subscription_checkout_request(Some("  ")),
             serde_json::json!({ "allow_promotion_codes": true })
         );
     }

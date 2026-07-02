@@ -486,8 +486,30 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
-    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("pro");
+  });
+
+  it("opens Max checkout from Upgrade to Max in billing settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("max");
   });
 
   it("shows usage remaining as a percentage instead of dollars", async () => {
@@ -801,7 +823,41 @@ describe("AppSettings", () => {
 
     expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Upgrade" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade to/ })).not.toBeInTheDocument();
+  });
+
+  it("labels max subscriptions as the Max plan", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: {
+            credits: 51200,
+            usdMillis: 51200,
+            usageRemainingPercent: 64,
+          },
+          subscription: {
+            subscribed: true,
+            status: "active",
+            plan: "max",
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(screen.getByRole("heading", { name: "Max plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade to/ })).not.toBeInTheDocument();
   });
 
   it("hides billing and sign-out controls in local mode", () => {

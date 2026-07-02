@@ -52,13 +52,29 @@ describe("FundingGate", () => {
       screen.queryByRole("list", { name: "How your free trial works" }),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("pro");
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
     await screen.findByText("Waiting for your upgrade");
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     expect(onSignOut).toHaveBeenCalledOnce();
+  });
+
+  it("offers Max checkout for those who want to go beyond Pro", async () => {
+    const user = userEvent.setup();
+    renderFundingGate();
+
+    expect(screen.getByText("Want to go beyond Pro?")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("max");
+    await screen.findByText("Waiting for your upgrade");
+
+    // Reopening checkout keeps the plan the user picked.
+    await user.click(screen.getByRole("button", { name: "Reopen checkout" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenLastCalledWith("max");
   });
 
   it("opens billing management for past-due subscriptions", async () => {
@@ -119,7 +135,7 @@ describe("FundingGate", () => {
     expect(screen.getByRole("heading", { name: "Upgrade to continue" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Top up credits" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
@@ -129,7 +145,7 @@ describe("FundingGate", () => {
     const onRefresh = vi.fn(async () => baseAccount);
     render(<FundingGate account={baseAccount} onRefresh={onRefresh} onSignOut={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
     await screen.findByText("Waiting for your upgrade");
 
     await user.click(screen.getByRole("button", { name: "Check again" }));

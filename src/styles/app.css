@@ -9784,7 +9784,9 @@ input:focus-visible,
 }
 
 .billing-plan-control {
+  display: inline-flex;
   flex: none;
+  gap: var(--sp-2);
 }
 
 .billing-usage {
