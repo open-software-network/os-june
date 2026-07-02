@@ -26,13 +26,11 @@ describe("isAccessibilityBlocked", () => {
 });
 
 // JUN-185: the helper now polls AXIsProcessTrusted() and re-emits
-// permission_status on change, so a mid-session revoke/re-grant flows through
-// the same accessibility-status state the banner is gated on. Each event just
-// overwrites accessibilityStatus, so banner visibility is exactly
-// isAccessibilityBlocked over that sequence — assert the whole revoke/re-grant
-// path so a future refactor can't silently strand the banner as "on".
+// permission_status on change. The app maps each emitted status through
+// isAccessibilityBlocked, so this guards the granted/missing/granted mapping
+// used by the banner without exercising the full IPC event pipeline.
 describe("accessibility banner across proactive status changes", () => {
-  it("shows on revoke and clears on re-grant without a failed paste", () => {
+  it("maps revoke and re-grant status changes to banner visibility", () => {
     // Trusted at launch: no banner.
     expect(isAccessibilityBlocked("granted")).toBe(false);
     // Grant revoked in System Settings mid-session (helper timer/wake poll

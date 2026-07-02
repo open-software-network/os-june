@@ -126,26 +126,25 @@ final class AccessibilityTrustMonitor {
         self.timer = timer
         timer.resume()
 
-        // Wake (timers don't advance during sleep) and app activation (returning
-        // to June, or toggling the grant in System Settings and switching back)
-        // each warrant an immediate re-check so the banner isn't gated on the
-        // next timer tick.
+        // Wake (timers don't advance during sleep) and system-wide app
+        // activation each warrant an immediate re-check so permission changes
+        // are not gated on the next timer tick.
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(
             self,
-            selector: #selector(handleWorkspaceEvent),
+            selector: #selector(handleWorkspaceEvent(_:)),
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
         center.addObserver(
             self,
-            selector: #selector(handleWorkspaceEvent),
+            selector: #selector(handleWorkspaceEvent(_:)),
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
     }
 
-    @objc private func handleWorkspaceEvent() {
+    @objc private func handleWorkspaceEvent(_: Notification) {
         poll()
     }
 
