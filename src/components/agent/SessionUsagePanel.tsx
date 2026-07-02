@@ -400,7 +400,7 @@ function MeterTrack({
         // of an ease-out cubic across the lit segments, so the front is quick
         // early and settles softly into the last lit segment. Unlit segments
         // carry no delay.
-        const f = litCount <= 1 ? 1 : index / (litCount - 1);
+        const f = litCount <= 1 ? 0 : index / (litCount - 1);
         const delay = lit ? SWEEP_MS * (1 - Math.cbrt(1 - f)) : 0;
         return (
           <span

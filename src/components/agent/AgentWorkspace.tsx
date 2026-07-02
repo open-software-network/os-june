@@ -8012,7 +8012,13 @@ function ComposerModelCardContent({
     <>
       <p className="agent-composer-model-detail-name">
         <span>{model.name}</span>
-        {badge ? <ModelPrivacyChip badge={badge} withTip={false} /> : null}
+        {badge ? (
+          <ModelPrivacyChip
+            badge={badge}
+            withTip={false}
+            label={badge.label.replace(" mode", "")}
+          />
+        ) : null}
       </p>
       {values ? <p className="agent-composer-model-detail-values">{values}</p> : null}
       {withDescription && model.description ? (

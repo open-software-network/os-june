@@ -467,6 +467,10 @@ describe("SessionUsagePanel", () => {
         container.querySelectorAll('.agent-usage-meter-segment[data-lit="true"]'),
       ).toHaveLength(1),
     );
+    const [lit] = Array.from(
+      container.querySelectorAll<HTMLElement>('.agent-usage-meter-segment[data-lit="true"]'),
+    );
+    expect(lit.style.transitionDelay).toBe("0ms");
   });
 
   it("lights no segments for zero usage", async () => {

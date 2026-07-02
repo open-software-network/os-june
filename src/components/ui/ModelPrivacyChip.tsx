@@ -22,17 +22,22 @@ import { HoverTip } from "./HoverTip";
  * "label: description" aria-label) for standalone placements. Pass `withTip={false}`
  * when the chip already lives inside a hover card — a nested HoverTip would be
  * wrong there — to fall back to a plain span with a native `title` tooltip.
+ *
+ * `label` is an escape hatch for placements that already established a shorter
+ * copy convention, while still sharing the same icon and chip styling.
  */
 export function ModelPrivacyChip({
   badge,
   withTip = true,
   variant = "muted",
   size = "md",
+  label = badge.label,
 }: {
   badge: ModelPrivacyBadge;
   withTip?: boolean;
   variant?: "muted" | "themed";
   size?: "md" | "sm";
+  label?: string;
 }) {
   // Themed pills key off the safety-badge family; the muted chip stays on the
   // trait-icon recipe. Only the themed pill honors the small modifier.
@@ -60,7 +65,7 @@ export function ModelPrivacyChip({
     return (
       <span className={className} data-mode={badge.mode} title={badge.description}>
         {icon}
-        <span>{badge.label}</span>
+        <span>{label}</span>
       </span>
     );
   }
@@ -74,7 +79,7 @@ export function ModelPrivacyChip({
       aria-label={`${badge.label}: ${badge.description}`}
     >
       {icon}
-      <span>{badge.label}</span>
+      <span>{label}</span>
     </HoverTip>
   );
 }
