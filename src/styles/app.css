@@ -9873,7 +9873,7 @@ input:focus-visible,
 }
 
 .usage-remaining-progress.is-compact {
-  height: 4px;
+  height: var(--sp-1);
 }
 
 .billing-usage-period-value {

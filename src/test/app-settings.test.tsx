@@ -615,6 +615,59 @@ describe("AppSettings", () => {
     expect(screen.queryByText("Usage remaining")).not.toBeInTheDocument();
   });
 
+  it("keeps capped weekly windows visible when the daily window is uncapped", async () => {
+    // An operator can uncap daily while keeping weekly (limits are per-window
+    // kill switches). The gate still enforces the weekly cap, so the card must
+    // not hide it: legacy balance-based primary + compact rows for the capped
+    // windows.
+    const user = userEvent.setup();
+    const resetsAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: {
+            credits: 1600,
+            usdMillis: 1600,
+            usageRemainingPercent: 80,
+            usageLimits: {
+              plan: "free",
+              weekly: {
+                limitCredits: 500,
+                usedCredits: 400,
+                remainingPercent: 20,
+                resetsAt,
+              },
+            },
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    // No daily window: the balance-based bar stays primary.
+    expect(screen.getByText("Usage remaining")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "80",
+    );
+    expect(screen.queryByText("Daily usage remaining")).not.toBeInTheDocument();
+    // The capped weekly window still shows.
+    expect(screen.getByRole("progressbar", { name: "Weekly usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "20",
+    );
+    expect(screen.queryByRole("progressbar", { name: "Monthly usage remaining" })).toBeNull();
+  });
+
   it("changes the accent color through the appearance picker", () => {
     vi.useFakeTimers();
     try {
