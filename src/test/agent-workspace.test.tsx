@@ -7684,6 +7684,37 @@ describe("AgentWorkspace", () => {
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
   });
 
+  it("maps a Max-gated top-up failure to an upgrade message, not a raw error", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsUpgrade.mockRejectedValue({
+      code: "top_up_requires_max",
+      message: "Buying credits requires the Max plan.",
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "How are the subagents doing",
+        timestamp: "2026-06-10T10:00:00Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content:
+          "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}",
+        timestamp: "2026-06-10T10:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await screen.findByText(/June stopped because your balance ran out/);
+    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+
+    expect(await screen.findByText("Upgrade to Max to keep using credits.")).toBeInTheDocument();
+    expect(screen.queryByText("Buying credits requires the Max plan.")).toBeNull();
+  });
+
   it("renders an out-of-credits notice with a top-up action for subscribed users", async () => {
     const user = userEvent.setup();
     const onTopUp = vi.fn();

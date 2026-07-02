@@ -220,6 +220,7 @@ import {
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
 import {
+  errorCode,
   isHermesServerError,
   isHermesSessionsStartupRequestError,
   messageFromError,
@@ -1502,7 +1503,15 @@ export function AgentWorkspace({
   );
   const handleTopUp = useCallback(() => {
     const result = onTopUp ? onTopUp() : osAccountsUpgrade();
-    void Promise.resolve(result).catch((err: unknown) => setError(messageFromError(err)));
+    void Promise.resolve(result).catch((err: unknown) => {
+      // A top-up that the backend gates behind Max must never surface as a raw
+      // error; point the user at the upgrade path instead.
+      if (errorCode(err) === "top_up_requires_max") {
+        setError("Upgrade to Max to keep using credits.");
+        return;
+      }
+      setError(messageFromError(err));
+    });
   }, [onTopUp, setError]);
   const clearErrorForSession = useCallback((sessionId: string) => {
     setErrorState((current) => (current?.sessionId === sessionId ? null : current));
@@ -5501,7 +5510,7 @@ export function AgentWorkspace({
       // cached live runtime id can branch from the current in-memory tip and
       // persist later messages past from_message_id. If the stored id is not
       // accepted by this Hermes pin, fall back to the live runtime path.
-      let raw: unknown = undefined;
+      let raw: unknown;
       try {
         raw = await branchVia(sessionId);
       } catch (err) {

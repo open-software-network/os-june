@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogout: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  osAccountsChangePlan: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
@@ -90,6 +91,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
+  osAccountsChangePlan: mocks.osAccountsChangePlan,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
@@ -414,6 +416,7 @@ describe("AppSettings", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.osAccountsChangePlan.mockResolvedValue({ subscribed: true, plan: "max", status: "active" });
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
@@ -829,7 +832,68 @@ describe("AppSettings", () => {
 
     expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
+    // Pro subscribers can upgrade in place to Max, but never see the Free
+    // checkout CTAs.
+    expect(screen.getByRole("button", { name: "Upgrade to Max" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upgrade to Pro" })).not.toBeInTheDocument();
+  });
+
+  it("lets a Pro subscriber upgrade in place to Max", async () => {
+    const user = userEvent.setup();
+    const onAccountRefresh = vi.fn(async () => undefined);
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+          subscription: { subscribed: true, status: "active", plan: "pro" },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={onAccountRefresh}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    // In-place change is not a browser checkout.
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    // Refreshes so the card reflects the new plan and its granted credits.
+    await waitFor(() => expect(onAccountRefresh).toHaveBeenCalled());
+  });
+
+  it("shows Max subscribers only billing management, no upgrade path", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: { credits: 51200, usdMillis: 51200, usageRemainingPercent: 80 },
+          subscription: { subscribed: true, status: "active", plan: "max" },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(screen.getByRole("heading", { name: "Max plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Upgrade to/ })).not.toBeInTheDocument();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
   });
 
   it("labels max subscriptions as the Max plan", async () => {

@@ -261,6 +261,20 @@ impl From<BalanceWire> for AccountBalance {
     }
 }
 
+impl From<SubscriptionWire> for AccountSubscription {
+    fn from(w: SubscriptionWire) -> Self {
+        Self {
+            subscribed: w.subscribed,
+            status: w.status,
+            plan: w.plan,
+            plan_credits: w.plan_credits,
+            trial_end: w.trial_end,
+            current_period_end: w.current_period_end,
+            trial_period_days: w.trial_period_days,
+        }
+    }
+}
+
 pub(crate) fn cached_signed_in() -> bool {
     if local_dev_enabled() {
         return true;
@@ -621,6 +635,52 @@ fn subscription_checkout_request(plan: Option<&str>) -> serde_json::Value {
             "allow_promotion_codes": true,
         }),
     }
+}
+
+/// Change the plan on the caller's *existing* subscription in place (e.g. Pro to
+/// Max). Unlike `os_accounts_upgrade`, which starts a fresh Stripe checkout, this
+/// PATCHes the live subscription so OS Accounts prorates the charge and grants
+/// the new plan's credits immediately, then returns the updated subscription
+/// status DTO. June's only in-app use today is the Pro -> Max path a depleted
+/// Pro user takes when their monthly credits run out.
+#[tauri::command]
+pub async fn os_accounts_change_plan(plan: String) -> Result<AccountSubscription, AppError> {
+    if local_dev_enabled() {
+        // No live billing in local mode; hand back the canned subscription so
+        // callers can refresh their UI without a network round-trip.
+        return Ok(local_dev_account_status()
+            .subscription
+            .expect("local dev status always carries a subscription"));
+    }
+    let cfg = Config::load();
+    if !cfg.configured() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    let Some(plan) = normalized_plan(&plan) else {
+        return Err(AppError::new(
+            "unknown_plan",
+            "A plan is required to change your subscription.",
+        ));
+    };
+    let subscription: SubscriptionWire =
+        authed_patch(&cfg, "/billing/subscription", change_plan_request(plan)).await?;
+    Ok(subscription.into())
+}
+
+/// PATCH body for an in-place plan change. The endpoint keys off `plan` alone;
+/// proration and immediate credit grant are decided server-side.
+fn change_plan_request(plan: &str) -> serde_json::Value {
+    serde_json::json!({ "plan": plan })
+}
+
+/// Trim a plan slug, treating a blank string as "no plan" so June never sends an
+/// empty slug the accounts API would reject with `unknown_plan`.
+fn normalized_plan(plan: &str) -> Option<&str> {
+    let plan = plan.trim();
+    (!plan.is_empty()).then_some(plan)
 }
 
 /// Opens the accounts portal in the default browser. The webview swallows
@@ -1312,6 +1372,45 @@ async fn authed_post<T: for<'de> Deserialize<'de>>(
     Err(AppError::new("unauthorized", "Not signed in."))
 }
 
+async fn authed_patch<T: for<'de> Deserialize<'de>>(
+    cfg: &Config,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<T, AppError> {
+    let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), path);
+    let mut access = access_token().await?;
+    for attempt in 0..2 {
+        let response = http_client()
+            .patch(&url)
+            .bearer_auth(&access)
+            .json(&body)
+            .send()
+            .await
+            .map_err(net_error)?;
+        let status = response.status();
+        let body = response.text().await.map_err(net_error)?;
+        if body.trim().is_empty() {
+            return Err(empty_accounts_response(path, status));
+        }
+        let resp: Envelope<T> = serde_json::from_str(&body)
+            .map_err(|error| decode_accounts_response_error(path, error))?;
+        if resp.success {
+            return resp
+                .data
+                .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."));
+        }
+        if resp.error_code == Some(ERR_TOKEN_EXPIRED) && attempt == 0 {
+            access = refresh_locked_with_retry(cfg).await?;
+            continue;
+        }
+        return Err(AppError::new(
+            "request_failed",
+            accounts_request_failed_message(resp.message),
+        ));
+    }
+    Err(AppError::new("unauthorized", "Not signed in."))
+}
+
 fn accounts_request_failed_message(message: Option<String>) -> String {
     match message.as_deref() {
         Some("access token is missing required scope") => {
@@ -1358,15 +1457,7 @@ async fn fetch_snapshot(
     let subscription = authed_get::<SubscriptionWire>(cfg, "/billing/subscription")
         .await
         .ok()
-        .map(|w| AccountSubscription {
-            subscribed: w.subscribed,
-            status: w.status,
-            plan: w.plan,
-            plan_credits: w.plan_credits,
-            trial_end: w.trial_end,
-            current_period_end: w.current_period_end,
-            trial_period_days: w.trial_period_days,
-        });
+        .map(AccountSubscription::from);
     Ok((me.into(), balance.into(), subscription))
 }
 
@@ -1708,6 +1799,46 @@ mod tests {
         assert_eq!(
             subscription_checkout_request(Some("  ")),
             serde_json::json!({ "allow_promotion_codes": true })
+        );
+    }
+
+    #[test]
+    fn change_plan_request_carries_only_the_plan() {
+        assert_eq!(
+            change_plan_request("max"),
+            serde_json::json!({ "plan": "max" })
+        );
+    }
+
+    #[test]
+    fn normalized_plan_trims_and_rejects_blanks() {
+        assert_eq!(normalized_plan("  max  "), Some("max"));
+        assert_eq!(normalized_plan("pro"), Some("pro"));
+        assert_eq!(normalized_plan("   "), None);
+        assert_eq!(normalized_plan(""), None);
+    }
+
+    #[test]
+    fn subscription_wire_maps_into_account_subscription() {
+        let wire = SubscriptionWire {
+            subscribed: true,
+            status: Some("active".to_string()),
+            plan: Some("max".to_string()),
+            plan_credits: Some(10_000),
+            trial_end: None,
+            current_period_end: Some("2026-08-01T00:00:00Z".to_string()),
+            trial_period_days: None,
+        };
+
+        let subscription = AccountSubscription::from(wire);
+
+        assert!(subscription.subscribed);
+        assert_eq!(subscription.status.as_deref(), Some("active"));
+        assert_eq!(subscription.plan.as_deref(), Some("max"));
+        assert_eq!(subscription.plan_credits, Some(10_000));
+        assert_eq!(
+            subscription.current_period_end.as_deref(),
+            Some("2026-08-01T00:00:00Z")
         );
     }
 

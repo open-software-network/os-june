@@ -8,6 +8,7 @@ import {
 } from "../../lib/billing-demo";
 import {
   osAccountsCancelLogin,
+  osAccountsChangePlan,
   osAccountsLogin,
   osAccountsLogout,
   osAccountsOpenPortal,
@@ -174,6 +175,19 @@ export function BillingSettingsSection({
     }
   }
 
+  // In-place upgrade for a paid subscriber (Pro -> Max). Unlike checkout, this
+  // changes the live subscription, so refresh to reflect the new plan and its
+  // freshly granted credits.
+  async function handleChangePlan(plan: SubscriptionPlan) {
+    try {
+      await osAccountsChangePlan(plan);
+      setBillingStatus("You are now on Max. Your new credits are ready.");
+      await onRefresh();
+    } catch (error) {
+      setBillingStatus(messageFromError(error));
+    }
+  }
+
   async function handleManageSubscription() {
     try {
       await osAccountsOpenPortal();
@@ -210,6 +224,7 @@ export function BillingSettingsSection({
     spins,
     onRefresh: () => void handleRefresh(),
     onUpgrade: (plan: SubscriptionPlan) => void handleUpgrade(plan),
+    onChangePlan: (plan: SubscriptionPlan) => void handleChangePlan(plan),
     onManage: () => void handleManageSubscription(),
   };
 
@@ -244,6 +259,7 @@ type BillingCardProps = {
   spins: number;
   onRefresh: () => void;
   onUpgrade: (plan: SubscriptionPlan) => void;
+  onChangePlan: (plan: SubscriptionPlan) => void;
   onManage: () => void;
 };
 
@@ -253,6 +269,7 @@ function BillingCard({
   spins,
   onRefresh,
   onUpgrade,
+  onChangePlan,
   onManage,
 }: BillingCardProps) {
   const subscription = account.subscription;
@@ -284,7 +301,18 @@ function BillingCard({
         ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Free trial")
         : (describeEnd("Renews", subscription?.currentPeriodEnd) ?? "Active");
   const ctas: { label: string; onClick: () => void; title?: string }[] = onPaidPlan
-    ? [{ label: "Manage billing", onClick: onManage }]
+    ? onMaxPlan
+      ? [{ label: "Manage billing", onClick: onManage }]
+      : // Pro subscribers keep billing management and gain an in-place upgrade
+        // to Max (only Max may buy credits); this is their path beyond Pro.
+        [
+          { label: "Manage billing", onClick: onManage },
+          {
+            label: "Upgrade to Max",
+            onClick: () => onChangePlan("max"),
+            title: "For those who want to go beyond Pro",
+          },
+        ]
     : canUpgrade
       ? [
           { label: "Upgrade to Pro", onClick: () => onUpgrade("pro") },

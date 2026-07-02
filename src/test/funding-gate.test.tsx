@@ -5,11 +5,13 @@ import { FundingGate } from "../components/account/FundingGate";
 import type { AccountStatus } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
+  osAccountsChangePlan: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   osAccountsUpgrade: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
+  osAccountsChangePlan: mocks.osAccountsChangePlan,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
 }));
@@ -31,6 +33,7 @@ function renderFundingGate(account: AccountStatus = baseAccount) {
 describe("FundingGate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.osAccountsChangePlan.mockResolvedValue({ subscribed: true, plan: "max" });
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
   });
@@ -106,12 +109,12 @@ describe("FundingGate", () => {
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
-  it("opens the account portal for subscribed users below zero credits", async () => {
+  it("opens the account portal for Max subscribers below zero credits", async () => {
     const user = userEvent.setup();
     renderFundingGate({
       ...baseAccount,
       balance: { credits: -1, usdMillis: -1 },
-      subscription: { subscribed: true, status: "active" },
+      subscription: { subscribed: true, status: "active", plan: "max" },
     });
 
     expect(screen.getByRole("heading", { name: "Top up credits" })).toBeInTheDocument();
@@ -122,6 +125,41 @@ describe("FundingGate", () => {
     await user.click(screen.getByRole("button", { name: "Top up credits" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+  });
+
+  it("offers a depleted Pro subscriber exactly one path: upgrade to Max in place", async () => {
+    const user = userEvent.setup();
+    const onRefresh = vi.fn(async () => baseAccount);
+    render(
+      <FundingGate
+        account={{
+          ...baseAccount,
+          balance: { credits: -1, usdMillis: -1 },
+          subscription: { subscribed: true, status: "active", plan: "pro" },
+        }}
+        onRefresh={onRefresh}
+        onSignOut={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Upgrade to Max" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "You have used your Pro credits for this cycle. Upgrade to Max for 5x the monthly usage.",
+      ),
+    ).toBeInTheDocument();
+    // No top-up affordance anywhere for Pro.
+    expect(screen.queryByRole("button", { name: "Top up credits" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Want to go beyond Pro?")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    // In-place upgrade grants credits immediately, so it refreshes rather than
+    // opening a browser or hitting checkout.
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(onRefresh).toHaveBeenCalled();
   });
 
   it("does not show top-up copy for subscribed users with positive credits", async () => {

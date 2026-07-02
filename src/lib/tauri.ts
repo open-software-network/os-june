@@ -1533,6 +1533,15 @@ export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
   return invoke<void>("os_accounts_upgrade", { plan });
 }
 
+/** Changes the plan on the caller's existing subscription in place (Pro to
+ * Max). OS Accounts prorates the charge and grants the new plan's credits
+ * immediately, so there is no browser round-trip; the resolved subscription
+ * reflects the new plan. Callers should refresh account status afterwards to
+ * pick up the freshly granted balance. */
+export async function osAccountsChangePlan(plan: SubscriptionPlan) {
+  return invoke<AccountSubscription>("os_accounts_change_plan", { plan });
+}
+
 /** Opens the accounts portal in the default browser — the webview swallows
  * target="_blank" anchors, so portal navigation must go through Rust. */
 export async function osAccountsOpenPortal() {

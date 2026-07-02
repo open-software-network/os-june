@@ -262,6 +262,7 @@ pub fn run() {
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
             os_accounts::os_accounts_upgrade,
+            os_accounts::os_accounts_change_plan,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
             updates::get_release_channel,

@@ -63,8 +63,6 @@ import {
   listSessionFolders,
   openPrivacySettings,
   osAccountsLogout,
-  osAccountsOpenPortal,
-  osAccountsUpgrade,
   pauseRecording,
   removeNoteFromFolder,
   removeSessionFromFolder,
@@ -142,10 +140,10 @@ import {
 } from "../lib/onboarding";
 import {
   depletedBalanceActionLabel,
-  shouldOpenPortalForDepletedBalance,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
+import { runDepletedBalanceAction } from "../lib/billing-actions";
 import { checkJuneUpdate, reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
 import { PROCESSING_DEMO_NOTE_ID, shouldPollProcessingStatus } from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
@@ -504,11 +502,16 @@ export function App() {
   const fundingRequired =
     !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
-  const topUpOpensPortal = shouldOpenPortalForDepletedBalance(account);
   const handleTopUp = useCallback(() => {
-    const action = topUpOpensPortal ? osAccountsOpenPortal : osAccountsUpgrade;
-    void action().catch((err: unknown) => setError(messageFromError(err)));
-  }, [topUpOpensPortal]);
+    // Tier-aware: Max tops up, Pro upgrades in place to Max, Free subscribes.
+    // An in-place plan change grants credits immediately with no browser round
+    // trip, so refresh the snapshot to lift the funding gate and update usage.
+    runDepletedBalanceAction(account)
+      .then((outcome) => {
+        if (outcome === "changed_plan") void refreshAccount();
+      })
+      .catch((err: unknown) => setError(messageFromError(err)));
+  }, [account, refreshAccount]);
   const [onboardingDone, setOnboardingDone] = useState(() => {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();

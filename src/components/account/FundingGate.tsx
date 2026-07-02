@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { hasLiveSubscription } from "../../lib/account-gate";
-import { osAccountsOpenPortal, osAccountsUpgrade } from "../../lib/tauri";
+import { hasLiveSubscription, isOnMaxPlan } from "../../lib/account-gate";
+import { osAccountsChangePlan, osAccountsOpenPortal, osAccountsUpgrade } from "../../lib/tauri";
 import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
 import { JuneMark } from "./AccountGate";
@@ -16,6 +16,7 @@ const POLL_INTERVAL_MS = 10_000;
 export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const [openedPortal, setOpenedPortal] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
   const [portalError, setPortalError] = useState<string>();
   // Remembered so "Reopen checkout" lands on the same plan the user picked.
   const [chosenPlan, setChosenPlan] = useState<SubscriptionPlan>("pro");
@@ -27,6 +28,11 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const billingRecovery =
     subscribed && typeof status === "string" && status.length > 0 && !hasLiveSubscription(account);
   const topUpRequired = subscribed && !billingRecovery && negativeBalance;
+  // Only Max may buy credits. A depleted Pro subscriber's one path is an
+  // in-place upgrade to Max (credits granted immediately, no browser round
+  // trip); a depleted Max subscriber tops up through the portal as before.
+  const proUpgradeRequired = topUpRequired && !isOnMaxPlan(account);
+  const maxTopUpRequired = topUpRequired && isOnMaxPlan(account);
 
   const copy = billingRecovery
     ? {
@@ -36,21 +42,34 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
         waiting: "Waiting for your billing update",
         reopen: "Reopen billing",
       }
-    : topUpRequired
+    : proUpgradeRequired
       ? {
-          title: "Top up credits",
-          subtitle: "Your credit balance is below zero. Top up credits to keep using June.",
-          cta: "Top up credits",
-          waiting: "Waiting for your top-up",
-          reopen: "Reopen account portal",
-        }
-      : {
-          title: "Upgrade to continue",
-          subtitle: "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
-          cta: "Upgrade to Pro",
+          title: "Upgrade to Max",
+          subtitle:
+            "You have used your Pro credits for this cycle. Upgrade to Max for 5x the monthly usage.",
+          cta: "Upgrade to Max",
           waiting: "Waiting for your upgrade",
-          reopen: "Reopen checkout",
-        };
+          reopen: "Try again",
+        }
+      : maxTopUpRequired
+        ? {
+            title: "Top up credits",
+            subtitle: "Your credit balance is below zero. Top up credits to keep using June.",
+            cta: "Top up credits",
+            waiting: "Waiting for your top-up",
+            reopen: "Reopen account portal",
+          }
+        : {
+            title: "Upgrade to continue",
+            subtitle:
+              "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
+            cta: "Upgrade to Pro",
+            waiting: "Waiting for your upgrade",
+            reopen: "Reopen checkout",
+          };
+  // The Max upsell link only belongs on the Free/subscribe path; a depleted Pro
+  // user already has exactly one path (upgrade to Max), and depleted Max users
+  // top up. Neither shows a second affordance.
   const offerMaxPlan = !billingRecovery && !topUpRequired;
 
   useEffect(() => {
@@ -63,7 +82,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   async function handleOpenPortal(plan: SubscriptionPlan = chosenPlan) {
     setPortalError(undefined);
     try {
-      if (billingRecovery || topUpRequired) {
+      if (billingRecovery || maxTopUpRequired) {
         await osAccountsOpenPortal();
       } else {
         setChosenPlan(plan);
@@ -72,6 +91,21 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
       setOpenedPortal(true);
     } catch (error) {
       setPortalError(messageFromError(error));
+    }
+  }
+
+  // In-place Pro -> Max upgrade: OS Accounts prorates and grants Max credits
+  // immediately, so there is no browser to wait on. Refresh to lift the gate.
+  async function handleUpgradeToMax() {
+    setPortalError(undefined);
+    setUpgrading(true);
+    try {
+      await osAccountsChangePlan("max");
+      await onRefresh();
+    } catch (error) {
+      setPortalError(messageFromError(error));
+    } finally {
+      setUpgrading(false);
     }
   }
 
@@ -94,7 +128,16 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
         <p className="welcome-subtitle">{copy.subtitle}</p>
 
         <div className="welcome-providers">
-          {openedPortal ? (
+          {proUpgradeRequired ? (
+            <button
+              type="button"
+              className="primary-action"
+              disabled={upgrading}
+              onClick={() => void handleUpgradeToMax()}
+            >
+              {upgrading ? "Upgrading..." : copy.cta}
+            </button>
+          ) : openedPortal ? (
             <>
               <div className="welcome-auth-progress" role="status" aria-live="polite">
                 <span className="welcome-progress-label">
