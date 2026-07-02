@@ -7,6 +7,7 @@ import { modelPrivacyBadge, modelPrivacyFlags, modelSupportsTools } from "../../
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
+import { HoverTip } from "../ui/HoverTip";
 import { ModelPrivacyChip } from "../ui/ModelPrivacyChip";
 import { ProviderLogo } from "./ProviderLogo";
 
