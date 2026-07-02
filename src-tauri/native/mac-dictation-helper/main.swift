@@ -1839,6 +1839,24 @@ enum PasteboardInserter {
             return
         }
 
+        // The synthetic Cmd+V below is a CGEvent keystroke, which macOS
+        // silently drops unless this helper holds Accessibility trust. That
+        // trust is commonly invalidated when an app update changes the
+        // helper's signature. Without this gate we'd post the keystroke into
+        // the void, emit paste_completed anyway, then restore the clipboard —
+        // so the transcript would vanish and the paste would look successful
+        // while nothing landed. When untrusted, leave the transcript on the
+        // clipboard for a manual paste, tell the user, and refresh the
+        // permission state so the in-app Accessibility banner appears.
+        guard AXIsProcessTrusted() else {
+            emit("permission_status", permissionPayload())
+            emit("error", [
+                "code": "accessibility_permission_missing",
+                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            ])
+            return
+        }
+
         let targetActivated = FocusTargetController.shared.activateLastExternalApp()
         emit("paste_target", [
             "app": FocusTargetController.shared.targetDescription(),

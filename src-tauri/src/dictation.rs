@@ -4111,6 +4111,24 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_permission_missing_error_is_visible() {
+        // The dictation helper emits this when Accessibility trust is missing,
+        // so the synthetic Cmd+V paste can't fire. The transcript is left on
+        // the clipboard and the user must be told: it must render as a real
+        // HUD error, never be swallowed as a "nothing recorded" silent case.
+        let mut event = serde_json::json!({
+            "type": "error",
+            "payload": {
+                "code": "accessibility_permission_missing",
+                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            }
+        });
+        assert!(!is_silent_transcription_error(&event));
+        annotate_silent_error(&mut event);
+        assert_eq!(event["payload"]["silent"], false);
+    }
+
+    #[test]
     fn dictation_event_log_redacts_transcript_text() {
         let event = serde_json::json!({
             "type": "final_transcript",
