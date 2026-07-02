@@ -2032,3 +2032,279 @@ mod tests {
             .contains("Standing content policy"));
     }
 }
+
+/// Live tests against a real OpenAI-compatible local endpoint (e.g. Ollama).
+///
+/// Every test is `#[ignore]`d so CI and the normal `cargo test` run never
+/// need a model server. To run them, start the endpoint and pull a model:
+///
+/// ```sh
+/// ollama serve &
+/// ollama pull llama3.1:8b
+/// cargo test --locked -- --ignored live_local
+/// ```
+///
+/// Configuration comes from the environment:
+/// - `JUNE_QA_LOCAL_BASE_URL`: OpenAI-compatible base URL
+///   (default `http://127.0.0.1:11434/v1`)
+/// - `JUNE_QA_LOCAL_MODEL`: model id the endpoint serves
+///   (default `llama3.1:8b`)
+///
+/// Each test skips (passes with a stderr note) when the endpoint is
+/// unreachable, so an accidental `--include-ignored` run does not fail.
+///
+/// The generation tests install settings into the process-wide provider
+/// store that `crate::providers::current_settings()` reads, which is shared
+/// global state. They serialize themselves through a module-local mutex, so
+/// the default parallel test runner is safe for `-- --ignored live_local`;
+/// mixing them with other settings-mutating tests in one run
+/// (`--include-ignored`) requires `--test-threads=1`.
+#[cfg(test)]
+mod live_local_tests {
+    use super::*;
+    use crate::providers::{
+        probe_local_generation_endpoint, LocalGenerationSettings,
+        ProbeLocalGenerationEndpointRequest, PROVIDER_LOCAL,
+    };
+    use std::sync::{Mutex, MutexGuard};
+
+    const DEFAULT_LIVE_BASE_URL: &str = "http://127.0.0.1:11434/v1";
+    const DEFAULT_LIVE_MODEL: &str = "llama3.1:8b";
+
+    fn live_base_url() -> String {
+        std::env::var("JUNE_QA_LOCAL_BASE_URL")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_LIVE_BASE_URL.to_string())
+    }
+
+    fn live_model() -> String {
+        std::env::var("JUNE_QA_LOCAL_MODEL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_LIVE_MODEL.to_string())
+    }
+
+    /// True when the live endpoint answers `GET {base}/models`. Used to skip
+    /// gracefully instead of failing when no server is running.
+    async fn live_server_reachable(base_url: &str) -> bool {
+        let Ok(client) = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+        else {
+            return false;
+        };
+        match client.get(format!("{base_url}/models")).send().await {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        }
+    }
+
+    fn skip_message(base_url: &str) -> String {
+        format!(
+            "SKIPPED: no OpenAI-compatible server reachable at {base_url}. \
+             Start one (e.g. `ollama serve`) or set JUNE_QA_LOCAL_BASE_URL."
+        )
+    }
+
+    /// Serializes the tests that mutate the process-wide provider settings
+    /// and restores the defaults afterwards, even on panic.
+    struct LiveSettingsGuard(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl Drop for LiveSettingsGuard {
+        fn drop(&mut self) {
+            crate::providers::replace_current_settings_for_tests(
+                crate::providers::default_settings_for_tests(),
+            );
+        }
+    }
+
+    fn install_live_local_provider(base_url: &str, model_id: &str) -> LiveSettingsGuard {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = crate::providers::default_settings_for_tests();
+        settings.generation_provider = PROVIDER_LOCAL.to_string();
+        settings.generation_model = model_id.to_string();
+        settings.local_generation = LocalGenerationSettings {
+            base_url: base_url.to_string(),
+            model_id: model_id.to_string(),
+            api_key: String::new(),
+        };
+        crate::providers::replace_current_settings_for_tests(settings);
+        LiveSettingsGuard(guard)
+    }
+
+    /// Exercises the real probe path (`probe_local_generation_endpoint`:
+    /// reqwest GET `{base}/models` + `parse_local_models_response`) against
+    /// the live server and expects the configured model in the list.
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible server"]
+    async fn live_local_probe_lists_pulled_models() {
+        let base_url = live_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+
+        let probe = probe_local_generation_endpoint(ProbeLocalGenerationEndpointRequest {
+            base_url: base_url.clone(),
+            api_key: String::new(),
+        })
+        .await
+        .expect("probe against the live endpoint should succeed");
+
+        let model = live_model();
+        assert!(
+            !probe.models.is_empty(),
+            "live endpoint advertised no models"
+        );
+        assert!(
+            probe.models.iter().any(|id| id == &model),
+            "expected model {model:?} in the live endpoint's model list {:?}; \
+             pull it first (e.g. `ollama pull {model}`)",
+            probe.models
+        );
+    }
+
+    /// Drives `generate_note_from_transcript` end to end on the local path
+    /// with a source-labeled transcript: real prompt assembly, real
+    /// completion parsing, and the source-label cleanup pass.
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible server"]
+    async fn live_local_note_generation_returns_clean_markdown() {
+        let base_url = live_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_model();
+        let _guard = install_live_local_provider(&base_url, &model);
+
+        let transcript = "\
+Microphone: Alright, let's kick off the weekly sync. First up is the release timeline.
+System: Thanks. The desktop build is ready, but the updater feed still points at staging.
+Microphone: Okay, so the action item is to repoint the updater feed before Thursday.
+System: Agreed. I also want to flag that onboarding drop-off improved after the copy change.
+Microphone: Great. Let's ship the feed fix this week, then review the onboarding metrics next Monday.";
+
+        let result = generate_note_from_transcript(GenerationRequest {
+            provider: PROVIDER_LOCAL.to_string(),
+            operation_id: Some("live-local-test".to_string()),
+            title: "Weekly sync".to_string(),
+            existing_generated_note: None,
+            transcript: transcript.to_string(),
+            transcript_source_labels: true,
+            manual_notes: None,
+            language: Some("en".to_string()),
+        })
+        .await
+        .expect("live local note generation should succeed");
+
+        assert_eq!(result.provider, PROVIDER_LOCAL);
+        assert!(
+            !result.content.trim().is_empty(),
+            "generated note should not be empty"
+        );
+        // Visible with --nocapture: lets a live QA run eyeball the note the
+        // model actually produced.
+        eprintln!("live note generation ({model}):\n{}\n", result.content);
+        // The audio source labels are transcript metadata; neither the model
+        // (instructed via <transcript_source_metadata>) nor the cleanup pass
+        // may let them through to the note.
+        for line in result.content.lines() {
+            let (_, text) = markdown_line_marker(line.trim_start());
+            assert!(
+                strip_source_label_prefix(text.trim_start()).is_none(),
+                "transcript source label leaked into the generated note line {line:?};\nfull note:\n{}",
+                result.content
+            );
+        }
+    }
+
+    /// Drives `proxy_agent_chat_completions` on the local path: buffered
+    /// JSON first, then `stream: true` asserting SSE framing terminated by
+    /// `data: [DONE]` (the shape Hermes consumes through the proxy).
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible server"]
+    async fn live_local_agent_proxy_completes_buffered_and_streaming() {
+        let base_url = live_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_model();
+        let _guard = install_live_local_provider(&base_url, &model);
+
+        // Buffered request, exactly what the session-title path sends.
+        let response = proxy_agent_chat_completions(serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "Reply with the single word: pong" }
+            ],
+            "stream": false,
+            "max_tokens": 512,
+        }))
+        .await
+        .expect("live local agent proxy call should succeed");
+        assert_eq!(response.status, 200);
+        assert!(
+            response.content_type.contains("json"),
+            "expected a JSON content type, got {:?}",
+            response.content_type
+        );
+        let body = response
+            .collect_body()
+            .await
+            .expect("proxy body should be readable");
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).expect("proxy body should be an OpenAI completion");
+        let content = extract_chat_completion_text(&value)
+            .expect("completion should carry non-empty assistant content");
+        assert!(!content.trim().is_empty());
+
+        // Streaming request, the shape Hermes actually uses.
+        let mut response = proxy_agent_chat_completions(serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "Reply with the single word: pong" }
+            ],
+            "stream": true,
+            "max_tokens": 512,
+        }))
+        .await
+        .expect("live local streaming proxy call should succeed");
+        assert_eq!(response.status, 200);
+        assert!(
+            response.content_type.starts_with("text/event-stream"),
+            "expected an SSE content type for stream: true, got {:?}",
+            response.content_type
+        );
+        let mut raw = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .expect("SSE chunk should be readable")
+        {
+            raw.extend_from_slice(&chunk);
+        }
+        let stream = String::from_utf8_lossy(&raw);
+        assert!(
+            stream.contains("data: [DONE]"),
+            "SSE stream should terminate with data: [DONE]; got tail {:?}",
+            &stream[stream.len().saturating_sub(200)..]
+        );
+        let has_parseable_delta = stream
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter(|data| *data != "[DONE]")
+            .any(|data| {
+                serde_json::from_str::<serde_json::Value>(data)
+                    .is_ok_and(|event| event.get("choices").is_some())
+            });
+        assert!(
+            has_parseable_delta,
+            "SSE stream should contain at least one parseable chat.completion.chunk"
+        );
+    }
+}

@@ -637,6 +637,22 @@ fn replace_current_settings(settings: ProviderModelSettings) {
     }
 }
 
+/// Test-only hook: installs settings into the process-wide store that
+/// `current_settings()` reads, so live integration tests (see
+/// `june_api::live_local_tests`) can activate the local provider without a
+/// running Tauri app.
+#[cfg(test)]
+pub(crate) fn replace_current_settings_for_tests(settings: ProviderModelSettings) {
+    replace_current_settings(settings);
+}
+
+/// Test-only companion to [`replace_current_settings_for_tests`]: the default
+/// (remote) settings, for restoring the store after a live test.
+#[cfg(test)]
+pub(crate) fn default_settings_for_tests() -> ProviderModelSettings {
+    default_settings()
+}
+
 fn default_settings() -> ProviderModelSettings {
     ProviderModelSettings {
         transcription_provider: PROVIDER_VENICE.to_string(),
