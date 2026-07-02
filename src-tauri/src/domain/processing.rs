@@ -982,11 +982,7 @@ fn is_retryable_transcription_error(error: &AppError) -> bool {
             && (message == "authorization_denied"
                 || message == "timeout"
                 || message.contains("connection")
-                || message.contains("error sending request")
-                // June API surfaces transient upstream ASR gateway failures
-                // (502) through this envelope before any charge can settle, so
-                // the bounded retry can safely replay the note-transcribe call.
-                || message.contains("upstream_provider_failed")))
+                || message.contains("error sending request")))
 }
 
 fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
@@ -2138,16 +2134,15 @@ mod tests {
 
     #[tokio::test]
     async fn transient_invalid_turn_response_retries_before_failing() {
-        // Every transient class June API can surface before ASR charges settle
+        // Every transient class June API can surface without a provider result
         // must recover on retry rather than fail the whole note: an
-        // invalid/empty envelope and a Venice ASR gateway failure
-        // (`upstream_provider_failed`, 502). See JUN-177 for the latter.
+        // invalid/empty envelope and explicit transient request failures.
         let transient_errors = [
             AppError::new(
                 "june_api_response_invalid",
                 "The processing service returned an invalid response.",
             ),
-            AppError::new("june_request_failed", "upstream_provider_failed"),
+            AppError::new("june_request_failed", "authorization_denied"),
         ];
 
         for transient_error in transient_errors {
@@ -2190,7 +2185,7 @@ mod tests {
     #[tokio::test]
     async fn exhausted_invalid_tail_turn_stays_visible_as_failure() {
         // When a turn fails after the allowed attempt budget, or fails with a
-        // non-retryable post-ASR metering error, it stays a visible per-turn
+        // non-retryable provider/metering error, it stays a visible per-turn
         // failure without dropping earlier successful turns. The surfaced
         // warning is user-facing copy, never the raw provider code.
         let cases = [
@@ -2205,7 +2200,7 @@ mod tests {
             (
                 AppError::new("june_request_failed", "upstream_provider_failed"),
                 "The transcription provider could not process this audio.",
-                TRANSIENT_TRANSCRIPTION_ATTEMPTS,
+                1,
             ),
             (
                 AppError::new("june_request_failed", "metering_provider_failed"),
@@ -2286,10 +2281,10 @@ mod tests {
             "june_request_failed",
             "operation timed out"
         )));
-        // JUN-177: a transient Venice ASR gateway failure (502) arrives as a
-        // `june_request_failed` envelope before any charge can settle, so it
-        // must retry instead of failing the whole note.
-        assert!(is_retryable_transcription_error(&AppError::new(
+        // `upstream_provider_failed` is not precise enough for desktop retry:
+        // June API uses the same envelope for transient 5xxs and deterministic
+        // provider 4xxs after taking a Hold.
+        assert!(!is_retryable_transcription_error(&AppError::new(
             "june_request_failed",
             "upstream_provider_failed"
         )));
