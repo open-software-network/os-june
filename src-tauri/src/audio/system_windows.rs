@@ -536,34 +536,186 @@ fn system_stream_error_message(error: &cpal::StreamError) -> String {
     }
 }
 
-pub fn system_audio_readiness() -> SourceReadinessDto {
+/// Sample formats `build_loopback_stream` has a conversion arm for. Keep in
+/// sync with its `match`: a format missing here fails stream build with the
+/// unsupported-format error, so readiness must not promise it.
+fn is_supported_loopback_sample_format(format: cpal::SampleFormat) -> bool {
+    matches!(
+        format,
+        cpal::SampleFormat::F32
+            | cpal::SampleFormat::I16
+            | cpal::SampleFormat::U16
+            | cpal::SampleFormat::I32
+            | cpal::SampleFormat::F64
+    )
+}
+
+/// Outcome of the cheap capture-prerequisite probe behind
+/// `system_audio_readiness`.
+enum LoopbackSupport {
+    Ready,
+    NoDevice,
+    /// The render device exists but reported no usable mix config (e.g. a
+    /// stale endpoint). Carries the cpal error text for the readiness message.
+    ConfigUnavailable(String),
+    /// The mix config uses a sample format `build_loopback_stream` cannot
+    /// convert. Carries the format's debug name for the readiness message.
+    UnsupportedFormat(String),
+}
+
+/// Validate the same prerequisites `SystemAudioCapture::start` needs, short of
+/// opening a stream: a default render device, a readable mix config, and a
+/// sample format the loopback arms can convert.
+///
+/// Deliberately does NOT open a loopback stream. Readiness runs repeatedly
+/// (mount, focus refreshes, the enable-toggle poll), and opening a WASAPI
+/// stream on every probe is heavy and can perturb the endpoint. The residual
+/// window where `start` can still fail (e.g. an exclusive-mode client grabs
+/// the endpoint between probe and record) is handled by the existing
+/// start_recording error path.
+fn probe_loopback_support() -> LoopbackSupport {
     let host = cpal::default_host();
-    let device_available = host.default_output_device().is_some();
-    SourceReadinessDto {
-        source: RecordingSource::System,
-        required: true,
-        ready: device_available,
-        // WASAPI loopback needs no OS permission, so the permission gate is
-        // always "granted"; the only thing that can block capture is the
-        // absence of an output device to loop back from.
-        permission_state: "granted".to_string(),
-        device_available,
-        capture_available: device_available,
-        // No recovery_action: there is no system-audio privacy pane to send the
-        // user to on Windows, so the frontend simply does not offer one.
-        recovery_action: None,
-        message: if device_available {
-            None
-        } else {
+    let Some(device) = host.default_output_device() else {
+        return LoopbackSupport::NoDevice;
+    };
+    match device.default_output_config() {
+        Err(error) => LoopbackSupport::ConfigUnavailable(error.to_string()),
+        Ok(config) if !is_supported_loopback_sample_format(config.sample_format()) => {
+            LoopbackSupport::UnsupportedFormat(format!("{:?}", config.sample_format()))
+        }
+        Ok(_) => LoopbackSupport::Ready,
+    }
+}
+
+/// Map a probe outcome onto the readiness DTO. Factored out of
+/// `system_audio_readiness` so the decision logic is unit-testable without a
+/// real audio endpoint.
+fn readiness_from_loopback_support(support: LoopbackSupport) -> SourceReadinessDto {
+    let (device_available, capture_available, message) = match support {
+        LoopbackSupport::Ready => (true, true, None),
+        LoopbackSupport::NoDevice => (
+            false,
+            false,
             Some(
                 "No audio output device is available. Connect speakers or headphones to capture system audio."
                     .to_string(),
-            )
-        },
+            ),
+        ),
+        LoopbackSupport::ConfigUnavailable(detail) => (
+            true,
+            false,
+            Some(format!(
+                "The audio output device did not report a usable format for system audio capture ({detail})."
+            )),
+        ),
+        LoopbackSupport::UnsupportedFormat(format) => (
+            true,
+            false,
+            Some(format!(
+                "The audio output device uses a sample format that system audio capture does not support ({format})."
+            )),
+        ),
+    };
+    SourceReadinessDto {
+        source: RecordingSource::System,
+        required: true,
+        ready: capture_available,
+        // WASAPI loopback needs no OS permission, so the permission gate is
+        // always "granted"; what can block capture is the absence of a render
+        // device to loop back from, or a device whose mix config the loopback
+        // stream cannot consume.
+        permission_state: "granted".to_string(),
+        device_available,
+        capture_available,
+        // No recovery_action: there is no system-audio privacy pane to send the
+        // user to on Windows, so the frontend simply does not offer one.
+        recovery_action: None,
+        message,
     }
+}
+
+pub fn system_audio_readiness() -> SourceReadinessDto {
+    readiness_from_loopback_support(probe_loopback_support())
 }
 
 pub fn helper_permission_check() -> Result<(), AppError> {
     // Loopback capture requires no permission grant on Windows.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_formats_match_the_loopback_stream_arms() {
+        for format in [
+            cpal::SampleFormat::F32,
+            cpal::SampleFormat::I16,
+            cpal::SampleFormat::U16,
+            cpal::SampleFormat::I32,
+            cpal::SampleFormat::F64,
+        ] {
+            assert!(
+                is_supported_loopback_sample_format(format),
+                "{format:?} should be supported"
+            );
+        }
+        for format in [
+            cpal::SampleFormat::I8,
+            cpal::SampleFormat::U8,
+            cpal::SampleFormat::I64,
+            cpal::SampleFormat::U32,
+            cpal::SampleFormat::U64,
+        ] {
+            assert!(
+                !is_supported_loopback_sample_format(format),
+                "{format:?} has no conversion arm"
+            );
+        }
+    }
+
+    #[test]
+    fn readiness_ready_when_probe_passes() {
+        let readiness = readiness_from_loopback_support(LoopbackSupport::Ready);
+        assert!(readiness.ready);
+        assert!(readiness.device_available);
+        assert!(readiness.capture_available);
+        assert_eq!(readiness.permission_state, "granted");
+        assert!(readiness.message.is_none());
+    }
+
+    #[test]
+    fn readiness_not_ready_without_device() {
+        let readiness = readiness_from_loopback_support(LoopbackSupport::NoDevice);
+        assert!(!readiness.ready);
+        assert!(!readiness.device_available);
+        assert!(!readiness.capture_available);
+        assert_eq!(readiness.permission_state, "granted");
+        assert!(readiness.message.is_some());
+    }
+
+    #[test]
+    fn readiness_not_ready_when_mix_config_is_unavailable() {
+        let readiness = readiness_from_loopback_support(LoopbackSupport::ConfigUnavailable(
+            "device not available".to_string(),
+        ));
+        assert!(!readiness.ready);
+        assert!(readiness.device_available);
+        assert!(!readiness.capture_available);
+        let message = readiness.message.expect("message");
+        assert!(message.contains("device not available"));
+    }
+
+    #[test]
+    fn readiness_not_ready_on_unsupported_sample_format() {
+        let readiness =
+            readiness_from_loopback_support(LoopbackSupport::UnsupportedFormat("U8".to_string()));
+        assert!(!readiness.ready);
+        assert!(readiness.device_available);
+        assert!(!readiness.capture_available);
+        assert_eq!(readiness.permission_state, "granted");
+        let message = readiness.message.expect("message");
+        assert!(message.contains("U8"));
+    }
 }
