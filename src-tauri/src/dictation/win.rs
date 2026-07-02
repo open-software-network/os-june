@@ -177,8 +177,13 @@ pub(crate) fn handle_command(_app: &AppHandle, command: Value) -> Result<(), App
             engine.emit(diagnostics_event());
         }
         HelperCommand::GetPermissionStatus => engine.emit(permission_status_event()),
+        // On macOS this triggers the one-time TCC prompt and is a no-op once
+        // decided, so App.tsx also sends it on every app open as a status
+        // refresh. Windows has no prompt to trigger; auto-opening the
+        // Settings app here would pop it on every launch, so just report the
+        // current status (the Manage buttons open Settings through the
+        // open_privacy_settings command instead).
         HelperCommand::RequestMicrophonePermission => {
-            open_microphone_privacy_settings();
             engine.emit(permission_status_event());
         }
         HelperCommand::RequestAccessibilityPermission => engine.emit(permission_status_event()),
@@ -317,15 +322,6 @@ fn diagnostics_event() -> Value {
             "autoDetectRawMeter": "disabled",
         },
     })
-}
-
-fn open_microphone_privacy_settings() {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "ms-settings:privacy-microphone"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
 }
 
 // ---------------------------------------------------------------------------
