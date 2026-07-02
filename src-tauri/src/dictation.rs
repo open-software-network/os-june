@@ -2254,10 +2254,16 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 }
 
 async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
-    // Read the paste target before the first await: the frontmost app at the
-    // moment dictation stops is where the cleaned text lands, and any yield
-    // point would let the user focus a different app before we look.
-    let app_context = frontmost_app_context();
+    // Resolve the paste target before the first await. Prefer the bundle id
+    // the helper captured with the recording: its FocusTargetController is
+    // the same authority that activateLastExternalApp() pastes into, so
+    // layout and paste share one source of truth. Fall back to the frontmost
+    // app for helper builds that predate the field.
+    let app_context = recording
+        .target_bundle_id
+        .as_deref()
+        .map(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
+        .unwrap_or_else(frontmost_app_context);
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
@@ -2575,6 +2581,13 @@ fn recording_ready_info_from_event(
     Ok(RecordingReadyInfo {
         audio_path: PathBuf::from(path),
         observed_audio_level: observed_audio_level_from_event(event),
+        target_bundle_id: event
+            .get("payload")
+            .and_then(|payload| payload.get("targetBundleIdentifier"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|bundle_id| !bundle_id.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -2604,6 +2617,10 @@ struct DictationTranscriptionOutcome {
 struct RecordingReadyInfo {
     audio_path: PathBuf,
     observed_audio_level: Option<f32>,
+    /// Bundle id of the paste target as tracked by the helper's
+    /// FocusTargetController: the same app activateLastExternalApp() will
+    /// paste into. None with older helper builds that predate the field.
+    target_bundle_id: Option<String>,
 }
 
 fn outcome_from_transcription_result(
@@ -4609,6 +4626,27 @@ mod tests {
             .expect("observed audio level");
         assert!((observed - 0.04).abs() < 0.001);
         assert!(!is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn recording_ready_info_carries_the_paste_target_bundle_id() {
+        let event = serde_json::json!({
+            "type": "recording_ready",
+            "payload": {
+                "path": "/tmp/os-june-dictation-test.m4a",
+                "targetBundleIdentifier": "com.apple.mail",
+            }
+        });
+        let info = recording_ready_info_from_event(&event).expect("info parses");
+        assert_eq!(info.target_bundle_id.as_deref(), Some("com.apple.mail"));
+
+        // Older helpers omit the field (or send it empty): no target.
+        let legacy = serde_json::json!({
+            "type": "recording_ready",
+            "payload": { "path": "/tmp/os-june-dictation-test.m4a", "targetBundleIdentifier": "" }
+        });
+        let info = recording_ready_info_from_event(&legacy).expect("info parses");
+        assert_eq!(info.target_bundle_id, None);
     }
 
     #[test]
