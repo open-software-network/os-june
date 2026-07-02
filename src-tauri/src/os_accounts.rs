@@ -462,8 +462,15 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
                 portal_url: portal_url(&cfg),
             })
         }
-        Err(_) => {
-            set_cached_signed_in(false);
+        Err(error) => {
+            // A transient snapshot failure (OS Accounts briefly unreachable
+            // after an update restart) is not a sign-out: we still hold valid
+            // tokens. Only a definitive rejection clears the cached signed-in
+            // state, so a focus-triggered status poll during an outage can't
+            // disable meeting capture, which reads cached_signed_in().
+            if snapshot_failure_clears_session(&error) {
+                set_cached_signed_in(false);
+            }
             Ok(AccountStatus {
                 configured: cfg.configured(),
                 ..Default::default()
@@ -1094,6 +1101,14 @@ fn session_expired_error() -> AppError {
 /// retriable error instead of discarding work or dropping to a signed-out UI.
 pub(crate) fn is_transient_auth_error(error: &AppError) -> bool {
     error.code == AUTH_REFRESH_UNAVAILABLE_CODE
+}
+
+/// Whether a failed account snapshot means the stored session is definitively
+/// over (tokens invalid) versus a transient outage. `os_accounts_status` runs
+/// on every window focus, so a transient failure here must NOT clear the cached
+/// signed-in state that capture gating reads — only a definitive sign-out does.
+fn snapshot_failure_clears_session(error: &AppError) -> bool {
+    matches!(error.code.as_str(), "session_expired" | "signed_out")
 }
 
 /// Refresh with a bounded retry on transient upstream failures. Each attempt
@@ -1747,6 +1762,29 @@ mod tests {
         assert!(!is_transient_auth_error(&AppError::new(
             "signed_out",
             "Not signed in."
+        )));
+    }
+
+    #[test]
+    fn only_a_definitive_sign_out_clears_the_snapshot_session() {
+        // Definitive: the stored tokens are invalid — clear the cache.
+        assert!(snapshot_failure_clears_session(&session_expired_error()));
+        assert!(snapshot_failure_clears_session(&AppError::new(
+            "signed_out",
+            "Not signed in."
+        )));
+        // Transient / reachability failures keep the session so a focus poll
+        // during an outage does not disable capture.
+        assert!(!snapshot_failure_clears_session(
+            &auth_refresh_unavailable_error()
+        ));
+        assert!(!snapshot_failure_clears_session(&AppError::new(
+            "network_error",
+            "Could not reach OS Accounts."
+        )));
+        assert!(!snapshot_failure_clears_session(&AppError::new(
+            "request_failed",
+            "OS Accounts request failed."
         )));
     }
 }
