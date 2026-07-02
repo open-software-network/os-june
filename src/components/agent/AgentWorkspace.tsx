@@ -3316,18 +3316,41 @@ export function AgentWorkspace({
     return true;
   }
 
+  async function imageSlashStartModelOverride() {
+    const willStartSession = newSessionModeRef.current || !selectedHermesSessionIdRef.current;
+    if (!willStartSession) return undefined;
+    const defaultModelId = hermesModelIdFor(defaultGenerationModelIdRef.current);
+    const currentModel = defaultModelId
+      ? generationModelsRef.current.find((model) => model.id === defaultModelId)
+      : undefined;
+    if (!currentModel || modelSupportsImageInput(currentModel)) return undefined;
+    const fallback = preferredVisionFallbackModel(generationModelsRef.current);
+    if (!fallback) {
+      setError(
+        `${currentModel.name} can't read images. Choose a vision model before using /image.`,
+      );
+      return null;
+    }
+    return (await handleSelectGenerationModel(fallback.id)) ? fallback.id : null;
+  }
+
   // `/image <prompt>` renders the generated image inline in the chat as an
   // assistant turn (loader -> image, with view + download), NOT as a composer
   // attachment chip. It creates/uses a real session and the prompt becomes a
   // user turn, but the model is never invoked — the image endpoint IS the whole
-  // response (see submitHermesSession's `skipPrompt`). The image model is
-  // resolved server-side from the saved default.
+  // response (see submitHermesSession's `skipPrompt`). On a new session, the
+  // text model is upgraded to a vision-capable model before the session exists.
+  // The image generation model is still resolved server-side from the saved
+  // image default.
   async function runImageSlashCommand(argument: string, commandText: string) {
     const prompt = argument.trim();
     if (!prompt) {
       setError("Type a description after /image to generate an image.");
       return;
     }
+
+    const modelOverride = await imageSlashStartModelOverride();
+    if (modelOverride === null) return;
 
     // The prompt is about to become a user turn — clear the draft up front and,
     // on a fresh session, play the hero teardown so the conversation view takes
@@ -3349,6 +3372,7 @@ export function AgentWorkspace({
         skipPrompt: true,
         displayContent: prompt,
         titleContent: prompt,
+        ...(modelOverride ? { modelOverride } : {}),
       });
     } catch (err) {
       if (heroMode) setHeroLeaving(false);
@@ -4417,6 +4441,9 @@ export function AgentWorkspace({
        * session id is known and before prompt.submit; a failed attach throws to
        * block the send so the user can retry. */
       attachments?: AgentAttachment[];
+      /** Optional model id for a new session when the caller has already chosen
+       * a more specific model than the current global default. */
+      modelOverride?: string;
       /** Create + select the session and add the user bubble, then stop BEFORE
        * `prompt.submit` (the `/image` flow): the model is never invoked, and the
        * caller renders the result itself. Returns the stored session id so the
@@ -4437,13 +4464,14 @@ export function AgentWorkspace({
     // session row backfilled from it) carries the synthetic local option id,
     // which must never reach Hermes — session.create/ensure get the raw id.
     const targetSessionModelId = hermesModelIdFor(
-      targetSessionId
-        ? explicitSession?.model?.trim() ||
+      options?.modelOverride ??
+        (targetSessionId
+          ? explicitSession?.model?.trim() ||
             hermesSessionItemsRef.current
               .find((session) => session.id === targetSessionId)
               ?.model?.trim() ||
-            defaultGenerationModelId
-        : defaultGenerationModelId,
+            defaultGenerationModelIdRef.current
+          : defaultGenerationModelIdRef.current),
     );
     // JUN-171 (Phase A): fold any held fast-path `/image` outputs for this
     // session into the turn so they ride the same structured-attach path as
