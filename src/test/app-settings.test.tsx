@@ -637,8 +637,8 @@ describe("AppSettings", () => {
         account={{
           ...signedInAccount,
           balance: {
-            credits: 4857,
-            usdMillis: 4857,
+            credits: 1943,
+            usdMillis: 1943,
           },
           subscription: {
             subscribed: false,
