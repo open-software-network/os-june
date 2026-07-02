@@ -192,6 +192,58 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Live preview")).toBeInTheDocument();
   });
 
+  it("shows system-source live transcript preview turns while recording", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({ activeTab: "transcription" })}
+        recordingStatus={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 8000,
+          level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+          silenceWarning: false,
+          bytesWritten: 4096,
+          livePreviewEnabled: true,
+        }}
+        liveTranscript={[
+          {
+            noteId: "note-1",
+            sessionId: "session-1",
+            sourceMode: "microphonePlusSystem",
+            source: "microphone",
+            segmentId: "microphone-0",
+            startMs: 0,
+            endMs: 8000,
+            text: "What I said into the mic",
+            language: "en",
+            stability: "final",
+          },
+          {
+            noteId: "note-1",
+            sessionId: "session-1",
+            sourceMode: "microphonePlusSystem",
+            source: "system",
+            segmentId: "system-0",
+            startMs: 0,
+            endMs: 8000,
+            text: "What the meeting played back",
+            language: "en",
+            stability: "final",
+          },
+        ]}
+      />,
+    );
+
+    // The system lane must surface in the live preview, labelled "System",
+    // alongside the microphone turn, not be dropped or mislabelled.
+    expect(screen.getByText("What the meeting played back")).toBeInTheDocument();
+    expect(screen.getByText("What I said into the mic")).toBeInTheDocument();
+    expect(
+      screen.getByText("System", { selector: ".transcript-turn-source" }),
+    ).toBeInTheDocument();
+  });
+
   it("only shows the live preview waiting state when preview is enabled", () => {
     const recordingStatus = {
       sessionId: "session-1",

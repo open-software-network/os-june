@@ -27,6 +27,15 @@ const PREVIEW_CHUNK_MS: i64 = 8_000;
 const PREVIEW_CONTEXT_TURNS: usize = 3;
 const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.001;
 const SYSTEM_PREVIEW_POLL_MS: u64 = 500;
+// The system lane tails a growing WAV rather than draining a bounded channel,
+// so it has no natural backpressure. If the transcription round-trip runs
+// slower than real time the buffered backlog would grow without bound and the
+// preview would fall further and further behind the live meeting. Cap the
+// backlog so the system preview skips stale audio and stays near real time,
+// mirroring the microphone lane's stale-batch dropping and ADR 0002's guardrail
+// that preview audio may be dropped to keep up. Two chunks keeps a little
+// context without letting the lag accumulate.
+const SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS: usize = 2;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -303,6 +312,11 @@ async fn run_system_live_preview_worker(
 
                 let chunk_samples =
                     samples_for_ms(read.sample_rate, read.channels, PREVIEW_CHUNK_MS);
+                let dropped = trim_stale_system_backlog(&mut buffer, chunk_samples);
+                if dropped > 0 {
+                    buffer_start_sample = buffer_start_sample.saturating_add(dropped as u64);
+                    segment_index += (dropped / chunk_samples) as i64;
+                }
                 while chunk_samples > 0 && buffer.len() >= chunk_samples {
                     let chunk_start_sample = buffer_start_sample;
                     let samples = buffer.drain(..chunk_samples).collect::<Vec<_>>();
@@ -369,6 +383,30 @@ fn newest_preview_batch(
 
 fn should_drop_stale_batches(queued_batches: usize) -> bool {
     queued_batches >= PREVIEW_STALE_BATCH_THRESHOLD
+}
+
+/// Drop whole stale chunks off the front of the system-preview buffer once the
+/// backlog exceeds [`SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS`], returning how many
+/// samples were discarded. Dropping in whole-chunk units keeps the retained
+/// buffer chunk-aligned so timestamps and segment ids stay correct, and lets
+/// the preview jump forward to recent audio instead of lagging the meeting.
+fn trim_stale_system_backlog(buffer: &mut Vec<i16>, chunk_samples: usize) -> usize {
+    if chunk_samples == 0 {
+        return 0;
+    }
+    let max_len = chunk_samples.saturating_mul(SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS);
+    if buffer.len() <= max_len {
+        return 0;
+    }
+    let excess = buffer.len() - max_len;
+    // Round the excess up to a whole number of chunks so we never leave a
+    // partial chunk that would shift every later frame boundary.
+    let excess_chunks = excess.div_ceil(chunk_samples);
+    let drop = excess_chunks
+        .saturating_mul(chunk_samples)
+        .min(buffer.len());
+    buffer.drain(..drop);
+    drop
 }
 
 struct WavTailRead {
@@ -454,52 +492,64 @@ impl WavTailReader {
 }
 
 fn read_wav_layout(path: &Path) -> std::io::Result<Option<WavLayout>> {
-    const HEADER_SCAN_LIMIT: u64 = 64 * 1024;
-
     let mut file = File::open(path)?;
     let file_len = file.metadata()?.len();
     if file_len < 44 {
         return Ok(None);
     }
 
-    let scan_len = file_len.min(HEADER_SCAN_LIMIT) as usize;
-    let mut bytes = vec![0_u8; scan_len];
-    file.read_exact(&mut bytes)?;
-    if bytes.get(0..4) != Some(&b"RIFF"[..]) || bytes.get(8..12) != Some(&b"WAVE"[..]) {
+    let mut riff = [0_u8; 12];
+    file.read_exact(&mut riff)?;
+    if &riff[0..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
         return Ok(None);
     }
 
-    let mut offset = 12_usize;
+    // Walk the chunk table by seeking rather than buffering a fixed prefix.
+    // AVAudioFile (the macOS system-audio helper) page-aligns the PCM data with
+    // a large `FLLR`/`JUNK` padding chunk, so the `data` chunk can sit well past
+    // any fixed scan window. A bounded scan silently returned `Ok(None)` for
+    // those files, which quietly disabled the whole system live-preview lane.
+    let mut offset = 12_u64;
     let mut sample_rate = None;
     let mut channels = None;
-    let mut data_offset = None;
 
-    while offset + 8 <= bytes.len() {
-        let chunk_id = &bytes[offset..offset + 4];
-        let chunk_size = u32::from_le_bytes([
-            bytes[offset + 4],
-            bytes[offset + 5],
-            bytes[offset + 6],
-            bytes[offset + 7],
-        ]) as usize;
+    while offset.saturating_add(8) <= file_len {
+        file.seek(SeekFrom::Start(offset))?;
+        let mut header = [0_u8; 8];
+        match file.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let chunk_id = &header[0..4];
+        let chunk_size = u64::from(u32::from_le_bytes([
+            header[4], header[5], header[6], header[7],
+        ]));
         let chunk_data_start = offset + 8;
 
+        if chunk_id == b"data" {
+            // The `data` header can be flushed before `fmt` in a partially
+            // written file; only report a layout once both are known.
+            return match (sample_rate, channels) {
+                (Some(sample_rate), Some(channels)) => Ok(Some(WavLayout {
+                    data_offset: chunk_data_start,
+                    sample_rate,
+                    channels,
+                })),
+                _ => Ok(None),
+            };
+        }
+
         if chunk_id == b"fmt " {
-            if chunk_data_start + 16 > bytes.len() {
+            if chunk_data_start + 16 > file_len {
                 return Ok(None);
             }
-            let audio_format =
-                u16::from_le_bytes([bytes[chunk_data_start], bytes[chunk_data_start + 1]]);
-            let parsed_channels =
-                u16::from_le_bytes([bytes[chunk_data_start + 2], bytes[chunk_data_start + 3]]);
-            let parsed_sample_rate = u32::from_le_bytes([
-                bytes[chunk_data_start + 4],
-                bytes[chunk_data_start + 5],
-                bytes[chunk_data_start + 6],
-                bytes[chunk_data_start + 7],
-            ]);
-            let bits_per_sample =
-                u16::from_le_bytes([bytes[chunk_data_start + 14], bytes[chunk_data_start + 15]]);
+            let mut fmt = [0_u8; 16];
+            file.read_exact(&mut fmt)?;
+            let audio_format = u16::from_le_bytes([fmt[0], fmt[1]]);
+            let parsed_channels = u16::from_le_bytes([fmt[2], fmt[3]]);
+            let parsed_sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
+            let bits_per_sample = u16::from_le_bytes([fmt[14], fmt[15]]);
             if !matches!(audio_format, 1 | 0xfffe)
                 || bits_per_sample != 16
                 || parsed_channels == 0
@@ -509,30 +559,13 @@ fn read_wav_layout(path: &Path) -> std::io::Result<Option<WavLayout>> {
             }
             channels = Some(parsed_channels);
             sample_rate = Some(parsed_sample_rate);
-        } else if chunk_id == b"data" {
-            data_offset = Some(chunk_data_start as u64);
-            break;
         }
 
         let padded_size = chunk_size.saturating_add(chunk_size % 2);
         offset = chunk_data_start.saturating_add(padded_size);
     }
 
-    let Some(data_offset) = data_offset else {
-        return Ok(None);
-    };
-    let Some(sample_rate) = sample_rate else {
-        return Ok(None);
-    };
-    let Some(channels) = channels else {
-        return Ok(None);
-    };
-
-    Ok(Some(WavLayout {
-        data_offset,
-        sample_rate,
-        channels,
-    }))
+    Ok(None)
 }
 
 async fn transcribe_preview_chunk(
@@ -699,17 +732,68 @@ mod tests {
     use super::{
         duration_ms, is_effectively_silent, newest_preview_batch, preview_chunk_path,
         preview_context, preview_segment_id, read_wav_layout, remember_preview_text,
-        sample_offset_ms, samples_for_ms, should_drop_stale_batches, write_preview_wav,
-        LivePreviewBatch, LivePreviewSink, WavTailReader, PREVIEW_STALE_BATCH_THRESHOLD,
+        sample_offset_ms, samples_for_ms, should_drop_stale_batches, trim_stale_system_backlog,
+        write_preview_wav, LivePreviewBatch, LivePreviewSink, WavTailReader,
+        PREVIEW_STALE_BATCH_THRESHOLD, SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS,
     };
     use std::{
         collections::VecDeque,
+        io::Write,
         sync::{
             atomic::{AtomicU64, Ordering},
             Arc,
         },
     };
     use tokio::sync::mpsc;
+
+    /// Build a WAV header shaped like the one `AVAudioFile(forWriting:)` writes
+    /// for the macOS system-audio helper: a `JUNK` chunk, a PCM `fmt ` chunk, an
+    /// `FLLR` padding chunk that page-aligns the audio, and a `data` chunk whose
+    /// declared size stays `0` while the file is still being recorded.
+    fn avaudiofile_style_wav(
+        sample_rate: u32,
+        channels: u16,
+        fllr_len: usize,
+        samples: &[i16],
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        // AVAudioFile leaves the RIFF size small/stale while recording; the
+        // reader must not trust it.
+        buf.extend_from_slice(&0_u32.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        // JUNK padding chunk (28 bytes, exactly what AVAudioFile emits).
+        buf.extend_from_slice(b"JUNK");
+        buf.extend_from_slice(&28_u32.to_le_bytes());
+        buf.extend(std::iter::repeat_n(0_u8, 28));
+        // PCM fmt chunk.
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16_u32.to_le_bytes());
+        buf.extend_from_slice(&1_u16.to_le_bytes());
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&(sample_rate * u32::from(channels) * 2).to_le_bytes());
+        buf.extend_from_slice(&(channels * 2).to_le_bytes());
+        buf.extend_from_slice(&16_u16.to_le_bytes());
+        // FLLR page-alignment padding chunk.
+        buf.extend_from_slice(b"FLLR");
+        buf.extend_from_slice(&(fllr_len as u32).to_le_bytes());
+        buf.extend(std::iter::repeat_n(0_u8, fllr_len));
+        // data chunk with a zero declared size (still recording).
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&0_u32.to_le_bytes());
+        for sample in samples {
+            buf.extend_from_slice(&sample.to_le_bytes());
+        }
+        buf
+    }
+
+    fn write_temp_wav(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = preview_chunk_path("avaudiofile", name);
+        let mut file = std::fs::File::create(&path).expect("create wav");
+        file.write_all(bytes).expect("write wav");
+        path
+    }
 
     #[test]
     fn computes_chunk_sample_counts_for_interleaved_audio() {
@@ -853,5 +937,89 @@ mod tests {
 
         assert!(layout.is_none());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reads_avaudiofile_style_partial_header() {
+        // Mirrors the real macOS helper file mid-recording: JUNK + fmt + FLLR
+        // padding + a zero-sized `data` chunk, followed by interleaved PCM.
+        let samples = vec![1, -2, 300, -400, 5, -6];
+        let bytes = avaudiofile_style_wav(48_000, 2, 4_008, &samples);
+        let path = write_temp_wav("partial-header", &bytes);
+
+        let layout = read_wav_layout(&path)
+            .expect("read layout")
+            .expect("layout present");
+        assert_eq!(layout.sample_rate, 48_000);
+        assert_eq!(layout.channels, 2);
+
+        let mut reader = WavTailReader::new(path.clone());
+        let read = reader
+            .read_new_samples()
+            .expect("read samples")
+            .expect("samples");
+        assert_eq!(read.start_sample, 0);
+        assert_eq!(read.sample_rate, 48_000);
+        assert_eq!(read.channels, 2);
+        assert_eq!(read.samples, samples);
+        assert!(reader.read_new_samples().expect("read none").is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn finds_data_chunk_beyond_a_64kb_header() {
+        // Regression: a bounded 64KB header scan returned `Ok(None)` forever
+        // when AVAudioFile's page-alignment padding pushed the `data` chunk past
+        // the window, silently disabling the whole system live-preview lane. The
+        // seek-based walk must still locate it.
+        let samples = vec![7, -8, 9, -10];
+        let bytes = avaudiofile_style_wav(44_100, 1, 70_000, &samples);
+        assert!(
+            bytes.len() > 64 * 1024,
+            "padding must push data past the old scan window"
+        );
+        let path = write_temp_wav("data-past-64k", &bytes);
+
+        let layout = read_wav_layout(&path)
+            .expect("read layout")
+            .expect("layout present past 64KB header");
+        assert_eq!(layout.sample_rate, 44_100);
+        assert_eq!(layout.channels, 1);
+        assert!(layout.data_offset > 64 * 1024);
+
+        let mut reader = WavTailReader::new(path.clone());
+        let read = reader
+            .read_new_samples()
+            .expect("read samples")
+            .expect("samples past 64KB header");
+        assert_eq!(read.samples, samples);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn trims_stale_system_backlog_to_whole_chunks() {
+        // Five chunks buffered; the cap keeps only the most recent chunks so the
+        // preview jumps to current audio instead of transcribing stale windows.
+        let chunk = 4;
+        let mut buffer: Vec<i16> = (0..20).collect();
+        let dropped = trim_stale_system_backlog(&mut buffer, chunk);
+        let expected_drop = 20 - chunk * SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS;
+        assert_eq!(dropped, expected_drop);
+        assert_eq!(dropped % chunk, 0, "must drop whole chunks only");
+        assert_eq!(buffer, (expected_drop as i16..20).collect::<Vec<i16>>());
+    }
+
+    #[test]
+    fn keeps_system_backlog_within_the_cap_intact() {
+        let chunk = 4;
+        let mut buffer: Vec<i16> = (0..chunk as i16 * 2).collect();
+        assert_eq!(trim_stale_system_backlog(&mut buffer, chunk), 0);
+        assert_eq!(buffer.len(), chunk * 2);
+        // A zero chunk size (unknown format) must be a no-op, never a divide.
+        let mut empty: Vec<i16> = vec![1, 2, 3];
+        assert_eq!(trim_stale_system_backlog(&mut empty, 0), 0);
+        assert_eq!(empty, vec![1, 2, 3]);
     }
 }
