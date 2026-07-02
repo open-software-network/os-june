@@ -482,10 +482,14 @@ pub fn take_pending_recording(session_id: &str) -> Option<FinishedRecording> {
 /// only maps session ids to finalized recordings, so a panic elsewhere cannot
 /// leave it in a state that makes recovery unsafe. Recovering keeps a staged
 /// recording reachable even after such a panic, so captured audio is never lost.
+/// The recovery is logged rather than silent: a poisoned lock means a thread
+/// panicked while holding it, which is worth surfacing even though it is not
+/// fatal here.
 fn pending_recordings() -> std::sync::MutexGuard<'static, HashMap<String, FinishedRecording>> {
-    PENDING_RECORDINGS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    PENDING_RECORDINGS.lock().unwrap_or_else(|poisoned| {
+        eprintln!("pending-recordings lock was poisoned; recovering to avoid losing staged audio");
+        poisoned.into_inner()
+    })
 }
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {
