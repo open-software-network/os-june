@@ -138,6 +138,15 @@ A `/name arg` handled client-side before submit — builtin `/model` and
 image *generation* is an upstream Hermes tool, not a June slash command.)
 _Avoid_: gateway command.
 
+**Steer**:
+A user instruction delivered into a still-running agent session without
+interrupting it. A steer is first-party and local to June — never a Hermes
+wire frame. A steer the run never consumed is resent as an ordinary follow-up
+when the run completes cleanly, and dropped when the run fails or is
+cancelled.
+_Avoid_: interrupt/stop (a steer never halts the run), follow-up (that is the
+fallback delivery, not the steer), mid-run message.
+
 **Model capability**:
 An authoritative boolean flag from the live Venice catalog `capabilities`
 (`supportsFunctionCalling` → tools, `supportsVision` → image input), never
