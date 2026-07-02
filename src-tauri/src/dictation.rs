@@ -176,7 +176,7 @@ impl DictationStyle {
     fn instruction(self) -> &'static str {
         match self {
             Self::Standard => {
-                "Writing style: standard. Preserve the speaker's natural tone and casing while producing clean dictated text."
+                "Writing style: standard. Clean up the dictation near-verbatim: fix punctuation, capitalization, spacing, and obvious transcription slips while keeping the speaker's own words, phrasing, order, tone, and casing. Do not shorten, condense, summarize, paraphrase, reorder, restructure, or reformat the dictation into bullet points, headings, or lists."
             }
             Self::CasualLowercase => {
                 "Writing style: casual lowercase. Write casually and conversationally. Use lowercase wherever grammatically possible, including the beginning of sentences, while preserving proper nouns, acronyms, brand names, and code exactly when capitalization matters."
@@ -4225,6 +4225,21 @@ mod tests {
 
         assert!(context.contains("Writing style: casual lowercase"));
         assert!(context.contains("Use lowercase"));
+    }
+
+    #[test]
+    fn standard_style_forbids_editorializing() {
+        // The standard style must read as near-verbatim cleanup, not editorial
+        // license. Regression guard for the "too eager to summarize/reformat"
+        // report: unlike casual, the old wording ("producing clean dictated
+        // text") gave the cleanup model no anti-rewrite anchor.
+        let instruction = DictationStyle::Standard.instruction();
+
+        assert!(instruction.contains("near-verbatim"));
+        assert!(instruction.contains("keeping the speaker's own words"));
+        assert!(instruction.contains("Do not shorten, condense, summarize"));
+        assert!(instruction.contains("reorder, restructure"));
+        assert!(instruction.contains("bullet points, headings, or lists"));
     }
 
     #[test]
