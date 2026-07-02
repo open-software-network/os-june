@@ -862,6 +862,15 @@ mod tests {
             .collect()
     }
 
+    // The tests below feed macOS bundle ids through the platform dispatchers
+    // (`MicrophoneInputProcess::new` -> `app_label_from_bundle_id`,
+    // `active_allowed_external_processes` -> `is_allowed_microphone_app`).
+    // On Windows those dispatch to the executable-name matcher, which rightly
+    // rejects bundle ids, so they are gated to the targets whose matcher they
+    // test: every non-Windows target, mirroring the dispatch `cfg` itself.
+    // Windows twins covering the same shared pipeline with executable names
+    // follow the pure allow-list tests further down.
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn deduped_app_labels_collapses_helper_processes_in_detection_order() {
         let processes = vec![
@@ -874,6 +883,7 @@ mod tests {
         assert!(deduped_app_labels(&[]).is_empty());
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn active_allowed_external_processes_excludes_owned_processes() {
         let owned = BTreeSet::from([10, 20]);
@@ -898,6 +908,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn chrome_mic_process_triggers_detection_filter() {
         let exact = input_process(30, "com.google.Chrome");
@@ -908,6 +919,7 @@ mod tests {
         assert_eq!(allowed_pids(&[exact, helper]), vec![30, 31]);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn arc_mic_process_triggers_detection_filter() {
         let exact = input_process(40, "company.thebrowser.Browser");
@@ -918,6 +930,7 @@ mod tests {
         assert_eq!(allowed_pids(&[exact, helper]), vec![40, 41]);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn safari_mic_process_triggers_detection_filter() {
         let exact = input_process(42, "com.apple.Safari");
@@ -928,6 +941,7 @@ mod tests {
         assert_eq!(allowed_pids(&[exact, helper]), vec![42, 43]);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn teams_mic_process_triggers_detection_filter() {
         let classic = input_process(44, "com.microsoft.teams");
@@ -945,6 +959,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn zoom_mic_process_triggers_detection_filter() {
         let exact = input_process(48, "us.zoom.xos");
@@ -955,6 +970,7 @@ mod tests {
         assert_eq!(allowed_pids(&[exact, helper]), vec![48, 49]);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn unlisted_mic_process_does_not_trigger_detection_filter() {
         assert!(allowed_pids(&[
@@ -1007,6 +1023,85 @@ mod tests {
         assert_eq!(windows_app_label_from_executable("  Zoom.exe  "), "Zoom");
     }
 
+    // Windows twins of the bundle-id pipeline tests above: same shared code
+    // path (`MicrophoneInputProcess::new` -> dispatcher -> filtering -> state
+    // machine), driven with executable names, running only where the
+    // dispatchers route to the executable-name matcher.
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_mic_processes_trigger_detection_filter_by_executable() {
+        let zoom = input_process(30, "Zoom.exe");
+        let teams = input_process(31, "ms-teams.exe");
+        let chrome = input_process(32, "chrome.exe");
+        let unlisted = input_process(33, "notepad.exe");
+
+        assert_eq!(zoom.app_label, "Zoom");
+        assert_eq!(teams.app_label, "Teams");
+        assert_eq!(chrome.app_label, "Chrome");
+        assert_eq!(
+            allowed_pids(&[zoom, teams, chrome, unlisted]),
+            vec![30, 31, 32]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_deduped_app_labels_collapses_duplicate_executables() {
+        let processes = vec![
+            input_process(30, "Zoom.exe"),
+            input_process(31, "zoom.exe"),
+            input_process(32, "chrome.exe"),
+        ];
+
+        assert_eq!(deduped_app_labels(&processes), vec!["Zoom", "Chrome"]);
+        assert!(deduped_app_labels(&[]).is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_active_allowed_external_processes_excludes_owned_processes() {
+        let owned = BTreeSet::from([10, 20]);
+        let processes = vec![
+            MicrophoneInputProcess {
+                pid: 0,
+                bundle_id: "chrome.exe".to_string(),
+                app_label: "Chrome".to_string(),
+            },
+            input_process(10, "chrome.exe"),
+            input_process(30, "chrome.exe"),
+            input_process(20, "zoom.exe"),
+            input_process(40, "zoom.exe"),
+        ];
+
+        assert_eq!(
+            active_allowed_external_processes(&processes, &owned)
+                .into_iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+            vec![30, 40]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_detector_clears_when_allowed_mic_process_becomes_unlisted() {
+        let mut state = MeetingDetectionState::default();
+        let active_allowed = allowed_pids(&[input_process(60, "chrome.exe")]);
+        let active_unlisted = allowed_pids(&[input_process(61, "notepad.exe")]);
+
+        assert_eq!(
+            state.update(true, !active_allowed.is_empty(), false),
+            Some(MeetingDetectionEvent::Detected)
+        );
+        assert_eq!(state.update(true, !active_unlisted.is_empty(), false), None);
+        assert_eq!(
+            state.update(true, !active_unlisted.is_empty(), false),
+            Some(MeetingDetectionEvent::Cleared)
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn detector_clears_when_allowed_mic_process_becomes_unlisted() {
         let mut state = MeetingDetectionState::default();
