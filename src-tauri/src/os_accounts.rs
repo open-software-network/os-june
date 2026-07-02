@@ -132,6 +132,25 @@ fn merge_rotated_tokens(fresh: TokenPair, previous: Option<AccountSnapshot>) -> 
     StoredAccount::new(fresh, previous)
 }
 
+fn access_token_claims(jwt: &str) -> Option<serde_json::Value> {
+    let payload = jwt.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice::<serde_json::Value>(&decoded).ok()
+}
+
+fn access_token_subject(jwt: &str) -> Option<String> {
+    access_token_claims(jwt)?
+        .get("sub")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn stored_account_matches_snapshot(stored: &StoredAccount, snapshot: &AccountSnapshot) -> bool {
+    access_token_subject(&stored.pair.access_token).as_deref() == Some(snapshot.user.id.as_str())
+}
+
 #[derive(Deserialize)]
 struct MeWire {
     id: String,
@@ -494,15 +513,14 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
     match fetch_snapshot(&cfg).await {
         Ok((user, balance, subscription)) => {
             set_cached_signed_in(true);
-            // Refresh the cached snapshot for the next launch fast-path, but
-            // avoid keychain write churn: status runs on every window focus, so
-            // only rewrite when the snapshot actually changed.
-            persist_snapshot_if_changed(&AccountSnapshot {
+            // Refresh the cached snapshot for the next launch fast-path
+            // (write-if-changed, detached so the response never waits on the
+            // refresh lock).
+            persist_snapshot_in_background(AccountSnapshot {
                 user: user.clone(),
                 balance: balance.clone(),
                 subscription: subscription.clone(),
-            })
-            .await;
+            });
             Ok(AccountStatus {
                 signed_in: true,
                 configured: cfg.configured(),
@@ -613,12 +631,11 @@ pub async fn os_accounts_login(
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     // Warm the cache from first sign-in so the next launch fast-path paints the
     // real identity instead of fallbacks.
-    persist_snapshot_if_changed(&AccountSnapshot {
+    persist_snapshot_in_background(AccountSnapshot {
         user: user.clone(),
         balance: balance.clone(),
         subscription: subscription.clone(),
-    })
-    .await;
+    });
     set_cached_signed_in(true);
     Ok(AccountStatus {
         signed_in: true,
@@ -1180,15 +1197,13 @@ fn classify_refresh_failure(status: u16, parsed_rejection: bool) -> AppError {
     }
 }
 
-/// Whether a failed refresh is worth retrying. Server/infra wobble (5xx) and
-/// rate limiting (429) are always transient. Otherwise a failure is definitive
-/// (session_expired) ONLY when the body parsed as a well-formed envelope
-/// rejection: a real "your refresh token is expired/revoked" answer from OS
-/// Accounts always arrives as a parsed envelope. An unparseable body — even on
-/// a 4xx — is far more likely an infra/edge outage (e.g. a platform "application
-/// not found" page served by the load balancer during a deploy or Railway
-/// hiccup) than a genuine token rejection; signing the user out on it would
-/// discard a still-valid rotating refresh token, so treat it as transient.
+/// Whether a failed refresh is worth retrying. The OS Accounts contract is that
+/// application-level refresh-token rejections always reach June as a well-formed
+/// JSON envelope (`success: false`). Server/infra wobble (5xx) and rate limiting
+/// (429) are always transient; every other status is definitive only when that
+/// envelope parsed. A bare 4xx from an edge, WAF, or platform outage is not proof
+/// the token was revoked, and signing out on it can discard a still-valid
+/// rotating refresh token, so keep the session and retry instead.
 fn refresh_failure_is_transient(status: u16, parsed_rejection: bool) -> bool {
     match status {
         500..=599 | 429 => true,
@@ -1359,14 +1374,7 @@ pub async fn access_token() -> Result<String, AppError> {
 const ACCESS_TOKEN_REFRESH_SKEW_SECS: i64 = 30;
 
 fn access_token_is_stale(jwt: &str) -> bool {
-    let Some(payload) = jwt.split('.').nth(1) else {
-        return false;
-    };
-    use base64::Engine as _;
-    let Ok(decoded) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
-        return false;
-    };
-    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&decoded) else {
+    let Some(claims) = access_token_claims(jwt) else {
         return false;
     };
     let Some(exp) = claims.get("exp").and_then(serde_json::Value::as_i64) else {
@@ -1553,26 +1561,38 @@ fn net_error(e: reqwest::Error) -> AppError {
 /// Refresh the cached account snapshot, rewriting the keychain entry only when
 /// the snapshot actually changed. Status runs on every window focus, so a
 /// blind rewrite would churn the keychain each time; comparing first keeps the
-/// stored token pair untouched when nothing moved. Best-effort: a failed cache
-/// write must not fail the status call, so errors are swallowed after logging.
-async fn persist_snapshot_if_changed(snapshot: &AccountSnapshot) {
-    // Hold the refresh lock across the load-modify-write: refresh_locked
-    // rotates the token pair under this lock, and writing back a pair loaded
-    // before the rotation would resurrect a consumed refresh token (and sign
-    // the user out on the next refresh).
-    let _guard = refresh_lock().lock().await;
-    let Some(mut stored) = load_account().await else {
-        // Tokens vanished between the fetch and here (e.g. a concurrent
-        // logout); nothing to attach the snapshot to.
-        return;
-    };
-    if stored.snapshot.as_ref() == Some(snapshot) {
-        return;
-    }
-    stored.snapshot = Some(snapshot.clone());
-    if let Err(error) = store_tokens(&stored).await {
-        tracing::warn!(error_code = %error.code, "failed to cache account snapshot");
-    }
+/// stored token pair untouched when nothing moved. Best-effort and detached
+/// from the caller: the write serialises on the refresh lock, which a
+/// concurrent refresh can hold for a full HTTP round-trip, and the status
+/// response must not stall behind it; a missed write is corrected by the next
+/// successful status. Errors are swallowed after logging.
+fn persist_snapshot_in_background(snapshot: AccountSnapshot) {
+    tokio::spawn(async move {
+        // Hold the refresh lock across the load-modify-write: refresh_locked
+        // rotates the token pair under this lock, and writing back a pair
+        // loaded before the rotation would resurrect a consumed refresh token
+        // (and sign the user out on the next refresh).
+        let _guard = refresh_lock().lock().await;
+        let Some(mut stored) = load_account().await else {
+            // Tokens vanished between the fetch and here (e.g. a concurrent
+            // logout); nothing to attach the snapshot to.
+            return;
+        };
+        if !stored_account_matches_snapshot(&stored, &snapshot) {
+            // The user may have signed out and into another OS Accounts identity
+            // while this best-effort task waited on the refresh lock. Never attach
+            // one user's cached identity/balance to a different token pair.
+            tracing::debug!("skipped stale cached account snapshot");
+            return;
+        }
+        if stored.snapshot.as_ref() == Some(&snapshot) {
+            return;
+        }
+        stored.snapshot = Some(snapshot);
+        if let Err(error) = store_tokens(&stored).await {
+            tracing::warn!(error_code = %error.code, "failed to cache account snapshot");
+        }
+    });
 }
 
 async fn store_tokens(account: &StoredAccount) -> Result<(), AppError> {
@@ -2112,6 +2132,14 @@ mod tests {
         }
     }
 
+    fn sample_token_for_user(user_id: &str) -> String {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"alg":"ES256","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!(r#"{{"sub":"{user_id}","exp":4102444800}}"#));
+        format!("{header}.{payload}.signature")
+    }
+
     fn test_cfg() -> Config {
         Config {
             accounts_url: "https://accounts.opensoftware.co/".to_string(),
@@ -2198,6 +2226,44 @@ mod tests {
         let mut changed = sample_snapshot();
         changed.balance.credits = 0;
         assert!(a != changed);
+    }
+
+    #[test]
+    fn access_token_subject_reads_the_user_id_claim() {
+        assert_eq!(
+            access_token_subject(&sample_token_for_user("usr_abc")).as_deref(),
+            Some("usr_abc")
+        );
+    }
+
+    #[test]
+    fn cached_snapshot_requires_the_current_token_subject() {
+        let snapshot = sample_snapshot();
+        let matching = StoredAccount::new(
+            TokenPair {
+                access_token: sample_token_for_user("usr_abc"),
+                refresh_token: "r".to_string(),
+            },
+            None,
+        );
+        let different_user = StoredAccount::new(
+            TokenPair {
+                access_token: sample_token_for_user("usr_other"),
+                refresh_token: "r".to_string(),
+            },
+            None,
+        );
+        let opaque_token = StoredAccount::new(
+            TokenPair {
+                access_token: "not-a-jwt".to_string(),
+                refresh_token: "r".to_string(),
+            },
+            None,
+        );
+
+        assert!(stored_account_matches_snapshot(&matching, &snapshot));
+        assert!(!stored_account_matches_snapshot(&different_user, &snapshot));
+        assert!(!stored_account_matches_snapshot(&opaque_token, &snapshot));
     }
 
     #[test]
