@@ -1493,10 +1493,12 @@ export function AgentWorkspace({
     // `activityStoreVersion` is the change signal; the read returns live rows.
     [activityStoreVersion],
   );
-  const activityLevels = useMemo(
-    () => projectAgentActivityLevels(activityRecords),
-    [activityRecords],
-  );
+  const previousActivityLevelsRef = useRef<AgentActivityLevelProjection | undefined>(undefined);
+  const activityLevels = useMemo(() => {
+    const next = projectAgentActivityLevels(activityRecords, previousActivityLevelsRef.current);
+    previousActivityLevelsRef.current = next;
+    return next;
+  }, [activityRecords]);
   const { toolCallSessionIds, waitingSessionIds, workingSessionIds } = activityLevels;
   const workingSessionIdsRef = useRef<Set<string>>(workingSessionIds);
   const toolCallSessionIdsRef = useRef<Set<string>>(toolCallSessionIds);
@@ -1857,7 +1859,14 @@ export function AgentWorkspace({
 
   function recordSessionRunningActivity(sessionId: string) {
     hermesActivityStore.record(
-      { kind: "lifecycle", sessionId, status: "running", receivedAt: new Date().toISOString() },
+      {
+        kind: "lifecycle",
+        sessionId,
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: new Date().toISOString(),
+      },
       hermesModeFor(sessionId),
     );
   }
@@ -1871,7 +1880,14 @@ export function AgentWorkspace({
 
   const clearSessionActivity = useCallback((sessionId: string, status = "completed") => {
     hermesActivityStore.record(
-      { kind: "lifecycle", sessionId, status, receivedAt: new Date().toISOString() },
+      {
+        kind: "lifecycle",
+        sessionId,
+        flavor: "terminal",
+        status,
+        text: "",
+        receivedAt: new Date().toISOString(),
+      },
       hermesModeFor(sessionId),
     );
     return agentActivityCountsFromStore();
@@ -4154,7 +4170,7 @@ export function AgentWorkspace({
       // Classify the raw frame once at ingress. Stores and transcript rendering
       // consume the typed event; the raw frame remains only for trace capture
       // and the Stage B status helpers below.
-      const classified = withStoredHermesSessionId(classifyHermesEvent(liveEvent), storedSessionId);
+      const classified = classifyHermesEvent(liveEvent);
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -4188,7 +4204,10 @@ export function AgentWorkspace({
       // derives the session's phase (running/waiting/background/error/complete),
       // current tool, and subagent count from the normalized event — never from
       // the raw frame (raw JSON belongs to feature 15's trace panel).
-      hermesActivityStore.record(classified, hermesModeFor(storedSessionId));
+      hermesActivityStore.record(
+        withStoredHermesSessionId(classified, storedSessionId),
+        hermesModeFor(storedSessionId),
+      );
       // Feature 14: extract any file/artifact reference this event carries into
       // the per-session artifact timeline behind the drawer's "Artifacts"
       // section. The store is total and only acts on `tool` completions that
@@ -11229,43 +11248,6 @@ function renderInlineMarkdown(
   return nodes;
 }
 
-function payloadText(payloadValue: unknown) {
-  const payload =
-    payloadValue && typeof payloadValue === "object" && !Array.isArray(payloadValue)
-      ? (payloadValue as Record<string, unknown>)
-      : undefined;
-  if (!payload) return "";
-  for (const key of [
-    "text",
-    "delta",
-    "message",
-    "summary",
-    "status",
-    "content",
-    "output",
-    "result",
-    "command",
-  ]) {
-    const value = stringValue(
-      payload[key],
-      key === "text" || key === "delta" || key === "message" || key === "content",
-    );
-    if (value) return value;
-  }
-  return "";
-}
-
-function stringValue(value: unknown, preserveWhitespace = false) {
-  if (typeof value === "string") {
-    if (!value.trim()) return undefined;
-    return preserveWhitespace ? value : value.trim();
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return undefined;
-}
-
 function capabilityMatches(
   item: HermesSkillInfo | HermesToolsetInfo | HermesMessagingPlatformInfo,
   query: string,
@@ -11692,13 +11674,16 @@ function sessionHasActiveWork(
   );
 }
 
-type AgentActivityLevelProjection = {
+export type AgentActivityLevelProjection = {
   workingSessionIds: Set<string>;
   waitingSessionIds: Set<string>;
   toolCallSessionIds: Set<string>;
 };
 
-function projectAgentActivityLevels(records: AgentActivityRecord[]): AgentActivityLevelProjection {
+export function projectAgentActivityLevels(
+  records: AgentActivityRecord[],
+  previous?: AgentActivityLevelProjection,
+): AgentActivityLevelProjection {
   const workingSessionIds = new Set<string>();
   const waitingSessionIds = new Set<string>();
   const toolCallSessionIds = new Set<string>();
@@ -11712,7 +11697,19 @@ function projectAgentActivityLevels(records: AgentActivityRecord[]): AgentActivi
       toolCallSessionIds.add(record.sessionId);
     }
   }
-  return { toolCallSessionIds, waitingSessionIds, workingSessionIds };
+  return {
+    workingSessionIds: stableSet(workingSessionIds, previous?.workingSessionIds),
+    waitingSessionIds: stableSet(waitingSessionIds, previous?.waitingSessionIds),
+    toolCallSessionIds: stableSet(toolCallSessionIds, previous?.toolCallSessionIds),
+  };
+}
+
+function stableSet(next: Set<string>, previous: Set<string> | undefined): Set<string> {
+  if (!previous || previous.size !== next.size) return next;
+  for (const value of next) {
+    if (!previous.has(value)) return next;
+  }
+  return previous;
 }
 
 function agentActivityCountsFromStore() {
@@ -11724,7 +11721,7 @@ function agentActivityCountsFromStore() {
 }
 
 function lifecycleStatusLooksRunning(event: Extract<JuneHermesEvent, { kind: "lifecycle" }>) {
-  return event.rawType === "status.update";
+  return event.flavor === "running";
 }
 
 function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusKind | undefined {
@@ -11756,7 +11753,7 @@ function agentStatusSummaryFromHermesEvent(event: JuneHermesEvent, status: Agent
     return event.kind === "error" ? event.message || "June hit a problem." : "June hit a problem.";
   }
   if (event.kind === "lifecycle") {
-    return payloadText(event.payload) || "June is working.";
+    return event.text || "June is working.";
   }
   if (event.kind === "tool") {
     return toolActivitySentence(event.name, event.sanitizedPayload);

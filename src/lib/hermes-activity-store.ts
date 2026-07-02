@@ -225,12 +225,21 @@ export function createHermesActivityStore(
     return version;
   }
 
-  /** Keep the map within the cap by dropping the oldest (least recently active). */
+  /** Keep the map within the cap, preferring completed/errored rows over live work. */
   function evict(): void {
     while (bySession.size > ACTIVITY_SESSIONS_CAP) {
-      const oldest = bySession.keys().next().value;
-      if (oldest === undefined) break;
-      bySession.delete(oldest);
+      let evicted = false;
+      for (const [sessionId, row] of bySession) {
+        if (!ACTIVE_PHASES.has(row.phase)) {
+          bySession.delete(sessionId);
+          evicted = true;
+          break;
+        }
+      }
+      if (evicted) continue;
+      const oldestActive = bySession.keys().next().value;
+      if (oldestActive === undefined) break;
+      bySession.delete(oldestActive);
     }
   }
 
@@ -337,12 +346,12 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       }
       // The agent is actively producing output — running, unless it has already
       // reached a terminal state this turn (a late delta shouldn't un-complete).
-      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
+      if (row.phase !== "complete") row.phase = "running";
       return;
     case "reasoning":
       // The agent is actively producing output — running, unless it has already
       // reached a terminal state this turn (a late delta shouldn't un-complete).
-      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
+      if (row.phase !== "complete") row.phase = "running";
       return;
     case "steering":
       // Steering is a local transcript marker, not evidence of new agent work.
@@ -444,9 +453,9 @@ function sessionIdOf(event: JuneHermesEvent): string | undefined {
 }
 
 /**
- * Resolve an event's timestamp to epoch ms. Background activity carries an ISO
- * `lastEventAt` from the classifier; everything else is "now" (the moment we
- * processed it). A bad ISO string falls back to now rather than NaN.
+ * Resolve an event's observed timestamp to epoch ms. The classifier stamps
+ * every kind with `receivedAt`; a bad ISO string falls back to now rather than
+ * NaN.
  */
 function eventTimestamp(event: JuneHermesEvent): number {
   const parsed = Date.parse(event.receivedAt);

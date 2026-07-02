@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyHermesEvent,
+  isTerminalHermesEvent,
+  type JuneHermesEvent,
+} from "../lib/hermes-control-plane";
+import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
   displayedComposerUserMessageText,
   repairContractionSpacing,
 } from "../lib/agent-chat-runtime";
-import type { JuneHermesEvent } from "../lib/hermes-control-plane";
 import { categoryPrompt } from "../lib/issue-report-prompt";
 import { explicitSkillInvocationPrompt } from "../lib/skill-slash-commands";
 import type { AgentMessageDto, HermesSessionMessage } from "../lib/tauri";
@@ -1033,6 +1037,35 @@ describe("Agent chat runtime", () => {
     expect(toolParts?.[0]?.status).toBe("complete");
   });
 
+  it("ignores message.completed for transcript turns while keeping it terminal", () => {
+    const completed = classifyHermesEvent({
+      type: "message.completed",
+      session_id: "runtime-session",
+      payload: { text: "Should not render" },
+    });
+
+    expect(isTerminalHermesEvent(completed)).toBe(true);
+    expect(buildAgentChatTurns([], [], [completed])).toEqual([]);
+  });
+
+  it("does not duplicate assistant text when message.completed follows message.complete", () => {
+    const complete = classifyHermesEvent({
+      type: "message.complete",
+      session_id: "runtime-session",
+      payload: { text: "Done." },
+    });
+    const completed = classifyHermesEvent({
+      type: "message.completed",
+      session_id: "runtime-session",
+      payload: { text: "Done." },
+    });
+
+    const turns = buildAgentChatTurns([], [], [complete, completed]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Done.", status: "complete" }]);
+  });
+
   it("does not merge same-name tool calls with distinct tool ids", () => {
     const turns = buildAgentChatTurns(
       [],
@@ -1343,6 +1376,19 @@ describe("Agent chat runtime", () => {
         }),
       ],
     );
+
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
+  });
+
+  it("folds a summary-only classified error into the same notice path", () => {
+    const event = classifyHermesEvent({
+      type: "error",
+      session_id: "runtime-session",
+      payload: { summary: CREDITS_ERROR },
+    });
+    expect(event.kind).toBe("error");
+
+    const turns = buildAgentChatTurns([], [], [event]);
 
     expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });

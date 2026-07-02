@@ -9,6 +9,7 @@ import {
   AgentWorkspace,
   HERO_GREETINGS,
   SkillsToolsPanel,
+  projectAgentActivityLevels,
   resetAgentSessionContinuity,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
@@ -19,6 +20,7 @@ import {
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
+import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
@@ -328,6 +330,26 @@ describe("AgentWorkspace", () => {
       }
       return Promise.resolve({});
     });
+  });
+
+  it("reuses activity projection set identities when membership is unchanged", () => {
+    const record: AgentActivityRecord = {
+      id: "session-1",
+      mode: "sandboxed",
+      sessionId: "session-1",
+      phase: "running",
+      pendingActionCount: 0,
+      subagentCount: 0,
+      subagents: [],
+      lastEventAt: 1,
+    };
+    const first = projectAgentActivityLevels([record]);
+
+    const second = projectAgentActivityLevels([{ ...record, lastEventAt: 2 }], first);
+
+    expect(second.workingSessionIds).toBe(first.workingSessionIds);
+    expect(second.waitingSessionIds).toBe(first.waitingSessionIds);
+    expect(second.toolCallSessionIds).toBe(first.toolCallSessionIds);
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {
@@ -4072,6 +4094,56 @@ describe("AgentWorkspace", () => {
       ),
     ).toBeInTheDocument();
     expect(mocks.explainAgentApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps approval cards on the runtime session while activity uses the stored session", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-runtime",
+            description: "Security scan requires approval.",
+            command: "npm run build",
+            allow_permanent: true,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("runtime-session-2")).toBeUndefined();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+    const projection = projectAgentActivityLevels(hermesActivityStore.getRecords());
+    expect(projection.waitingSessionIds.has("session-2")).toBe(true);
+    expect(projection.waitingSessionIds.has("runtime-session-2")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Approve once" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
+        session_id: "runtime-session-2",
+        choice: "once",
+      }),
+    );
   });
 
   it("retires a pending approval and explains when its runtime session is gone", async () => {

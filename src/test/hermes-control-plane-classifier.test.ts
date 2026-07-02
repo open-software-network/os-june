@@ -137,15 +137,6 @@ describe("classifyHermesEvent — transcript", () => {
     if (complete.kind === "transcript") {
       expect(complete.delta).toBe("Hello");
     }
-
-    const completed = classifyHermesEvent(
-      event("message.completed", { message_id: "m1", text: "Hello again" }),
-    );
-    expect(completed).toMatchObject({
-      kind: "transcript",
-      complete: true,
-      failed: false,
-    });
   });
 
   it("preserves whitespace-only deltas verbatim", () => {
@@ -202,8 +193,8 @@ describe("classifyHermesEvent — tools", () => {
       isClarify: false,
     });
     if (start.kind === "tool") {
-      // The raw payload is preserved so a tool card can render arguments.
-      expect(start.payload).toMatchObject({ path: "/tmp/x" });
+      // The sanitized payload is preserved so a tool card can render arguments.
+      expect("payload" in start).toBe(false);
       expect(start.sanitizedPayload).toMatchObject({ path: "/tmp/x" });
     }
 
@@ -503,12 +494,14 @@ describe("classifyHermesEvent — lifecycle", () => {
       expect(result.kind, `expected lifecycle for ${name}`).toBe("lifecycle");
       if (result.kind === "lifecycle") {
         expect(result.status).toBeTruthy();
+        expect(result.text).toBe("ready");
       }
     }
   });
 
   it("maps turn/background completion aliases to terminal lifecycle events", () => {
     for (const name of [
+      "message.completed",
       "turn.complete",
       "turn.completed",
       "background.complete",
@@ -518,8 +511,29 @@ describe("classifyHermesEvent — lifecycle", () => {
       expect(result.kind, `expected lifecycle for ${name}`).toBe("lifecycle");
       if (result.kind === "lifecycle") {
         expect(result.status).toBe(name);
+        expect(result.flavor).toBe("terminal");
         expect(isTerminalHermesEvent(result)).toBe(true);
       }
+    }
+  });
+
+  it("keys terminal lifecycle flavor from raw type rather than payload status", () => {
+    const result = classifyHermesEvent(event("turn.complete", { status: "success" }));
+    expect(result.kind).toBe("lifecycle");
+    if (result.kind === "lifecycle") {
+      expect(result.status).toBe("success");
+      expect(result.flavor).toBe("terminal");
+      expect(isTerminalHermesEvent(result)).toBe(true);
+    }
+  });
+
+  it("keeps status.update running even when payload status sounds terminal", () => {
+    const result = classifyHermesEvent(event("status.update", { status: "done" }));
+    expect(result.kind).toBe("lifecycle");
+    if (result.kind === "lifecycle") {
+      expect(result.status).toBe("done");
+      expect(result.flavor).toBe("running");
+      expect(isTerminalHermesEvent(result)).toBe(false);
     }
   });
 });
@@ -550,6 +564,14 @@ describe("classifyHermesEvent — error redaction", () => {
     const result = classifyHermesEvent(event("error", { code: 500 }));
     if (result.kind === "error") {
       expect(result.message).toBeTruthy();
+    }
+  });
+
+  it("reads error text from the broad rendered summary chain", () => {
+    const result = classifyHermesEvent(event("error", { summary: "  Summary-only failure  " }));
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toBe("Summary-only failure");
     }
   });
 });

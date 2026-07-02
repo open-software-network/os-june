@@ -207,6 +207,17 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(0);
   });
 
+  it("lets parent transcript streaming recover visibility after a subagent error", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("subagent.error", "s1", { subagent_id: "a1" }), "sandboxed");
+    expect(store.getRecord("s1")?.phase).toBe("error");
+
+    store.record(classified("message.delta", "s1", { delta: "Still streaming" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+  });
+
   it("keeps the parent in 'background' while any sibling subagent is still working", () => {
     const store = createHermesActivityStore();
     store.record(classified("subagent.start", "s1", { subagent_id: "a1" }), "sandboxed");
@@ -299,5 +310,22 @@ describe("createHermesActivityStore", () => {
     expect(store.getRecords().length).toBeLessThanOrEqual(ACTIVITY_SESSIONS_CAP);
     // The very first session should have been evicted.
     expect(store.getRecord("s0")).toBeUndefined();
+  });
+
+  it("evicts completed rows before an older live row when over capacity", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "running", { tool_name: "bash" }), "sandboxed");
+    advance(1);
+
+    for (let i = 0; i < ACTIVITY_SESSIONS_CAP; i++) {
+      const sessionId = `complete-${i}`;
+      store.record(classified("tool.start", sessionId, { tool_name: "bash" }), "sandboxed");
+      store.record(classified("session.complete", sessionId), "sandboxed");
+      advance(1);
+    }
+
+    expect(store.getRecords()).toHaveLength(ACTIVITY_SESSIONS_CAP);
+    expect(store.getRecord("running")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
   });
 });

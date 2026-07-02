@@ -292,7 +292,7 @@ export function artifactsFromToolEvent(event: JuneHermesEvent): AgentArtifact[] 
   const sessionId = nonEmpty(event.sessionId);
   if (!sessionId) return [];
 
-  const payload = asRecord(event.payload);
+  const payload = asRecord(event.sanitizedPayload);
   if (!payload) return [];
 
   const locations = locationsFromPayload(payload);

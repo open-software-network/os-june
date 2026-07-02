@@ -31,7 +31,6 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     case "message.start":
     case "message.delta":
     case "message.complete":
-    case "message.completed":
       return classifyTranscript(type, sessionId, payload, receivedAt);
 
     case "thinking.delta":
@@ -86,8 +85,9 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     return {
       kind: "lifecycle",
       sessionId,
-      rawType: type,
+      flavor: lifecycleFlavor(type),
       status: lifecycleStatus(type, payload),
+      text: eventText(payload),
       payload: payload ? sanitizePayload(payload) : undefined,
       receivedAt,
     };
@@ -108,7 +108,7 @@ function classifyTranscript(
   payload: RawHermesPayload | undefined,
   receivedAt: string,
 ): JuneHermesEvent {
-  const complete = type === "message.complete" || type === "message.completed";
+  const complete = type === "message.complete";
   const delta =
     type === "message.delta" ? rawDeltaText(payload) : complete ? eventText(payload) : undefined;
   const failed = complete && stringValue(payload?.status)?.toLowerCase() === "error";
@@ -156,10 +156,9 @@ function classifyTool(
     text: eventText(payload),
     // Clarify tool calls are action-card plumbing in the builder, not tool rows.
     isClarify: isClarifyTool(payload),
-    // Tool cards render arguments/output, so keep the payload — sanitized, in
-    // case a tool's args happen to embed a secret.
+    // Tool cards render arguments/output, so keep the sanitized payload in case
+    // a tool's args happen to embed a secret.
     sanitizedPayload,
-    payload: sanitizedPayload,
     receivedAt,
   };
 }
@@ -319,12 +318,9 @@ function classifyError(
   return {
     kind: "error",
     sessionId,
-    // The human-readable message is safe to surface; everything else stays out
-    // unless explicitly modeled, so a secret in some other field can't leak.
-    message:
-      stringValue(payload?.message, true) ??
-      stringValue(payload?.text, true) ??
-      "The agent reported an error.",
+    // Main already rendered the broad visible-text chain for error frames; keep
+    // that user-facing text while leaving every unmodeled field out.
+    message: eventText(payload) || "The agent reported an error.",
     code: numberValue(payload?.code),
     recoverable: typeof payload?.recoverable === "boolean" ? payload.recoverable : undefined,
     receivedAt,
@@ -341,11 +337,13 @@ const SUBAGENT_PHASES: Record<string, BackgroundHermesPhase> = {
   blocked: "blocked",
 };
 
+const FAILURE_WORD = /fail|error|cancel|timeout|abort|interrupt/;
+
 function subagentPhase(type: string, payload: RawHermesPayload | undefined): BackgroundHermesPhase {
   const subtype = type.slice("subagent.".length).toLowerCase();
   const reportedStatus = stringValue(payload?.status)?.toLowerCase() ?? "";
-  if (/fail|error|cancel|timeout|abort|interrupt/.test(subtype)) return "error";
-  if (/fail|error|cancel|timeout|abort|interrupt/.test(reportedStatus)) return "error";
+  if (FAILURE_WORD.test(subtype)) return "error";
+  if (FAILURE_WORD.test(reportedStatus)) return "error";
   if (subtype in SUBAGENT_PHASES) return SUBAGENT_PHASES[subtype];
   // Unknown subagent subtype: classify by failure-flavored keywords, else
   // treat as progress so the row still updates rather than vanishing.
@@ -360,6 +358,7 @@ const LIFECYCLE_TYPES = new Set([
   "session.start",
   "session.complete",
   "session.completed",
+  "message.completed",
   // Workspace terminal detection predates the union; these raw frames are
   // lifecycle-flavored terminals even though they are not session.* names.
   "turn.complete",
@@ -374,6 +373,23 @@ function isLifecycleType(type: string): boolean {
 
 function lifecycleStatus(type: string, payload: RawHermesPayload | undefined): string {
   return stringValue(payload?.status, true) ?? type;
+}
+
+function lifecycleFlavor(type: string): Extract<JuneHermesEvent, { kind: "lifecycle" }>["flavor"] {
+  switch (type.toLowerCase()) {
+    case "message.completed":
+    case "turn.complete":
+    case "turn.completed":
+    case "session.complete":
+    case "session.completed":
+    case "background.complete":
+    case "background.completed":
+      return "terminal";
+    case "status.update":
+      return "running";
+    default:
+      return "info";
+  }
 }
 
 function requestIdOf(
@@ -434,9 +450,7 @@ function toolPhase(type: string): Extract<JuneHermesEvent, { kind: "tool" }>["ph
   const normalized = type.toLowerCase();
   if (normalized.includes("complete")) return "complete";
   if (normalized.includes("error") || normalized.includes("fail")) return "failed";
-  if (normalized === "tool.start") return "start";
-  if (normalized === "tool.progress") return "progress";
-  return "progress";
+  return normalized === "tool.start" ? "start" : "progress";
 }
 
 function toolEventKey(

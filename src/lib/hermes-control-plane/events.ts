@@ -180,9 +180,6 @@ export type JuneHermesEvent =
       /** Sanitized opaque payload for display/details. Keep consumers from
        * depending on raw wire structure. */
       sanitizedPayload?: unknown;
-      /** Existing store-facing alias for the sanitized payload; stage A2 can
-       * migrate consumers to `sanitizedPayload` when transcript rendering moves. */
-      payload?: unknown;
     })
   | (JuneHermesEventBase & {
       kind: "pending_action";
@@ -207,8 +204,9 @@ export type JuneHermesEvent =
   | (JuneHermesEventBase & {
       kind: "lifecycle";
       sessionId?: string;
-      rawType?: string;
+      flavor: "terminal" | "running" | "info";
       status: string;
+      text: string;
       payload?: unknown;
     })
   | (JuneHermesEventBase & {
@@ -257,7 +255,7 @@ export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
     case "transcript":
       return event.complete === true;
     case "lifecycle":
-      return isTerminalHermesLifecycleStatus(event.status);
+      return event.flavor === "terminal";
     default:
       return false;
   }
