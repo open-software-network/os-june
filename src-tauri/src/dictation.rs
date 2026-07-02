@@ -1614,10 +1614,18 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
         let app = app.clone();
         let label = shortcut_label.to_string();
         tauri::async_runtime::spawn(async move {
-            if crate::os_accounts::access_token().await.is_err() {
-                forward_dictation_command(&app, DictationCommand::DiscardListening, &label);
-                notify_dictation_not_signed_in(&app);
-                reset_shortcut_activation(&app);
+            match classify_dictation_auth(&crate::os_accounts::access_token().await) {
+                DictationAuthGate::Proceed => {}
+                // A transient outage at the key press must not kill a live
+                // dictation: let it record. The recording_ready backstop
+                // re-checks at the end and, if still unavailable, keeps the
+                // audio and shows a retriable error.
+                DictationAuthGate::Unavailable(_) => {}
+                DictationAuthGate::SignedOut => {
+                    forward_dictation_command(&app, DictationCommand::DiscardListening, &label);
+                    notify_dictation_not_signed_in(&app);
+                    reset_shortcut_activation(&app);
+                }
             }
         });
     }
@@ -1683,6 +1691,29 @@ fn dictation_not_signed_in_event() -> serde_json::Value {
             "message": "Sign in to use dictation.",
         },
     })
+}
+
+/// How a dictation auth check should be handled. A transient OS Accounts
+/// failure is distinct from a genuine sign-out: the recording must be kept and
+/// a retriable error shown, never discarded behind a sign-in prompt.
+enum DictationAuthGate {
+    /// The token is usable; continue with transcription.
+    Proceed,
+    /// OS Accounts was momentarily unreachable. Keep the recording; show a
+    /// retriable error carrying the upstream message.
+    Unavailable(AppError),
+    /// The user is genuinely signed out. Discard and prompt to sign in.
+    SignedOut,
+}
+
+fn classify_dictation_auth(result: &Result<String, AppError>) -> DictationAuthGate {
+    match result {
+        Ok(_) => DictationAuthGate::Proceed,
+        Err(error) if crate::os_accounts::is_transient_auth_error(error) => {
+            DictationAuthGate::Unavailable(error.clone())
+        }
+        Err(_) => DictationAuthGate::SignedOut,
+    }
 }
 
 fn focus_main_window(app: &AppHandle) {
@@ -2211,11 +2242,23 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
-    if crate::os_accounts::access_token().await.is_err() {
-        let state = app.state::<HelperState>();
-        let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
-        notify_dictation_not_signed_in(&app);
-        return;
+    match classify_dictation_auth(&crate::os_accounts::access_token().await) {
+        DictationAuthGate::Proceed => {}
+        DictationAuthGate::Unavailable(error) => {
+            // OS Accounts is momentarily unreachable (e.g. an upstream 5xx
+            // during a post-update restart). The recording is intact and the
+            // user is still signed in, so keep the audio (do NOT discard) and
+            // surface a retriable error instead of a misleading sign-in prompt.
+            // The helper drops the leftover file on the next start_listening.
+            emit_dictation_event_value(&app, app_error_event(error));
+            return;
+        }
+        DictationAuthGate::SignedOut => {
+            let state = app.state::<HelperState>();
+            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            notify_dictation_not_signed_in(&app);
+            return;
+        }
     }
     let provider = match dictation_transcription_provider(configured_transcription_provider()) {
         Ok(provider) => provider,
@@ -4716,5 +4759,62 @@ mod tests {
         // Must be classified as non-silent so the HUD renders the actionable
         // message instead of the "Nothing recorded" terminal state.
         assert_eq!(event["payload"]["silent"], false);
+    }
+
+    #[test]
+    fn dictation_auth_gate_keeps_recording_on_transient_failure() {
+        let transient: Result<String, AppError> = Err(AppError::new(
+            "auth_refresh_unavailable",
+            "Couldn't reach your account.",
+        ));
+        assert!(matches!(
+            classify_dictation_auth(&transient),
+            DictationAuthGate::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn dictation_auth_gate_signs_out_on_genuine_rejection() {
+        let signed_out: Result<String, AppError> =
+            Err(AppError::new("signed_out", "Not signed in."));
+        assert!(matches!(
+            classify_dictation_auth(&signed_out),
+            DictationAuthGate::SignedOut
+        ));
+        let expired: Result<String, AppError> = Err(AppError::new(
+            "session_expired",
+            "Your session expired. Sign in again.",
+        ));
+        assert!(matches!(
+            classify_dictation_auth(&expired),
+            DictationAuthGate::SignedOut
+        ));
+    }
+
+    #[test]
+    fn dictation_auth_gate_proceeds_with_a_token() {
+        let ok: Result<String, AppError> = Ok("token".to_string());
+        assert!(matches!(
+            classify_dictation_auth(&ok),
+            DictationAuthGate::Proceed
+        ));
+    }
+
+    #[test]
+    fn transient_auth_error_renders_as_a_visible_hud_error() {
+        // The kept-recording branch emits app_error_event for the transient
+        // failure; it must not be silent-classified, or the HUD would swallow
+        // it and the user would see nothing after their dictation vanished.
+        let error = AppError::new(
+            "auth_refresh_unavailable",
+            "Couldn't reach your account. Try again in a moment.",
+        );
+        let mut event = app_error_event(error);
+        annotate_silent_error(&mut event);
+
+        assert_eq!(event["type"], "error");
+        assert_eq!(event["payload"]["code"], "auth_refresh_unavailable");
+        assert_eq!(event["payload"]["silent"], false);
+        assert!(!is_silent_transcription_error(&event));
     }
 }
