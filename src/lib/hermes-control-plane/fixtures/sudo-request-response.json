@@ -3,7 +3,7 @@
   "hermesVersion": "v2026.6.19",
   "recordedFrom": "tui-gateway",
   "sanitized": true,
-  "_note": "A privilege-escalation prompt and its resolution. sudo.request -> pending_action/sudo carrying the mode. sudo.response is not modeled as a gateway event yet; classifier routes it to unsupported today (locked as honest current behavior; feature 03 wires the response method).",
+  "_note": "A privilege-escalation prompt and its resolution. sudo.request -> pending_action/sudo carrying the mode. sudo.response -> pending_action_resolution/sudo.",
   "frames": [
     {
       "type": "sudo.request",
