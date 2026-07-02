@@ -2404,6 +2404,8 @@ mod tests {
                 trial_end: None,
                 current_period_end: None,
                 trial_period_days: None,
+                scheduled_plan: None,
+                scheduled_plan_credits: None,
             }),
         }
     }
