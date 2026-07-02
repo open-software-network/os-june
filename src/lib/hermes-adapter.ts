@@ -244,7 +244,7 @@ export function titleFromPrompt(prompt: string) {
     .split(" ")
     .filter(Boolean)
     .slice(0, 6);
-  const title = titleCaseSessionTitle(words.join(" "));
+  const title = sentenceCaseSessionTitle(words.join(" "));
   if (title.length <= 72) return title || UNTITLED_SESSION_TITLE;
   return `${title.slice(0, 69).trim()}...`;
 }
@@ -283,37 +283,10 @@ function stripRequestPrefix(value: string) {
   return title;
 }
 
-function titleCaseSessionTitle(value: string) {
-  const smallWords = new Set([
-    "a",
-    "an",
-    "and",
-    "as",
-    "at",
-    "but",
-    "by",
-    "for",
-    "from",
-    "in",
-    "into",
-    "of",
-    "on",
-    "or",
-    "the",
-    "to",
-    "with",
-  ]);
-  return value
-    .split(" ")
-    .map((word, index) => {
-      if (!word) return word;
-      if (/[A-Z]/.test(word) && word === word.toUpperCase()) return word;
-      const lower = word.toLowerCase();
-      if (index > 0 && smallWords.has(lower)) return lower;
-      return lower.replace(/^([a-z])/, (match) => match.toUpperCase());
-    })
-    .join(" ")
-    .trim();
+// Sentence case per spec/sentence-case.md: capitalize the first word and keep
+// the user's own casing elsewhere (acronyms and proper nouns survive as typed).
+function sentenceCaseSessionTitle(value: string) {
+  return value.trim().replace(/^([a-z])/, (match) => match.toUpperCase());
 }
 
 function extractList(response: unknown, preferredKey: "sessions" | "messages") {

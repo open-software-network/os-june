@@ -866,7 +866,7 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
         "messages": [
             {
                 "role": "system",
-                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations."
+                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title in sentence case: capitalize the first word and proper nouns only, never every word. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations."
             },
             {
                 "role": "user",
