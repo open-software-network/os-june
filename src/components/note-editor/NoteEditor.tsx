@@ -28,6 +28,7 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
 import { isMacLikePlatform } from "../../lib/platform";
+import { useSystemAudioSupport } from "../../lib/use-system-audio-support";
 import {
   isInvalidJuneResponseMessage,
   NoteFailureBanner,
@@ -192,7 +193,17 @@ export function NoteEditor({
   const systemDenied =
     systemSource?.permissionState === "denied" || systemSource?.permissionState === "restricted";
   const systemUnsupported = systemSource?.permissionState === "unsupported";
-  const showRecordingOptions = isMacLikePlatform();
+  // Recording options (the system-audio toggle) show wherever a system-audio
+  // backend exists. macOS always qualifies; Windows qualifies once readiness
+  // reports a supported system source (WASAPI loopback, no permission needed).
+  // Platforms without a backend report "unsupported" and stay hidden, and an
+  // unknown state (no readiness result has covered the system source yet)
+  // also reads as unsupported on non-macOS hosts so nothing flashes while the
+  // first readiness check is in flight. Support is sticky across mic-only
+  // preflights, which drop the system source from the DTO, so turning system
+  // audio off never hides the way to turn it back on.
+  const systemAudioSupport = useSystemAudioSupport(sourceReadiness);
+  const showRecordingOptions = isMacLikePlatform() || systemAudioSupport === "supported";
   // Mic denial is sourced from App via the dictation helper, not from
   // sourceReadiness — the Rust cpal-based check can't see TCC denials.
   const micDenied = microphoneBlocked;

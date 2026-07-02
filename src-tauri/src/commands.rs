@@ -1278,11 +1278,11 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
         message: microphone_hint,
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
-        let mut system = crate::audio::system_macos::system_audio_readiness();
+        let mut system = crate::audio::system_audio_readiness();
         if should_probe_system_audio_permission(system.ready, is_capture_active()) {
             system = apply_system_audio_permission_probe_result(
                 system,
-                crate::audio::system_macos::helper_permission_check(),
+                crate::audio::helper_permission_check(),
             );
         }
         sources.push(system);

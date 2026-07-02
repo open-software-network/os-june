@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resetSystemAudioSupportForTests } from "../lib/use-system-audio-support";
 import { AppSettings } from "../components/settings/AppSettings";
 import type { AccountStatus, DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
@@ -215,6 +216,9 @@ function stubNavigatorPlatform(platform: string, userAgent: string) {
 
 describe("AppSettings", () => {
   beforeEach(() => {
+    // The remembered system-audio support is module-scoped on purpose (it must
+    // survive remounts in the app); tests reset it so cases stay independent.
+    resetSystemAudioSupportForTests();
     vi.clearAllMocks();
     localStorage.clear();
     localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
@@ -1455,11 +1459,10 @@ describe("AppSettings", () => {
               {
                 source: "system",
                 required: true,
-                ready: false,
-                permissionState: "denied",
+                ready: true,
+                permissionState: "granted",
                 deviceAvailable: true,
-                captureAvailable: false,
-                recoveryAction: "openSystemAudioSettings",
+                captureAvailable: true,
               },
             ],
           }}
@@ -1475,6 +1478,8 @@ describe("AppSettings", () => {
         />,
       );
 
+      // The permissions list stays microphone-only on Windows: there is no
+      // accessibility handoff and system audio needs no OS permission grant.
       expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
@@ -1492,12 +1497,14 @@ describe("AppSettings", () => {
       expect(onEnableAccessibility).not.toHaveBeenCalled();
       expect(onEnableSystemAudio).not.toHaveBeenCalled();
 
+      // The Audio tab still offers the system-audio capture toggle on Windows
+      // (WASAPI loopback is supported); only the macOS-only mic test is hidden.
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
       expect(
-        screen.queryByRole("switch", {
+        screen.getByRole("switch", {
           name: "Capture system audio for notes",
         }),
-      ).not.toBeInTheDocument();
+      ).toBeInTheDocument();
       expect(
         screen.queryByRole("button", {
           name: "Start test",
@@ -1507,6 +1514,124 @@ describe("AppSettings", () => {
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
       expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("hides the system audio toggle on Windows until source readiness first loads", async () => {
+    // Before the first readiness check resolves, sourceReadiness is undefined.
+    // Non-macOS hosts must treat that unknown state as unavailable so hosts
+    // whose backend will report "unsupported" never flash the toggle.
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          sourceReadiness={undefined}
+          checkingSourceReadiness={true}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
+      expect(
+        screen.queryByRole("switch", {
+          name: "Capture system audio for notes",
+        }),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("keeps the system audio toggle on Windows after a mic-only readiness check", async () => {
+    // Turning system audio off makes the recording preflight store a
+    // microphoneOnly readiness with no system source. Backend support is a
+    // property of the host, not of the last-checked mode, so the toggle must
+    // stay visible or the user could never turn system audio back on.
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    const microphoneSource = {
+      source: "microphone" as const,
+      required: true,
+      ready: true,
+      permissionState: "granted" as const,
+      deviceAvailable: true,
+      captureAvailable: true,
+    };
+    const onSourceModeChange = vi.fn();
+    const sharedProps = {
+      account: signedInAccount,
+      accountLoading: false,
+      checkingSourceReadiness: false,
+      onAccountChanged: vi.fn(),
+      onAccountRefresh: vi.fn(),
+      onSourceModeChange,
+      onEnableSystemAudio: vi.fn(),
+    };
+    try {
+      const { rerender } = render(
+        <AppSettings
+          {...sharedProps}
+          sourceMode="microphonePlusSystem"
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: true,
+            checkedAt: "2026-06-08T12:00:00Z",
+            sources: [
+              microphoneSource,
+              {
+                source: "system",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+            ],
+          }}
+        />,
+      );
+
+      await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
+      expect(
+        screen.getByRole("switch", { name: "Capture system audio for notes" }),
+      ).toBeInTheDocument();
+
+      // System audio switched off; the preflight readiness now covers only
+      // the microphone.
+      rerender(
+        <AppSettings
+          {...sharedProps}
+          sourceMode="microphoneOnly"
+          sourceReadiness={{
+            sourceMode: "microphoneOnly",
+            ready: true,
+            checkedAt: "2026-06-08T12:01:00Z",
+            sources: [microphoneSource],
+          }}
+        />,
+      );
+
+      const systemSwitch = screen.getByRole("switch", {
+        name: "Capture system audio for notes",
+      });
+      expect(systemSwitch).toBeEnabled();
+
+      // And the user can turn system audio back on.
+      await userEvent.click(systemSwitch);
+      expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
     } finally {
       restoreNavigator();
     }
