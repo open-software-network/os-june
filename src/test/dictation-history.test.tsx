@@ -134,7 +134,9 @@ describe("DictationHistoryView", () => {
 
       render(<DictationHistoryView />);
 
-      expect(await screen.findByText("Dictation is only supported on macOS")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Dictation is not available on this platform yet"),
+      ).toBeInTheDocument();
       expect(
         screen.getByText("Meeting notes still work with microphone recording on this device."),
       ).toBeInTheDocument();
