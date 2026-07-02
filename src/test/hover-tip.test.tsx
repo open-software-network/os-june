@@ -114,6 +114,59 @@ describe("HoverTip", () => {
     }
   });
 
+  it("tightens to the widest visual line, not the widest inline fragment", () => {
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.getAttribute("role") === "tooltip") {
+          return { top: 0, left: 0, right: 216, bottom: 40, width: 216, height: 40 } as DOMRect;
+        }
+        return { top: 100, left: 100, right: 132, bottom: 116, width: 32, height: 16 } as DOMRect;
+      });
+    const fragment = (left: number, right: number, top: number, bottom: number) =>
+      ({ left, right, top, bottom, width: right - left, height: bottom - top }) as DOMRect;
+    // First visual line split into two inline fragments (plain text + inline
+    // markup) spanning 10..160; second line a single 90px fragment. The widest
+    // single fragment is 90px, but the widest LINE is 150px — the box must be
+    // sized from the line, or one-line content would be forced to re-wrap.
+    const rangeSpy = vi
+      .spyOn(Range.prototype, "getClientRects")
+      .mockReturnValue([
+        fragment(10, 100, 0, 16),
+        fragment(100, 160, 0, 16),
+        fragment(10, 100, 16, 32),
+      ] as unknown as DOMRectList);
+    const realGetComputedStyle = window.getComputedStyle.bind(window);
+    const styleSpy = vi
+      .spyOn(window, "getComputedStyle")
+      .mockImplementation((el: Element, pseudo?: string | null) =>
+        (el as HTMLElement).getAttribute?.("role") === "tooltip"
+          ? ({
+              paddingLeft: "6px",
+              paddingRight: "6px",
+              borderLeftWidth: "1px",
+              borderRightWidth: "1px",
+            } as CSSStyleDeclaration)
+          : realGetComputedStyle(el, pseudo),
+      );
+    try {
+      render(
+        <HoverTip tip="Two-line tip with inline markup" width={216} tabIndex={0}>
+          Info
+        </HoverTip>,
+      );
+      fireEvent.focus(screen.getByText("Info"));
+      // ceil(150 line span + 12 padding + 2 borders) — not 90 + 14.
+      expect(screen.getByRole("tooltip").style.width).toBe("164px");
+    } finally {
+      rectSpy.mockRestore();
+      rangeSpy.mockRestore();
+      styleSpy.mockRestore();
+    }
+  });
+
   it("does not flip sides when the anchor is re-entered while the tip is open", () => {
     vi.useFakeTimers();
     // Anchor pinned so close to the viewport floor that the tip opens above it;

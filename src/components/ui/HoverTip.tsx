@@ -41,11 +41,26 @@ type TipCoords = {
 function widestLineWidth(element: HTMLElement): number {
   const range = document.createRange();
   range.selectNodeContents(element);
+  // One rect per inline fragment, not per visual line: inline markup (a
+  // <strong>, a link) splits a single line into adjacent rects. Rebuild each
+  // line by grouping fragments that overlap vertically (rects arrive in
+  // document order) and read its width as the group's horizontal span.
   const rects = range.getClientRects();
   let widest = 0;
+  let line: { bottom: number; left: number; right: number } | null = null;
   for (let index = 0; index < rects.length; index += 1) {
-    widest = Math.max(widest, rects[index].width);
+    const rect = rects[index];
+    if (rect.width === 0) continue;
+    if (line && (rect.top + rect.bottom) / 2 < line.bottom) {
+      line.left = Math.min(line.left, rect.left);
+      line.right = Math.max(line.right, rect.right);
+      line.bottom = Math.max(line.bottom, rect.bottom);
+    } else {
+      if (line) widest = Math.max(widest, line.right - line.left);
+      line = { bottom: rect.bottom, left: rect.left, right: rect.right };
+    }
   }
+  if (line) widest = Math.max(widest, line.right - line.left);
   return widest;
 }
 
