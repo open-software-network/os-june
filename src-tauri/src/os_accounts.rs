@@ -1081,6 +1081,9 @@ fn refresh_failure_is_transient(status: u16, parsed_rejection: bool) -> bool {
         500..=599 | 429 => true,
         _ if parsed_rejection => false,
         400..=499 => false,
+        // Unrecognised status (a 2xx we couldn't parse, or a 1xx/3xx that
+        // reqwest's redirect-following should never surface): lean toward
+        // transient rather than signing the user out on an unexpected shape.
         _ => true,
     }
 }
