@@ -698,7 +698,14 @@ input:focus-visible,
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: var(--sp-6);
+  /* The per-turn actions row (copy/branch/timestamp) is positioned out of flow
+   * into the space below each turn (see .agent-turn-actions). The inter-turn
+   * gap must be at least the row's own height, plus a little breathing room,
+   * so a revealed row never overlaps the next turn's "Thought" summary. Both
+   * the row and this gap size off --agent-turn-actions-h, so they stay in sync
+   * if the button size changes. */
+  --agent-turn-actions-h: calc(var(--sp-8) + var(--sp-px));
+  gap: calc(var(--agent-turn-actions-h) + var(--sp-2));
   /* Align the thread rail with the composer's text line, not its outer
    * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
    * User turns stay right-aligned inside this rail. */
@@ -14054,6 +14061,10 @@ input:focus-visible,
   line-height: 1.5;
   text-align: left;
   white-space: normal;
+  /* Split a wrapped tip's lines evenly so a two-line tip reads as a balanced
+   * block. HoverTip measures the line boxes AFTER this applies and tightens the
+   * box width to hug the widest line, so the box edges match the text edges. */
+  text-wrap: balance;
   pointer-events: none;
 }
 

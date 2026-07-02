@@ -82,6 +82,76 @@ describe("HoverTip", () => {
     }
   });
 
+  it("keeps a compact tip below the anchor near the viewport bottom when it fits", () => {
+    // jsdom has no layout, so feed the geometry the measure pass reads: a short
+    // anchor low in a tall-enough viewport, and a one-line tip that fits below.
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectFor = (el: Element): DOMRect => {
+      if (el instanceof HTMLElement && el.getAttribute("role") === "tooltip") {
+        // Compact one-line tip: ~24px tall.
+        return { top: 0, left: 0, right: 120, bottom: 24, width: 120, height: 24 } as DOMRect;
+      }
+      // Anchor sits 40px above the viewport floor — plenty for a 24px tip plus
+      // the gap and margin, so the tip should stay below.
+      return { top: 744, left: 100, right: 132, bottom: 760, width: 32, height: 16 } as DOMRect;
+    };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        return rectFor(this);
+      });
+    try {
+      render(
+        <HoverTip tip="Copy message" compact width={104} tabIndex={0}>
+          Copy
+        </HoverTip>,
+      );
+      fireEvent.focus(screen.getByText("Copy"));
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "bottom");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not flip sides when the anchor is re-entered while the tip is open", () => {
+    vi.useFakeTimers();
+    // Anchor pinned so close to the viewport floor that the tip opens above it;
+    // a re-hover must not teleport the visible card back below.
+    window.innerHeight = 800;
+    window.innerWidth = 1000;
+    const rectFor = (el: Element): DOMRect => {
+      if (el instanceof HTMLElement && el.getAttribute("role") === "tooltip") {
+        return { top: 0, left: 0, right: 120, bottom: 200, width: 120, height: 200 } as DOMRect;
+      }
+      // Only 20px of room below — a 200px tip can't fit, so it flips to top.
+      return { top: 764, left: 100, right: 132, bottom: 780, width: 32, height: 16 } as DOMRect;
+    };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        return rectFor(this);
+      });
+    try {
+      render(
+        <HoverTip tip="A tall explainer that flips above the anchor." tabIndex={0}>
+          Info
+        </HoverTip>,
+      );
+      const anchor = screen.getByText("Info");
+      fireEvent.focus(anchor);
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "top");
+
+      // Fade out, then re-enter while still mounted — the side must hold.
+      fireEvent.blur(anchor);
+      fireEvent.focus(anchor);
+      expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "top");
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("cancels the exit when the anchor is re-entered mid-fade", () => {
     vi.useFakeTimers();
     try {

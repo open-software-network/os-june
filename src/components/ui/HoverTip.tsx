@@ -13,8 +13,9 @@ import { createPortal } from "react-dom";
 const DEFAULT_TIP_WIDTH = 300;
 const TIP_GAP = 6;
 const VIEWPORT_MARGIN = 8;
-// Flip above the anchor when less than this remains below — enough for the
-// longest privacy explainer at the default cap without clipping.
+// Fallback flip threshold used only before the tip's real height is known (it
+// never is, since the side is decided in the measure pass from the measured
+// height — this just keeps a sane default if measurement ever yields nothing).
 const MIN_SPACE_BELOW = 200;
 // Hover-intent delay before the card opens — a pointer sweeping across the
 // anchor should not flash it. Matches the model popover's flyout debounce;
@@ -28,14 +29,41 @@ type TipCoords = {
   side: "top" | "bottom";
   top: number;
   left: number;
+  // The tightened width in px once the wrapped line boxes are measured, so a
+  // two-line tip hugs its text instead of keeping the full cap. Undefined when
+  // measurement can't run (jsdom) — the tip keeps its natural capped width.
+  width?: number;
 };
 
-// The anchor's midpoint x and its below/top gap coordinates, captured at open
-// time; the final left is derived once the tip's own width is measured.
+// The widest rendered line box of a wrapped element, via a Range over its text.
+// Returns 0 when the platform can't measure (jsdom returns no client rects),
+// which the caller reads as "leave the natural width alone".
+function widestLineWidth(element: HTMLElement): number {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const rects = range.getClientRects();
+  let widest = 0;
+  for (let index = 0; index < rects.length; index += 1) {
+    widest = Math.max(widest, rects[index].width);
+  }
+  return widest;
+}
+
+// The anchor geometry captured at open time. The side is decided later, in the
+// measure pass, from the tip's real height — but once decided for a mounted
+// tip it stays put (see `side` below) so a re-hover never teleports the visible
+// card from bottom to top. `top`/`bottom` are the two candidate gap edges.
 type TipAnchor = {
-  side: "top" | "bottom";
-  top: number;
+  // The already-committed side for a still-mounted tip. Undefined on a fresh
+  // open, which lets the measure pass pick the side from the measured height.
+  side?: "top" | "bottom";
   centerX: number;
+  // Y of the tip's leading edge for each side: below the anchor, or above it.
+  bottom: number;
+  top: number;
+  // Room from the anchor's bottom to the viewport floor — the measure pass
+  // compares this against the measured tip height to decide the side.
+  spaceBelow: number;
 };
 
 type HoverTipProps = HTMLAttributes<HTMLSpanElement> & {
@@ -120,12 +148,17 @@ export function HoverTip({
     cancelClose();
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const side = window.innerHeight - rect.bottom < MIN_SPACE_BELOW ? "top" : "bottom";
-    setAnchor({
-      side,
+    setAnchor((current) => ({
+      // A re-hover while the tip is still mounted (open or mid-fade) keeps the
+      // side it already committed to: recomputing it here is what made the
+      // visible card teleport bottom→top. Only a fresh open (no current
+      // anchor) leaves `side` undefined so the measure pass can decide it.
+      side: current?.side ?? coords?.side,
       centerX: rect.left + rect.width / 2,
-      top: side === "bottom" ? rect.bottom + TIP_GAP : rect.top - TIP_GAP,
-    });
+      bottom: rect.bottom + TIP_GAP,
+      top: rect.top - TIP_GAP,
+      spaceBelow: window.innerHeight - rect.bottom,
+    }));
     // A re-entry mid-fade reuses the mounted node: re-assert the open phase so
     // the render before the measure effect lands shows "open", not a stale
     // mid-fade "closing" frame.
@@ -154,12 +187,50 @@ export function HoverTip({
   // biome-ignore lint/correctness/useExhaustiveDependencies(tip): re-measure on content change
   useLayoutEffect(() => {
     if (!anchor) return;
-    const tipWidth = tipRef.current?.getBoundingClientRect().width ?? 0;
+    const node = tipRef.current;
+    const rect = node?.getBoundingClientRect();
+    const tipHeight = rect?.height ?? 0;
+
+    // Decide the side from the tip's real height once, on a fresh open. If the
+    // tip fits below (its height plus the gap and a viewport margin), keep it
+    // below; otherwise flip above. A committed side (`anchor.side`) is honored
+    // so a re-hover on a mounted tip never flips the visible card. Before any
+    // real measurement (jsdom), fall back to the fixed threshold.
+    const fitsBelow =
+      tipHeight > 0
+        ? anchor.spaceBelow >= tipHeight + TIP_GAP + VIEWPORT_MARGIN
+        : anchor.spaceBelow >= MIN_SPACE_BELOW;
+    const side = anchor.side ?? (fitsBelow ? "bottom" : "top");
+
+    // Tighten the width to the widest wrapped line (plus horizontal padding) so
+    // a two-line tip hugs its text instead of keeping the full cap. `text-wrap:
+    // balance` in CSS has already split the lines evenly by the time we measure.
+    let width: number | undefined;
+    if (node) {
+      const widest = widestLineWidth(node);
+      if (widest > 0) {
+        const style = window.getComputedStyle(node);
+        const hPadding =
+          Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+        const borders =
+          Number.parseFloat(style.borderLeftWidth) + Number.parseFloat(style.borderRightWidth);
+        const naturalWidth = rect?.width ?? 0;
+        const tightened = Math.ceil(widest + hPadding + borders);
+        // Never widen past the natural (capped) width — only pull in. Skip if
+        // padding/border couldn't be resolved (NaN) rather than set a bad width.
+        if (Number.isFinite(tightened)) {
+          width = naturalWidth > 0 ? Math.min(tightened, naturalWidth) : tightened;
+        }
+      }
+    }
+
+    // Clamp the centered box to the viewport using the final (tightened) width.
+    const boxWidth = width ?? rect?.width ?? 0;
     const left = Math.min(
-      Math.max(anchor.centerX - tipWidth / 2, VIEWPORT_MARGIN),
-      Math.max(window.innerWidth - tipWidth - VIEWPORT_MARGIN, VIEWPORT_MARGIN),
+      Math.max(anchor.centerX - boxWidth / 2, VIEWPORT_MARGIN),
+      Math.max(window.innerWidth - boxWidth - VIEWPORT_MARGIN, VIEWPORT_MARGIN),
     );
-    setCoords({ side: anchor.side, top: anchor.top, left });
+    setCoords({ side, top: side === "bottom" ? anchor.bottom : anchor.top, left, width });
   }, [anchor, tip]);
 
   useEffect(
@@ -212,7 +283,7 @@ export function HoverTip({
               id={tooltipId}
               className={compact ? "hover-tip hover-tip-compact" : "hover-tip"}
               role="tooltip"
-              data-side={coords?.side ?? anchor.side}
+              data-side={coords?.side ?? anchor.side ?? "bottom"}
               // Hidden until measured: the enter animation runs only once the
               // final position is revealed, never while offscreen.
               data-state={coords ? phase : "measuring"}
@@ -220,9 +291,12 @@ export function HoverTip({
                 if (event.propertyName === "opacity" && phase === "closing") unmount();
               }}
               style={{
-                top: coords?.top ?? anchor.top,
+                top: coords?.top ?? anchor.bottom,
                 left: coords?.left ?? 0,
                 maxWidth: width,
+                // Applied only after the tighten pass; while measuring the tip
+                // renders at its natural capped width so the wrap is real.
+                width: coords?.width,
               }}
             >
               {tip}
