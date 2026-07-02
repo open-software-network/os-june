@@ -516,7 +516,10 @@ describe("OnboardingFlow", () => {
     );
   });
 
-  it("only requires microphone access on Windows", async () => {
+  it("asks for microphone and system audio but not accessibility on Windows", async () => {
+    // Windows now captures system audio (WASAPI loopback), so its permission
+    // row shows; accessibility stays macOS-only. Dictation practice follows
+    // the dictation capability, which Windows reports too.
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -525,10 +528,10 @@ describe("OnboardingFlow", () => {
       const onComplete = await renderFlow();
 
       expect(
-        screen.getByText("Dictation and meeting notes need microphone access."),
+        screen.getByText("Meeting notes need microphone and system audio access."),
       ).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
-      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+      expect(screen.getByText("System audio")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
 
       emitDictationEvent?.({
@@ -538,11 +541,15 @@ describe("OnboardingFlow", () => {
         }),
       });
 
+      // The mocked readiness probe reports system audio granted, so the mic
+      // grant is all that was missing.
       await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
       await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-      await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
-      expect(screen.queryByRole("heading", { name: "Talk to June" })).not.toBeInTheDocument();
+      // Windows has dictation, so the practice step follows the permissions
+      // screen instead of completing the flow.
+      expect(await screen.findByRole("heading", { name: "Talk to June" })).toBeInTheDocument();
+      expect(onComplete).not.toHaveBeenCalled();
     } finally {
       restoreNavigator();
     }

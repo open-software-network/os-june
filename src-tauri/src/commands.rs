@@ -562,6 +562,36 @@ pub async fn check_recording_source_readiness(
         .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))
 }
 
+/// What this build of June can actually do, decided at compile time. The
+/// frontend gates feature surfaces on these flags instead of sniffing the OS
+/// from the user agent, so newly ported backends light up their UI without
+/// frontend changes beyond flipping a `cfg` here.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformCapabilities {
+    pub system_audio: bool,
+    pub meeting_detection: bool,
+    pub dictation: bool,
+}
+
+/// Static per-build capability report. Values mirror which platform modules
+/// are compiled in (see `audio/mod.rs` and `meeting_detection.rs`).
+#[tauri::command]
+pub fn get_platform_capabilities() -> PlatformCapabilities {
+    PlatformCapabilities {
+        system_audio: cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
+        meeting_detection: cfg!(any(target_os = "macos", target_os = "windows")),
+        // macOS uses the Swift helper; Windows the in-process hook engine in
+        // dictation/win.rs. Linux is still unsupported (Wayland has no
+        // portable global-hotkey API).
+        dictation: cfg!(any(target_os = "macos", target_os = "windows")),
+    }
+}
+
 /// Opens the june-api `/verify` page (enclave attestation, routing,
 /// retention) in the default browser. Must route through Rust: the webview
 /// installs no new-window handler, so `target="_blank"` anchors are silently
@@ -1079,11 +1109,11 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
         message: microphone_hint,
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
-        let mut system = crate::audio::system_macos::system_audio_readiness();
+        let mut system = crate::audio::system_audio_readiness();
         if should_probe_system_audio_permission(system.ready, is_capture_active()) {
             system = apply_system_audio_permission_probe_result(
                 system,
-                crate::audio::system_macos::helper_permission_check(),
+                crate::audio::helper_permission_check(),
             );
         }
         sources.push(system);

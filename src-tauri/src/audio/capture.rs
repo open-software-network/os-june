@@ -5,7 +5,7 @@ use crate::{
             start_live_transcript_preview, start_system_live_transcript_preview,
             LivePreviewController, LivePreviewSink, SystemLivePreviewController,
         },
-        system_macos::SystemAudioCapture,
+        SystemAudioCapture,
     },
     domain::types::{
         AppError, AudioLevelDto, RecordingSessionDto, RecordingSource, RecordingSourceMode,

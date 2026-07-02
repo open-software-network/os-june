@@ -1,5 +1,5 @@
 use serde::Serialize;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::thread;
 use std::{collections::BTreeSet, time::Duration};
 use tauri::{AppHandle, Emitter};
@@ -8,6 +8,7 @@ const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;
 const HEARTBEAT_EVERY_ACTIVE_POLLS: u8 = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEETING_DETECTION_EVENT_NAME: &str = "meeting-detection-event";
+#[cfg(not(target_os = "windows"))]
 const ALLOWED_MIC_APP_BUNDLE_PREFIXES: &[&str] = &[
     "company.thebrowser.Browser",
     "com.google.Chrome",
@@ -18,10 +19,10 @@ const ALLOWED_MIC_APP_BUNDLE_PREFIXES: &[&str] = &[
 ];
 
 pub fn setup(app: &mut tauri::App) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     spawn_monitor(app.handle().clone());
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = app;
 }
 
@@ -130,12 +131,37 @@ pub(crate) fn active_allowed_external_processes(
         .collect()
 }
 
-fn is_allowed_microphone_app(bundle_id: &str) -> bool {
+// The allow-list and friendly-label lookups are keyed on a platform-specific
+// identifier: a bundle id on macOS, an executable name on Windows. Both paths
+// feed the same `MicrophoneInputProcess` shape and the same shared filtering,
+// so the dispatchers below keep their original names and signatures.
+
+fn is_allowed_microphone_app(identifier: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    let allowed = is_allowed_windows_microphone_app(identifier);
+    #[cfg(not(target_os = "windows"))]
+    let allowed = is_allowed_macos_microphone_app(identifier);
+    allowed
+}
+
+fn app_label_from_bundle_id(identifier: &str) -> String {
+    #[cfg(target_os = "windows")]
+    let label = windows_app_label_from_executable(identifier);
+    #[cfg(not(target_os = "windows"))]
+    let label = macos_app_label_from_bundle_id(identifier);
+    label
+}
+
+// ---- macOS bundle-id matching --------------------------------------------
+
+#[cfg(not(target_os = "windows"))]
+fn is_allowed_macos_microphone_app(bundle_id: &str) -> bool {
     ALLOWED_MIC_APP_BUNDLE_PREFIXES
         .iter()
         .any(|prefix| bundle_id_matches_prefix(bundle_id, prefix))
 }
 
+#[cfg(not(target_os = "windows"))]
 fn bundle_id_matches_prefix(bundle_id: &str, prefix: &str) -> bool {
     let bundle_id = bundle_id.trim().to_ascii_lowercase();
     let prefix = prefix.trim().to_ascii_lowercase();
@@ -145,7 +171,8 @@ fn bundle_id_matches_prefix(bundle_id: &str, prefix: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
-fn app_label_from_bundle_id(bundle_id: &str) -> String {
+#[cfg(not(target_os = "windows"))]
+fn macos_app_label_from_bundle_id(bundle_id: &str) -> String {
     if bundle_id_matches_prefix(bundle_id, "company.thebrowser.Browser") {
         return "Arc".to_string();
     }
@@ -170,7 +197,58 @@ fn app_label_from_bundle_id(bundle_id: &str) -> String {
         .to_string()
 }
 
-#[cfg(target_os = "macos")]
+// ---- Windows executable-name matching ------------------------------------
+
+/// Allow-list of Windows meeting apps keyed on lowercase executable names,
+/// mapped to the same friendly labels the macOS bundle-id path produces.
+/// June's own future WASAPI capture helper is excluded by pid (`owned_pids`),
+/// not by name, so it does not belong here.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const ALLOWED_WINDOWS_MIC_APPS: &[(&str, &str)] = &[
+    ("ms-teams.exe", "Teams"),
+    ("teams.exe", "Teams"),
+    ("zoom.exe", "Zoom"),
+    ("chrome.exe", "Chrome"),
+    ("msedge.exe", "Edge"),
+    ("arc.exe", "Arc"),
+    ("firefox.exe", "Firefox"),
+    ("brave.exe", "Brave"),
+];
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_allowed_windows_microphone_app(executable: &str) -> bool {
+    let executable = executable.trim().to_ascii_lowercase();
+    ALLOWED_WINDOWS_MIC_APPS
+        .iter()
+        .any(|(name, _)| *name == executable)
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_app_label_from_executable(executable: &str) -> String {
+    let executable = executable.trim();
+    let lowercased = executable.to_ascii_lowercase();
+    if let Some((_, label)) = ALLOWED_WINDOWS_MIC_APPS
+        .iter()
+        .find(|(name, _)| *name == lowercased)
+    {
+        return (*label).to_string();
+    }
+    // Unlisted apps are dropped by the allow-list, so this label only surfaces
+    // defensively. Strip a trailing ".exe" (case-insensitively) so it reads as
+    // an app name rather than a file.
+    let stem = if lowercased.ends_with(".exe") {
+        &executable[..executable.len() - ".exe".len()]
+    } else {
+        executable
+    };
+    if stem.is_empty() {
+        executable.to_string()
+    } else {
+        stem.to_string()
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn spawn_monitor(app: AppHandle) {
     thread::spawn(move || {
         let mut state = MeetingDetectionState::default();
@@ -210,10 +288,20 @@ fn spawn_monitor(app: AppHandle) {
 }
 
 fn owned_pids(app: &AppHandle) -> BTreeSet<u32> {
+    // Only the macOS branch mutates `pids` today; keep `mut` warning-free where
+    // no helper pid is inserted.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut pids = BTreeSet::from([std::process::id()]);
+    // macOS spawns a dictation helper that also holds the microphone; exclude
+    // it so June's own capture never looks like an external meeting. Windows
+    // has no such helper yet, so its owned set is just this process. When a
+    // Windows capture helper lands, insert its pid here under a windows cfg.
+    #[cfg(target_os = "macos")]
     if let Some(helper_pid) = crate::dictation::dictation_helper_pid(app) {
         pids.insert(helper_pid);
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
     pids
 }
 
@@ -282,7 +370,10 @@ fn emit_detection_event(
 #[cfg(target_os = "macos")]
 pub(crate) use macos::active_input_processes;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub(crate) use windows::active_input_processes;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) fn active_input_processes() -> Result<Vec<MicrophoneInputProcess>, ProbeError> {
     Ok(Vec::new())
 }
@@ -301,9 +392,11 @@ impl ProbeError {
 
 impl std::fmt::Display for ProbeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `status` carries an OSStatus on macOS and an HRESULT on Windows;
+        // both are 32-bit and read fine as a signed decimal in the log line.
         write!(
             formatter,
-            "{} failed with OSStatus {}",
+            "{} failed with status {}",
             self.operation, self.status
         )
     }
@@ -601,6 +694,159 @@ mod macos {
     }
 }
 
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::{MicrophoneInputProcess, ProbeError};
+    use std::cell::Cell;
+    use std::collections::BTreeSet;
+
+    use ::windows::core::Interface;
+    use ::windows::Win32::Foundation::CloseHandle;
+    use ::windows::Win32::Media::Audio::{
+        eCapture, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2,
+        IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    };
+    use ::windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+    use ::windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    thread_local! {
+        // COM must be initialised once per thread before any WASAPI call. The
+        // monitor owns a single long-lived polling thread, so we join the MTA on
+        // the first probe and never uninitialise (the thread outlives the app).
+        static COM_READY: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn ensure_com_initialized() {
+        COM_READY.with(|ready| {
+            if ready.get() {
+                return;
+            }
+            // SAFETY: CoInitializeEx with a null reserved pointer is the
+            // documented way to join an apartment. If the thread were already an
+            // STA this returns RPC_E_CHANGED_MODE; we proceed regardless because
+            // COM stays usable in whichever mode won and the objects below are
+            // apartment-neutral. The polling thread is fresh, so MTA wins.
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            ready.set(true);
+        });
+    }
+
+    pub(crate) fn active_input_processes() -> Result<Vec<MicrophoneInputProcess>, ProbeError> {
+        ensure_com_initialized();
+
+        // Dedupe pids across endpoints: one app capturing from a headset mic and
+        // a webcam mic shows up as two sessions on two endpoints, but is one app.
+        let mut pids: BTreeSet<u32> = BTreeSet::new();
+
+        // SAFETY: every interface below comes from a checked COM call and lives
+        // only within this scope; the `windows` crate ref-counts the pointers.
+        unsafe {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                    .map_err(|error| probe(error, "create device enumerator"))?;
+
+            // Enumerate ALL active capture endpoints, not just the default: a
+            // meeting app may bind to any microphone the machine exposes.
+            let endpoints = enumerator
+                .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
+                .map_err(|error| probe(error, "enumerate capture endpoints"))?;
+            let endpoint_count = endpoints
+                .GetCount()
+                .map_err(|error| probe(error, "count capture endpoints"))?;
+
+            for endpoint_index in 0..endpoint_count {
+                let Ok(device) = endpoints.Item(endpoint_index) else {
+                    continue;
+                };
+                let Ok(session_manager) =
+                    device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)
+                else {
+                    continue;
+                };
+                let Ok(sessions) = session_manager.GetSessionEnumerator() else {
+                    continue;
+                };
+                let session_count = sessions.GetCount().unwrap_or(0);
+                for session_index in 0..session_count {
+                    let Ok(control) = sessions.GetSession(session_index) else {
+                        continue;
+                    };
+                    let Ok(control) = control.cast::<IAudioSessionControl2>() else {
+                        continue;
+                    };
+                    // Only sessions still actively capturing count. Sessions can
+                    // linger Active briefly after capture stops, and idle apps
+                    // keep Inactive sessions open; both would be false positives,
+                    // so require exactly AudioSessionStateActive.
+                    if !matches!(control.GetState(), Ok(state) if state == AudioSessionStateActive)
+                    {
+                        continue;
+                    }
+                    let Ok(pid) = control.GetProcessId() else {
+                        continue;
+                    };
+                    // pid 0 is the shared system-sounds pseudo-session; skip it.
+                    if pid != 0 {
+                        pids.insert(pid);
+                    }
+                }
+            }
+        }
+
+        let mut processes = Vec::new();
+        for pid in pids {
+            if let Some(executable) = process_executable_name(pid) {
+                if let Some(process) = MicrophoneInputProcess::new(pid, executable) {
+                    processes.push(process);
+                }
+            }
+        }
+        processes.sort_by_key(|process| process.pid);
+        Ok(processes)
+    }
+
+    fn probe(error: ::windows::core::Error, operation: &'static str) -> ProbeError {
+        ProbeError::new(operation, error.code().0)
+    }
+
+    /// Resolve a pid to its executable file name (e.g. `Zoom.exe`). Uses the
+    /// limited-information access right so it succeeds across sessions and
+    /// elevation levels where full query access would be denied.
+    fn process_executable_name(pid: u32) -> Option<String> {
+        // SAFETY: the process handle is closed on every return path, and
+        // QueryFullProcessImageNameW writes into `buffer` and reports the
+        // character count it produced back through `size`.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut buffer = [0u16; 260];
+            let mut size = buffer.len() as u32;
+            let query = QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                ::windows::core::PWSTR(buffer.as_mut_ptr()),
+                &mut size,
+            );
+            let _ = CloseHandle(handle);
+            query.ok()?;
+
+            let full_path = String::from_utf16_lossy(&buffer[..size as usize]);
+            let file_name = full_path
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(&full_path)
+                .trim();
+            (!file_name.is_empty()).then(|| file_name.to_string())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +963,48 @@ mod tests {
             input_process(53, "com.apple.WebKit.WebContent"),
         ])
         .is_empty());
+    }
+
+    #[test]
+    fn windows_allow_list_matches_meeting_executables_case_insensitively() {
+        for (executable, label) in [
+            ("Zoom.exe", "Zoom"),
+            ("zoom.exe", "Zoom"),
+            ("ms-teams.exe", "Teams"),
+            ("Teams.exe", "Teams"),
+            ("chrome.exe", "Chrome"),
+            ("MSEDGE.EXE", "Edge"),
+            ("Arc.exe", "Arc"),
+            ("firefox.exe", "Firefox"),
+            ("brave.exe", "Brave"),
+        ] {
+            assert!(
+                is_allowed_windows_microphone_app(executable),
+                "{executable} should be allowed"
+            );
+            assert_eq!(windows_app_label_from_executable(executable), label);
+        }
+    }
+
+    #[test]
+    fn windows_allow_list_rejects_unlisted_executables() {
+        for executable in ["notepad.exe", "explorer.exe", "obs64.exe", ""] {
+            assert!(
+                !is_allowed_windows_microphone_app(executable),
+                "{executable} should not be allowed"
+            );
+        }
+        // Unlisted apps still get a sensible fallback label with the ".exe" tail
+        // stripped, even though the allow-list drops them before it is shown.
+        assert_eq!(windows_app_label_from_executable("notepad.exe"), "notepad");
+        assert_eq!(windows_app_label_from_executable("weird"), "weird");
+        assert_eq!(windows_app_label_from_executable(".exe"), ".exe");
+    }
+
+    #[test]
+    fn windows_allow_list_ignores_surrounding_whitespace() {
+        assert!(is_allowed_windows_microphone_app("  Zoom.exe  "));
+        assert_eq!(windows_app_label_from_executable("  Zoom.exe  "), "Zoom");
     }
 
     #[test]

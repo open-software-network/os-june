@@ -1,9 +1,13 @@
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { useEffect, useMemo, useState } from "react";
+import { cachedPlatformCapabilities, platformCapabilities } from "../../lib/capabilities";
 import { onboardingResumeStep, setOnboardingResumeStep } from "../../lib/onboarding";
-import { isMacLikePlatform } from "../../lib/platform";
 import { dictationSettings, setDictationShortcut } from "../../lib/tauri";
-import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
+import type {
+  AccountStatus,
+  DictationShortcutSetting,
+  PlatformCapabilities,
+} from "../../lib/tauri";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
@@ -39,8 +43,8 @@ function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
   );
 }
 
-const MAC_STEPS: StepId[] = ["sign-in", "permissions", "dictation-practice"];
-const NON_MAC_STEPS: StepId[] = ["sign-in", "permissions"];
+const DICTATION_STEPS: StepId[] = ["sign-in", "permissions", "dictation-practice"];
+const BASE_STEPS: StepId[] = ["sign-in", "permissions"];
 
 type Props = {
   account: AccountStatus;
@@ -68,8 +72,39 @@ function browserOnboardingDemoStep(): StepId | null {
     : null;
 }
 
-export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props) {
-  const steps = useMemo(() => (isMacLikePlatform() ? MAC_STEPS : NON_MAC_STEPS), []);
+export function OnboardingFlow(props: Props) {
+  // The steps array must be fixed before the wizard mounts: capabilities
+  // landing mid-flow would add or drop steps under the user's feet. Resolve
+  // the backend answer first (one fast IPC read, usually already cached),
+  // then hand the settled value to the step machine.
+  const [capabilities, setCapabilities] = useState(cachedPlatformCapabilities);
+  useEffect(() => {
+    if (capabilities) return;
+    let active = true;
+    void platformCapabilities().then((resolved) => {
+      if (active) setCapabilities(resolved);
+    });
+    return () => {
+      active = false;
+    };
+  }, [capabilities]);
+
+  if (!capabilities) {
+    return <div className="onboarding-screen" />;
+  }
+  return <OnboardingSteps capabilities={capabilities} {...props} />;
+}
+
+function OnboardingSteps({
+  capabilities,
+  account,
+  onAccountChanged,
+  onComplete,
+}: Props & { capabilities: PlatformCapabilities }) {
+  const steps = useMemo(
+    () => (capabilities.dictation ? DICTATION_STEPS : BASE_STEPS),
+    [capabilities.dictation],
+  );
   const supportsDictationPractice = steps.includes("dictation-practice");
   const [stepIndex, setStepIndex] = useState(() => {
     const initial = initialStepIndex(steps);
@@ -178,6 +213,7 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
           <PermissionsStep
             statuses={permissionStatuses}
             systemAudioStatus={systemAudio.status}
+            capabilities={capabilities}
             onAllowSystemAudio={systemAudio.probe}
             onContinue={goNext}
           />

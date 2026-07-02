@@ -1,3 +1,12 @@
+/// In-process Windows helper: hotkey hook, mic capture, paste. Speaks the
+/// same command/event protocol as the macOS Swift helper.
+#[cfg(target_os = "windows")]
+mod win;
+/// Pure chord-matching / key-mapping / command-parsing logic for the Windows
+/// helper. Host-independent so its unit tests run everywhere.
+#[cfg(any(target_os = "windows", test))]
+mod win_chords;
+
 use crate::domain::{
     processing::{build_dictionary_context, merge_transcription_context},
     types::{AppError, ListDictationHistoryResponse},
@@ -9,11 +18,15 @@ use crate::june_api::{
 use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
 use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
+#[cfg(not(target_os = "windows"))]
+use std::io::{BufRead, BufReader};
+#[cfg(not(target_os = "windows"))]
+use std::process::{Command, Stdio};
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::Write,
     path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin},
     sync::{Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
@@ -604,6 +617,15 @@ pub fn setup(app: &mut tauri::App) {
         controller: Mutex::new(ShortcutActivationController::default()),
     });
 
+    // On Windows the helper is in-process (dictation/win.rs); there is no
+    // child process to spawn, and the same command/event protocol is served
+    // by the hook + capture threads started here.
+    #[cfg(target_os = "windows")]
+    let helper: Option<HelperProcess> = {
+        win::start(app.handle());
+        None
+    };
+    #[cfg(not(target_os = "windows"))]
     let helper = spawn_helper(app.handle()).ok();
     app.manage(HelperState {
         process: Mutex::new(helper),
@@ -611,15 +633,14 @@ pub fn setup(app: &mut tauri::App) {
 
     {
         let settings = app.state::<DictationSettingsState>();
-        let helper_state = app.state::<HelperState>();
         let settings = settings
             .settings
             .lock()
             .ok()
             .map(|settings| settings.clone());
         if let Some(settings) = settings {
-            let _ = apply_microphone_setting(&helper_state, &settings.microphone);
-            let _ = apply_shortcut_settings(&helper_state, &settings);
+            let _ = apply_microphone_setting(app.handle(), &settings.microphone);
+            let _ = apply_shortcut_settings(app.handle(), &settings);
         }
     }
 
@@ -669,11 +690,10 @@ pub async fn delete_dictation_history_item(app: AppHandle, id: String) -> Result
 }
 
 #[tauri::command]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn set_dictation_shortcut(
     app: AppHandle,
     state: State<'_, DictationSettingsState>,
-    helper_state: State<'_, HelperState>,
     hotkey_status: State<'_, HotkeyStatus>,
     kind: DictationShortcutKind,
     shortcut: DictationShortcutInput,
@@ -694,7 +714,7 @@ pub fn set_dictation_shortcut(
 
     if current_shortcut == &shortcut {
         set_hotkey_status(&hotkey_status, hotkey_ready_event(&current_settings));
-        apply_shortcut_settings(&helper_state, &current_settings)?;
+        apply_shortcut_settings(&app, &current_settings)?;
         return Ok(current_settings);
     }
 
@@ -703,14 +723,14 @@ pub fn set_dictation_shortcut(
         DictationShortcutKind::Toggle => settings.toggle_shortcut = shortcut,
     })?;
     reset_shortcut_activation(&app);
-    apply_shortcut_settings(&helper_state, &settings)?;
+    apply_shortcut_settings(&app, &settings)?;
 
     set_hotkey_status(&hotkey_status, hotkey_ready_event(&settings));
     Ok(settings)
 }
 
 #[tauri::command]
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn set_dictation_shortcut(
     kind: DictationShortcutKind,
     shortcut: DictationShortcutInput,
@@ -724,6 +744,7 @@ pub fn set_dictation_shortcut(
 
 #[tauri::command]
 pub fn set_dictation_microphone(
+    app: AppHandle,
     state: State<'_, DictationSettingsState>,
     helper_state: State<'_, HelperState>,
     id: Option<String>,
@@ -732,7 +753,9 @@ pub fn set_dictation_microphone(
     let settings = update_settings(&state, |settings| {
         settings.microphone = DictationMicrophoneSetting { id, name };
     })?;
-    #[cfg(not(target_os = "macos"))]
+    // Windows serves this in-process; only platforms that require the
+    // external helper (and lack it) skip the push.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if helper_state
         .process
         .lock()
@@ -741,8 +764,10 @@ pub fn set_dictation_microphone(
     {
         return Ok(settings);
     }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let _ = &helper_state;
 
-    apply_microphone_setting(&helper_state, &settings.microphone)?;
+    apply_microphone_setting(&app, &settings.microphone)?;
     Ok(settings)
 }
 
@@ -773,22 +798,30 @@ pub fn dictation_helper_command(
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if helper_command_resets_shortcut_activation(&command) {
         reset_shortcut_activation(&app);
     }
 
-    #[cfg(not(target_os = "macos"))]
-    if state
-        .process
-        .lock()
-        .map(|process| process.is_none())
-        .unwrap_or(true)
+    #[cfg(target_os = "windows")]
     {
-        return handle_missing_helper_command(&app, &command);
+        let _ = &state;
+        win::handle_command(&app, command)
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(not(target_os = "macos"))]
+        if state
+            .process
+            .lock()
+            .map(|process| process.is_none())
+            .unwrap_or(true)
+        {
+            return handle_missing_helper_command(&app, &command);
+        }
 
-    send_helper_command(&state, command)
+        send_helper_command(&state, command)
+    }
 }
 
 fn helper_command_resets_shortcut_activation(command: &serde_json::Value) -> bool {
@@ -1336,6 +1369,11 @@ fn spawn_hud_hover_thread(app: AppHandle) {
 }
 
 pub fn stop_helper(app: &AppHandle) {
+    // The Windows helper is in-process: stop its hook thread and reset any
+    // live recording instead of shutting down a child process.
+    #[cfg(target_os = "windows")]
+    win::stop();
+
     let state = app.state::<HelperState>();
     let Ok(mut guard) = state.process.lock() else {
         return;
@@ -1361,6 +1399,7 @@ pub(crate) fn dictation_helper_pid(app: &AppHandle) -> Option<u32> {
     })
 }
 
+#[cfg(not(target_os = "windows"))]
 fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Result<(), AppError> {
     let mut guard = state
         .process
@@ -1385,7 +1424,7 @@ fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Resul
         .map_err(|error| AppError::new("dictation_helper_write_failed", error.to_string()))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn handle_missing_helper_command(
     app: &AppHandle,
     command: &serde_json::Value,
@@ -1425,7 +1464,7 @@ fn handle_missing_helper_command(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn non_macos_permission_status_event() -> serde_json::Value {
     let (microphone, _) = crate::audio::capture::microphone_permission_state();
     serde_json::json!({
@@ -1437,12 +1476,31 @@ fn non_macos_permission_status_event() -> serde_json::Value {
     })
 }
 
+/// Deliver a helper command to whichever implementation owns the platform:
+/// the in-process Windows engine, or the external helper process elsewhere.
+fn dispatch_helper_command(app: &AppHandle, command: serde_json::Value) -> Result<(), AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        win::handle_command(app, command)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let state = app.try_state::<HelperState>().ok_or_else(|| {
+            AppError::new(
+                "dictation_helper_unavailable",
+                "Dictation helper process is not running.",
+            )
+        })?;
+        send_helper_command(&state, command)
+    }
+}
+
 fn apply_microphone_setting(
-    helper_state: &HelperState,
+    app: &AppHandle,
     microphone: &DictationMicrophoneSetting,
 ) -> Result<(), AppError> {
-    send_helper_command(
-        helper_state,
+    dispatch_helper_command(
+        app,
         serde_json::json!({
             "type": "set_microphone",
             "id": microphone.id,
@@ -1452,12 +1510,12 @@ fn apply_microphone_setting(
 }
 
 fn apply_shortcut_setting(
-    helper_state: &HelperState,
+    app: &AppHandle,
     kind: DictationShortcutKind,
     shortcut: &DictationShortcutSetting,
 ) -> Result<(), AppError> {
-    send_helper_command(
-        helper_state,
+    dispatch_helper_command(
+        app,
         serde_json::json!({
             "type": "set_shortcut",
             "shortcut": {
@@ -1472,17 +1530,14 @@ fn apply_shortcut_setting(
     )
 }
 
-fn apply_shortcut_settings(
-    helper_state: &HelperState,
-    settings: &DictationSettings,
-) -> Result<(), AppError> {
+fn apply_shortcut_settings(app: &AppHandle, settings: &DictationSettings) -> Result<(), AppError> {
     apply_shortcut_setting(
-        helper_state,
+        app,
         DictationShortcutKind::PushToTalk,
         &settings.push_to_talk_shortcut,
     )?;
     apply_shortcut_setting(
-        helper_state,
+        app,
         DictationShortcutKind::Toggle,
         &settings.toggle_shortcut,
     )
@@ -1606,18 +1661,7 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
 }
 
 fn forward_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
-    let Some(state) = app.try_state::<HelperState>() else {
-        emit_dictation_event_value(
-            app,
-            app_error_event(AppError::new(
-                "dictation_helper_unavailable",
-                "Dictation helper process is not running.",
-            )),
-        );
-        return;
-    };
-
-    if let Err(error) = send_helper_command(&state, command.helper_command(shortcut_label)) {
+    if let Err(error) = dispatch_helper_command(app, command.helper_command(shortcut_label)) {
         emit_dictation_event_value(app, app_error_event(error));
     }
 }
@@ -1752,6 +1796,7 @@ fn save_settings(
         .map_err(|error| AppError::new("dictation_settings_save_failed", error.to_string()))
 }
 
+#[cfg(not(target_os = "windows"))]
 fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -1799,6 +1844,7 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
     paths
 }
 
+#[cfg(not(target_os = "windows"))]
 fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
     let helper_path = helper_candidates(app)
         .into_iter()
@@ -1882,9 +1928,8 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
                     });
                 }
                 Err(error) => {
-                    let state = app.state::<HelperState>();
-                    let _ = send_helper_command(
-                        &state,
+                    let _ = dispatch_helper_command(
+                        app,
                         serde_json::json!({ "type": "discard_recording" }),
                     );
                     emit_dictation_event_value(app, app_error_event(error));
@@ -1909,16 +1954,15 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
     if crate::os_accounts::access_token().await.is_err() {
-        let state = app.state::<HelperState>();
-        let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+        let _ = dispatch_helper_command(&app, serde_json::json!({ "type": "discard_recording" }));
         notify_dictation_not_signed_in(&app);
         return;
     }
     let provider = match dictation_transcription_provider(configured_transcription_provider()) {
         Ok(provider) => provider,
         Err(error) => {
-            let state = app.state::<HelperState>();
-            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            let _ =
+                dispatch_helper_command(&app, serde_json::json!({ "type": "discard_recording" }));
             emit_dictation_event_value(&app, app_error_event(error));
             return;
         }
@@ -1952,8 +1996,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     )
     .await;
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
-    let state = app.state::<HelperState>();
-    if let Err(error) = send_helper_command(&state, outcome.helper_command) {
+    if let Err(error) = dispatch_helper_command(&app, outcome.helper_command) {
         emit_dictation_event_value(&app, app_error_event(error));
         return;
     }
@@ -3129,12 +3172,12 @@ fn hotkey_ready_event(settings: &DictationSettings) -> serde_json::Value {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn initial_hotkey_event(settings: &DictationSettings) -> serde_json::Value {
     hotkey_ready_event(settings)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn initial_hotkey_event(_settings: &DictationSettings) -> serde_json::Value {
     serde_json::json!({
         "type": "hotkey_trigger_unavailable",

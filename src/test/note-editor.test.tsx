@@ -661,7 +661,10 @@ describe("NoteEditor", () => {
     expect(onEnableSystemAudio).toHaveBeenCalledOnce();
   });
 
-  it("hides system audio recording options on Windows", () => {
+  it("shows system audio recording options on Windows", async () => {
+    // System audio capture is a build capability now (WASAPI loopback on
+    // Windows), so the recording options toggle is no longer mac-gated.
+    const user = userEvent.setup();
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -673,7 +676,7 @@ describe("NoteEditor", () => {
           note={note()}
           sourceReadiness={{
             sourceMode: "microphonePlusSystem",
-            ready: false,
+            ready: true,
             checkedAt: now,
             sources: [
               {
@@ -687,10 +690,10 @@ describe("NoteEditor", () => {
               {
                 source: "system",
                 required: true,
-                ready: false,
-                permissionState: "unsupported",
-                deviceAvailable: false,
-                captureAvailable: false,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
               },
             ],
           }}
@@ -698,14 +701,86 @@ describe("NoteEditor", () => {
       );
 
       expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
-      expect(screen.queryByRole("button", { name: "Recording options" })).not.toBeInTheDocument();
-      expect(screen.queryByText("Capture system audio")).not.toBeInTheDocument();
-      expect(
-        screen.queryByText("System audio requires macOS 14.2 or later."),
-      ).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Recording options" }));
+      expect(screen.getByRole("switch", { name: "Capture system audio" })).toBeEnabled();
     } finally {
       restoreNavigator();
     }
+  });
+
+  it("surfaces the backend readiness message when system audio is unsupported", async () => {
+    const user = userEvent.setup();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        sourceReadiness={{
+          sourceMode: "microphonePlusSystem",
+          ready: false,
+          checkedAt: now,
+          sources: [
+            {
+              source: "microphone",
+              required: true,
+              ready: true,
+              permissionState: "granted",
+              deviceAvailable: true,
+              captureAvailable: true,
+            },
+            {
+              source: "system",
+              required: true,
+              ready: false,
+              permissionState: "unsupported",
+              deviceAvailable: false,
+              captureAvailable: false,
+              message:
+                "System audio capture requires macOS 14.2 or later. Use microphone-only recording on this Mac.",
+            },
+          ],
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Recording options" }));
+    // The unsupported copy comes from the backend readiness probe, which
+    // knows the platform-accurate reason; no hardcoded macOS wording.
+    expect(
+      screen.getByText(
+        "System audio capture requires macOS 14.2 or later. Use microphone-only recording on this Mac.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Capture system audio" })).not.toBeInTheDocument();
+  });
+
+  it("falls back to generic copy when unsupported readiness carries no message", async () => {
+    const user = userEvent.setup();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        sourceReadiness={{
+          sourceMode: "microphonePlusSystem",
+          ready: false,
+          checkedAt: now,
+          sources: [
+            {
+              source: "system",
+              required: true,
+              ready: false,
+              permissionState: "unsupported",
+              deviceAvailable: false,
+              captureAvailable: false,
+            },
+          ],
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Recording options" }));
+    expect(
+      screen.getByText("System audio capture is not available on this device."),
+    ).toBeInTheDocument();
   });
 
   it("surfaces a dismissible consent reminder after the recorder settles", async () => {

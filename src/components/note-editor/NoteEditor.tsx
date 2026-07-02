@@ -27,7 +27,7 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
-import { isMacLikePlatform } from "../../lib/platform";
+import { usePlatformCapabilities } from "../../lib/capabilities";
 import {
   isInvalidJuneResponseMessage,
   NoteFailureBanner,
@@ -144,6 +144,7 @@ export function NoteEditor({
   onNavigateToFolder,
   onTabChange,
 }: NoteEditorProps) {
+  const capabilities = usePlatformCapabilities();
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = orderedVisibleSourceTranscripts(note);
@@ -192,7 +193,10 @@ export function NoteEditor({
   const systemDenied =
     systemSource?.permissionState === "denied" || systemSource?.permissionState === "restricted";
   const systemUnsupported = systemSource?.permissionState === "unsupported";
-  const showRecordingOptions = isMacLikePlatform();
+  // Backend-reported capability, not a UA sniff: the toggle shows wherever
+  // this build can capture system audio (macOS, Windows, Linux), and the
+  // live readiness probe above drives its enabled/denied/unsupported state.
+  const showRecordingOptions = capabilities.systemAudio;
   // Mic denial is sourced from App via the dictation helper, not from
   // sourceReadiness — the Rust cpal-based check can't see TCC denials.
   const micDenied = microphoneBlocked;
@@ -482,7 +486,11 @@ export function NoteEditor({
                   <div className="record-options-panel-inner">
                     {systemUnsupported ? (
                       <p className="record-options-unsupported">
-                        System audio requires macOS 14.2 or later.
+                        {/* The backend readiness probe knows why capture is
+                            unavailable on this exact platform; only fall back
+                            to generic copy when it sent no message. */}
+                        {systemSource?.message ??
+                          "System audio capture is not available on this device."}
                       </p>
                     ) : (
                       <div className="record-options-row" data-locked={systemDenied || undefined}>

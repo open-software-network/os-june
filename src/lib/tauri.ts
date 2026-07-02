@@ -1360,6 +1360,20 @@ export async function checkRecordingSourceReadiness(sourceMode: RecordingSourceM
   });
 }
 
+/** What this build of June can actually do, reported by the backend at
+ * compile time. The UI gates feature surfaces on these flags instead of
+ * sniffing the OS from the user agent. Static for the lifetime of the app;
+ * see `src/lib/capabilities.ts` for the cached accessor and hook. */
+export type PlatformCapabilities = {
+  systemAudio: boolean;
+  meetingDetection: boolean;
+  dictation: boolean;
+};
+
+export async function getPlatformCapabilities() {
+  return invoke<PlatformCapabilities>("get_platform_capabilities");
+}
+
 export async function openPrivacySettings(pane: "microphone" | "accessibility" | "systemAudio") {
   return invoke<void>("open_privacy_settings", { request: { pane } });
 }

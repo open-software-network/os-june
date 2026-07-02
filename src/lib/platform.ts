@@ -7,6 +7,12 @@ export function isMacLikePlatform() {
   return true;
 }
 
+export function isWindowsLikePlatform() {
+  const platform =
+    typeof navigator === "undefined" ? "" : `${navigator.platform} ${navigator.userAgent}`;
+  return /Windows|Win32|Win64/i.test(platform);
+}
+
 export function primaryShortcutLabel(key: string) {
   // No space after the ⌘ glyph (it reads tight), but keep one after the
   // "Ctrl" word so Windows labels don't run together as "CtrlN".

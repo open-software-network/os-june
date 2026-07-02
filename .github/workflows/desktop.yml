@@ -240,7 +240,8 @@ jobs:
             file \
             libxdo-dev \
             libssl-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            libpulse-dev
 
       - name: Cache cargo registry
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -412,6 +413,7 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libdbus-1-dev \
+            libpulse-dev \
             libfuse2
 
       - name: Install uv

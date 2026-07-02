@@ -113,6 +113,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Launch at login. Order-independent, so it follows the updater. The
+        // plugin manages the platform launch entry: Login Items on macOS, the
+        // Run registry key on Windows, and ~/.config/autostart on Linux. Plain
+        // start with no launch args: June has no hidden-start / tray-only mode
+        // to honor, so there is nothing to signal with an `--autostart` flag.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None::<Vec<&str>>,
+        ))
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
@@ -209,6 +218,7 @@ pub fn run() {
             hermes_bridge::set_hermes_agent_cli_access,
             hermes_bridge::open_hermes_tui_debug,
             commands::get_microphone_permission_state,
+            commands::get_platform_capabilities,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
             commands::june_open_verify_page,

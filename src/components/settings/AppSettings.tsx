@@ -1,4 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
@@ -68,6 +73,7 @@ import {
   setReleaseChannel,
   type ReleaseChannel,
 } from "../../lib/updater";
+import { usePlatformCapabilities } from "../../lib/capabilities";
 import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -317,6 +323,8 @@ export function AppSettings({
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
   const [releaseChannel, setReleaseChannelValue] = useState<ReleaseChannel>("stable");
+  const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [launchAtLoginBusy, setLaunchAtLoginBusy] = useState(false);
   // Set only when a leave-rc switch turns up an installable stable, so the
   // bespoke in-context confirm below the toggle can name the exact version.
   const [reconcileVersion, setReconcileVersion] = useState<string>();
@@ -342,7 +350,7 @@ export function AppSettings({
   const settingsTabs = account.localDev
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
-  const macLikePlatform = isMacLikePlatform();
+  const capabilities = usePlatformCapabilities();
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -359,7 +367,10 @@ export function AppSettings({
   );
   const systemState = systemReadiness?.permissionState;
   const systemDenied = systemState === "denied" || systemState === "restricted";
-  const systemUnavailable = !macLikePlatform || systemState === "unsupported";
+  // Capability says whether this build can capture system audio at all;
+  // "unsupported" from the live readiness probe covers a capable build on an
+  // OS that cannot deliver it (e.g. macOS older than 14.2).
+  const systemUnavailable = !capabilities.systemAudio || systemState === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
@@ -381,6 +392,38 @@ export function AppSettings({
       active = false;
     };
   }, [updaterAvailable]);
+
+  // Reflect the real launch-at-login state (macOS Login Items, the Windows Run
+  // key, or a Linux ~/.config/autostart entry) once on mount. A read failure
+  // leaves the toggle off rather than surfacing an error.
+  useEffect(() => {
+    let active = true;
+    void isAutostartEnabled()
+      .then((enabled) => {
+        if (active) setLaunchAtLogin(enabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleLaunchAtLoginChange = (next: boolean) => {
+    // Optimistic flip so the switch feels instant, then persist. If writing the
+    // platform launch entry fails, re-read the real state so the toggle never
+    // lies about whether June actually launches at login.
+    setLaunchAtLogin(next);
+    setLaunchAtLoginBusy(true);
+    void (next ? enableAutostart() : disableAutostart())
+      .catch(() => {
+        void isAutostartEnabled()
+          .then((enabled) => setLaunchAtLogin(enabled))
+          .catch(() => setLaunchAtLogin(!next));
+      })
+      .finally(() => {
+        setLaunchAtLoginBusy(false);
+      });
+  };
 
   const handleReleaseChannelChange = (next: ReleaseChannel) => {
     setReleaseChannelValue(next);
@@ -1005,6 +1048,32 @@ export function AppSettings({
               </div>
             </section>
 
+            <section className="settings-group" aria-labelledby="startup-heading">
+              <h2 id="startup-heading" className="settings-group-heading">
+                Startup
+              </h2>
+              <div className="settings-card">
+                <div className="settings-rows">
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Launch at login</h3>
+                      <p className="settings-row-description">
+                        Open June automatically when you sign in to your computer.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={launchAtLogin}
+                        disabled={launchAtLoginBusy}
+                        aria-label="Launch June at login"
+                        onCheckedChange={handleLaunchAtLoginChange}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <PermissionsSettingsSection
               microphonePermissionStatus={microphonePermissionStatus}
               microphoneReadiness={microphoneReadiness}
@@ -1028,7 +1097,7 @@ export function AppSettings({
             </h2>
             <div className="settings-card">
               <div className="settings-rows">
-                {macLikePlatform ? (
+                {capabilities.dictation ? (
                   <>
                     <ShortcutRow
                       title="Push to talk"
@@ -1063,7 +1132,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Dictation shortcuts unavailable</h3>
                       <p className="settings-row-description">
-                        Global dictation shortcuts are only supported on macOS.
+                        Dictation is not available on this platform yet.
                       </p>
                     </div>
                   </div>
@@ -1204,7 +1273,7 @@ export function AppSettings({
                   </div>
                 </div>
 
-                {macLikePlatform ? (
+                {capabilities.dictation ? (
                   <MicTestControl
                     state={micTestState}
                     level={micTestLevel}
@@ -1581,16 +1650,24 @@ function PermissionsSettingsSection({
   onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
 }) {
-  const macLikePlatform = isMacLikePlatform();
+  const capabilities = usePlatformCapabilities();
+  // Accessibility is a macOS TCC concept (June pastes dictated text through
+  // the AX APIs), so the row stays platform-sniffed on purpose: keying it on
+  // capabilities.dictation would wrongly grow an accessibility row on
+  // Windows once dictation ships there.
+  const showAccessibility = isMacLikePlatform();
+  const showSystemAudio = capabilities.systemAudio;
   return (
     <section className="settings-group" aria-labelledby="permissions-heading">
       <h2 id="permissions-heading" className="settings-group-heading">
         System permissions
       </h2>
       <p className="settings-group-description">
-        {macLikePlatform
+        {showAccessibility
           ? "macOS access used for recording audio, pasting dictation, and capturing system sound."
-          : "Access used for recording audio."}
+          : showSystemAudio
+            ? "Access used for recording audio and capturing system sound."
+            : "Access used for recording audio."}
       </p>
       <div className="settings-card">
         <div className="settings-rows">
@@ -1603,22 +1680,22 @@ function PermissionsSettingsSection({
             onManage={onEnableMicrophone}
           />
 
-          {macLikePlatform ? (
-            <>
-              <PermissionRow
-                title="Accessibility"
-                description="Paste dictated text into the active app."
-                status={permissionStatus(accessibilityPermissionStatus)}
-                onManage={onEnableAccessibility}
-              />
+          {showAccessibility ? (
+            <PermissionRow
+              title="Accessibility"
+              description="Paste dictated text into the active app."
+              status={permissionStatus(accessibilityPermissionStatus)}
+              onManage={onEnableAccessibility}
+            />
+          ) : null}
 
-              <PermissionRow
-                title="System audio"
-                description="Record audio from other apps when system audio is enabled."
-                status={sourcePermissionStatus(systemReadiness)}
-                onManage={onEnableSystemAudio}
-              />
-            </>
+          {showSystemAudio ? (
+            <PermissionRow
+              title="System audio"
+              description="Record audio from other apps when system audio is enabled."
+              status={sourcePermissionStatus(systemReadiness)}
+              onManage={onEnableSystemAudio}
+            />
           ) : null}
         </div>
       </div>
