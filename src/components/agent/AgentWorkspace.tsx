@@ -746,6 +746,10 @@ type AgentArtifact = {
 
 type AgentAttachment = ImportedHermesFile & {
   id: string;
+  /** Ephemeral image data for hidden `/image` fast-path holds. Kept out of
+   * visible composer state, artifacts, and traces; cleared with the hold after
+   * the next successful prompt submit. */
+  attachDataUrl?: string;
   /** Structured attach status (feature 19). Tracks whether this import has been
    * sent to the model via image.attach_bytes: imported (ready) → attached (acked) →
    * or failed. Carries file refs only, never the image bytes. Files stay
@@ -3446,6 +3450,7 @@ export function AgentWorkspace({
       const heldImage: AgentAttachment = {
         ...result.file,
         id: `held-image:${sessionId}:${Date.now()}`,
+        attachDataUrl: result.dataUrl,
         attach: attachmentStateFrom(result.file, sessionId),
       };
       pendingFastPathImagesRef.current = {
@@ -4005,9 +4010,17 @@ export function AgentWorkspace({
     const pending = pendingImageAttachments(turnAttachments.map((attachment) => attachment.attach));
     if (!pending.length) return;
     const methods = createHermesMethods(gateway);
+    const heldImageDataByPath = new Map(
+      turnAttachments.flatMap((attachment) =>
+        attachment.attachDataUrl && attachment.attach.workspacePath
+          ? [[attachment.attach.workspacePath, attachment.attachDataUrl] as const]
+          : [],
+      ),
+    );
     const deps = {
       attachImage: methods.attachImage,
-      readImageData: (path: string) => hermesBridgeFilePreview(path),
+      readImageData: async (path: string) =>
+        heldImageDataByPath.get(path) ?? (await hermesBridgeFilePreview(path)),
       isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
     };
     const mode = hermesModeFor(storedSessionId);
@@ -4064,6 +4077,21 @@ export function AgentWorkspace({
         }),
       );
     }
+  }
+
+  function clearHeldFastPathImages(sessionId: string, heldImages: AgentAttachment[]) {
+    if (!heldImages.length) return;
+    const heldIds = new Set(heldImages.map((attachment) => attachment.id));
+    const remaining = (pendingFastPathImagesRef.current[sessionId] ?? []).filter(
+      (attachment) => !heldIds.has(attachment.id),
+    );
+    const next = { ...pendingFastPathImagesRef.current };
+    if (remaining.length) {
+      next[sessionId] = remaining;
+    } else {
+      delete next[sessionId];
+    }
+    pendingFastPathImagesRef.current = next;
   }
 
   function startOptimisticHermesSession({
@@ -4629,17 +4657,6 @@ export function AgentWorkspace({
         rollbackOptimisticBeforePrompt(err);
       }
     }
-    // JUN-171 (Phase A): the held fast-path images have now been attached (for a
-    // vision model) or folded into the path-in-prompt fallback (non-vision), so
-    // drop them — the following message must not re-attach the same image. A
-    // failed attach throws above (rollback) and never reaches here, so the hold
-    // survives for a retry. Single-flight submit guarantees nothing was added to
-    // the session's bucket between the merge and here.
-    if (heldFastPathImages.length) {
-      const next = { ...pendingFastPathImagesRef.current };
-      delete next[storedSessionId];
-      pendingFastPathImagesRef.current = next;
-    }
     const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
     setRuntimeSessionIds((current) => ({
       ...current,
@@ -4736,6 +4753,12 @@ export function AgentWorkspace({
         session_id: runtimeSessionId,
         text: promptSubmitContent,
       });
+      // JUN-171 (Phase A): the held fast-path images have now ridden along
+      // with a successful follow-up prompt, either as structured image bytes or
+      // in the non-vision path fallback. Clear only after prompt.submit accepts
+      // the message, so a rejected submit can be retried with the same image
+      // context.
+      clearHeldFastPathImages(storedSessionId, heldFastPathImages);
       await loadHermesSessions({
         suppressStartupRequestError: !hermesSessionsHydratedRef.current,
       });
