@@ -18,7 +18,7 @@ import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 const FREE_PLAN_NAME = "Free plan";
 const PRO_PLAN_NAME = "Pro plan";
 const MAX_PLAN_NAME = "Max plan";
-const FREE_PLAN_CREDITS = 5000;
+const FREE_PLAN_CREDITS = 2000;
 
 type Props = {
   account: AccountStatus;
