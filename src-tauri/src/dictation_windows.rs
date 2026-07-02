@@ -23,7 +23,7 @@
 //! tested on the host; everything that touches Win32 is behind
 //! `cfg(target_os = "windows")`.
 
-use crate::dictation::DictationShortcutModifiers;
+use crate::dictation::{DictationShortcutKind, DictationShortcutModifiers};
 
 /// Maps a subset of DOM `KeyboardEvent.code` values (how dictation shortcuts
 /// are stored, platform-neutrally) to Windows virtual-key codes. Covers the
@@ -159,6 +159,54 @@ pub(crate) fn windows_shortcut_label(modifiers: &DictationShortcutModifiers, key
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn shortcut_is_supported(code: &str, modifiers: &DictationShortcutModifiers) -> bool {
     vk_for_code(code).is_some() && (modifiers.control || modifiers.option || modifiers.command)
+}
+
+/// What the keyboard hook should do for one key event of a (potential)
+/// trigger key.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ShortcutEdgeAction {
+    /// Not a shortcut interaction: let the event through to the focused app.
+    PassThrough,
+    /// A newly pressed trigger: dispatch the down edge and swallow the key.
+    DispatchDown(DictationShortcutKind),
+    /// OS key repeat for a held, already-suppressed trigger: swallow it
+    /// without dispatching. A repeat is not a new press; re-dispatching the
+    /// down edge would make the shared activation controller re-toggle
+    /// (starting and then immediately stopping dictation on a held toggle
+    /// chord).
+    SwallowRepeat,
+    /// Release of a suppressed trigger: dispatch the up edge and swallow.
+    DispatchUp(DictationShortcutKind),
+}
+
+/// Pure decision for a trigger-key edge, factored out of the raw hook
+/// callback so it is unit-testable on any host. `matched` is the shortcut the
+/// key+modifiers currently match (down edges only); `suppressed_kind` is set
+/// when this key's down edge was already suppressed and is still held. A held
+/// key whose repeats arrive is swallowed even if the modifiers were released
+/// mid-hold (`matched` gone), so a suppressed trigger can never leak repeats
+/// into the focused app before its release.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn shortcut_edge_action(
+    is_down: bool,
+    matched: Option<DictationShortcutKind>,
+    suppressed_kind: Option<DictationShortcutKind>,
+) -> ShortcutEdgeAction {
+    if is_down {
+        if suppressed_kind.is_some() {
+            return ShortcutEdgeAction::SwallowRepeat;
+        }
+        match matched {
+            Some(kind) => ShortcutEdgeAction::DispatchDown(kind),
+            None => ShortcutEdgeAction::PassThrough,
+        }
+    } else {
+        match suppressed_kind {
+            Some(kind) => ShortcutEdgeAction::DispatchUp(kind),
+            None => ShortcutEdgeAction::PassThrough,
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -485,29 +533,35 @@ mod windows_impl {
             return false;
         }
 
-        if is_down {
-            let matched = guard
+        let matched = if is_down {
+            guard
                 .shortcuts
                 .iter()
                 .find(|shortcut| shortcut.vk == vk && shortcut.modifiers_match())
-                .map(|shortcut| shortcut.kind);
-            if let Some(kind) = matched {
-                if !guard.suppressed.iter().any(|(held, _)| *held == vk) {
-                    guard.suppressed.push((vk, kind));
-                }
-                dispatch_worker(WorkerMsg::ShortcutEdge { kind, down: true });
-                return true;
-            }
-            return false;
-        }
+                .map(|shortcut| shortcut.kind)
+        } else {
+            None
+        };
+        let suppressed_kind = guard
+            .suppressed
+            .iter()
+            .find(|(held, _)| *held == vk)
+            .map(|(_, kind)| *kind);
 
-        // Key up: release any suppressed trigger.
-        if let Some(position) = guard.suppressed.iter().position(|(held, _)| *held == vk) {
-            let (_, kind) = guard.suppressed.remove(position);
-            dispatch_worker(WorkerMsg::ShortcutEdge { kind, down: false });
-            return true;
+        match super::shortcut_edge_action(is_down, matched, suppressed_kind) {
+            super::ShortcutEdgeAction::PassThrough => false,
+            super::ShortcutEdgeAction::SwallowRepeat => true,
+            super::ShortcutEdgeAction::DispatchDown(kind) => {
+                guard.suppressed.push((vk, kind));
+                dispatch_worker(WorkerMsg::ShortcutEdge { kind, down: true });
+                true
+            }
+            super::ShortcutEdgeAction::DispatchUp(kind) => {
+                guard.suppressed.retain(|(held, _)| *held != vk);
+                dispatch_worker(WorkerMsg::ShortcutEdge { kind, down: false });
+                true
+            }
         }
-        false
     }
 
     fn dispatch_worker(msg: WorkerMsg) {
@@ -1206,8 +1260,9 @@ mod windows_impl {
 #[cfg(test)]
 mod tests {
     use super::{
-        code_for_vk, key_label_for_vk, shortcut_is_supported, vk_for_code, windows_shortcut_label,
-        DictationShortcutModifiers,
+        code_for_vk, key_label_for_vk, shortcut_edge_action, shortcut_is_supported, vk_for_code,
+        windows_shortcut_label, DictationShortcutKind, DictationShortcutModifiers,
+        ShortcutEdgeAction,
     };
 
     fn ctrl_alt() -> DictationShortcutModifiers {
@@ -1260,6 +1315,61 @@ mod tests {
         assert_eq!(
             windows_shortcut_label(&win_shift, "Space"),
             "Win+Shift+Space"
+        );
+    }
+
+    #[test]
+    fn key_repeat_for_a_held_trigger_is_swallowed_without_a_second_down_edge() {
+        // First down: dispatch and suppress.
+        assert_eq!(
+            shortcut_edge_action(true, Some(DictationShortcutKind::Toggle), None),
+            ShortcutEdgeAction::DispatchDown(DictationShortcutKind::Toggle)
+        );
+        // OS key repeat while held (key already suppressed): swallowed, no
+        // second down edge — a repeat must not re-toggle dictation.
+        assert_eq!(
+            shortcut_edge_action(
+                true,
+                Some(DictationShortcutKind::Toggle),
+                Some(DictationShortcutKind::Toggle)
+            ),
+            ShortcutEdgeAction::SwallowRepeat
+        );
+        // Same for push-to-talk: no re-dispatched down on repeats.
+        assert_eq!(
+            shortcut_edge_action(
+                true,
+                Some(DictationShortcutKind::PushToTalk),
+                Some(DictationShortcutKind::PushToTalk)
+            ),
+            ShortcutEdgeAction::SwallowRepeat
+        );
+        // Repeats stay swallowed even if the modifiers were released mid-hold
+        // (no current match), so a suppressed trigger never leaks into the app.
+        assert_eq!(
+            shortcut_edge_action(true, None, Some(DictationShortcutKind::Toggle)),
+            ShortcutEdgeAction::SwallowRepeat
+        );
+    }
+
+    #[test]
+    fn release_of_a_suppressed_trigger_dispatches_the_up_edge() {
+        assert_eq!(
+            shortcut_edge_action(false, None, Some(DictationShortcutKind::PushToTalk)),
+            ShortcutEdgeAction::DispatchUp(DictationShortcutKind::PushToTalk)
+        );
+        // A release we never suppressed passes through untouched.
+        assert_eq!(
+            shortcut_edge_action(false, None, None),
+            ShortcutEdgeAction::PassThrough
+        );
+    }
+
+    #[test]
+    fn unmatched_keys_pass_through() {
+        assert_eq!(
+            shortcut_edge_action(true, None, None),
+            ShortcutEdgeAction::PassThrough
         );
     }
 
