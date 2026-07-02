@@ -1,8 +1,5 @@
-import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconFire1 } from "central-icons/IconFire1";
-import { IconGhost2 } from "central-icons/IconGhost2";
-import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -10,7 +7,7 @@ import { modelPrivacyBadge, modelPrivacyFlags, modelSupportsTools } from "../../
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
-import { HoverTip } from "../ui/HoverTip";
+import { ModelPrivacyChip } from "../ui/ModelPrivacyChip";
 import { ProviderLogo } from "./ProviderLogo";
 
 // Model catalog UI shared between Settings (the Models tab rows) and the
@@ -28,24 +25,7 @@ export function ModelMeta({ model }: { model: VeniceModelDto }) {
   if (price) items.push(<span className="model-meta-price">{price}</span>);
   if (context) items.push(<span>{context}</span>);
   if (privacyBadge) {
-    items.push(
-      <HoverTip
-        tip={privacyBadge.description}
-        className="model-trait-icon"
-        data-mode={privacyBadge.mode}
-        tabIndex={0}
-        aria-label={`${privacyBadge.label}: ${privacyBadge.description}`}
-      >
-        {privacyBadge.mode === "e2ee" ? (
-          <IconLock size={14} />
-        ) : privacyBadge.mode === "private" ? (
-          <IconGhost2 size={14} />
-        ) : (
-          <IconAnonymous size={14} />
-        )}
-        <span>{privacyBadge.label}</span>
-      </HoverTip>,
-    );
+    items.push(<ModelPrivacyChip badge={privacyBadge} />);
   }
   if (flags.uncensored) {
     items.push(

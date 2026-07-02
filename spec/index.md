@@ -17,3 +17,4 @@ authoritative, reviewable version.
 
 - [icons-central-only](icons-central-only.md) — icons from `central-icons` / `central-icons-filled` only
 - [design-tokens](design-tokens.md) — use the variables in `src/styles/tokens.css`
+- [no-tabular-numerals](no-tabular-numerals.md) — UI numbers use proportional figures, never `tabular-nums`

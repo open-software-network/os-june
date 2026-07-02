@@ -57,6 +57,11 @@ if (import.meta.env.DEV) {
   // __billingDemo("pro") parks the Account → Billing card in any plan state;
   // __billingDemo("all") stacks every variant; __billingDemo("off") resets.
   void import("./lib/billing-demo").then(({ registerBillingDemo }) => registerBillingDemo());
+  // __usageDemo("half") parks the session usage panel in any state;
+  // __usageDemo("off") resets.
+  void import("./lib/usage-panel-demo").then(({ registerUsagePanelDemo }) =>
+    registerUsagePanelDemo(),
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

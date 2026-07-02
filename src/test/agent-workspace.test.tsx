@@ -2346,7 +2346,7 @@ describe("AgentWorkspace", () => {
     // carries the mode description.
     expect(screen.getByRole("button", { name: "Model: Anonymous Only" })).toBeInTheDocument();
     expect(
-      screen.getByLabelText(new RegExp(`^Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`)),
+      screen.getByLabelText(new RegExp(`^Anonymous mode: ${ANONYMOUS_MODEL_DESCRIPTION}`)),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
@@ -4123,8 +4123,15 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Usage" }));
 
-    expect(await screen.findByText("zai-org-glm-5-2")).toBeInTheDocument();
-    expect(screen.getByText("100 / 1,000 (10%)")).toBeInTheDocument();
+    // The panel resolves the raw model id against the catalog fixture, so the
+    // display name renders, not "zai-org-glm-5-2". Scoped to the panel: the
+    // composer's model pill shows the same name.
+    const panel = await screen.findByLabelText("Session usage");
+    expect(await within(panel).findByText("GLM 5.2")).toBeInTheDocument();
+    // The redesigned meter splits the reading (used, then a muted "/ limit
+    // tokens" span) and the percent into separate legend elements.
+    expect(within(panel).getByText(/1,000 tokens/)).toBeInTheDocument();
+    expect(within(panel).getByText(/^10%$/)).toBeInTheDocument();
     expect(resumeCount).toBe(2);
   });
 
