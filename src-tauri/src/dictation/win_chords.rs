@@ -33,12 +33,14 @@ use std::time::{Duration, Instant};
 
 /// A push shorter than this on a shared trigger is (or arms) the toggle;
 /// only a hold is the push. Mirrors the Swift monitor's `holdThreshold`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) const HOLD_THRESHOLD: Duration = Duration::from_millis(160);
 /// Two taps of a pressCount == 2 toggle must land within this window.
 /// Mirrors the Swift monitor's `doublePressWindow`.
 pub(crate) const DOUBLE_PRESS_WINDOW: Duration = Duration::from_millis(340);
 /// A modifier-only chord held stable for this long during shortcut capture
 /// commits as the captured shortcut. Mirrors the Swift capture debounce.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) const CAPTURE_DEBOUNCE: Duration = Duration::from_millis(180);
 
 // Modifier virtual keys (winuser.h). Generic VKs are included alongside the
@@ -256,6 +258,7 @@ impl ChordMatcher {
     /// Drop a kind's chord entirely (its configured shortcut cannot be
     /// monitored on Windows, e.g. Fn-based). Mirrors the Swift helper
     /// skipping registration for such chords.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn clear_shortcut(&mut self, kind: DictationShortcutKind) {
         match kind {
             DictationShortcutKind::PushToTalk => self.push_to_talk = None,
