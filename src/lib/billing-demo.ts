@@ -37,6 +37,34 @@ const DEMO_USER = {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RENEWS_AT = new Date(Date.now() + 24 * DAY_MS).toISOString();
 const TRIAL_ENDS_AT = new Date(Date.now() + 7 * DAY_MS).toISOString();
+const DAILY_RESETS_AT = new Date(Date.now() + 1 * DAY_MS).toISOString();
+const WEEKLY_RESETS_AT = new Date(Date.now() + 3 * DAY_MS).toISOString();
+const MONTHLY_RESETS_AT = new Date(Date.now() + 12 * DAY_MS).toISOString();
+
+/** Usage windows shaped like the os-accounts ADR-0022 ladder, scaled per
+ * fixture from used credits. */
+function demoUsageLimits(
+  plan: string,
+  caps: { daily: number; weekly: number; monthly: number },
+  used: { daily: number; weekly: number; monthly: number },
+) {
+  const window = (limitCredits: number, usedCredits: number, resetsAt: string) => ({
+    limitCredits,
+    usedCredits,
+    remainingPercent: Math.round(((limitCredits - usedCredits) / limitCredits) * 100),
+    resetsAt,
+  });
+  return {
+    plan,
+    daily: window(caps.daily, used.daily, DAILY_RESETS_AT),
+    weekly: window(caps.weekly, used.weekly, WEEKLY_RESETS_AT),
+    monthly: window(caps.monthly, used.monthly, MONTHLY_RESETS_AT),
+  };
+}
+
+const FREE_CAPS = { daily: 400, weekly: 1000, monthly: 2000 };
+const PRO_CAPS = { daily: 2000, weekly: 6000, monthly: 20000 };
+const MAX_CAPS = { daily: 10000, weekly: 30000, monthly: 100000 };
 
 // Ordered so the gallery reads from the default state outward to the edges.
 export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> = {
@@ -46,7 +74,12 @@ export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
       signedIn: true,
       configured: true,
       user: DEMO_USER,
-      balance: { credits: 3900, usdMillis: 3900, usageRemainingPercent: 78 },
+      balance: {
+        credits: 3900,
+        usdMillis: 3900,
+        usageRemainingPercent: 78,
+        usageLimits: demoUsageLimits("free", FREE_CAPS, { daily: 120, weekly: 320, monthly: 480 }),
+      },
       subscription: { subscribed: false },
     },
   },
@@ -56,7 +89,12 @@ export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
       signedIn: true,
       configured: true,
       user: DEMO_USER,
-      balance: { credits: 300, usdMillis: 300, usageRemainingPercent: 6 },
+      balance: {
+        credits: 300,
+        usdMillis: 300,
+        usageRemainingPercent: 6,
+        usageLimits: demoUsageLimits("free", FREE_CAPS, { daily: 380, weekly: 700, monthly: 1700 }),
+      },
       subscription: { subscribed: false },
     },
   },
@@ -70,6 +108,11 @@ export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
         credits: 12800,
         usdMillis: 12800,
         usageRemainingPercent: 64,
+        usageLimits: demoUsageLimits("pro", PRO_CAPS, {
+          daily: 720,
+          weekly: 2100,
+          monthly: 7200,
+        }),
       },
       subscription: {
         subscribed: true,
@@ -89,6 +132,11 @@ export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
         credits: 64000,
         usdMillis: 64000,
         usageRemainingPercent: 64,
+        usageLimits: demoUsageLimits("max", MAX_CAPS, {
+          daily: 3600,
+          weekly: 10800,
+          monthly: 36000,
+        }),
       },
       subscription: {
         subscribed: true,

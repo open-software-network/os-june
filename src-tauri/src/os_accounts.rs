@@ -91,6 +91,27 @@ struct BalanceWire {
     usd_millis: i64,
     #[serde(default)]
     usage_remaining_percent: Option<i64>,
+    /// Per-plan usage limits (os-accounts ADR-0022). Absent on accounts APIs
+    /// that predate them and when every window is uncapped.
+    #[serde(default)]
+    usage_limits: Option<UsageLimitsWire>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimitsWire {
+    plan: String,
+    daily: Option<UsageWindowWire>,
+    weekly: Option<UsageWindowWire>,
+    monthly: Option<UsageWindowWire>,
+}
+
+#[derive(Deserialize)]
+struct UsageWindowWire {
+    limit_credits: i64,
+    used_credits: i64,
+    remaining_percent: i64,
+    /// RFC 3339; passed through as a string like the subscription dates.
+    resets_at: String,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +180,31 @@ pub struct AccountBalance {
     pub usd_millis: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_remaining_percent: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_limits: Option<AccountUsageLimits>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUsageLimits {
+    /// "free" for accounts without an active subscription, else the plan
+    /// slug ("pro", "max").
+    pub plan: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily: Option<AccountUsageWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weekly: Option<AccountUsageWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly: Option<AccountUsageWindow>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUsageWindow {
+    pub limit_credits: i64,
+    pub used_credits: i64,
+    pub remaining_percent: i64,
+    pub resets_at: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -243,6 +289,29 @@ impl From<BalanceWire> for AccountBalance {
             credits: w.credits,
             usd_millis: w.usd_millis,
             usage_remaining_percent: w.usage_remaining_percent,
+            usage_limits: w.usage_limits.map(Into::into),
+        }
+    }
+}
+
+impl From<UsageLimitsWire> for AccountUsageLimits {
+    fn from(w: UsageLimitsWire) -> Self {
+        Self {
+            plan: w.plan,
+            daily: w.daily.map(Into::into),
+            weekly: w.weekly.map(Into::into),
+            monthly: w.monthly.map(Into::into),
+        }
+    }
+}
+
+impl From<UsageWindowWire> for AccountUsageWindow {
+    fn from(w: UsageWindowWire) -> Self {
+        Self {
+            limit_credits: w.limit_credits,
+            used_credits: w.used_credits,
+            remaining_percent: w.remaining_percent,
+            resets_at: w.resets_at,
         }
     }
 }
@@ -358,6 +427,36 @@ fn normalize_local_dev_user_id(value: &str) -> String {
     }
 }
 
+/// Representative free-plan usage windows so the local-dev build exercises
+/// the usage limit UI without a live accounts API.
+fn local_dev_usage_limits() -> AccountUsageLimits {
+    let now = chrono::Utc::now();
+    let tomorrow = (now.date_naive() + chrono::Days::new(1))
+        .and_time(chrono::NaiveTime::MIN)
+        .and_utc();
+    AccountUsageLimits {
+        plan: "free".to_string(),
+        daily: Some(AccountUsageWindow {
+            limit_credits: 400,
+            used_credits: 120,
+            remaining_percent: 70,
+            resets_at: tomorrow.to_rfc3339(),
+        }),
+        weekly: Some(AccountUsageWindow {
+            limit_credits: 1_000,
+            used_credits: 320,
+            remaining_percent: 68,
+            resets_at: tomorrow.to_rfc3339(),
+        }),
+        monthly: Some(AccountUsageWindow {
+            limit_credits: 2_000,
+            used_credits: 480,
+            remaining_percent: 76,
+            resets_at: tomorrow.to_rfc3339(),
+        }),
+    }
+}
+
 fn local_dev_account_status() -> AccountStatus {
     AccountStatus {
         signed_in: true,
@@ -374,6 +473,7 @@ fn local_dev_account_status() -> AccountStatus {
             credits: 0,
             usd_millis: 0,
             usage_remaining_percent: Some(100),
+            usage_limits: Some(local_dev_usage_limits()),
         }),
         subscription: Some(AccountSubscription {
             subscribed: true,

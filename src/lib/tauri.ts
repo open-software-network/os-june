@@ -1443,6 +1443,27 @@ export type AccountBalance = {
    * Optional while the app can still receive older accounts API payloads. */
   usageRemainingPercent?: number;
   usdMillis: number;
+  /** Per-plan usage limits (os-accounts ADR-0022). Absent on accounts APIs
+   * that predate them and when every window is uncapped. */
+  usageLimits?: AccountUsageLimits;
+};
+
+export type AccountUsageLimits = {
+  /** "free" for accounts without an active subscription, else the plan
+   * slug ("pro", "max"). */
+  plan: string;
+  daily?: AccountUsageWindow;
+  weekly?: AccountUsageWindow;
+  monthly?: AccountUsageWindow;
+};
+
+export type AccountUsageWindow = {
+  limitCredits: number;
+  usedCredits: number;
+  /** Rounded share of the window still spendable, 0 to 100. */
+  remainingPercent: number;
+  /** RFC 3339 instant the window resets (UTC calendar boundary). */
+  resetsAt: string;
 };
 
 export type SubscriptionPlan = "pro" | "max";

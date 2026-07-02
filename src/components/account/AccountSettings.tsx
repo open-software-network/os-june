@@ -13,7 +13,7 @@ import {
   osAccountsOpenPortal,
   osAccountsUpgrade,
 } from "../../lib/tauri";
-import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
+import type { AccountStatus, AccountUsageWindow, SubscriptionPlan } from "../../lib/tauri";
 
 const FREE_PLAN_NAME = "Free plan";
 const PRO_PLAN_NAME = "Pro plan";
@@ -258,6 +258,18 @@ function BillingCard({
   const subscription = account.subscription;
   const liveSubscription = hasLiveSubscription(account);
   const usageRemainingPercent = usagePercentFromBalance(account.balance, subscription);
+  // Per-plan usage windows (os-accounts ADR-0022). When a daily cap exists it
+  // becomes the primary value users see; weekly and monthly stay one glance
+  // away as compact rows. Absent on older accounts APIs and uncapped plans,
+  // where the card keeps the original balance-based bar.
+  const usageLimits = account.balance?.usageLimits;
+  const dailyWindow = usageLimits?.daily;
+  const periodRows = (
+    [
+      ["Weekly", usageLimits?.weekly],
+      ["Monthly", usageLimits?.monthly],
+    ] as [string, AccountUsageWindow | undefined][]
+  ).filter((row): row is [string, AccountUsageWindow] => row[1] !== undefined);
   const billingRecovery =
     subscription?.subscribed === true &&
     typeof subscription.status === "string" &&
@@ -268,9 +280,14 @@ function BillingCard({
   // is a subset of this, kept to drive the "update billing" detail line.
   const onPaidPlan = subscription?.subscribed === true || liveSubscription;
   const canUpgrade = account.signedIn && !onPaidPlan;
+  const primaryPercent = dailyWindow
+    ? clampPercent(dailyWindow.remainingPercent)
+    : usageRemainingPercent;
+  const primaryLabel = dailyWindow ? "Daily usage remaining" : "Usage remaining";
+  const dailyResets = dailyWindow ? describeEnd("Resets", dailyWindow.resetsAt) : undefined;
   // Warm the meter toward "running low" so green never implies a near-empty
   // allowance. Only meaningful once we have a real signed-in reading.
-  const lowUsage = account.signedIn && usageRemainingPercent <= 15;
+  const lowUsage = account.signedIn && primaryPercent <= 15;
 
   // Legacy subscription rows predate plan tiers and carry no slug; they are
   // all Pro, so anything that isn't explicitly "max" reads as Pro.
@@ -322,9 +339,9 @@ function BillingCard({
 
       <div className="billing-usage">
         <div className="billing-usage-head">
-          <span className="billing-usage-label">Usage remaining</span>
+          <span className="billing-usage-label">{primaryLabel}</span>
           <span className="billing-usage-right">
-            <span className="billing-usage-value">{formatPercent(usageRemainingPercent)}</span>
+            <span className="billing-usage-value">{formatPercent(primaryPercent)}</span>
             <button
               type="button"
               className="icon-button"
@@ -344,18 +361,47 @@ function BillingCard({
         <div
           className={`usage-remaining-progress${lowUsage ? " is-low" : ""}`}
           role="progressbar"
-          aria-label="Usage remaining"
+          aria-label={primaryLabel}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={usageRemainingPercent}
+          aria-valuenow={primaryPercent}
         >
           <div
             className="usage-remaining-progress-fill"
             style={{
-              transform: `scaleX(${usageRemainingPercent / 100})`,
+              transform: `scaleX(${primaryPercent / 100})`,
             }}
           />
         </div>
+        {dailyResets ? <p className="billing-usage-resets">{dailyResets}</p> : null}
+        {periodRows.length > 0 ? (
+          <div className="billing-usage-periods">
+            {periodRows.map(([label, usageWindow]) => {
+              const percent = clampPercent(usageWindow.remainingPercent);
+              return (
+                <div key={label} className="billing-usage-period">
+                  <span className="billing-usage-period-label">{label}</span>
+                  <div
+                    className={`usage-remaining-progress is-compact${
+                      account.signedIn && percent <= 15 ? " is-low" : ""
+                    }`}
+                    role="progressbar"
+                    aria-label={`${label} usage remaining`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={percent}
+                  >
+                    <div
+                      className="usage-remaining-progress-fill"
+                      style={{ transform: `scaleX(${percent / 100})` }}
+                    />
+                  </div>
+                  <span className="billing-usage-period-value">{formatPercent(percent)}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
     </div>
   );

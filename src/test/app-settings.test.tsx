@@ -547,6 +547,74 @@ describe("AppSettings", () => {
     expect(screen.queryByText("$1.20")).not.toBeInTheDocument();
   });
 
+  it("leads with the daily usage limit and keeps weekly and monthly in view", async () => {
+    const user = userEvent.setup();
+    const resetsAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: {
+            credits: 1600,
+            usdMillis: 1600,
+            usageRemainingPercent: 80,
+            usageLimits: {
+              plan: "free",
+              daily: {
+                limitCredits: 400,
+                usedCredits: 120,
+                remainingPercent: 70,
+                resetsAt,
+              },
+              weekly: {
+                limitCredits: 1000,
+                usedCredits: 320,
+                remainingPercent: 68,
+                resetsAt,
+              },
+              monthly: {
+                limitCredits: 2000,
+                usedCredits: 480,
+                remainingPercent: 76,
+                resetsAt,
+              },
+            },
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    // Daily is the primary value; the balance-based 80% takes the back seat.
+    expect(screen.getByText("Daily usage remaining")).toBeInTheDocument();
+    expect(screen.getByText("70%")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Daily usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "70",
+    );
+    expect(screen.getByText(/^Resets /)).toBeInTheDocument();
+    // Weekly and monthly stay one glance away.
+    expect(screen.getByRole("progressbar", { name: "Weekly usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "68",
+    );
+    expect(screen.getByRole("progressbar", { name: "Monthly usage remaining" })).toHaveAttribute(
+      "aria-valuenow",
+      "76",
+    );
+    expect(screen.getByText("68%")).toBeInTheDocument();
+    expect(screen.getByText("76%")).toBeInTheDocument();
+    expect(screen.queryByText("Usage remaining")).not.toBeInTheDocument();
+  });
+
   it("changes the accent color through the appearance picker", () => {
     vi.useFakeTimers();
     try {
