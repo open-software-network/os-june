@@ -18,7 +18,14 @@ const BILLING_DEMO_EVENT = "june:billing-demo-changed";
 /** A single forced variant, or "all" for the stacked gallery. */
 export type BillingDemoPlan = BillingDemoKey | "all";
 
-export type BillingDemoKey = "free" | "freeLow" | "pro" | "trial" | "pastDue" | "signedOut";
+export type BillingDemoKey =
+  | "free"
+  | "freeLow"
+  | "pro"
+  | "max"
+  | "trial"
+  | "pastDue"
+  | "signedOut";
 
 type BillingDemoFixture = {
   label: string;
@@ -74,6 +81,26 @@ export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
       subscription: {
         subscribed: true,
         status: "active",
+        plan: "pro",
+        currentPeriodEnd: RENEWS_AT,
+      },
+    },
+  },
+  max: {
+    label: "Max, active",
+    account: {
+      signedIn: true,
+      configured: true,
+      user: DEMO_USER,
+      balance: {
+        credits: 64000,
+        usdMillis: 64000,
+        usageRemainingPercent: 64,
+      },
+      subscription: {
+        subscribed: true,
+        status: "active",
+        plan: "max",
         currentPeriodEnd: RENEWS_AT,
       },
     },
@@ -119,6 +146,7 @@ export const BILLING_DEMO_FIXTURES: Record<BillingDemoKey, BillingDemoFixture> =
 export const BILLING_DEMO_ORDER: BillingDemoKey[] = [
   "free",
   "pro",
+  "max",
   "trial",
   "pastDue",
   "freeLow",

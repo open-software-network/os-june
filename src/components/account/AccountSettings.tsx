@@ -13,11 +13,11 @@ import {
   osAccountsOpenPortal,
   osAccountsUpgrade,
 } from "../../lib/tauri";
-import type { AccountStatus } from "../../lib/tauri";
+import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 
 const FREE_PLAN_NAME = "Free plan";
-// Single paid tier today; rename here when the plan catalog grows.
-const PAID_PLAN_NAME = "Pro plan";
+const PRO_PLAN_NAME = "Pro plan";
+const MAX_PLAN_NAME = "Max plan";
 const FREE_PLAN_CREDITS = 5000;
 
 type Props = {
@@ -165,9 +165,9 @@ export function BillingSettingsSection({
   const [spins, setSpins] = useState(0);
   const demoPlan = useForcedBillingPlan();
 
-  async function handleUpgrade() {
+  async function handleUpgrade(plan: SubscriptionPlan) {
     try {
-      await osAccountsUpgrade();
+      await osAccountsUpgrade(plan);
       setBillingStatus("Opened checkout in your browser.");
     } catch (error) {
       setBillingStatus(messageFromError(error));
@@ -209,7 +209,7 @@ export function BillingSettingsSection({
     refreshing,
     spins,
     onRefresh: () => void handleRefresh(),
-    onUpgrade: () => void handleUpgrade(),
+    onUpgrade: (plan: SubscriptionPlan) => void handleUpgrade(plan),
     onManage: () => void handleManageSubscription(),
   };
 
@@ -243,7 +243,7 @@ type BillingCardProps = {
   refreshing: boolean;
   spins: number;
   onRefresh: () => void;
-  onUpgrade: () => void;
+  onUpgrade: (plan: SubscriptionPlan) => void;
   onManage: () => void;
 };
 
@@ -272,7 +272,10 @@ function BillingCard({
   // allowance. Only meaningful once we have a real signed-in reading.
   const lowUsage = account.signedIn && usageRemainingPercent <= 15;
 
-  const planName = onPaidPlan ? PAID_PLAN_NAME : FREE_PLAN_NAME;
+  // Legacy subscription rows predate plan tiers and carry no slug; they are
+  // all Pro, so anything that isn't explicitly "max" reads as Pro.
+  const onMaxPlan = onPaidPlan && subscription?.plan === "max";
+  const planName = onPaidPlan ? (onMaxPlan ? MAX_PLAN_NAME : PRO_PLAN_NAME) : FREE_PLAN_NAME;
   const planDetail = !onPaidPlan
     ? "No credit card required."
     : billingRecovery
@@ -280,11 +283,18 @@ function BillingCard({
       : liveSubscription && subscription?.status === "trialing"
         ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Free trial")
         : (describeEnd("Renews", subscription?.currentPeriodEnd) ?? "Active");
-  const primaryCta = onPaidPlan
-    ? { label: "Manage billing", onClick: onManage }
+  const ctas: { label: string; onClick: () => void; title?: string }[] = onPaidPlan
+    ? [{ label: "Manage billing", onClick: onManage }]
     : canUpgrade
-      ? { label: "Upgrade", onClick: onUpgrade }
-      : undefined;
+      ? [
+          { label: "Upgrade to Pro", onClick: () => onUpgrade("pro") },
+          {
+            label: "Upgrade to Max",
+            onClick: () => onUpgrade("max"),
+            title: "For those who want to go beyond Pro",
+          },
+        ]
+      : [];
 
   return (
     <div className="settings-card billing-card">
@@ -293,11 +303,19 @@ function BillingCard({
           <h3 className="billing-plan-name">{planName}</h3>
           <p className="billing-plan-detail">{planDetail}</p>
         </div>
-        {primaryCta ? (
+        {ctas.length > 0 ? (
           <div className="billing-plan-control">
-            <button type="button" className="btn btn-secondary" onClick={primaryCta.onClick}>
-              {primaryCta.label}
-            </button>
+            {ctas.map((cta) => (
+              <button
+                key={cta.label}
+                type="button"
+                className="btn btn-secondary"
+                title={cta.title}
+                onClick={cta.onClick}
+              >
+                {cta.label}
+              </button>
+            ))}
           </div>
         ) : null}
       </div>

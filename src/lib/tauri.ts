@@ -1436,9 +1436,14 @@ export type AccountBalance = {
   usdMillis: number;
 };
 
+export type SubscriptionPlan = "pro" | "max";
+
 export type AccountSubscription = {
   subscribed: boolean;
   status?: "trialing" | "active" | "past_due" | "canceled" | (string & {});
+  /** Plan slug from OS Accounts. Absent on accounts APIs that predate plan
+   * tiers and on legacy subscription rows, which are all Pro. */
+  plan?: SubscriptionPlan | (string & {});
   /** Monthly plan credits returned by OS Accounts. Used as a fallback for
    * deployments whose balance endpoint does not expose usageRemainingPercent. */
   planCredits?: number;
@@ -1495,8 +1500,10 @@ export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
   });
 }
 
-export async function osAccountsUpgrade() {
-  return invoke<void>("os_accounts_upgrade");
+/** Opens subscription checkout in the browser. Omitting `plan` keeps the
+ * accounts-API default (Pro). */
+export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
+  return invoke<void>("os_accounts_upgrade", { plan });
 }
 
 /** Opens the accounts portal in the default browser — the webview swallows

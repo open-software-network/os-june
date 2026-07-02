@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { hasLiveSubscription } from "../../lib/account-gate";
 import { osAccountsOpenPortal, osAccountsUpgrade } from "../../lib/tauri";
-import type { AccountStatus } from "../../lib/tauri";
+import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
 import { JuneMark } from "./AccountGate";
 
@@ -17,6 +17,8 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const [openedPortal, setOpenedPortal] = useState(false);
   const [checking, setChecking] = useState(false);
   const [portalError, setPortalError] = useState<string>();
+  // Remembered so "Reopen checkout" lands on the same plan the user picked.
+  const [chosenPlan, setChosenPlan] = useState<SubscriptionPlan>("pro");
   const handle = account.user?.handle;
   const status = account.subscription?.status;
   const subscribed = account.subscription?.subscribed === true;
@@ -45,10 +47,11 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
       : {
           title: "Upgrade to continue",
           subtitle: "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
-          cta: "Upgrade",
+          cta: "Upgrade to Pro",
           waiting: "Waiting for your upgrade",
           reopen: "Reopen checkout",
         };
+  const offerMaxPlan = !billingRecovery && !topUpRequired;
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -57,13 +60,14 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
     return () => window.clearInterval(interval);
   }, [onRefresh]);
 
-  async function handleOpenPortal() {
+  async function handleOpenPortal(plan: SubscriptionPlan = chosenPlan) {
     setPortalError(undefined);
     try {
       if (billingRecovery || topUpRequired) {
         await osAccountsOpenPortal();
       } else {
-        await osAccountsUpgrade();
+        setChosenPlan(plan);
+        await osAccountsUpgrade(plan);
       }
       setOpenedPortal(true);
     } catch (error) {
@@ -118,13 +122,27 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
               </p>
             </>
           ) : (
-            <button
-              type="button"
-              className="primary-action"
-              onClick={() => void handleOpenPortal()}
-            >
-              {copy.cta}
-            </button>
+            <>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => void handleOpenPortal(offerMaxPlan ? "pro" : chosenPlan)}
+              >
+                {copy.cta}
+              </button>
+              {offerMaxPlan ? (
+                <p className="funding-hint">
+                  Want to go beyond Pro?{" "}
+                  <button
+                    type="button"
+                    className="funding-gate-link"
+                    onClick={() => void handleOpenPortal("max")}
+                  >
+                    Upgrade to Max
+                  </button>
+                </p>
+              ) : null}
+            </>
           )}
         </div>
 
