@@ -38,6 +38,8 @@ PROTOCOL_VERSION = "2025-03-26"
 SERVER_INFO = {"name": "june-image", "version": "0.1.0"}
 REQUEST_TIMEOUT_SECONDS = 120
 TOKEN_ENV_VAR = "JUNE_IMAGE_PROXY_TOKEN"
+MAX_EDIT_SOURCE_IMAGE_BYTES = 50 * 1024 * 1024
+IMAGE_SIGNATURE_READ_BYTES = 32
 
 # Venice always returns png for generation; edits echo the requested output
 # format. Map the response mime to a file extension for the on-disk name.
@@ -280,7 +282,12 @@ def generate_image(
         raise ValueError("prompt is required")
     # No model is sent: the loopback proxy injects the user's selected image
     # generation model so the tool honors their setting.
-    envelope = call_proxy(base_url, token, "/image/generate", {"prompt": prompt})
+    envelope = call_proxy(
+        base_url,
+        token,
+        "/image/generate",
+        {"prompt": prompt, "requestId": new_request_id()},
+    )
     image_base64 = str(envelope.get("imageBase64") or "")
     mime_type = str(envelope.get("mimeType") or "image/png")
     if not image_base64:
@@ -317,6 +324,7 @@ def edit_image(
             "image": source_base64,
             "prompt": instruction,
             "mimeType": source_mime,
+            "requestId": new_request_id(),
         },
     )
     image_base64 = str(envelope.get("imageBase64") or "")
@@ -352,9 +360,29 @@ def read_image(source_dirs: list[str], filename: str) -> tuple[str, str]:
     path = resolve_source_image_path(source_dirs, filename)
     safe_name = os.path.basename(path)
     mime_type = source_image_mime_type(path, safe_name)
+    size = os.path.getsize(path)
+    if size > MAX_EDIT_SOURCE_IMAGE_BYTES:
+        raise ValueError("source_filename must be 50 MB or smaller.")
     with open(path, "rb") as handle:
+        signature = handle.read(IMAGE_SIGNATURE_READ_BYTES)
+        sniffed_mime = sniff_image_mime_type(signature)
+        if sniffed_mime is None or sniffed_mime != mime_type:
+            raise ValueError("source_filename must refer to a real PNG, JPEG, WebP, or GIF image.")
+        handle.seek(0)
         data = handle.read()
     return base64.b64encode(data).decode("ascii"), mime_type
+
+
+def sniff_image_mime_type(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def source_image_mime_type(path: str, safe_name: str) -> str:
@@ -413,6 +441,10 @@ def unique_strings(values: list[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def new_request_id() -> str:
+    return uuid.uuid4().hex
 
 
 def call_proxy(
