@@ -112,6 +112,11 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Resolved $source → digest=${digest} sha=${sha_short}"
 
+      # NOTE: from-tag re-pins only the june-api APP image; the compose file
+      # (incl. the dstack-ingress pin and env) always deploys from this
+      # workflow's checkout ref. Rolling back a bad compose/ingress change
+      # therefore means reverting it on main and rerunning promote — promoting
+      # an older app SHA alone redeploys the same compose.
       - id: phala
         uses: ./.github/actions/phala-deploy
         with:
@@ -122,6 +127,34 @@ jobs:
           # CVM never boots. The sha_short tag is resolved above and pullable.
           image-ref: ${{ env.IMAGE }}:${{ steps.image.outputs.sha_short }}
           api-key: ${{ secrets.PHALA_CLOUD_API_KEY }}
+
+      # The public endpoint is the only place the dstack-ingress container can
+      # be exercised (staging has no ingress), so check it before accepting
+      # the promote: a broken ingress boot would otherwise surface only via
+      # the 30-minute watchdog. Runs before the retag/record steps so a
+      # failure fails the promotion and leaves :production on the last-good
+      # digest. Deeper checks (e.g. body-size probes after an ingress change)
+      # are run manually against the public endpoint.
+      - name: Verify public endpoint after deploy
+        if: steps.phala.outputs.deployed == 'true'
+        run: |
+          set -euo pipefail
+          base="https://june-api.opensoftware.co"
+          # The CVM restarts its containers on update; give the ingress up to
+          # 10 minutes to come back before judging the deploy.
+          code=""
+          for _ in $(seq 1 60); do
+            # `|| true`, not `|| echo`: curl prints its own %{http_code} (000)
+            # on transport failure, so a fallback echo would corrupt the value.
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$base/healthz" || true)
+            [[ "$code" == "200" ]] && break
+            sleep 10
+          done
+          if [[ "$code" != "200" ]]; then
+            echo "::error::$base/healthz did not return 200 within 10 minutes of the promote (last: $code)."
+            exit 1
+          fi
+          echo "healthz OK"
 
       - name: Retag digest as :production
         if: steps.phala.outputs.deployed == 'true'
