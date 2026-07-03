@@ -32,6 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 semver = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 sha2 = "0.10"
 # Avoid the SQLx umbrella crate here. Its optional macro/database dependencies
 # put unused MySQL/Postgres packages into Cargo.lock and cargo-audit.

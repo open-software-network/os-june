@@ -2868,6 +2868,101 @@ fn query_key_is_sensitive(key: &str) -> bool {
     )
 }
 
+/// Strips ANSI escape sequences (CSI color codes, OSC titles, two-character
+/// escapes) and non-printing control characters from CLI output. Under the
+/// login PTY the CLI emits color codes, carriage returns, and end-of-input
+/// markers (^D) that must never reach the webview as mojibake. Keeps newlines
+/// and tabs so line structure survives for the summarizer.
+fn strip_ansi_and_controls(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                // CSI: `ESC [` params, terminated by a byte in @..~
+                Some('[') => {
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if ('\u{40}'..='\u{7e}').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: `ESC ]` payload, terminated by BEL or ST (`ESC \`)
+                Some(']') => {
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next == '\u{07}' {
+                            break;
+                        }
+                        if next == '\u{1b}' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                // Two-character escape (ESC + one byte)
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+        } else if c == '\n' || c == '\t' || !c.is_control() {
+            out.push(c);
+        }
+        // Other control characters (\r, ^D, NUL, BEL) are dropped.
+    }
+    out
+}
+
+/// Reduces a login transcript to the line that matters: Hermes' success line
+/// when the login succeeded, the first failure line when it failed, otherwise
+/// the whole cleaned text capped so a mid-flow prompt (the auth URL plus paste
+/// instructions) cannot flood the sign-in panel. Expects ANSI-stripped input.
+fn summarize_login_output(cleaned: &str, ok: bool) -> String {
+    let lines: Vec<&str> = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if ok {
+        if let Some(line) = lines.iter().rev().find(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("authenticated") || lower.contains("authorized")
+        }) {
+            return (*line).to_string();
+        }
+    } else if let Some(line) = lines.iter().find(|line| {
+        let lower = line.to_ascii_lowercase();
+        [
+            "authentication failed",
+            "no oauth token",
+            "error",
+            "fail",
+            "cancelled",
+            "canceled",
+            "denied",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    }) {
+        return (*line).to_string();
+    }
+    let joined = lines.join(" ");
+    const CAP: usize = 280;
+    if joined.chars().count() > CAP {
+        let mut capped: String = joined.chars().take(CAP).collect();
+        capped.push_str("...");
+        capped
+    } else {
+        joined
+    }
+}
+
 /// Redacts a free-text CLI line for return to June. The CLI may echo a
 /// `Bearer <token>`, a `?token=<value>`, or a long credential-shaped run; this
 /// masks all three so the message that reaches the webview never carries a
@@ -3023,7 +3118,10 @@ pub async fn hermes_mcp_oauth_login(
         )
     })??;
 
-    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    // Strip the PTY's ANSI color codes and control characters FIRST: a reset
+    // code glued onto a URL would defeat extraction, and raw escapes render as
+    // mojibake in the webview.
+    let combined = strip_ansi_and_controls(&format!("{}\n{}", join.stdout, join.stderr));
     let auth_url = extract_authorization_url(&combined);
     // Open the authorization URL in the OS browser so the user can complete the
     // sign-in. macOS only; on other platforms June surfaces the URL for a manual
@@ -3038,9 +3136,13 @@ pub async fn hermes_mcp_oauth_login(
         }
     }
 
+    let ok = mcp_login_succeeded(join.exit_success, &combined);
     Ok(HermesMcpOauthLoginResult {
-        ok: mcp_login_succeeded(join.exit_success, &combined),
-        message: redact_cli_message(&combined),
+        ok,
+        // The message is the ONE line that matters (success line / failure
+        // line), not the whole transcript, then redacted so no secret-shaped
+        // value crosses into the renderer.
+        message: redact_cli_message(&summarize_login_output(&combined, ok)),
         // The browser was opened above with the real URL; the copy returned to
         // the webview has any secret-shaped query values redacted so a token can
         // never cross into the renderer through this result.
@@ -5946,8 +6048,55 @@ fn sync_hermes_config(
         Some(june_context_mcp),
         Some(june_web_mcp),
     );
-    std::fs::write(hermes_home.join("config.yaml"), config)
+    let config_path = hermes_home.join("config.yaml");
+    // MERGE over the existing config, never replace it: the jailed dashboard
+    // persists admin changes (user-added MCP servers, tool filters, OAuth
+    // client names, skill config) into this same file, and a plain overwrite
+    // wiped them on every June spawn. June's rendered keys still win — the
+    // provider proxy port/token legitimately change per spawn — but every key
+    // June does not render survives.
+    let merged = merge_hermes_config(&config_path, &config);
+    std::fs::write(config_path, merged)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
+}
+
+/// Deep-merges June's freshly rendered config over the existing `config.yaml`,
+/// returning the YAML to write. June's leaves win on conflict; mappings merge
+/// recursively, so a user-added `mcp_servers.<name>` entry (and its `oauth` /
+/// `tools` blocks, or `skills.config` values) survives while June's
+/// `june_context` / `june_web` entries and the per-spawn model proxy settings
+/// refresh. A missing or unparsable existing file falls back to the rendered
+/// config alone, matching the previous overwrite behavior.
+fn merge_hermes_config(existing_path: &std::path::Path, rendered: &str) -> String {
+    let Ok(existing_text) = std::fs::read_to_string(existing_path) else {
+        return rendered.to_string();
+    };
+    let Ok(existing) = serde_yaml::from_str::<serde_yaml::Value>(&existing_text) else {
+        return rendered.to_string();
+    };
+    let Ok(overlay) = serde_yaml::from_str::<serde_yaml::Value>(rendered) else {
+        return rendered.to_string();
+    };
+    let merged = deep_merge_yaml(existing, overlay);
+    serde_yaml::to_string(&merged).unwrap_or_else(|_| rendered.to_string())
+}
+
+/// Recursive overlay merge: mappings merge key by key (overlay wins on leaf
+/// conflicts); any non-mapping overlay value replaces the base outright.
+fn deep_merge_yaml(base: serde_yaml::Value, overlay: serde_yaml::Value) -> serde_yaml::Value {
+    match (base, overlay) {
+        (serde_yaml::Value::Mapping(mut base_map), serde_yaml::Value::Mapping(overlay_map)) => {
+            for (key, overlay_value) in overlay_map {
+                let merged = match base_map.remove(&key) {
+                    Some(base_value) => deep_merge_yaml(base_value, overlay_value),
+                    None => overlay_value,
+                };
+                base_map.insert(key, merged);
+            }
+            serde_yaml::Value::Mapping(base_map)
+        }
+        (_, overlay) => overlay,
+    }
 }
 
 /// Renders the `config.yaml` June owns for every Hermes spawn. Pure so the
@@ -7062,6 +7211,36 @@ mod tests {
         assert!(!mcp_login_succeeded(true, "401 unauthorized"));
     }
 
+    #[test]
+    fn strips_ansi_and_control_characters_from_pty_output() {
+        // CSI color codes, an OSC title, a two-char escape, ^D, NUL, and \r.
+        let raw = "\u{4}\u{0}\u{1b}[2mStarting\u{1b}[0m flow\r\n\u{1b}]0;title\u{7}Authenticated \u{1b}M— 5 tool(s)";
+        let cleaned = strip_ansi_and_controls(raw);
+        assert_eq!(cleaned, "Starting flow\nAuthenticated — 5 tool(s)");
+    }
+
+    #[test]
+    fn summarizes_login_output_to_the_line_that_matters() {
+        let transcript = "Starting OAuth flow for 'todoist'...\nMCP OAuth: authorization required. Open this URL in your browser:\nhttps://todoist.com/oauth/authorize?client_id=abc\n(Browser opened automatically.)\nAuthenticated — 12 tool(s) available";
+        // Success: the success line only, not the URL / paste noise.
+        assert_eq!(
+            summarize_login_output(transcript, true),
+            "Authenticated — 12 tool(s) available"
+        );
+        // Failure: the first failure line.
+        let failed =
+            "Starting OAuth flow for 'todoist'...\nAuthentication failed: MCP OAuth for 'todoist'";
+        assert_eq!(
+            summarize_login_output(failed, false),
+            "Authentication failed: MCP OAuth for 'todoist'"
+        );
+        // No marker (timed out mid-flow): capped, never the full flood.
+        let long = "word ".repeat(200);
+        let summary = summarize_login_output(&long, false);
+        assert!(summary.chars().count() <= 283);
+        assert!(summary.ends_with("..."));
+    }
+
     fn request_with_authorization(value: &str) -> HttpRequest {
         HttpRequest {
             method: "GET".to_string(),
@@ -7227,6 +7406,87 @@ mod tests {
         } else {
             assert_eq!(command, PathBuf::from("venv").join("bin").join("hermes"));
         }
+    }
+
+    #[test]
+    fn merge_hermes_config_preserves_dashboard_persisted_entries() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config_path = home.path().join("config.yaml");
+        // What the jailed dashboard persisted across the last run: a user MCP
+        // server (with its oauth client name and tool filter) and skill config,
+        // alongside June's own entries from the previous spawn.
+        std::fs::write(
+            &config_path,
+            r#"model:
+  default: "old-model"
+  api_key: "old-token"
+skills:
+  external_dirs: []
+  config:
+    my-skill:
+      api_base: "https://example.com"
+mcp_servers:
+  june_context:
+    command: "/old/python"
+  todoist:
+    url: "https://ai.todoist.net/mcp"
+    auth: "oauth"
+    oauth:
+      client_name: "June"
+    tools:
+      include:
+        - "get_tasks"
+"#,
+        )
+        .expect("seed config");
+
+        let rendered = render_hermes_config(
+            "new-model",
+            "http://127.0.0.1:9/v1",
+            "new-token",
+            "web",
+            &[],
+            Some(&test_june_context_mcp_config()),
+            None,
+        );
+        let merged = merge_hermes_config(&config_path, &rendered);
+        let value: serde_yaml::Value = serde_yaml::from_str(&merged).expect("merged parses");
+
+        // June's per-spawn keys won...
+        assert_eq!(value["model"]["api_key"], "new-token");
+        assert_eq!(value["model"]["default"], "new-model");
+        assert_ne!(
+            value["mcp_servers"]["june_context"]["command"],
+            "/old/python"
+        );
+        // ...and everything the dashboard persisted survived.
+        assert_eq!(
+            value["mcp_servers"]["todoist"]["url"],
+            "https://ai.todoist.net/mcp"
+        );
+        assert_eq!(
+            value["mcp_servers"]["todoist"]["oauth"]["client_name"],
+            "June"
+        );
+        assert_eq!(
+            value["mcp_servers"]["todoist"]["tools"]["include"][0],
+            "get_tasks"
+        );
+        assert_eq!(
+            value["skills"]["config"]["my-skill"]["api_base"],
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn merge_hermes_config_falls_back_to_rendered_when_existing_is_missing_or_bad() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let missing = home.path().join("config.yaml");
+        let rendered = "model:\n  default: \"m\"\n";
+        assert_eq!(merge_hermes_config(&missing, rendered), rendered);
+
+        std::fs::write(&missing, ": not yaml : [").expect("seed corrupt");
+        assert_eq!(merge_hermes_config(&missing, rendered), rendered);
     }
 
     #[test]
