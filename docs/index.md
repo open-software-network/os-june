@@ -35,6 +35,7 @@ Per-repo config the engineering skills read before acting (see the
 - [agents/issue-tracker.md](agents/issue-tracker.md) — issues live on os-platform (org `june`), read via the os-platform skill, writes append-only via the API
 - [agents/triage-labels.md](agents/triage-labels.md) — the five triage roles mapped to platform labels + statuses
 - [agents/domain.md](agents/domain.md) — single-context layout; how skills consume CONTEXT.md and ADRs
+- [agents/collaboration.md](agents/collaboration.md) — how agents build, delegate, and review across harnesses: the skill family map, reviewer-is-never-the-author, trust levels
 
 ## Subsystems
 

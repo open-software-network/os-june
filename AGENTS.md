@@ -153,6 +153,13 @@ labels; "ready-for-agent" = status `todo` + os-task-prep enrichment; "wontfix"
 Single-context: one root `CONTEXT.md` (canonical glossary, binding _Avoid_
 lists) + `docs/adr/`. See `docs/agents/domain.md`.
 
+### Collaboration (build, delegate, review)
+
+`repo-build-pr` is the entry-point skill; implementation can be delegated
+across harnesses (`with codex`), reviews always run on a harness that did not
+write the diff, and trust levels are explicit (OS sandbox vs policy-level).
+See `docs/agents/collaboration.md` for the map.
+
 ## Build, test, lint
 
 Package manager: `pnpm` (a `bun.lock` also exists; the scripts are
