@@ -101,7 +101,12 @@ scripts/fill-prompt.sh -a adversarial ...
 
 **Default dispatch** — one message, parallel general-purpose sub-agents, one
 per axis, each given its filled prompt verbatim (the templates already carry
-the read-only rules and output contracts).
+the read-only rules and output contracts). From Claude Code, run axis
+sub-agents on Opus (the Agent tool's `model` option); the session model
+aggregates and triages, it does not review. For a build implemented
+`with codex`, skip Claude sub-agents entirely and dispatch every axis
+through `run-codex.sh` (single-harness convention; see
+docs/agents/collaboration.md).
 
 **Cross-harness dispatch** — prefer sending at least the adversarial axis to
 the *other* harness, so the review never comes from the model that wrote the
