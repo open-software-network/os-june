@@ -66,10 +66,9 @@ pub struct ImageService {
     edit_pricing: BTreeMap<String, ImageModelPrice>,
     default_edit_model: String,
     hold_ttl_seconds: u64,
-    /// Per-process sequence that makes every generation/edit settle under a
-    /// UNIQUE charge key. Image work is not idempotent — a repeat produces a new
-    /// image and a new upstream cost — so the key is never client-supplied; that
-    /// prevents replaying one settlement to mint free images.
+    /// Per-process sequence used only for older clients that do not send a
+    /// request id. New clients scope charge idempotency to their request id so a
+    /// dropped charge response can be retried without double-charging.
     seq: AtomicU64,
 }
 
@@ -229,29 +228,35 @@ impl ImageService {
         Ok(ImageGenerateOutput { image, receipt })
     }
 
-    /// Each successful generation gets a distinct charge key from the
-    /// per-process sequence, so a repeat can never replay a prior settlement to
-    /// bill zero. A transport-level retry of THIS one charge reuses the same
-    /// computed key (it is built once per `generate` call) and so still dedups.
-    /// The request shape is hashed in for traceability.
+    /// New clients supply a stable per-call request id, mirroring the web tools:
+    /// a dropped-response retry reuses it (no double charge), while a real
+    /// repeat uses a fresh id. Older clients omit it and retain the pre-existing
+    /// unique-per-call sequence behavior. The request shape is hashed in so
+    /// reusing an id with a different shape settles as a new charge.
     fn idempotency_key(&self, params: &ImageGenerateParams) -> String {
         format!(
             "image_generate:{}:{}:{}",
             params.user_id.0,
-            self.seq.fetch_add(1, Ordering::Relaxed),
+            self.idempotency_scope(params.request_id.as_deref()),
             sha256_hex(image_shape(params).as_bytes())
         )
     }
 
-    /// The edit counterpart of [`Self::idempotency_key`]: distinct per edit via
-    /// the shared sequence, so two edits settle as two charges.
+    /// Edit counterpart of [`Self::idempotency_key`].
     fn edit_idempotency_key(&self, params: &ImageEditParams, model: &str) -> String {
         format!(
             "image_edit:{}:{}:{}",
             params.user_id.0,
-            self.seq.fetch_add(1, Ordering::Relaxed),
+            self.idempotency_scope(params.request_id.as_deref()),
             sha256_hex(edit_shape(params, model).as_bytes())
         )
+    }
+
+    fn idempotency_scope(&self, request_id: Option<&str>) -> String {
+        match request_id {
+            Some(request_id) => format!("request:{request_id}"),
+            None => format!("legacy:{}", self.seq.fetch_add(1, Ordering::Relaxed)),
+        }
     }
 }
 
@@ -285,6 +290,8 @@ fn edit_shape(params: &ImageEditParams, model: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct ImageGenerateParams {
     pub user_id: UserId,
+    /// Stable per-call id scoping the metering idempotency key.
+    pub request_id: Option<String>,
     pub prompt: String,
     pub model: String,
     pub width: Option<u32>,
@@ -296,6 +303,8 @@ pub struct ImageGenerateParams {
 #[derive(Clone, Debug)]
 pub struct ImageEditParams {
     pub user_id: UserId,
+    /// Stable per-call id scoping the metering idempotency key.
+    pub request_id: Option<String>,
     /// Source image as raw base64 (no `data:` prefix).
     pub image_base64: String,
     pub mime_type: String,
@@ -455,6 +464,7 @@ mod tests {
     fn params(model: &str) -> ImageGenerateParams {
         ImageGenerateParams {
             user_id: UserId("usr_1".to_string()),
+            request_id: None,
             prompt: "a cat".to_string(),
             model: model.to_string(),
             width: None,
@@ -467,6 +477,7 @@ mod tests {
     fn edit_params() -> ImageEditParams {
         ImageEditParams {
             user_id: UserId("usr_1".to_string()),
+            request_id: None,
             image_base64: "aGVsbG8=".to_string(),
             mime_type: "image/png".to_string(),
             prompt: "make it fluffier".to_string(),
@@ -499,10 +510,11 @@ mod tests {
                 idempotency_key,
             } => {
                 assert_eq!(*credits, 20);
-                // Key is `image_generate:<user>:<seq>:<64-hex shape digest>`.
+                // Key is `image_generate:<user>:legacy:<seq>:<64-hex digest>`.
                 let rest = idempotency_key
                     .strip_prefix("image_generate:usr_1:")
                     .expect("key has the expected prefix");
+                let rest = rest.strip_prefix("legacy:").expect("legacy fallback scope");
                 let (seq, digest) = rest.split_once(':').expect("seq:digest");
                 assert!(seq.chars().all(|ch| ch.is_ascii_digit()));
                 assert_eq!(digest.len(), 64);
@@ -615,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn each_generation_uses_a_distinct_charge_key() {
         // Two generations must settle as two distinct charges (generate twice =
-        // charge twice) — a repeat can never replay the first to bill zero.
+        // charge twice) for older clients that do not send a request id.
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let service = service(os_accounts.clone(), Arc::new(FixedGenerator));
         for _ in 0..2 {
@@ -636,6 +648,23 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(charge_keys.len(), 2);
         assert_ne!(charge_keys[0], charge_keys[1]);
+    }
+
+    #[tokio::test]
+    async fn generation_request_id_reuses_the_charge_key_for_retry() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let service = service(os_accounts.clone(), Arc::new(FixedGenerator));
+        let mut params = params("venice-sd35");
+        params.request_id = Some("req_1".to_string());
+        service
+            .generate(params.clone())
+            .await
+            .expect("generation succeeds");
+        service.generate(params).await.expect("generation succeeds");
+
+        let charge_keys = charge_keys(os_accounts.events());
+        assert_eq!(charge_keys.len(), 2);
+        assert_eq!(charge_keys[0], charge_keys[1]);
     }
 
     #[tokio::test]
@@ -663,10 +692,44 @@ mod tests {
                 idempotency_key,
             } => {
                 assert_eq!(*credits, 80);
-                assert!(idempotency_key.starts_with("image_edit:usr_1:"));
+                assert!(idempotency_key.starts_with("image_edit:usr_1:legacy:"));
             }
             Call::Authorize { .. } => panic!("expected a charge, got an authorize"),
         }
+    }
+
+    #[tokio::test]
+    async fn edit_request_id_reuses_the_charge_key_for_retry() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let service = service(os_accounts.clone(), Arc::new(FixedGenerator));
+        let mut params = edit_params();
+        params.request_id = Some("req_1".to_string());
+        service.edit(params.clone()).await.expect("edit succeeds");
+        service.edit(params).await.expect("edit succeeds");
+
+        let charge_keys = charge_keys(os_accounts.events());
+        assert_eq!(charge_keys.len(), 2);
+        assert_eq!(charge_keys[0], charge_keys[1]);
+    }
+
+    #[tokio::test]
+    async fn edit_same_request_id_different_shape_uses_a_distinct_charge_key() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let service = service(os_accounts.clone(), Arc::new(FixedGenerator));
+        for prompt in ["make it red", "make it blue"] {
+            service
+                .edit(ImageEditParams {
+                    request_id: Some("req_1".to_string()),
+                    prompt: prompt.to_string(),
+                    ..edit_params()
+                })
+                .await
+                .expect("edit succeeds");
+        }
+
+        let charge_keys = charge_keys(os_accounts.events());
+        assert_eq!(charge_keys.len(), 2);
+        assert_ne!(charge_keys[0], charge_keys[1]);
     }
 
     #[tokio::test]
@@ -697,5 +760,17 @@ mod tests {
 
         assert!(matches!(result, Err(crate::ServiceError::ModelNotPriced)));
         assert!(os_accounts.events().is_empty());
+    }
+
+    fn charge_keys(events: Vec<Call>) -> Vec<String> {
+        events
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::Charge {
+                    idempotency_key, ..
+                } => Some(idempotency_key),
+                Call::Authorize { .. } => None,
+            })
+            .collect()
     }
 }

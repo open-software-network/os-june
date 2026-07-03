@@ -401,6 +401,7 @@ pub struct GeneratedImageDto {
 struct ImageGenerateBody {
     prompt: String,
     model: String,
+    request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     safe_mode: Option<bool>,
 }
@@ -410,6 +411,7 @@ struct ImageGenerateBody {
 struct ImageEditBody {
     image: String,
     prompt: String,
+    request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -432,6 +434,7 @@ pub async fn generate_image(
         &ImageGenerateBody {
             prompt,
             model,
+            request_id: new_image_request_id(),
             safe_mode,
         },
         send_venice_api_key,
@@ -453,6 +456,7 @@ pub async fn edit_image(
         &ImageEditBody {
             image,
             prompt,
+            request_id: new_image_request_id(),
             model,
             mime_type,
             safe_mode,
@@ -460,6 +464,10 @@ pub async fn edit_image(
         true,
     )
     .await
+}
+
+fn new_image_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 pub async fn proxy_agent_chat_completions(

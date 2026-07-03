@@ -23,6 +23,11 @@ const MAX_IMAGE_DIMENSION: u32 = 1280;
 pub struct ImageGenerateRequest {
     pub prompt: String,
     pub model: String,
+    /// Optional client-generated id for metering idempotency. New clients send a
+    /// fresh id per logical call and reuse it only when retrying a dropped
+    /// response; old clients may omit it.
+    #[serde(default)]
+    pub request_id: Option<String>,
     #[serde(default)]
     pub width: Option<u32>,
     #[serde(default)]
@@ -41,6 +46,11 @@ pub struct ImageGenerateRequest {
 pub struct ImageEditRequest {
     pub image: String,
     pub prompt: String,
+    /// Optional client-generated id for metering idempotency. New clients send a
+    /// fresh id per logical edit and reuse it only when retrying a dropped
+    /// response; old clients may omit it.
+    #[serde(default)]
+    pub request_id: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -93,6 +103,7 @@ pub(crate) async fn generate(
         return Err(ApiError::bad_request("model_required"));
     }
     validation::validate_text_len("model", &model, validation::MAX_MODEL_CHARS)?;
+    let request_id = optional_request_id(request.request_id)?;
 
     let width = validate_dimension("width", request.width)?;
     let height = validate_dimension("height", request.height)?;
@@ -101,6 +112,7 @@ pub(crate) async fn generate(
         .image()
         .generate(ImageGenerateParams {
             user_id,
+            request_id,
             prompt,
             model,
             width,
@@ -136,6 +148,7 @@ pub(crate) async fn edit(
     if image.is_empty() {
         return Err(ApiError::bad_request("image_required"));
     }
+    let request_id = optional_request_id(request.request_id)?;
 
     // Model is optional; an empty string is treated as absent so the service's
     // default edit model applies. Validate length only when one is given.
@@ -151,6 +164,7 @@ pub(crate) async fn edit(
         .image()
         .edit(ImageEditParams {
             user_id,
+            request_id,
             image_base64: image,
             mime_type: request
                 .mime_type
@@ -174,4 +188,15 @@ fn validate_dimension(field: &str, value: Option<u32>) -> Result<Option<u32>, Ap
         }
         other => Ok(other),
     }
+}
+
+fn optional_request_id(raw: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(request_id) = raw
+        .map(|request_id| request_id.trim().to_string())
+        .filter(|request_id| !request_id.is_empty())
+    else {
+        return Ok(None);
+    };
+    validation::validate_text_len("request_id", &request_id, validation::MAX_ID_CHARS)?;
+    Ok(Some(request_id))
 }
