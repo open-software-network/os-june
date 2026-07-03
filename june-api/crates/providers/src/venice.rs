@@ -481,6 +481,7 @@ impl VeniceChat {
             serde_json::Value::String(model.0.clone()),
         );
         inject_safety_context(object);
+        sanitize_tool_schemas(object);
         if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
             let stream_options = object
                 .entry("stream_options")
@@ -519,11 +520,16 @@ impl VeniceChat {
             DomainError::UpstreamProvider
         })?;
         if !status.is_success() {
+            // The upstream error body is the only place Venice states WHY it
+            // rejected the request (e.g. its tool-schema normalizer bugs), so
+            // a capped preview is logged; it is an error message, not payload.
+            let body_preview: String = String::from_utf8_lossy(&body).chars().take(300).collect();
             tracing::error!(
                 %status,
                 %url,
                 model = %model.0,
                 body_bytes = body.len(),
+                body_preview = %body_preview,
                 "venice: agent chat non-success response"
             );
             return Err(DomainError::UpstreamProvider);
@@ -618,6 +624,53 @@ struct ChatCompletionMessage {
 struct ChatCompletionUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
+}
+
+/// Works around a Venice request-normalizer bug: a tool parameter schema node
+/// that carries BOTH a `type` and an `allOf` (valid JSON Schema draft-07 —
+/// Todoist's MCP server emits it for its date fields) is rejected with
+/// "Conflict in schema definitions for key 'type'. Previous: object, New:
+/// string", which turns EVERY chat request into a 400 while such a server is
+/// connected. The `allOf` branches only restate the declared type plus regex
+/// refinements, so dropping `allOf` where a sibling `type` exists loses
+/// nothing the model needs for tool calling.
+fn sanitize_tool_schemas(body: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(tools) = body
+        .get_mut("tools")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for tool in tools {
+        if let Some(parameters) = tool
+            .get_mut("function")
+            .and_then(|function| function.get_mut("parameters"))
+        {
+            strip_conflicting_all_of(parameters);
+        }
+    }
+}
+
+/// Recursively removes `allOf` from any schema node that also declares `type`
+/// (the combination Venice's normalizer rejects). Nodes using `allOf` alone
+/// are left untouched.
+fn strip_conflicting_all_of(node: &mut serde_json::Value) {
+    match node {
+        serde_json::Value::Object(map) => {
+            if map.contains_key("type") && map.contains_key("allOf") {
+                map.remove("allOf");
+            }
+            for value in map.values_mut() {
+                strip_conflicting_all_of(value);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                strip_conflicting_all_of(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Prepends the standing safety policy to a raw (client-supplied) chat
@@ -1031,7 +1084,8 @@ mod tests {
     use super::{
         SAFETY_CONTEXT, VeniceAgentChat, VeniceGenerator, VeniceModelsApiResponse,
         cleanup_generated_note_text, cleanup_source_text, generation_source_text,
-        inject_safety_context, strip_scaffolding_tags, venice_priced_model_items,
+        inject_safety_context, sanitize_tool_schemas, strip_scaffolding_tags,
+        venice_priced_model_items,
     };
     use crate::http;
     use june_config::ModelType;
@@ -1534,6 +1588,49 @@ mod tests {
         let mut body = json!({ "model": "text-model", "messages": "bogus" });
         inject_safety_context(body.as_object_mut().expect("object"));
         assert_eq!(body["messages"], "bogus");
+    }
+
+    #[test]
+    fn sanitize_tool_schemas_strips_all_of_beside_type() {
+        // Todoist's find_completed_tasks date fields: `type: string` with an
+        // `allOf` of pattern refinements. Venice rejects the combination with
+        // "Conflict in schema definitions for key 'type'".
+        let mut body = json!({
+            "model": "m",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "mcp_todoist_find_completed_tasks",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "since": {
+                                "type": "string",
+                                "format": "date",
+                                "allOf": [
+                                    { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+                                ]
+                            },
+                            // An allOf WITHOUT a sibling type stays untouched.
+                            "combined": {
+                                "allOf": [{ "type": "string" }]
+                            }
+                        }
+                    }
+                }
+            }]
+        });
+        sanitize_tool_schemas(body.as_object_mut().expect("object"));
+        let params = &body["tools"][0]["function"]["parameters"];
+        assert!(params["properties"]["since"].get("allOf").is_none());
+        assert_eq!(params["properties"]["since"]["type"], "string");
+        assert_eq!(params["properties"]["since"]["format"], "date");
+        assert!(params["properties"]["combined"].get("allOf").is_some());
+
+        // Tool-less and malformed bodies are left alone.
+        let mut no_tools = json!({ "model": "m" });
+        sanitize_tool_schemas(no_tools.as_object_mut().expect("object"));
+        assert!(no_tools.get("tools").is_none());
     }
 
     #[test]
