@@ -52,10 +52,24 @@ fi
 
 out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-review-$axis.XXXXXX")}
 cd "$worktree"
+
+# Detection guard: policy-level enforcement cannot prevent an allowlisted
+# write (e.g. `git diff --output`), but a worktree that changed during a
+# read-only review invalidates the review — fail loudly instead of silently.
+review_state() { git rev-parse HEAD; git status --porcelain; }
+
+state_before=$(review_state)
 printf -- '--- verdict (%s) ---\n' "$out"
+harness_rc=0
 printf '%s\n' "$prompt" | claude -p \
   --permission-mode plan \
   --allowedTools "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)" \
   --disallowedTools "Edit" "Write" "NotebookEdit" \
   ${add_dir_args[@]+"${add_dir_args[@]}"} \
-  | tee "$out"
+  | tee "$out" || harness_rc=$?
+state_after=$(review_state)
+if [ "$state_before" != "$state_after" ]; then
+  echo "error: worktree changed during a read-only review — the report at $out is invalid" >&2
+  exit 1
+fi
+[ "$harness_rc" -eq 0 ] || { echo "error: harness exited $harness_rc" >&2; exit "$harness_rc"; }

@@ -14,7 +14,9 @@ A runner dispatches any review axis to one agent harness. To add one, create
    (Codex: `-s read-only`); fall back to the harness's strictest policy mode
    (Claude: `--permission-mode plan` + disallowed edit tools). Document the
    enforcement level honestly in the script header — an allowlist is not a
-   sandbox.
+   sandbox. When enforcement is policy-level, add a detection guard: snapshot
+   HEAD + `git status --porcelain` before, and fail the run if the worktree
+   changed during the review.
 5. **Uniform output**: default `-o` to
    `mktemp "${TMPDIR:-/tmp}/repo-review-$axis.XXXXXX"` (trailing X's — GNU
    mktemp requires them), print a `--- verdict (<path>) ---` marker line and
