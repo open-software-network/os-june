@@ -4,6 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 function Log([string]$Message) {
   Write-Host "[bundle-hermes-windows] $Message"
@@ -307,10 +308,10 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $venvDir "S
   ),
   [Text.UTF8Encoding]::new($false)
 )
-[IO.File]::WriteAllText(
+[IO.File]::Copy(
+  (Join-Path $root "src-tauri\src\hermes\sitecustomize.py"),
   (Join-Path $baseSp "sitecustomize.py"),
-  "import sys`n`nsys.dont_write_bytecode = True`n",
-  [Text.UTF8Encoding]::new($false)
+  $true
 )
 
 Log "precompiling bytecode"
@@ -385,6 +386,15 @@ if (!$SkipSelfTest) {
       $env:HERMES_HOME = $testHome
       Invoke-Native (Join-Path $selftest "hermes\bin\hermes.exe") @("--version")
       Invoke-Native (Join-Path $selftest "hermes\python\current\python.exe") @("-c", "import hermes_cli.main")
+      $pluginRoot = Join-Path $selftest "hermes\hermes-agent\plugins"
+      $previousPluginRoot = $env:HERMES_PLUGIN_ROOT
+      try {
+        $env:HERMES_PLUGIN_ROOT = $pluginRoot
+        $cronShadowCheck = "import os, sys; sys.path.insert(0, os.environ['HERMES_PLUGIN_ROOT']); from cron import jobs; assert '/hermes-agent/cron/jobs.py' in jobs.__file__.replace('\\', '/'), jobs.__file__"
+        Invoke-Native (Join-Path $selftest "hermes\python\current\python.exe") @("-c", $cronShadowCheck)
+      } finally {
+        $env:HERMES_PLUGIN_ROOT = $previousPluginRoot
+      }
     } finally {
       $env:HERMES_HOME = $previousHome
     }

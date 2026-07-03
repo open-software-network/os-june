@@ -157,6 +157,8 @@ async function main(): Promise<void> {
     );
     record("hermes-smoke: PASS dashboard /api/status responded");
 
+    await assertDefaultCronJobsEndpoint(port, token, record);
+
     socket = await connectGateway(port, token);
     record("hermes-smoke: PASS /api/ws connected with the token auth flow");
 
@@ -328,6 +330,42 @@ async function waitForStatus(
     await delay(READY_POLL_MS);
   }
   throw new Error(`hermes did not become ready: ${lastError}`);
+}
+
+/** Routines reads the default profile's cron jobs. This endpoint previously
+ * regressed to HTTP 500 when bundled plugins shadowed Hermes core `cron`. */
+async function assertDefaultCronJobsEndpoint(
+  port: number,
+  token: string,
+  record: (line: string) => void,
+): Promise<void> {
+  const url = `http://${HOST}:${port}/api/cron/jobs?profile=default`;
+  const response = await fetch(url, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "X-Hermes-Session-Token": token,
+    },
+    signal: AbortSignal.timeout(5_000),
+  });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `/api/cron/jobs?profile=default returned HTTP ${response.status}: ${body.slice(0, 200)}`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new Error(`/api/cron/jobs?profile=default returned invalid JSON: ${body.slice(0, 200)}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `/api/cron/jobs?profile=default returned a non-array body: ${safeJson(parsed)}`,
+    );
+  }
+  record(`hermes-smoke: PASS /api/cron/jobs?profile=default returned ${parsed.length} job(s)`);
 }
 
 /** Opens the JSON-RPC WebSocket at /api/ws?token=... and resolves once the

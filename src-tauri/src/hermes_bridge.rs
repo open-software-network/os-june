@@ -5179,8 +5179,10 @@ async fn resolve_hermes_command(
         });
     }
 
-    let managed_command = managed_hermes_command(app)?;
+    let managed_install_dir = managed_hermes_runtime_dir(app)?.join("hermes-agent");
+    let managed_command = hermes_venv_command(&managed_install_dir.join("venv"));
     if managed_command.exists() && managed_hermes_runtime_current(app)? {
+        ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
             source: HermesCommandSource::ManagedRuntime,
@@ -5202,6 +5204,7 @@ async fn resolve_hermes_command(
     }
 
     if managed_command.exists() {
+        ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
             source: HermesCommandSource::ManagedRuntime,
@@ -5257,14 +5260,6 @@ fn managed_hermes_runtime_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
         .join("hermes-runtime"))
 }
 
-fn managed_hermes_command(app: &AppHandle) -> Result<PathBuf, AppError> {
-    Ok(hermes_venv_command(
-        &managed_hermes_runtime_dir(app)?
-            .join("hermes-agent")
-            .join("venv"),
-    ))
-}
-
 fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
     let metadata_path = managed_hermes_runtime_dir(app)?.join("runtime.json");
     let Ok(metadata) = fs::read_to_string(metadata_path) else {
@@ -5294,6 +5289,60 @@ fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
     } else {
         venv_dir.join("bin").join("hermes")
     }
+}
+
+const HERMES_SITE_CUSTOMIZE: &str = include_str!("hermes/sitecustomize.py");
+
+fn ensure_managed_hermes_sitecustomize(install_dir: &Path) -> Result<(), AppError> {
+    for site_packages in managed_hermes_site_packages_dirs(install_dir)? {
+        fs::create_dir_all(&site_packages)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        let sitecustomize = site_packages.join("sitecustomize.py");
+        if fs::read_to_string(&sitecustomize).ok().as_deref() == Some(HERMES_SITE_CUSTOMIZE) {
+            continue;
+        }
+        fs::write(&sitecustomize, HERMES_SITE_CUSTOMIZE)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn managed_hermes_site_packages_dirs(install_dir: &Path) -> Result<Vec<PathBuf>, AppError> {
+    let venv_dir = install_dir.join("venv");
+    if cfg!(target_os = "windows") {
+        return Ok(vec![venv_dir.join("Lib").join("site-packages")]);
+    }
+
+    let lib_dir = venv_dir.join("lib");
+    let entries = fs::read_dir(&lib_dir)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        if !entry
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let file_name = entry.file_name();
+        if file_name.to_string_lossy().starts_with("python") {
+            candidates.push(entry.path().join("site-packages"));
+        }
+    }
+    candidates.sort();
+    if candidates.is_empty() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "Could not locate managed Hermes site-packages under {}.",
+                lib_dir.display()
+            ),
+        ));
+    }
+    Ok(candidates)
 }
 
 fn home_dir_candidates() -> Vec<PathBuf> {
@@ -5328,9 +5377,11 @@ fn hermes_runtime_available_for_auto_start(app: &AppHandle) -> bool {
     if bundled_hermes_command(app).is_some() {
         return true;
     }
-    let Ok(command) = managed_hermes_command(app) else {
+    let Ok(install_dir) = managed_hermes_runtime_dir(app).map(|dir| dir.join("hermes-agent"))
+    else {
         return false;
     };
+    let command = hermes_venv_command(&install_dir.join("venv"));
     command.exists() && managed_hermes_runtime_current(app).unwrap_or(false)
 }
 
