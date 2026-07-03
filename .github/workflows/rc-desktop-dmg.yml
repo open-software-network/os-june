@@ -40,7 +40,7 @@ env:
 jobs:
   release:
     name: Release rc macOS app
-    runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["macos-latest"]') }}
+    runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["blacksmith-6vcpu-macos-15"]') }}
     environment: production
     steps:
       # Same release App identity as production: it publishes to os-june-releases.

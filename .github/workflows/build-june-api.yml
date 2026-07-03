@@ -24,7 +24,7 @@ env:
 jobs:
   build:
     name: Build & push
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       sha_short: ${{ steps.meta.outputs.sha_short }}
       digest: ${{ steps.build.outputs.digest }}
@@ -40,7 +40,8 @@ jobs:
           echo "epoch=$(git log -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
           echo "created=$(git log -1 --pretty=%cI)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@ab5c1da94f53f5cd75c1038092aa276dddfccbba # v1.9.0
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -50,7 +51,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
         env:
           # Normalizes layer/file timestamps to the commit time (with
           # rewrite-timestamp below) so the image digest is reproducible.
@@ -69,8 +70,6 @@ jobs:
           # Derived from the commit, so it does not break reproducibility.
           build-args: |
             GIT_SHA=${{ github.sha }}
-          cache-from: type=gha,scope=june-api
-          cache-to: type=gha,scope=june-api,mode=max
           # No provenance/SBOM attestations: they make build.outputs.digest an OCI
           # *index* (image + attestation manifests) that dstack cannot pull by
           # digest at CVM image-pull time. Disabling them yields a plain single-arch
@@ -92,7 +91,7 @@ jobs:
   deploy-staging:
     name: Deploy staging
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: staging
     # contents: write lets the post-deploy step push the digest-record git tag
     permissions:
