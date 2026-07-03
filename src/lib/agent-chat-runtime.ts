@@ -128,6 +128,12 @@ export type AgentChatImagePart = {
   prompt: string;
   /** Stable June API replay key for this logical `/image` turn. */
   requestId?: string;
+  /** Image model pinned at turn creation. A retry must replay the exact
+   * request shape June API hashed into the replay-ledger key, so a settings
+   * change between attempt and retry cannot become a second charge. */
+  model?: string;
+  /** Safe-mode value pinned at turn creation; same replay-shape reason. */
+  safeMode?: boolean;
   /** Original synthetic user-turn timestamp, kept so retry can finish the same turn. */
   userCreatedAt?: string;
   /** Original synthetic assistant-turn timestamp, kept so retry can finish the same turn. */

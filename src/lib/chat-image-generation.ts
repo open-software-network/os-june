@@ -30,6 +30,7 @@ export type GenerateChatImageDeps = {
     prompt: string,
     model: string | undefined,
     requestId: string,
+    safeMode?: boolean,
   ) => Promise<GeneratedImageDto>;
   /** Imports raw bytes into the Hermes workspace (the paste path's importer). */
   importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedHermesFile>;
@@ -105,6 +106,7 @@ export async function generateChatImage(
   deps: GenerateChatImageDeps,
   model?: string,
   requestId = newImageRequestId(),
+  safeMode?: boolean,
 ): Promise<GenerateChatImageResult> {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -113,7 +115,7 @@ export async function generateChatImage(
 
   let image: GeneratedImageDto;
   try {
-    image = await deps.generate(trimmed, model ?? deps.defaultModel?.(), requestId);
+    image = await deps.generate(trimmed, model ?? deps.defaultModel?.(), requestId, safeMode);
   } catch (error) {
     return { status: "error", message: messageFromError(error) };
   }

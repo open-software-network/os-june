@@ -886,6 +886,8 @@ function runningImageSlashTurns(input: {
   requestId: string;
   createdAt: string;
   imageCreatedAt: string;
+  model?: string;
+  safeMode?: boolean;
 }): AgentChatTurn[] {
   return [
     imageSlashUserTurn(input),
@@ -900,6 +902,8 @@ function runningImageSlashTurns(input: {
           status: "running",
           prompt: input.prompt,
           requestId: input.requestId,
+          model: input.model,
+          safeMode: input.safeMode,
           userCreatedAt: input.createdAt,
           imageCreatedAt: input.imageCreatedAt,
         },
@@ -3595,6 +3599,8 @@ export function AgentWorkspace({
     requestId: string;
     createdAt: string;
     imageCreatedAt: string;
+    model?: string;
+    safeMode?: boolean;
   }) {
     const { sessionId, turnId, prompt, requestId, createdAt, imageCreatedAt } = input;
     const assistantTurnId = `${turnId}:assistant`;
@@ -3602,11 +3608,13 @@ export function AgentWorkspace({
       const result = await generateChatImage(
         prompt,
         {
-          generate: (text, model, nextRequestId) => generateImage(text, model, nextRequestId),
+          generate: (text, model, nextRequestId, safeMode) =>
+            generateImage(text, model, nextRequestId, safeMode),
           importImageBytes: importHermesBridgeFileBytes,
         },
-        undefined,
+        input.model,
         requestId,
+        input.safeMode,
       );
       if (result.status !== "ok") {
         updateImageSlashPart(sessionId, assistantTurnId, {
@@ -3693,6 +3701,11 @@ export function AgentWorkspace({
       requestId: part.requestId,
       createdAt: part.userCreatedAt ?? now,
       imageCreatedAt: part.imageCreatedAt ?? now,
+      // Replay the shape pinned at turn creation - resolving the CURRENT
+      // settings here would change the June API ledger key and turn a retry
+      // into a second billable generation.
+      model: part.model,
+      safeMode: part.safeMode,
     });
   }
 
@@ -3755,12 +3768,34 @@ export function AgentWorkspace({
     const createdAt = new Date(turnStartedAt).toISOString();
     const imageCreatedAt = new Date(turnStartedAt + 1).toISOString();
     const requestId = newImageRequestId();
+    // Pin the image model and safe mode NOW: June API's replay ledger hashes
+    // them into the requestId's key, so a retry after a settings change must
+    // send the values this turn started with or it becomes a second charge.
+    // If the settings read fails, leave them unpinned (server resolves live,
+    // matching the pre-pinning behavior).
+    let pinnedModel: string | undefined;
+    let pinnedSafeMode: boolean | undefined;
+    try {
+      const settingsResponse = await providerModelSettings();
+      pinnedModel = settingsResponse.settings.imageModel || undefined;
+      pinnedSafeMode = settingsResponse.settings.imageSafeMode;
+    } catch {
+      // Non-fatal: generation proceeds with server-resolved settings.
+    }
 
     setImageTurnsBySession((current) => ({
       ...current,
       [sessionId]: [
         ...(current[sessionId] ?? []),
-        ...runningImageSlashTurns({ id: turnId, prompt, requestId, createdAt, imageCreatedAt }),
+        ...runningImageSlashTurns({
+          id: turnId,
+          prompt,
+          requestId,
+          createdAt,
+          imageCreatedAt,
+          model: pinnedModel,
+          safeMode: pinnedSafeMode,
+        }),
       ],
     }));
 
@@ -3771,6 +3806,8 @@ export function AgentWorkspace({
       requestId,
       createdAt,
       imageCreatedAt,
+      model: pinnedModel,
+      safeMode: pinnedSafeMode,
     });
   }
 

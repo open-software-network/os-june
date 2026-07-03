@@ -1623,9 +1623,16 @@ export async function setImageSafeMode(enabled: boolean) {
 
 // Generates an image from a prompt via the June API. `model` is optional; the
 // backend falls back to the saved default image model when it is omitted.
-export async function generateImage(prompt: string, model?: string, requestId?: string) {
+// `safeMode` pins the safe-mode value a retry must replay; omitted uses the
+// live saved setting.
+export async function generateImage(
+  prompt: string,
+  model?: string,
+  requestId?: string,
+  safeMode?: boolean,
+) {
   return invoke<GeneratedImageDto>("generate_image", {
-    request: { prompt, model, requestId },
+    request: { prompt, model, requestId, safeMode },
   });
 }
 

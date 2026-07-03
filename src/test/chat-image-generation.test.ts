@@ -57,7 +57,12 @@ describe("chat image generation", () => {
 
     const result = await generateChatImage("a red bicycle", deps, "venice-sd35", "image-req-1");
 
-    expect(deps.generate).toHaveBeenCalledWith("a red bicycle", "venice-sd35", "image-req-1");
+    expect(deps.generate).toHaveBeenCalledWith(
+      "a red bicycle",
+      "venice-sd35",
+      "image-req-1",
+      undefined,
+    );
     // The decoded bytes (not the base64) are imported into the workspace.
     const [name, bytes] = (deps.importImageBytes as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(name).toMatch(/^generated-image-\d+\.png$/);
@@ -83,7 +88,23 @@ describe("chat image generation", () => {
 
     await generateChatImage("anything", deps);
 
-    expect(deps.generate).toHaveBeenCalledWith("anything", "venice-sd35", expect.any(String));
+    expect(deps.generate).toHaveBeenCalledWith(
+      "anything",
+      "venice-sd35",
+      expect.any(String),
+      undefined,
+    );
+  });
+
+  it("forwards a pinned safe-mode value to the generate call", async () => {
+    const deps: GenerateChatImageDeps = {
+      generate: vi.fn().mockResolvedValue(pngImage()),
+      importImageBytes: vi.fn().mockResolvedValue(importedFile()),
+    };
+
+    await generateChatImage("anything", deps, "venice-sd35", "image-req-1", false);
+
+    expect(deps.generate).toHaveBeenCalledWith("anything", "venice-sd35", "image-req-1", false);
   });
 
   it("rejects a blank prompt without calling the backend", async () => {

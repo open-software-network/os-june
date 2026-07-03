@@ -400,6 +400,12 @@ pub struct GenerateImageRequest {
     /// Stable logical request id supplied by the chat orchestration layer.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Optional safe-mode override pinned at turn creation. A retry must replay
+    /// the exact request shape June API hashed into its replay-ledger key, so a
+    /// settings change between attempt and retry cannot mint a second charge.
+    /// Absent falls back to the live saved setting.
+    #[serde(default)]
+    pub safe_mode: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -437,7 +443,8 @@ pub async fn generate_image(
         .request_id
         .map(|request_id| request_id.trim().to_string())
         .filter(|request_id| !request_id.is_empty());
-    crate::june_api::generate_image(prompt, model, Some(image_safe_mode()), request_id).await
+    let safe_mode = request.safe_mode.unwrap_or_else(image_safe_mode);
+    crate::june_api::generate_image(prompt, model, Some(safe_mode), request_id).await
 }
 
 /// Edits a source image through June API. Provider keys and the upstream call

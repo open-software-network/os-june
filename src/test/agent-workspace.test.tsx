@@ -7006,12 +7006,14 @@ describe("AgentWorkspace", () => {
     expect(image).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=");
     expect(image.closest(".agent-generated-image-frame")).not.toBeNull();
     expect(document.querySelector(".agent-attachment-chip")).toBeNull();
-    // The prompt went to generation (model defaulted server-side); the decoded
+    // The prompt went to generation (nothing pinned: the default settings mock
+    // has no image model/safe mode, so the server resolves both); the decoded
     // bytes were imported into the workspace.
     expect(mocks.generateImage).toHaveBeenCalledWith(
       "a red bicycle",
       undefined,
       expect.any(String),
+      undefined,
     );
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
       expect.stringMatching(/^generated-image-\d+\.png$/),
@@ -7052,6 +7054,73 @@ describe("AgentWorkspace", () => {
     expect(mocks.generateImage).toHaveBeenCalledTimes(2);
     expect(mocks.generateImage.mock.calls[1]?.[2]).toBe(firstRequestId);
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays the pinned image shape when settings change before retry", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    // June API's replay ledger hashes model + safe mode into the requestId's
+    // key, so the retry must resend the values the turn started with - not the
+    // settings at retry time - or one visible turn becomes two charges.
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        imageModel: "venice-sd35",
+        imageSafeMode: false,
+      },
+    });
+    mocks.generateImage.mockRejectedValueOnce(new Error("gateway timeout")).mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "generated-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    expect(await screen.findByText("gateway timeout")).toBeInTheDocument();
+    expect(mocks.generateImage).toHaveBeenCalledWith(
+      "a red bicycle",
+      "venice-sd35",
+      expect.any(String),
+      false,
+    );
+    const firstRequestId = mocks.generateImage.mock.calls[0]?.[2];
+
+    // Settings drift between the failed attempt and the retry.
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        imageModel: "flux-2-pro",
+        imageSafeMode: true,
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.generateImage).toHaveBeenCalledTimes(2);
+    expect(mocks.generateImage.mock.calls[1]).toEqual([
+      "a red bicycle",
+      "venice-sd35",
+      firstRequestId,
+      false,
+    ]);
   });
 
   it("restores a /image prompt and generated image above the preview cap with context after remount", async () => {
