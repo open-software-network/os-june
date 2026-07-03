@@ -19,6 +19,7 @@ import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
+import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
@@ -4132,6 +4133,13 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Approval required")).toBeInTheDocument();
     expect(hermesActivityStore.getRecord("runtime-session-2")).toBeUndefined();
     expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+    const [pendingRecord] = pendingActionStore.openRecords().filter((record) => {
+      return record.requestId === "approval-runtime";
+    });
+    expect(pendingRecord?.sessionId).toBe("session-2");
+    expect(
+      pendingActionStore.openRecords().some((record) => record.sessionId === "runtime-session-2"),
+    ).toBe(false);
     const projection = projectAgentActivityLevels(hermesActivityStore.getRecords());
     expect(projection.waitingSessionIds.has("session-2")).toBe(true);
     expect(projection.waitingSessionIds.has("runtime-session-2")).toBe(false);
@@ -4144,6 +4152,71 @@ describe("AgentWorkspace", () => {
         choice: "once",
       }),
     );
+    await waitFor(() =>
+      expect(
+        pendingActionStore.openRecords().some((record) => record.requestId === "approval-runtime"),
+      ).toBe(false),
+    );
+  });
+
+  it("keeps sudo and secret pending status copy generic", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "sudo.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "sudo-copy",
+            command: "npm run build",
+          },
+        });
+        handler({
+          type: "secret.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "secret-copy",
+            key_name: "API_KEY",
+          },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(
+        statusDetails
+          .filter((detail) => detail.status === "waitingForUser")
+          .map((detail) => ({
+            sessionId: detail.sessionId,
+            summary: detail.summary,
+          })),
+      ).toEqual([
+        { sessionId: "session-2", summary: "June has a question." },
+        { sessionId: "session-2", summary: "June has a question." },
+      ]),
+    );
+    expect(statusDetails.some((detail) => detail.summary === "June needs approval.")).toBe(false);
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
   });
 
   it("retires a pending approval and explains when its runtime session is gone", async () => {

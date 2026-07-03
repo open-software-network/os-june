@@ -4171,6 +4171,7 @@ export function AgentWorkspace({
       // consume the typed event; the raw frame remains only for trace capture
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
+      const storedClassified = withStoredHermesSessionId(classified, storedSessionId);
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -4190,13 +4191,13 @@ export function AgentWorkspace({
             classified.sanitizedPayload,
           );
         }
-      } else if (classified.kind === "pending_action") {
+      } else if (storedClassified.kind === "pending_action") {
         // Feature 04: aggregate this blocker into the pending-action store
         // keyed by mode + session + request. The session's mode comes from its
         // recorded opt-in (sudo carries its own; the rest derive it here). A
         // fresh event for a known request also re-confirms a row that went
         // stale across a reconnect (see the store's reconcile logic).
-        pendingActionStore.record(classified, hermesModeFor(storedSessionId));
+        pendingActionStore.record(storedClassified, hermesModeFor(storedSessionId));
       }
       // Feature 11: roll EVERY classified event into the global activity store
       // that backs the Agent activity drawer. The store is total and ignores
@@ -4204,10 +4205,7 @@ export function AgentWorkspace({
       // derives the session's phase (running/waiting/background/error/complete),
       // current tool, and subagent count from the normalized event — never from
       // the raw frame (raw JSON belongs to feature 15's trace panel).
-      hermesActivityStore.record(
-        withStoredHermesSessionId(classified, storedSessionId),
-        hermesModeFor(storedSessionId),
-      );
+      hermesActivityStore.record(storedClassified, hermesModeFor(storedSessionId));
       // Feature 14: extract any file/artifact reference this event carries into
       // the per-session artifact timeline behind the drawer's "Artifacts"
       // section. The store is total and only acts on `tool` completions that
@@ -5042,7 +5040,7 @@ export function AgentWorkspace({
       );
       // Feature 04: the user just answered this approval — clear its global
       // "Needs you" row immediately (the response itself is the resolution).
-      pendingActionStore.resolveRequest(sessionId, requestId);
+      pendingActionStore.resolveRequest(liveEventKey, requestId);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -5065,7 +5063,7 @@ export function AgentWorkspace({
         setLiveEvents(liveEventsRef.current);
         // The request can never be answered now — retire its card so neither the
         // sidebar count nor the inline prompt offers a dead-end "Respond".
-        pendingActionStore.resolveRequest(sessionId, requestId);
+        pendingActionStore.resolveRequest(liveEventKey, requestId);
         void loadHermesSessions();
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
@@ -5155,14 +5153,14 @@ export function AgentWorkspace({
         }),
       );
       // Feature 04: the user resolved the sudo prompt — clear its pending record.
-      pendingActionStore.resolveRequest(sessionId, requestId);
+      pendingActionStore.resolveRequest(liveEventKey, requestId);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
       if (isSessionGoneError(message)) {
         // The runtime is gone, so this prompt can never be answered — retire
         // its card and say so plainly instead of leaking the raw 404.
-        pendingActionStore.resolveRequest(sessionId, requestId);
+        pendingActionStore.resolveRequest(liveEventKey, requestId);
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
         setError(message, { sessionId });
@@ -5203,14 +5201,14 @@ export function AgentWorkspace({
         }),
       );
       // Feature 04: the user provided the secret — clear its pending record.
-      pendingActionStore.resolveRequest(sessionId, requestId);
+      pendingActionStore.resolveRequest(liveEventKey, requestId);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
       if (isSessionGoneError(message)) {
         // The runtime is gone, so this secret prompt can never be answered —
         // retire its card and say so plainly instead of leaking the raw 404.
-        pendingActionStore.resolveRequest(sessionId, requestId);
+        pendingActionStore.resolveRequest(liveEventKey, requestId);
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
         setError(message, { sessionId });
@@ -11746,7 +11744,8 @@ function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusK
 function agentStatusSummaryFromHermesEvent(event: JuneHermesEvent, status: AgentSessionStatusKind) {
   if (status === "waitingForUser") {
     if (event.kind !== "pending_action") return "June has a question.";
-    return event.action.kind === "clarify" ? "June has a question." : "June needs approval.";
+    // Sudo and secret deliberately keep the generic sentence for visible-copy parity with main.
+    return event.action.kind === "approval" ? "June needs approval." : "June has a question.";
   }
   if (status === "completed") return "June finished.";
   if (status === "failed") {

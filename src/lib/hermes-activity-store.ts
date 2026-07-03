@@ -306,8 +306,8 @@ type InternalRecord = {
  * - `pending_action_resolution`-> running (the user answered; the agent resumes).
  * - `background_activity`     -> background, and track the subagent's id/count.
  * - `error`                   -> error.
- * - `lifecycle`               -> complete when the status is terminal, else
- *                                running (the session is alive and progressing).
+ * - `lifecycle`               -> complete when the flavor or status is terminal,
+ *                                else running (the session is alive and progressing).
  * - `transcript`              -> complete on message completion, else running.
  * - `reasoning`               -> running (the agent is producing output).
  * - `steering`                -> no phase change (local transcript marker).
@@ -336,7 +336,11 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "error";
       return;
     case "lifecycle":
-      row.phase = isTerminalHermesLifecycleStatus(event.status) ? "complete" : "running";
+      // Raw terminal frames can carry non-terminal status words such as "success".
+      row.phase =
+        event.flavor === "terminal" || isTerminalHermesLifecycleStatus(event.status)
+          ? "complete"
+          : "running";
       return;
     case "transcript":
       if (event.complete) {
