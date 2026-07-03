@@ -26,7 +26,11 @@ import type { GeneratedImageDto, ImportedHermesFile } from "./tauri";
 
 export type GenerateChatImageDeps = {
   /** Calls the June API image endpoint; `model` falls back server-side. */
-  generate: (prompt: string, model?: string) => Promise<GeneratedImageDto>;
+  generate: (
+    prompt: string,
+    model: string | undefined,
+    requestId: string,
+  ) => Promise<GeneratedImageDto>;
   /** Imports raw bytes into the Hermes workspace (the paste path's importer). */
   importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedHermesFile>;
   /** Resolves the default image model when the caller passes none. */
@@ -100,6 +104,7 @@ export async function generateChatImage(
   prompt: string,
   deps: GenerateChatImageDeps,
   model?: string,
+  requestId = newImageRequestId(),
 ): Promise<GenerateChatImageResult> {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -108,7 +113,7 @@ export async function generateChatImage(
 
   let image: GeneratedImageDto;
   try {
-    image = await deps.generate(trimmed, model ?? deps.defaultModel?.());
+    image = await deps.generate(trimmed, model ?? deps.defaultModel?.(), requestId);
   } catch (error) {
     return { status: "error", message: messageFromError(error) };
   }
@@ -136,6 +141,13 @@ export async function generateChatImage(
   // Same composer attachment shape a pasted/dropped image produces, so the
   // generated image renders inline through the existing display path.
   return { status: "ok", file, attachment: attachmentStateFrom(file), dataUrl };
+}
+
+export function newImageRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 /**

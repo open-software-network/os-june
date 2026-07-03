@@ -251,7 +251,7 @@ import {
   resolveSlashModel,
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
-import { generateChatImage } from "../../lib/chat-image-generation";
+import { generateChatImage, newImageRequestId } from "../../lib/chat-image-generation";
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import {
   ComposerEditor,
@@ -883,6 +883,7 @@ function imageSlashAssistantTurn(
 function runningImageSlashTurns(input: {
   id: string;
   prompt: string;
+  requestId: string;
   createdAt: string;
   imageCreatedAt: string;
 }): AgentChatTurn[] {
@@ -893,7 +894,16 @@ function runningImageSlashTurns(input: {
       role: "assistant",
       createdAt: input.imageCreatedAt,
       status: "running",
-      parts: [{ type: "image", status: "running", prompt: input.prompt }],
+      parts: [
+        {
+          type: "image",
+          status: "running",
+          prompt: input.prompt,
+          requestId: input.requestId,
+          userCreatedAt: input.createdAt,
+          imageCreatedAt: input.imageCreatedAt,
+        },
+      ],
     },
   ];
 }
@@ -3551,6 +3561,138 @@ export function AgentWorkspace({
     return true;
   }
 
+  function updateImageSlashPart(
+    sessionId: string,
+    assistantTurnId: string,
+    patch: Partial<Extract<AgentChatPart, { type: "image" }>>,
+  ) {
+    setImageTurnsBySession((current) => {
+      const turns = current[sessionId] ?? [];
+      return {
+        ...current,
+        [sessionId]: turns.map((turn) => {
+          if (turn.id !== assistantTurnId) return turn;
+          const parts = turn.parts.map((part) =>
+            part.type === "image" ? { ...part, ...patch } : part,
+          );
+          const running = parts.some((part) => part.type === "image" && part.status === "running");
+          return { ...turn, parts, status: running ? "running" : "complete" };
+        }),
+      };
+    });
+  }
+
+  function imageSlashBaseTurnId(assistantTurnId: string) {
+    return assistantTurnId.endsWith(":assistant")
+      ? assistantTurnId.slice(0, -":assistant".length)
+      : assistantTurnId;
+  }
+
+  async function finishImageSlashGeneration(input: {
+    sessionId: string;
+    turnId: string;
+    prompt: string;
+    requestId: string;
+    createdAt: string;
+    imageCreatedAt: string;
+  }) {
+    const { sessionId, turnId, prompt, requestId, createdAt, imageCreatedAt } = input;
+    const assistantTurnId = `${turnId}:assistant`;
+    try {
+      const result = await generateChatImage(
+        prompt,
+        {
+          generate: (text, model, nextRequestId) => generateImage(text, model, nextRequestId),
+          importImageBytes: importHermesBridgeFileBytes,
+        },
+        undefined,
+        requestId,
+      );
+      if (result.status !== "ok") {
+        updateImageSlashPart(sessionId, assistantTurnId, { status: "error", error: result.message });
+        return;
+      }
+      updateImageSlashPart(sessionId, assistantTurnId, {
+        status: "complete",
+        dataUrl: result.dataUrl,
+        path: result.file.path,
+        name: result.file.name,
+      });
+      upsertStoredImageSlashTurn({
+        id: turnId,
+        sessionId,
+        prompt,
+        sourcePrompt: prompt,
+        path: result.file.path,
+        name: result.file.name,
+        createdAt,
+        imageCreatedAt,
+        contextPending: true,
+      });
+      // Mirror into the files drawer/timeline like any artifact the agent
+      // touches, so the image is reachable after it scrolls away.
+      hermesArtifactStore.recordArtifact(
+        {
+          sessionId,
+          kind: "image",
+          action: "attached",
+          path: result.file.path,
+          displayName: result.file.name,
+          previewAvailable: true,
+        },
+        hermesModeFor(sessionId),
+      );
+      void loadFilesystemSnapshot();
+      // JUN-171 (Phase A): hold the generated image so the user's next message
+      // carries it into the model's context (lazy attach). No composer chip -
+      // it already renders in-thread as the assistant image turn above. Reuses
+      // attachmentStateFrom so it rides the exact structured-attach path a
+      // pasted/dropped image would (kind:"image", status:"imported").
+      const heldImage: AgentAttachment = {
+        ...result.file,
+        id: `held-image:${sessionId}:${Date.now()}`,
+        attachDataUrl: result.dataUrl,
+        attach: attachmentStateFrom(result.file, sessionId),
+      };
+      pendingFastPathImagesRef.current = {
+        ...pendingFastPathImagesRef.current,
+        [sessionId]: [...(pendingFastPathImagesRef.current[sessionId] ?? []), heldImage],
+      };
+    } catch (err) {
+      updateImageSlashPart(sessionId, assistantTurnId, {
+        status: "error",
+        error: messageFromError(err),
+      });
+    } finally {
+      setGeneratingImage(false);
+      setImportingFiles(false);
+    }
+  }
+
+  async function retryImageSlashTurn(
+    sessionId: string,
+    assistantTurnId: string,
+    part: Extract<AgentChatPart, { type: "image" }>,
+  ) {
+    if (part.status !== "error" || !part.requestId) return;
+    const now = new Date().toISOString();
+    setError(null);
+    setImportingFiles(true);
+    setGeneratingImage(true);
+    updateImageSlashPart(sessionId, assistantTurnId, {
+      status: "running",
+      error: undefined,
+    });
+    await finishImageSlashGeneration({
+      sessionId,
+      turnId: imageSlashBaseTurnId(assistantTurnId),
+      prompt: part.prompt,
+      requestId: part.requestId,
+      createdAt: part.userCreatedAt ?? now,
+      imageCreatedAt: part.imageCreatedAt ?? now,
+    });
+  }
+
   // `/image <prompt>` renders the generated image inline in the chat as an
   // assistant turn (loader -> image, with view + download), NOT as a composer
   // attachment chip. It creates/uses a real session and the prompt becomes a
@@ -3607,96 +3749,26 @@ export function AgentWorkspace({
     // slash flow does not call prompt.submit, so these are June-side turns.
     const turnStartedAt = Date.now();
     const turnId = `image:${sessionId}:${turnStartedAt}`;
-    const assistantTurnId = `${turnId}:assistant`;
     const createdAt = new Date(turnStartedAt).toISOString();
     const imageCreatedAt = new Date(turnStartedAt + 1).toISOString();
-    const updateImagePart = (patch: Partial<Extract<AgentChatPart, { type: "image" }>>) =>
-      setImageTurnsBySession((current) => {
-        const turns = current[sessionId] ?? [];
-        return {
-          ...current,
-          [sessionId]: turns.map((turn) => {
-            if (turn.id !== assistantTurnId) return turn;
-            const parts = turn.parts.map((part) =>
-              part.type === "image" ? { ...part, ...patch } : part,
-            );
-            const running = parts.some(
-              (part) => part.type === "image" && part.status === "running",
-            );
-            return { ...turn, parts, status: running ? "running" : "complete" };
-          }),
-        };
-      });
+    const requestId = newImageRequestId();
 
     setImageTurnsBySession((current) => ({
       ...current,
       [sessionId]: [
         ...(current[sessionId] ?? []),
-        ...runningImageSlashTurns({ id: turnId, prompt, createdAt, imageCreatedAt }),
+        ...runningImageSlashTurns({ id: turnId, prompt, requestId, createdAt, imageCreatedAt }),
       ],
     }));
 
-    try {
-      const result = await generateChatImage(prompt, {
-        generate: (text, model) => generateImage(text, model),
-        importImageBytes: importHermesBridgeFileBytes,
-      });
-      if (result.status !== "ok") {
-        updateImagePart({ status: "error", error: result.message });
-        return;
-      }
-      updateImagePart({
-        status: "complete",
-        dataUrl: result.dataUrl,
-        path: result.file.path,
-        name: result.file.name,
-      });
-      upsertStoredImageSlashTurn({
-        id: turnId,
-        sessionId,
-        prompt,
-        sourcePrompt: prompt,
-        path: result.file.path,
-        name: result.file.name,
-        createdAt,
-        imageCreatedAt,
-        contextPending: true,
-      });
-      // Mirror into the files drawer/timeline like any artifact the agent
-      // touches, so the image is reachable after it scrolls away.
-      hermesArtifactStore.recordArtifact(
-        {
-          sessionId,
-          kind: "image",
-          action: "attached",
-          path: result.file.path,
-          displayName: result.file.name,
-          previewAvailable: true,
-        },
-        hermesModeFor(sessionId),
-      );
-      void loadFilesystemSnapshot();
-      // JUN-171 (Phase A): hold the generated image so the user's next message
-      // carries it into the model's context (lazy attach). No composer chip —
-      // it already renders in-thread as the assistant image turn above. Reuses
-      // attachmentStateFrom so it rides the exact structured-attach path a
-      // pasted/dropped image would (kind:"image", status:"imported").
-      const heldImage: AgentAttachment = {
-        ...result.file,
-        id: `held-image:${sessionId}:${Date.now()}`,
-        attachDataUrl: result.dataUrl,
-        attach: attachmentStateFrom(result.file, sessionId),
-      };
-      pendingFastPathImagesRef.current = {
-        ...pendingFastPathImagesRef.current,
-        [sessionId]: [...(pendingFastPathImagesRef.current[sessionId] ?? []), heldImage],
-      };
-    } catch (err) {
-      updateImagePart({ status: "error", error: messageFromError(err) });
-    } finally {
-      setGeneratingImage(false);
-      setImportingFiles(false);
-    }
+    await finishImageSlashGeneration({
+      sessionId,
+      turnId,
+      prompt,
+      requestId,
+      createdAt,
+      imageCreatedAt,
+    });
   }
 
   async function runModelSlashCommand(argument: string, commandText: string) {
@@ -7347,6 +7419,9 @@ export function AgentWorkspace({
           onOpenArtifact={openArtifact}
           onDownloadImage={downloadGeneratedImage}
           onOpenImage={openGeneratedImage}
+          onRetryImage={(assistantTurnId, part) =>
+            void retryImageSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+          }
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
@@ -9568,6 +9643,7 @@ function AgentChatTurnRow({
   onOpenArtifact,
   onDownloadImage,
   onOpenImage,
+  onRetryImage,
   onThinkingOpenChange,
   onTopUp,
   topUpLabel,
@@ -9598,6 +9674,10 @@ function AgentChatTurnRow({
    * the dev gallery can render image rows without the live bridge. */
   onDownloadImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onOpenImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
+  onRetryImage?: (
+    assistantTurnId: string,
+    part: Extract<AgentChatPart, { type: "image" }>,
+  ) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
@@ -9895,6 +9975,7 @@ function AgentChatTurnRow({
               part={part}
               onOpen={onOpenImage}
               onDownload={onDownloadImage}
+              onRetry={onRetryImage ? () => onRetryImage(turn.id, part) : undefined}
             />
           ) : null,
         )}
@@ -10282,10 +10363,12 @@ function AgentGeneratedImage({
   part,
   onOpen,
   onDownload,
+  onRetry,
 }: {
   part: Extract<AgentChatPart, { type: "image" }>;
   onOpen?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownload?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
+  onRetry?: () => void;
 }) {
   const [pathPreviewDataUrl, setPathPreviewDataUrl] = useState<string | null>(null);
 
@@ -10323,6 +10406,11 @@ function AgentGeneratedImage({
         <p className="agent-generated-image-error">
           {part.error?.trim() || "Could not generate the image."}
         </p>
+        {onRetry && part.requestId ? (
+          <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
+            Try again
+          </button>
+        ) : null}
       </div>
     );
   }

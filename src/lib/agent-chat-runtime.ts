@@ -126,6 +126,12 @@ export type AgentChatImagePart = {
   status: "running" | "complete" | "error";
   /** The prompt the user typed after `/image`. */
   prompt: string;
+  /** Stable June API replay key for this logical `/image` turn. */
+  requestId?: string;
+  /** Original synthetic user-turn timestamp, kept so retry can finish the same turn. */
+  userCreatedAt?: string;
+  /** Original synthetic assistant-turn timestamp, kept so retry can finish the same turn. */
+  imageCreatedAt?: string;
   /** Imported workspace path; set once `status === "complete"`. */
   path?: string;
   /** `data:<mime>;base64,…` for the inline preview; set when complete. */

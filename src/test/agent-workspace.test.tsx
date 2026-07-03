@@ -7008,11 +7008,52 @@ describe("AgentWorkspace", () => {
     expect(document.querySelector(".agent-attachment-chip")).toBeNull();
     // The prompt went to generation (model defaulted server-side); the decoded
     // bytes were imported into the workspace.
-    expect(mocks.generateImage).toHaveBeenCalledWith("a red bicycle", undefined);
+    expect(mocks.generateImage).toHaveBeenCalledWith(
+      "a red bicycle",
+      undefined,
+      expect.any(String),
+    );
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
       expect.stringMatching(/^generated-image-\d+\.png$/),
       expect.any(Uint8Array),
     );
+  });
+
+  it("reuses the failed /image request id when the user retries the same turn", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage
+      .mockRejectedValueOnce(new Error("gateway timeout"))
+      .mockResolvedValueOnce({
+        imageBase64: "aGVsbG8=",
+        mimeType: "image/png",
+        model: "venice-sd35",
+        provider: "venice",
+      });
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "generated-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    expect(await screen.findByText("gateway timeout")).toBeInTheDocument();
+    const firstRequestId = mocks.generateImage.mock.calls[0]?.[2];
+    expect(firstRequestId).toEqual(expect.any(String));
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.generateImage).toHaveBeenCalledTimes(2);
+    expect(mocks.generateImage.mock.calls[1]?.[2]).toBe(firstRequestId);
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(1);
   });
 
   it("restores a /image prompt and generated image above the preview cap with context after remount", async () => {

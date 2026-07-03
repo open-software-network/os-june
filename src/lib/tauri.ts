@@ -1623,9 +1623,9 @@ export async function setImageSafeMode(enabled: boolean) {
 
 // Generates an image from a prompt via the June API. `model` is optional; the
 // backend falls back to the saved default image model when it is omitted.
-export async function generateImage(prompt: string, model?: string) {
+export async function generateImage(prompt: string, model?: string, requestId?: string) {
   return invoke<GeneratedImageDto>("generate_image", {
-    request: { prompt, model },
+    request: { prompt, model, requestId },
   });
 }
 
@@ -1634,6 +1634,7 @@ export async function editImage(input: {
   prompt: string;
   mimeType?: string;
   model?: string;
+  requestId?: string;
 }) {
   return invoke<GeneratedImageDto>("edit_image", {
     request: {
@@ -1641,6 +1642,7 @@ export async function editImage(input: {
       prompt: input.prompt,
       mimeType: input.mimeType,
       model: input.model,
+      requestId: input.requestId,
     },
   });
 }

@@ -55,9 +55,9 @@ describe("chat image generation", () => {
       importImageBytes: vi.fn().mockResolvedValue(file),
     };
 
-    const result = await generateChatImage("a red bicycle", deps, "venice-sd35");
+    const result = await generateChatImage("a red bicycle", deps, "venice-sd35", "image-req-1");
 
-    expect(deps.generate).toHaveBeenCalledWith("a red bicycle", "venice-sd35");
+    expect(deps.generate).toHaveBeenCalledWith("a red bicycle", "venice-sd35", "image-req-1");
     // The decoded bytes (not the base64) are imported into the workspace.
     const [name, bytes] = (deps.importImageBytes as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(name).toMatch(/^generated-image-\d+\.png$/);
@@ -83,7 +83,7 @@ describe("chat image generation", () => {
 
     await generateChatImage("anything", deps);
 
-    expect(deps.generate).toHaveBeenCalledWith("anything", "venice-sd35");
+    expect(deps.generate).toHaveBeenCalledWith("anything", "venice-sd35", expect.any(String));
   });
 
   it("rejects a blank prompt without calling the backend", async () => {

@@ -39,6 +39,8 @@ const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_JUNE_RESPONSE_MESSAGE: &str = "The processing service returned an invalid response.";
+const IMAGE_REQUEST_MAX_ATTEMPTS: usize = 3;
+const IMAGE_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(250);
 const NOTE_GENERATE_SYSTEM_PROMPT: &str =
     include_str!("../../june-api/crates/services/src/prompts/note_generate.md");
 const LOCAL_SAFETY_CONTEXT: &str = "\
@@ -427,14 +429,15 @@ pub async fn generate_image(
     prompt: String,
     model: String,
     safe_mode: Option<bool>,
+    request_id: Option<String>,
 ) -> Result<GeneratedImageDto, AppError> {
     let send_venice_api_key = model_accepts_venice_api_key(&model);
-    post_json(
+    post_json_image_retryable(
         "/v1/image/generate",
         &ImageGenerateBody {
             prompt,
             model,
-            request_id: new_image_request_id(),
+            request_id: request_id.unwrap_or_else(new_image_request_id),
             safe_mode,
         },
         send_venice_api_key,
@@ -450,13 +453,14 @@ pub async fn edit_image(
     mime_type: Option<String>,
     model: Option<String>,
     safe_mode: Option<bool>,
+    request_id: Option<String>,
 ) -> Result<GeneratedImageDto, AppError> {
-    post_json(
+    post_json_image_retryable(
         "/v1/image/edit",
         &ImageEditBody {
             image,
             prompt,
-            request_id: new_image_request_id(),
+            request_id: request_id.unwrap_or_else(new_image_request_id),
             model,
             mime_type,
             safe_mode,
@@ -1384,6 +1388,57 @@ where
     })
     .await?;
     parse_response(path, response).await
+}
+
+async fn post_json_image_retryable<T, B>(
+    path: &str,
+    body: &B,
+    send_venice_api_key: bool,
+) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+    B: Serialize,
+{
+    for attempt in 0..IMAGE_REQUEST_MAX_ATTEMPTS {
+        match authed_send(path, send_venice_api_key, |client, url, token| {
+            client.post(url).bearer_auth(token).json(body)
+        })
+        .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                if image_retryable_status(status) && attempt + 1 < IMAGE_REQUEST_MAX_ATTEMPTS {
+                    let delay = response_retry_after_ms(&response)
+                        .map(Duration::from_millis)
+                        .unwrap_or(IMAGE_REQUEST_RETRY_DELAY);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return parse_response(path, response).await;
+            }
+            Err(error)
+                if image_transport_retryable(&error)
+                    && attempt + 1 < IMAGE_REQUEST_MAX_ATTEMPTS =>
+            {
+                tokio::time::sleep(IMAGE_REQUEST_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(AppError::new("june_request_failed", "Couldn't reach June."))
+}
+
+fn image_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::TOO_MANY_REQUESTS
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn image_transport_retryable(error: &AppError) -> bool {
+    error.code == "june_request_failed"
 }
 
 async fn post_multipart<T>(path: &str, form: Form, send_venice_api_key: bool) -> Result<T, AppError>

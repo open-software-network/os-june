@@ -397,6 +397,9 @@ pub struct GenerateImageRequest {
     /// Optional model override; falls back to the saved default image model.
     #[serde(default)]
     pub model: Option<String>,
+    /// Stable logical request id supplied by the chat orchestration layer.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -404,6 +407,9 @@ pub struct GenerateImageRequest {
 pub struct EditImageRequest {
     pub image: String,
     pub prompt: String,
+    /// Stable logical request id supplied by the caller.
+    #[serde(default)]
+    pub request_id: Option<String>,
     #[serde(default)]
     pub mime_type: Option<String>,
     /// Optional edit-model override; absent uses June API's default edit model.
@@ -427,7 +433,11 @@ pub async fn generate_image(
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
         .unwrap_or_else(image_model);
-    crate::june_api::generate_image(prompt, model, Some(image_safe_mode())).await
+    let request_id = request
+        .request_id
+        .map(|request_id| request_id.trim().to_string())
+        .filter(|request_id| !request_id.is_empty());
+    crate::june_api::generate_image(prompt, model, Some(image_safe_mode()), request_id).await
 }
 
 /// Edits a source image through June API. Provider keys and the upstream call
@@ -454,11 +464,23 @@ pub async fn edit_image(
         .model
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty());
+    let request_id = request
+        .request_id
+        .map(|request_id| request_id.trim().to_string())
+        .filter(|request_id| !request_id.is_empty());
     let mime_type = request
         .mime_type
         .map(|mime_type| mime_type.trim().to_string())
         .filter(|mime_type| !mime_type.is_empty());
-    crate::june_api::edit_image(image, prompt, mime_type, model, Some(image_safe_mode())).await
+    crate::june_api::edit_image(
+        image,
+        prompt,
+        mime_type,
+        model,
+        Some(image_safe_mode()),
+        request_id,
+    )
+    .await
 }
 
 #[tauri::command]

@@ -2412,10 +2412,26 @@ input:focus-visible,
   margin: 0;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
-  padding: var(--sp-3);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
   background: var(--card);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+}
+
+.agent-generated-image-retry {
+  margin-top: var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: calc(var(--sp-1) / 2) var(--sp-2);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.agent-generated-image-retry:hover,
+.agent-generated-image-retry:focus-visible {
+  background: var(--muted);
 }
 
 .agent-generated-image-frame {
