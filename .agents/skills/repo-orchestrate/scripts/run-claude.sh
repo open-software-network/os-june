@@ -44,13 +44,24 @@ if [ "$dry_run" = 1 ]; then
   exit 0
 fi
 
+repo_root=$(cd "$repo_root" && pwd -P)
+# Skill-runner rules cover both relative invocation (PROMPT.md mandates it)
+# and absolute paths as belt-and-braces — permission prefixes have no
+# implicit leading wildcard.
 allowed=(
   "Bash(git fetch:*)" "Bash(git worktree:*)" "Bash(git add:*)" "Bash(git commit:*)"
   "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)"
   "Bash(git rev-parse:*)" "Bash(git merge-base:*)" "Bash(git branch:*)"
   "Bash(pnpm:*)" "Bash(cargo:*)" "Bash(make:*)" "Bash(rg:*)"
   "Bash(mkdir:*)" "Bash(cp:*)"
-  "Bash(.agents/skills/repo-review/scripts/*)" "Bash(.agents/skills/repo-delegate/scripts/*)"
+  "Bash(.agents/skills/repo-review/scripts/run-codex.sh:*)"
+  "Bash(.agents/skills/repo-review/scripts/run-claude.sh:*)"
+  "Bash(.agents/skills/repo-delegate/scripts/run-codex.sh:*)"
+  "Bash(.agents/skills/repo-delegate/scripts/run-claude.sh:*)"
+  "Bash($repo_root/.agents/skills/repo-review/scripts/run-codex.sh:*)"
+  "Bash($repo_root/.agents/skills/repo-review/scripts/run-claude.sh:*)"
+  "Bash($repo_root/.agents/skills/repo-delegate/scripts/run-codex.sh:*)"
+  "Bash($repo_root/.agents/skills/repo-delegate/scripts/run-claude.sh:*)"
 )
 if [ "$publish" = 1 ]; then
   allowed+=("Bash(git push:*)" "Bash(gh pr:*)")

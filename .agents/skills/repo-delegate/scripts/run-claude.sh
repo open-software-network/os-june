@@ -70,11 +70,17 @@ printf -- '--- report (%s) ---\n' "$out"
 # `pnpm dlx`, and `cargo run` would bypass the no-git/no-arbitrary-code
 # contract. A custom -g gate outside this set will prompt-fail closed.
 harness_rc=0
+# `:*` is a prefix-plus-args wildcard, so colon-named pnpm scripts and
+# toolchain-pinned cargo need their own entries (Bash(pnpm test:*) covers
+# `pnpm test ...`, NOT `pnpm test:rust`). Extend here when a new documented
+# gate script appears.
 printf '%s\n' "$prompt" | claude -p \
   --permission-mode acceptEdits \
   --allowedTools "Bash(pnpm check:*)" "Bash(pnpm typecheck:*)" "Bash(pnpm test:*)" \
+    "Bash(pnpm test:rust:*)" "Bash(pnpm test:june-api:*)" "Bash(pnpm test:hermes-smoke:*)" \
     "Bash(pnpm install:*)" "Bash(pnpm build:*)" \
     "Bash(cargo test:*)" "Bash(cargo fmt:*)" "Bash(cargo clippy:*)" "Bash(cargo check:*)" \
+    "Bash(cargo +1.95.0-aarch64-apple-darwin test:*)" \
     "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" \
   | tee "$out" || harness_rc=$?
 state_after=$(git_state)

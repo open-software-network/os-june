@@ -33,15 +33,18 @@ to end, with these headless adaptations:
   branched from {{BASE}} (fetch first). Copy {{REPO_ROOT}}/.env and
   {{REPO_ROOT}}/june-api/.env into it if they exist. Run `pnpm install`.
 - Implement following the repo's patterns (AGENTS.md and everything it
-  points to). For bulk scoped work you may sub-delegate via
-  {{REPO_ROOT}}/.agents/skills/repo-delegate/scripts/run-*.sh; verify every
-  delegated diff yourself.
+  points to). For bulk scoped work you may sub-delegate via the repo-delegate
+  runners — invoke them RELATIVE from your checkout
+  (`.agents/skills/repo-delegate/scripts/run-*.sh`), never by absolute path;
+  verify every delegated diff yourself.
 - Validate per repo-build-pr: the smallest checks that prove the change,
   broadened by blast radius; judge vitest by failure count, not exit code.
 - Run the pre-publish review battery per
   {{REPO_ROOT}}/.agents/skills/repo-review/SKILL.md: Standards + Spec + an
-  adversarial axis dispatched to a harness OTHER than your own
-  (repo-review/scripts/run-*.sh). Triage findings to dispositions; fix what
+  adversarial axis dispatched to a harness OTHER than your own — invoke the
+  runners relative from your checkout
+  (`.agents/skills/repo-review/scripts/run-*.sh`). Triage findings to
+  dispositions; fix what
   survives verification; re-run the adversarial axis until it returns only
   restatements of documented trade-offs.
 - Commit in atomic commits with terse lowercase messages.
