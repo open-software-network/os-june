@@ -81,7 +81,6 @@ import { Spinner } from "../ui/Spinner";
 import {
   cancelAgentTask,
   dictationHelperCommand,
-  editImage,
   explainAgentApproval,
   finalizeHermesBridgeBranch,
   getAgentTask,
@@ -251,7 +250,7 @@ import {
   resolveSlashModel,
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
-import { editChatImage, generateChatImage } from "../../lib/chat-image-generation";
+import { generateChatImage } from "../../lib/chat-image-generation";
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import {
   ComposerEditor,
@@ -921,30 +920,6 @@ function storedPendingImageSlashAttachments(sessionId: string): AgentAttachment[
     });
 }
 
-function latestStoredImageSlashTurn(sessionId: string): PersistedImageSlashTurn | undefined {
-  return (storedImageSlashTurns()[sessionId] ?? [])
-    .slice()
-    .sort((a, b) => b.imageCreatedAt.localeCompare(a.imageCreatedAt))[0];
-}
-
-function imageRegenerationSourcePrompt(sessionId: string): string | undefined {
-  const turns = (storedImageSlashTurns()[sessionId] ?? [])
-    .slice()
-    .sort((a, b) => b.imageCreatedAt.localeCompare(a.imageCreatedAt));
-  if (!turns.length) return undefined;
-  const linkedSource = turns.find((turn) => turn.sourcePrompt.trim() !== turn.prompt.trim());
-  if (linkedSource?.sourcePrompt.trim()) return linkedSource.sourcePrompt.trim();
-  const nonEditTurn = turns.find(
-    (turn) =>
-      !looksLikeImageEditFollowUp(turn.prompt) && !looksLikeImageRegenerateFollowUp(turn.prompt),
-  );
-  return (nonEditTurn ?? turns[turns.length - 1])?.sourcePrompt.trim();
-}
-
-function storedImageSlashPaths(sessionId: string): string[] {
-  return (storedImageSlashTurns()[sessionId] ?? []).map((turn) => turn.path);
-}
-
 function importedFileFromImageSlashTurn(turn: PersistedImageSlashTurn): ImportedHermesFile {
   return {
     name: turn.name,
@@ -953,18 +928,6 @@ function importedFileFromImageSlashTurn(turn: PersistedImageSlashTurn): Imported
     size: 0,
     previewDataUrl: null,
   };
-}
-
-function looksLikeImageRegenerateFollowUp(message: string) {
-  const trimmed = message.trim();
-  if (IMAGE_REGENERATE_STRONG_FOLLOW_UP_PATTERN.test(trimmed)) return true;
-  return (
-    IMAGE_REGENERATE_WEAK_FOLLOW_UP_PATTERN.test(trimmed) && !looksLikeImageEditFollowUp(trimmed)
-  );
-}
-
-function looksLikeImageEditFollowUp(message: string) {
-  return IMAGE_EDIT_FOLLOW_UP_PATTERN.test(message.trim());
 }
 
 function storedImageSlashTurns(): Record<string, PersistedImageSlashTurn[]> {
@@ -1212,11 +1175,6 @@ const ISSUE_REPORT_SENT_MESSAGE =
   "Your report was sent to the June team. Thank you for helping improve June.";
 const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
 const ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS = 1500;
-const IMAGE_REGENERATE_STRONG_FOLLOW_UP_PATTERN =
-  /\b(another\s+(?:image|one|shot)|different\s+(?:image|one|shot)|fresh\s+(?:image|one|shot)|new\s+(?:image|one|shot)|other\s+shot|regenerate|rerun|retry|variation)\b/i;
-const IMAGE_REGENERATE_WEAK_FOLLOW_UP_PATTERN = /\b(again|different|version)\b/i;
-const IMAGE_EDIT_FOLLOW_UP_PATTERN =
-  /\b(add|adjust|background|brighter|change|closer|convert|crop|darker|edit|expand|extend|foreground|make|modify|remove|replace|reframe|refine|restyle|style|turn|wider|zoom)\b/i;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
 
 function sessionComposerDraftKey(sessionId: string) {
@@ -3740,278 +3698,6 @@ export function AgentWorkspace({
     }
   }
 
-  async function maybeRunImageEditFastPath(message: string) {
-    const instruction = message.trim();
-    if (
-      !IMAGE_GENERATION_ENABLED ||
-      !instruction ||
-      attachments.length ||
-      category ||
-      newSessionModeRef.current ||
-      !selectedHermesSessionId ||
-      workingSessionIdsRef.current.has(selectedHermesSessionId) ||
-      !looksLikeImageEditFollowUp(instruction)
-    ) {
-      return false;
-    }
-    const sessionId = selectedHermesSessionId;
-    const sourceTurn = latestStoredImageSlashTurn(sessionId);
-    if (!sourceTurn) return false;
-
-    const sourceFile = importedFileFromImageSlashTurn(sourceTurn);
-    composerEditorRef.current?.clear();
-    setDraft("");
-    draftRef.current = "";
-    forgetComposerDraft(composerDraftKeyRef.current);
-    setError(null);
-    setImportingFiles(true);
-    setGeneratingImage(true);
-
-    const turnStartedAt = Date.now();
-    const turnId = `image:${sessionId}:${turnStartedAt}`;
-    const assistantTurnId = `${turnId}:assistant`;
-    const createdAt = new Date(turnStartedAt).toISOString();
-    const imageCreatedAt = new Date(turnStartedAt + 1).toISOString();
-    const updateImagePart = (patch: Partial<Extract<AgentChatPart, { type: "image" }>>) =>
-      setImageTurnsBySession((current) => {
-        const turns = current[sessionId] ?? [];
-        return {
-          ...current,
-          [sessionId]: turns.map((turn) => {
-            if (turn.id !== assistantTurnId) return turn;
-            const parts = turn.parts.map((part) =>
-              part.type === "image" ? { ...part, ...patch } : part,
-            );
-            const running = parts.some(
-              (part) => part.type === "image" && part.status === "running",
-            );
-            return { ...turn, parts, status: running ? "running" : "complete" };
-          }),
-        };
-      });
-
-    setImageTurnsBySession((current) => ({
-      ...current,
-      [sessionId]: [
-        ...(current[sessionId] ?? []),
-        ...runningImageSlashTurns({ id: turnId, prompt: instruction, createdAt, imageCreatedAt }),
-      ],
-    }));
-    setHermesSessionItems((current) =>
-      current.map((session) =>
-        session.id === sessionId
-          ? {
-              ...session,
-              preview: instruction,
-              last_active: createdAt,
-              message_count:
-                typeof session.message_count === "number" ? session.message_count + 2 : 2,
-            }
-          : session,
-      ),
-    );
-
-    try {
-      const result = await editChatImage(sourceFile, instruction, {
-        readImageData: hermesBridgeFilePreview,
-        edit: (imageBase64, prompt, mimeType, model) =>
-          editImage({ imageBase64, prompt, mimeType, model }),
-        importImageBytes: importHermesBridgeFileBytes,
-      });
-      if (result.status !== "ok") {
-        updateImagePart({ status: "error", error: result.message });
-        return true;
-      }
-
-      updateImagePart({
-        status: "complete",
-        dataUrl: result.dataUrl,
-        path: result.file.path,
-        name: result.file.name,
-      });
-      markStoredImageSlashTurnsAttached(sessionId, [sourceTurn.path]);
-      clearHeldFastPathImages(
-        sessionId,
-        (pendingFastPathImagesRef.current[sessionId] ?? []).filter(
-          (attachment) => attachment.path === sourceTurn.path,
-        ),
-      );
-      upsertStoredImageSlashTurn({
-        id: turnId,
-        sessionId,
-        prompt: instruction,
-        sourcePrompt: sourceTurn.sourcePrompt,
-        path: result.file.path,
-        name: result.file.name,
-        createdAt,
-        imageCreatedAt,
-        contextPending: true,
-      });
-      hermesArtifactStore.recordArtifact(
-        {
-          sessionId,
-          kind: "image",
-          action: "attached",
-          path: result.file.path,
-          displayName: result.file.name,
-          previewAvailable: true,
-        },
-        hermesModeFor(sessionId),
-      );
-      void loadFilesystemSnapshot();
-      const heldImage: AgentAttachment = {
-        ...result.file,
-        id: `held-image:${sessionId}:${Date.now()}`,
-        attachDataUrl: result.dataUrl,
-        attach: attachmentStateFrom(result.file, sessionId),
-      };
-      pendingFastPathImagesRef.current = {
-        ...pendingFastPathImagesRef.current,
-        [sessionId]: [...(pendingFastPathImagesRef.current[sessionId] ?? []), heldImage],
-      };
-      return true;
-    } catch (err) {
-      updateImagePart({ status: "error", error: messageFromError(err) });
-      return true;
-    } finally {
-      setGeneratingImage(false);
-      setImportingFiles(false);
-    }
-  }
-
-  async function maybeRunImageRegenerateFastPath(message: string) {
-    const instruction = message.trim();
-    if (
-      !IMAGE_GENERATION_ENABLED ||
-      !instruction ||
-      attachments.length ||
-      category ||
-      newSessionModeRef.current ||
-      !selectedHermesSessionId ||
-      workingSessionIdsRef.current.has(selectedHermesSessionId) ||
-      !looksLikeImageRegenerateFollowUp(instruction)
-    ) {
-      return false;
-    }
-    const sessionId = selectedHermesSessionId;
-    const sourcePrompt = imageRegenerationSourcePrompt(sessionId);
-    if (!sourcePrompt) return false;
-
-    composerEditorRef.current?.clear();
-    setDraft("");
-    draftRef.current = "";
-    forgetComposerDraft(composerDraftKeyRef.current);
-    setError(null);
-    setImportingFiles(true);
-    setGeneratingImage(true);
-
-    const turnStartedAt = Date.now();
-    const turnId = `image:${sessionId}:${turnStartedAt}`;
-    const assistantTurnId = `${turnId}:assistant`;
-    const createdAt = new Date(turnStartedAt).toISOString();
-    const imageCreatedAt = new Date(turnStartedAt + 1).toISOString();
-    const updateImagePart = (patch: Partial<Extract<AgentChatPart, { type: "image" }>>) =>
-      setImageTurnsBySession((current) => {
-        const turns = current[sessionId] ?? [];
-        return {
-          ...current,
-          [sessionId]: turns.map((turn) => {
-            if (turn.id !== assistantTurnId) return turn;
-            const parts = turn.parts.map((part) =>
-              part.type === "image" ? { ...part, ...patch } : part,
-            );
-            const running = parts.some(
-              (part) => part.type === "image" && part.status === "running",
-            );
-            return { ...turn, parts, status: running ? "running" : "complete" };
-          }),
-        };
-      });
-
-    setImageTurnsBySession((current) => ({
-      ...current,
-      [sessionId]: [
-        ...(current[sessionId] ?? []),
-        ...runningImageSlashTurns({ id: turnId, prompt: instruction, createdAt, imageCreatedAt }),
-      ],
-    }));
-    setHermesSessionItems((current) =>
-      current.map((session) =>
-        session.id === sessionId
-          ? {
-              ...session,
-              preview: instruction,
-              last_active: createdAt,
-              message_count:
-                typeof session.message_count === "number" ? session.message_count + 2 : 2,
-            }
-          : session,
-      ),
-    );
-
-    try {
-      const result = await generateChatImage(sourcePrompt, {
-        generate: (text, model) => generateImage(text, model),
-        importImageBytes: importHermesBridgeFileBytes,
-      });
-      if (result.status !== "ok") {
-        updateImagePart({ status: "error", error: result.message });
-        return true;
-      }
-
-      updateImagePart({
-        status: "complete",
-        dataUrl: result.dataUrl,
-        path: result.file.path,
-        name: result.file.name,
-      });
-      markStoredImageSlashTurnsAttached(sessionId, storedImageSlashPaths(sessionId));
-      const nextPendingFastPathImages = { ...pendingFastPathImagesRef.current };
-      delete nextPendingFastPathImages[sessionId];
-      pendingFastPathImagesRef.current = nextPendingFastPathImages;
-      upsertStoredImageSlashTurn({
-        id: turnId,
-        sessionId,
-        prompt: instruction,
-        sourcePrompt,
-        path: result.file.path,
-        name: result.file.name,
-        createdAt,
-        imageCreatedAt,
-        contextPending: true,
-      });
-      hermesArtifactStore.recordArtifact(
-        {
-          sessionId,
-          kind: "image",
-          action: "attached",
-          path: result.file.path,
-          displayName: result.file.name,
-          previewAvailable: true,
-        },
-        hermesModeFor(sessionId),
-      );
-      void loadFilesystemSnapshot();
-      const heldImage: AgentAttachment = {
-        ...result.file,
-        id: `held-image:${sessionId}:${Date.now()}`,
-        attachDataUrl: result.dataUrl,
-        attach: attachmentStateFrom(result.file, sessionId),
-      };
-      pendingFastPathImagesRef.current = {
-        ...pendingFastPathImagesRef.current,
-        [sessionId]: [heldImage],
-      };
-      return true;
-    } catch (err) {
-      updateImagePart({ status: "error", error: messageFromError(err) });
-      return true;
-    } finally {
-      setGeneratingImage(false);
-      setImportingFiles(false);
-    }
-  }
-
   async function runModelSlashCommand(argument: string, commandText: string) {
     const query = argument.trim();
     if (!query) {
@@ -4087,8 +3773,6 @@ export function AgentWorkspace({
     )
       return;
     if (message && (await handleBuiltinComposerSlashCommand(message))) return;
-    if (message && (await maybeRunImageRegenerateFastPath(message))) return;
-    if (message && (await maybeRunImageEditFastPath(message))) return;
     // June is mid-run: send the message straight into the loop via steer so
     // June picks it up after the current tool call (adds context without
     // interrupting — Escape or Stop interrupts instead). Plain-text follow-ups
@@ -5007,9 +4691,6 @@ export function AgentWorkspace({
        * session id is known and before prompt.submit; a failed attach throws to
        * block the send so the user can retry. */
       attachments?: AgentAttachment[];
-      /** Optional model id for a new session when the caller has already chosen
-       * a more specific model than the current global default. */
-      modelOverride?: string;
       /** Create + select the session and add the user bubble, then stop BEFORE
        * `prompt.submit` (the `/image` flow): the model is never invoked, and the
        * caller renders the result itself. Returns the stored session id so the
@@ -5029,15 +4710,16 @@ export function AgentWorkspace({
     // hermesModelIdFor: when local generation is active the default (and any
     // session row backfilled from it) carries the synthetic local option id,
     // which must never reach Hermes — session.create/ensure get the raw id.
+    const selectedSessionModelId = targetSessionId
+      ? hermesSessionItemsRef.current
+          .find((session) => session.id === targetSessionId)
+          ?.model?.trim()
+      : undefined;
+    const existingSessionModelId = explicitSession?.model?.trim() || selectedSessionModelId;
     const targetSessionModelId = hermesModelIdFor(
-      options?.modelOverride ??
-        (targetSessionId
-          ? explicitSession?.model?.trim() ||
-            hermesSessionItemsRef.current
-              .find((session) => session.id === targetSessionId)
-              ?.model?.trim() ||
-            defaultGenerationModelIdRef.current
-          : defaultGenerationModelIdRef.current),
+      targetSessionId
+        ? existingSessionModelId || defaultGenerationModelIdRef.current
+        : defaultGenerationModelIdRef.current,
     );
     // JUN-171 (Phase A): fold any held fast-path `/image` outputs for this
     // session into the turn so they ride the same structured-attach path as
