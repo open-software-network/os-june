@@ -679,13 +679,13 @@ fn sanitize_tool_schemas(body: &mut serde_json::Map<String, serde_json::Value>) 
 fn strip_conflicting_all_of(node: &mut serde_json::Value) {
     match node {
         serde_json::Value::Object(map) => {
-            if map.contains_key("type") && map.contains_key("allOf") {
-                if let Some(serde_json::Value::Array(branches)) = map.remove("allOf") {
-                    for branch in branches {
-                        if let serde_json::Value::Object(branch_map) = branch {
-                            for (key, value) in branch_map {
-                                map.entry(key).or_insert(value);
-                            }
+            if map.contains_key("type")
+                && let Some(serde_json::Value::Array(branches)) = map.remove("allOf")
+            {
+                for branch in branches {
+                    if let serde_json::Value::Object(branch_map) = branch {
+                        for (key, value) in branch_map {
+                            map.entry(key).or_insert(value);
                         }
                     }
                 }
