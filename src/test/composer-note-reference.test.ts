@@ -196,6 +196,12 @@ describe("draft rehydration", () => {
     expect(doc.content).toHaveLength(2);
     expect(doc.content[0].content).toEqual([{ type: "text", text: "just a line" }]);
   });
+
+  it("skips rehydration when asked, keeping placeholder position math valid", () => {
+    const line = '@note:note-1 ("Launch plan") ask about it';
+    const doc = buildDoc(line, null, { rehydrateNoteTokens: false });
+    expect(doc.content[0].content).toEqual([{ type: "text", text: line }]);
+  });
 });
 
 describe("note suggestion filtering", () => {

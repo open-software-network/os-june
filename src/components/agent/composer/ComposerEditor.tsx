@@ -121,11 +121,19 @@ function inlineContent(line: string) {
   return nodes;
 }
 
-export function buildDoc(text: string, category?: ReportCategory | null) {
+export function buildDoc(
+  text: string,
+  category?: ReportCategory | null,
+  options?: { rehydrateNoteTokens?: boolean },
+) {
+  // Placeholder-staged prefills skip rehydration: stripPlaceholder maps raw
+  // string indices to doc positions, which only holds while every character
+  // stays a size-1 text position — a chip atom would shift the selection.
+  const rehydrate = options?.rehydrateNoteTokens !== false;
   const paragraphs = text.split("\n").map((line) => ({
     type: "paragraph",
     // A text node may not be empty, so a blank line is an empty paragraph.
-    content: inlineContent(line),
+    content: rehydrate ? inlineContent(line) : line ? [{ type: "text", text: line }] : [],
   }));
   if (paragraphs.length === 0) paragraphs.push({ type: "paragraph", content: [] });
   if (category) {
@@ -297,9 +305,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         setContent: (text, category, options) => {
           if (!editor) return;
           const staged = options?.selectPlaceholder && !category ? stripPlaceholder(text) : null;
-          editor.commands.setContent(buildDoc(staged?.text ?? text, category), {
-            emitUpdate: true,
-          });
+          editor.commands.setContent(
+            buildDoc(staged?.text ?? text, category, { rehydrateNoteTokens: !staged }),
+            {
+              emitUpdate: true,
+            },
+          );
           // A hero shortcut authors a "<placeholder>" token; the brackets are
           // stripped before the text hits the document and the bare phrase left
           // selected (rather than parking the caret at the end) so typing

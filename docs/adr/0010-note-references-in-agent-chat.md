@@ -73,6 +73,11 @@ anywhere a prompt can be typed.
   serializer, the copy affordance, and the SOUL guidance — change it only
   additively (the agent must keep resolving tokens already embedded in old
   chat transcripts).
+- Token-shaped text **is** a reference, everywhere, by design: the agent
+  resolves it whether it arrived as a chip, a paste, or literal typing, and
+  draft restore renders it as a chip. There is deliberately no "inert" spelling
+  of the token; an id that resolves to nothing yields the tool's not-found
+  answer rather than silent text.
 - `get_meeting_note` evolves additively: new tools/fields only, no
   repurposing (mirrors the June API compatibility boundary in AGENTS.md,
   though this server ships with the app and has no cross-version wire

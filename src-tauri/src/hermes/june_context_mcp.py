@@ -53,6 +53,17 @@ TRANSCRIPT_TEXT_SUBQUERIES = """
         )
     ) AS turns_text,
     (
+        SELECT COUNT(*)
+        FROM transcripts t
+        WHERE t.note_id = n.id
+          AND t.recording_session_id IS NOT NULL
+          AND t.turn_index IS NOT NULL
+          AND (
+                trim(coalesce(t.text, '')) != ''
+                OR trim(coalesce(t.last_error, '')) != ''
+          )
+    ) AS visible_turn_rows,
+    (
         SELECT t.text
         FROM transcripts t
         WHERE t.note_id = n.id
@@ -63,10 +74,13 @@ TRANSCRIPT_TEXT_SUBQUERIES = """
 
 
 def transcript_text_from_row(row: sqlite3.Row) -> str:
-    """The transcript the app itself would show: turns first, else latest."""
-    turns = row["turns_text"] or ""
-    if turns.strip():
-        return turns
+    """The transcript the app itself would show. The app takes the turns
+    branch whenever any visible turn row exists — including all-failed turns
+    (empty text, lastError set), which render as an empty transcript — so an
+    older whole-file transcript must not resurface behind them. Only a note
+    with no visible turn rows at all falls back to the latest transcript."""
+    if row["visible_turn_rows"]:
+        return row["turns_text"] or ""
     return row["latest_text"] or ""
 
 
