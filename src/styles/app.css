@@ -7749,17 +7749,38 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
-/* Overline — quiet metadata row sitting above the title. Date is plain
- * text; the folder chip is the one actionable affordance. Status (when
- * present) floats to the right end so it never crowds the chip. */
+/* Overline - quiet metadata row sitting above the title. Date and project
+ * stay left; note actions wrap on the right before they crowd the header. */
 .note-overline {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  width: 100%;
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
 
+.note-overline-meta,
+.note-header-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.note-overline-meta {
+  flex: 1 1 auto;
+}
+
+.note-header-actions {
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+
 .note-overline-date {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -7801,6 +7822,41 @@ input:focus-visible,
 .folder-chip:hover,
 .folder-chip[aria-expanded="true"] {
   background: var(--muted);
+  color: var(--foreground);
+}
+
+.note-header-ask,
+.note-reference-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-sm);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.note-header-ask {
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.note-reference-copy {
+  width: var(--control-sm);
+  padding: 0;
+}
+
+.note-header-ask:hover,
+.note-reference-copy:hover,
+.note-reference-copy[data-copied="true"] {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
 }
 

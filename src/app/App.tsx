@@ -2068,6 +2068,21 @@ export function App() {
     }, 0);
   }
 
+  function handleAskJuneAboutNote(noteRef: { id: string; title: string }) {
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending(undefined, { noteRef });
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
+          detail: { noteRef },
+        }),
+      );
+    }, 0);
+  }
+
   // "Start chat with this bundle" from the Bundles settings tab: the same
   // fresh-chat handshake the dictation prompt path uses, auto-submitting the
   // bundle's slash command so Hermes resolves the bundle and loads its skills.
@@ -3168,6 +3183,12 @@ export function App() {
                       onPauseRecording={(sessionId) => void handlePauseRecording(sessionId)}
                       onResumeRecording={(sessionId) => void handleResumeRecording(sessionId)}
                       onFinishRecording={(sessionId) => void handleFinishRecording(sessionId)}
+                      onAskJune={() =>
+                        handleAskJuneAboutNote({
+                          id: selectedNote.id,
+                          title: selectedNote.title,
+                        })
+                      }
                       onRetry={async () => {
                         if (!selectedNote) return;
                         try {

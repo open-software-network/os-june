@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import type { Editor as TiptapEditor } from "@tiptap/react";
 import { IconArrowDown } from "central-icons/IconArrowDown";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
@@ -44,6 +45,7 @@ import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconNoteText } from "central-icons/IconNoteText";
 import { IconNotes } from "central-icons/IconNotes";
 import { IconPageTextSearch } from "central-icons/IconPageTextSearch";
 import { IconPencil } from "central-icons/IconPencil";
@@ -257,6 +259,7 @@ import {
   type ComposerEditorHandle,
   stripPlaceholder,
 } from "./composer/ComposerEditor";
+import { noteReferenceToken, type NoteReferenceInput } from "./composer/noteReference";
 import { CategoryIcon } from "./composer/CategoryIcon";
 import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
 import {
@@ -738,6 +741,9 @@ export type AgentNewSessionDetail = {
   /** Seeds the composer with a category chip (and skips auto-submit) so the
    * user lands ready to type a tagged report instead of an ordinary message. */
   category?: ReportCategory;
+  /** Seeds the composer with a note chip (and skips auto-submit) so the user
+   * lands ready to ask about that note instead of starting an ordinary ask. */
+  noteRef?: NoteReferenceInput;
 };
 
 /** Frames the user's bug report for June: investigate and write a diagnosis
@@ -1716,10 +1722,17 @@ export function AgentWorkspace({
   const listRef = useRef<HTMLDivElement | null>(null);
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
   const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
+  const composerTiptapEditorRef = useRef<TiptapEditor | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   // A category to seed into the composer chip once the editor is ready, set by
   // startNewTask for the sidebar/settings report entry points.
   const pendingSeedCategoryRef = useRef<ReportCategory | null>(null);
+  // A note reference to seed once the editor is ready, set by startNewTask for
+  // note-level "Ask June" entry points.
+  const pendingSeedNoteRefRef = useRef<{
+    noteRef: NoteReferenceInput;
+    prompt: string;
+  } | null>(null);
 
   function setReviewableIssueReport(sessionId: string, report: PendingIssueReport | null) {
     const next = { ...reviewableIssueReportsRef.current };
@@ -5578,10 +5591,14 @@ export function AgentWorkspace({
   ) {
     clearPendingNewSessionRequest();
     const seedCategory = request?.category ?? null;
+    const seedNoteRef = seedCategory ? null : (request?.noteRef ?? null);
+    const seedPrompt = request?.prompt?.trim() ?? "";
     // A seeded report never auto-submits: the category chip lands in the
     // composer for the user to type their report after, whatever prompt the
     // request carried.
-    const initialPrompt = seedCategory ? "" : (request?.prompt?.trim() ?? "");
+    // A seeded note reference follows the same rule: the chip lands in the
+    // composer and the user decides what to send.
+    const initialPrompt = seedCategory || seedNoteRef ? "" : seedPrompt;
     // The pending-marker mount path and the AGENT_NEW_SESSION_EVENT dispatch
     // can deliver the same request twice (App marks the marker, then fires
     // the event in a setTimeout for already-mounted workspaces). Submitting
@@ -5605,13 +5622,24 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = undefined;
     composerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
     setSelectedHermesSessionId(undefined);
-    // Seed the composer: a category chip for a report, the prompt otherwise.
-    // The editor may not be mounted yet on a cold open, so stash the category
-    // for ComposerEditor's onReady to pick up and also try to apply now.
+    // Seed the composer: a category chip for a report, a note chip for a note
+    // entry point, the prompt otherwise. The editor may not be mounted yet on
+    // a cold open, so stash chips for ComposerEditor's onReady to pick up and
+    // also try to apply now.
     pendingSeedCategoryRef.current = seedCategory;
+    pendingSeedNoteRefRef.current = seedNoteRef
+      ? {
+          noteRef: seedNoteRef,
+          prompt: seedPrompt,
+        }
+      : null;
     if (seedCategory) {
+      pendingSeedNoteRefRef.current = null;
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
       seedComposerCategory({ defer: options.deferCategorySeed });
+    } else if (seedNoteRef) {
+      clearComposerDraft(NEW_SESSION_DRAFT_KEY);
+      seedComposerNoteRef({ defer: options.deferCategorySeed });
     } else if (initialPrompt) {
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       composerEditorRef.current?.setContent(initialPrompt);
@@ -5702,6 +5730,7 @@ export function AgentWorkspace({
       const currentEditor = composerEditorRef.current;
       if (!seed || !currentEditor) return;
       pendingSeedCategoryRef.current = null;
+      pendingSeedNoteRefRef.current = null;
       draftRef.current = "";
       categoryRef.current = seed;
       setDraft("");
@@ -5709,6 +5738,43 @@ export function AgentWorkspace({
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, "", seed);
       restoredComposerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
       currentEditor.setContent("", seed);
+    };
+    if (options.defer) {
+      window.setTimeout(applySeed, 0);
+    } else {
+      applySeed();
+    }
+  }
+
+  /** Applies any pending note reference to the composer once the editor is
+   * available. Mirrors seedComposerCategory for cold-open note entry points. */
+  function seedComposerNoteRef(options: { defer?: boolean } = {}) {
+    if (!pendingSeedNoteRefRef.current) return;
+    const editor = composerEditorRef.current;
+    const tiptapEditor = composerTiptapEditorRef.current;
+    // Not mounted yet (cold open) — leave it pending for onReady to apply.
+    if (!editor || !tiptapEditor || tiptapEditor.isDestroyed) return;
+    const applySeed = () => {
+      const seed = pendingSeedNoteRefRef.current;
+      const currentEditor = composerEditorRef.current;
+      const currentTiptapEditor = composerTiptapEditorRef.current;
+      if (!seed || !currentEditor || !currentTiptapEditor || currentTiptapEditor.isDestroyed) {
+        return;
+      }
+      pendingSeedNoteRefRef.current = null;
+      draftRef.current = `${noteReferenceToken(seed.noteRef)} ${seed.prompt}`;
+      categoryRef.current = null;
+      setDraft(draftRef.current);
+      setCategory(null);
+      rememberComposerDraft(NEW_SESSION_DRAFT_KEY, draftRef.current, null);
+      restoredComposerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
+      currentEditor.setContent("", null);
+      currentEditor.insertNoteReference(seed.noteRef);
+      if (seed.prompt) {
+        currentTiptapEditor.chain().focus().insertContent(seed.prompt).run();
+      } else {
+        currentEditor.focus();
+      }
     };
     if (options.defer) {
       window.setTimeout(applySeed, 0);
@@ -6718,9 +6784,11 @@ export function AgentWorkspace({
               );
             }}
             onSubmit={() => void submit()}
-            onReady={() => {
+            onReady={(editor) => {
+              composerTiptapEditorRef.current = editor;
               restoreComposerDraft(composerDraftKeyRef.current);
               seedComposerCategory({ defer: true });
+              seedComposerNoteRef({ defer: true });
             }}
           />
           <div className="agent-composer-toolbar">
@@ -6839,6 +6907,24 @@ export function AgentWorkspace({
                 <IconFileText size={16} aria-hidden />
               </span>
               <span className="agent-attach-menu-label">Attach files</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setAttachMenuOpen(false);
+                const editor = composerTiptapEditorRef.current;
+                if (editor && !editor.isDestroyed) {
+                  editor.chain().focus().insertContent("@").run();
+                } else {
+                  composerEditorRef.current?.focus();
+                }
+              }}
+            >
+              <span className="agent-attach-menu-icon">
+                <IconNoteText size={16} aria-hidden />
+              </span>
+              <span className="agent-attach-menu-label">Reference a note</span>
             </button>
             <div className="agent-attach-menu-divider" role="separator" />
             {REPORT_CATEGORIES.map((reportCategory) => (
@@ -12334,13 +12420,14 @@ function writeLastOpenSessionId(sessionId: string) {
 
 export function markAgentNewSessionPending(
   prompt?: string,
-  options?: { category?: ReportCategory },
+  options?: { category?: ReportCategory; noteRef?: NoteReferenceInput },
 ) {
   try {
     const payload = JSON.stringify({
       createdAt: Date.now(),
       prompt: prompt?.trim() || undefined,
       category: options?.category,
+      noteRef: options?.noteRef,
     });
     window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, payload);
   } catch {
@@ -12373,7 +12460,17 @@ function hasPendingNewSessionRequest(): boolean {
   }
 }
 
-function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
+function parsePendingNoteRef(value: unknown): NoteReferenceInput | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { id?: unknown; title?: unknown };
+  if (typeof record.id !== "string" || record.id.trim().length === 0) return undefined;
+  return {
+    id: record.id,
+    title: typeof record.title === "string" ? record.title : "",
+  };
+}
+
+export function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {
     const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
     if (value == null) return undefined;
@@ -12385,6 +12482,7 @@ function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
         createdAt?: number;
         prompt?: string;
         category?: string;
+        noteRef?: unknown;
       };
       if (
         typeof parsed.createdAt !== "number" ||
@@ -12392,9 +12490,12 @@ function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
       ) {
         return undefined;
       }
+      const category = isReportCategory(parsed.category) ? parsed.category : undefined;
+      const noteRef = category ? undefined : parsePendingNoteRef(parsed.noteRef);
       return {
         ...(typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {}),
-        ...(isReportCategory(parsed.category) ? { category: parsed.category } : {}),
+        ...(category ? { category } : {}),
+        ...(noteRef ? { noteRef } : {}),
       };
     } catch {
       return undefined;
