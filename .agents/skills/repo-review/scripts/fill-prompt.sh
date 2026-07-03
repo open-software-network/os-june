@@ -56,21 +56,26 @@ case "$fixed_point" in
     git fetch --quiet origin "${fixed_point#origin/}" \
       || { echo "error: fetch failed for $fixed_point — refusing a possibly stale baseline (pass a SHA or local ref to review offline)" >&2; exit 1; } ;;
 esac
-git rev-parse --verify --quiet "${fixed_point}^{commit}" >/dev/null \
+# Pin both ends to immutable SHAs: ref names may contain shell
+# metacharacters, refs can move mid-review, and the caller may commit while
+# a reviewer is still running.
+fixed_sha=$(git rev-parse --verify --quiet "${fixed_point}^{commit}") \
   || { echo "error: ref does not resolve: $fixed_point" >&2; exit 1; }
-diff_cmd="git diff $fixed_point...HEAD"
-[ -n "$(git diff "$fixed_point...HEAD" --stat)" ] \
-  || { echo "error: empty diff: $diff_cmd" >&2; exit 1; }
+head_sha=$(git rev-parse HEAD)
+diff_cmd="git diff $fixed_sha...$head_sha"
+[ -n "$(git diff "$fixed_sha...$head_sha" --stat)" ] \
+  || { echo "error: empty diff: $diff_cmd ($fixed_point...HEAD)" >&2; exit 1; }
 {
   echo "axis: $axis"
-  echo "fixed point: $fixed_point (merge-base $(git merge-base "$fixed_point" HEAD))"
-  git diff "$fixed_point...HEAD" --stat | tail -1
+  echo "fixed point: $fixed_point = $fixed_sha (merge-base $(git merge-base "$fixed_sha" "$head_sha"))"
+  echo "head: $head_sha"
+  git diff "$fixed_sha...$head_sha" --stat | tail -1
 } >&2
 
 # Template body = everything after the `---` separator in the axis file.
 template=$(awk 'body { print } /^---$/ { body = 1 }' "$template_file")
 # Replacements quoted: bash >= 5.2 patsub_replacement expands unquoted `&`.
-prompt=${template//'{{TARGET_LABEL}}'/"branch diff against $fixed_point"}
+prompt=${template//'{{TARGET_LABEL}}'/"branch diff against $fixed_point (pinned: $fixed_sha)"}
 prompt=${prompt//'{{DIFF_COMMAND}}'/"$diff_cmd"}
 prompt=${prompt//'{{WORKTREE}}'/"$worktree"}
 prompt=${prompt//'{{USER_FOCUS}}'/"$focus"}

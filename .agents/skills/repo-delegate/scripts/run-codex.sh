@@ -45,6 +45,11 @@ out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-delegate-codex.XXXXXX")}
 # are the delegate's job; everything else in git is off limits.
 git_state() { git -C "$1" rev-parse HEAD; git -C "$1" for-each-ref; git -C "$1" diff --cached --name-status; }
 
+# Clean index required: with pre-staged content, a delegate could restage a
+# path with different content and the name-status guard would not see it.
+git -C "$worktree" diff --cached --quiet \
+  || { echo "error: staged changes present in $worktree — commit or unstage before delegating" >&2; exit 1; }
+
 state_before=$(git_state "$worktree")
 harness_rc=0
 printf '%s\n' "$prompt" | codex exec -s workspace-write -C "$worktree" -o "$out" - \

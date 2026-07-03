@@ -15,11 +15,13 @@ A runner dispatches a delegate task to one agent harness. To add one, create
    `--permission-mode acceptEdits`). Document the enforcement level honestly
    in the script header. Git mutations stay forbidden by the prompt contract
    either way — the caller commits.
-5. **Verify git is untouched**: snapshot git state (HEAD + `for-each-ref` +
-   staged paths) before dispatch and fail loudly if any of it changed after —
-   the no-commit contract is prompt text, the check is what enforces it. Run
-   the check even when the harness fails (capture its exit status instead of
-   letting `set -e` skip the guard), then propagate the original status.
+5. **Verify git is untouched**: require a clean index before dispatch (with
+   pre-staged content, restaged changes are invisible to a name-status
+   comparison), snapshot git state (HEAD + `for-each-ref` + staged paths),
+   and fail loudly if any of it changed after — the no-commit contract is
+   prompt text, the check is what enforces it. Run the check even when the
+   harness fails (capture its exit status instead of letting `set -e` skip
+   the guard), then propagate the original status.
 6. **Uniform output**: default `-o` to
    `mktemp "${TMPDIR:-/tmp}/repo-delegate-<harness>.XXXXXX"` (trailing X's —
    GNU mktemp requires them), print a `--- report (<path>) ---` marker line
@@ -37,6 +39,8 @@ prompt=$("$fill" -t "$task_file" -C "$worktree" \
 [ "$dry_run" = 1 ] && { printf '%s\n' "$prompt"; exit 0; }
 out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-delegate-<harness>.XXXXXX")}
 git_state() { git -C "$1" rev-parse HEAD; git -C "$1" for-each-ref; git -C "$1" diff --cached --name-status; }
+git -C "$worktree" diff --cached --quiet \
+  || { echo "error: staged changes present — commit or unstage first" >&2; exit 1; }
 state_before=$(git_state "$worktree")
 harness_rc=0
 printf '%s\n' "$prompt" | <harness-cli> <worktree-write flags> > "$out" \

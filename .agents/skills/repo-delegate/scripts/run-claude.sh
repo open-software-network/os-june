@@ -48,6 +48,11 @@ cd "$worktree"
 # are the delegate's job; everything else in git is off limits.
 git_state() { git rev-parse HEAD; git for-each-ref; git diff --cached --name-status; }
 
+# Clean index required: with pre-staged content, a delegate could restage a
+# path with different content and the name-status guard would not see it.
+git diff --cached --quiet \
+  || { echo "error: staged changes present — commit or unstage before delegating" >&2; exit 1; }
+
 state_before=$(git_state)
 printf -- '--- report (%s) ---\n' "$out"
 # Allowlist is the exact gate surface, not bare pnpm/cargo — `pnpm exec`,
