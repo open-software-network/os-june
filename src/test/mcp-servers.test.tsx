@@ -835,6 +835,24 @@ describe("McpServersView — component", () => {
     await waitFor(() => expect(screen.getByText(/currently exposes tools/i)).toBeInTheDocument());
   });
 
+  // Regression (review): server A's failed edit must not render its error
+  // inside server B's freshly opened dialog — opening the form clears it.
+  it("clears a stale edit error when the edit dialog opens", () => {
+    const clearEditError = vi.fn();
+    render(
+      <McpServersView
+        state={stubState({
+          servers: VIEW_SERVERS,
+          editServer: vi.fn(() => Promise.resolve(true)),
+          editError: "stale failure from another server",
+          clearEditError,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /edit sqlite/i }));
+    expect(clearEditError).toHaveBeenCalled();
+  });
+
   it("shows no Edit action when the edit slice is not wired", () => {
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS })} />);
     expect(screen.queryByRole("button", { name: /edit sqlite/i })).not.toBeInTheDocument();

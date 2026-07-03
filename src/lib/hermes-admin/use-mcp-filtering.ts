@@ -64,6 +64,13 @@ export type McpFilteringState = McpServersState & {
    * edit lands atomically: every leaf applies or none does.
    */
   editServer: (serverName: string, writes: McpEditWrite[]) => Promise<boolean>;
+  /** Clears the last edit error. The dialog host calls this when OPENING the
+   * edit form, so a failure from another server's edit never renders inside a
+   * freshly opened dialog. */
+  clearEditError: () => void;
+  /** Clears the last tool-policy save error (same staleness rule as
+   * {@link clearEditError}, for the Tools dialog). */
+  clearSaveError: () => void;
 };
 
 /**
@@ -148,6 +155,9 @@ export function useMcpFilteringController(engine: McpServersEngine | null): McpF
     [engine, servers],
   );
 
+  const clearEditError = useCallback(() => setEditError(undefined), []);
+  const clearSaveError = useCallback(() => setSaveError(undefined), []);
+
   return {
     ...servers,
     savingServer,
@@ -156,6 +166,8 @@ export function useMcpFilteringController(engine: McpServersEngine | null): McpF
     editingServer,
     editError,
     editServer,
+    clearEditError,
+    clearSaveError,
   };
 }
 

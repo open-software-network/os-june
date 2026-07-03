@@ -977,14 +977,33 @@ struct JuneWebMcpConfig {
 #[tauri::command]
 pub async fn stop_hermes_bridge(
     bridge: State<'_, HermesBridge>,
+    mode: Option<String>,
 ) -> Result<HermesBridgeStatus, AppError> {
-    stop_hermes_bridge_inner(&bridge)?;
-    Ok(HermesBridgeStatus {
-        running: false,
-        connection: None,
-        connections: Vec::new(),
-        message: Some("Hermes bridge stopped.".to_string()),
-    })
+    // A mode-scoped stop kills ONLY that runtime (the MCP page's restart flow
+    // targets one mode and must not silently take down a live session in the
+    // other mode); no mode keeps the historical stop-everything behavior.
+    let Some(mode) = mode.as_deref() else {
+        stop_hermes_bridge_inner(&bridge)?;
+        return Ok(HermesBridgeStatus {
+            running: false,
+            connection: None,
+            connections: Vec::new(),
+            message: Some("Hermes bridge stopped.".to_string()),
+        });
+    };
+    let full_mode = match mode {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    stop_hermes_mode(&bridge, full_mode)?;
+    let connections = live_connections(&bridge)?;
+    Ok(status_for(connections, None))
 }
 
 #[tauri::command]
@@ -2725,6 +2744,15 @@ pub async fn hermes_admin_request(
 /// showing the waiting state, refreshing status on its own.
 const MCP_OAUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// The line Hermes' OAuth redirect handler prints after it opens the system
+/// browser itself (`tools/mcp_oauth.py`, `_redirect_handler`, pinned runtime).
+/// June skips its own browser-open when this marker is present so the user
+/// does not get two tabs racing the same OAuth state. The match is prose and
+/// version-specific by nature: if a future runtime rewords it the check goes
+/// false and the WORST CASE is a harmless duplicate tab — re-verify on a pin
+/// bump (docs/hermes-upgrade-checklist.md).
+const HERMES_BROWSER_OPENED_MARKER: &str = "Browser opened automatically";
+
 /// A name a CLI argument is allowed to be: the same slug the TS validator
 /// enforces (`/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/`). This is defense in depth —
 /// the value is already passed as a discrete `Command` argument (no shell), but
@@ -3129,7 +3157,7 @@ pub async fn hermes_mcp_oauth_login(
     // opened automatically" under the PTY), so the user does not get a second
     // tab racing the same OAuth state. The URL is a navigation target, not a
     // credential, but it is still redacted before display on the TS side.
-    let hermes_opened_browser = combined.contains("Browser opened automatically");
+    let hermes_opened_browser = combined.contains(HERMES_BROWSER_OPENED_MARKER);
     if let Some(url) = auth_url.as_deref() {
         if !hermes_opened_browser {
             open_url_in_browser(url);

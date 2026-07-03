@@ -1100,8 +1100,11 @@ export async function startHermesBridge(cwd?: string, fullMode?: boolean) {
   });
 }
 
-export async function stopHermesBridge() {
-  return invoke<HermesBridgeStatus>("stop_hermes_bridge");
+/** Stops the Hermes runtime. With `mode`, stops ONLY that runtime (the MCP
+ * page's restart flow targets one mode and must not take down a live session
+ * in the other); without it, stops everything (historical behavior). */
+export async function stopHermesBridge(mode?: "sandboxed" | "unrestricted") {
+  return invoke<HermesBridgeStatus>("stop_hermes_bridge", { mode });
 }
 
 /** The redacted result of an MCP OAuth login attempt. The Rust bridge runs

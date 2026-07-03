@@ -521,15 +521,18 @@ impl VeniceChat {
         })?;
         if !status.is_success() {
             // The upstream error body is the only place Venice states WHY it
-            // rejected the request (e.g. its tool-schema normalizer bugs), so
-            // a capped preview is logged; it is an error message, not payload.
-            let body_preview: String = String::from_utf8_lossy(&body).chars().take(300).collect();
+            // rejected the request (e.g. its tool-schema normalizer bugs) —
+            // but agent chat bodies can carry private note/chat content that a
+            // validation error might echo. Log ONLY the structured error field
+            // from a JSON error body (capped), never a raw body preview, so
+            // this path keeps the provider-wide no-payload-in-logs rule.
+            let error_detail = upstream_error_detail(&body).unwrap_or_default();
             tracing::error!(
                 %status,
                 %url,
                 model = %model.0,
                 body_bytes = body.len(),
-                body_preview = %body_preview,
+                error_detail = %error_detail,
                 "venice: agent chat non-success response"
             );
             return Err(DomainError::UpstreamProvider);
@@ -542,6 +545,19 @@ impl VeniceChat {
             usage,
         })
     }
+}
+
+/// Extracts the short, structured error message from an upstream JSON error
+/// body (`{"error": "..."}` / `{"message": "..."}`), capped. Returns `None`
+/// for a non-JSON body or one without a string error field, so free-text
+/// bodies that might echo request content are never logged.
+fn upstream_error_detail(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let detail = value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("message").and_then(serde_json::Value::as_str))?;
+    Some(detail.chars().take(200).collect())
 }
 
 fn venice_api_key<'a>(configured: &'a str, credentials: &'a ProviderCredentials) -> &'a str {
@@ -651,14 +667,28 @@ fn sanitize_tool_schemas(body: &mut serde_json::Map<String, serde_json::Value>) 
     }
 }
 
-/// Recursively removes `allOf` from any schema node that also declares `type`
-/// (the combination Venice's normalizer rejects). Nodes using `allOf` alone
-/// are left untouched.
+/// Recursively resolves `allOf` on any schema node that also declares `type`
+/// (the combination Venice's normalizer rejects). Instead of dropping the
+/// branch outright, its keys are FOLDED into the parent (parent wins on
+/// conflict), so constraints a branch legitimately contributes — `required`,
+/// nested `properties`, a `pattern` the parent lacks — survive the rewrite.
+/// True `allOf` AND-semantics cannot be fully expressed after folding (two
+/// competing `pattern`s keep only the parent's), which is acceptable for tool
+/// calling: the schemas guide the model, they are not the validator. Nodes
+/// using `allOf` without a sibling `type` are left untouched.
 fn strip_conflicting_all_of(node: &mut serde_json::Value) {
     match node {
         serde_json::Value::Object(map) => {
             if map.contains_key("type") && map.contains_key("allOf") {
-                map.remove("allOf");
+                if let Some(serde_json::Value::Array(branches)) = map.remove("allOf") {
+                    for branch in branches {
+                        if let serde_json::Value::Object(branch_map) = branch {
+                            for (key, value) in branch_map {
+                                map.entry(key).or_insert(value);
+                            }
+                        }
+                    }
+                }
             }
             for value in map.values_mut() {
                 strip_conflicting_all_of(value);
@@ -1614,6 +1644,16 @@ mod tests {
                             // An allOf WITHOUT a sibling type stays untouched.
                             "combined": {
                                 "allOf": [{ "type": "string" }]
+                            },
+                            // A branch's non-conflicting constraints are
+                            // FOLDED into the parent, not dropped with it.
+                            "filter": {
+                                "type": "object",
+                                "allOf": [{
+                                    "type": "object",
+                                    "required": ["kind"],
+                                    "properties": { "kind": { "type": "string" } }
+                                }]
                             }
                         }
                     }
@@ -1626,6 +1666,12 @@ mod tests {
         assert_eq!(params["properties"]["since"]["type"], "string");
         assert_eq!(params["properties"]["since"]["format"], "date");
         assert!(params["properties"]["combined"].get("allOf").is_some());
+        // The folded branch kept its constraints; the conflicting key is gone.
+        let filter = &params["properties"]["filter"];
+        assert!(filter.get("allOf").is_none());
+        assert_eq!(filter["type"], "object");
+        assert_eq!(filter["required"][0], "kind");
+        assert_eq!(filter["properties"]["kind"]["type"], "string");
 
         // Tool-less and malformed bodies are left alone.
         let mut no_tools = json!({ "model": "m" });

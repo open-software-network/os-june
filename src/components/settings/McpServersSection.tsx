@@ -120,7 +120,9 @@ export function McpServersSection({ mode = "sandboxed" }: McpServersSectionProps
     if (restart.phase === "running") return;
     setRestart({ phase: "running" });
     try {
-      await stopHermesBridge();
+      // Scope the stop to THIS page's runtime: stopping everything would
+      // silently kill a live session in the other mode and leave it stopped.
+      await stopHermesBridge(mode);
       const status = await startHermesBridge(undefined, mode === "unrestricted");
       setBridge(status);
       setRestart({ phase: "idle" });
@@ -194,6 +196,8 @@ export function McpServersView({
         | "editingServer"
         | "editError"
         | "editServer"
+        | "clearEditError"
+        | "clearSaveError"
       >
     >;
   /** The OAuth sign-in slice. Optional so a component test can drive the list
@@ -329,9 +333,19 @@ export function McpServersView({
                   onToggle={(enabled) => handleToggle(server, enabled)}
                   onTest={() => void state.test(server.name)}
                   onEdit={
-                    state.editServer && canEditServer(server) ? () => setToEdit(server) : undefined
+                    state.editServer && canEditServer(server)
+                      ? () => {
+                          // Never show another server's stale edit failure in
+                          // a freshly opened form.
+                          state.clearEditError?.();
+                          setToEdit(server);
+                        }
+                      : undefined
                   }
-                  onTools={() => setToolsFor(server)}
+                  onTools={() => {
+                    state.clearSaveError?.();
+                    setToolsFor(server);
+                  }}
                   onDelete={() => setToDelete(server)}
                 />
               ))}
