@@ -9,7 +9,7 @@ services:
   # (independent of the GHCR prelaunch login / DSTACK_DOCKER_REGISTRY).
   # Docs: https://docs.phala.com/phala-cloud/networking/setup-custom-domain
   dstack-ingress:
-    image: dstacktee/dstack-ingress:20250924@sha256:40429d78060ef3066b5f93676bf3ba7c2e9ac47d4648440febfdda558aed4b32
+    image: dstacktee/dstack-ingress:20251013@sha256:fee7a6075a271adb5a5ff72ff3ff49bcb9e22d5f4c9fa68fa683cfb3932f911c
     restart: unless-stopped
     # Start after the app so the proxy isn't pointed at a cold backend on first
     # boot. Plain start-ordering, not health-gated: the slim runtime image has no
@@ -24,6 +24,11 @@ services:
       - TARGET_ENDPOINT=http://june-api:8080
       - GATEWAY_DOMAIN=_.${DSTACK_GATEWAY_DOMAIN}
       - SET_CAA=true
+      # nginx's default client_max_body_size (1m) rejected image-edit requests
+      # (multi-MB base64 source image) with an HTML 413 the app cannot parse.
+      # Must stay above june-api's own per-route body caps (the largest is
+      # max_image_edit_bytes, ~67m); june-api still enforces the precise limits.
+      - CLIENT_MAX_BODY_SIZE=80m
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL}
     volumes:
