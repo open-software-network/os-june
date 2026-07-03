@@ -39,7 +39,8 @@ const HERMES_SOURCE_TARBALL_SHA256: &str =
     "7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc";
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
-const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
+const HERMES_IMPORT_MAX_BYTES: u64 = HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES as u64;
 const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
@@ -54,10 +55,17 @@ const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // window and degrades to the context-overflow notice (recognizable wording in
 // `read_http_request`).
 const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 3 * 1024 * 1024;
-// Image edit requests carry the source image as base64 inside JSON. A 50 MiB
-// import can expand to about 67 MiB before JSON overhead, so image endpoints get
-// a separate loopback-only cap instead of the chat context-window cap.
-const JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES: usize = 80 * 1024 * 1024;
+// Image edit requests carry a source image as base64 inside JSON. Keep the
+// loopback cap derived from the same 50 MiB source-image maximum enforced by
+// imports and the image MCP.
+const JUNE_PROVIDER_PROXY_IMAGE_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
+const JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES: usize =
+    base64_encoded_len(HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES)
+        + JUNE_PROVIDER_PROXY_IMAGE_JSON_OVERHEAD_BYTES;
+
+const fn base64_encoded_len(byte_count: usize) -> usize {
+    byte_count.div_ceil(3) * 4
+}
 const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
@@ -2544,9 +2552,11 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
     // "image_cache" is where the Hermes runtime copies tool-result images;
     // assistant MEDIA: references point at those copies, so dropping it breaks
     // inline rendering and download of every tool-generated image.
-    allowed_roots.extend(["images", "image_cache"].into_iter().filter_map(|relative| {
-        hermes_home.join(relative).canonicalize().ok()
-    }));
+    allowed_roots.extend(
+        ["images", "image_cache"]
+            .into_iter()
+            .filter_map(|relative| hermes_home.join(relative).canonicalize().ok()),
+    );
     let allowed = allowed_roots
         .into_iter()
         .any(|root| requested.starts_with(root));
@@ -7546,6 +7556,11 @@ mod tests {
 
     #[test]
     fn provider_proxy_uses_larger_body_cap_for_image_tools() {
+        assert_eq!(
+            JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
+            base64_encoded_len(HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES)
+                + JUNE_PROVIDER_PROXY_IMAGE_JSON_OVERHEAD_BYTES
+        );
         assert_eq!(
             provider_proxy_max_body_bytes("/v1/chat/completions"),
             JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES

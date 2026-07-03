@@ -55,7 +55,7 @@ Non-secret (usually left to `config.toml`): `JUNE__SERVER__HOST` / `PORT`,
 
 ## Backend knobs (`june-api/config.toml`)
 
-- **Server:** `request_timeout_secs` 600, `max_audio_bytes` 25 MiB, `max_json_bytes` 512 KiB.
+- **Server:** `request_timeout_secs` 600, `max_audio_bytes` 25 MiB, `max_json_bytes` 512 KiB, `max_image_edit_bytes` sized for a 50 MiB source image after base64 expansion.
 - **Metering estimate:** `flat_estimate_credits` 250 — the flat credit Hold per metered action; skips per-request estimation.
 - **Hold TTLs (secs):** `note_transcribe` 60, `note_generate` 300, `dictate_transcribe` 30, `dictate_cleanup` 30, `web` 30.
 - **Web tools:** `web_search_credits` 20, `web_fetch_credits` 20 (flat).

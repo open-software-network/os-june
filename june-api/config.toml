@@ -4,6 +4,7 @@ port = 8080
 request_timeout_secs = 600
 max_audio_bytes = 26214400
 max_json_bytes = 524288
+max_image_edit_bytes = 69921452
 
 # Public facts shown on the /verify attestation page. source_commit is not
 # set here — the Docker build stamps it via JUNE__ATTESTATION__SOURCE_COMMIT.

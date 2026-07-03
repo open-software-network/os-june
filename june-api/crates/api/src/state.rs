@@ -31,6 +31,7 @@ struct ApiStateInner {
 pub struct ApiLimits {
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
+    pub max_image_edit_bytes: usize,
     pub request_timeout_secs: u64,
 }
 

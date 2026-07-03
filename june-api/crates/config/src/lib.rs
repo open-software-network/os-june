@@ -14,6 +14,14 @@ const REDACTED: &str = "<redacted>";
 pub const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER: &str = "local-dev-token";
 pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
+pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
+const IMAGE_EDIT_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
+pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
+    base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
+
+const fn base64_encoded_len(byte_count: usize) -> usize {
+    byte_count.div_ceil(3) * 4
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct AppConfig {
@@ -171,6 +179,9 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
+    /// JSON body cap for `/v1/image/edit`. It is sized for a 50 MiB source
+    /// image after base64 expansion plus fixed request overhead.
+    pub max_image_edit_bytes: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -595,6 +606,7 @@ impl Default for AppConfig {
                 request_timeout_secs: 600,
                 max_audio_bytes: 26_214_400,
                 max_json_bytes: 524_288,
+                max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
             },
             local_dev: LocalDevConfig::default(),
             os_accounts: OsAccountsConfig {
@@ -703,6 +715,10 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     validate_positive_config(
         "os_accounts.note_transcribe_preview_max_audio_secs",
         config.os_accounts.note_transcribe_preview_max_audio_secs,
+    )?;
+    validate_positive_usize_config(
+        "server.max_image_edit_bytes",
+        config.server.max_image_edit_bytes,
     )?;
 
     let uses_openai = config
@@ -877,6 +893,16 @@ fn validate_positive_config(field: &'static str, value: u64) -> Result<(), Confi
     Ok(())
 }
 
+fn validate_positive_usize_config(field: &'static str, value: usize) -> Result<(), ConfigError> {
+    if value == 0 {
+        return Err(ConfigError::InvalidRequired {
+            field,
+            reason: "must be > 0",
+        });
+    }
+    Ok(())
+}
+
 fn validate_positive_rate(
     model_id: &str,
     value: Option<u64>,
@@ -894,9 +920,9 @@ fn validate_positive_rate(
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, ConfigError, ModelPriceConfig, ModelProvider, ModelType,
-        OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, PriceUnit,
-        VENICE_API_KEY_PLACEHOLDERS, validate,
+        AppConfig, ConfigError, DEFAULT_MAX_IMAGE_EDIT_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        ModelPriceConfig, ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
+        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, PriceUnit, VENICE_API_KEY_PLACEHOLDERS, validate,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -1128,6 +1154,19 @@ mod tests {
                 "missing image price for {model}"
             );
         }
+    }
+
+    #[test]
+    fn default_image_edit_body_limit_matches_source_image_cap() {
+        let expected_base64_len = IMAGE_EDIT_SOURCE_MAX_BYTES.div_ceil(3) * 4;
+        assert_eq!(
+            DEFAULT_MAX_IMAGE_EDIT_BYTES,
+            expected_base64_len + (16 * 1024)
+        );
+        assert_eq!(
+            AppConfig::default().server.max_image_edit_bytes,
+            DEFAULT_MAX_IMAGE_EDIT_BYTES
+        );
     }
 
     #[test]

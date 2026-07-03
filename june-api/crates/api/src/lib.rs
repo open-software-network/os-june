@@ -68,10 +68,10 @@ pub fn router(state: ApiState) -> Router {
             post(handlers::image::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
-            // Edits carry a base64 source image, which can exceed the JSON body
-            // budget, so give this route the audio-sized limit like uploads.
+            // Edits carry a base64 source image, so use the explicit image-edit
+            // budget rather than the small JSON budget or unrelated audio cap.
             "/v1/image/edit",
-            post(handlers::image::edit).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
+            post(handlers::image::edit).layer(DefaultBodyLimit::max(limits.max_image_edit_bytes)),
         )
         .route(
             "/v1/dictate",

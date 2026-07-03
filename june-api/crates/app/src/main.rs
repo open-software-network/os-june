@@ -208,6 +208,7 @@ fn build_router(
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
+            max_image_edit_bytes: config.server.max_image_edit_bytes,
             request_timeout_secs: config.server.request_timeout_secs,
         },
         attestation: AttestationInfo {
