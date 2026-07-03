@@ -27,6 +27,7 @@ import base64
 import json
 import mimetypes
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -36,7 +37,8 @@ from typing import Any
 
 PROTOCOL_VERSION = "2025-03-26"
 SERVER_INFO = {"name": "june-image", "version": "0.1.0"}
-REQUEST_TIMEOUT_SECONDS = 120
+REQUEST_TIMEOUT_SECONDS = 600
+REQUEST_MAX_ATTEMPTS = 2
 TOKEN_ENV_VAR = "JUNE_IMAGE_PROXY_TOKEN"
 MAX_EDIT_SOURCE_IMAGE_BYTES = 50 * 1024 * 1024
 IMAGE_SIGNATURE_READ_BYTES = 32
@@ -282,11 +284,12 @@ def generate_image(
         raise ValueError("prompt is required")
     # No model is sent: the loopback proxy injects the user's selected image
     # generation model so the tool honors their setting.
+    request_id = new_request_id()
     envelope = call_proxy(
         base_url,
         token,
         "/image/generate",
-        {"prompt": prompt, "requestId": new_request_id()},
+        {"prompt": prompt, "requestId": request_id},
     )
     image_base64 = str(envelope.get("imageBase64") or "")
     mime_type = str(envelope.get("mimeType") or "image/png")
@@ -316,6 +319,7 @@ def edit_image(
     if not instruction:
         raise ValueError("instruction is required")
     source_base64, source_mime = read_image(source_dirs, source_filename)
+    request_id = new_request_id()
     envelope = call_proxy(
         base_url,
         token,
@@ -324,7 +328,7 @@ def edit_image(
             "image": source_base64,
             "prompt": instruction,
             "mimeType": source_mime,
-            "requestId": new_request_id(),
+            "requestId": request_id,
         },
     )
     image_base64 = str(envelope.get("imageBase64") or "")
@@ -448,21 +452,34 @@ def new_request_id() -> str:
 
 
 def call_proxy(
-    base_url: str, token: str, path: str, payload: dict[str, Any]
+    base_url: str,
+    token: str,
+    path: str,
+    payload: dict[str, Any],
+    timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
+    max_attempts: int = REQUEST_MAX_ATTEMPTS,
 ) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(f"{base_url}{path}", data=data, method="POST")
-    request.add_header("Content-Type", "application/json")
-    request.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-            body = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        # The envelope still carries {success, message} on 4xx/5xx (e.g. 402 out
-        # of credits, 422 model_not_priced), so read it for a usable error.
-        body = exc.read().decode("utf-8", "replace")
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach the June image proxy: {exc.reason}")
+    attempts = max(1, max_attempts)
+    for attempt in range(attempts):
+        request = urllib.request.Request(f"{base_url}{path}", data=data, method="POST")
+        request.add_header("Content-Type", "application/json")
+        request.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as resp:
+                body = resp.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as exc:
+            # The envelope still carries {success, message} on 4xx/5xx (e.g. 402 out
+            # of credits, 422 model_not_priced), so read it for a usable error.
+            body = exc.read().decode("utf-8", "replace")
+            break
+        except (TimeoutError, ConnectionError, socket.timeout, urllib.error.URLError) as exc:
+            if attempt + 1 < attempts:
+                continue
+            raise RuntimeError(
+                f"Could not reach the June image proxy: {transport_error_reason(exc)}"
+            )
 
     try:
         envelope = json.loads(body) if body else {}
@@ -475,6 +492,72 @@ def call_proxy(
     raise RuntimeError(str(envelope.get("message") or "Image request failed."))
 
 
+def transport_error_reason(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.URLError):
+        return str(exc.reason)
+    return str(exc)
+
+
+def run_smoke_tests() -> None:
+    smoke_test_proxy_retry_reuses_request_id()
+
+
+def smoke_test_proxy_retry_reuses_request_id() -> None:
+    state: dict[str, Any] = {
+        "requests": [],
+        "side_effects": 0,
+    }
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "success": True,
+                    "data": {
+                        "imageBase64": base64.b64encode(b"ok").decode("ascii"),
+                        "mimeType": "image/png",
+                    },
+                }
+            ).encode("utf-8")
+
+    original_urlopen = urllib.request.urlopen
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeResponse:
+        payload = json.loads((request.data or b"{}").decode("utf-8"))
+        state["requests"].append(payload.get("requestId"))
+        if len(state["requests"]) == 1:
+            raise TimeoutError("timed out")
+        state["side_effects"] += 1
+        return FakeResponse()
+
+    try:
+        urllib.request.urlopen = fake_urlopen
+        request_id = new_request_id()
+        envelope = call_proxy(
+            "http://127.0.0.1",
+            "token",
+            "/image/generate",
+            {"prompt": "a cat", "requestId": request_id},
+            timeout_seconds=0.05,
+            max_attempts=2,
+        )
+    finally:
+        urllib.request.urlopen = original_urlopen
+
+    if envelope.get("mimeType") != "image/png":
+        raise AssertionError("retry smoke test returned the wrong envelope")
+    if state["requests"] != [request_id, request_id]:
+        raise AssertionError("retry smoke test did not reuse one requestId")
+    if state["side_effects"] != 1:
+        raise AssertionError("retry smoke test produced more than one side effect")
+
+
 def response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
@@ -484,4 +567,7 @@ def error_response(request_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+        run_smoke_tests()
+    else:
+        main()

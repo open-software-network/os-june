@@ -6367,7 +6367,7 @@ fn render_image_mcp_entry(
     env:
       PYTHONUNBUFFERED: "1"
       {token_env}: {token}
-    timeout: 180
+    timeout: 600
     connect_timeout: 10
 "#,
         server_name = JUNE_IMAGE_MCP_SERVER_NAME,
@@ -7893,6 +7893,7 @@ mcp_servers:
         assert!(config.contains("      - \"/tmp/hermes-home/images\"\n"));
         assert!(config.contains("      - \"/tmp/hermes-home/workspace/uploads\"\n"));
         assert!(config.contains("      JUNE_IMAGE_PROXY_TOKEN: \"proxy-tok\"\n"));
+        assert!(config.contains("    timeout: 600\n"));
     }
 
     #[test]

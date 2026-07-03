@@ -82,7 +82,7 @@ impl ImageService {
             edit_pricing: deps.edit_pricing,
             default_edit_model: deps.default_edit_model,
             hold_ttl_seconds: deps.hold_ttl_seconds,
-            request_ledger: ImageRequestLedger::default(),
+            request_ledger: ImageRequestLedger::new(Duration::from_secs(deps.hold_ttl_seconds)),
         }
     }
 
@@ -155,6 +155,7 @@ impl ImageService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
+        let charge_created_at = Instant::now();
         let operation_id = new_charge_operation_id();
         // A failed/rejected generation returns the error WITHOUT charging; the
         // wallet hold simply expires (same as the web and agent chat paths).
@@ -178,6 +179,7 @@ impl ImageService {
             action_token: authorization.action_token,
             credits: charge_credits,
             idempotency_key: Self::idempotency_key(params, &operation_id),
+            created_at: charge_created_at,
         })
     }
 
@@ -252,6 +254,7 @@ impl ImageService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
+        let charge_created_at = Instant::now();
         let operation_id = new_charge_operation_id();
         let image = self
             .editor
@@ -273,6 +276,7 @@ impl ImageService {
             action_token: authorization.action_token,
             credits: charge_credits,
             idempotency_key: Self::edit_idempotency_key(params, model, &operation_id),
+            created_at: charge_created_at,
         })
     }
 
@@ -361,6 +365,7 @@ struct PendingImageCharge {
     action_token: String,
     credits: Credits,
     idempotency_key: String,
+    created_at: Instant,
 }
 
 fn new_charge_operation_id() -> String {
@@ -376,9 +381,10 @@ const IMAGE_LEDGER_REPLAY_TTL: Duration = Duration::from_mins(10);
 const IMAGE_LEDGER_IN_FLIGHT_TTL: Duration = Duration::from_mins(15);
 const IMAGE_LEDGER_MAX_SETTLED: usize = 32;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct ImageRequestLedger {
     inner: Arc<ImageRequestLedgerInner>,
+    pending_ttl: Duration,
 }
 
 #[derive(Default)]
@@ -393,7 +399,10 @@ enum ImageLedgerEntry {
         started_at: Instant,
         owner: u64,
     },
-    ChargePending(PendingImageCharge),
+    ChargePending {
+        pending: PendingImageCharge,
+        created_at: Instant,
+    },
     Complete {
         output: ImageGenerateOutput,
         settled_at: Instant,
@@ -443,16 +452,23 @@ impl Drop for ImageLedgerRun {
 }
 
 impl ImageRequestLedger {
+    fn new(pending_ttl: Duration) -> Self {
+        Self {
+            inner: Arc::new(ImageRequestLedgerInner::default()),
+            pending_ttl,
+        }
+    }
+
     async fn claim(&self, key: String) -> ImageLedgerClaim {
         loop {
             let notified = {
                 let mut entries = self.entries();
-                prune_expired_entries(&mut entries, Instant::now());
+                prune_expired_entries(&mut entries, Instant::now(), self.pending_ttl);
                 match entries.get(&key) {
                     Some(ImageLedgerEntry::Complete { output, .. }) => {
                         return ImageLedgerClaim::Replay(output.clone());
                     }
-                    Some(ImageLedgerEntry::ChargePending(pending)) => {
+                    Some(ImageLedgerEntry::ChargePending { pending, .. }) => {
                         return ImageLedgerClaim::ChargePending {
                             key: key.clone(),
                             pending: pending.clone(),
@@ -496,13 +512,20 @@ impl ImageRequestLedger {
                 }) if *current_owner == owner => Some(notify.clone()),
                 Some(
                     ImageLedgerEntry::InFlight { .. }
-                    | ImageLedgerEntry::ChargePending(_)
+                    | ImageLedgerEntry::ChargePending { .. }
                     | ImageLedgerEntry::Complete { .. },
                 )
                 | None => None,
             };
             if notify.is_some() {
-                entries.insert(key, ImageLedgerEntry::ChargePending(pending));
+                entries.insert(
+                    key,
+                    ImageLedgerEntry::ChargePending {
+                        created_at: pending.created_at,
+                        pending,
+                    },
+                );
+                evict_over_pending_cap(&mut entries);
             }
             notify
         };
@@ -515,7 +538,10 @@ impl ImageRequestLedger {
 
     fn complete_pending(&self, key: String, output: ImageGenerateOutput) {
         let mut entries = self.entries();
-        if matches!(entries.get(&key), Some(ImageLedgerEntry::ChargePending(_))) {
+        if matches!(
+            entries.get(&key),
+            Some(ImageLedgerEntry::ChargePending { .. })
+        ) {
             entries.insert(
                 key,
                 ImageLedgerEntry::Complete {
@@ -542,7 +568,7 @@ impl ImageRequestLedger {
                 }
                 Some(
                     ImageLedgerEntry::InFlight { .. }
-                    | ImageLedgerEntry::ChargePending(_)
+                    | ImageLedgerEntry::ChargePending { .. }
                     | ImageLedgerEntry::Complete { .. },
                 )
                 | None => None,
@@ -564,7 +590,11 @@ impl ImageRequestLedger {
     }
 }
 
-fn prune_expired_entries(entries: &mut BTreeMap<String, ImageLedgerEntry>, now: Instant) {
+fn prune_expired_entries(
+    entries: &mut BTreeMap<String, ImageLedgerEntry>,
+    now: Instant,
+    pending_ttl: Duration,
+) {
     entries.retain(|_, entry| match entry {
         ImageLedgerEntry::InFlight {
             notify, started_at, ..
@@ -575,7 +605,9 @@ fn prune_expired_entries(entries: &mut BTreeMap<String, ImageLedgerEntry>, now: 
             }
             keep
         }
-        ImageLedgerEntry::ChargePending(_) => true,
+        ImageLedgerEntry::ChargePending { created_at, .. } => {
+            now.saturating_duration_since(*created_at) < pending_ttl
+        }
         ImageLedgerEntry::Complete { settled_at, .. } => {
             now.saturating_duration_since(*settled_at) < IMAGE_LEDGER_REPLAY_TTL
         }
@@ -588,7 +620,7 @@ fn evict_over_replay_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
             .iter()
             .filter_map(|(key, entry)| match entry {
                 ImageLedgerEntry::Complete { settled_at, .. } => Some((key.clone(), *settled_at)),
-                ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::ChargePending(_) => None,
+                ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::ChargePending { .. } => None,
             })
             .collect();
         if settled.len() <= IMAGE_LEDGER_MAX_SETTLED {
@@ -597,6 +629,30 @@ fn evict_over_replay_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
         let Some((oldest, _)) = settled
             .into_iter()
             .min_by_key(|(_, settled_at)| *settled_at)
+        else {
+            return;
+        };
+        entries.remove(&oldest);
+    }
+}
+
+fn evict_over_pending_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
+    loop {
+        let pending: Vec<(String, Instant)> = entries
+            .iter()
+            .filter_map(|(key, entry)| match entry {
+                ImageLedgerEntry::ChargePending { created_at, .. } => {
+                    Some((key.clone(), *created_at))
+                }
+                ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::Complete { .. } => None,
+            })
+            .collect();
+        if pending.len() <= IMAGE_LEDGER_MAX_SETTLED {
+            return;
+        }
+        let Some((oldest, _)) = pending
+            .into_iter()
+            .min_by_key(|(_, created_at)| *created_at)
         else {
             return;
         };
@@ -709,6 +765,7 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicBool, AtomicU64, Ordering},
         },
+        time::{Duration, Instant},
     };
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -721,6 +778,12 @@ mod tests {
             credits: u64,
             idempotency_key: String,
         },
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TokenCall {
+        Authorize { action_token: String },
+        Charge { action_token: String },
     }
 
     struct RecordingOsAccounts {
@@ -750,6 +813,52 @@ mod tests {
     impl ChargeFailsOnceOsAccounts {
         fn events(&self) -> Vec<Call> {
             self.events.lock().map(|e| e.clone()).unwrap_or_default()
+        }
+    }
+
+    #[derive(Default)]
+    struct StaleTokenChargeFailsOsAccounts {
+        next_token: AtomicU64,
+        events: Mutex<Vec<TokenCall>>,
+    }
+
+    impl StaleTokenChargeFailsOsAccounts {
+        fn events(&self) -> Vec<TokenCall> {
+            self.events.lock().map(|e| e.clone()).unwrap_or_default()
+        }
+    }
+
+    #[async_trait]
+    impl OsAccountsClient for StaleTokenChargeFailsOsAccounts {
+        async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+            let token_number = self.next_token.fetch_add(1, Ordering::SeqCst) + 1;
+            let token = format!("agt_{token_number}");
+            if let Ok(mut events) = self.events.lock() {
+                events.push(TokenCall::Authorize {
+                    action_token: token.clone(),
+                });
+            }
+            Ok(Authorization {
+                allowed: true,
+                action_token: Some(token),
+                cap_credits: Some(request.estimate),
+                reason: None,
+            })
+        }
+
+        async fn charge(&self, request: ChargeRequest) -> Result<Receipt, DomainError> {
+            if let Ok(mut events) = self.events.lock() {
+                events.push(TokenCall::Charge {
+                    action_token: request.action_token.clone(),
+                });
+            }
+            if request.action_token == "agt_1" {
+                return Err(DomainError::MeteringProvider);
+            }
+            Ok(Receipt {
+                credits_charged: request.credits,
+                idempotent_replay: false,
+            })
         }
     }
 
@@ -916,13 +1025,22 @@ mod tests {
         os_accounts: Arc<dyn OsAccountsClient>,
         generator: Arc<dyn ImageGenerator>,
     ) -> ImageService {
-        service_with_editor(os_accounts, generator, Arc::new(FixedEditor))
+        service_with_hold_ttl(os_accounts, generator, Arc::new(FixedEditor), 60)
     }
 
     fn service_with_editor(
         os_accounts: Arc<dyn OsAccountsClient>,
         generator: Arc<dyn ImageGenerator>,
         editor: Arc<dyn ImageEditor>,
+    ) -> ImageService {
+        service_with_hold_ttl(os_accounts, generator, editor, 60)
+    }
+
+    fn service_with_hold_ttl(
+        os_accounts: Arc<dyn OsAccountsClient>,
+        generator: Arc<dyn ImageGenerator>,
+        editor: Arc<dyn ImageEditor>,
+        hold_ttl_seconds: u64,
     ) -> ImageService {
         ImageService::new(ImageServiceDeps {
             os_accounts,
@@ -934,7 +1052,7 @@ mod tests {
                 ImageModelPrice::venice(80),
             )]),
             default_edit_model: "firered-image-edit".to_string(),
-            hold_ttl_seconds: 60,
+            hold_ttl_seconds,
         })
     }
 
@@ -1196,6 +1314,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_pending_charge_runs_fresh_instead_of_reusing_stale_action_token() {
+        let os_accounts = Arc::new(StaleTokenChargeFailsOsAccounts::default());
+        let generator = Arc::new(CountingGenerator::default());
+        let service = service_with_hold_ttl(
+            os_accounts.clone(),
+            generator.clone(),
+            Arc::new(FixedEditor),
+            1,
+        );
+        let mut params = params("venice-sd35");
+        params.request_id = Some("req_expired_pending_charge".to_string());
+
+        let first = service.generate(params.clone()).await;
+        assert!(matches!(first, Err(crate::ServiceError::MeteringProvider)));
+        age_pending_entries(&service.request_ledger, Duration::from_secs(2));
+
+        let second = service.generate(params).await.expect("fresh retry settles");
+
+        assert_eq!(second.image.image_base64, "generated-2");
+        assert_eq!(generator.calls(), 2);
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                TokenCall::Authorize {
+                    action_token: "agt_1".to_string(),
+                },
+                TokenCall::Charge {
+                    action_token: "agt_1".to_string(),
+                },
+                TokenCall::Authorize {
+                    action_token: "agt_2".to_string(),
+                },
+                TokenCall::Charge {
+                    action_token: "agt_2".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn edit_authorizes_then_charges_the_default_edit_model_price() {
         // An edit with no model uses the default edit model and charges its flat
         // edit price under the image_edit action.
@@ -1268,13 +1426,13 @@ mod tests {
 
     #[tokio::test]
     async fn ledger_evicts_the_oldest_settled_replay_over_the_cap() {
-        let ledger = super::ImageRequestLedger::default();
+        let ledger = test_ledger();
         for index in 0..=super::IMAGE_LEDGER_MAX_SETTLED {
             let key = format!("key-{index:03}");
             match ledger.claim(key).await {
                 super::ImageLedgerClaim::Run { guard } => {
                     let pending_key = guard
-                        .charge_pending(sample_pending())
+                        .charge_pending(sample_pending_at(Instant::now()))
                         .expect("pending charge inserted");
                     ledger.complete_pending(pending_key, sample_output());
                 }
@@ -1298,6 +1456,39 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn ledger_evicts_the_oldest_pending_charge_over_the_cap() {
+        let ledger = test_ledger();
+        let created_at = Instant::now();
+        let mut offset = Duration::ZERO;
+        for index in 0..=super::IMAGE_LEDGER_MAX_SETTLED {
+            let key = format!("pending-{index:03}");
+            match ledger.claim(key).await {
+                super::ImageLedgerClaim::Run { guard } => {
+                    guard
+                        .charge_pending(sample_pending_at(created_at + offset))
+                        .expect("pending charge inserted");
+                }
+                super::ImageLedgerClaim::Replay(_) => panic!("fresh key must run"),
+                super::ImageLedgerClaim::ChargePending { .. } => {
+                    panic!("fresh key must not have a pending charge")
+                }
+            }
+            offset += Duration::from_secs(1);
+        }
+
+        assert!(matches!(
+            ledger.claim("pending-000".to_string()).await,
+            super::ImageLedgerClaim::Run { .. }
+        ));
+        assert!(matches!(
+            ledger
+                .claim(format!("pending-{:03}", super::IMAGE_LEDGER_MAX_SETTLED))
+                .await,
+            super::ImageLedgerClaim::ChargePending { .. }
+        ));
+    }
+
     #[test]
     fn ledger_prunes_settled_replays_past_the_ttl() {
         let mut entries = BTreeMap::new();
@@ -1312,6 +1503,26 @@ mod tests {
         super::prune_expired_entries(
             &mut entries,
             settled_at + super::IMAGE_LEDGER_REPLAY_TTL + std::time::Duration::from_secs(1),
+            Duration::from_mins(1),
+        );
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn ledger_prunes_pending_charges_past_the_hold_ttl() {
+        let mut entries = BTreeMap::new();
+        let created_at = Instant::now();
+        entries.insert(
+            "old".to_string(),
+            super::ImageLedgerEntry::ChargePending {
+                pending: sample_pending_at(created_at),
+                created_at,
+            },
+        );
+        super::prune_expired_entries(
+            &mut entries,
+            created_at + Duration::from_secs(61),
+            Duration::from_mins(1),
         );
         assert!(entries.is_empty());
     }
@@ -1331,13 +1542,14 @@ mod tests {
         super::prune_expired_entries(
             &mut entries,
             started_at + super::IMAGE_LEDGER_IN_FLIGHT_TTL + std::time::Duration::from_secs(1),
+            Duration::from_mins(1),
         );
         assert!(entries.is_empty());
     }
 
     #[tokio::test]
     async fn dropped_in_flight_claim_releases_waiters_for_same_key() {
-        let ledger = super::ImageRequestLedger::default();
+        let ledger = test_ledger();
         let key = "cancelled-key".to_string();
         let first_claim = ledger.claim(key.clone()).await;
         let super::ImageLedgerClaim::Run { guard } = first_claim else {
@@ -1358,7 +1570,26 @@ mod tests {
         assert!(matches!(second_claim, super::ImageLedgerClaim::Run { .. }));
     }
 
-    fn sample_pending() -> super::PendingImageCharge {
+    fn test_ledger() -> super::ImageRequestLedger {
+        super::ImageRequestLedger::new(Duration::from_mins(1))
+    }
+
+    fn age_pending_entries(ledger: &super::ImageRequestLedger, age: Duration) {
+        let now = Instant::now();
+        let created_at = now.checked_sub(age).unwrap_or(now);
+        let mut entries = ledger.entries();
+        for entry in entries.values_mut() {
+            if let super::ImageLedgerEntry::ChargePending {
+                created_at: entry_created_at,
+                ..
+            } = entry
+            {
+                *entry_created_at = created_at;
+            }
+        }
+    }
+
+    fn sample_pending_at(created_at: Instant) -> super::PendingImageCharge {
         super::PendingImageCharge {
             action: june_domain::ActionSlug::ImageGenerate,
             user_id: UserId("usr_1".to_string()),
@@ -1372,6 +1603,7 @@ mod tests {
             action_token: "agt_test".to_string(),
             credits: june_domain::Credits(60),
             idempotency_key: "image_generate:usr_1:attempt:test:test".to_string(),
+            created_at,
         }
     }
 
