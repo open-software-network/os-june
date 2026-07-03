@@ -31,6 +31,20 @@ thing built right, correct-looking thing that fails under stress). Keeping the
 axes separate stops one from masking another — never merge or rerank findings
 across axes.
 
+## Sizing the battery
+
+A cross-harness run costs real tokens (a single Codex axis run is roughly
+150-200k). Size the battery to the diff instead of always running everything:
+
+- **Trivial** (docs-only, one-liners, no runtime surface): one adversarial
+  run, one round, cheapest harness. Skip Spec when no spec exists.
+- **Standard** (typical feature/fix): full battery once, then converge on the
+  adversarial axis only.
+- **High-stakes** (auth, billing, data loss, migrations, wire contracts, or
+  diffs a delegate/implementer harness wrote): full battery, multi-round
+  convergence, and run the adversarial axis on both harnesses at least once —
+  the finding sets are measurably disjoint (see CALIBRATION.md).
+
 ## 1. Pin the fixed point
 
 The fixed point is whatever the user names (`main`, a SHA, `HEAD~5`). For a PR
@@ -129,13 +143,22 @@ adversarial, not verified:
    Rust crates); frontend-only diffs can use
    `pnpm typecheck && pnpm check && pnpm test` (judge vitest by failure
    count, not exit code).
-3. Re-run the **adversarial** axis only.
+3. Re-run the **adversarial** axis only — and alternate the reviewing
+   harness between rounds. A loop run on one harness converges to that
+   harness's blind spots; the finding sets are measurably disjoint
+   (CALIBRATION.md, PR #612: the single Claude round found what six Codex
+   rounds never would, and vice versa).
 4. Repeat until it returns `approve` / no material findings. Adversarial
    reviewers rarely return zero forever — findings that are hedged
    ("verify that..."), pre-existing parity, or restatements of documented
    trade-offs count as "nothing worth fixing"; say so explicitly with
    evidence.
 5. Finish with one last Standards + Spec pass.
+6. Close the cycle in [CALIBRATION.md](CALIBRATION.md): one row per reviewer
+   (findings / true / pattern notes). This is what keeps the battery
+   improving — skip-rules and harness choices get made from this table, not
+   from memory. If the cycle taught a lesson the skill text doesn't carry
+   yet, fold it into SKILL.md in the same change.
 
 ## Extending
 
