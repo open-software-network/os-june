@@ -139,6 +139,26 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(0);
   });
 
+  it("keeps running lifecycle flavor active even when the payload status is terminal", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+
+    store.record(classified("status.update", "s1", { status: "done" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+  });
+
+  it("falls back to terminal payload status for info lifecycle flavor", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+
+    store.record(classified("lifecycle.update", "s1", { status: "completed" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("complete");
+    expect(store.activeCount()).toBe(0);
+  });
+
   it("message completion flips the session to phase 'complete'", () => {
     const store = createHermesActivityStore();
     store.record(classified("message.start", "s1"), "sandboxed");

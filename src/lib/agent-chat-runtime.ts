@@ -672,7 +672,18 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
         break;
       }
 
-      case "lifecycle":
+      case "lifecycle": {
+        if (event.flavor === "terminal") {
+          const target = currentAssistant ?? lastAssistantTurn(turns);
+          if (target?.status === "running") {
+            target.status = "complete";
+            completeRunningParts(target.parts);
+          }
+          currentAssistant = null;
+        }
+        break;
+      }
+
       case "unsupported":
         break;
     }

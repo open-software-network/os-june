@@ -625,6 +625,52 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("closes a running reasoning turn when only a terminal lifecycle event follows", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          delta: "Checking the workspace.",
+        }),
+        lifecycleEvent({
+          sessionId: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          flavor: "terminal",
+          status: "turn.complete",
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.status).toBe("complete");
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "Checking the workspace.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("does not create a turn for a terminal lifecycle event without an assistant turn", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        lifecycleEvent({
+          sessionId: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          flavor: "terminal",
+          status: "turn.complete",
+        }),
+      ],
+    );
+
+    expect(turns).toEqual([]);
+  });
+
   it("renders live clarify requests as answerable chat parts", () => {
     const turns = buildAgentChatTurns(
       [],
