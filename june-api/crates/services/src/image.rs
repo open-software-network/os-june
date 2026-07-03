@@ -18,7 +18,9 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 /// Metered image generation. Each generation is flat-priced per model (Venice
 /// bills per image), so the authorize estimate and the settled charge are the
@@ -66,10 +68,11 @@ pub struct ImageService {
     edit_pricing: BTreeMap<String, ImageModelPrice>,
     default_edit_model: String,
     hold_ttl_seconds: u64,
-    /// Per-process sequence used only for older clients that do not send a
-    /// request id. New clients scope charge idempotency to their request id so a
-    /// dropped charge response can be retried without double-charging.
+    /// Per-process sequence for unique charge settlements. Request replay is
+    /// handled by `request_ledger`; charge keys stay unique so a ledger miss
+    /// cannot replay an old OS Accounts settlement to fund fresh upstream work.
     seq: AtomicU64,
+    request_ledger: ImageRequestLedger,
 }
 
 impl ImageService {
@@ -83,6 +86,7 @@ impl ImageService {
             default_edit_model: deps.default_edit_model,
             hold_ttl_seconds: deps.hold_ttl_seconds,
             seq: AtomicU64::new(0),
+            request_ledger: ImageRequestLedger::default(),
         }
     }
 
@@ -122,6 +126,32 @@ impl ImageService {
                 receipt: zero_receipt(),
             });
         }
+        if let Some(key) = image_ledger_key(&params) {
+            match self.request_ledger.claim(key).await {
+                ImageLedgerClaim::Replay(output) => return Ok(output),
+                ImageLedgerClaim::Run { key } => {
+                    let result = self.generate_metered(&params, estimate).await;
+                    return match result {
+                        Ok(output) => {
+                            self.request_ledger.complete(key, output.clone()).await;
+                            Ok(output)
+                        }
+                        Err(error) => {
+                            self.request_ledger.fail(key).await;
+                            Err(error)
+                        }
+                    };
+                }
+            }
+        }
+        self.generate_metered(&params, estimate).await
+    }
+
+    async fn generate_metered(
+        &self,
+        params: &ImageGenerateParams,
+        estimate: Credits,
+    ) -> Result<ImageGenerateOutput, ServiceError> {
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
@@ -148,7 +178,7 @@ impl ImageService {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
             credits: charge_credits,
-            idempotency_key: self.idempotency_key(&params),
+            idempotency_key: self.idempotency_key(params),
         })
         .await?;
         log_settled(
@@ -197,6 +227,33 @@ impl ImageService {
                 receipt: zero_receipt(),
             });
         }
+        if let Some(key) = edit_ledger_key(&params, &model) {
+            match self.request_ledger.claim(key).await {
+                ImageLedgerClaim::Replay(output) => return Ok(output),
+                ImageLedgerClaim::Run { key } => {
+                    let result = self.edit_metered(&params, &model, estimate).await;
+                    return match result {
+                        Ok(output) => {
+                            self.request_ledger.complete(key, output.clone()).await;
+                            Ok(output)
+                        }
+                        Err(error) => {
+                            self.request_ledger.fail(key).await;
+                            Err(error)
+                        }
+                    };
+                }
+            }
+        }
+        self.edit_metered(&params, &model, estimate).await
+    }
+
+    async fn edit_metered(
+        &self,
+        params: &ImageEditParams,
+        model: &str,
+        estimate: Credits,
+    ) -> Result<ImageGenerateOutput, ServiceError> {
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
@@ -211,7 +268,7 @@ impl ImageService {
                 image_base64: params.image_base64.clone(),
                 mime_type: params.mime_type.clone(),
                 prompt: params.prompt.clone(),
-                model: ModelId(model.clone()),
+                model: ModelId(model.to_string()),
                 safe_mode: params.safe_mode,
                 provider_credentials: params.provider_credentials.clone(),
             })
@@ -221,23 +278,22 @@ impl ImageService {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
             credits: charge_credits,
-            idempotency_key: self.edit_idempotency_key(&params, &model),
+            idempotency_key: self.edit_idempotency_key(params, model),
         })
         .await?;
-        log_settled(ActionSlug::ImageEdit, &params.user_id, &model, &receipt);
+        log_settled(ActionSlug::ImageEdit, &params.user_id, model, &receipt);
         Ok(ImageGenerateOutput { image, receipt })
     }
 
-    /// New clients supply a stable per-call request id, mirroring the web tools:
-    /// a dropped-response retry reuses it (no double charge), while a real
-    /// repeat uses a fresh id. Older clients omit it and retain the pre-existing
-    /// unique-per-call sequence behavior. The request shape is hashed in so
-    /// reusing an id with a different shape settles as a new charge.
+    /// Each successful paid image operation gets a distinct charge key. The
+    /// service-level request ledger absorbs same-request retries before they
+    /// reach Venice or OS Accounts; keeping the settlement key unique preserves
+    /// the invariant that fresh upstream work never replays an old charge.
     fn idempotency_key(&self, params: &ImageGenerateParams) -> String {
         format!(
             "image_generate:{}:{}:{}",
             params.user_id.0,
-            self.idempotency_scope(params.request_id.as_deref()),
+            self.charge_scope(),
             sha256_hex(image_shape(params).as_bytes())
         )
     }
@@ -247,17 +303,152 @@ impl ImageService {
         format!(
             "image_edit:{}:{}:{}",
             params.user_id.0,
-            self.idempotency_scope(params.request_id.as_deref()),
+            self.charge_scope(),
             sha256_hex(edit_shape(params, model).as_bytes())
         )
     }
 
-    fn idempotency_scope(&self, request_id: Option<&str>) -> String {
-        match request_id {
-            Some(request_id) => format!("request:{request_id}"),
-            None => format!("legacy:{}", self.seq.fetch_add(1, Ordering::Relaxed)),
+    fn charge_scope(&self) -> String {
+        format!("run:{}", self.seq.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Settled replays are kept only briefly: each entry pins a full base64 image
+/// in memory, so an unbounded ledger would grow by megabytes per generation
+/// for the life of the process. Duplicate request ids only arise from
+/// short-lived client retries, so a short window plus a hard cap bounds memory
+/// without weakening the replay guarantee in practice.
+const IMAGE_LEDGER_REPLAY_TTL: Duration = Duration::from_mins(10);
+const IMAGE_LEDGER_MAX_SETTLED: usize = 32;
+
+#[derive(Default)]
+struct ImageRequestLedger {
+    entries: AsyncMutex<BTreeMap<String, ImageLedgerEntry>>,
+}
+
+enum ImageLedgerEntry {
+    InFlight(Arc<Notify>),
+    Complete {
+        output: ImageGenerateOutput,
+        settled_at: Instant,
+    },
+}
+
+enum ImageLedgerClaim {
+    Replay(ImageGenerateOutput),
+    Run { key: String },
+}
+
+impl ImageRequestLedger {
+    async fn claim(&self, key: String) -> ImageLedgerClaim {
+        loop {
+            let notified = {
+                let mut entries = self.entries.lock().await;
+                prune_expired_replays(&mut entries, Instant::now());
+                match entries.get(&key) {
+                    Some(ImageLedgerEntry::Complete { output, .. }) => {
+                        return ImageLedgerClaim::Replay(output.clone());
+                    }
+                    Some(ImageLedgerEntry::InFlight(notify)) => notify.clone().notified_owned(),
+                    None => {
+                        entries.insert(
+                            key.clone(),
+                            ImageLedgerEntry::InFlight(Arc::new(Notify::new())),
+                        );
+                        return ImageLedgerClaim::Run { key };
+                    }
+                }
+            };
+            notified.await;
         }
     }
+
+    async fn complete(&self, key: String, output: ImageGenerateOutput) {
+        let notify = {
+            let mut entries = self.entries.lock().await;
+            let replaced = entries.insert(
+                key,
+                ImageLedgerEntry::Complete {
+                    output,
+                    settled_at: Instant::now(),
+                },
+            );
+            evict_over_replay_cap(&mut entries);
+            match replaced {
+                Some(ImageLedgerEntry::InFlight(notify)) => Some(notify),
+                Some(ImageLedgerEntry::Complete { .. }) | None => None,
+            }
+        };
+        if let Some(notify) = notify {
+            notify.notify_waiters();
+        }
+    }
+
+    async fn fail(&self, key: String) {
+        let notify = {
+            let mut entries = self.entries.lock().await;
+            match entries.remove(&key) {
+                Some(ImageLedgerEntry::InFlight(notify)) => Some(notify),
+                Some(ImageLedgerEntry::Complete { .. }) | None => None,
+            }
+        };
+        if let Some(notify) = notify {
+            notify.notify_waiters();
+        }
+    }
+}
+
+fn prune_expired_replays(entries: &mut BTreeMap<String, ImageLedgerEntry>, now: Instant) {
+    entries.retain(|_, entry| match entry {
+        ImageLedgerEntry::InFlight(_) => true,
+        ImageLedgerEntry::Complete { settled_at, .. } => {
+            now.saturating_duration_since(*settled_at) < IMAGE_LEDGER_REPLAY_TTL
+        }
+    });
+}
+
+fn evict_over_replay_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
+    loop {
+        let settled: Vec<(String, Instant)> = entries
+            .iter()
+            .filter_map(|(key, entry)| match entry {
+                ImageLedgerEntry::Complete { settled_at, .. } => Some((key.clone(), *settled_at)),
+                ImageLedgerEntry::InFlight(_) => None,
+            })
+            .collect();
+        if settled.len() <= IMAGE_LEDGER_MAX_SETTLED {
+            return;
+        }
+        let Some((oldest, _)) = settled
+            .into_iter()
+            .min_by_key(|(_, settled_at)| *settled_at)
+        else {
+            return;
+        };
+        entries.remove(&oldest);
+    }
+}
+
+fn image_ledger_key(params: &ImageGenerateParams) -> Option<String> {
+    params.request_id.as_ref().map(|request_id| {
+        format!(
+            "image_generate:{}:{}:{}",
+            params.user_id.0,
+            request_id,
+            sha256_hex(image_shape(params).as_bytes())
+        )
+    })
+}
+
+fn edit_ledger_key(params: &ImageEditParams, model: &str) -> Option<String> {
+    params.request_id.as_ref().map(|request_id| {
+        format!(
+            "image_edit:{}:{}:{}",
+            params.user_id.0,
+            request_id,
+            sha256_hex(edit_shape(params, model).as_bytes())
+        )
+    })
 }
 
 /// A canonical string for everything that shapes an image, hashed into the
@@ -282,6 +473,7 @@ fn edit_shape(params: &ImageEditParams, model: &str) -> String {
         "prompt": params.prompt,
         "model": model,
         "image": sha256_hex(params.image_base64.as_bytes()),
+        "mime_type": params.mime_type,
         "safe_mode": params.safe_mode,
     })
     .to_string()
@@ -290,7 +482,8 @@ fn edit_shape(params: &ImageEditParams, model: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct ImageGenerateParams {
     pub user_id: UserId,
-    /// Stable per-call id scoping the metering idempotency key.
+    /// Stable per-call id used to replay a settled duplicate without rerunning
+    /// upstream image work.
     pub request_id: Option<String>,
     pub prompt: String,
     pub model: String,
@@ -303,7 +496,8 @@ pub struct ImageGenerateParams {
 #[derive(Clone, Debug)]
 pub struct ImageEditParams {
     pub user_id: UserId,
-    /// Stable per-call id scoping the metering idempotency key.
+    /// Stable per-call id used to replay a settled duplicate without rerunning
+    /// upstream image work.
     pub request_id: Option<String>,
     /// Source image as raw base64 (no `data:` prefix).
     pub image_base64: String,
@@ -336,7 +530,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::{
         collections::BTreeMap,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -417,6 +614,33 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CountingGenerator {
+        calls: AtomicU64,
+    }
+
+    impl CountingGenerator {
+        fn calls(&self) -> u64 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ImageGenerator for CountingGenerator {
+        async fn generate(
+            &self,
+            request: ImageGenerationRequest,
+        ) -> Result<GeneratedImage, DomainError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(GeneratedImage {
+                image_base64: format!("generated-{call}"),
+                mime_type: "image/png".to_string(),
+                model: request.model.0,
+                provider: "venice".to_string(),
+            })
+        }
+    }
+
     struct FailingGenerator;
 
     #[async_trait]
@@ -443,14 +667,46 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CountingEditor {
+        calls: AtomicU64,
+    }
+
+    impl CountingEditor {
+        fn calls(&self) -> u64 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ImageEditor for CountingEditor {
+        async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(GeneratedImage {
+                image_base64: format!("edited-{call}"),
+                mime_type: "image/png".to_string(),
+                model: request.model.0,
+                provider: "venice".to_string(),
+            })
+        }
+    }
+
     fn service(
         os_accounts: Arc<RecordingOsAccounts>,
         generator: Arc<dyn ImageGenerator>,
     ) -> ImageService {
+        service_with_editor(os_accounts, generator, Arc::new(FixedEditor))
+    }
+
+    fn service_with_editor(
+        os_accounts: Arc<RecordingOsAccounts>,
+        generator: Arc<dyn ImageGenerator>,
+        editor: Arc<dyn ImageEditor>,
+    ) -> ImageService {
         ImageService::new(ImageServiceDeps {
             os_accounts,
             generator,
-            editor: Arc::new(FixedEditor),
+            editor,
             pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
             edit_pricing: BTreeMap::from([(
                 "firered-image-edit".to_string(),
@@ -510,11 +766,11 @@ mod tests {
                 idempotency_key,
             } => {
                 assert_eq!(*credits, 20);
-                // Key is `image_generate:<user>:legacy:<seq>:<64-hex digest>`.
+                // Key is `image_generate:<user>:run:<seq>:<64-hex digest>`.
                 let rest = idempotency_key
                     .strip_prefix("image_generate:usr_1:")
                     .expect("key has the expected prefix");
-                let rest = rest.strip_prefix("legacy:").expect("legacy fallback scope");
+                let rest = rest.strip_prefix("run:").expect("unique run scope");
                 let (seq, digest) = rest.split_once(':').expect("seq:digest");
                 assert!(seq.chars().all(|ch| ch.is_ascii_digit()));
                 assert_eq!(digest.len(), 64);
@@ -651,20 +907,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generation_request_id_reuses_the_charge_key_for_retry() {
+    async fn generation_request_id_returns_cached_image_without_recharging_or_regenerating() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
-        let service = service(os_accounts.clone(), Arc::new(FixedGenerator));
+        let generator = Arc::new(CountingGenerator::default());
+        let service = service(os_accounts.clone(), generator.clone());
         let mut params = params("venice-sd35");
         params.request_id = Some("req_1".to_string());
-        service
+        let first = service
             .generate(params.clone())
             .await
             .expect("generation succeeds");
-        service.generate(params).await.expect("generation succeeds");
+        let second = service.generate(params).await.expect("generation succeeds");
 
         let charge_keys = charge_keys(os_accounts.events());
-        assert_eq!(charge_keys.len(), 2);
-        assert_eq!(charge_keys[0], charge_keys[1]);
+        assert_eq!(first.image, second.image);
+        assert_eq!(generator.calls(), 1);
+        assert_eq!(charge_keys.len(), 1);
     }
 
     #[tokio::test]
@@ -692,24 +950,30 @@ mod tests {
                 idempotency_key,
             } => {
                 assert_eq!(*credits, 80);
-                assert!(idempotency_key.starts_with("image_edit:usr_1:legacy:"));
+                assert!(idempotency_key.starts_with("image_edit:usr_1:run:"));
             }
             Call::Authorize { .. } => panic!("expected a charge, got an authorize"),
         }
     }
 
     #[tokio::test]
-    async fn edit_request_id_reuses_the_charge_key_for_retry() {
+    async fn edit_request_id_returns_cached_image_without_recharging_or_reediting() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
-        let service = service(os_accounts.clone(), Arc::new(FixedGenerator));
+        let editor = Arc::new(CountingEditor::default());
+        let service = service_with_editor(
+            os_accounts.clone(),
+            Arc::new(FixedGenerator),
+            editor.clone(),
+        );
         let mut params = edit_params();
         params.request_id = Some("req_1".to_string());
-        service.edit(params.clone()).await.expect("edit succeeds");
-        service.edit(params).await.expect("edit succeeds");
+        let first = service.edit(params.clone()).await.expect("edit succeeds");
+        let second = service.edit(params).await.expect("edit succeeds");
 
         let charge_keys = charge_keys(os_accounts.events());
-        assert_eq!(charge_keys.len(), 2);
-        assert_eq!(charge_keys[0], charge_keys[1]);
+        assert_eq!(first.image, second.image);
+        assert_eq!(editor.calls(), 1);
+        assert_eq!(charge_keys.len(), 1);
     }
 
     #[tokio::test]
@@ -730,6 +994,65 @@ mod tests {
         let charge_keys = charge_keys(os_accounts.events());
         assert_eq!(charge_keys.len(), 2);
         assert_ne!(charge_keys[0], charge_keys[1]);
+    }
+
+    #[tokio::test]
+    async fn ledger_evicts_the_oldest_settled_replay_over_the_cap() {
+        let ledger = super::ImageRequestLedger::default();
+        for index in 0..=super::IMAGE_LEDGER_MAX_SETTLED {
+            let key = format!("key-{index:03}");
+            match ledger.claim(key).await {
+                super::ImageLedgerClaim::Run { key } => {
+                    ledger.complete(key, sample_output()).await;
+                }
+                super::ImageLedgerClaim::Replay(_) => panic!("fresh key must run"),
+            }
+        }
+
+        // One over the cap: the oldest settlement is gone, the newest replays.
+        assert!(matches!(
+            ledger.claim("key-000".to_string()).await,
+            super::ImageLedgerClaim::Run { .. }
+        ));
+        assert!(matches!(
+            ledger
+                .claim(format!("key-{:03}", super::IMAGE_LEDGER_MAX_SETTLED))
+                .await,
+            super::ImageLedgerClaim::Replay(_)
+        ));
+    }
+
+    #[test]
+    fn ledger_prunes_settled_replays_past_the_ttl() {
+        let mut entries = BTreeMap::new();
+        let settled_at = std::time::Instant::now();
+        entries.insert(
+            "old".to_string(),
+            super::ImageLedgerEntry::Complete {
+                output: sample_output(),
+                settled_at,
+            },
+        );
+        super::prune_expired_replays(
+            &mut entries,
+            settled_at + super::IMAGE_LEDGER_REPLAY_TTL + std::time::Duration::from_secs(1),
+        );
+        assert!(entries.is_empty());
+    }
+
+    fn sample_output() -> super::ImageGenerateOutput {
+        super::ImageGenerateOutput {
+            image: GeneratedImage {
+                image_base64: "aGVsbG8=".to_string(),
+                mime_type: "image/png".to_string(),
+                model: "flux-2-pro".to_string(),
+                provider: "venice".to_string(),
+            },
+            receipt: Receipt {
+                credits_charged: june_domain::Credits(60),
+                idempotent_replay: false,
+            },
+        }
     }
 
     #[tokio::test]

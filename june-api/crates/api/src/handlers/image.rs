@@ -23,9 +23,9 @@ const MAX_IMAGE_DIMENSION: u32 = 1280;
 pub struct ImageGenerateRequest {
     pub prompt: String,
     pub model: String,
-    /// Optional client-generated id for metering idempotency. New clients send a
-    /// fresh id per logical call and reuse it only when retrying a dropped
-    /// response; old clients may omit it.
+    /// Optional client-generated id for replaying a settled image request. New
+    /// clients send a fresh id per logical call and reuse it only when retrying
+    /// a dropped response; old clients may omit it.
     #[serde(default)]
     pub request_id: Option<String>,
     #[serde(default)]
@@ -46,9 +46,9 @@ pub struct ImageGenerateRequest {
 pub struct ImageEditRequest {
     pub image: String,
     pub prompt: String,
-    /// Optional client-generated id for metering idempotency. New clients send a
-    /// fresh id per logical edit and reuse it only when retrying a dropped
-    /// response; old clients may omit it.
+    /// Optional client-generated id for replaying a settled image edit. New
+    /// clients send a fresh id per logical edit and reuse it only when retrying
+    /// a dropped response; old clients may omit it.
     #[serde(default)]
     pub request_id: Option<String>,
     #[serde(default)]
