@@ -15,6 +15,10 @@ pub const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER: &str = "local-dev-token";
 pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
+pub const IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS: u64 = 30;
+pub const DEFAULT_IMAGE_HOLD_TTL_SECS: u64 =
+    DEFAULT_REQUEST_TIMEOUT_SECS + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS;
 const IMAGE_EDIT_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
     base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
@@ -603,7 +607,7 @@ impl Default for AppConfig {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
-                request_timeout_secs: 600,
+                request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
                 max_audio_bytes: 26_214_400,
                 max_json_bytes: 524_288,
                 max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
@@ -625,7 +629,7 @@ impl Default for AppConfig {
                 web_search_credits: 20,
                 web_fetch_credits: 20,
                 authorize_hold_ttl_web_secs: 30,
-                authorize_hold_ttl_image_secs: 60,
+                authorize_hold_ttl_image_secs: DEFAULT_IMAGE_HOLD_TTL_SECS,
             },
             upstreams: UpstreamsConfig {
                 openai: UpstreamConfig {
@@ -720,6 +724,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         "server.max_image_edit_bytes",
         config.server.max_image_edit_bytes,
     )?;
+    validate_image_hold_ttl(config)?;
 
     let uses_openai = config
         .pricing
@@ -795,6 +800,20 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         }
     }
     validate_image_pricing(config)?;
+    Ok(())
+}
+
+fn validate_image_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
+    let minimum = config
+        .server
+        .request_timeout_secs
+        .saturating_add(IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS);
+    if config.os_accounts.authorize_hold_ttl_image_secs < minimum {
+        return Err(ConfigError::InvalidRequired {
+            field: "os_accounts.authorize_hold_ttl_image_secs",
+            reason: "must be >= server.request_timeout_secs + image hold margin",
+        });
+    }
     Ok(())
 }
 
@@ -920,9 +939,11 @@ fn validate_positive_rate(
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, ConfigError, DEFAULT_MAX_IMAGE_EDIT_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
-        ModelPriceConfig, ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
-        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, PriceUnit, VENICE_API_KEY_PLACEHOLDERS, validate,
+        AppConfig, ConfigError, DEFAULT_IMAGE_HOLD_TTL_SECS, DEFAULT_MAX_IMAGE_EDIT_BYTES,
+        DEFAULT_REQUEST_TIMEOUT_SECS, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
+        OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, PriceUnit,
+        VENICE_API_KEY_PLACEHOLDERS, validate,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -1167,6 +1188,36 @@ mod tests {
             AppConfig::default().server.max_image_edit_bytes,
             DEFAULT_MAX_IMAGE_EDIT_BYTES
         );
+    }
+
+    #[test]
+    fn default_image_hold_ttl_tracks_request_timeout_with_margin() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.os_accounts.authorize_hold_ttl_image_secs,
+            config.server.request_timeout_secs + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS
+        );
+        assert_eq!(
+            config.os_accounts.authorize_hold_ttl_image_secs,
+            DEFAULT_IMAGE_HOLD_TTL_SECS
+        );
+    }
+
+    #[test]
+    fn validate_rejects_image_hold_ttl_below_request_timeout_margin() {
+        let mut config = valid_config();
+        config.server.request_timeout_secs = DEFAULT_REQUEST_TIMEOUT_SECS;
+        config.os_accounts.authorize_hold_ttl_image_secs = 60;
+
+        let result = validate(&config);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidRequired {
+                field: "os_accounts.authorize_hold_ttl_image_secs",
+                ..
+            })
+        ));
     }
 
     #[test]

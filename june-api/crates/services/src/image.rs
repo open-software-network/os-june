@@ -763,7 +763,9 @@ mod tests {
         ImageEditParams, ImageGenerateParams, ImageModelPrice, ImageService, ImageServiceDeps,
     };
     use async_trait::async_trait;
-    use june_config::ModelProvider;
+    use june_config::{
+        DEFAULT_REQUEST_TIMEOUT_SECS, IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS, ModelProvider,
+    };
     use june_domain::{
         Authorization, AuthorizeRequest, ChargeRequest, DomainError, GeneratedImage,
         ImageEditRequest, ImageEditor, ImageGenerationRequest, ImageGenerator, OsAccountsClient,
@@ -839,6 +841,38 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ManualClock {
+        now_seconds: AtomicU64,
+    }
+
+    impl ManualClock {
+        fn now(&self) -> u64 {
+            self.now_seconds.load(Ordering::SeqCst)
+        }
+
+        fn advance(&self, seconds: u64) {
+            self.now_seconds.fetch_add(seconds, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Default)]
+    struct TtlExpiringOsAccounts {
+        clock: Arc<ManualClock>,
+        next_token: AtomicU64,
+        expires_at_by_token: Mutex<BTreeMap<String, u64>>,
+    }
+
+    impl TtlExpiringOsAccounts {
+        fn new(clock: Arc<ManualClock>) -> Self {
+            Self {
+                clock,
+                next_token: AtomicU64::new(0),
+                expires_at_by_token: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+
     #[async_trait]
     impl OsAccountsClient for StaleTokenChargeFailsOsAccounts {
         async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
@@ -864,6 +898,41 @@ mod tests {
                 });
             }
             if request.action_token == "agt_1" {
+                return Err(DomainError::MeteringProvider);
+            }
+            Ok(Receipt {
+                credits_charged: request.credits,
+                idempotent_replay: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl OsAccountsClient for TtlExpiringOsAccounts {
+        async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+            let token_number = self.next_token.fetch_add(1, Ordering::SeqCst) + 1;
+            let token = format!("agt_ttl_{token_number}");
+            if let Ok(mut expirations) = self.expires_at_by_token.lock() {
+                expirations.insert(
+                    token.clone(),
+                    self.clock.now().saturating_add(request.hold_ttl_seconds),
+                );
+            }
+            Ok(Authorization {
+                allowed: true,
+                action_token: Some(token),
+                cap_credits: Some(request.estimate),
+                reason: None,
+            })
+        }
+
+        async fn charge(&self, request: ChargeRequest) -> Result<Receipt, DomainError> {
+            let expires_at = self
+                .expires_at_by_token
+                .lock()
+                .ok()
+                .and_then(|expirations| expirations.get(&request.action_token).copied());
+            if expires_at.is_none_or(|expires_at| self.clock.now() > expires_at) {
                 return Err(DomainError::MeteringProvider);
             }
             Ok(Receipt {
@@ -991,6 +1060,36 @@ mod tests {
             _request: ImageGenerationRequest,
         ) -> Result<GeneratedImage, DomainError> {
             Err(DomainError::UpstreamProvider)
+        }
+    }
+
+    struct DelayedGenerator {
+        clock: Arc<ManualClock>,
+        delay_seconds: u64,
+    }
+
+    impl DelayedGenerator {
+        fn new(clock: Arc<ManualClock>, delay_seconds: u64) -> Self {
+            Self {
+                clock,
+                delay_seconds,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ImageGenerator for DelayedGenerator {
+        async fn generate(
+            &self,
+            request: ImageGenerationRequest,
+        ) -> Result<GeneratedImage, DomainError> {
+            self.clock.advance(self.delay_seconds);
+            Ok(GeneratedImage {
+                image_base64: "ZGVsYXllZA==".to_string(),
+                mime_type: "image/png".to_string(),
+                model: request.model.0,
+                provider: "venice".to_string(),
+            })
         }
     }
 
@@ -1220,6 +1319,45 @@ mod tests {
                 estimate: 20,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn image_hold_ttl_covers_provider_delay_beyond_the_old_default() {
+        const OLD_IMAGE_HOLD_TTL_SECONDS: u64 = 60;
+        let delayed_past_old_hold = OLD_IMAGE_HOLD_TTL_SECONDS + 1;
+
+        let old_clock = Arc::new(ManualClock::default());
+        let old_result = service_with_hold_ttl(
+            Arc::new(TtlExpiringOsAccounts::new(old_clock.clone())),
+            Arc::new(DelayedGenerator::new(
+                old_clock.clone(),
+                delayed_past_old_hold,
+            )),
+            Arc::new(FixedEditor),
+            OLD_IMAGE_HOLD_TTL_SECONDS,
+        )
+        .generate(params("venice-sd35"))
+        .await;
+        assert!(matches!(
+            old_result,
+            Err(crate::ServiceError::MeteringProvider)
+        ));
+
+        let clock = Arc::new(ManualClock::default());
+        let service = service_with_hold_ttl(
+            Arc::new(TtlExpiringOsAccounts::new(clock.clone())),
+            Arc::new(DelayedGenerator::new(clock, delayed_past_old_hold)),
+            Arc::new(FixedEditor),
+            DEFAULT_REQUEST_TIMEOUT_SECS + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS,
+        );
+
+        let output = service
+            .generate(params("venice-sd35"))
+            .await
+            .expect("settlement succeeds before the widened image hold expires");
+
+        assert_eq!(output.receipt.credits_charged.0, 20);
+        assert_eq!(output.image.image_base64, "ZGVsYXllZA==");
     }
 
     #[tokio::test]
