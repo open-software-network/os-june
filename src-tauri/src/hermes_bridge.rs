@@ -2919,24 +2919,41 @@ fn redact_cli_word(word: &str) -> String {
     word.to_string()
 }
 
-/// Classifies success from CLI exit + output without ever inspecting a token.
-/// A zero exit, or output that states authorization completed, counts as
-/// success; otherwise it is a non-success (the caller may have timed out waiting
-/// for the browser step). Pure so a test pins the signal parsing.
+/// Classifies a `hermes mcp login` outcome from its exit status AND output,
+/// without ever inspecting a token. Hermes' CLI exits 0 even when it prints
+/// "Authentication failed" (it reports the error and returns), so failure
+/// markers in the output always win — and a zero exit alone proves nothing, so
+/// success additionally requires Hermes' explicit success line ("Authenticated
+/// — N tool(s) available" / "Authenticated (server reported no tools)").
+/// Prefers a false negative (the user re-tests and sees the truth) over a
+/// false success that raises a restart notification with no token stored.
+/// Pure so a test pins the signal parsing.
 fn mcp_login_succeeded(exit_success: bool, output: &str) -> bool {
     let lower = output.to_ascii_lowercase();
-    // Hermes' `mcp login` exits 0 even when it prints "Authentication failed"
-    // (the CLI reports the error and returns), so an explicit failure marker in
-    // the output must win over the exit status.
-    if lower.contains("authentication failed") || lower.contains("no oauth token was obtained") {
+    const FAILURE_MARKERS: [&str; 7] = [
+        "authentication failed",
+        "no oauth token was obtained",
+        "error",
+        "fail",
+        "cancelled",
+        "canceled",
+        "denied",
+    ];
+    if FAILURE_MARKERS.iter().any(|marker| lower.contains(marker)) {
         return false;
     }
-    if exit_success {
-        return true;
-    }
-    (lower.contains("authorized") || lower.contains("logged in") || lower.contains("success"))
-        && !lower.contains("fail")
-        && !lower.contains("error")
+    // The negated auth words contain the positive ones ("unauthenticated"
+    // contains "authenticated"); strip them before the positive check.
+    let positive = lower
+        .replace("unauthenticated", "")
+        .replace("unauthorized", "")
+        .replace("not authenticated", "")
+        .replace("not authorized", "");
+    let explicit_success = positive.contains("authenticated")
+        || positive.contains("authorized")
+        || positive.contains("logged in")
+        || positive.contains("success");
+    exit_success && explicit_success
 }
 
 /// Runs the MCP OAuth sign-in for one server: `hermes mcp login <server>` in the
@@ -7006,12 +7023,26 @@ mod tests {
 
     #[test]
     fn classifies_login_success_from_exit_and_output() {
-        assert!(mcp_login_succeeded(true, ""));
-        assert!(mcp_login_succeeded(false, "Successfully authorized linear"));
+        // Success requires BOTH a clean exit AND Hermes' explicit success line.
+        assert!(mcp_login_succeeded(
+            true,
+            "Authenticated — 5 tool(s) available"
+        ));
+        assert!(mcp_login_succeeded(
+            true,
+            "Authenticated (server reported no tools)"
+        ));
+        // A zero exit alone proves nothing: Hermes exits 0 on failure too.
+        assert!(!mcp_login_succeeded(true, ""));
+        assert!(!mcp_login_succeeded(true, "Starting OAuth flow for 'x'..."));
+        // Success text without a clean exit is not success either.
+        assert!(!mcp_login_succeeded(
+            false,
+            "Successfully authorized linear"
+        ));
         assert!(!mcp_login_succeeded(false, "error: authorization failed"));
         assert!(!mcp_login_succeeded(false, "waiting for browser"));
-        // Hermes' `mcp login` exits 0 even when authentication failed — the
-        // output marker must win over the exit status.
+        // Failure markers beat a zero exit, whatever else the output says.
         assert!(!mcp_login_succeeded(
             true,
             "Starting OAuth flow for 'Todoist'... Authentication failed: MCP OAuth for 'Todoist'"
@@ -7020,6 +7051,15 @@ mod tests {
             true,
             "Server responded, but no OAuth token was obtained"
         ));
+        assert!(!mcp_login_succeeded(
+            true,
+            "Authenticated — 3 tool(s) available\nerror: token store write failed"
+        ));
+        assert!(!mcp_login_succeeded(true, "Sign-in cancelled by the user"));
+        assert!(!mcp_login_succeeded(true, "Access denied by the provider"));
+        // The negated auth words never read as the positive marker.
+        assert!(!mcp_login_succeeded(true, "status: unauthenticated"));
+        assert!(!mcp_login_succeeded(true, "401 unauthorized"));
     }
 
     fn request_with_authorization(value: &str) -> HttpRequest {

@@ -59,9 +59,9 @@ export type McpFilteringState = McpServersState & {
    * `mcp_servers.<name>` (built by `planServerEdit`) — through the REST config
    * path, so secret env/headers and the tool policy are preserved. Resolves true
    * on success (and refreshes the list), false on failure (with `editError`
-   * set). An empty write list is a no-op success. The write is applied
-   * leaf-by-leaf; a mid-sequence failure can leave an earlier leaf applied, so
-   * the surfaced error invites a re-save.
+   * set). An empty write list is a no-op success. The writes are applied to
+   * ONE fetched config tree and persisted with a single PUT, so a multi-field
+   * edit lands atomically: every leaf applies or none does.
    */
   editServer: (serverName: string, writes: McpEditWrite[]) => Promise<boolean>;
 };
@@ -122,16 +122,12 @@ export function useMcpFilteringController(engine: McpServersEngine | null): McpF
       setEditingServer(serverName);
       setEditError(undefined);
       try {
-        // Each changed leaf is one scoped read-modify-write of the whole tree,
-        // so every untouched leaf under mcp_servers.<name> (secret env/headers,
-        // the tools policy) is preserved, exactly like the tool-filter save.
-        for (const write of writes) {
-          if (write.op === "set") {
-            await engine.client.config.setValueAtSegments(write.segments, write.value);
-          } else {
-            await engine.client.config.deleteAtSegments(write.segments);
-          }
-        }
+        // ONE batched read-modify-write: every changed leaf is applied to the
+        // SAME fetched config tree and persisted with a single PUT, so a
+        // multi-field edit (command AND args) can never land half-applied,
+        // while every untouched leaf under mcp_servers.<name> (secret
+        // env/headers, the tools policy) is preserved.
+        await engine.client.config.applyWritesAtSegments(writes);
         // The edit lands in config.yaml now, but Hermes rebuilds the server
         // connection + tool inventory at gateway start, so June advances the
         // cache/lifecycle with the gateway-restart `mcp.edit` mutation (which

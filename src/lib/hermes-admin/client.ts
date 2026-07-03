@@ -110,6 +110,13 @@ const DEFAULT_POLL_TIMEOUT_MS = 120_000;
  * include/exclude/filter field, so MCP tool filtering is not configured here
  * (see the removed `setToolFilters` note below). Extra keys are tolerated by the
  * server but not part of the contract. */
+/** One segment-aware config write in a batch: set a value at a leaf, or delete
+ * a leaf (a cleared field). Structurally identical to the MCP edit plan's
+ * `McpEditWrite` so an edit plan can be applied directly. */
+export type ConfigSegmentWrite =
+  | { op: "set"; segments: string[]; value: unknown }
+  | { op: "delete"; segments: string[] };
+
 export type HermesAddMcpServerPayload = {
   name: string;
   command?: string;
@@ -303,6 +310,17 @@ export type HermesAdminClient = {
     delete(path: string): Promise<MutationOutcome<HermesConfigWriteResult>>;
     /** Segment-aware variant of {@link delete} (see {@link setValueAtSegments}). */
     deleteAtSegments(segments: string[]): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /**
+     * Applies MULTIPLE segment-aware writes (set / delete) to ONE fetched
+     * config tree and persists them with ONE `PUT /api/config`, so a
+     * multi-field change (an MCP server edit touching command AND args) lands
+     * atomically: every leaf applies or none does. The per-leaf variants each
+     * run their own read-modify-write, which could leave config.yaml
+     * half-mutated when a later write fails.
+     */
+    applyWritesAtSegments(
+      writes: ConfigSegmentWrite[],
+    ): Promise<MutationOutcome<HermesConfigWriteResult>>;
   };
 
   /**
@@ -794,6 +812,23 @@ function makeConfig(send: AdminTransport): HermesAdminClient["config"] {
       return writePath("config.delete", segments.join("."), (tree) =>
         deleteConfigAtPath(tree, segments),
       );
+    },
+    async applyWritesAtSegments(writes) {
+      // ONE read-modify-write for the whole batch: every leaf is applied to
+      // the SAME fetched tree and persisted with a single PUT, so a
+      // multi-field edit can never land half-applied (the per-leaf variants
+      // each PUT their own tree, and a later failure would leave the earlier
+      // leaf already committed).
+      const path = writes.map((write) => write.segments.join(".")).join(", ");
+      return writePath("config.set", path, (tree) => {
+        for (const write of writes) {
+          if (write.op === "set") {
+            setConfigAtPath(tree, write.segments, write.value);
+          } else {
+            deleteConfigAtPath(tree, write.segments);
+          }
+        }
+      });
     },
   };
 }

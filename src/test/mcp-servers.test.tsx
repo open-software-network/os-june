@@ -391,18 +391,24 @@ describe("mcp servers — edit plan (scoped, non-destructive)", () => {
 });
 
 describe("mcp servers — edit apply (config write preserves secrets)", () => {
-  function engineFor(config: Record<string, unknown>): McpServersEngine {
+  function engineFor(config: Record<string, unknown>): {
+    engine: McpServersEngine;
+    logs: ReturnType<typeof makeAdminHarness>["logs"];
+  } {
     const harness = makeAdminHarness({ config });
     return {
-      target: harness.target,
-      client: harness.client,
-      cache: harness.cache,
-      lifecycle: harness.lifecycle,
+      engine: {
+        target: harness.target,
+        client: harness.client,
+        cache: harness.cache,
+        lifecycle: harness.lifecycle,
+      },
+      logs: harness.logs,
     };
   }
 
   it("applies the changed leaf and preserves env + tools + unrelated config", async () => {
-    const engine = engineFor({
+    const { engine } = engineFor({
       mcp_servers: {
         sqlite: {
           command: "old-cmd",
@@ -446,8 +452,57 @@ describe("mcp servers — edit apply (config write preserves secrets)", () => {
     expect(result.current.notifications.some((n) => n.mutation === "mcp.edit")).toBe(true);
   });
 
+  // Regression (adversarial review): a multi-leaf edit must land ATOMICALLY —
+  // one fetched tree, one PUT — never one read-modify-write per leaf, where a
+  // later failure would leave config.yaml with a mixed connection target.
+  it("applies a multi-leaf edit in exactly one config PUT", async () => {
+    const { engine, logs } = engineFor({
+      mcp_servers: {
+        sqlite: {
+          command: "old-cmd",
+          args: ["--db", "./data.db"],
+          env: { SQLITE_KEY: "env-ref" },
+          tools: { include: ["query"] },
+        },
+      },
+    });
+    const { result } = renderHook(() => useMcpFilteringController(engine));
+    await waitFor(() => expect(result.current.status).not.toBe("loading"));
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.editServer("sqlite", [
+        {
+          op: "set",
+          segments: ["mcp_servers", "sqlite", "command"],
+          value: "new-cmd",
+        },
+        { op: "delete", segments: ["mcp_servers", "sqlite", "args"] },
+      ]);
+    });
+    expect(ok).toBe(true);
+
+    // Exactly ONE PUT /api/config carried the whole edit. The transport log
+    // records one entry per request as `endpoint: "<METHOD> <path>"`.
+    const configPuts = logs.filter((record) => record.endpoint === "PUT /api/config");
+    expect(configPuts).toHaveLength(1);
+
+    // Both leaves landed, and the untouched secret/tool leaves survived.
+    const after = await engine.client.config.get();
+    const servers = (after.config as Record<string, unknown>).mcp_servers as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(servers.sqlite.command).toBe("new-cmd");
+    expect(servers.sqlite.args).toBeUndefined();
+    expect(servers.sqlite.env).toEqual({ SQLITE_KEY: "env-ref" });
+    expect(servers.sqlite.tools).toEqual({ include: ["query"] });
+  });
+
   it("is a no-op success when there are no writes", async () => {
-    const engine = engineFor({ mcp_servers: { sqlite: { command: "cmd" } } });
+    const { engine } = engineFor({
+      mcp_servers: { sqlite: { command: "cmd" } },
+    });
     const { result } = renderHook(() => useMcpFilteringController(engine));
     await waitFor(() => expect(result.current.status).not.toBe("loading"));
 
