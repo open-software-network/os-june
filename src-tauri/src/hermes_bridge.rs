@@ -6565,6 +6565,7 @@ fn bundled_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
     if let Ok(resource_dir) = app.path().resource_dir() {
         dirs.push(bundled_skill_resource_dir(&resource_dir));
     }
+    #[cfg(debug_assertions)]
     dirs.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
