@@ -132,6 +132,26 @@ the Spec Kit workflow skills (`speckit-*`). `make skills-update` /
 `skills-restore` / `skills-sync` (thin wrappers over `npx skills`) refresh,
 restore from the lockfile, or re-link them.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live on the Open Software platform (os-platform), org `june` — not
+GitHub Issues. Read/search/take via the `os-platform` skill script; writes go
+through the documented platform API with an append-only, probe-then-verify
+discipline. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Hybrid mapping: `needs-triage` / `needs-info` / `ready-for-human` are platform
+labels; "ready-for-agent" = status `todo` + os-task-prep enrichment; "wontfix"
+= status `cancelled`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `CONTEXT.md` (canonical glossary, binding _Avoid_
+lists) + `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Build, test, lint
 
 Package manager: `pnpm` (a `bun.lock` also exists; the scripts are

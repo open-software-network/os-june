@@ -17,6 +17,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0005](adr/0005-source-separated-audio-capture.md) — one WAV per source, re-interleaved as turns
 - [adr/0006](adr/0006-embed-hermes-sandboxed-runtime.md) — embed the pinned Hermes runtime as sandboxed child processes
 - [adr/0007](adr/0007-model-capability-source-of-truth.md) — model capabilities come from the live Venice catalog, not marketing traits
+- [adr/0008](adr/0008-image-generation-and-editing-tools.md) — image generation/editing: `/image` fast path + LLM tools, via Venice
 
 ## Enforceable rules (spec/)
 
@@ -25,6 +26,15 @@ feature specs). Full index: [spec/index.md](../spec/index.md).
 
 - UI copy: [spec/sentence-case](../spec/sentence-case.md), [spec/no-typographic-dashes](../spec/no-typographic-dashes.md)
 - UI styling: [spec/icons-central-only](../spec/icons-central-only.md), [spec/design-tokens](../spec/design-tokens.md)
+
+## Agent skill config (docs/agents/)
+
+Per-repo config the engineering skills read before acting (see the
+"Agent skills" section in [AGENTS.md](../AGENTS.md)).
+
+- [agents/issue-tracker.md](agents/issue-tracker.md) — issues live on os-platform (org `june`), read via the os-platform skill, writes append-only via the API
+- [agents/triage-labels.md](agents/triage-labels.md) — the five triage roles mapped to platform labels + statuses
+- [agents/domain.md](agents/domain.md) — single-context layout; how skills consume CONTEXT.md and ADRs
 
 ## Subsystems
 

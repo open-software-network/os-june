@@ -45,6 +45,16 @@ environment, never in June. In code, each upstream sits behind a domain trait
 `june-domain` and implemented in `june-providers`.
 _Avoid_: AI provider, model provider, vendor, "the LLM".
 
+### Notes
+
+**Note**:
+The central June artifact — a persistent, user-editable markdown document,
+listed in the sidebar and optionally organized into folders. Created blank or
+filled by **note generation**, and owns any manual notes the user types. A
+**recording session** is note-backed: the recording attaches to a note, never
+the reverse, and a note need not have a recording at all.
+_Avoid_: meeting (June has no meeting entity), document, summary.
+
 ### Audio & recording
 
 **Recording session**:
@@ -92,6 +102,12 @@ system audio via CoreAudio process taps and reports over a `status.json` file
 (see [ADR-0004](docs/adr/0004-out-of-process-system-audio-helper.md)).
 _Avoid_: system driver, in-process capture.
 
+**Dictation helper**:
+The native macOS helper (`mac-dictation-helper`) that owns push-to-talk
+**dictation** capture and text insertion into the foreground app, and is the
+authoritative source for microphone + accessibility permission state.
+_Avoid_: dictation app, keyboard helper.
+
 ### Agent runtime (Hermes)
 
 **Hermes**:
@@ -135,9 +151,9 @@ The ProseMirror chat input with slash commands and attachment chips.
 _Avoid_: textbox.
 
 **Slash command**:
-A `/name arg` handled client-side before submit — builtin `/model` and
-`/file`, plus skill slash commands. (There is no `/image` builtin on `main`;
-image *generation* is an upstream Hermes tool, not a June slash command.)
+A `/name arg` handled client-side before submit — builtin `/model`, `/file`,
+and `/image` (the last gated off behind `IMAGE_GENERATION_ENABLED`), plus
+skill slash commands.
 _Avoid_: gateway command.
 
 **Steer**:
@@ -167,6 +183,13 @@ group; an MCP server is an external tool provider (June ships `june_context`
 and `june_web`).
 _Avoid_: using "tool" for all three.
 
+**Admin surface**:
+A June-native management view for the embedded Hermes runtime — skills hub,
+MCP servers and diagnostics, toolsets, integrations health, and similar —
+rendered with June's own UI and driven through the Hermes admin request
+channel, never by exposing Hermes's own web UI.
+_Avoid_: admin panel, Hermes UI (June presents as June).
+
 ### AI work & billing
 
 **Dictation**:
@@ -195,7 +218,7 @@ _Avoid_: notes generation, AI summarisation.
 Producing a new image from a text **prompt** (text-to-image), via Venice. The
 user reaches it two ways: an explicit `/image` command (a fast, no-model shot),
 or the assistant calling it as a tool mid-conversation. Distinct from **image
-editing**. See [ADR 0003](docs/adr/0003-image-generation-and-editing-tools.md).
+editing**. See [ADR 0008](docs/adr/0008-image-generation-and-editing-tools.md).
 _Avoid_: rendering, drawing (say **image generation**).
 
 **Image editing**:
@@ -238,11 +261,25 @@ The metered-operation id (e.g. `note_transcribe`, `dictate_transcribe`,
 splits the bill in the dashboard.
 _Avoid_: operation, endpoint.
 
+**Plan**:
+The OS Accounts subscription level carried in the account snapshot
+(`subscription.plan`, e.g. `max`). Gates features and sizes the recurring
+**credit grant**; the **FundingGate** keys off subscription state.
+_Avoid_: tier, subscription (that is the whole object, not the level).
+
+**Credit grant**:
+Credits deposited into the wallet by OS Accounts when a plan starts, renews,
+or upgrades. Arrives asynchronously after the plan change itself resolves, so
+"plan flipped" and "credits arrived" are two separate moments — June polls
+the account snapshot until the grant lands rather than assuming credits are
+present the instant the plan changes.
+_Avoid_: top-up (a user-initiated purchase), refill.
+
 ### Desktop shell & updates
 
 **Release channel**:
-The updater track: `stable` (the only track on `main` today) or `rc`
-(in-flight on branch `jakub/rc-channel-for-june`, PR #529).
+The updater track: `stable` or `rc` (shipped in PR #529; see
+[ADR-0003](docs/adr/0003-release-candidate-channel-and-promotion.md)).
 _Avoid_: beta.
 
 **Update manifest** (`latest.json`):
@@ -272,6 +309,12 @@ _Avoid_: profile, balance (unqualified).
 The sign-in wall (`AccountGate`) versus the credits-exhausted / upgrade wall
 (`FundingGate`, keyed off `subscription.subscribed`).
 _Avoid_: paywall (unqualified — say which gate).
+
+**Agent HUD**:
+The floating agent overlay window, toggled from the menu bar and separate
+from the main window.
+_Avoid_: pet (legacy name — survives only in an old storage key), overlay
+(unqualified), floating window.
 
 **Permission**:
 A macOS TCC grant June needs — microphone, accessibility, or screen/system

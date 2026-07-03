@@ -69,15 +69,20 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
   [ADR-0007](adr/0007-model-capability-source-of-truth.md). The model catalog is
   Rust-side (`src-tauri/src/providers/mod.rs`, backed by June API's Venice
   catalog).
+- **The control plane is the sole reader of raw Hermes frames.** Every
+  consumer (`agent-chat-runtime`, `hermes-trace-buffer`, `hermes-session-steer`)
+  works from classified `JuneHermesEvent`s, never from raw frames. Every
+  normalized event carries `receivedAt`; first-party local kinds (`steering`)
+  are minted by June and never come out of `classifyHermesEvent`.
 - **Identity override.** June rewrites the runtime's persona at prompt-build time
   via an injected `SOUL.md`; June presents as June, never as Hermes.
 
 ## Slash commands
 
-Builtin composer slash commands are only **`/model`** and **`/file`**
-(`src/lib/agent-composer-slash-commands.ts`), plus **skill** slash commands
-(`skill-slash-commands.ts`). There is no `/image` builtin on `main`; image
-*generation* is an upstream Hermes tool, not a June slash command.
+Builtin composer slash commands are **`/model`**, **`/file`**, and
+**`/image`** — the last gated off behind `IMAGE_GENERATION_ENABLED`
+(`src/lib/agent-composer-slash-commands.ts`) — plus **skill** slash commands
+(`skill-slash-commands.ts`).
 
 ## Key Tauri commands
 
