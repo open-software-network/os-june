@@ -377,6 +377,17 @@ fn new_charge_operation_id() -> String {
 /// for the life of the process. Duplicate request ids only arise from
 /// short-lived client retries, so a short window plus a hard cap bounds memory
 /// without weakening the replay guarantee in practice.
+///
+/// KNOWN BOUNDARY: this ledger is per-process memory, so its retry guarantee
+/// does not survive a June API restart, a replay eviction, or (hypothetically)
+/// a multi-instance deployment. A client retrying a dropped response across
+/// one of those events re-runs the provider and settles under a fresh charge
+/// key - a duplicate charge. Exactly-once billing across restarts requires
+/// durable request state, which this stateless service does not have; the
+/// exposure is bounded by the MCP's short transport-retry window and flat
+/// per-image prices. Accepted for now - see the follow-up issue linked in
+/// PR #584 before "fixing" this by deriving charge keys from the request id
+/// (that reintroduces the replay-funded free-work hole this design closed).
 const IMAGE_LEDGER_REPLAY_TTL: Duration = Duration::from_mins(10);
 const IMAGE_LEDGER_IN_FLIGHT_TTL: Duration = Duration::from_mins(15);
 const IMAGE_LEDGER_MAX_SETTLED: usize = 32;
