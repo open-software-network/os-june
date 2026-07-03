@@ -26,11 +26,20 @@ FULL_TEXT_CHARS = 60_000
 # Keep this in sync with DICTATION_HISTORY_RETENTION_DAYS in db/repositories.rs.
 DICTATION_HISTORY_RETENTION_DAYS = 7
 
+# The app's note editor (NoteEditor.tsx) shows the note body as
+# editedContent ?? generatedContent ?? "". Mirror that exactly: edited_content
+# wins when it is not NULL, even when it is an empty string; only NULL falls
+# back to generated_content.
+APP_VISIBLE_NOTE_BODY_SQL = (
+    "CASE WHEN n.edited_content IS NOT NULL THEN n.edited_content "
+    "ELSE coalesce(n.generated_content, '') END"
+)
+
 # The app's transcript view (transcriptToText in NoteEditor.tsx) shows the
 # turn-based rows when any exist and otherwise falls back to the latest
-# whole-file transcript — never a mix. Mirror both halves: `turns_text`
+# whole-file transcript - never a mix. Mirror both halves: `turns_text`
 # matches source_transcripts in db/repositories.rs (same filter, same
-# canonical order — turns land out of insertion order because dual-source
+# canonical order - turns land out of insertion order because dual-source
 # recordings interleave by start_ms and a note can stack several recording
 # sessions), and `latest_text` matches latest_transcript. Callers pick
 # turns_text first, latest_text as the fallback.
@@ -299,21 +308,19 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
         needle = f"%{query.lower()}%"
         where = """
         WHERE lower(coalesce(title, '')) LIKE ?
-           OR lower(coalesce(generated_content, '')) LIKE ?
-           OR lower(coalesce(edited_content, '')) LIKE ?
+           OR lower(coalesce(note_body, '')) LIKE ?
            OR lower(coalesce(
                 CASE WHEN visible_turn_rows > 0 THEN turns_text ELSE latest_text END,
                 ''
            )) LIKE ?
         """
-        params.extend([needle, needle, needle, needle])
+        params.extend([needle, needle, needle])
 
     sql = f"""
         SELECT
             id,
             title,
-            generated_content,
-            edited_content,
+            note_body,
             processing_status,
             created_at,
             updated_at,
@@ -325,8 +332,7 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
                 n.rowid AS note_rowid,
                 n.id,
                 n.title,
-                n.generated_content,
-                n.edited_content,
+                {APP_VISIBLE_NOTE_BODY_SQL} AS note_body,
                 n.processing_status,
                 n.created_at,
                 n.updated_at,
@@ -344,7 +350,7 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
 
     items = []
     for row in rows:
-        note_text = first_text(row["edited_content"], row["generated_content"])
+        note_text = row["note_body"] or ""
         transcript_text = transcript_text_from_row(row)
         items.append(
             {
@@ -376,8 +382,7 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
         SELECT
             n.id,
             n.title,
-            n.generated_content,
-            n.edited_content,
+            {APP_VISIBLE_NOTE_BODY_SQL} AS note_body,
             n.processing_status,
             n.created_at,
             n.updated_at,
@@ -397,7 +402,7 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
             "message": "No note with this id.",
         }
 
-    note_text = first_text(row["edited_content"], row["generated_content"])
+    note_text = row["note_body"] or ""
     note_content, note_content_truncated = capped_text(note_text)
     transcript_text = transcript_text_from_row(row)
     transcript, transcript_truncated = capped_text(transcript_text)
@@ -490,13 +495,6 @@ def bounded_limit(value: Any) -> int:
     except (TypeError, ValueError):
         limit = DEFAULT_LIMIT
     return max(1, min(MAX_LIMIT, limit))
-
-
-def first_text(*values: str | None) -> str:
-    for value in values:
-        if value and value.strip():
-            return value
-    return ""
 
 
 def capped_text(text: str) -> tuple[str, bool]:
