@@ -490,6 +490,8 @@ fn new_charge_operation_id() -> String {
 const IMAGE_LEDGER_REPLAY_TTL: Duration = Duration::from_mins(10);
 const IMAGE_LEDGER_IN_FLIGHT_TTL: Duration = Duration::from_mins(15);
 const IMAGE_LEDGER_MAX_SETTLED: usize = 32;
+const IMAGE_LEDGER_MAX_PENDING_PER_USER: usize = IMAGE_LEDGER_MAX_SETTLED;
+const IMAGE_LEDGER_MAX_PENDING_GLOBAL: usize = IMAGE_LEDGER_MAX_PENDING_PER_USER * 4;
 
 #[derive(Clone)]
 struct ImageRequestLedger {
@@ -515,6 +517,7 @@ enum ImageLedgerEntry {
     },
     Settling {
         notify: Arc<Notify>,
+        user_id: UserId,
         created_at: Instant,
     },
     Complete {
@@ -653,6 +656,7 @@ impl ImageRequestLedger {
                 | None => None,
             };
             if notify.is_some() {
+                let user_id = pending.user_id.clone();
                 entries.insert(
                     key,
                     ImageLedgerEntry::ChargePending {
@@ -660,7 +664,7 @@ impl ImageRequestLedger {
                         pending,
                     },
                 );
-                evict_over_pending_cap(&mut entries);
+                evict_over_pending_cap(&mut entries, &user_id);
             }
             notify
         };
@@ -698,10 +702,11 @@ impl ImageRequestLedger {
                     key,
                     ImageLedgerEntry::Settling {
                         notify: Arc::new(Notify::new()),
+                        user_id: pending.user_id.clone(),
                         created_at: pending.created_at,
                     },
                 );
-                evict_over_pending_cap(&mut entries);
+                evict_over_pending_cap(&mut entries, &pending.user_id);
             }
             notify
         };
@@ -722,10 +727,11 @@ impl ImageRequestLedger {
                 key,
                 ImageLedgerEntry::Settling {
                     notify: Arc::new(Notify::new()),
+                    user_id: pending.user_id.clone(),
                     created_at: pending.created_at,
                 },
             );
-            evict_over_pending_cap(&mut entries);
+            evict_over_pending_cap(&mut entries, &pending.user_id);
             return true;
         }
         false
@@ -807,6 +813,7 @@ impl ImageRequestLedger {
             match entries.get(&key) {
                 Some(ImageLedgerEntry::Settling { notify, .. }) => {
                     let notify = notify.clone();
+                    let user_id = pending.user_id.clone();
                     entries.insert(
                         key,
                         ImageLedgerEntry::ChargePending {
@@ -814,6 +821,7 @@ impl ImageRequestLedger {
                             pending,
                         },
                     );
+                    evict_over_pending_cap(&mut entries, &user_id);
                     Some(notify)
                 }
                 Some(
@@ -924,28 +932,128 @@ fn evict_over_replay_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
     }
 }
 
-fn evict_over_pending_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
+fn evict_over_pending_cap(
+    entries: &mut BTreeMap<String, ImageLedgerEntry>,
+    evicting_user: &UserId,
+) {
     loop {
-        let pending: Vec<(String, Instant)> = entries
-            .iter()
-            .filter_map(|(key, entry)| match entry {
-                ImageLedgerEntry::ChargePending { created_at, .. } => {
-                    Some((key.clone(), *created_at))
-                }
-                ImageLedgerEntry::Settling { created_at, .. } => Some((key.clone(), *created_at)),
-                ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::Complete { .. } => None,
-            })
-            .collect();
-        if pending.len() <= IMAGE_LEDGER_MAX_SETTLED {
+        let user_pending_count = entries
+            .values()
+            .filter(|entry| pending_entry_belongs_to_user(entry, evicting_user))
+            .count();
+        if user_pending_count <= IMAGE_LEDGER_MAX_PENDING_PER_USER {
+            break;
+        }
+        let Some(evicted_key) = oldest_pending_entry_for_user(entries, evicting_user) else {
+            break;
+        };
+        remove_ledger_entry(entries, &evicted_key);
+    }
+
+    loop {
+        let pending_count = entries
+            .values()
+            .filter(|entry| pending_entry(entry))
+            .count();
+        if pending_count <= IMAGE_LEDGER_MAX_PENDING_GLOBAL {
             return;
         }
-        let Some((oldest, _)) = pending
-            .into_iter()
-            .min_by_key(|(_, created_at)| *created_at)
-        else {
+        let Some(evicted_key) = oldest_pending_entry(entries) else {
             return;
         };
-        entries.remove(&oldest);
+        remove_ledger_entry(entries, &evicted_key);
+    }
+}
+
+fn pending_entry(entry: &ImageLedgerEntry) -> bool {
+    matches!(
+        entry,
+        ImageLedgerEntry::ChargePending { .. } | ImageLedgerEntry::Settling { .. }
+    )
+}
+
+fn pending_entry_belongs_to_user(entry: &ImageLedgerEntry, user_id: &UserId) -> bool {
+    match entry {
+        ImageLedgerEntry::ChargePending { pending, .. } => &pending.user_id == user_id,
+        ImageLedgerEntry::Settling {
+            user_id: entry_user_id,
+            ..
+        } => entry_user_id == user_id,
+        ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::Complete { .. } => false,
+    }
+}
+
+fn oldest_pending_entry_for_user(
+    entries: &BTreeMap<String, ImageLedgerEntry>,
+    user_id: &UserId,
+) -> Option<String> {
+    oldest_matching_pending_entry(entries, |entry| {
+        pending_entry_belongs_to_user(entry, user_id)
+    })
+}
+
+fn oldest_pending_entry(entries: &BTreeMap<String, ImageLedgerEntry>) -> Option<String> {
+    oldest_matching_pending_entry(entries, pending_entry)
+}
+
+fn oldest_matching_pending_entry(
+    entries: &BTreeMap<String, ImageLedgerEntry>,
+    matches_entry: impl Fn(&ImageLedgerEntry) -> bool,
+) -> Option<String> {
+    oldest_matching_charge_pending_entry(entries, &matches_entry)
+        .or_else(|| oldest_matching_settling_entry(entries, &matches_entry))
+}
+
+fn oldest_matching_charge_pending_entry(
+    entries: &BTreeMap<String, ImageLedgerEntry>,
+    matches_entry: &impl Fn(&ImageLedgerEntry) -> bool,
+) -> Option<String> {
+    entries
+        .iter()
+        .filter_map(|(key, entry)| match entry {
+            ImageLedgerEntry::ChargePending { created_at, .. } if matches_entry(entry) => {
+                Some((key.clone(), *created_at))
+            }
+            ImageLedgerEntry::InFlight { .. }
+            | ImageLedgerEntry::ChargePending { .. }
+            | ImageLedgerEntry::Settling { .. }
+            | ImageLedgerEntry::Complete { .. } => None,
+        })
+        .min_by_key(|(_, created_at)| *created_at)
+        .map(|(key, _)| key)
+}
+
+fn oldest_matching_settling_entry(
+    entries: &BTreeMap<String, ImageLedgerEntry>,
+    matches_entry: &impl Fn(&ImageLedgerEntry) -> bool,
+) -> Option<String> {
+    entries
+        .iter()
+        .filter_map(|(key, entry)| match entry {
+            ImageLedgerEntry::Settling { created_at, .. } if matches_entry(entry) => {
+                Some((key.clone(), *created_at))
+            }
+            ImageLedgerEntry::InFlight { .. }
+            | ImageLedgerEntry::ChargePending { .. }
+            | ImageLedgerEntry::Settling { .. }
+            | ImageLedgerEntry::Complete { .. } => None,
+        })
+        .min_by_key(|(_, created_at)| *created_at)
+        .map(|(key, _)| key)
+}
+
+fn remove_ledger_entry(entries: &mut BTreeMap<String, ImageLedgerEntry>, key: &str) {
+    if let Some(entry) = entries.remove(key) {
+        notify_entry_removed(&entry);
+    }
+}
+
+fn notify_entry_removed(entry: &ImageLedgerEntry) {
+    match entry {
+        ImageLedgerEntry::InFlight { notify, .. } | ImageLedgerEntry::Settling { notify, .. } => {
+            notify.notify_waiters();
+        }
+        ImageLedgerEntry::ChargePending { .. } | ImageLedgerEntry::Complete { .. } => {}
     }
 }
 
@@ -2030,7 +2138,7 @@ mod tests {
         let ledger = test_ledger();
         let created_at = Instant::now();
         let mut offset = Duration::ZERO;
-        for index in 0..=super::IMAGE_LEDGER_MAX_SETTLED {
+        for index in 0..=super::IMAGE_LEDGER_MAX_PENDING_PER_USER {
             let key = format!("pending-{index:03}");
             match ledger.claim(key).await {
                 super::ImageLedgerClaim::Run { guard } => {
@@ -2052,10 +2160,96 @@ mod tests {
         ));
         assert!(matches!(
             ledger
-                .claim(format!("pending-{:03}", super::IMAGE_LEDGER_MAX_SETTLED))
+                .claim(format!(
+                    "pending-{:03}",
+                    super::IMAGE_LEDGER_MAX_PENDING_PER_USER
+                ))
                 .await,
             super::ImageLedgerClaim::ChargePending { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn evicting_settling_entry_wakes_waiter_to_reclaim() {
+        let ledger = test_ledger();
+        let created_at = Instant::now();
+        let key = "settling-000".to_string();
+        insert_settling(&ledger, key.clone(), "usr_1", created_at).await;
+
+        let waiter = tokio::spawn({
+            let ledger = ledger.clone();
+            let key = key.clone();
+            async move { ledger.claim(key).await }
+        });
+        tokio::task::yield_now().await;
+
+        let mut offset = Duration::from_secs(1);
+        for index in 1..=super::IMAGE_LEDGER_MAX_PENDING_PER_USER {
+            insert_settling(
+                &ledger,
+                format!("settling-{index:03}"),
+                "usr_1",
+                created_at + offset,
+            )
+            .await;
+            offset += Duration::from_secs(1);
+        }
+
+        let claim = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should be notified when its settling entry is evicted")
+            .expect("waiter task should not panic");
+        let super::ImageLedgerClaim::Run { guard } = claim else {
+            panic!("evicted settling entry should be claimed by a fresh runner");
+        };
+        guard.complete(sample_output());
+        assert!(matches!(
+            ledger.claim(key).await,
+            super::ImageLedgerClaim::Replay(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cross_user_pressure_preserves_other_user_settling_until_global_backstop() {
+        let ledger = test_ledger();
+        let created_at = Instant::now();
+        let protected_key = "protected-settling".to_string();
+        insert_settling(&ledger, protected_key.clone(), "usr_protected", created_at).await;
+
+        let mut offset = Duration::from_secs(1);
+        for index in 0..=super::IMAGE_LEDGER_MAX_PENDING_PER_USER {
+            insert_settling(
+                &ledger,
+                format!("noisy-user-a-{index:03}"),
+                "usr_noisy_a",
+                created_at + offset,
+            )
+            .await;
+            offset += Duration::from_secs(1);
+        }
+        assert!(
+            ledger_contains_key(&ledger, &protected_key),
+            "one user's per-user pressure must not evict another user's settling entry"
+        );
+
+        for user_suffix in ["b", "c", "d"] {
+            let user_id = format!("usr_noisy_{user_suffix}");
+            for index in 0..super::IMAGE_LEDGER_MAX_PENDING_PER_USER {
+                insert_settling(
+                    &ledger,
+                    format!("noisy-user-{user_suffix}-{index:03}"),
+                    &user_id,
+                    created_at + offset,
+                )
+                .await;
+                offset += Duration::from_secs(1);
+            }
+        }
+
+        assert!(
+            !ledger_contains_key(&ledger, &protected_key),
+            "the global hard backstop may evict the oldest settling entry"
+        );
     }
 
     #[test]
@@ -2143,6 +2337,29 @@ mod tests {
         super::ImageRequestLedger::new(Duration::from_mins(1))
     }
 
+    async fn insert_settling(
+        ledger: &super::ImageRequestLedger,
+        key: String,
+        user_id: &str,
+        created_at: Instant,
+    ) {
+        match ledger.claim(key).await {
+            super::ImageLedgerClaim::Run { guard } => {
+                guard
+                    .start_settling(&sample_pending_for_user_at(user_id, created_at))
+                    .expect("settling entry inserted");
+            }
+            super::ImageLedgerClaim::Replay(_) => panic!("fresh key must run"),
+            super::ImageLedgerClaim::ChargePending { .. } => {
+                panic!("fresh key must not have a pending charge")
+            }
+        }
+    }
+
+    fn ledger_contains_key(ledger: &super::ImageRequestLedger, key: &str) -> bool {
+        ledger.entries().contains_key(key)
+    }
+
     fn age_pending_entries(ledger: &super::ImageRequestLedger, age: Duration) {
         let now = Instant::now();
         let created_at = now.checked_sub(age).unwrap_or(now);
@@ -2159,9 +2376,13 @@ mod tests {
     }
 
     fn sample_pending_at(created_at: Instant) -> super::PendingImageCharge {
+        sample_pending_for_user_at("usr_1", created_at)
+    }
+
+    fn sample_pending_for_user_at(user_id: &str, created_at: Instant) -> super::PendingImageCharge {
         super::PendingImageCharge {
             action: june_domain::ActionSlug::ImageGenerate,
-            user_id: UserId("usr_1".to_string()),
+            user_id: UserId(user_id.to_string()),
             model: "flux-2-pro".to_string(),
             image: GeneratedImage {
                 image_base64: "aGVsbG8=".to_string(),
