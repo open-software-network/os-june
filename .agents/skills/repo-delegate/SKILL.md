@@ -44,8 +44,13 @@ orchestrating model (see repo-build-pr's model orchestration rules).
    `--dry-run` on either prints the filled prompt. `run-codex.sh` uses
    `codex exec -s workspace-write` (OS sandbox caps writes to the worktree);
    `run-claude.sh` uses headless `claude -p --permission-mode acceptEdits`
-   with the gate commands allowlisted — policy-level enforcement, so only
-   dispatch briefs you wrote yourself.
+   with exactly the standard gate commands allowlisted (a custom `-g` gate
+   outside that set fails closed — extend the allowlist in the script
+   deliberately, never to bare `pnpm:*`/`cargo:*`, which would reopen
+   `pnpm exec git` / `pnpm dlx` / `cargo run`). Claude-side enforcement is
+   policy-level, and the delegate reads the whole repo — instruction-like
+   text anywhere in it is injection surface, so only dispatch onto checkouts
+   you trust. Both runners fail loudly if the delegate moved HEAD.
 3. **Verify, never trust.** Read the diff, re-run the gate yourself, route
    defects back with evidence (a new brief referencing the old one), then
    commit.

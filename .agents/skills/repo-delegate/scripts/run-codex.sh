@@ -39,7 +39,13 @@ if [ "$dry_run" = 1 ]; then
   exit 0
 fi
 
-out=${out:-$(mktemp -t repo-delegate-codex)}
+out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-delegate-codex.XXXXXX")}
+head_before=$(git -C "$worktree" rev-parse HEAD)
 printf '%s\n' "$prompt" | codex exec -s workspace-write -C "$worktree" -o "$out" -
+head_after=$(git -C "$worktree" rev-parse HEAD)
+if [ "$head_before" != "$head_after" ]; then
+  echo "error: delegate moved HEAD ($head_before -> $head_after) — the no-commit contract was violated; inspect before trusting the worktree" >&2
+  exit 1
+fi
 printf '\n--- report (%s) ---\n' "$out"
 cat "$out"

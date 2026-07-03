@@ -15,8 +15,11 @@ A runner dispatches any review axis to one agent harness. To add one, create
    (Claude: `--permission-mode plan` + disallowed edit tools). Document the
    enforcement level honestly in the script header — an allowlist is not a
    sandbox.
-5. **Uniform output**: default `-o` to `mktemp`, print the verdict to stdout,
-   end with `--- verdict (<path>) ---`, exit non-zero on harness failure.
+5. **Uniform output**: default `-o` to
+   `mktemp "${TMPDIR:-/tmp}/repo-review-$axis.XXXXXX"` (trailing X's — GNU
+   mktemp requires them), print a `--- verdict (<path>) ---` marker line and
+   then the report, so the report is always what follows the last marker.
+   Exit non-zero on harness failure.
 
 Skeleton:
 
@@ -28,7 +31,7 @@ fill="$(cd "$(dirname "$0")" && pwd)/fill-prompt.sh"
 prompt=$("$fill" -a "$axis" -C "$worktree" -f "$focus" \
   ${spec_path:+-s "$spec_path"} ${fixed_point:+"$fixed_point"})
 [ "$dry_run" = 1 ] && { printf '%s\n' "$prompt"; exit 0; }
-out=${out:-$(mktemp -t "repo-review-$axis")}
+out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-review-$axis.XXXXXX")}
 printf '%s\n' "$prompt" | <harness-cli> <read-only flags> > "$out"
 printf '\n--- verdict (%s) ---\n' "$out"
 cat "$out"

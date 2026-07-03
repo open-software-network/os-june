@@ -38,7 +38,7 @@ if [ "$dry_run" = 1 ]; then
   exit 0
 fi
 
-out=${out:-$(mktemp -t "repo-review-$axis")}
+out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-review-$axis.XXXXXX")}
 printf '%s\n' "$prompt" | codex exec -s read-only -C "$worktree" -o "$out" -
 printf '\n--- verdict (%s) ---\n' "$out"
 cat "$out"

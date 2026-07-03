@@ -48,6 +48,12 @@ if [ -z "$fixed_point" ]; then
     fixed_point=main
   fi
 fi
+case "$fixed_point" in
+  origin/*)
+    # Remote-tracking refs go stale too; refresh before pinning the baseline.
+    git fetch --quiet origin "${fixed_point#origin/}" 2>/dev/null \
+      || echo "warning: fetch failed; $fixed_point may be stale" >&2 ;;
+esac
 git rev-parse --verify --quiet "${fixed_point}^{commit}" >/dev/null \
   || { echo "error: ref does not resolve: $fixed_point" >&2; exit 1; }
 diff_cmd="git diff $fixed_point...HEAD"
@@ -61,11 +67,12 @@ diff_cmd="git diff $fixed_point...HEAD"
 
 # Template body = everything after the `---` separator in the axis file.
 template=$(awk 'body { print } /^---$/ { body = 1 }' "$template_file")
-prompt=${template//'{{TARGET_LABEL}}'/branch diff against $fixed_point}
-prompt=${prompt//'{{DIFF_COMMAND}}'/$diff_cmd}
-prompt=${prompt//'{{WORKTREE}}'/$worktree}
-prompt=${prompt//'{{USER_FOCUS}}'/$focus}
-[ -n "$spec_path" ] && prompt=${prompt//'{{SPEC_PATH}}'/$spec_path}
+# Replacements quoted: bash >= 5.2 patsub_replacement expands unquoted `&`.
+prompt=${template//'{{TARGET_LABEL}}'/"branch diff against $fixed_point"}
+prompt=${prompt//'{{DIFF_COMMAND}}'/"$diff_cmd"}
+prompt=${prompt//'{{WORKTREE}}'/"$worktree"}
+prompt=${prompt//'{{USER_FOCUS}}'/"$focus"}
+[ -n "$spec_path" ] && prompt=${prompt//'{{SPEC_PATH}}'/"$spec_path"}
 
 if leftover=$(printf '%s' "$prompt" | grep -o '{{[A-Z_]*}}' | sort -u); [ -n "$leftover" ]; then
   echo "error: unfilled placeholders (missing a flag for this axis?):" >&2

@@ -41,11 +41,22 @@ if [ "$dry_run" = 1 ]; then
   exit 0
 fi
 
-out=${out:-$(mktemp -t repo-delegate-claude)}
+out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-delegate-claude.XXXXXX")}
 cd "$worktree"
+head_before=$(git rev-parse HEAD)
+printf -- '--- report (%s) ---\n' "$out"
+# Allowlist is the exact gate surface, not bare pnpm/cargo — `pnpm exec`,
+# `pnpm dlx`, and `cargo run` would bypass the no-git/no-arbitrary-code
+# contract. A custom -g gate outside this set will prompt-fail closed.
 printf '%s\n' "$prompt" | claude -p \
   --permission-mode acceptEdits \
-  --allowedTools "Bash(pnpm:*)" "Bash(cargo:*)" \
+  --allowedTools "Bash(pnpm check:*)" "Bash(pnpm typecheck:*)" "Bash(pnpm test:*)" \
+    "Bash(pnpm install:*)" "Bash(pnpm build:*)" \
+    "Bash(cargo test:*)" "Bash(cargo fmt:*)" "Bash(cargo clippy:*)" "Bash(cargo check:*)" \
     "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" \
   | tee "$out"
-printf '\n--- report (%s) ---\n' "$out"
+head_after=$(git rev-parse HEAD)
+if [ "$head_before" != "$head_after" ]; then
+  echo "error: delegate moved HEAD ($head_before -> $head_after) — the no-commit contract was violated; inspect before trusting the worktree" >&2
+  exit 1
+fi

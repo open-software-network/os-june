@@ -55,7 +55,7 @@ with the repo):
 
 - `spec/index.md` and every rule file it lists — violations fail review.
 - `CONTEXT.md` — the glossary's `_Avoid_` lists are binding.
-- `AGENTS.md` conventions (comment idiom, naming, boundaries).
+- `AGENTS.md` conventions (naming, boundaries, PR copy rules).
 - `docs/agents/domain.md` — single-context consumer rules and doc-family
   routing.
 - Skip anything tooling already enforces (Biome, tsc, cargo fmt/clippy).
@@ -124,8 +124,10 @@ adversarial, not verified:
 1. Update the spec file's **Amendments** with every deliberate decision made
    so far — before re-running anything, or the Spec axis re-flags settled
    decisions as drift.
-2. Fix the findings worth fixing (verify each first); commit; run the full
-   gate (`pnpm typecheck && pnpm check && pnpm test` — judge vitest by failure
+2. Fix the findings worth fixing (verify each first); commit; run the gate
+   for the touched surfaces — `make verify` is the full gate (includes both
+   Rust crates); frontend-only diffs can use
+   `pnpm typecheck && pnpm check && pnpm test` (judge vitest by failure
    count, not exit code).
 3. Re-run the **adversarial** axis only.
 4. Repeat until it returns `approve` / no material findings. Adversarial

@@ -173,7 +173,7 @@ The upload reads the os-platform API key from `june-api/.env` (`JUNE__ISSUE_REPO
 
 Green checks and a passing walkthrough are necessary, not sufficient: they prove the code does what its tests say, not that the diff is free of defects the tests never imagined. For any non-trivial diff, run the `repo-review` battery locally before opening the draft PR (load `.agents/skills/repo-review/SKILL.md`; `$repo-review` in Codex):
 
-1. Run all three axes over `origin/main...HEAD` — Standards and Spec as parallel sub-agents, and dispatch the adversarial axis to the *other* harness so the reviewer is not the model that wrote the change: from Claude Code, `.agents/skills/repo-review/scripts/run-codex.sh -a adversarial`; from Codex, `.../run-claude.sh -a adversarial`.
+1. Run all three axes over `origin/main...HEAD` — Standards and Spec as parallel sub-agents, and dispatch the adversarial axis to the *other* harness so the reviewer is not the model that wrote the change: from Claude Code, `.agents/skills/repo-review/scripts/run-codex.sh -a adversarial`; from Codex, `.../run-claude.sh -a adversarial` (policy-level enforcement — for branches this session authored, never unvetted third-party diffs).
 2. Triage every finding to a disposition per the battery's aggregate step — fix-now, deliberate (amend the spec file), pre-existing parity (follow-up, checked against the fixed point), or refuted (with evidence). Verify before fixing; plausible-sounding findings that cannot name a failure scenario are noise.
 3. Route confirmed defects back to the implementer agent that owns the code, with the evidence, re-run the relevant validation, then re-run the adversarial axis until it approves (the battery's convergence loop).
 

@@ -26,7 +26,7 @@ improvising around them.
 - Work only inside {{WORKTREE}}.
 - Read AGENTS.md before editing, plus any doc it points to for the area you
   touch; follow the repo's documented rules (naming from CONTEXT.md, spec/
-  rule files, comment idiom: constraints not narration).
+  rule files).
 - Match existing patterns. No new dependencies, abstractions, or global
   behavior unless the task explicitly says so.
 - Keep edits scoped to the task and nearby supporting tests.
@@ -39,6 +39,9 @@ improvising around them.
 Before reporting, run: {{GATE}}
 Report the actual output including failures. Never claim a check you did not
 run; if one cannot run, say exactly what blocked it.
+Known quirk: this repo's `pnpm test` (vitest) can exit non-zero with 0 real
+failures (hud-meeting teardown noise) — judge by the failure count and report
+it, not the exit code.
 </validation>
 
 <output_contract>

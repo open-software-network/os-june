@@ -50,12 +50,12 @@ if [ -n "$spec_path" ]; then
   add_dir_args=(--add-dir "$(cd "$(dirname "$spec_path")" && pwd)")
 fi
 
-out=${out:-$(mktemp -t "repo-review-$axis")}
+out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-review-$axis.XXXXXX")}
 cd "$worktree"
+printf -- '--- verdict (%s) ---\n' "$out"
 printf '%s\n' "$prompt" | claude -p \
   --permission-mode plan \
   --allowedTools "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)" \
   --disallowedTools "Edit" "Write" "NotebookEdit" \
   ${add_dir_args[@]+"${add_dir_args[@]}"} \
   | tee "$out"
-printf '\n--- verdict (%s) ---\n' "$out"

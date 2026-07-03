@@ -30,9 +30,9 @@ Read these before reviewing, prioritized by what the diff touches:
 - `CONTEXT.md` — the glossary's _Avoid_ lists are binding; "stored vs runtime
   session id" must always be qualified; watch control plane vs gateway vs
   adapter drift.
-- `AGENTS.md` conventions — comment idiom (constraints, not narration),
-  naming, boundaries (provider keys, June API compatibility, June-not-Hermes
-  identity, OS Accounts ownership).
+- `AGENTS.md` conventions — naming, PR copy rules, boundaries (provider
+  keys, June API compatibility, June-not-Hermes identity, OS Accounts
+  ownership).
 - `docs/agents/domain.md` — single-context consumer rules and the
   doc-family routing (CONTEXT.md+ADRs vs `spec/` rules vs `specs/` features).
 Skip anything tooling already enforces (Biome, tsc, cargo fmt/clippy).

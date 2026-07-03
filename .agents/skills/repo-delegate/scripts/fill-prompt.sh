@@ -33,10 +33,12 @@ worktree=$(cd "$worktree" && pwd -P)
 # Template body = everything after the `---` separator in PROMPT.md.
 template=$(awk 'body { print } /^---$/ { body = 1 }' \
   "$(cd "$(dirname "$0")" && pwd)/../PROMPT.md")
-prompt=${template//'{{TASK}}'/$task}
-prompt=${prompt//'{{WORKTREE}}'/$worktree}
-prompt=${prompt//'{{GATE}}'/$gate}
-prompt=${prompt//'{{CONSTRAINTS}}'/$constraints}
+# Replacements quoted: bash >= 5.2 patsub_replacement expands unquoted `&`,
+# and the default gate (and most briefs) contain `&&`.
+prompt=${template//'{{TASK}}'/"$task"}
+prompt=${prompt//'{{WORKTREE}}'/"$worktree"}
+prompt=${prompt//'{{GATE}}'/"$gate"}
+prompt=${prompt//'{{CONSTRAINTS}}'/"$constraints"}
 
 if printf '%s' "$prompt" | grep -q '{{\(TASK\|WORKTREE\|GATE\|CONSTRAINTS\)}}'; then
   echo "error: unfilled placeholders remain" >&2
