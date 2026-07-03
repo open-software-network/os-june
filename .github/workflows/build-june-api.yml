@@ -41,7 +41,7 @@ jobs:
           echo "created=$(git log -1 --pretty=%cI)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@ab5c1da94f53f5cd75c1038092aa276dddfccbba # v1.9.0
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
         env:
           # Normalizes layer/file timestamps to the commit time (with
           # rewrite-timestamp below) so the image digest is reproducible.
