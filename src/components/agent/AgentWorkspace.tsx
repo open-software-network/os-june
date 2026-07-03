@@ -848,6 +848,14 @@ type PersistedImageSlashTurn = {
   createdAt: string;
   imageCreatedAt: string;
   contextPending: boolean;
+  /** True from just before the paid request starts until import succeeds.
+   * `path`/`name` are still empty; the fields below carry the replay shape so
+   * an app exit mid-generation can retry the SAME June API request instead of
+   * minting a new id and a second charge. */
+  pending?: boolean;
+  requestId?: string;
+  model?: string;
+  safeMode?: boolean;
 };
 
 function imageSlashUserTurn(turn: Pick<PersistedImageSlashTurn, "createdAt" | "id" | "prompt">) {
@@ -861,8 +869,45 @@ function imageSlashUserTurn(turn: Pick<PersistedImageSlashTurn, "createdAt" | "i
 }
 
 function imageSlashAssistantTurn(
-  turn: Pick<PersistedImageSlashTurn, "id" | "imageCreatedAt" | "name" | "path" | "prompt">,
+  turn: Pick<
+    PersistedImageSlashTurn,
+    | "id"
+    | "imageCreatedAt"
+    | "name"
+    | "path"
+    | "prompt"
+    | "createdAt"
+    | "pending"
+    | "requestId"
+    | "model"
+    | "safeMode"
+  >,
 ): AgentChatTurn {
+  if (turn.pending) {
+    // The app exited while this paid generation was in flight. Restore it as
+    // a retryable error carrying the pinned request shape - Try again replays
+    // the SAME June API request id, so a settled-but-unseen result is
+    // deduplicated server-side instead of billed twice.
+    return {
+      id: `${turn.id}:assistant`,
+      role: "assistant",
+      createdAt: turn.imageCreatedAt,
+      status: "complete",
+      parts: [
+        {
+          type: "image",
+          status: "error",
+          prompt: turn.prompt,
+          requestId: turn.requestId,
+          model: turn.model,
+          safeMode: turn.safeMode,
+          userCreatedAt: turn.createdAt,
+          imageCreatedAt: turn.imageCreatedAt,
+          error: "Generation was interrupted. Try again to resume.",
+        },
+      ],
+    };
+  }
   return {
     id: `${turn.id}:assistant`,
     role: "assistant",
@@ -974,6 +1019,12 @@ function persistedImageSlashTurn(
 ): PersistedImageSlashTurn | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Partial<PersistedImageSlashTurn>;
+  // A pending entry (paid request in flight when the app exited) has no
+  // path/name yet; its replay request id is what makes it worth restoring.
+  const pending =
+    candidate.pending === true &&
+    typeof candidate.requestId === "string" &&
+    candidate.requestId.trim() !== "";
   if (
     typeof candidate.id !== "string" ||
     typeof candidate.prompt !== "string" ||
@@ -983,8 +1034,8 @@ function persistedImageSlashTurn(
     typeof candidate.imageCreatedAt !== "string" ||
     !candidate.id.trim() ||
     !candidate.prompt.trim() ||
-    !candidate.path.trim() ||
-    !candidate.name.trim() ||
+    (!pending && !candidate.path.trim()) ||
+    (!pending && !candidate.name.trim()) ||
     Number.isNaN(Date.parse(candidate.createdAt)) ||
     Number.isNaN(Date.parse(candidate.imageCreatedAt))
   ) {
@@ -1002,7 +1053,16 @@ function persistedImageSlashTurn(
     name: candidate.name,
     createdAt: candidate.createdAt,
     imageCreatedAt: candidate.imageCreatedAt,
-    contextPending: candidate.contextPending !== false,
+    // A pending turn has no image to attach on the follow-up.
+    contextPending: pending ? false : candidate.contextPending !== false,
+    ...(pending
+      ? {
+          pending: true,
+          requestId: candidate.requestId,
+          model: typeof candidate.model === "string" ? candidate.model : undefined,
+          safeMode: typeof candidate.safeMode === "boolean" ? candidate.safeMode : undefined,
+        }
+      : {}),
   };
 }
 
@@ -3798,6 +3858,27 @@ export function AgentWorkspace({
         }),
       ],
     }));
+
+    // Persist the replay shape BEFORE the paid request starts: if the app
+    // exits mid-generation, the restored turn can retry the SAME request id
+    // instead of minting a new one (a possibly-settled request would then be
+    // billed twice). The success path below overwrites this with the
+    // completed turn.
+    upsertStoredImageSlashTurn({
+      id: turnId,
+      sessionId,
+      prompt,
+      sourcePrompt: prompt,
+      path: "",
+      name: "",
+      createdAt,
+      imageCreatedAt,
+      contextPending: false,
+      pending: true,
+      requestId,
+      model: pinnedModel,
+      safeMode: pinnedSafeMode,
+    });
 
     await finishImageSlashGeneration({
       sessionId,

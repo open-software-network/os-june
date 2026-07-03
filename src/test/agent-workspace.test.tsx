@@ -7181,6 +7181,67 @@ describe("AgentWorkspace", () => {
     expect(submitIndex).toBeGreaterThan(attachIndex);
   });
 
+  it("recovers an interrupted /image turn after remount and retries with the same request id", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    const { unmount } = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        imageModel: "venice-sd35",
+        imageSafeMode: false,
+      },
+    });
+    // The paid request never settles client-side - the app "exits" while the
+    // generation is in flight, after June API may already have started work.
+    mocks.generateImage.mockImplementationOnce(() => new Promise(() => {}));
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await waitFor(() => expect(mocks.generateImage).toHaveBeenCalledTimes(1));
+    const firstRequestId = mocks.generateImage.mock.calls[0]?.[2];
+    expect(firstRequestId).toEqual(expect.any(String));
+
+    unmount();
+    resetAgentSessionContinuity();
+    render(<AgentWorkspace />);
+
+    // The turn is restored as retryable instead of silently lost.
+    expect(
+      await screen.findByText("Generation was interrupted. Try again to resume."),
+    ).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "generated-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    // The retry replays the exact request June API hashed into its ledger key:
+    // same request id, same pinned model and safe mode.
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.generateImage).toHaveBeenCalledTimes(2);
+    expect(mocks.generateImage.mock.calls[1]).toEqual([
+      "a red bicycle",
+      "venice-sd35",
+      firstRequestId,
+      false,
+    ]);
+  });
+
   it.each([
     "make it better",
     "change my mind",
