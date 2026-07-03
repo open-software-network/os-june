@@ -8405,6 +8405,7 @@ mcp_servers:
             &[],
             Some(&test_june_context_mcp_config()),
             None,
+            None,
         );
         let merged = merge_hermes_config(&config_path, &rendered);
         let value: serde_yaml::Value = serde_yaml::from_str(&merged).expect("merged parses");
