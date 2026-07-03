@@ -16,6 +16,9 @@ pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
+pub const IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS: u64 = 30;
+pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 =
+    DEFAULT_REQUEST_TIMEOUT_SECS - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
 pub const IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS: u64 = 30;
 pub const DEFAULT_IMAGE_HOLD_TTL_SECS: u64 =
     DEFAULT_REQUEST_TIMEOUT_SECS + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS;
@@ -25,6 +28,10 @@ pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
 
 const fn base64_encoded_len(byte_count: usize) -> usize {
     byte_count.div_ceil(3) * 4
+}
+
+pub const fn image_client_timeout_secs(route_timeout_secs: u64) -> u64 {
+    route_timeout_secs - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -716,15 +723,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
             OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
         )?;
     }
-    validate_positive_config(
-        "os_accounts.note_transcribe_preview_max_audio_secs",
-        config.os_accounts.note_transcribe_preview_max_audio_secs,
-    )?;
-    validate_positive_usize_config(
-        "server.max_image_edit_bytes",
-        config.server.max_image_edit_bytes,
-    )?;
-    validate_image_hold_ttl(config)?;
+    validate_request_limits(config)?;
 
     let uses_openai = config
         .pricing
@@ -803,6 +802,20 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
+    validate_positive_config(
+        "os_accounts.note_transcribe_preview_max_audio_secs",
+        config.os_accounts.note_transcribe_preview_max_audio_secs,
+    )?;
+    validate_image_timeout_margin(config)?;
+    validate_positive_usize_config(
+        "server.max_image_edit_bytes",
+        config.server.max_image_edit_bytes,
+    )?;
+    validate_image_hold_ttl(config)?;
+    Ok(())
+}
+
 fn validate_image_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
     let minimum = config
         .server
@@ -812,6 +825,16 @@ fn validate_image_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
         return Err(ConfigError::InvalidRequired {
             field: "os_accounts.authorize_hold_ttl_image_secs",
             reason: "must be >= server.request_timeout_secs + image hold margin",
+        });
+    }
+    Ok(())
+}
+
+fn validate_image_timeout_margin(config: &AppConfig) -> Result<(), ConfigError> {
+    if config.server.request_timeout_secs <= IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS {
+        return Err(ConfigError::InvalidRequired {
+            field: "server.request_timeout_secs",
+            reason: "must be > image settlement margin",
         });
     }
     Ok(())
@@ -939,11 +962,12 @@ fn validate_positive_rate(
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, ConfigError, DEFAULT_IMAGE_HOLD_TTL_SECS, DEFAULT_MAX_IMAGE_EDIT_BYTES,
-        DEFAULT_REQUEST_TIMEOUT_SECS, IMAGE_EDIT_SOURCE_MAX_BYTES,
-        IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
-        OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, PriceUnit,
-        VENICE_API_KEY_PLACEHOLDERS, validate,
+        AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
+        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS, IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig,
+        ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
+        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, PriceUnit, VENICE_API_KEY_PLACEHOLDERS,
+        image_client_timeout_secs, validate,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -1201,6 +1225,37 @@ mod tests {
             config.os_accounts.authorize_hold_ttl_image_secs,
             DEFAULT_IMAGE_HOLD_TTL_SECS
         );
+    }
+
+    #[test]
+    fn default_image_client_timeout_leaves_settlement_margin_before_route_timeout() {
+        let config = AppConfig::default();
+        let image_client_timeout = image_client_timeout_secs(config.server.request_timeout_secs);
+
+        assert_eq!(image_client_timeout, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS);
+        assert!(image_client_timeout < config.server.request_timeout_secs);
+        assert!(
+            image_client_timeout + IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
+                <= config.server.request_timeout_secs
+        );
+    }
+
+    #[test]
+    fn validate_rejects_image_route_timeout_without_settlement_margin() {
+        let mut config = valid_config();
+        config.server.request_timeout_secs = IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+        config.os_accounts.authorize_hold_ttl_image_secs =
+            config.server.request_timeout_secs + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS;
+
+        let result = validate(&config);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidRequired {
+                field: "server.request_timeout_secs",
+                ..
+            })
+        ));
     }
 
     #[test]

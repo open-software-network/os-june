@@ -102,26 +102,8 @@ impl ImageService {
             .copied()
             .ok_or(ServiceError::ModelNotPriced)?;
         let estimate = Credits(price.credits);
-        if price.provider == ModelProvider::Venice
-            && uses_user_venice_key(&params.provider_credentials)
-        {
-            let image = self
-                .generator
-                .generate(ImageGenerationRequest {
-                    prompt: params.prompt.clone(),
-                    model: ModelId(params.model.clone()),
-                    width: params.width,
-                    height: params.height,
-                    safe_mode: params.safe_mode,
-                    provider_credentials: params.provider_credentials.clone(),
-                })
-                .await?;
-            log_skipped_user_venice_key(ActionSlug::ImageGenerate, &params.user_id, &params.model);
-            return Ok(ImageGenerateOutput {
-                image,
-                receipt: zero_receipt(),
-            });
-        }
+        let uses_user_key = price.provider == ModelProvider::Venice
+            && uses_user_venice_key(&params.provider_credentials);
         if let Some(key) = image_ledger_key(&params) {
             match self.request_ledger.claim(key).await {
                 ImageLedgerClaim::Replay(output) => return Ok(output),
@@ -129,6 +111,12 @@ impl ImageService {
                     return self.settle_pending_ledger_charge(key, pending).await;
                 }
                 ImageLedgerClaim::Run { guard } => {
+                    if uses_user_key {
+                        return Self::finish_claimed_output(
+                            guard,
+                            self.generate_with_user_venice_key(&params).await,
+                        );
+                    }
                     return self
                         .finish_claimed_charge(
                             guard,
@@ -138,8 +126,34 @@ impl ImageService {
                 }
             }
         }
+        if uses_user_key {
+            return self.generate_with_user_venice_key(&params).await;
+        }
         let pending = self.prepare_generate_charge(&params, estimate).await?;
-        self.settle_pending_charge(&pending).await
+        self.settle_pending_charge_cancellation_safe(None, pending)
+            .await
+    }
+
+    async fn generate_with_user_venice_key(
+        &self,
+        params: &ImageGenerateParams,
+    ) -> Result<ImageGenerateOutput, ServiceError> {
+        let image = self
+            .generator
+            .generate(ImageGenerationRequest {
+                prompt: params.prompt.clone(),
+                model: ModelId(params.model.clone()),
+                width: params.width,
+                height: params.height,
+                safe_mode: params.safe_mode,
+                provider_credentials: params.provider_credentials.clone(),
+            })
+            .await?;
+        log_skipped_user_venice_key(ActionSlug::ImageGenerate, &params.user_id, &params.model);
+        Ok(ImageGenerateOutput {
+            image,
+            receipt: zero_receipt(),
+        })
     }
 
     async fn prepare_generate_charge(
@@ -200,26 +214,8 @@ impl ImageService {
             .copied()
             .ok_or(ServiceError::ModelNotPriced)?;
         let estimate = Credits(price.credits);
-        if price.provider == ModelProvider::Venice
-            && uses_user_venice_key(&params.provider_credentials)
-        {
-            let image = self
-                .editor
-                .edit(ImageEditRequest {
-                    image_base64: params.image_base64.clone(),
-                    mime_type: params.mime_type.clone(),
-                    prompt: params.prompt.clone(),
-                    model: ModelId(model.clone()),
-                    safe_mode: params.safe_mode,
-                    provider_credentials: params.provider_credentials.clone(),
-                })
-                .await?;
-            log_skipped_user_venice_key(ActionSlug::ImageEdit, &params.user_id, &model);
-            return Ok(ImageGenerateOutput {
-                image,
-                receipt: zero_receipt(),
-            });
-        }
+        let uses_user_key = price.provider == ModelProvider::Venice
+            && uses_user_venice_key(&params.provider_credentials);
         if let Some(key) = edit_ledger_key(&params, &model) {
             match self.request_ledger.claim(key).await {
                 ImageLedgerClaim::Replay(output) => return Ok(output),
@@ -227,6 +223,12 @@ impl ImageService {
                     return self.settle_pending_ledger_charge(key, pending).await;
                 }
                 ImageLedgerClaim::Run { guard } => {
+                    if uses_user_key {
+                        return Self::finish_claimed_output(
+                            guard,
+                            self.edit_with_user_venice_key(&params, &model).await,
+                        );
+                    }
                     return self
                         .finish_claimed_charge(
                             guard,
@@ -236,8 +238,35 @@ impl ImageService {
                 }
             }
         }
+        if uses_user_key {
+            return self.edit_with_user_venice_key(&params, &model).await;
+        }
         let pending = self.prepare_edit_charge(&params, &model, estimate).await?;
-        self.settle_pending_charge(&pending).await
+        self.settle_pending_charge_cancellation_safe(None, pending)
+            .await
+    }
+
+    async fn edit_with_user_venice_key(
+        &self,
+        params: &ImageEditParams,
+        model: &str,
+    ) -> Result<ImageGenerateOutput, ServiceError> {
+        let image = self
+            .editor
+            .edit(ImageEditRequest {
+                image_base64: params.image_base64.clone(),
+                mime_type: params.mime_type.clone(),
+                prompt: params.prompt.clone(),
+                model: ModelId(model.to_string()),
+                safe_mode: params.safe_mode,
+                provider_credentials: params.provider_credentials.clone(),
+            })
+            .await?;
+        log_skipped_user_venice_key(ActionSlug::ImageEdit, &params.user_id, model);
+        Ok(ImageGenerateOutput {
+            image,
+            receipt: zero_receipt(),
+        })
     }
 
     async fn prepare_edit_charge(
@@ -292,15 +321,24 @@ impl ImageService {
                 return Err(error);
             }
         };
-        let pending_key = guard.charge_pending(pending.clone());
-        match self.settle_pending_charge(&pending).await {
+        let pending_key = guard.start_settling(&pending);
+        self.settle_pending_charge_cancellation_safe(pending_key, pending)
+            .await
+    }
+
+    fn finish_claimed_output(
+        guard: ImageLedgerRun,
+        output: Result<ImageGenerateOutput, ServiceError>,
+    ) -> Result<ImageGenerateOutput, ServiceError> {
+        match output {
             Ok(output) => {
-                if let Some(key) = pending_key {
-                    self.request_ledger.complete_pending(key, output.clone());
-                }
+                guard.complete(output.clone());
                 Ok(output)
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                guard.fail();
+                Err(error)
+            }
         }
     }
 
@@ -309,17 +347,60 @@ impl ImageService {
         key: String,
         pending: PendingImageCharge,
     ) -> Result<ImageGenerateOutput, ServiceError> {
-        let output = self.settle_pending_charge(&pending).await?;
-        self.request_ledger.complete_pending(key, output.clone());
-        Ok(output)
+        let mut key = key;
+        let mut pending = pending;
+        loop {
+            if self
+                .request_ledger
+                .start_settling_pending(key.clone(), &pending)
+            {
+                return self
+                    .settle_pending_charge_cancellation_safe(Some(key), pending)
+                    .await;
+            }
+            match self.request_ledger.claim(key.clone()).await {
+                ImageLedgerClaim::Replay(output) => return Ok(output),
+                ImageLedgerClaim::ChargePending {
+                    key: next_key,
+                    pending: next_pending,
+                } => {
+                    key = next_key;
+                    pending = next_pending;
+                }
+                ImageLedgerClaim::Run { guard } => {
+                    guard.fail();
+                    return Err(ServiceError::MeteringProvider);
+                }
+            }
+        }
     }
 
-    async fn settle_pending_charge(
+    async fn settle_pending_charge_cancellation_safe(
         &self,
+        key: Option<String>,
+        pending: PendingImageCharge,
+    ) -> Result<ImageGenerateOutput, ServiceError> {
+        let handle = spawn_pending_charge_settlement(
+            self.os_accounts.clone(),
+            self.request_ledger.clone(),
+            key,
+            pending,
+        );
+        match handle.await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(%error, "image settlement task failed");
+                Err(ServiceError::MeteringProvider)
+            }
+        }
+    }
+
+    async fn settle_pending_charge_with(
+        os_accounts: Arc<dyn OsAccountsClient>,
         pending: &PendingImageCharge,
     ) -> Result<ImageGenerateOutput, ServiceError> {
         let receipt = charge(ChargeParams {
-            os_accounts: self.os_accounts.as_ref(),
+            os_accounts: os_accounts.as_ref(),
             action_token: pending.action_token.clone(),
             credits: pending.credits,
             idempotency_key: pending.idempotency_key.clone(),
@@ -354,6 +435,24 @@ impl ImageService {
             sha256_hex(edit_shape(params, model).as_bytes())
         )
     }
+}
+
+fn spawn_pending_charge_settlement(
+    os_accounts: Arc<dyn OsAccountsClient>,
+    ledger: ImageRequestLedger,
+    key: Option<String>,
+    pending: PendingImageCharge,
+) -> tokio::task::JoinHandle<Result<ImageGenerateOutput, ServiceError>> {
+    tokio::spawn(async move {
+        let result = ImageService::settle_pending_charge_with(os_accounts, &pending).await;
+        if let Some(key) = key {
+            match &result {
+                Ok(output) => ledger.complete_pending(key, output.clone()),
+                Err(_) => ledger.settlement_failed(key, pending.clone()),
+            }
+        }
+        result
+    })
 }
 
 #[derive(Clone)]
@@ -414,6 +513,10 @@ enum ImageLedgerEntry {
         pending: PendingImageCharge,
         created_at: Instant,
     },
+    Settling {
+        notify: Arc<Notify>,
+        created_at: Instant,
+    },
     Complete {
         output: ImageGenerateOutput,
         settled_at: Instant,
@@ -438,6 +541,7 @@ struct ImageLedgerRun {
 }
 
 impl ImageLedgerRun {
+    #[cfg(test)]
     fn charge_pending(mut self, pending: PendingImageCharge) -> Option<String> {
         if let Some(key) = self.key.take()
             && self.ledger.charge_pending(key.clone(), self.owner, pending)
@@ -445,6 +549,23 @@ impl ImageLedgerRun {
             return Some(key);
         }
         None
+    }
+
+    fn start_settling(mut self, pending: &PendingImageCharge) -> Option<String> {
+        if let Some(key) = self.key.take()
+            && self
+                .ledger
+                .start_settling_in_flight(key.clone(), self.owner, pending)
+        {
+            return Some(key);
+        }
+        None
+    }
+
+    fn complete(mut self, output: ImageGenerateOutput) {
+        if let Some(key) = self.key.take() {
+            self.ledger.complete_in_flight(key, self.owner, output);
+        }
     }
 
     fn fail(mut self) {
@@ -485,9 +606,10 @@ impl ImageRequestLedger {
                             pending: pending.clone(),
                         };
                     }
-                    Some(ImageLedgerEntry::InFlight { notify, .. }) => {
-                        notify.clone().notified_owned()
-                    }
+                    Some(
+                        ImageLedgerEntry::InFlight { notify, .. }
+                        | ImageLedgerEntry::Settling { notify, .. },
+                    ) => notify.clone().notified_owned(),
                     None => {
                         let owner = self.inner.next_owner.fetch_add(1, Ordering::Relaxed);
                         entries.insert(
@@ -512,6 +634,7 @@ impl ImageRequestLedger {
         }
     }
 
+    #[cfg(test)]
     fn charge_pending(&self, key: String, owner: u64, pending: PendingImageCharge) -> bool {
         let notify = {
             let mut entries = self.entries();
@@ -524,6 +647,7 @@ impl ImageRequestLedger {
                 Some(
                     ImageLedgerEntry::InFlight { .. }
                     | ImageLedgerEntry::ChargePending { .. }
+                    | ImageLedgerEntry::Settling { .. }
                     | ImageLedgerEntry::Complete { .. },
                 )
                 | None => None,
@@ -547,7 +671,48 @@ impl ImageRequestLedger {
         false
     }
 
-    fn complete_pending(&self, key: String, output: ImageGenerateOutput) {
+    fn start_settling_in_flight(
+        &self,
+        key: String,
+        owner: u64,
+        pending: &PendingImageCharge,
+    ) -> bool {
+        let notify = {
+            let mut entries = self.entries();
+            let notify = match entries.get(&key) {
+                Some(ImageLedgerEntry::InFlight {
+                    notify,
+                    owner: current_owner,
+                    ..
+                }) if *current_owner == owner => Some(notify.clone()),
+                Some(
+                    ImageLedgerEntry::InFlight { .. }
+                    | ImageLedgerEntry::ChargePending { .. }
+                    | ImageLedgerEntry::Settling { .. }
+                    | ImageLedgerEntry::Complete { .. },
+                )
+                | None => None,
+            };
+            if notify.is_some() {
+                entries.insert(
+                    key,
+                    ImageLedgerEntry::Settling {
+                        notify: Arc::new(Notify::new()),
+                        created_at: pending.created_at,
+                    },
+                );
+                evict_over_pending_cap(&mut entries);
+            }
+            notify
+        };
+        if let Some(notify) = notify {
+            notify.notify_waiters();
+            return true;
+        }
+        false
+    }
+
+    fn start_settling_pending(&self, key: String, pending: &PendingImageCharge) -> bool {
         let mut entries = self.entries();
         if matches!(
             entries.get(&key),
@@ -555,12 +720,112 @@ impl ImageRequestLedger {
         ) {
             entries.insert(
                 key,
-                ImageLedgerEntry::Complete {
-                    output,
-                    settled_at: Instant::now(),
+                ImageLedgerEntry::Settling {
+                    notify: Arc::new(Notify::new()),
+                    created_at: pending.created_at,
                 },
             );
-            evict_over_replay_cap(&mut entries);
+            evict_over_pending_cap(&mut entries);
+            return true;
+        }
+        false
+    }
+
+    fn complete_in_flight(&self, key: String, owner: u64, output: ImageGenerateOutput) {
+        let notify = {
+            let mut entries = self.entries();
+            match entries.get(&key) {
+                Some(ImageLedgerEntry::InFlight {
+                    notify,
+                    owner: current_owner,
+                    ..
+                }) if *current_owner == owner => {
+                    let notify = notify.clone();
+                    entries.insert(
+                        key,
+                        ImageLedgerEntry::Complete {
+                            output,
+                            settled_at: Instant::now(),
+                        },
+                    );
+                    evict_over_replay_cap(&mut entries);
+                    Some(notify)
+                }
+                Some(
+                    ImageLedgerEntry::InFlight { .. }
+                    | ImageLedgerEntry::ChargePending { .. }
+                    | ImageLedgerEntry::Settling { .. }
+                    | ImageLedgerEntry::Complete { .. },
+                )
+                | None => None,
+            }
+        };
+        if let Some(notify) = notify {
+            notify.notify_waiters();
+        }
+    }
+
+    fn complete_pending(&self, key: String, output: ImageGenerateOutput) {
+        let notify = {
+            let mut entries = self.entries();
+            match entries.get(&key) {
+                Some(ImageLedgerEntry::ChargePending { .. }) => {
+                    entries.insert(
+                        key,
+                        ImageLedgerEntry::Complete {
+                            output,
+                            settled_at: Instant::now(),
+                        },
+                    );
+                    evict_over_replay_cap(&mut entries);
+                    None
+                }
+                Some(ImageLedgerEntry::Settling { notify, .. }) => {
+                    let notify = notify.clone();
+                    entries.insert(
+                        key,
+                        ImageLedgerEntry::Complete {
+                            output,
+                            settled_at: Instant::now(),
+                        },
+                    );
+                    evict_over_replay_cap(&mut entries);
+                    Some(notify)
+                }
+                Some(ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::Complete { .. })
+                | None => None,
+            }
+        };
+        if let Some(notify) = notify {
+            notify.notify_waiters();
+        }
+    }
+
+    fn settlement_failed(&self, key: String, pending: PendingImageCharge) {
+        let notify = {
+            let mut entries = self.entries();
+            match entries.get(&key) {
+                Some(ImageLedgerEntry::Settling { notify, .. }) => {
+                    let notify = notify.clone();
+                    entries.insert(
+                        key,
+                        ImageLedgerEntry::ChargePending {
+                            created_at: pending.created_at,
+                            pending,
+                        },
+                    );
+                    Some(notify)
+                }
+                Some(
+                    ImageLedgerEntry::InFlight { .. }
+                    | ImageLedgerEntry::ChargePending { .. }
+                    | ImageLedgerEntry::Complete { .. },
+                )
+                | None => None,
+            }
+        };
+        if let Some(notify) = notify {
+            notify.notify_waiters();
         }
     }
 
@@ -580,6 +845,7 @@ impl ImageRequestLedger {
                 Some(
                     ImageLedgerEntry::InFlight { .. }
                     | ImageLedgerEntry::ChargePending { .. }
+                    | ImageLedgerEntry::Settling { .. }
                     | ImageLedgerEntry::Complete { .. },
                 )
                 | None => None,
@@ -619,6 +885,15 @@ fn prune_expired_entries(
         ImageLedgerEntry::ChargePending { created_at, .. } => {
             now.saturating_duration_since(*created_at) < pending_ttl
         }
+        ImageLedgerEntry::Settling {
+            notify, created_at, ..
+        } => {
+            let keep = now.saturating_duration_since(*created_at) < pending_ttl;
+            if !keep {
+                notify.notify_waiters();
+            }
+            keep
+        }
         ImageLedgerEntry::Complete { settled_at, .. } => {
             now.saturating_duration_since(*settled_at) < IMAGE_LEDGER_REPLAY_TTL
         }
@@ -631,7 +906,9 @@ fn evict_over_replay_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
             .iter()
             .filter_map(|(key, entry)| match entry {
                 ImageLedgerEntry::Complete { settled_at, .. } => Some((key.clone(), *settled_at)),
-                ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::ChargePending { .. } => None,
+                ImageLedgerEntry::InFlight { .. }
+                | ImageLedgerEntry::ChargePending { .. }
+                | ImageLedgerEntry::Settling { .. } => None,
             })
             .collect();
         if settled.len() <= IMAGE_LEDGER_MAX_SETTLED {
@@ -655,6 +932,7 @@ fn evict_over_pending_cap(entries: &mut BTreeMap<String, ImageLedgerEntry>) {
                 ImageLedgerEntry::ChargePending { created_at, .. } => {
                     Some((key.clone(), *created_at))
                 }
+                ImageLedgerEntry::Settling { created_at, .. } => Some((key.clone(), *created_at)),
                 ImageLedgerEntry::InFlight { .. } | ImageLedgerEntry::Complete { .. } => None,
             })
             .collect();
@@ -830,6 +1108,27 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct BlockingChargeOsAccounts {
+        events: Mutex<Vec<Call>>,
+        charge_started: tokio::sync::Notify,
+        release_charge: tokio::sync::Notify,
+    }
+
+    impl BlockingChargeOsAccounts {
+        fn events(&self) -> Vec<Call> {
+            self.events.lock().map(|e| e.clone()).unwrap_or_default()
+        }
+
+        async fn wait_for_charge_started(&self) {
+            self.charge_started.notified().await;
+        }
+
+        fn release_charge(&self) {
+            self.release_charge.notify_waiters();
+        }
+    }
+
+    #[derive(Default)]
     struct StaleTokenChargeFailsOsAccounts {
         next_token: AtomicU64,
         events: Mutex<Vec<TokenCall>>,
@@ -977,6 +1276,39 @@ mod tests {
     }
 
     #[async_trait]
+    impl OsAccountsClient for BlockingChargeOsAccounts {
+        async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+            if let Ok(mut events) = self.events.lock() {
+                events.push(Call::Authorize {
+                    action: request.action.to_string(),
+                    estimate: request.estimate.0,
+                });
+            }
+            Ok(Authorization {
+                allowed: true,
+                action_token: Some("agt_blocking".to_string()),
+                cap_credits: Some(request.estimate),
+                reason: None,
+            })
+        }
+
+        async fn charge(&self, request: ChargeRequest) -> Result<Receipt, DomainError> {
+            if let Ok(mut events) = self.events.lock() {
+                events.push(Call::Charge {
+                    credits: request.credits.0,
+                    idempotency_key: request.idempotency_key,
+                });
+            }
+            self.charge_started.notify_waiters();
+            self.release_charge.notified().await;
+            Ok(Receipt {
+                credits_charged: request.credits,
+                idempotent_replay: false,
+            })
+        }
+    }
+
+    #[async_trait]
     impl OsAccountsClient for RecordingOsAccounts {
         async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
             if let Ok(mut events) = self.events.lock() {
@@ -1037,6 +1369,33 @@ mod tests {
 
     #[async_trait]
     impl ImageGenerator for CountingGenerator {
+        async fn generate(
+            &self,
+            request: ImageGenerationRequest,
+        ) -> Result<GeneratedImage, DomainError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(GeneratedImage {
+                image_base64: format!("generated-{call}"),
+                mime_type: "image/png".to_string(),
+                model: request.model.0,
+                provider: "venice".to_string(),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct NotifyingCountingGenerator {
+        calls: AtomicU64,
+    }
+
+    impl NotifyingCountingGenerator {
+        fn calls(&self) -> u64 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ImageGenerator for NotifyingCountingGenerator {
         async fn generate(
             &self,
             request: ImageGenerationRequest,
@@ -1288,6 +1647,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_venice_key_generation_request_id_replays_without_regenerating() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let generator = Arc::new(CountingGenerator::default());
+        let service = service(os_accounts.clone(), generator.clone());
+        let mut params = params("venice-sd35");
+        params.request_id = Some("req_byok_generate".to_string());
+        params.provider_credentials = ProviderCredentials {
+            venice_api_key: Some("vc_user_key".to_string()),
+        };
+
+        let first = service
+            .generate(params.clone())
+            .await
+            .expect("BYOK generation succeeds");
+        let second = service
+            .generate(params)
+            .await
+            .expect("BYOK generation replays");
+
+        assert_eq!(first.image, second.image);
+        assert_eq!(first.receipt.credits_charged.0, 0);
+        assert_eq!(second.receipt.credits_charged.0, 0);
+        assert_eq!(generator.calls(), 1);
+        assert!(os_accounts.events().is_empty());
+    }
+
+    #[tokio::test]
     async fn user_venice_key_does_not_skip_non_venice_image_model_metering() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let service = ImageService::new(ImageServiceDeps {
@@ -1419,6 +1805,40 @@ mod tests {
         assert_eq!(first.image, second.image);
         assert_eq!(generator.calls(), 1);
         assert_eq!(charge_keys.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dropped_route_after_provider_success_settles_and_replays_without_regenerating() {
+        let os_accounts = Arc::new(BlockingChargeOsAccounts::default());
+        let generator = Arc::new(NotifyingCountingGenerator::default());
+        let service = Arc::new(service(os_accounts.clone(), generator.clone()));
+        let mut params = params("venice-sd35");
+        params.request_id = Some("req_cancel_after_provider".to_string());
+
+        let first = tokio::spawn({
+            let service = service.clone();
+            let params = params.clone();
+            async move { service.generate(params).await }
+        });
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            os_accounts.wait_for_charge_started(),
+        )
+        .await
+        .expect("settlement should start after provider success");
+        first.abort();
+        let aborted = first.await;
+        assert!(aborted.is_err());
+
+        os_accounts.release_charge();
+        let second = tokio::time::timeout(Duration::from_secs(1), service.generate(params))
+            .await
+            .expect("retry should wait for settlement rather than hang")
+            .expect("retry replays settled output");
+
+        assert_eq!(second.image.image_base64, "generated-1");
+        assert_eq!(generator.calls(), 1);
+        assert_eq!(charge_keys(os_accounts.events()).len(), 1);
     }
 
     #[tokio::test]
@@ -1784,6 +2204,34 @@ mod tests {
             .expect("edit succeeds");
 
         assert_eq!(output.receipt.credits_charged.0, 0);
+        assert!(os_accounts.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_venice_key_edit_request_id_replays_without_reediting() {
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let editor = Arc::new(CountingEditor::default());
+        let service = service_with_editor(
+            os_accounts.clone(),
+            Arc::new(FixedGenerator),
+            editor.clone(),
+        );
+        let mut params = edit_params();
+        params.request_id = Some("req_byok_edit".to_string());
+        params.provider_credentials = ProviderCredentials {
+            venice_api_key: Some("vc_user_key".to_string()),
+        };
+
+        let first = service
+            .edit(params.clone())
+            .await
+            .expect("BYOK edit succeeds");
+        let second = service.edit(params).await.expect("BYOK edit replays");
+
+        assert_eq!(first.image, second.image);
+        assert_eq!(first.receipt.credits_charged.0, 0);
+        assert_eq!(second.receipt.credits_charged.0, 0);
+        assert_eq!(editor.calls(), 1);
         assert!(os_accounts.events().is_empty());
     }
 
