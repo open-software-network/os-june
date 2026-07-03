@@ -32,9 +32,10 @@ Entry points by situation:
 1. **The reviewer is never the author** (default). The adversarial review
    axis runs on a harness that did not write the diff. This is
    evidence-based: the two harnesses' finding sets are measurably disjoint
-   (`.agents/skills/repo-review/CALIBRATION.md`). Deliberate exception: the
-   `with codex` build mode runs implementation and all review axes on Codex
-   by convention — self-review accepted; the counterweights are
+   (`.agents/skills/repo-review/CALIBRATION.md`). Deliberate exception: a
+   cross-harness implementer build (`with codex` / `with claude`) runs
+   implementation and all review axes on the implementer harness by
+   convention — self-review accepted; the counterweights are
    regression-gated fixture tests per fix and the orchestrating session's
    own verification. (PR #615: Codex adversarial rounds still surfaced two
    real defects in largely Codex-written code.)

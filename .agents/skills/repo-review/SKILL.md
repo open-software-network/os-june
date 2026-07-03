@@ -103,9 +103,10 @@ scripts/fill-prompt.sh -a adversarial ...
 per axis, each given its filled prompt verbatim (the templates already carry
 the read-only rules and output contracts). From Claude Code, run axis
 sub-agents on Opus (the Agent tool's `model` option); the session model
-aggregates and triages, it does not review. For a build implemented
-`with codex`, skip Claude sub-agents entirely and dispatch every axis
-through `run-codex.sh` (single-harness convention; see
+aggregates and triages, it does not review. For a build with a
+cross-harness implementer (`with codex` / `with claude`), skip the
+orchestrating side's sub-agents entirely and dispatch every axis through
+the implementer harness's runner (single-harness convention; see
 docs/agents/collaboration.md).
 
 **Cross-harness dispatch** — prefer sending at least the adversarial axis to
