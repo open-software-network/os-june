@@ -7064,50 +7064,52 @@ describe("AgentWorkspace", () => {
     expect(submitIndex).toBeGreaterThan(attachIndex);
   });
 
-  it.each(["make it better", "change my mind", "let's try again", "new version of the doc"])(
-    "submits generic image-session follow-up through the model instead of an image fast path: %s",
-    async (followUp) => {
-      mockGlmCapabilities(["functionCalling", "supportsVision"]);
-      const user = userEvent.setup();
-      render(<AgentWorkspace />);
-      expect(await screen.findByText("Existing session")).toBeInTheDocument();
+  it.each([
+    "make it better",
+    "change my mind",
+    "let's try again",
+    "new version of the doc",
+  ])("submits generic image-session follow-up through the model instead of an image fast path: %s", async (followUp) => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
 
-      mocks.generateImage.mockResolvedValueOnce({
-        imageBase64: "aGVsbG8=",
-        mimeType: "image/png",
-        model: "venice-sd35",
-        provider: "venice",
-      });
-      mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
-        name: "generated-image.png",
-        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
-        rootLabel: "Workspace",
-        size: 5,
-        previewDataUrl: "data:image/png;base64,preview",
-      });
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "generated-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
 
-      await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
-      fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
-      await screen.findByRole("img", { name: "a red bicycle" });
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("img", { name: "a red bicycle" });
 
-      mocks.generateImage.mockClear();
-      mocks.editImage.mockClear();
-      mocks.gatewayRequest.mockClear();
-      await user.type(await screen.findByRole("textbox"), followUp);
-      const sendButton = screen.getByRole("button", { name: "Send message" });
-      await waitFor(() => expect(sendButton).not.toBeDisabled());
-      await user.click(sendButton);
+    mocks.generateImage.mockClear();
+    mocks.editImage.mockClear();
+    mocks.gatewayRequest.mockClear();
+    await user.type(await screen.findByRole("textbox"), followUp);
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
 
-      await waitFor(() =>
-        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-          session_id: "runtime-session-1",
-          text: followUp,
-        }),
-      );
-      expect(mocks.generateImage).not.toHaveBeenCalled();
-      expect(mocks.editImage).not.toHaveBeenCalled();
-    },
-  );
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: followUp,
+      }),
+    );
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(mocks.editImage).not.toHaveBeenCalled();
+  });
 
   it("keeps /image follow-ups in model context after an image-session follow-up", async () => {
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
