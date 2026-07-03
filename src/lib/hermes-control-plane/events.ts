@@ -167,7 +167,15 @@ export type JuneHermesEvent =
       failed: boolean;
       role?: "assistant" | "user" | "system";
     })
-  | (JuneHermesEventBase & { kind: "reasoning"; sessionId: string; delta: string })
+  | (JuneHermesEventBase & {
+      kind: "reasoning";
+      sessionId: string;
+      delta: string;
+      /** True when `delta` carries the FULL reasoning text (a `*.available`
+       * frame), not an incremental chunk. Consumers replace instead of append,
+       * so a full replay after streamed deltas cannot duplicate the thought. */
+      full?: boolean;
+    })
   | (JuneHermesEventBase & {
       kind: "tool";
       sessionId: string;

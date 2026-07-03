@@ -42,6 +42,19 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
         receivedAt,
       };
 
+    case "thinking.available":
+    case "reasoning.available":
+      // The one-shot "full reasoning text is ready" frame (whole-block
+      // reasoning models emit it instead of, or after, streamed deltas).
+      // `full` tells consumers to replace the thought text, not append it.
+      return {
+        kind: "reasoning",
+        sessionId: sessionId ?? "",
+        delta: rawDeltaText(payload),
+        full: true,
+        receivedAt,
+      };
+
     case "clarify.request":
     case "approval.request":
     case "sudo.request":

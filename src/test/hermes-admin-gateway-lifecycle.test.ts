@@ -32,7 +32,7 @@ describe("GatewayLifecycle — state machine and copy", () => {
     // Spot check copy on a couple of states.
     lifecycle.markRestartRequired();
     let snap = lifecycle.getSnapshot();
-    expect(snap.label).toBe("Restart required");
+    expect(snap.label).toBe("Restart to apply your changes");
     expect(snap.canRestart).toBe(true);
     expect(snap.detail).not.toMatch(/[–—]/);
 

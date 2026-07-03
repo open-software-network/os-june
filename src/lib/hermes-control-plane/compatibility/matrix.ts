@@ -191,7 +191,7 @@ const events: HermesCompatibilitySection = {
   thinking: {
     status: "supported",
     rationale:
-      "thinking.delta and reasoning.delta classify to reasoning events and render as reasoning parts.",
+      "thinking.delta and reasoning.delta classify to reasoning events and render as reasoning parts; thinking.available and reasoning.available carry the full text and replace the part.",
     since: PIN,
   },
   tool: {

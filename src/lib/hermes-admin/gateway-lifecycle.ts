@@ -69,20 +69,20 @@ function describe(
       };
     case "gateway-restart-required":
       return {
-        label: "Restart required",
-        detail: "Restart the Hermes gateway to apply your changes.",
+        label: "Restart to apply your changes",
+        detail: "Your changes are saved. Restart the agent to start using them.",
         canRestart: true,
       };
     case "restart-in-progress":
       return {
-        label: "Restarting gateway",
+        label: "Restarting",
         detail: "Applying your changes. This can take a moment.",
         canRestart: false,
       };
     case "restart-failed":
       return {
         label: "Restart failed",
-        detail: "The gateway did not restart. You can try again.",
+        detail: "The agent did not restart. You can try again.",
         canRestart: true,
       };
     case "reindex-in-progress":

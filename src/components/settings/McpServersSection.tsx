@@ -52,7 +52,12 @@ import {
   type McpTestState,
   type ToolPolicyDraft,
 } from "../../lib/hermes-admin";
-import { hermesBridgeStatus, type HermesBridgeStatus } from "../../lib/tauri";
+import {
+  hermesBridgeStatus,
+  startHermesBridge,
+  stopHermesBridge,
+  type HermesBridgeStatus,
+} from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
 import { McpToolsDialog } from "./McpToolsDialog";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -81,6 +86,15 @@ type McpServersSectionProps = {
 export function McpServersSection({ mode = "sandboxed" }: McpServersSectionProps) {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
+  // The native runtime restart. June owns the Hermes process, so applying MCP
+  // changes stops and respawns it through the bridge; Hermes' own HTTP restart
+  // endpoint would kill the server answering the request and hand the new
+  // gateway a port/token June no longer knows. The fresh bridge status rebuilds
+  // the engine, so the page reloads clean with the changes applied.
+  const [restart, setRestart] = useState<{
+    phase: "idle" | "running" | "failed";
+    error?: string;
+  }>({ phase: "idle" });
 
   useEffect(() => {
     let cancelled = false;
@@ -102,6 +116,22 @@ export function McpServersSection({ mode = "sandboxed" }: McpServersSectionProps
   const serversState = useMcpFilteringController(engine);
   const oauthState = useMcpOauthController(engine);
 
+  async function restartRuntime() {
+    if (restart.phase === "running") return;
+    setRestart({ phase: "running" });
+    try {
+      await stopHermesBridge();
+      const status = await startHermesBridge(undefined, mode === "unrestricted");
+      setBridge(status);
+      setRestart({ phase: "idle" });
+    } catch (error) {
+      setRestart({
+        phase: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   const state: McpFilteringState =
     engine === null && bridgeError
       ? {
@@ -112,7 +142,32 @@ export function McpServersSection({ mode = "sandboxed" }: McpServersSectionProps
         }
       : serversState;
 
-  return <McpServersView state={state} oauth={oauthState} mode={mode} />;
+  // Overlay the native restart onto the engine state: the banner's button
+  // drives the bridge restart, and while it runs (or after it fails) the
+  // banner shows the restart lifecycle instead of the engine snapshot.
+  const withRestart: McpFilteringState = {
+    ...state,
+    restartGateway: () => void restartRuntime(),
+    lifecycle:
+      restart.phase === "running"
+        ? {
+            state: "restart-in-progress",
+            label: "Restarting",
+            detail: "Applying your changes. This can take a moment.",
+            canRestart: false,
+          }
+        : restart.phase === "failed"
+          ? {
+              state: "restart-failed",
+              label: "Restart failed",
+              detail: restart.error ?? "The agent did not restart. You can try again.",
+              error: restart.error,
+              canRestart: true,
+            }
+          : state.lifecycle,
+  };
+
+  return <McpServersView state={withRestart} oauth={oauthState} mode={mode} />;
 }
 
 /**
@@ -187,7 +242,7 @@ export function McpServersView({
       </h2>
       <p className="settings-group-description">
         Connect Model Context Protocol servers so future sessions can use their tools. Changes apply
-        after the Hermes gateway restarts.{" "}
+        after a restart.{" "}
         <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
       </p>
 
@@ -365,20 +420,37 @@ function LifecycleBanner({ state }: { state: McpServersState }) {
   const snapshot = state.lifecycle;
   if (state.status === "unavailable") return null;
   if (snapshot.state === "clean") return null;
+  // A pending restart is a normal, expected step (info tone with an action),
+  // not a warning: the user saved a change and just needs to apply it. Only a
+  // failed restart reads as destructive.
   const tone =
     snapshot.state === "restart-failed"
       ? "destructive"
-      : snapshot.state === "gateway-restart-required" ||
-          snapshot.state === "active-session-should-restart"
+      : snapshot.state === "active-session-should-restart"
         ? "warning"
         : "info";
   return (
     <div className="mcp-servers-lifecycle" data-tone={tone} role="status">
-      <span className="mcp-servers-lifecycle-eyebrow">
-        <IconCircleInfo size={15} ariaHidden />
-        {snapshot.label}
-      </span>
-      <span className="mcp-servers-lifecycle-body">{snapshot.detail}</span>
+      <div className="mcp-servers-lifecycle-main">
+        <span className="mcp-servers-lifecycle-eyebrow">
+          <IconCircleInfo size={15} ariaHidden />
+          {snapshot.label}
+        </span>
+        <span className="mcp-servers-lifecycle-body">
+          {snapshot.state === "gateway-restart-required"
+            ? "Your changes are saved. Restart to start using your MCP tools."
+            : snapshot.detail}
+        </span>
+      </div>
+      {snapshot.canRestart ? (
+        <button
+          type="button"
+          className="mcp-servers-lifecycle-restart"
+          onClick={state.restartGateway}
+        >
+          {snapshot.state === "restart-failed" ? "Try again" : "Restart now"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -434,120 +506,132 @@ function ServerRow({
 
   return (
     <li className="mcp-server-row" data-enabled={server.enabled}>
-      <div className="mcp-server-main">
-        <div className="mcp-server-headline">
-          <span className="mcp-server-name" id={labelId}>
-            {server.name}
-          </span>
-          <span className="mcp-server-transport" data-risk={transport.risk}>
-            {transport.label}
-          </span>
-          <span className="mcp-server-risk" data-risk={transport.risk}>
-            <IconShield size={12} ariaHidden />
-            {transport.riskLabel}
-          </span>
-          {server.auth !== "not-required" ? (
-            <span className="mcp-server-auth" data-tone={auth.tone}>
-              {auth.label}
+      <div className="mcp-server-top">
+        <div className="mcp-server-main">
+          <div className="mcp-server-headline">
+            <span className="mcp-server-name" id={labelId}>
+              {server.name}
             </span>
-          ) : null}
-        </div>
-
-        <p className="mcp-server-target" title={server.command ?? server.url}>
-          {server.transport === "stdio"
-            ? formatCommand(server.command, args)
-            : (server.url ?? "No URL configured.")}
-        </p>
-
-        <p className="mcp-server-blurb">{transport.blurb}</p>
-
-        <SecurityLabels labels={securityLabels} />
-
-        {risk.tier === "high" ? (
-          <p className="mcp-server-risk-note" data-tier="high" role="note">
-            <IconExclamationCircle size={13} ariaHidden />
-            {risk.reasons[0]?.detail ?? "This server can take high-impact actions."}
-          </p>
-        ) : null}
-
-        {risk.tier === "high" && testedOk ? (
-          <p className="mcp-server-allowlist-note" role="note">
-            <IconShield size={13} ariaHidden />
-            {ALLOWLIST_RECOMMENDATION}
-          </p>
-        ) : null}
-
-        <div className="mcp-server-meta">
-          <span className="mcp-server-status" data-tone={status.tone}>
-            <StatusIcon tone={status.tone} />
-            {status.label}
-          </span>
-          {server.statusMessage ? (
-            <span className="mcp-server-status-detail">{server.statusMessage}</span>
-          ) : null}
-        </div>
-
-        {env.length > 0 || headers.length > 0 ? (
-          <div className="mcp-server-secrets">
-            {env.length > 0 ? <SecretSummary label="Environment" count={env.length} /> : null}
-            {headers.length > 0 ? <SecretSummary label="Headers" count={headers.length} /> : null}
+            <span className="mcp-server-transport" data-risk={transport.risk}>
+              {transport.label}
+            </span>
+            <span className="mcp-server-risk" data-risk={transport.risk}>
+              <IconShield size={12} ariaHidden />
+              {transport.riskLabel}
+            </span>
+            {/* An "Auth unknown" pill is noise once a probe has proven the
+             * connection; the sign-in panel below carries the real status. */}
+            {server.auth !== "not-required" && !(server.auth === "unknown" && testedOk) ? (
+              <span className="mcp-server-auth" data-tone={auth.tone}>
+                {auth.label}
+              </span>
+            ) : null}
           </div>
-        ) : null}
 
-        <TestResult test={test} tools={tools} />
+          <p className="mcp-server-target" title={server.command ?? server.url}>
+            {server.transport === "stdio"
+              ? formatCommand(server.command, args)
+              : (server.url ?? "No URL configured.")}
+          </p>
 
-        {oauth ? <OauthStatus server={server} login={oauthLogin} onSignIn={onSignIn} /> : null}
-      </div>
+          <p className="mcp-server-blurb">{transport.blurb}</p>
 
-      <div className="mcp-server-actions">
-        <button type="button" className="mcp-server-test" disabled={test?.pending} onClick={onTest}>
-          {test?.pending ? "Testing" : "Test"}
-        </button>
-        {onEdit ? (
+          <SecurityLabels labels={securityLabels} />
+
+          {risk.tier === "high" ? (
+            <p className="mcp-server-risk-note" data-tier="high" role="note">
+              <IconExclamationCircle size={13} ariaHidden />
+              {risk.reasons[0]?.detail ?? "This server can take high-impact actions."}
+            </p>
+          ) : null}
+
+          {risk.tier === "high" && testedOk ? (
+            <p className="mcp-server-allowlist-note" role="note">
+              <IconShield size={13} ariaHidden />
+              {ALLOWLIST_RECOMMENDATION}
+            </p>
+          ) : null}
+
+          <div className="mcp-server-meta">
+            <span className="mcp-server-status" data-tone={status.tone}>
+              <StatusIcon tone={status.tone} />
+              {status.label}
+            </span>
+            {server.statusMessage ? (
+              <span className="mcp-server-status-detail">{server.statusMessage}</span>
+            ) : null}
+          </div>
+
+          {env.length > 0 || headers.length > 0 ? (
+            <div className="mcp-server-secrets">
+              {env.length > 0 ? <SecretSummary label="Environment" count={env.length} /> : null}
+              {headers.length > 0 ? <SecretSummary label="Headers" count={headers.length} /> : null}
+            </div>
+          ) : null}
+
+          <TestResult test={test} tools={tools} />
+        </div>
+
+        <div className="mcp-server-actions">
           <button
             type="button"
-            className="mcp-server-edit"
-            aria-label={`Edit ${server.name}`}
-            title="Edit connection"
-            disabled={pending}
-            onClick={onEdit}
+            className="mcp-server-test"
+            disabled={test?.pending}
+            onClick={onTest}
           >
-            <IconEditSmall1 size={14} ariaHidden />
-            Edit
+            {test?.pending ? "Testing" : "Test"}
           </button>
-        ) : null}
-        <button
-          type="button"
-          className="mcp-server-tools"
-          aria-label={`Configure tools for ${server.name}`}
-          title="Configure tools"
-          onClick={onTools}
-        >
-          <IconFilter2 size={14} ariaHidden />
-          Tools
-        </button>
-        <button
-          type="button"
-          className="mcp-server-delete"
-          aria-label={`Delete ${server.name}`}
-          title="Delete server"
-          disabled={pending}
-          onClick={onDelete}
-        >
-          <IconTrashCan size={14} ariaHidden />
-        </button>
-        <span className="mcp-server-toggle">
-          <Switch
-            checked={server.enabled}
+          {onEdit ? (
+            <button
+              type="button"
+              className="mcp-server-edit"
+              aria-label={`Edit ${server.name}`}
+              title="Edit connection"
+              disabled={pending}
+              onClick={onEdit}
+            >
+              <IconEditSmall1 size={14} ariaHidden />
+              Edit
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="mcp-server-tools"
+            aria-label={`Configure tools for ${server.name}`}
+            title="Configure tools"
+            onClick={onTools}
+          >
+            <IconFilter2 size={14} ariaHidden />
+            Tools
+          </button>
+          <button
+            type="button"
+            className="mcp-server-delete"
+            aria-label={`Delete ${server.name}`}
+            title="Delete server"
             disabled={pending}
-            aria-labelledby={labelId}
-            onCheckedChange={onToggle}
-          />
-          <span className="mcp-server-timing" aria-hidden>
-            {pending ? "Saving" : "Restart to apply"}
+            onClick={onDelete}
+          >
+            <IconTrashCan size={14} ariaHidden />
+          </button>
+          <span className="mcp-server-toggle">
+            <Switch
+              checked={server.enabled}
+              disabled={pending}
+              aria-labelledby={labelId}
+              onCheckedChange={onToggle}
+            />
+            <span className="mcp-server-timing" aria-hidden>
+              {pending ? "Saving" : "Restart to apply"}
+            </span>
           </span>
-        </span>
+        </div>
       </div>
+
+      {/* Below the main/actions columns so the sign-in panel spans the row. */}
+      {oauth ? (
+        <OauthStatus server={server} login={oauthLogin} testedOk={testedOk} onSignIn={onSignIn} />
+      ) : null}
     </li>
   );
 }
@@ -654,14 +738,30 @@ function StatusIcon({ tone }: { tone: "ok" | "error" | "neutral" }) {
 function OauthStatus({
   server,
   login,
+  testedOk,
   onSignIn,
 }: {
   server: HermesMcpServerInfo;
   login?: McpOauthLoginState;
+  /** True when the server's last test probe connected (or the listing says
+   * connected) — with cached tokens on disk that outranks an "unknown" status. */
+  testedOk?: boolean;
   onSignIn?: () => void;
 }) {
   const inFlight = login?.phase === "signing-in" || login?.phase === "waiting";
-  const meta = oauthStatusMeta(oauthStateFor(server, inFlight));
+  const baseState = oauthStateFor(server, inFlight);
+  // Fresher signals outrank a listing that reports no auth status (Hermes'
+  // GET does not carry token state for every transport): a sign-in that just
+  // completed, or a successful test probe (which needed the cached token to
+  // connect). A REPORTED needs-sign-in only yields to a completed login, not
+  // to a test - some servers list tools without auth.
+  const meta = oauthStatusMeta(
+    login?.phase === "done" && (baseState === "unknown" || baseState === "needs-sign-in")
+      ? "connected"
+      : testedOk && baseState === "unknown"
+        ? "connected"
+        : baseState,
+  );
   // The configure action is a setup step (client id/secret); a sign-in action
   // runs the browser flow. We only wire the sign-in here. Client-detail setup is
   // surfaced as guidance: this Hermes version configures client credentials in

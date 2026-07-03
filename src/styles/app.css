@@ -12810,11 +12810,18 @@ input:focus-visible,
 
 .mcp-server-row {
   display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* The main details + actions columns; the OAuth sign-in panel renders BELOW
+ * this row so it spans the card's full width. */
+.mcp-server-top {
+  display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
   align-items: start;
-  padding: var(--sp-4) 0;
-  border-bottom: 1px solid var(--border-subtle);
 }
 
 .mcp-server-row:last-child {
@@ -13303,13 +13310,37 @@ input:focus-visible,
 
 /* Lifecycle banner + durable notifications (same tones as installed skills). */
 .mcp-servers-lifecycle {
-  display: grid;
-  gap: var(--sp-px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
   padding: var(--sp-3) var(--sp-4);
   margin-bottom: var(--sp-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   background: var(--card);
+}
+
+.mcp-servers-lifecycle-main {
+  display: grid;
+  gap: var(--sp-px);
+  min-width: 0;
+}
+
+.mcp-servers-lifecycle-restart {
+  flex-shrink: 0;
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-servers-lifecycle-restart:hover {
+  opacity: 0.9;
 }
 
 .mcp-servers-lifecycle[data-tone="warning"] {

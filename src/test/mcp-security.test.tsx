@@ -388,6 +388,7 @@ function serversState(servers: HermesMcpServerInfo[], setEnabled = vi.fn()) {
     test: vi.fn(),
     add: vi.fn(),
     remove: vi.fn(),
+    restartGateway: vi.fn(),
     dismissNotification: vi.fn(),
   };
 }

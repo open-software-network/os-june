@@ -147,7 +147,7 @@ const STATE_META: Readonly<Record<McpOauthStatus, McpOauthStatusMeta>> = Object.
   unknown: {
     state: "unknown",
     label: "Sign-in status unknown",
-    blurb: "Hermes did not report this server's sign-in status.",
+    blurb: "The sign-in status was not reported. Sign in to refresh it.",
     tone: "neutral",
     action: "sign-in",
     actionLabel: "Sign in",

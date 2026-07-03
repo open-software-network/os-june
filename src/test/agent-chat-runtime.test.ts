@@ -625,6 +625,54 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  // Regression: `reasoning.available` replays the FULL thought after streamed
+  // deltas (or arrives alone from a whole-block reasoning model). Replace, not
+  // append — exactly one copy of the thought either way.
+  it("replaces the thought on a full reasoning event instead of duplicating it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          delta: "I should prefer",
+        }),
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.200Z",
+          delta: "ably use Homebrew.",
+        }),
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.300Z",
+          delta: "I should preferably use Homebrew.",
+          full: true,
+        }),
+      ],
+    );
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "I should preferably use Homebrew.",
+        status: "running",
+      },
+    ]);
+
+    // Whole-block models emit ONLY the full frame: the part is created.
+    const soloTurns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          delta: "One whole thought.",
+          full: true,
+        }),
+      ],
+    );
+    expect(soloTurns[0]?.parts).toEqual([
+      { type: "reasoning", text: "One whole thought.", status: "running" },
+    ]);
+  });
+
   it("closes a running reasoning turn when only a terminal lifecycle event follows", () => {
     const turns = buildAgentChatTurns(
       [],

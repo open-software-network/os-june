@@ -132,6 +132,14 @@ export class McpOauthController {
     if (this.logins.get(server)?.phase === "signing-in") return;
     this.setLogin(server, { phase: "signing-in" });
 
+    // Present as June on the provider's consent screen: the runtime registers
+    // its OAuth client with `oauth.client_name` from the server's config
+    // (default "Hermes Agent"), and a re-login re-registers, so writing the
+    // name BEFORE the flow is enough. A user-set custom name is never
+    // overwritten, and a failure here is non-fatal (the name is cosmetic).
+    await this.ensureClientName(server);
+    if (this.disposed) return;
+
     let result: HermesMcpOauthLoginResult;
     try {
       result = await this.bridge({
@@ -179,6 +187,39 @@ export class McpOauthController {
 
   clear(server: string): void {
     if (this.logins.delete(server)) this.recompute();
+  }
+
+  /** Writes `mcp_servers.<server>.oauth.client_name = "June"` when no client
+   * name is configured, so the provider's consent screen says June, not the
+   * runtime's default. Read-check first so a custom name survives; silent on
+   * any failure (cosmetic, and the sign-in must not be blocked by it). The
+   * write goes through the scoped config path, so nothing else on the server
+   * is touched, and no notification/banner is raised (nothing to restart for). */
+  private async ensureClientName(server: string): Promise<void> {
+    try {
+      const current = await this.engine.client.config.get();
+      const tree = current.config as Record<string, unknown> | undefined;
+      const servers =
+        tree && typeof tree === "object"
+          ? (tree.mcp_servers as Record<string, unknown> | undefined)
+          : undefined;
+      const entry =
+        servers && typeof servers === "object"
+          ? (servers[server] as Record<string, unknown> | undefined)
+          : undefined;
+      const oauth =
+        entry && typeof entry === "object"
+          ? (entry.oauth as Record<string, unknown> | undefined)
+          : undefined;
+      const existing = oauth && typeof oauth === "object" ? oauth.client_name : undefined;
+      if (typeof existing === "string" && existing.trim().length > 0) return;
+      await this.engine.client.config.setValueAtSegments(
+        ["mcp_servers", server, "oauth", "client_name"],
+        "June",
+      );
+    } catch {
+      // Cosmetic only: a failed read/write must never block the sign-in.
+    }
   }
 
   /** Re-probes the server (so its token status updates) and applies the cache

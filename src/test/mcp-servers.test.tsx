@@ -614,6 +614,42 @@ describe("mcp servers — controller", () => {
     controller.dispose();
   });
 
+  // Regression: rows opened as "Not tested" + "status unknown" until the user
+  // clicked Test by hand. The first load now probes enabled, untested servers
+  // in the background — quietly, so the notification tray is not spammed.
+  it("auto-probes untested enabled servers quietly after the first load", async () => {
+    const harness = makeAdminHarness({
+      mcpServers: [
+        {
+          name: "fresh",
+          enabled: true,
+          transport: "stdio",
+          command: "mcp-server-fresh",
+          status: "untested",
+          tools: [{ name: "ping" }],
+        },
+        {
+          name: "off",
+          enabled: false,
+          transport: "stdio",
+          command: "mcp-server-off",
+          status: "untested",
+        },
+      ],
+    });
+    const controller = new McpServersController(harness as McpServersEngine);
+    await controller.load();
+
+    await waitFor(() => {
+      expect(controller.getSnapshot().tests.get("fresh")?.result?.ok).toBe(true);
+    });
+    // Disabled servers are left alone, and quiet probes raise no notifications.
+    expect(controller.getSnapshot().tests.has("off")).toBe(false);
+    expect(harness.cache.getNotifications()).toHaveLength(0);
+
+    controller.dispose();
+  });
+
   it("removes a server through the real client", async () => {
     const harness = makeAdminHarness(mcpStdioWithToolsScenario());
     const controller = new McpServersController(harness as McpServersEngine);
@@ -696,6 +732,7 @@ function stubState(
     test: vi.fn(() => Promise.resolve({ pending: false })),
     add: vi.fn(() => Promise.resolve(true)),
     remove: vi.fn(() => Promise.resolve(true)),
+    restartGateway: vi.fn(),
     dismissNotification: vi.fn(),
     ...overrides,
   };
@@ -934,21 +971,30 @@ describe("McpServersView — component", () => {
     expect(refresh).toHaveBeenCalled();
   });
 
-  it("renders the restart-required lifecycle banner when a change is pending", () => {
+  it("renders the restart banner as a friendly prompt with a working Restart now button", () => {
+    const restartGateway = vi.fn();
     render(
       <McpServersView
         state={stubState({
           servers: VIEW_SERVERS,
+          restartGateway,
           lifecycle: {
             state: "gateway-restart-required",
-            label: "Restart required",
-            detail: "Restart the Hermes gateway to apply your changes.",
+            label: "Restart to apply your changes",
+            detail: "Your changes are saved. Restart the agent to start using them.",
             canRestart: true,
           },
         })}
       />,
     );
-    expect(screen.getByText("Restart required")).toBeInTheDocument();
+    expect(screen.getByText("Restart to apply your changes")).toBeInTheDocument();
+    // The MCP page swaps in its own body copy naming the MCP tools.
+    expect(screen.getByText(/using your MCP tools/i)).toBeInTheDocument();
+    // The pending restart reads as info (an expected step), never a warning.
+    const banner = document.querySelector(".mcp-servers-lifecycle");
+    expect(banner?.getAttribute("data-tone")).toBe("info");
+    fireEvent.click(screen.getByRole("button", { name: /restart now/i }));
+    expect(restartGateway).toHaveBeenCalled();
   });
 });
 

@@ -170,6 +170,22 @@ describe("classifyHermesEvent — reasoning", () => {
         sessionId: "sess-1",
         delta: "mmm",
       });
+      expect((result as { full?: boolean }).full).toBeUndefined();
+    }
+  });
+
+  // Regression: whole-block reasoning models emit `reasoning.available` with
+  // the full text; it used to land as `unsupported` and raise the scary
+  // "event June does not support yet" banner mid-answer.
+  it("maps thinking.available and reasoning.available to full reasoning", () => {
+    for (const name of ["thinking.available", "reasoning.available"]) {
+      const result = classifyHermesEvent(event(name, { text: "the whole thought" }));
+      expect(result).toMatchObject({
+        kind: "reasoning",
+        sessionId: "sess-1",
+        delta: "the whole thought",
+        full: true,
+      });
     }
   });
 });

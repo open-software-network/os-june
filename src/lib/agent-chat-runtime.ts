@@ -479,7 +479,15 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
       case "reasoning": {
         currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
         currentAssistant.status = "running";
-        appendReasoningPart(currentAssistant.parts, event.delta);
+        if (event.full) {
+          // A `*.available` frame carries the FULL reasoning text: replace the
+          // thought instead of appending, so a replay after streamed deltas
+          // (or a whole-block reasoning model with no deltas at all) renders
+          // exactly one copy.
+          replaceReasoningPart(currentAssistant.parts, event.delta);
+        } else {
+          appendReasoningPart(currentAssistant.parts, event.delta);
+        }
         break;
       }
 
@@ -821,6 +829,19 @@ function appendReasoningPart(parts: AgentChatPart[], delta: string) {
     return;
   }
   parts.push({ type: "reasoning", text: delta, status: "running" });
+}
+
+/** Replaces the last reasoning part's text with the authoritative full text
+ * (a `reasoning.available` frame), creating the part when none streamed. */
+function replaceReasoningPart(parts: AgentChatPart[], text: string) {
+  if (!text) return;
+  const last = parts.at(-1);
+  if (last?.type === "reasoning") {
+    last.text = text;
+    last.status = "running";
+    return;
+  }
+  parts.push({ type: "reasoning", text, status: "running" });
 }
 
 function completeRunningParts(parts: AgentChatPart[]) {

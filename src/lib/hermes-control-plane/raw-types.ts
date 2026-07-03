@@ -46,6 +46,8 @@ export type RawHermesEventName =
   | "message.complete"
   | "thinking.delta"
   | "reasoning.delta"
+  | "thinking.available"
+  | "reasoning.available"
   | "status.update"
   // Tools
   | "tool.start"

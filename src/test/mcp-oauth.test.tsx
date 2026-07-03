@@ -1,4 +1,4 @@
-import { render, renderHook, screen, act } from "@testing-library/react";
+import { render, renderHook, screen, act, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   McpOauthController,
@@ -246,6 +246,56 @@ describe("mcp oauth — controller", () => {
     controller.dispose();
   });
 
+  // June presents as June: the runtime registers its OAuth client with the
+  // server's `oauth.client_name` (default "Hermes Agent"), so June writes its
+  // own name before the flow and the provider's consent screen says June.
+  it("writes the June client name into the server's oauth config before signing in", async () => {
+    const harness = makeAdminHarness(mcpOAuthAuthMissingScenario());
+    const controller = new McpOauthController(harness as McpServersEngine, {
+      bridge: bridgeResolving({ ok: true, message: "Authorized linear." }),
+    });
+
+    await controller.signIn("linear");
+
+    const after = await harness.client.config.get();
+    const servers = (after.config as Record<string, unknown>).mcp_servers as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect((servers.linear.oauth as Record<string, unknown>).client_name).toBe("June");
+
+    controller.dispose();
+  });
+
+  it("never overwrites a custom oauth client name", async () => {
+    const harness = makeAdminHarness({
+      ...mcpOAuthAuthMissingScenario(),
+      config: {
+        mcp_servers: {
+          linear: {
+            url: "https://mcp.linear.app/sse",
+            auth: "oauth",
+            oauth: { client_name: "My Company" },
+          },
+        },
+      },
+    });
+    const controller = new McpOauthController(harness as McpServersEngine, {
+      bridge: bridgeResolving({ ok: true }),
+    });
+
+    await controller.signIn("linear");
+
+    const after = await harness.client.config.get();
+    const servers = (after.config as Record<string, unknown>).mcp_servers as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect((servers.linear.oauth as Record<string, unknown>).client_name).toBe("My Company");
+
+    controller.dispose();
+  });
+
   it("leaves the row waiting (not failed) when the bridge times out", async () => {
     const harness = makeAdminHarness(mcpOAuthAuthMissingScenario());
     const testSpy = vi.spyOn(harness.client.mcp, "testServer");
@@ -325,9 +375,12 @@ describe("mcp oauth — controller", () => {
 
     void controller.signIn("linear");
     void controller.signIn("linear"); // ignored while in flight
-    expect(bridge).toHaveBeenCalledTimes(1);
+    // The client-name config check runs (async) before the bridge, so flush
+    // until the FIRST call reaches the bridge; the second must never arrive.
+    await waitFor(() => expect(bridge).toHaveBeenCalledTimes(1));
     resolve?.();
     await Promise.resolve();
+    expect(bridge).toHaveBeenCalledTimes(1);
 
     controller.dispose();
   });
@@ -374,6 +427,7 @@ function oauthServersState(): McpServersState {
     test: () => Promise.resolve({ pending: false }),
     add: () => Promise.resolve(false),
     remove: () => Promise.resolve(false),
+    restartGateway: () => {},
     dismissNotification: () => {},
   } as McpServersState;
 }
@@ -440,6 +494,44 @@ describe("mcp oauth — McpServersView", () => {
       button.click();
     });
     expect(signIn).toHaveBeenCalledWith("todoist");
+  });
+
+  // Regression: after an app restart the login map is empty and the listing
+  // still reports no auth status, but the cached token is on disk. A
+  // successful test probe is proof enough: the panel reads "Signed in", not
+  // "Sign-in status unknown".
+  it("shows Signed in when a test probe succeeded and the listing reports no status", () => {
+    const base = oauthServersState();
+    const todoist = parseMcpServer({
+      name: "todoist",
+      enabled: true,
+      transport: "http",
+      url: "https://ai.todoist.net/mcp",
+      auth: "oauth",
+    });
+    if (!todoist) throw new Error("fixture did not parse");
+    const state: McpServersState = {
+      ...base,
+      servers: [todoist],
+      tests: new Map([
+        [
+          "todoist",
+          {
+            pending: false,
+            result: { name: "todoist", ok: true, tools: [{ name: "get_tasks" }], raw: {} },
+          },
+        ],
+      ]),
+    };
+    const oauth: McpOauthState = {
+      logins: new Map(),
+      signIn: () => {},
+      clear: () => {},
+      busy: false,
+    };
+    render(<McpServersView state={state} oauth={oauth} />);
+    expect(screen.getByText("Signed in")).toBeInTheDocument();
+    expect(screen.queryByText(/status unknown/i)).not.toBeInTheDocument();
   });
 
   it("shows the waiting state and a manual sign-in link while signing in", () => {

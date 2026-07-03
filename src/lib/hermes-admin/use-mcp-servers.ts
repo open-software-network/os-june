@@ -25,7 +25,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { hermesBridgeStatus, type HermesBridgeStatus } from "../tauri";
-import { AdminStateCache, type AdminNotification } from "./cache";
+import { AdminStateCache, resourcesForMutation, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import type { HermesAddMcpServerPayload } from "./client";
 import { HermesAdminError } from "./errors";
@@ -88,6 +88,10 @@ export type McpServersState = {
   add: (payload: HermesAddMcpServerPayload) => Promise<boolean>;
   /** Removes a server. Resolves true on success. */
   remove: (name: string) => Promise<boolean>;
+  /** Restarts the agent gateway to apply pending changes. The lifecycle banner
+   * drives through restart-in-progress and the server list refreshes when the
+   * post-restart invalidation lands. */
+  restartGateway: () => void;
   dismissNotification: (id: string) => void;
 };
 
@@ -111,6 +115,7 @@ export class McpServersController {
   private listeners = new Set<() => void>();
   private disposed = false;
   private loadSeq = 0;
+  private autoProbed = false;
   private unsubscribers: Array<() => void> = [];
   private snapshot: McpServersState;
 
@@ -185,6 +190,7 @@ export class McpServersController {
       this.error = undefined;
       this.retryable = false;
       this.recompute();
+      this.maybeAutoProbe();
     } catch (error) {
       if (this.disposed || seq !== this.loadSeq) return;
       const adminError = HermesAdminError.from("GET /api/mcp/servers", error);
@@ -228,14 +234,38 @@ export class McpServersController {
   }
 
   /**
+   * Probes every enabled server that has no reported status and no test result
+   * yet, in the background, so rows come up with a real connection / sign-in
+   * status instead of "Not tested" + "status unknown". Runs ONCE per controller
+   * lifetime (not on every cache-driven reload): the probes are quiet — they
+   * refresh state but raise no "Tested ..." notifications.
+   */
+  private maybeAutoProbe(): void {
+    if (this.autoProbed) return;
+    this.autoProbed = true;
+    const candidates = this.servers.filter(
+      (server) =>
+        server.enabled &&
+        !this.tests.has(server.name) &&
+        (server.status === undefined ||
+          server.status === "untested" ||
+          server.status === "unknown"),
+    );
+    for (const server of candidates) {
+      void this.test(server.name, { quiet: true });
+    }
+  }
+
+  /**
    * Probes a server's connection. Stores the discovered tools / resources /
    * prompts or a clear error in `tests[name]`. A test is a PROBE: it persists
    * nothing, so a test-only draft's secrets never round-trip into state here (the
    * add flow is the only place a payload is sent). On a successful probe the
    * cache rule still invalidates the server list (mcp.test) so a freshly-tested
-   * server reflects its new status.
+   * server reflects its new status. A `quiet` probe (the background auto-probe)
+   * still refreshes state but raises no "Tested ..." notification.
    */
-  async test(name: string): Promise<McpTestState> {
+  async test(name: string, options?: { quiet?: boolean }): Promise<McpTestState> {
     this.setTest(name, { pending: true });
     this.error = undefined;
     this.recompute();
@@ -246,7 +276,11 @@ export class McpServersController {
       this.setTest(name, state);
       // A test is immediate (it changes nothing durable), but the rule refreshes
       // the server list so the row's last-test status updates.
-      this.engine.cache.afterMutation(outcome.mutation, name);
+      if (options?.quiet) {
+        this.engine.cache.invalidate(resourcesForMutation(outcome.mutation));
+      } else {
+        this.engine.cache.afterMutation(outcome.mutation, name);
+      }
       await this.load();
       return state;
     } catch (error) {
@@ -350,6 +384,7 @@ export class McpServersController {
       test: this.testAction,
       add: this.addAction,
       remove: this.removeAction,
+      restartGateway: this.restartGatewayAction,
       dismissNotification: this.dismissNotificationAction,
     };
   }
@@ -371,6 +406,13 @@ export class McpServersController {
   private readonly addAction = (payload: HermesAddMcpServerPayload): Promise<boolean> =>
     this.add(payload);
   private readonly removeAction = (name: string): Promise<boolean> => this.remove(name);
+  private readonly restartGatewayAction = (): void => {
+    // The lifecycle drives the banner (restart-in-progress -> clean /
+    // restart-failed) and, on success, invalidates the post-restart resources;
+    // the mcpServers invalidation triggers this controller's reload
+    // subscription, so no explicit load() is needed here.
+    void this.engine.lifecycle.requestRestart({});
+  };
   private readonly dismissNotificationAction = (id: string): void => {
     this.dismissNotification(id);
   };
@@ -427,6 +469,7 @@ const UNAVAILABLE_STATE: McpServersState = Object.freeze({
   test: () => Promise.resolve({ pending: false }),
   add: () => Promise.resolve(false),
   remove: () => Promise.resolve(false),
+  restartGateway: () => {},
   dismissNotification: () => {},
 }) as McpServersState;
 
