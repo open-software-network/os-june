@@ -9,7 +9,7 @@
 
 use crate::{
     retry::{self, UpstreamAttemptError},
-    venice::PROVIDER_NAME,
+    venice::{PROVIDER_NAME, user_venice_key_auth_error},
 };
 use async_trait::async_trait;
 use june_config::UpstreamConfig;
@@ -61,9 +61,11 @@ impl VeniceAugment {
             url: format!("{}{}", self.base_url, endpoint.path),
             client_error_reason: endpoint.client_error_reason,
         };
-        let api_key = venice_api_key(&self.api_key, provider_credentials);
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-            let error = match self.post_augment_once(&endpoint, body, api_key).await {
+            let error = match self
+                .post_augment_once(&endpoint, body, provider_credentials)
+                .await
+            {
                 Ok(parsed) => return Ok(parsed),
                 Err(error) => error,
             };
@@ -81,12 +83,13 @@ impl VeniceAugment {
         &self,
         endpoint: &ResolvedAugmentEndpoint,
         body: &B,
-        api_key: &str,
+        provider_credentials: &ProviderCredentials,
     ) -> Result<T, UpstreamAttemptError>
     where
         B: Serialize,
         T: DeserializeOwned,
     {
+        let api_key = venice_api_key(&self.api_key, provider_credentials);
         let response = self
             .http
             .post(&endpoint.url)
@@ -115,6 +118,9 @@ impl VeniceAugment {
                 return Err(UpstreamAttemptError::fatal(DomainError::InvalidInput {
                     reason: endpoint.client_error_reason.to_string(),
                 }));
+            }
+            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
+                return Err(UpstreamAttemptError::fatal(error));
             }
             return Err(UpstreamAttemptError {
                 error: DomainError::UpstreamProvider,

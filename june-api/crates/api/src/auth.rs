@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, header};
 use june_domain::{ProviderCredentials, UserId};
 
 const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
+const VENICE_API_KEY_PREFIX: &str = "VENICE_INFERENCE_KEY_";
 
 pub(crate) async fn authenticated_user(
     state: &ApiState,
@@ -45,5 +46,53 @@ pub(crate) fn provider_credentials(headers: &HeaderMap) -> Result<ProviderCreden
         venice_api_key.as_deref(),
         validation::MAX_PROVIDER_API_KEY_CHARS,
     )?;
+    if let Some(api_key) = venice_api_key.as_deref() {
+        validate_venice_api_key(api_key)?;
+    }
     Ok(ProviderCredentials { venice_api_key })
+}
+
+fn validate_venice_api_key(api_key: &str) -> Result<(), ApiError> {
+    if !api_key.starts_with(VENICE_API_KEY_PREFIX) || api_key.chars().any(char::is_control) {
+        return Err(ApiError::bad_request("venice_api_key_invalid"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VENICE_API_KEY_HEADER, provider_credentials};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn provider_credentials_accepts_prefixed_venice_key() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            VENICE_API_KEY_HEADER,
+            HeaderValue::from_static("VENICE_INFERENCE_KEY_valid"),
+        );
+
+        let credentials = provider_credentials(&headers).expect("key should parse");
+
+        assert_eq!(
+            credentials.venice_api_key.as_deref(),
+            Some("VENICE_INFERENCE_KEY_valid")
+        );
+    }
+
+    #[test]
+    fn provider_credentials_rejects_wrong_venice_key_prefix() {
+        let mut headers = HeaderMap::new();
+        headers.insert(VENICE_API_KEY_HEADER, HeaderValue::from_static("sk_wrong"));
+
+        let error = provider_credentials(&headers).expect_err("key should fail");
+
+        assert!(matches!(
+            error,
+            crate::ApiError::BadRequest {
+                message,
+                ..
+            } if message == "venice_api_key_invalid"
+        ));
+    }
 }

@@ -21,6 +21,9 @@ pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
+const VENICE_API_KEY_PREFIX: &str = "VENICE_INFERENCE_KEY_";
+const VENICE_API_BASE_URL: &str = "https://api.venice.ai/api/v1";
+const VENICE_API_KEY_VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_VENICE_API_KEY_CHARS: usize = 4_096;
 
 // Kept exported under the legacy names so existing callers compile until they
@@ -29,6 +32,7 @@ pub use PROVIDER_OPENAI as OPENAI_PROVIDER;
 pub use PROVIDER_VENICE as VENICE_PROVIDER;
 
 static MODEL_SETTINGS: OnceLock<Mutex<ProviderModelSettings>> = OnceLock::new();
+static VENICE_VERIFY_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 pub struct ProviderSettingsState {
     path: PathBuf,
@@ -491,16 +495,18 @@ pub async fn edit_image(
 }
 
 #[tauri::command]
-pub fn set_venice_api_key(
+pub async fn set_venice_api_key(
     state: State<'_, ProviderSettingsState>,
     request: SetVeniceApiKeyRequest,
 ) -> Result<ProviderModelSettingsDto, AppError> {
-    let api_key = normalize_api_key_for_save(&request.api_key).ok_or_else(|| {
+    let api_key = normalize_api_key(&request.api_key).ok_or_else(|| {
         AppError::new(
             "venice_api_key_required",
             "Enter a Venice API key before saving.",
         )
     })?;
+    validate_venice_api_key_format(&api_key)?;
+    verify_venice_api_key(&api_key).await?;
     update_settings(&state, |settings| {
         settings.venice_api_key = Some(api_key);
     })
@@ -866,9 +872,7 @@ fn normalize_api_key_option(value: Option<String>) -> Option<String> {
 
 fn normalize_api_key_for_save(value: &str) -> Option<String> {
     let value = normalize_api_key(value)?;
-    if value.chars().count() > MAX_VENICE_API_KEY_CHARS
-        || value.chars().any(|character| character.is_control())
-    {
+    if value.chars().count() > MAX_VENICE_API_KEY_CHARS || value.chars().any(char::is_control) {
         None
     } else {
         Some(value)
@@ -882,6 +886,64 @@ fn normalize_api_key(value: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
+}
+
+fn validate_venice_api_key_format(value: &str) -> Result<(), AppError> {
+    if !value.starts_with(VENICE_API_KEY_PREFIX) {
+        return Err(AppError::new(
+            "venice_api_key_invalid",
+            "Venice API keys must start with VENICE_INFERENCE_KEY_.",
+        ));
+    }
+    if value.chars().count() > MAX_VENICE_API_KEY_CHARS
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(AppError::new(
+            "venice_api_key_invalid",
+            "Enter a valid Venice API key.",
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_venice_api_key(api_key: &str) -> Result<(), AppError> {
+    let url = format!("{VENICE_API_BASE_URL}/models");
+    let response = venice_verify_http_client()
+        .get(&url)
+        .query(&[("type", "text")])
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "venice_api_key_verification_failed",
+                "Could not verify the Venice API key. Check your connection and try again.",
+            )
+        })?;
+    match response.status() {
+        reqwest::StatusCode::OK => Ok(()),
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => Err(AppError::new(
+            "venice_api_key_rejected",
+            "Venice rejected this API key. Check the key and try again.",
+        )),
+        _ => Err(AppError::new(
+            "venice_api_key_verification_failed",
+            "Could not verify the Venice API key. Try again later.",
+        )),
+    }
+}
+
+fn venice_verify_http_client() -> &'static reqwest::Client {
+    VENICE_VERIFY_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(VENICE_API_KEY_VERIFY_TIMEOUT)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .user_agent("os-june/0.1")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
 }
 
 fn non_empty_or(value: String, fallback: &str) -> String {
@@ -1117,6 +1179,29 @@ mod tests {
         assert_eq!(sanitized.generation_provider, PROVIDER_VENICE);
         assert_eq!(sanitized.generation_model, "custom-remote-model");
         assert_eq!(sanitized.remote_generation_model, "custom-remote-model");
+    }
+
+    #[test]
+    fn venice_api_key_requires_inference_prefix() {
+        assert_eq!(
+            validate_venice_api_key_format("sk_wrong").unwrap_err().code,
+            "venice_api_key_invalid"
+        );
+        assert!(validate_venice_api_key_format("VENICE_INFERENCE_KEY_valid").is_ok());
+    }
+
+    #[test]
+    fn sanitize_settings_preserves_legacy_venice_api_key_for_actionable_error() {
+        let settings = ProviderModelSettings {
+            venice_api_key: Some("not-a-venice-inference-key".to_string()),
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+
+        assert_eq!(
+            sanitized.venice_api_key.as_deref(),
+            Some("not-a-venice-inference-key")
+        );
     }
 
     #[test]

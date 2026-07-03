@@ -7,7 +7,10 @@ use june_domain::{
     CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator, ProviderCredentials,
     TokenUsage, Transcriber, Transcript, TranscriptionRequest,
 };
-use reqwest::multipart::{Form, Part};
+use reqwest::{
+    StatusCode,
+    multipart::{Form, Part},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -194,6 +197,9 @@ impl VeniceTranscriber {
             let retryable = retry::is_retryable_status(status);
             let body = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, model = %model_id, body_bytes = body.len(), retryable, "venice: non-success response");
+            if let Some(error) = user_venice_key_auth_error(status, &request.provider_credentials) {
+                return Err(UpstreamAttemptError::fatal(error));
+            }
             return Err(UpstreamAttemptError {
                 error: DomainError::UpstreamProvider,
                 retryable,
@@ -401,12 +407,11 @@ impl VeniceChat {
     ) -> Result<ChatCompletionResponse, DomainError> {
         body.messages.insert(0, ChatMessage::safety_context());
         let url = format!("{}/chat/completions", self.base_url);
-        let api_key = venice_api_key(&self.api_key, provider_credentials);
         // Bounded retry on transient failures — same rationale as the
         // transcribers: metering settles only after success, so a replay
         // can never double-charge.
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-            let error = match self.complete_once(&url, &body, api_key).await {
+            let error = match self.complete_once(&url, &body, provider_credentials).await {
                 Ok(parsed) => return Ok(parsed),
                 Err(error) => error,
             };
@@ -429,8 +434,9 @@ impl VeniceChat {
         &self,
         url: &str,
         body: &ChatCompletionRequest,
-        api_key: &str,
+        provider_credentials: &ProviderCredentials,
     ) -> Result<ChatCompletionResponse, UpstreamAttemptError> {
+        let api_key = venice_api_key(&self.api_key, provider_credentials);
         let response = self
             .http
             .post(url)
@@ -451,6 +457,9 @@ impl VeniceChat {
             let retryable = retry::is_retryable_status(status);
             let body_text = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), retryable, "venice: chat non-success response");
+            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
+                return Err(UpstreamAttemptError::fatal(error));
+            }
             return Err(UpstreamAttemptError {
                 error: DomainError::UpstreamProvider,
                 retryable,
@@ -535,6 +544,9 @@ impl VeniceChat {
                 error_detail = %error_detail,
                 "venice: agent chat non-success response"
             );
+            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
+                return Err(error);
+            }
             return Err(DomainError::UpstreamProvider);
         }
         let usage = usage_from_chat_body(&body, &content_type)?;
@@ -567,6 +579,21 @@ fn venice_api_key<'a>(configured: &'a str, credentials: &'a ProviderCredentials)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(configured)
+}
+
+pub(crate) fn user_venice_key_auth_error(
+    status: StatusCode,
+    credentials: &ProviderCredentials,
+) -> Option<DomainError> {
+    if credentials.has_venice_api_key()
+        && matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+    {
+        Some(DomainError::InvalidInput {
+            reason: "venice_api_key_rejected".to_string(),
+        })
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1121,7 +1148,7 @@ mod tests {
     use june_config::ModelType;
     use june_config::UpstreamConfig;
     use june_domain::{
-        AgentChatCompleter, AgentChatRequest, GenerationRequest, Generator, ModelId,
+        AgentChatCompleter, AgentChatRequest, DomainError, GenerationRequest, Generator, ModelId,
         ProviderCredentials,
     };
     use pretty_assertions::assert_eq;
@@ -1516,6 +1543,47 @@ mod tests {
 
         assert_eq!(completion.usage.prompt_tokens, 1);
         assert_eq!(completion.usage.completion_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_reports_rejected_user_venice_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer VENICE_INFERENCE_KEY_bad"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "error": "Invalid API key"
+            })))
+            .mount(&server)
+            .await;
+        let agent = VeniceAgentChat::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "shared_venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let error = agent
+            .complete(AgentChatRequest {
+                body: json!({
+                    "model": "text-model",
+                    "messages": [{ "role": "user", "content": "hi" }],
+                }),
+                model: ModelId("text-model".to_string()),
+                provider_credentials: ProviderCredentials {
+                    venice_api_key: Some("VENICE_INFERENCE_KEY_bad".to_string()),
+                },
+            })
+            .await
+            .expect_err("bad user key should be rejected");
+
+        assert_eq!(
+            error,
+            DomainError::InvalidInput {
+                reason: "venice_api_key_rejected".to_string()
+            }
+        );
     }
 
     #[tokio::test]

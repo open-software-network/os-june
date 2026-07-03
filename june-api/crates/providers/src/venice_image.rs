@@ -8,7 +8,7 @@
 //! user-supplied Venice key for the upstream call.
 
 use crate::retry::{self, UpstreamAttemptError};
-use crate::venice::PROVIDER_NAME;
+use crate::venice::{PROVIDER_NAME, user_venice_key_auth_error};
 use async_trait::async_trait;
 use june_config::UpstreamConfig;
 use june_domain::{
@@ -50,8 +50,9 @@ impl VeniceImageGenerator {
         &self,
         url: &str,
         body: &VeniceImageRequest<'_>,
-        api_key: &str,
+        provider_credentials: &ProviderCredentials,
     ) -> Result<VeniceImageResponse, UpstreamAttemptError> {
+        let api_key = venice_api_key(&self.api_key, provider_credentials);
         let response = self
             .http
             .post(url)
@@ -80,6 +81,9 @@ impl VeniceImageGenerator {
                 return Err(UpstreamAttemptError::fatal(DomainError::InvalidInput {
                     reason: "image_generation_rejected".to_string(),
                 }));
+            }
+            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
+                return Err(UpstreamAttemptError::fatal(error));
             }
             return Err(UpstreamAttemptError {
                 error: DomainError::UpstreamProvider,
@@ -117,7 +121,6 @@ impl ImageGenerator for VeniceImageGenerator {
             safe_mode: request.safe_mode,
         };
         let url = format!("{}/image/generate", self.base_url);
-        let api_key = venice_api_key(&self.api_key, &request.provider_credentials);
         // Bounded retry on transient failures (connection reset, 429, 5xx),
         // same as the chat and augment paths. The service settles at most one
         // June charge after this call returns; a retry can cost at most one
@@ -128,7 +131,10 @@ impl ImageGenerator for VeniceImageGenerator {
         // expiring the credit hold before settlement.
         let attempts = async {
             for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-                let error = match self.generate_once(&url, &body, api_key).await {
+                let error = match self
+                    .generate_once(&url, &body, &request.provider_credentials)
+                    .await
+                {
                     Ok(parsed) => return image_from_response(parsed, &request.model.0),
                     Err(error) => error,
                 };

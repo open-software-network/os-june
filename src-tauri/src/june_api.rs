@@ -1529,6 +1529,18 @@ where
             "Your balance is too low. Upgrade to continue.",
         ));
     }
+    if envelope.message.as_deref() == Some("venice_api_key_invalid") {
+        return Err(AppError::new(
+            "venice_api_key_invalid",
+            "Your saved Venice API key is not an inference key. Open Settings and paste a key that starts with VENICE_INFERENCE_KEY_.",
+        ));
+    }
+    if envelope.message.as_deref() == Some("venice_api_key_rejected") {
+        return Err(AppError::new(
+            "venice_api_key_rejected",
+            "Venice rejected your saved API key. Open Settings and update it.",
+        ));
+    }
     let _ = path;
     let mut error = AppError::new(
         "june_request_failed",
@@ -1811,6 +1823,31 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(2_000)
         );
+    }
+
+    #[test]
+    fn venice_api_key_errors_are_mapped_to_user_action() {
+        let Err(invalid) = parse_response_body::<GenerateResponse>(
+            "/v1/notes/generate",
+            reqwest::StatusCode::BAD_REQUEST,
+            None,
+            r#"{"data":null,"success":false,"error_code":4000,"message":"venice_api_key_invalid"}"#,
+        ) else {
+            panic!("invalid Venice key should fail");
+        };
+        assert_eq!(invalid.code, "venice_api_key_invalid");
+        assert!(invalid.message.contains("VENICE_INFERENCE_KEY_"));
+
+        let Err(rejected) = parse_response_body::<GenerateResponse>(
+            "/v1/notes/generate",
+            reqwest::StatusCode::BAD_REQUEST,
+            None,
+            r#"{"data":null,"success":false,"error_code":4000,"message":"venice_api_key_rejected"}"#,
+        ) else {
+            panic!("rejected Venice key should fail");
+        };
+        assert_eq!(rejected.code, "venice_api_key_rejected");
+        assert!(rejected.message.contains("update it"));
     }
 
     #[test]

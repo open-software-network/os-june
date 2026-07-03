@@ -93,7 +93,7 @@ async fn integration_note_generate_forwards_venice_api_key_header() -> Result<()
             "transcript": "System: launch is Friday",
             "model": "text-model"
         }),
-        "vc_user_key",
+        "VENICE_INFERENCE_KEY_user",
     )?)
     .await;
 
@@ -104,7 +104,30 @@ async fn integration_note_generate_forwards_venice_api_key_header() -> Result<()
         body["data"]["content"],
         "Generated note body with user Venice key"
     );
-    assert!(!body.to_string().contains("vc_user_key"));
+    assert!(!body.to_string().contains("VENICE_INFERENCE_KEY_user"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_rejects_malformed_venice_api_key_header()
+-> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "model": "text-model"
+        }),
+        "sk_wrong",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "venice_api_key_invalid");
     Ok(())
 }
 
@@ -661,7 +684,7 @@ async fn integration_image_edit_accepts_body_at_configured_limit() -> Result<(),
         .oneshot(raw_json_request_with_venice_api_key(
             "/v1/image/edit",
             body,
-            "vc_user_key",
+            "VENICE_INFERENCE_KEY_user",
         )?)
         .await
     {
@@ -687,7 +710,7 @@ async fn integration_image_edit_rejects_body_over_configured_limit() -> Result<(
         .oneshot(raw_json_request_with_venice_api_key(
             "/v1/image/edit",
             body,
-            "vc_user_key",
+            "VENICE_INFERENCE_KEY_user",
         )?)
         .await
     {
@@ -1190,12 +1213,13 @@ struct FakeGenerator;
 #[async_trait]
 impl Generator for FakeGenerator {
     async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
-        let content =
-            if request.provider_credentials.venice_api_key.as_deref() == Some("vc_user_key") {
-                "Generated note body with user Venice key"
-            } else {
-                "Generated note body"
-            };
+        let content = if request.provider_credentials.venice_api_key.as_deref()
+            == Some("VENICE_INFERENCE_KEY_user")
+        {
+            "Generated note body with user Venice key"
+        } else {
+            "Generated note body"
+        };
         Ok(GeneratedNote {
             content: content.to_string(),
             title_suggestion: Some("Generated title".to_string()),

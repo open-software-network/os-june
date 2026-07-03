@@ -8,7 +8,7 @@
 //! charge) lives in the service; this provider does inference only.
 
 use crate::retry::{self, UpstreamAttemptError};
-use crate::venice::PROVIDER_NAME;
+use crate::venice::{PROVIDER_NAME, user_venice_key_auth_error};
 use async_trait::async_trait;
 use base64::Engine as _;
 use june_config::UpstreamConfig;
@@ -50,8 +50,9 @@ impl VeniceImageEditor {
         &self,
         url: &str,
         body: &VeniceImageEditBody<'_>,
-        api_key: &str,
+        provider_credentials: &ProviderCredentials,
     ) -> Result<GeneratedImage, UpstreamAttemptError> {
+        let api_key = venice_api_key(&self.api_key, provider_credentials);
         let response = self
             .http
             .post(url)
@@ -79,6 +80,9 @@ impl VeniceImageEditor {
                 return Err(UpstreamAttemptError::fatal(DomainError::InvalidInput {
                     reason: "image_edit_rejected".to_string(),
                 }));
+            }
+            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
+                return Err(UpstreamAttemptError::fatal(error));
             }
             return Err(UpstreamAttemptError {
                 error: DomainError::UpstreamProvider,
@@ -127,14 +131,16 @@ impl ImageEditor for VeniceImageEditor {
             safe_mode: request.safe_mode,
         };
         let url = format!("{}/image/edit", self.base_url);
-        let api_key = venice_api_key(&self.api_key, &request.provider_credentials);
         // Bounded retry on transient failures, same as the generator. The
         // service charges once AFTER a successful edit, so a retry never
         // double-charges; at most one extra upstream edit if a completed
         // response was lost, bounded by UPSTREAM_ATTEMPTS.
         let attempts = async {
             for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-                let error = match self.edit_once(&url, &body, api_key).await {
+                let error = match self
+                    .edit_once(&url, &body, &request.provider_credentials)
+                    .await
+                {
                     Ok(image) => return Ok(image),
                     Err(error) => error,
                 };
