@@ -127,8 +127,8 @@ symlink to `../../.agents/skills/<name>` — never a real directory. Add a new
 skill under `.agents/skills/<name>/` and create the `.claude/skills/<name>`
 symlink in the same change. Current project skills: `os-platform`,
 `os-accounts-integration`, `os-rust-backend`, `os-rust-backend-ci`,
-`os-task-prep`, `repo-build-pr`, `browser-test-tauri-fe`, `agent-e2e-qa`, plus
-the Spec Kit workflow skills (`speckit-*`). `make skills-update` /
+`os-task-prep`, `repo-build-pr`, `repo-review`, `browser-test-tauri-fe`,
+`agent-e2e-qa`, plus the Spec Kit workflow skills (`speckit-*`). `make skills-update` /
 `skills-restore` / `skills-sync` (thin wrappers over `npx skills`) refresh,
 restore from the lockfile, or re-link them.
 
