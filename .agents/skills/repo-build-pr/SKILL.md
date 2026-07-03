@@ -171,11 +171,11 @@ The upload reads the os-platform API key from `june-api/.env` (`JUNE__ISSUE_REPO
 
 ### Pre-publish review pass
 
-Green checks and a passing walkthrough are necessary, not sufficient: they prove the code does what its tests say, not that the diff is free of defects the tests never imagined. For any non-trivial diff, run an independent review pass before opening the draft PR:
+Green checks and a passing walkthrough are necessary, not sufficient: they prove the code does what its tests say, not that the diff is free of defects the tests never imagined. For any non-trivial diff, run the `repo-review` battery locally before opening the draft PR (load `.agents/skills/repo-review/SKILL.md`; `$repo-review` in Codex):
 
-1. Fan out a few cheap finder agents over the final diff, each with a distinct lens: line-by-line correctness, removed-behavior audit, cross-file callers and contracts, repo conventions.
-2. Verify every candidate finding to a CONFIRMED or REFUTED verdict with file:line evidence. Discard what does not survive verification; plausible-sounding findings that cannot name a failure scenario are noise.
-3. Route confirmed defects back to the implementer agent that owns the code, with the evidence, then re-run the relevant validation and re-review the changed area.
+1. Run all three axes over `origin/main...HEAD` — Standards and Spec as parallel sub-agents, and dispatch the adversarial axis to the *other* harness so the reviewer is not the model that wrote the change: from Claude Code, `.agents/skills/repo-review/scripts/run-codex.sh -a adversarial`; from Codex, `.../run-claude.sh -a adversarial`.
+2. Triage every finding to a disposition per the battery's aggregate step — fix-now, deliberate (amend the spec file), pre-existing parity (follow-up, checked against the fixed point), or refuted (with evidence). Verify before fixing; plausible-sounding findings that cannot name a failure scenario are noise.
+3. Route confirmed defects back to the implementer agent that owns the code, with the evidence, re-run the relevant validation, then re-run the adversarial axis until it approves (the battery's convergence loop).
 
 Skip this only for trivial diffs (docs, one-line fixes) and say so in the PR validation notes.
 
