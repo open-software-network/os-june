@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 import os
 import sys
 import urllib.error
@@ -45,6 +46,10 @@ EXTENSION_BY_MIME = {
     "image/jpeg": "jpg",
     "image/webp": "webp",
     "image/gif": "gif",
+}
+MIME_BY_EXTENSION = {
+    **{extension: mime_type for mime_type, extension in EXTENSION_BY_MIME.items()},
+    "jpeg": "image/jpeg",
 }
 
 
@@ -346,14 +351,22 @@ def write_image(images_dir: str, image_base64: str, mime_type: str) -> str:
 def read_image(source_dirs: list[str], filename: str) -> tuple[str, str]:
     path = resolve_source_image_path(source_dirs, filename)
     safe_name = os.path.basename(path)
+    mime_type = source_image_mime_type(path, safe_name)
     with open(path, "rb") as handle:
         data = handle.read()
-    extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else "png"
-    mime_type = next(
-        (mime for mime, ext in EXTENSION_BY_MIME.items() if ext == extension),
-        "image/png",
-    )
     return base64.b64encode(data).decode("ascii"), mime_type
+
+
+def source_image_mime_type(path: str, safe_name: str) -> str:
+    extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+    mime_type = MIME_BY_EXTENSION.get(extension)
+    if mime_type is None:
+        raise ValueError("source_filename must refer to a PNG, JPEG, WebP, or GIF image.")
+
+    guessed_mime = (mimetypes.guess_type(path)[0] or "").strip().lower()
+    if guessed_mime and guessed_mime != mime_type:
+        raise ValueError("source_filename must refer to a PNG, JPEG, WebP, or GIF image.")
+    return mime_type
 
 
 def resolve_source_image_path(source_dirs: list[str], filename: str) -> str:
