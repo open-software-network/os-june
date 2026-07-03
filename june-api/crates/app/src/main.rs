@@ -172,8 +172,20 @@ fn build_router(
     }));
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
-        generator: build_image_generator(clients.image, &config.upstreams.venice),
-        editor: build_image_editor(clients.image, &config.upstreams.venice),
+        generator: build_image_generator(
+            clients.image,
+            &config.upstreams.venice,
+            Duration::from_secs(image_client_timeout_secs(
+                config.server.request_timeout_secs,
+            )),
+        ),
+        editor: build_image_editor(
+            clients.image,
+            &config.upstreams.venice,
+            Duration::from_secs(image_client_timeout_secs(
+                config.server.request_timeout_secs,
+            )),
+        ),
         pricing: config
             .image_pricing
             .iter()
@@ -238,20 +250,24 @@ struct HttpClients<'a> {
 fn build_image_generator(
     upstream_http: &reqwest::Client,
     venice: &june_config::UpstreamConfig,
+    leg_budget: Duration,
 ) -> Arc<dyn june_domain::ImageGenerator> {
     Arc::new(VeniceImageGenerator::from_config(
         upstream_http.clone(),
         venice,
+        leg_budget,
     ))
 }
 
 fn build_image_editor(
     upstream_http: &reqwest::Client,
     venice: &june_config::UpstreamConfig,
+    leg_budget: Duration,
 ) -> Arc<dyn june_domain::ImageEditor> {
     Arc::new(VeniceImageEditor::from_config(
         upstream_http.clone(),
         venice,
+        leg_budget,
     ))
 }
 

@@ -1149,9 +1149,7 @@ mod tests {
         ImageEditParams, ImageGenerateParams, ImageModelPrice, ImageService, ImageServiceDeps,
     };
     use async_trait::async_trait;
-    use june_config::{
-        DEFAULT_REQUEST_TIMEOUT_SECS, IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS, ModelProvider,
-    };
+    use june_config::{DEFAULT_IMAGE_HOLD_TTL_SECS, ModelProvider};
     use june_domain::{
         Authorization, AuthorizeRequest, ChargeRequest, DomainError, GeneratedImage,
         ImageEditRequest, ImageEditor, ImageGenerationRequest, ImageGenerator, OsAccountsClient,
@@ -1842,7 +1840,7 @@ mod tests {
             Arc::new(TtlExpiringOsAccounts::new(clock.clone())),
             Arc::new(DelayedGenerator::new(clock, delayed_past_old_hold)),
             Arc::new(FixedEditor),
-            DEFAULT_REQUEST_TIMEOUT_SECS + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS,
+            DEFAULT_IMAGE_HOLD_TTL_SECS,
         );
 
         let output = service

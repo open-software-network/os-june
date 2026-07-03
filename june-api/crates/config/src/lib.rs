@@ -16,20 +16,40 @@ pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
-pub const IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS: u64 = 30;
-pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 =
-    DEFAULT_REQUEST_TIMEOUT_SECS - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
-pub const IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS: u64 = 30;
 /// OS Accounts rejects `/authorize` holds outside 1..=600 seconds as
 /// `invalid_ttl` (envelope code 4201). Keep in sync with
 /// `MAX_HOLD_TTL_SECONDS` in os-accounts `api/crates/services/src/grants.rs`.
 pub const OS_ACCOUNTS_MAX_HOLD_TTL_SECS: u64 = 600;
-/// The hold must outlive the image *client* timeout plus the settlement
-/// margin — not the whole route timeout: route timeout + margin (630) is past
-/// the OS Accounts cap and every image authorize was rejected `invalid_ttl`
-/// in production. 570 + 30 lands exactly on the 600-second cap.
+/// Budget reserved between the image client call ending and the hold
+/// expiring, sized to the WORST-CASE charge path, not a nominal grace:
+/// settling can spend `CHARGE_RETRY_ATTEMPTS` HTTP calls at the 60-second
+/// client timeout plus backoff (~121s) before giving up. Keep in sync with
+/// `CHARGE_RETRY_ATTEMPTS` / `CHARGE_RETRY_BACKOFF` (`os_accounts.rs`) and the
+/// default HTTP client timeout (`http.rs`) in june-providers — a contract test
+/// there pins this margin above that budget.
+pub const IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS: u64 = 150;
+/// Budget reserved before generation for the OS Accounts authorize call —
+/// it runs on the same 60-second default HTTP client (pinned by the same
+/// june-providers contract test as the settlement budget). The route's
+/// `TimeoutLayer` bounds authorize + generate + settle together, so the
+/// image client window must leave room for both metering legs.
+pub const OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS: u64 = 60;
+pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 = DEFAULT_REQUEST_TIMEOUT_SECS
+    - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
+    - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+/// The hold is minted after authorize returns and must cover generation
+/// plus settlement: 390 + 150 = 540, inside the 600-second platform cap.
+/// Anchoring on the route timeout instead produced 630, past the cap, and
+/// every image authorize was rejected `invalid_ttl` (4201) in production.
 pub const DEFAULT_IMAGE_HOLD_TTL_SECS: u64 =
-    DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS;
+    DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS + IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+// The full route budget must fit its three legs.
+const _: () = assert!(
+    OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
+        + DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS
+        + IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
+        <= DEFAULT_REQUEST_TIMEOUT_SECS
+);
 // Compile-time regression pin: a default past the cap fails every image
 // authorize as invalid_ttl (4201) in production.
 const _: () = assert!(DEFAULT_IMAGE_HOLD_TTL_SECS <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
@@ -42,7 +62,9 @@ const fn base64_encoded_len(byte_count: usize) -> usize {
 }
 
 pub const fn image_client_timeout_secs(route_timeout_secs: u64) -> u64 {
-    route_timeout_secs - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
+    route_timeout_secs
+        - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
+        - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -830,19 +852,21 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
 
 fn validate_image_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
     // The hold has to cover the image *client* timeout (route timeout minus
-    // the settlement margin) plus the hold margin. Anchoring on the route
-    // timeout instead demanded 630s, which OS Accounts rejects (see
-    // OS_ACCOUNTS_MAX_HOLD_TTL_SECS). Saturating math keeps this safe even
-    // when the route timeout is itself invalid (rejected by the margin check).
+    // the settlement budget) plus that same settlement budget for the charge
+    // path. Anchoring on the route timeout plus a margin demanded 630s, which
+    // OS Accounts rejects (see OS_ACCOUNTS_MAX_HOLD_TTL_SECS). Saturating
+    // math keeps this safe even when the route timeout is itself invalid
+    // (rejected by the margin check).
     let minimum = config
         .server
         .request_timeout_secs
+        .saturating_sub(OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS)
         .saturating_sub(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS)
-        .saturating_add(IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS);
+        .saturating_add(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS);
     if config.os_accounts.authorize_hold_ttl_image_secs < minimum {
         return Err(ConfigError::InvalidRequired {
             field: "os_accounts.authorize_hold_ttl_image_secs",
-            reason: "must cover the image client timeout plus the hold margin",
+            reason: "must cover the image client timeout plus the settlement budget",
         });
     }
     Ok(())
@@ -892,10 +916,12 @@ fn validate_hold_ttl_bounds(config: &AppConfig) -> Result<(), ConfigError> {
 }
 
 fn validate_image_timeout_margin(config: &AppConfig) -> Result<(), ConfigError> {
-    if config.server.request_timeout_secs <= IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS {
+    if config.server.request_timeout_secs
+        <= OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS + IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
+    {
         return Err(ConfigError::InvalidRequired {
             field: "server.request_timeout_secs",
-            reason: "must be > image settlement margin",
+            reason: "must exceed the authorize budget plus the image settlement margin",
         });
     }
     Ok(())
@@ -1025,9 +1051,9 @@ mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
         DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, IMAGE_EDIT_SOURCE_MAX_BYTES,
-        IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS, IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig,
-        ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
-        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
+        IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
+        OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
+        OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
         VENICE_API_KEY_PLACEHOLDERS, image_client_timeout_secs, validate,
     };
     use pretty_assertions::assert_eq;
@@ -1281,7 +1307,7 @@ mod tests {
         assert_eq!(
             config.os_accounts.authorize_hold_ttl_image_secs,
             image_client_timeout_secs(config.server.request_timeout_secs)
-                + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS
+                + IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
         );
         assert_eq!(
             config.os_accounts.authorize_hold_ttl_image_secs,
@@ -1346,9 +1372,9 @@ mod tests {
     #[test]
     fn validate_rejects_image_route_timeout_without_settlement_margin() {
         let mut config = valid_config();
-        config.server.request_timeout_secs = IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
-        config.os_accounts.authorize_hold_ttl_image_secs =
-            config.server.request_timeout_secs + IMAGE_HOLD_TTL_TIMEOUT_MARGIN_SECS;
+        config.server.request_timeout_secs =
+            OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS + IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+        config.os_accounts.authorize_hold_ttl_image_secs = DEFAULT_IMAGE_HOLD_TTL_SECS;
 
         let result = validate(&config);
 

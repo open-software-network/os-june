@@ -1,7 +1,8 @@
 use reqwest::Client;
 use std::time::Duration;
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub fn default_client() -> Client {

@@ -27,14 +27,22 @@ pub struct VeniceImageEditor {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    /// End-to-end budget for the whole edit leg INCLUDING retries (see
+    /// `VeniceImageGenerator::leg_budget`).
+    leg_budget: std::time::Duration,
 }
 
 impl VeniceImageEditor {
-    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+    pub fn from_config(
+        http: reqwest::Client,
+        config: &UpstreamConfig,
+        leg_budget: std::time::Duration,
+    ) -> Self {
         Self {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            leg_budget,
         }
     }
 
@@ -124,19 +132,28 @@ impl ImageEditor for VeniceImageEditor {
         // service charges once AFTER a successful edit, so a retry never
         // double-charges; at most one extra upstream edit if a completed
         // response was lost, bounded by UPSTREAM_ATTEMPTS.
-        for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-            let error = match self.edit_once(&url, &body, api_key).await {
-                Ok(image) => return Ok(image),
-                Err(error) => error,
-            };
-            if error.retryable && attempt + 1 < retry::UPSTREAM_ATTEMPTS {
-                tracing::warn!(%url, model = %request.model.0, attempt, "venice image edit: transient failure, retrying");
-                tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
-                continue;
+        let attempts = async {
+            for attempt in 0..retry::UPSTREAM_ATTEMPTS {
+                let error = match self.edit_once(&url, &body, api_key).await {
+                    Ok(image) => return Ok(image),
+                    Err(error) => error,
+                };
+                if error.retryable && attempt + 1 < retry::UPSTREAM_ATTEMPTS {
+                    tracing::warn!(%url, model = %request.model.0, attempt, "venice image edit: transient failure, retrying");
+                    tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
+                    continue;
+                }
+                return Err(error.error);
             }
-            return Err(error.error);
+            Err(DomainError::UpstreamProvider)
+        };
+        match tokio::time::timeout(self.leg_budget, attempts).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                tracing::error!(%url, model = %request.model.0, "venice image edit: edit leg budget exhausted");
+                Err(DomainError::UpstreamProvider)
+            }
         }
-        Err(DomainError::UpstreamProvider)
     }
 }
 
@@ -178,6 +195,7 @@ mod tests {
                 api_key: "test-key".to_string(),
                 base_url: base_url.to_string(),
             },
+            std::time::Duration::from_secs(5),
         )
     }
 

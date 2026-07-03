@@ -14,6 +14,33 @@ const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_IDEMPOTENCY_KEY_COLLISION: i64 = 4001;
 const CHARGE_RETRY_ATTEMPTS: u32 = 2;
 const CHARGE_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+// Compile-time budget contracts with june-config's image route arithmetic.
+//
+// The image hold TTL reserves `IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS` for the
+// charge path after generation. If the worst-case charge budget (every retry
+// spending the full HTTP timeout plus backoff) outgrew that margin, a
+// max-length generation would settle against an expired hold: June pays the
+// upstream and the user sees `metering_provider_failed`.
+const _: () = assert!(
+    (CHARGE_RETRY_ATTEMPTS as u64) * crate::http::DEFAULT_TIMEOUT_SECS
+        + ((CHARGE_RETRY_ATTEMPTS - 1) as u64) * next_second(CHARGE_RETRY_BACKOFF)
+        <= june_config::IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
+);
+// The authorize leg runs on the same default HTTP client; the image route
+// reserves this budget ahead of the generation window.
+const _: () = assert!(
+    crate::http::DEFAULT_TIMEOUT_SECS <= june_config::OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
+);
+
+/// Backoff rounded up to a whole second for the const budget arithmetic.
+const fn next_second(duration: std::time::Duration) -> u64 {
+    let secs = duration.as_secs();
+    if duration.subsec_nanos() > 0 {
+        secs + 1
+    } else {
+        secs
+    }
+}
 
 pub struct OsAccountsHttpClient {
     http: reqwest::Client,
