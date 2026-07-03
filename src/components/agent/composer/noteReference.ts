@@ -124,8 +124,14 @@ const NoteReferenceBase = Mention.extend({
   },
 });
 
+// The list_notes command defaults to the 100 most recent notes, which reads
+// as "that note doesn't exist" in the palette for heavy users. 500 keeps the
+// fetch cheap (one palette-open, lightweight rows) while covering realistic
+// libraries; server-side search is the follow-up if that ever falls short.
+const PALETTE_FETCH_LIMIT = 500;
+
 async function defaultFetchNotes() {
-  const response = await listNotes();
+  const response = await listNotes(undefined, PALETTE_FETCH_LIMIT);
   return response.items;
 }
 

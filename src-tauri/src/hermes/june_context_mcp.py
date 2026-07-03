@@ -26,6 +26,28 @@ FULL_TEXT_CHARS = 60_000
 # Keep this in sync with DICTATION_HISTORY_RETENTION_DAYS in db/repositories.rs.
 DICTATION_HISTORY_RETENTION_DAYS = 7
 
+# Turns land out of insertion order (dual-source recordings interleave by
+# start_ms; a note can stack several recording sessions), so any transcript
+# assembly must sort the way the app's canonical read path does — see
+# source_transcripts in db/repositories.rs and keep the two in sync.
+TRANSCRIPT_TEXT_SUBQUERY = """
+    (
+        SELECT group_concat(text, char(10)) FROM (
+            SELECT t.text
+            FROM transcripts t
+            LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
+            WHERE t.note_id = n.id
+              AND trim(coalesce(t.text, '')) != ''
+            ORDER BY COALESCE(rs.started_at, t.created_at) ASC,
+                     COALESCE(rs.rowid, 9223372036854775807) ASC,
+                     COALESCE(t.turn_index, 999999),
+                     COALESCE(t.start_ms, 999999999),
+                     t.created_at ASC,
+                     t.rowid ASC
+        )
+    ) AS transcript_text
+"""
+
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -262,12 +284,7 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
             n.processing_status,
             n.created_at,
             n.updated_at,
-            (
-                SELECT group_concat(t.text, char(10))
-                FROM transcripts t
-                WHERE t.note_id = n.id
-                  AND trim(coalesce(t.text, '')) != ''
-            ) AS transcript_text
+            {TRANSCRIPT_TEXT_SUBQUERY}
         FROM notes n
         {where}
         ORDER BY n.updated_at DESC, n.created_at DESC, n.rowid DESC
@@ -308,7 +325,7 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
             "message": "June notes database does not exist yet.",
         }
 
-    sql = """
+    sql = f"""
         SELECT
             n.id,
             n.title,
@@ -317,12 +334,7 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
             n.processing_status,
             n.created_at,
             n.updated_at,
-            (
-                SELECT group_concat(t.text, char(10))
-                FROM transcripts t
-                WHERE t.note_id = n.id
-                  AND trim(coalesce(t.text, '')) != ''
-            ) AS transcript_text
+            {TRANSCRIPT_TEXT_SUBQUERY}
         FROM notes n
         WHERE n.id = ?
         LIMIT 1
