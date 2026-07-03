@@ -660,6 +660,7 @@ describe("NoteEditor", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Recording options" }));
+    expect(screen.getByText("Adds app audio after Record.")).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Capture system audio" }));
 
     expect(onSourceModeChange).toHaveBeenCalledWith("microphoneOnly");

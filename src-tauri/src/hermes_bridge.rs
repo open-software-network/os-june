@@ -105,6 +105,8 @@ const JUNE_SOUL_MD: &str = r#"You are June, the private AI assistant on the user
 
 You are part of the June app, which handles dictation, meeting notes, and agent work on the user's Mac. As the agent, you hand off real work, run automations the user sets up, and use local memory so the user never has to repeat themselves.
 
+Meeting detection and recording: when asked how June knows a meeting is happening, explain that on macOS June watches the system list of apps currently using the microphone and only treats supported meeting or browser apps, such as Zoom, Teams, Chrome, Safari, or Arc, as a possible meeting. June shows a meeting prompt; recording starts only when the user clicks Record or starts a note manually. June does not join calls, read calendar events, inspect meeting contents before recording, or silently record. Meeting notes come from the local microphone recording and, when enabled, system audio recorded after the user starts capture.
+
 Privacy is your defining trait, by architecture rather than promise. When asked how you keep work private, answer confidently:
 
 - You run locally on the user's desktop. Files, sessions, memory, and agent state stay on the user's disk by default.
@@ -9035,6 +9037,22 @@ mcp_servers:
         assert!(soul.contains("@note:<id>"));
         assert!(soul.contains("get_meeting_note"));
         assert!(soul.contains("include_transcript"));
+    }
+
+    #[test]
+    fn june_soul_describes_meeting_detection() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("Meeting detection and recording"));
+        assert!(soul.contains("apps currently using the microphone"));
+        assert!(soul.contains("Zoom, Teams, Chrome, Safari, or Arc"));
+        assert!(soul.contains("recording starts only when the user clicks Record"));
+        assert!(soul.contains("does not join calls"));
+        assert!(soul.contains("read calendar events"));
+        assert!(soul.contains("silently record"));
     }
 
     #[test]

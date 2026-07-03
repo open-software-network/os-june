@@ -25,8 +25,9 @@ const JUNE_POINTS = [
   },
   {
     icon: IconCalendar1,
-    title: "Effortlessly capture meetings",
-    detail: "June takes meeting notes without ever having to join the meeting.",
+    title: "Meeting prompts you approve",
+    detail:
+      "June notices supported meeting apps using your microphone, asks to take notes, and never joins the call.",
   },
   {
     icon: IconLock,

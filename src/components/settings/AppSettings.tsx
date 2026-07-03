@@ -1489,7 +1489,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">System audio</h3>
                       <p className="settings-row-description">
-                        Capture audio from other apps along with your microphone.
+                        Include audio from other apps after you start recording.
                       </p>
                     </div>
                     <div className="settings-row-control">

@@ -58,7 +58,7 @@ describe("meeting detection HUD", () => {
 
     expect(hudElement().dataset.state).toBe("meeting");
     expect(document.querySelector("#hud-meeting-label")).toHaveTextContent("Meeting detected");
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom");
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom using mic");
     expect(document.querySelector("#hud-meeting-start")).toHaveTextContent("Record");
     expect(hudShowCalls()).toBe(1);
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_stop_bounds", {
@@ -91,7 +91,7 @@ describe("meeting detection HUD", () => {
     await Promise.resolve();
 
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom");
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom using mic");
     await vi.waitFor(() => expect(hudShowCalls()).toBe(1));
   });
 
@@ -120,7 +120,7 @@ describe("meeting detection HUD", () => {
       type: "meeting_detected",
       payload: { activeProcessCount: 2, appLabels: ["Zoom", "Chrome"] },
     });
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom, Chrome");
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Zoom, Chrome using mic");
 
     await emit("meeting-detection-event", { type: "meeting_detected" });
     expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Microphone in use");
@@ -140,7 +140,7 @@ describe("meeting detection HUD", () => {
     await Promise.resolve();
 
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Teams");
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Teams using mic");
   });
 
   it("emits a start transcription request when the button is clicked", async () => {

@@ -45,6 +45,21 @@ Tauri commands: `start_recording`, `pause_recording`, `resume_recording`,
 `get_recording_status`, `finish_recording`, `check_recording_source_readiness`,
 `recover_recording`, `get_microphone_permission_state`.
 
+## Meeting detection
+
+On macOS, June's meeting detector polls the system list of processes currently
+using the microphone once per second. It ignores June's own process and helper
+processes, requires the user to be signed in, and only treats supported meeting
+or browser app bundle prefixes as meeting candidates: Arc, Chrome, Safari,
+Teams, and Zoom.
+
+When one of those external apps is using the microphone and June is not already
+recording, the detector emits a `meeting-detection-event` with friendly app
+labels such as `Zoom` or `Chrome`. The HUD turns that into a prompt. Recording
+starts only after the user clicks Record, or when the user starts a note
+manually in the app. June does not join calls, read calendars, inspect meeting
+contents before recording, or silently start capture.
+
 ## System-audio helper IPC contract
 
 The helper is controlled and observed out-of-process (see ADR-0004):

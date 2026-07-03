@@ -762,7 +762,7 @@ let frameSettleTimer: number | undefined;
 
 function clearFrameSettleTimer() {
   if (frameSettleTimer !== undefined) {
-    window.clearTimeout(frameSettleTimer);
+    if (typeof window !== "undefined") window.clearTimeout(frameSettleTimer);
     frameSettleTimer = undefined;
   }
 }
@@ -773,6 +773,7 @@ function assertWindowMatchesPill() {
   clearFrameSettleTimer();
   frameSettleTimer = window.setTimeout(() => {
     frameSettleTimer = undefined;
+    if (typeof window === "undefined") return;
     const state = hud?.dataset.state;
     if (!hud || !state || state === "idle" || state === "exiting") return;
     const expected = measureWindowSize();
@@ -986,14 +987,14 @@ function showPendingMeetingPromptAfterOnboarding() {
   void showMeetingPrompt(meetingEvent);
 }
 
-// "Zoom" / "Zoom, Chrome" — the friendly labels Rust derives from the
+// "Zoom using mic" / "Zoom, Chrome using mic" — the friendly labels Rust derives from the
 // processes holding the microphone. Detection is mic-based, so when no
 // label survives validation, say what we actually know.
 function meetingAppLine(labels: unknown) {
   const names = Array.isArray(labels)
     ? labels.filter((label): label is string => typeof label === "string" && label.trim() !== "")
     : [];
-  return names.length > 0 ? names.join(", ") : "Microphone in use";
+  return names.length > 0 ? `${names.join(", ")} using mic` : "Microphone in use";
 }
 
 function pillIsBlank(state: string | undefined) {

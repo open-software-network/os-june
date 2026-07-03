@@ -17,7 +17,7 @@ import {
 } from "react";
 import type { NoteListItemDto } from "../../lib/tauri";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
-import { primaryShiftShortcutLabel } from "../../lib/platform";
+import { isMacLikePlatform, primaryShiftShortcutLabel } from "../../lib/platform";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 
@@ -133,6 +133,10 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
 
   const barMounted = selectedCount > 0 || exit !== null;
   const isExiting = selectedCount === 0 && exit !== null;
+  const macLikePlatform = isMacLikePlatform();
+  const subtitle = macLikePlatform
+    ? "June prompts when supported meeting apps use your microphone. You can also start a note manually."
+    : "Start a note manually when a meeting, call, or thought begins.";
 
   useEffect(() => {
     const noteIds = new Set(notes.map((note) => note.id));
@@ -203,7 +207,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
             Meeting notes
             {notes.length > 0 ? <span className="folders-count">{notes.length}</span> : null}
           </h1>
-          <p className="folders-subtitle">Everything across your workspace.</p>
+          <p className="folders-subtitle">{subtitle}</p>
         </div>
         <button
           type="button"
@@ -236,8 +240,8 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
         <EmptyState
           label="Create your first note"
           icon={<IconNoteText size={28} />}
-          title="Capture your first meeting"
-          description="Record a meeting, a phone call, or a half-formed thought. June transcribes it and writes the note for you."
+          title="Record your first conversation"
+          description="Start recording from June when a meeting, call, or thought begins. June transcribes it and writes the note for you."
           action={
             <button type="button" className="primary-action primary-solid" onClick={onCreateNote}>
               <IconPlusMedium size={13} />
