@@ -20,3 +20,8 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #612 | Spec (claude) | 0 | — | clean verdict, verified all 11 amendments individually, but missed the marker drift codex caught |
 | #612 | Adversarial (codex, 6 rounds) | 9 | 8 | steady 1-2/round narrowing; r6 was a restatement of a documented trade-off (loop exit); high precision, incremental depth |
 | #612 | Adversarial (claude, 1 round) | 4 | 4 | best single run of the cycle: bash 5.2 patsub, allowlist≠sandbox, git --output writes, sink drift; also reproduced the bash 3.2 crash live |
+| #615 | Standards (claude, r1+final) | 0 | — | clean twice; pre-cleared the get_meeting_note "meeting" naming call with entity-scoped reasoning |
+| #615 | Spec (claude, r1+final) | 0 | — | clean twice; individually verified amendments A1-A12 incl. the superseded-constraint trail |
+| #615 | Adversarial (claude, r1-r4) | 8 | 7 | found transcript scan-order + WHERE-divergence + draft-degrade chain; 1 deliberate (token-is-reference, ADR'd); r4 approve |
+| #615 | Adversarial (codex, r4-r6) | 2 | 2 | both high-value and missed by 4 claude rounds (search predicate on suppressed rows; cleared note body resurrection) — disjoint-blind-spots confirmed again; r6 approve |
+| #615 | Browser walkthrough (playwright) | 1 | 1 | @-trigger prefix bug invisible to jsdom (needed composed state); walkthroughs earn their cost on composer features |

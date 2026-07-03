@@ -178,6 +178,16 @@ A file or image imported into the Hermes workspace and referenced by path;
 images additionally get a structured `image.attach_bytes`.
 _Avoid_: upload (unqualified).
 
+**Note reference**:
+A plain-text token — `@note:<id>`, optionally followed by the quoted note
+title — that points the agent at one specific note. Inserted as a composer
+chip via `@`, seeded by "Ask June" on a note, or pasted from "Copy note
+reference"; the agent resolves it on demand through `june_context`'s
+`get_meeting_note` tool (see
+[ADR-0010](docs/adr/0010-note-references-in-agent-chat.md)).
+_Avoid_: note link (no URL or deep link is involved), note mention (the chip
+is UI; the reference is the token).
+
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,

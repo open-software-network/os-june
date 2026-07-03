@@ -5283,6 +5283,45 @@ input:focus-visible,
   outline-offset: 1px;
 }
 
+/* Inline note references are prompt content, not message metadata. They keep
+ * the category chip's atom affordance but use neutral note styling and allow
+ * several references in one composer message. */
+.agent-note-reference-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(calc(var(--sp-12) * 6), 100%);
+  gap: var(--sp-px);
+  vertical-align: baseline;
+  padding: var(--sp-px) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 58%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.agent-note-reference-chip-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-note-reference-chip-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-note-reference-chip.ProseMirror-selectednode {
+  outline: 2px solid color-mix(in oklch, var(--foreground) 24%, transparent);
+  outline-offset: var(--sp-px);
+}
+
 /* "/" suggestion palette + "+" popover share the floating-menu look. */
 .agent-category-menu-host {
   position: fixed;
@@ -5496,6 +5535,14 @@ input:focus-visible,
 .agent-category-menu-icon[data-category="feature"],
 .agent-attach-menu-icon[data-category="feature"] {
   color: var(--success);
+}
+
+.agent-note-suggestion-menu-label {
+  min-width: 0;
+}
+
+.agent-note-suggestion-menu-icon {
+  color: var(--muted-foreground);
 }
 
 /* Opens upward, just above the toolbar where the "+" trigger sits (the box
@@ -7726,17 +7773,38 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
-/* Overline — quiet metadata row sitting above the title. Date is plain
- * text; the folder chip is the one actionable affordance. Status (when
- * present) floats to the right end so it never crowds the chip. */
+/* Overline - quiet metadata row sitting above the title. Date and project
+ * stay left; note actions wrap on the right before they crowd the header. */
 .note-overline {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  width: 100%;
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
 
+.note-overline-meta,
+.note-header-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.note-overline-meta {
+  flex: 1 1 auto;
+}
+
+.note-header-actions {
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+
 .note-overline-date {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -7778,6 +7846,41 @@ input:focus-visible,
 .folder-chip:hover,
 .folder-chip[aria-expanded="true"] {
   background: var(--muted);
+  color: var(--foreground);
+}
+
+.note-header-ask,
+.note-reference-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-sm);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.note-header-ask {
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.note-reference-copy {
+  width: var(--control-sm);
+  padding: 0;
+}
+
+.note-header-ask:hover,
+.note-reference-copy:hover,
+.note-reference-copy[data-copied="true"] {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
 }
 

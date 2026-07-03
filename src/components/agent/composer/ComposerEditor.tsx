@@ -11,6 +11,13 @@ import {
   createCategoryChip,
   insertReportCategory,
 } from "./categoryChip";
+import {
+  NOTE_REFERENCE_NODE,
+  createNoteReference,
+  insertNoteReference,
+  noteReferenceToken,
+  type NoteReferenceInput,
+} from "./noteReference";
 import type { ReportCategory } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 
@@ -29,6 +36,9 @@ export type ComposerEditorHandle = {
   ) => void;
   /** Inserts or swaps the message's single category tag at the caret. */
   insertCategory: (category: ReportCategory) => void;
+  /** Inserts a note reference chip at the caret. Multiple references can
+   * coexist because they serialize into the prompt text. */
+  insertNoteReference: (ref: NoteReferenceInput) => void;
   isEmpty: () => boolean;
 };
 
@@ -43,12 +53,20 @@ type ComposerEditorProps = {
 };
 
 /** Serializes the doc to the plain string sent to June: paragraph and
- * hard-break boundaries become newlines, and the category chip (a leaf atom)
- * contributes nothing — its meaning rides along as the category, not as text. */
+ * hard-break boundaries become newlines, the category chip contributes
+ * nothing, and note reference atoms emit the stable token Hermes resolves via
+ * June's note context tool. */
 export function serializePlainText(doc: ProseMirrorNode): string {
-  return doc.textBetween(0, doc.content.size, "\n", (leaf) =>
-    leaf.type.name === "hardBreak" ? "\n" : "",
-  );
+  return doc.textBetween(0, doc.content.size, "\n", (leaf) => {
+    if (leaf.type.name === "hardBreak") return "\n";
+    if (leaf.type.name === NOTE_REFERENCE_NODE) {
+      return noteReferenceToken({
+        id: typeof leaf.attrs.noteId === "string" ? leaf.attrs.noteId : "",
+        title: typeof leaf.attrs.title === "string" ? leaf.attrs.title : "",
+      });
+    }
+    return "";
+  });
 }
 
 /** Focuses the editor with the caret at the end, synchronously. tiptap's
@@ -79,11 +97,43 @@ export function stripPlaceholder(text: string): { text: string; from: number; to
   };
 }
 
-function buildDoc(text: string, category?: ReportCategory | null) {
+/** Splits a line into text nodes and note-reference chips. Drafts persist as
+ * the serialized plain string, so a restored draft carries reference tokens
+ * as text; rebuilding the chip here keeps the pill UX across restores. The
+ * round-trip is lossless because serializePlainText re-emits the token. */
+function inlineContent(line: string) {
+  const nodes: Array<Record<string, unknown>> = [];
+  const tokenPattern = /@note:([\w-]+)(?: \("([^"]*)"\))?/g;
+  let consumed = 0;
+  for (const match of line.matchAll(tokenPattern)) {
+    if (match.index > consumed) {
+      nodes.push({ type: "text", text: line.slice(consumed, match.index) });
+    }
+    nodes.push({
+      type: NOTE_REFERENCE_NODE,
+      attrs: { noteId: match[1], title: match[2] ?? "" },
+    });
+    consumed = match.index + match[0].length;
+  }
+  if (consumed < line.length) {
+    nodes.push({ type: "text", text: line.slice(consumed) });
+  }
+  return nodes;
+}
+
+export function buildDoc(
+  text: string,
+  category?: ReportCategory | null,
+  options?: { rehydrateNoteTokens?: boolean },
+) {
+  // Placeholder-staged prefills skip rehydration: stripPlaceholder maps raw
+  // string indices to doc positions, which only holds while every character
+  // stays a size-1 text position — a chip atom would shift the selection.
+  const rehydrate = options?.rehydrateNoteTokens !== false;
   const paragraphs = text.split("\n").map((line) => ({
     type: "paragraph",
     // A text node may not be empty, so a blank line is an empty paragraph.
-    content: line ? [{ type: "text", text: line }] : [],
+    content: rehydrate ? inlineContent(line) : line ? [{ type: "text", text: line }] : [],
   }));
   if (paragraphs.length === 0) paragraphs.push({ type: "paragraph", content: [] });
   if (category) {
@@ -170,6 +220,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         }),
         Placeholder.configure({ placeholder }),
         createCategoryChip({ skills: () => skillsRef.current }),
+        createNoteReference(),
       ],
       editorProps: {
         attributes: {
@@ -199,8 +250,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
             return false;
           }
-          // The "/" palette owns Enter while it's open (it commits the
-          // highlighted category); only a closed palette submits the message.
+          // Suggestion palettes own Enter while open (they commit the
+          // highlighted row); only a closed palette submits the message.
           if (document.querySelector(".agent-category-menu-host")) return false;
           event.preventDefault();
           onSubmitRef.current();
@@ -254,9 +305,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         setContent: (text, category, options) => {
           if (!editor) return;
           const staged = options?.selectPlaceholder && !category ? stripPlaceholder(text) : null;
-          editor.commands.setContent(buildDoc(staged?.text ?? text, category), {
-            emitUpdate: true,
-          });
+          editor.commands.setContent(
+            buildDoc(staged?.text ?? text, category, { rehydrateNoteTokens: !staged }),
+            {
+              emitUpdate: true,
+            },
+          );
           // A hero shortcut authors a "<placeholder>" token; the brackets are
           // stripped before the text hits the document and the bare phrase left
           // selected (rather than parking the caret at the end) so typing
@@ -272,6 +326,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         },
         insertCategory: (category) => {
           if (editor) insertReportCategory(editor, category);
+        },
+        insertNoteReference: (noteReference) => {
+          if (editor) insertNoteReference(editor, noteReference);
         },
         isEmpty: () => editor?.isEmpty ?? true,
       }),

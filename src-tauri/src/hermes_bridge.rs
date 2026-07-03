@@ -119,6 +119,7 @@ You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertain
 /// prompt note teaches the model when to spend tool calls on that local data.
 const JUNE_SOUL_CONTEXT_MD: &str = r#"
 June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
+Messages may reference a specific note as `@note:<id>`, usually followed by the note title in quotes. When you see such a reference, call the `june_context` tool `get_meeting_note` with that id to load the note before answering, and rely on what it returns. Ask for the transcript with `include_transcript` only when the note content is not enough. If the tool reports the note was not found, say so instead of guessing.
 "#;
 
 /// Appended to `SOUL.md` for every runtime. This calibrates June's first-turn
@@ -8917,6 +8918,9 @@ mcp_servers:
         assert!(soul.contains("meeting notes"));
         assert!(soul.contains("dictation history"));
         assert!(soul.contains("Query it on demand"));
+        assert!(soul.contains("@note:<id>"));
+        assert!(soul.contains("get_meeting_note"));
+        assert!(soul.contains("include_transcript"));
     }
 
     #[test]

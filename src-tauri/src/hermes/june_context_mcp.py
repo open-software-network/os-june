@@ -18,12 +18,118 @@ from typing import Any
 
 
 PROTOCOL_VERSION = "2025-03-26"
-SERVER_INFO = {"name": "june-context", "version": "0.1.0"}
+SERVER_INFO = {"name": "june-context", "version": "0.2.0"}
 MAX_LIMIT = 20
 DEFAULT_LIMIT = 8
 SNIPPET_CHARS = 900
+FULL_TEXT_CHARS = 60_000
 # Keep this in sync with DICTATION_HISTORY_RETENTION_DAYS in db/repositories.rs.
 DICTATION_HISTORY_RETENTION_DAYS = 7
+
+# The app's note editor (NoteEditor.tsx) shows the note body as
+# editedContent ?? generatedContent ?? "". Mirror that exactly: edited_content
+# wins when it is not NULL, even when it is an empty string; only NULL falls
+# back to generated_content.
+APP_VISIBLE_NOTE_BODY_SQL = (
+    "CASE WHEN n.edited_content IS NOT NULL THEN n.edited_content "
+    "ELSE coalesce(n.generated_content, '') END"
+)
+
+# Turn text queries share this filter/order. The fragments expect transcript
+# rows aliased as `t` and recording sessions aliased as `rs`.
+TURN_TEXT_FILTER_SQL = """
+              AND t.recording_session_id IS NOT NULL
+              AND t.turn_index IS NOT NULL
+              AND trim(coalesce(t.text, '')) != ''
+"""
+
+TURN_TEXT_ORDER_SQL = """
+            ORDER BY COALESCE(rs.started_at, t.created_at) ASC,
+                     COALESCE(rs.rowid, 9223372036854775807) ASC,
+                     COALESCE(t.turn_index, 999999),
+                     COALESCE(t.start_ms, 999999999),
+                     t.created_at ASC,
+                     t.rowid ASC
+"""
+
+# The app's transcript view (transcriptToText in NoteEditor.tsx) shows turn
+# rows when any visible turn exists and otherwise falls back to the latest
+# whole-file transcript - never a mix. `turns_text` stays unlabeled for search;
+# `get_meeting_note` formats labeled turn blocks from a second row query.
+TRANSCRIPT_TEXT_SUBQUERIES = f"""
+    (
+        SELECT group_concat(text, char(10)) FROM (
+            SELECT t.text
+            FROM transcripts t
+            LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
+            WHERE t.note_id = n.id
+{TURN_TEXT_FILTER_SQL}
+{TURN_TEXT_ORDER_SQL}
+        )
+    ) AS turns_text,
+    (
+        SELECT COUNT(*)
+        FROM transcripts t
+        WHERE t.note_id = n.id
+          AND t.recording_session_id IS NOT NULL
+          AND t.turn_index IS NOT NULL
+          AND (
+                trim(coalesce(t.text, '')) != ''
+                OR trim(coalesce(t.last_error, '')) != ''
+          )
+    ) AS visible_turn_rows,
+    (
+        SELECT t.text
+        FROM transcripts t
+        WHERE t.note_id = n.id
+        ORDER BY t.created_at DESC
+        LIMIT 1
+    ) AS latest_text
+"""
+
+LABELED_TURN_TEXT_SQL = f"""
+    SELECT t.source, t.start_ms, t.end_ms, t.text
+    FROM transcripts t
+    LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
+    WHERE t.note_id = ?
+{TURN_TEXT_FILTER_SQL}
+{TURN_TEXT_ORDER_SQL}
+"""
+
+
+def transcript_text_from_row(row: sqlite3.Row) -> str:
+    """The unlabeled transcript used by search.
+
+    It still follows the app's turn-vs-whole-file branch decision so an older
+    whole-file transcript cannot resurface behind visible turn rows.
+    """
+    if row["visible_turn_rows"]:
+        return row["turns_text"] or ""
+    return row["latest_text"] or ""
+
+
+def labeled_transcript_from_turn_rows(rows: list[sqlite3.Row]) -> str:
+    blocks = []
+    for row in rows:
+        text = row["text"] or ""
+        if not text.strip():
+            continue
+        label = "System" if row["source"] == "system" else "Microphone"
+        turn_time = format_turn_time(row["start_ms"], row["end_ms"])
+        meta = f"{label} {turn_time}" if turn_time else label
+        blocks.append(f"{meta}\n{text}")
+    return "\n\n".join(blocks)
+
+
+def format_turn_time(start_ms: Any, end_ms: Any) -> str | None:
+    if start_ms is None or end_ms is None or end_ms <= start_ms:
+        return None
+
+    def format_ms(value: Any) -> str:
+        seconds = int(max(0, value) / 1000 + 0.5)
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+    return f"{format_ms(start_ms)}-{format_ms(end_ms)}"
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -70,6 +176,32 @@ TOOLS: list[dict[str, Any]] = [
                     "default": DEFAULT_LIMIT,
                 },
             },
+        },
+    },
+    {
+        "name": "get_meeting_note",
+        "description": (
+            "Fetch one June meeting note in full by its id. Use this when a "
+            "message references a specific note (for example an `@note:<id>` "
+            "reference) or when a search result's snippet is not enough. Set "
+            "include_transcript only when the note content alone cannot answer."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "note_id": {
+                    "type": "string",
+                    "description": (
+                        "The note id, e.g. from an @note:<id> reference or a "
+                        "search_meeting_notes result."
+                    ),
+                },
+                "include_transcript": {
+                    "type": "boolean",
+                    "default": False,
+                },
+            },
+            "required": ["note_id"],
         },
     },
 ]
@@ -160,6 +292,8 @@ def call_tool(db_path: Path, request_id: Any, params: dict[str, Any]) -> dict[st
             result = search_meeting_notes(db_path, arguments)
         elif name == "search_dictation_history":
             result = search_dictation_history(db_path, arguments)
+        elif name == "get_meeting_note":
+            result = get_meeting_note(db_path, arguments)
         else:
             return error_response(request_id, -32602, f"Unknown tool: {name}")
     except Exception as exc:
@@ -212,36 +346,40 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
     if query:
         needle = f"%{query.lower()}%"
         where = """
-        WHERE lower(coalesce(n.title, '')) LIKE ?
-           OR lower(coalesce(n.generated_content, '')) LIKE ?
-           OR lower(coalesce(n.edited_content, '')) LIKE ?
-           OR EXISTS (
-                SELECT 1
-                FROM transcripts tx
-                WHERE tx.note_id = n.id
-                  AND lower(coalesce(tx.text, '')) LIKE ?
-           )
+        WHERE lower(coalesce(title, '')) LIKE ?
+           OR lower(coalesce(note_body, '')) LIKE ?
+           OR lower(coalesce(
+                CASE WHEN visible_turn_rows > 0 THEN turns_text ELSE latest_text END,
+                ''
+           )) LIKE ?
         """
-        params.extend([needle, needle, needle, needle])
+        params.extend([needle, needle, needle])
 
     sql = f"""
         SELECT
-            n.id,
-            n.title,
-            n.generated_content,
-            n.edited_content,
-            n.processing_status,
-            n.created_at,
-            n.updated_at,
-            (
-                SELECT group_concat(t.text, char(10))
-                FROM transcripts t
-                WHERE t.note_id = n.id
-                  AND trim(coalesce(t.text, '')) != ''
-            ) AS transcript_text
-        FROM notes n
+            id,
+            title,
+            note_body,
+            processing_status,
+            created_at,
+            updated_at,
+            turns_text,
+            visible_turn_rows,
+            latest_text
+        FROM (
+            SELECT
+                n.rowid AS note_rowid,
+                n.id,
+                n.title,
+                {APP_VISIBLE_NOTE_BODY_SQL} AS note_body,
+                n.processing_status,
+                n.created_at,
+                n.updated_at,
+                {TRANSCRIPT_TEXT_SUBQUERIES}
+            FROM notes n
+        )
         {where}
-        ORDER BY n.updated_at DESC, n.created_at DESC, n.rowid DESC
+        ORDER BY updated_at DESC, created_at DESC, note_rowid DESC
         LIMIT ?
     """
     params.append(limit)
@@ -251,8 +389,11 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
 
     items = []
     for row in rows:
-        note_text = first_text(row["edited_content"], row["generated_content"])
-        transcript_text = row["transcript_text"] or ""
+        note_text = row["note_body"] or ""
+        # Search intentionally keeps turn transcripts unlabeled: labels would
+        # make queries like "system" match every dual-source note and spend
+        # snippet budget on metadata instead of user text.
+        transcript_text = transcript_text_from_row(row)
         items.append(
             {
                 "id": row["id"],
@@ -265,6 +406,70 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
             }
         )
     return {"query": query, "count": len(items), "items": items}
+
+
+def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+    note_id = str(arguments.get("note_id") or "").strip()
+    if not note_id:
+        return {"noteId": note_id, "found": False, "message": "note_id is required."}
+
+    if not db_path.exists():
+        return {
+            "noteId": note_id,
+            "found": False,
+            "message": "June notes database does not exist yet.",
+        }
+
+    sql = f"""
+        SELECT
+            n.id,
+            n.title,
+            {APP_VISIBLE_NOTE_BODY_SQL} AS note_body,
+            n.processing_status,
+            n.created_at,
+            n.updated_at,
+            {TRANSCRIPT_TEXT_SUBQUERIES}
+        FROM notes n
+        WHERE n.id = ?
+        LIMIT 1
+    """
+
+    turn_rows: list[sqlite3.Row] = []
+    with connect_readonly(db_path) as conn:
+        row = conn.execute(sql, [note_id]).fetchone()
+        if row is not None and row["visible_turn_rows"]:
+            turn_rows = conn.execute(LABELED_TURN_TEXT_SQL, [note_id]).fetchall()
+
+    if row is None:
+        return {
+            "noteId": note_id,
+            "found": False,
+            "message": "No note with this id.",
+        }
+
+    note_text = row["note_body"] or ""
+    note_content, note_content_truncated = capped_text(note_text)
+    if row["visible_turn_rows"]:
+        transcript_text = labeled_transcript_from_turn_rows(turn_rows)
+    else:
+        transcript_text = row["latest_text"] or ""
+    transcript, transcript_truncated = capped_text(transcript_text)
+
+    result = {
+        "noteId": row["id"],
+        "found": True,
+        "title": row["title"] or "Untitled note",
+        "processingStatus": row["processing_status"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "noteContent": note_content,
+        "noteContentTruncated": note_content_truncated,
+        "transcriptChars": len(transcript_text),
+    }
+    if arguments.get("include_transcript"):
+        result["transcript"] = transcript
+        result["transcriptTruncated"] = transcript_truncated
+    return result
 
 
 def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -340,11 +545,10 @@ def bounded_limit(value: Any) -> int:
     return max(1, min(MAX_LIMIT, limit))
 
 
-def first_text(*values: str | None) -> str:
-    for value in values:
-        if value and value.strip():
-            return value
-    return ""
+def capped_text(text: str) -> tuple[str, bool]:
+    if len(text) <= FULL_TEXT_CHARS:
+        return text, False
+    return text[:FULL_TEXT_CHARS], True
 
 
 def snippet(text: str, query: str) -> str:
