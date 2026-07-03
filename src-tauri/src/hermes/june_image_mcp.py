@@ -10,11 +10,10 @@ third party directly, the access token never leaves the Rust process, and every
 generation/edit is billed to the signed-in user automatically.
 
 Generated and edited images are written to a dedicated images directory (passed
-as the second argument) so the model can reference a prior image by an edit-safe
-source reference when it wants to edit it. Source images are resolved from a
-stateless HMAC-signed reference over the canonical image filename, keyed by a
-secret persisted beside the images directory. Bare filenames and paths inside
-those global roots are not accepted as edit sources.
+as the second argument) under proxy-selected storage filenames. The Rust
+loopback proxy mints opaque edit-safe source references and validates them
+before reading source bytes for edits; this MCP only forwards those references
+back to the proxy.
 
 It depends only on the Python standard library so it can run inside the Hermes
 runtime venv without extra packaging.
@@ -23,17 +22,11 @@ runtime venv without extra packaging.
 from __future__ import annotations
 
 import base64
-import builtins
 import email.utils
-import hashlib
-import hmac
 import io
 import json
-import mimetypes
 import os
-import secrets
 import socket
-import stat
 import sys
 import tempfile
 import time
@@ -49,13 +42,6 @@ REQUEST_TIMEOUT_SECONDS = 660
 REQUEST_MAX_ATTEMPTS = 3
 REQUEST_RETRY_DELAY_SECONDS = 0.25
 TOKEN_ENV_VAR = "JUNE_IMAGE_PROXY_TOKEN"
-MAX_EDIT_SOURCE_IMAGE_BYTES = 50 * 1024 * 1024
-IMAGE_SIGNATURE_READ_BYTES = 32
-EDIT_SOURCE_MARKER = ".june-source-"
-EDIT_SOURCE_SIGNATURE_HEX_LEN = 64
-EDIT_SOURCE_SECRET_BYTES = 32
-EDIT_SOURCE_HMAC_PAYLOAD_PREFIX = b"june-image-source-v1\0"
-EDIT_SOURCE_SECRET_SUFFIX = ".june-image-source-secret"
 
 # Venice always returns png for generation; edits echo the requested output
 # format. Map the response mime to a file extension for the on-disk name.
@@ -65,11 +51,6 @@ EXTENSION_BY_MIME = {
     "image/webp": "webp",
     "image/gif": "gif",
 }
-MIME_BY_EXTENSION = {
-    **{extension: mime_type for mime_type, extension in EXTENSION_BY_MIME.items()},
-    "jpeg": "image/jpeg",
-}
-
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -133,13 +114,11 @@ TOOLS: list[dict[str, Any]] = [
 def main() -> None:
     if len(sys.argv) < 3:
         raise SystemExit(
-            "Usage: june_image_mcp.py <proxy_base_url> <images_dir> [source_dir ...]"
+            "Usage: june_image_mcp.py <proxy_base_url> <images_dir>"
         )
 
     base_url = sys.argv[1].rstrip("/")
     images_dir = sys.argv[2]
-    source_dirs = [images_dir, *sys.argv[3:]]
-    source_registry = EditSourceRegistry(images_dir)
     # The proxy token is passed via the environment rather than argv so it does
     # not show up in process listings.
     token = os.environ.get(TOKEN_ENV_VAR, "")
@@ -148,7 +127,7 @@ def main() -> None:
         if message is None:
             return
         response_message = handle_message(
-            base_url, images_dir, source_dirs, source_registry, token, message
+            base_url, images_dir, token, message
         )
         if response_message is not None:
             write_message(response_message)
@@ -193,8 +172,6 @@ def write_message(payload: dict[str, Any]) -> None:
 def handle_message(
     base_url: str,
     images_dir: str,
-    source_dirs: list[str],
-    source_registry: "EditSourceRegistry",
     token: str,
     message: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -220,8 +197,6 @@ def handle_message(
         return call_tool(
             base_url,
             images_dir,
-            source_dirs,
-            source_registry,
             token,
             request_id,
             message.get("params") or {},
@@ -235,8 +210,6 @@ def handle_message(
 def call_tool(
     base_url: str,
     images_dir: str,
-    source_dirs: list[str],
-    source_registry: "EditSourceRegistry",
     token: str,
     request_id: Any,
     params: dict[str, Any],
@@ -245,11 +218,9 @@ def call_tool(
     arguments = params.get("arguments") or {}
     try:
         if name == "generate_image":
-            result = generate_image(base_url, images_dir, source_registry, token, arguments)
+            result = generate_image(base_url, images_dir, token, arguments)
         elif name == "edit_image":
-            result = edit_image(
-                base_url, images_dir, source_dirs, source_registry, token, arguments
-            )
+            result = edit_image(base_url, images_dir, token, arguments)
         else:
             return error_response(request_id, -32602, f"Unknown tool: {name}")
     except Exception as exc:
@@ -300,7 +271,6 @@ def call_tool(
 def generate_image(
     base_url: str,
     images_dir: str,
-    source_registry: "EditSourceRegistry",
     token: str,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
@@ -320,8 +290,9 @@ def generate_image(
     mime_type = str(envelope.get("mimeType") or "image/png")
     if not image_base64:
         raise RuntimeError("June returned an empty image.")
-    filename = write_image(images_dir, image_base64, mime_type)
-    source_filename = source_registry.register(os.path.join(images_dir, filename))
+    storage_filename = proxy_storage_filename(envelope)
+    source_filename = proxy_source_filename(envelope)
+    write_image(images_dir, storage_filename, image_base64, mime_type)
     return {
         "image_base64": image_base64,
         "mime_type": mime_type,
@@ -334,8 +305,6 @@ def generate_image(
 def edit_image(
     base_url: str,
     images_dir: str,
-    source_dirs: list[str],
-    source_registry: "EditSourceRegistry",
     token: str,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
@@ -345,25 +314,24 @@ def edit_image(
         raise ValueError("source_filename is required")
     if not instruction:
         raise ValueError("instruction is required")
-    source_base64, source_mime = read_image(source_dirs, source_filename, source_registry)
     request_id = new_request_id()
     envelope = call_proxy(
         base_url,
         token,
         "/image/edit",
         {
-            "image": source_base64,
+            "sourceFilename": source_filename,
             "prompt": instruction,
-            "mimeType": source_mime,
             "requestId": request_id,
         },
     )
     image_base64 = str(envelope.get("imageBase64") or "")
-    mime_type = str(envelope.get("mimeType") or source_mime or "image/png")
+    mime_type = str(envelope.get("mimeType") or "image/png")
     if not image_base64:
         raise RuntimeError("June returned an empty edited image.")
-    filename = write_image(images_dir, image_base64, mime_type)
-    next_source_filename = source_registry.register(os.path.join(images_dir, filename))
+    storage_filename = proxy_storage_filename(envelope)
+    next_source_filename = proxy_source_filename(envelope)
+    write_image(images_dir, storage_filename, image_base64, mime_type)
     return {
         "image_base64": image_base64,
         "mime_type": mime_type,
@@ -373,181 +341,43 @@ def edit_image(
     }
 
 
-def write_image(images_dir: str, image_base64: str, mime_type: str) -> str:
+def proxy_storage_filename(envelope: dict[str, Any]) -> str:
+    filename = str(envelope.get("storageFilename") or "").strip()
+    if not filename:
+        raise RuntimeError("June returned an image without a storage filename.")
+    return filename
+
+
+def proxy_source_filename(envelope: dict[str, Any]) -> str:
+    filename = str(envelope.get("sourceFilename") or "").strip()
+    if not filename:
+        raise RuntimeError("June returned an image without an edit-safe filename.")
+    return filename
+
+
+def write_image(
+    images_dir: str, filename: str, image_base64: str, mime_type: str
+) -> str:
     os.makedirs(images_dir, exist_ok=True)
-    extension = EXTENSION_BY_MIME.get(mime_type.strip().lower(), "png")
-    # A uuid keeps two images in one session from colliding; the model threads
-    # this exact name back into edit_image.
-    filename = f"generated-image-{uuid.uuid4().hex}.{extension}"
+    safe_name = storage_safe_filename(filename, mime_type)
     try:
         data = base64.b64decode(image_base64)
     except Exception:
         raise RuntimeError("June returned an image it could not decode.")
-    with open(os.path.join(images_dir, filename), "wb") as handle:
+    with open(os.path.join(images_dir, safe_name), "wb") as handle:
         handle.write(data)
-    return filename
+    return safe_name
 
 
-def read_image(
-    source_dirs: list[str], filename: str, source_registry: "EditSourceRegistry"
-) -> tuple[str, str]:
-    path = resolve_source_image_path(source_dirs, filename, source_registry)
-    safe_name = os.path.basename(path)
-    mime_type = source_image_mime_type(path, safe_name)
-    size = os.path.getsize(path)
-    if size > MAX_EDIT_SOURCE_IMAGE_BYTES:
-        raise ValueError("source_filename must be 50 MB or smaller.")
-    with open(path, "rb") as handle:
-        signature = handle.read(IMAGE_SIGNATURE_READ_BYTES)
-        sniffed_mime = sniff_image_mime_type(signature)
-        if sniffed_mime is None or sniffed_mime != mime_type:
-            raise ValueError("source_filename must refer to a real PNG, JPEG, WebP, or GIF image.")
-        handle.seek(0)
-        data = handle.read()
-    return base64.b64encode(data).decode("ascii"), mime_type
-
-
-def sniff_image_mime_type(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
-        return "image/gif"
-    if len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
-
-def source_image_mime_type(path: str, safe_name: str) -> str:
+def storage_safe_filename(filename: str, mime_type: str) -> str:
+    safe_name = os.path.basename(filename.strip())
+    if not safe_name or safe_name != filename.strip() or os.path.isabs(filename):
+        raise RuntimeError("June returned an unsafe storage filename.")
     extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
-    mime_type = MIME_BY_EXTENSION.get(extension)
-    if mime_type is None:
-        raise ValueError("source_filename must refer to a PNG, JPEG, WebP, or GIF image.")
-
-    guessed_mime = (mimetypes.guess_type(path)[0] or "").strip().lower()
-    if guessed_mime and guessed_mime != mime_type:
-        raise ValueError("source_filename must refer to a PNG, JPEG, WebP, or GIF image.")
-    return mime_type
-
-
-class EditSourceRegistry:
-    def __init__(self, images_dir: str) -> None:
-        self._images_dir = canonical_path(images_dir)
-        self._secret = load_or_create_edit_source_secret(self._images_dir)
-
-    def register(self, path: str) -> str:
-        canonical = canonical_path(path)
-        safe_name = os.path.basename(canonical)
-        if not safe_name:
-            raise ValueError("source_filename is required")
-        signature = edit_source_signature(self._secret, safe_name)
-        return edit_source_reference(safe_name, signature)
-
-    def path_for(self, safe_name: str, signature: str) -> str | None:
-        expected_signature = edit_source_signature(self._secret, safe_name)
-        if not hmac.compare_digest(signature, expected_signature):
-            return None
-        path = canonical_path(os.path.join(self._images_dir, safe_name))
-        if path_is_within(path, self._images_dir):
-            return path
-        return None
-
-
-def edit_source_reference(safe_name: str, signature: str) -> str:
-    stem, extension = os.path.splitext(safe_name)
-    if not stem:
-        stem = "image"
-    return f"{stem}{EDIT_SOURCE_MARKER}{signature}{extension}"
-
-
-def parse_edit_source_reference(reference: str) -> tuple[str, str] | None:
-    stripped = reference.strip()
-    safe_name = os.path.basename(stripped)
-    if not safe_name or safe_name != stripped:
-        return None
-    stem_with_signature, extension = os.path.splitext(safe_name)
-    stem, marker, signature = stem_with_signature.rpartition(EDIT_SOURCE_MARKER)
-    if not marker or not stem or len(signature) != EDIT_SOURCE_SIGNATURE_HEX_LEN:
-        return None
-    if any(char not in "0123456789abcdef" for char in signature):
-        return None
-    return signature, f"{stem}{extension}"
-
-
-def edit_source_signature(secret: bytes, safe_name: str) -> str:
-    payload = EDIT_SOURCE_HMAC_PAYLOAD_PREFIX + safe_name.encode("utf-8")
-    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
-
-
-def edit_source_secret_path(images_dir: str) -> str:
-    canonical_images_dir = canonical_path(images_dir)
-    parent = os.path.dirname(canonical_images_dir)
-    images_name = os.path.basename(canonical_images_dir) or "images"
-    return os.path.join(parent, f".{images_name}{EDIT_SOURCE_SECRET_SUFFIX}")
-
-
-def load_or_create_edit_source_secret(images_dir: str) -> bytes:
-    path = edit_source_secret_path(images_dir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        fd = None
-    if fd is not None:
-        with os.fdopen(fd, "w", encoding="ascii") as handle:
-            handle.write(secrets.token_hex(EDIT_SOURCE_SECRET_BYTES))
-    os.chmod(path, 0o600)
-    with open(path, "r", encoding="ascii") as handle:
-        secret_hex = handle.read().strip()
-    if (
-        len(secret_hex) != EDIT_SOURCE_SECRET_BYTES * 2
-        or any(char not in "0123456789abcdef" for char in secret_hex)
-    ):
-        raise ValueError("June image edit-source secret is invalid.")
-    return bytes.fromhex(secret_hex)
-
-
-def resolve_source_image_path(
-    source_dirs: list[str], filename: str, source_registry: EditSourceRegistry
-) -> str:
-    reference = filename.strip()
-    parsed = parse_edit_source_reference(reference)
-    if parsed is None:
-        safe_name = os.path.basename(reference)
-        if not safe_name:
-            raise ValueError("source_filename is required")
-        if os.path.isabs(reference) or safe_name != reference:
-            raise ValueError("source_filename must be an edit-safe filename from this tool.")
-        raise ValueError(
-            f"No editable image named {safe_name}. Use the edit-safe filename returned by June's image tool."
-        )
-
-    signature, expected_name = parsed
-    path = source_registry.path_for(expected_name, signature)
-    if path is None:
-        raise ValueError("source_filename must be an edit-safe filename from this tool.")
-
-    safe_name = os.path.basename(path)
-    if safe_name != expected_name:
-        raise ValueError("source_filename must match the image it was issued for.")
-
-    roots = [canonical_path(source_dir) for source_dir in source_dirs if source_dir]
-    if any(path_is_within(path, root) for root in roots) and os.path.isfile(path):
-        return path
-
-    raise ValueError("source_filename must refer to an available June image source.")
-
-
-def canonical_path(path: str) -> str:
-    return os.path.realpath(os.path.abspath(path))
-
-
-def path_is_within(candidate: str, root: str) -> bool:
-    try:
-        return os.path.commonpath([candidate, root]) == root
-    except ValueError:
-        return False
+    expected_extension = EXTENSION_BY_MIME.get(mime_type.strip().lower(), "png")
+    if extension != expected_extension:
+        raise RuntimeError("June returned a storage filename that does not match the image type.")
+    return safe_name
 
 
 def new_request_id() -> str:
@@ -635,60 +465,30 @@ def transport_error_reason(exc: BaseException) -> str:
 def run_smoke_tests() -> None:
     smoke_test_proxy_retry_reuses_request_id()
     smoke_test_proxy_retryable_http_reuses_request_id()
-    smoke_test_registered_edit_source_resolves_and_reads()
-    smoke_test_edit_source_survives_registry_restart()
-    smoke_test_tampered_edit_source_is_rejected_before_read()
-    smoke_test_unregistered_upload_source_is_rejected_before_read()
-    smoke_test_registered_source_outside_roots_is_rejected()
+    smoke_test_generate_writes_proxy_issued_storage_filename()
+    smoke_test_edit_forwards_opaque_source_ref_without_reading_source()
+    smoke_test_no_legacy_edit_secret_under_hermes_home()
 
 
-def write_test_png(path: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as handle:
-        handle.write(b"\x89PNG\r\n\x1a\n" + b"test-png")
+def test_png_base64(label: bytes = b"test-png") -> str:
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + label).decode("ascii")
 
 
-def assert_raises_value_error(expected: str, action: Any) -> None:
-    try:
-        action()
-    except ValueError as exc:
-        if expected not in str(exc):
-            raise AssertionError(f"wrong error: {exc}") from exc
-        return
-    raise AssertionError("expected ValueError")
+def assert_no_legacy_secret(root: str) -> None:
+    for directory, _, filenames in os.walk(root):
+        for filename in filenames:
+            if filename.endswith(".june-image-source-secret"):
+                raise AssertionError(
+                    f"legacy edit-source secret exists under Hermes home: {os.path.join(directory, filename)}"
+                )
 
 
-def smoke_test_registered_edit_source_resolves_and_reads() -> None:
+def smoke_test_generate_writes_proxy_issued_storage_filename() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         images_dir = os.path.join(temp_dir, "images")
-        image_path = os.path.join(images_dir, "generated-image-ok.png")
-        write_test_png(image_path)
-        registry = EditSourceRegistry(images_dir)
-        source_ref = registry.register(image_path)
-
-        resolved = resolve_source_image_path([images_dir], source_ref, registry)
-        if resolved != canonical_path(image_path):
-            raise AssertionError("registered source resolved to the wrong path")
-
-        source_base64, source_mime = read_image([images_dir], source_ref, registry)
-        if source_mime != "image/png":
-            raise AssertionError("registered source returned the wrong mime type")
-        if not base64.b64decode(source_base64).startswith(b"\x89PNG\r\n\x1a\n"):
-            raise AssertionError("registered source returned the wrong bytes")
-
-
-def smoke_test_edit_source_survives_registry_restart() -> None:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        images_dir = os.path.join(temp_dir, "images")
-        image_path = os.path.join(images_dir, "generated-image-ok.png")
-        write_test_png(image_path)
-        source_ref = EditSourceRegistry(images_dir).register(image_path)
-        secret_mode = stat.S_IMODE(os.stat(edit_source_secret_path(images_dir)).st_mode)
-        if secret_mode != 0o600:
-            raise AssertionError("edit-source secret was not created with 0600 permissions")
-
-        restarted_registry = EditSourceRegistry(images_dir)
         original_call_proxy = globals()["call_proxy"]
+        source_ref = "generated-image-ok.june-source-" + ("a" * 64) + ".png"
+        storage_filename = "generated-image-ok.png"
 
         def fake_call_proxy(
             base_url: str,
@@ -697,19 +497,67 @@ def smoke_test_edit_source_survives_registry_restart() -> None:
             payload: dict[str, Any],
             timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
             max_attempts: int = REQUEST_MAX_ATTEMPTS,
+            retry_delay_seconds: float = REQUEST_RETRY_DELAY_SECONDS,
+        ) -> dict[str, Any]:
+            if path != "/image/generate":
+                raise AssertionError(f"wrong path: {path}")
+            if payload.get("prompt") != "a cat":
+                raise AssertionError("generate did not send the prompt")
+            if "image" in payload or "sourceFilename" in payload:
+                raise AssertionError("generate sent source data")
+            return {
+                "imageBase64": test_png_base64(),
+                "mimeType": "image/png",
+                "model": "fake-generate",
+                "sourceFilename": source_ref,
+                "storageFilename": storage_filename,
+            }
+
+        try:
+            globals()["call_proxy"] = fake_call_proxy
+            result = generate_image("http://127.0.0.1", images_dir, "token", {"prompt": "a cat"})
+        finally:
+            globals()["call_proxy"] = original_call_proxy
+
+        if result.get("filename") != source_ref:
+            raise AssertionError("generate did not return the proxy-issued edit reference")
+        if result.get("model") != "fake-generate":
+            raise AssertionError("generate did not return the fake model")
+        written_path = os.path.join(images_dir, storage_filename)
+        if not os.path.exists(written_path):
+            raise AssertionError("generate did not write the proxy-issued storage filename")
+        assert_no_legacy_secret(temp_dir)
+
+
+def smoke_test_edit_forwards_opaque_source_ref_without_reading_source() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        images_dir = os.path.join(temp_dir, "images")
+        original_call_proxy = globals()["call_proxy"]
+        source_ref = "generated-image-ok.june-source-" + ("b" * 64) + ".png"
+        next_source_ref = "generated-image-edit.june-source-" + ("c" * 64) + ".png"
+        next_storage_filename = "generated-image-edit.png"
+
+        def fake_call_proxy(
+            base_url: str,
+            token: str,
+            path: str,
+            payload: dict[str, Any],
+            timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
+            max_attempts: int = REQUEST_MAX_ATTEMPTS,
+            retry_delay_seconds: float = REQUEST_RETRY_DELAY_SECONDS,
         ) -> dict[str, Any]:
             if path != "/image/edit":
                 raise AssertionError(f"wrong path: {path}")
-            if not base64.b64decode(str(payload.get("image") or "")).startswith(
-                b"\x89PNG\r\n\x1a\n"
-            ):
-                raise AssertionError("restart edit did not send the source image bytes")
+            if payload.get("sourceFilename") != source_ref:
+                raise AssertionError("edit did not forward the source reference")
+            if "image" in payload or "mimeType" in payload:
+                raise AssertionError("edit sent source bytes instead of an opaque ref")
             return {
-                "imageBase64": base64.b64encode(b"\x89PNG\r\n\x1a\nedited").decode(
-                    "ascii"
-                ),
+                "imageBase64": test_png_base64(b"edited"),
                 "mimeType": "image/png",
                 "model": "fake-edit",
+                "sourceFilename": next_source_ref,
+                "storageFilename": next_storage_filename,
             }
 
         try:
@@ -717,8 +565,6 @@ def smoke_test_edit_source_survives_registry_restart() -> None:
             result = edit_image(
                 "http://127.0.0.1",
                 images_dir,
-                [images_dir],
-                restarted_registry,
                 "token",
                 {
                     "source_filename": source_ref,
@@ -728,80 +574,41 @@ def smoke_test_edit_source_survives_registry_restart() -> None:
         finally:
             globals()["call_proxy"] = original_call_proxy
 
-        if result.get("model") != "fake-edit":
-            raise AssertionError("restart edit did not return the fake edit result")
-        read_image([images_dir], str(result.get("filename") or ""), EditSourceRegistry(images_dir))
+        if result.get("filename") != next_source_ref:
+            raise AssertionError("edit did not return the proxy-issued next edit reference")
+        if not os.path.exists(os.path.join(images_dir, next_storage_filename)):
+            raise AssertionError("edit did not write the proxy-issued storage filename")
 
 
-def smoke_test_tampered_edit_source_is_rejected_before_read() -> None:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        images_dir = os.path.join(temp_dir, "images")
-        image_path = os.path.join(images_dir, "generated-image-ok.png")
-        write_test_png(image_path)
-        registry = EditSourceRegistry(images_dir)
-        source_ref = registry.register(image_path)
-        signature_start = source_ref.rfind(EDIT_SOURCE_MARKER) + len(EDIT_SOURCE_MARKER)
-        replacement = "1" if source_ref[signature_start] == "0" else "0"
-        tampered = (
-            source_ref[:signature_start]
-            + replacement
-            + source_ref[signature_start + 1 :]
-        )
-        restarted_registry = EditSourceRegistry(images_dir)
-        original_open = builtins.open
+def smoke_test_no_legacy_edit_secret_under_hermes_home() -> None:
+    with tempfile.TemporaryDirectory() as hermes_home:
+        images_dir = os.path.join(hermes_home, "images")
+        original_call_proxy = globals()["call_proxy"]
 
-        def fail_on_read(*args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("tampered source was opened")
-
-        try:
-            builtins.open = fail_on_read
-            assert_raises_value_error(
-                "edit-safe filename",
-                lambda: read_image([images_dir], tampered, restarted_registry),
-            )
-        finally:
-            builtins.open = original_open
-
-
-def smoke_test_unregistered_upload_source_is_rejected_before_read() -> None:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        images_dir = os.path.join(temp_dir, "images")
-        uploads_dir = os.path.join(temp_dir, "uploads")
-        image_path = os.path.join(uploads_dir, "other-session.png")
-        write_test_png(image_path)
-        registry = EditSourceRegistry(images_dir)
-        source_ref = edit_source_reference(
-            "other-session.png", "0" * EDIT_SOURCE_SIGNATURE_HEX_LEN
-        )
-        original_open = builtins.open
-
-        def fail_on_read(*args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("unregistered source was opened")
+        def fake_call_proxy(
+            base_url: str,
+            token: str,
+            path: str,
+            payload: dict[str, Any],
+            timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
+            max_attempts: int = REQUEST_MAX_ATTEMPTS,
+            retry_delay_seconds: float = REQUEST_RETRY_DELAY_SECONDS,
+        ) -> dict[str, Any]:
+            return {
+                "imageBase64": test_png_base64(),
+                "mimeType": "image/png",
+                "model": "fake-generate",
+                "sourceFilename": "generated-image-ok.june-source-" + ("d" * 64) + ".png",
+                "storageFilename": "generated-image-ok.png",
+            }
 
         try:
-            builtins.open = fail_on_read
-            assert_raises_value_error(
-                "edit-safe filename",
-                lambda: read_image([uploads_dir], source_ref, registry),
-            )
+            globals()["call_proxy"] = fake_call_proxy
+            generate_image("http://127.0.0.1", images_dir, "token", {"prompt": "a cat"})
         finally:
-            builtins.open = original_open
+            globals()["call_proxy"] = original_call_proxy
 
-
-def smoke_test_registered_source_outside_roots_is_rejected() -> None:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        images_dir = os.path.join(temp_dir, "images")
-        uploads_dir = os.path.join(temp_dir, "uploads")
-        other_session_uploads = os.path.join(temp_dir, "other-session-uploads")
-        image_path = os.path.join(other_session_uploads, "attached.png")
-        write_test_png(image_path)
-        registry = EditSourceRegistry(images_dir)
-        source_ref = registry.register(image_path)
-
-        assert_raises_value_error(
-            "available June image source",
-            lambda: read_image([images_dir, uploads_dir], source_ref, registry),
-        )
+        assert_no_legacy_secret(hermes_home)
 
 
 def smoke_test_proxy_retry_reuses_request_id() -> None:
