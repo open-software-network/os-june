@@ -395,12 +395,14 @@ def call_proxy(
 ) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     attempts = max(1, max_attempts)
+    status: int | None = None
     for attempt in range(attempts):
         request = urllib.request.Request(f"{base_url}{path}", data=data, method="POST")
         request.add_header("Content-Type", "application/json")
         request.add_header("Authorization", f"Bearer {token}")
         try:
             with urllib.request.urlopen(request, timeout=timeout_seconds) as resp:
+                status = resp.status
                 body = resp.read().decode("utf-8")
             break
         except urllib.error.HTTPError as exc:
@@ -408,6 +410,7 @@ def call_proxy(
             # errors (e.g. 402 out of credits, 422 model_not_priced), so read it
             # for a usable terminal error. Only retry statuses whose replay can
             # complete safely with the same requestId.
+            status = exc.code
             body = exc.read().decode("utf-8", "replace")
             if retryable_http_status(exc.code) and attempt + 1 < attempts:
                 time.sleep(retry_after_seconds(exc.headers) or retry_delay_seconds)
@@ -424,7 +427,12 @@ def call_proxy(
     try:
         envelope = json.loads(body) if body else {}
     except json.JSONDecodeError:
-        raise RuntimeError("The June image proxy returned an unreadable response.")
+        # A body that is not JSON never came from June's envelope; it is an
+        # intermediary artifact (e.g. an ingress error page), so the status is
+        # the only clue worth surfacing.
+        raise RuntimeError(
+            f"The June image proxy returned an unreadable response (HTTP {status})."
+        )
 
     if envelope.get("success"):
         data_value = envelope.get("data")
@@ -465,6 +473,7 @@ def transport_error_reason(exc: BaseException) -> str:
 def run_smoke_tests() -> None:
     smoke_test_proxy_retry_reuses_request_id()
     smoke_test_proxy_retryable_http_reuses_request_id()
+    smoke_test_proxy_unreadable_response_reports_status()
     smoke_test_generate_writes_proxy_issued_storage_filename()
     smoke_test_edit_forwards_opaque_source_ref_without_reading_source()
     smoke_test_no_legacy_edit_secret_under_hermes_home()
@@ -618,6 +627,8 @@ def smoke_test_proxy_retry_reuses_request_id() -> None:
     }
 
     class FakeResponse:
+        status = 200
+
         def __enter__(self) -> "FakeResponse":
             return self
 
@@ -676,6 +687,8 @@ def smoke_test_proxy_retryable_http_reuses_request_id() -> None:
     }
 
     class FakeResponse:
+        status = 200
+
         def __enter__(self) -> "FakeResponse":
             return self
 
@@ -737,6 +750,49 @@ def smoke_test_proxy_retryable_http_reuses_request_id() -> None:
         raise AssertionError("http retry smoke test did not reuse one requestId")
     if state["side_effects"] != 1:
         raise AssertionError("http retry smoke test produced more than one side effect")
+
+
+def smoke_test_proxy_unreadable_response_reports_status() -> None:
+    # The exact production failure: an ingress in front of June API rejects the
+    # request before it reaches June (e.g. 413 for an oversized edit body) and
+    # answers with an HTML error page instead of a June JSON envelope.
+    nginx_413_page = (
+        b"<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n"
+        b"<body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n"
+        b"<hr><center>nginx/1.27.4</center>\r\n</body>\r\n</html>\r\n"
+    )
+
+    original_urlopen = urllib.request.urlopen
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> Any:
+        raise urllib.error.HTTPError(
+            request.full_url,
+            413,
+            "request entity too large",
+            {},
+            io.BytesIO(nginx_413_page),
+        )
+
+    try:
+        urllib.request.urlopen = fake_urlopen
+        call_proxy(
+            "http://127.0.0.1",
+            "token",
+            "/image/edit",
+            {"sourceFilename": "x", "prompt": "y", "requestId": new_request_id()},
+            timeout_seconds=0.05,
+            max_attempts=2,
+            retry_delay_seconds=0,
+        )
+    except RuntimeError as exc:
+        if "HTTP 413" not in str(exc):
+            raise AssertionError(
+                f"unreadable-response error does not name the status: {exc}"
+            )
+    else:
+        raise AssertionError("unreadable response did not raise")
+    finally:
+        urllib.request.urlopen = original_urlopen
 
 
 def response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
