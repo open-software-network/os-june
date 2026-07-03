@@ -3,6 +3,7 @@
 # Usage: run-claude.sh -t <task-file> [-C <worktree>] [-g <gate>] [-c <constraints>] [-o <out>] [--dry-run]
 #   Flags as in fill-prompt.sh, plus:
 #   -o <out>    file for the delegate's report; default: mktemp (path is printed)
+#   --allow-untracked  proceed despite untracked files in the worktree
 #   --dry-run   print the filled prompt instead of running Claude
 #
 # Enforcement is policy-level, not an OS sandbox: acceptEdits auto-approves
@@ -19,6 +20,7 @@ gate=""
 constraints=""
 out=""
 dry_run=0
+allow_untracked=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -t) task_file=$2; shift 2 ;;
@@ -26,6 +28,7 @@ while [ $# -gt 0 ]; do
     -g) gate=$2; shift 2 ;;
     -c) constraints=$2; shift 2 ;;
     -o) out=$2; shift 2 ;;
+    --allow-untracked) allow_untracked=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
@@ -54,9 +57,12 @@ git_state() { git rev-parse HEAD; git for-each-ref; git diff --cached --name-sta
 # complete record of what the delegate did.
 [ -z "$(git status --porcelain --untracked-files=no)" ] \
   || { echo "error: uncommitted tracked changes — commit or stash before delegating" >&2; exit 1; }
-untracked=$(git status --porcelain | grep -c '^??') || true
-[ "${untracked:-0}" -eq 0 ] \
-  || echo "warning: $untracked untracked file(s) — the delegate could overwrite them" >&2
+untracked=$(git ls-files -o --exclude-standard)
+if [ -n "$untracked" ] && [ "$allow_untracked" != 1 ]; then
+  echo "error: untracked files present — the delegate could overwrite them with no diff evidence (commit them or pass --allow-untracked):" >&2
+  printf '%s\n' "$untracked" | head -10 >&2
+  exit 1
+fi
 
 state_before=$(git_state)
 printf -- '--- report (%s) ---\n' "$out"

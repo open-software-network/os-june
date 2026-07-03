@@ -17,8 +17,9 @@ A runner dispatches a delegate task to one agent harness. To add one, create
    either way — the caller commits.
 5. **Verify git is untouched**: require a clean tracked tree before dispatch
    (pre-existing uncommitted work can be silently clobbered, and restaged
-   content is invisible to a name-status comparison; warn on untracked
-   files), snapshot git state (HEAD + `for-each-ref` + staged paths), and
+   content is invisible to a name-status comparison; untracked files fail
+   closed unless the caller passes `--allow-untracked`), snapshot git state
+   (HEAD + `for-each-ref` + staged paths), and
    fail loudly if any of it changed after — the no-commit contract is prompt
    text, the check is what enforces it. Run the check even when the harness
    fails (capture its exit status instead of letting `set -e` skip the
