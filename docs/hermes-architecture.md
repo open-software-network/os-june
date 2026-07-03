@@ -18,8 +18,10 @@ June wraps Hermes in four layers, cleanly separated:
   processes under a macOS Seatbelt sandbox, injects the `SOUL.md` identity, runs
   a shared on-device provider proxy (identity stripping / retention enforcement
   before any inference leaves the device), bundles two Python MCP servers
-  (`june_context` = search the user's notes/dictation, `june_web` = web via a
-  token-gated loopback proxy), and exposes ~50 Tauri commands.
+  (`june_context` = search the user's notes/dictation plus `get_meeting_note`
+  fetch-by-id for **note references** (`@note:<id>`, see
+  [ADR-0010](adr/0010-note-references-in-agent-chat.md)), `june_web` = web via
+  a token-gated loopback proxy), and exposes ~50 Tauri commands.
 - **Gateway** (`src/lib/hermes-gateway.ts`) — `HermesGatewayClient`: pure
   JSON-RPC-over-WebSocket transport (connect coalescing, request/response
   correlation, timeouts, `4009` "session busy").
