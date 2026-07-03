@@ -69,8 +69,27 @@ deliberate deviations aren't re-flagged as drift.
 **Adversarial prompt**: [ADVERSARIAL-PROMPT.md](ADVERSARIAL-PROMPT.md). Fill
 the placeholders and pass it verbatim. It is model-agnostic by design: run it
 on a general-purpose sub-agent by default, or dispatch it to any external
-reviewer that accepts a prompt (e.g. `/codex:adversarial-review` from the
-openai-codex plugin uses the equivalent template). Same prompt, any model.
+reviewer that accepts a prompt. Same prompt, any model.
+
+**Cross-runner dispatch** — prefer sending the adversarial axis to the *other*
+agent, so the review never comes from the model that wrote the change. One
+bundled runner script per harness, same interface
+(`[-C <worktree>] [-f "<focus>"] [-o <out.md>] [--dry-run] [<fixed-point>]`,
+fixed point defaults to `main`, `--dry-run` prints the filled prompt):
+
+- **→ Codex**: `.agents/skills/repo-review/scripts/adversarial-codex.sh` —
+  `codex exec` in a read-only sandbox; needs the `codex` CLI logged in, no
+  plugin required.
+- **→ Claude Code**: `.agents/skills/repo-review/scripts/adversarial-claude.sh`
+  — headless `claude -p`, read-only via a git-history allowlist plus
+  disallowed edit tools.
+
+Both are thin wrappers over `scripts/fill-adversarial-prompt.sh` (validates
+the ref, fails on an empty diff, fills the template). To support another
+harness, add one more runner that pipes the filled prompt in read-only mode.
+
+Either direction, the caller still triages the verdict per step 4 — external
+reviewers are adversarial, not verified.
 
 ## 3. Spawn all axes in parallel
 

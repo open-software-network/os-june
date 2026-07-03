@@ -1,4 +1,4 @@
-# Adversarial review prompt (model-agnostic)
+# Adversarial review prompt
 
 Fill the `{{PLACEHOLDERS}}` and hand the whole block below to the reviewing
 sub-agent verbatim. It is deliberately model-agnostic: the same prompt drives a
