@@ -1527,6 +1527,27 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("keeps user-authored MEDIA image references as text", () => {
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_ce347dc6e27a.png";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "user-1",
+        role: "user",
+        content: `Please explain why this literal path matters: MEDIA:${mediaPath}`,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: `Please explain why this literal path matters: MEDIA:${mediaPath}`,
+        status: "complete",
+      },
+    ]);
+  });
+
   it("normalizes live complete messages that contain Hermes MEDIA image references", () => {
     const mediaPath =
       "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_live.png";

@@ -1079,10 +1079,11 @@ function safeJsonParse(value: string) {
 }
 
 function resolveHermesMessageText(message: HermesSessionMessage) {
+  const stripMediaImageReferences = message.role !== "user";
   return (
-    textFromHermesContent(message.content) ??
-    textFromHermesContent(message.text) ??
-    textFromHermesContent(message.context) ??
+    textFromHermesContent(message.content, { stripMediaImageReferences }) ??
+    textFromHermesContent(message.text, { stripMediaImageReferences }) ??
+    textFromHermesContent(message.context, { stripMediaImageReferences }) ??
     stringValue(message.name, true) ??
     ""
   );
@@ -1161,21 +1162,39 @@ function contextCompactionPreview(value: string) {
     : "Earlier turns were compacted into a reference summary.";
 }
 
-export function textFromHermesContent(value: unknown, depth = 0): string | undefined {
+type TextFromHermesContentOptions = {
+  stripMediaImageReferences?: boolean;
+};
+
+export function textFromHermesContent(
+  value: unknown,
+  options: TextFromHermesContentOptions = {},
+): string | undefined {
+  return textFromHermesContentInner(value, 0, options);
+}
+
+function textFromHermesContentInner(
+  value: unknown,
+  depth: number,
+  options: TextFromHermesContentOptions,
+): string | undefined {
   if (value === null || value === undefined || depth > 4) return undefined;
   if (typeof value === "string") {
     if (!value.trim()) return undefined;
     const parsed = parseLikelyJsonContent(value);
     if (parsed !== undefined) {
-      const parsedText = textFromHermesContent(parsed, depth + 1);
+      const parsedText = textFromHermesContentInner(parsed, depth + 1, options);
       if (parsedText?.trim()) return parsedText;
     }
-    const text = stripMediaImageReferences(value);
+    const text =
+      options.stripMediaImageReferences === false ? value : stripMediaImageReferences(value);
     return text.trim() ? text : undefined;
   }
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
-    const text = value.map((item) => textFromHermesContent(item, depth + 1) ?? "").join("");
+    const text = value
+      .map((item) => textFromHermesContentInner(item, depth + 1, options) ?? "")
+      .join("");
     return text.trim() ? text : undefined;
   }
   if (typeof value === "object") {
@@ -1185,7 +1204,7 @@ export function textFromHermesContent(value: unknown, depth = 0): string | undef
     // inline as image parts instead (see imagePartsFromHermesContent).
     if (record.type === "image") return undefined;
     for (const key of ["text", "output_text", "content", "message", "delta", "summary"]) {
-      const text = textFromHermesContent(record[key], depth + 1);
+      const text = textFromHermesContentInner(record[key], depth + 1, options);
       if (text?.trim()) return text;
     }
     return stringifyObject(value) || undefined;
