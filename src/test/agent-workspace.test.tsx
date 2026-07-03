@@ -9,6 +9,7 @@ import {
   AgentWorkspace,
   HERO_GREETINGS,
   SkillsToolsPanel,
+  projectAgentActivityLevels,
   resetAgentSessionContinuity,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
@@ -18,10 +19,13 @@ import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
+import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
+import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
+import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -335,6 +339,26 @@ describe("AgentWorkspace", () => {
       }
       return Promise.resolve({});
     });
+  });
+
+  it("reuses activity projection set identities when membership is unchanged", () => {
+    const record: AgentActivityRecord = {
+      id: "session-1",
+      mode: "sandboxed",
+      sessionId: "session-1",
+      phase: "running",
+      pendingActionCount: 0,
+      subagentCount: 0,
+      subagents: [],
+      lastEventAt: 1,
+    };
+    const first = projectAgentActivityLevels([record]);
+
+    const second = projectAgentActivityLevels([{ ...record, lastEventAt: 2 }], first);
+
+    expect(second.workingSessionIds).toBe(first.workingSessionIds);
+    expect(second.waitingSessionIds).toBe(first.waitingSessionIds);
+    expect(second.toolCallSessionIds).toBe(first.toolCallSessionIds);
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {
@@ -4789,6 +4813,227 @@ describe("AgentWorkspace", () => {
       ),
     ).toBeInTheDocument();
     expect(mocks.explainAgentApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps approval cards on the runtime session while activity uses the stored session", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-runtime",
+            description: "Security scan requires approval.",
+            command: "npm run build",
+            allow_permanent: true,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("runtime-session-2")).toBeUndefined();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+    const [pendingRecord] = pendingActionStore.openRecords().filter((record) => {
+      return record.requestId === "approval-runtime";
+    });
+    expect(pendingRecord?.sessionId).toBe("session-2");
+    expect(
+      pendingActionStore.openRecords().some((record) => record.sessionId === "runtime-session-2"),
+    ).toBe(false);
+    const projection = projectAgentActivityLevels(hermesActivityStore.getRecords());
+    expect(projection.waitingSessionIds.has("session-2")).toBe(true);
+    expect(projection.waitingSessionIds.has("runtime-session-2")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Approve once" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
+        session_id: "runtime-session-2",
+        choice: "once",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        pendingActionStore.openRecords().some((record) => record.requestId === "approval-runtime"),
+      ).toBe(false),
+    );
+  });
+
+  it("keys inbound diagnostics by the stored session id", async () => {
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-diagnostics-session",
+          stored_session_id: "stored-diagnostics-session",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "inspect diagnostics",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-diagnostics-session",
+        text: "inspect diagnostics",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "future.diagnostic",
+          session_id: "runtime-diagnostics-session",
+          payload: { detail: "unknown" },
+        });
+      }
+    });
+
+    expect(unsupportedEventStore.activeNotice("runtime-diagnostics-session")).toBeUndefined();
+    expect(unsupportedEventStore.activeNotice("stored-diagnostics-session")?.type).toBe(
+      "future.diagnostic",
+    );
+    expect(hermesTraceBuffer.entriesFor("runtime-diagnostics-session")).toHaveLength(0);
+    const traceEntry = hermesTraceBuffer
+      .entriesFor("stored-diagnostics-session")
+      .find((entry) => entry.rawType === "future.diagnostic");
+    expect(traceEntry).toBeDefined();
+    expect(traceEntry?.sessionId).toBe("stored-diagnostics-session");
+    expect(traceEntry?.runtimeSessionId).toBe("runtime-diagnostics-session");
+  });
+
+  it("treats lifecycle.complete as a terminal workspace edge", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-2",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-2",
+          status: "completed",
+          summary: "June finished.",
+        }),
+      ),
+    );
+    expect(mocks.gatewayEventHandlers.size).toBe(0);
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("keeps sudo and secret pending status copy generic", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "sudo.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "sudo-copy",
+            command: "npm run build",
+          },
+        });
+        handler({
+          type: "secret.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "secret-copy",
+            key_name: "API_KEY",
+          },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(
+        statusDetails
+          .filter((detail) => detail.status === "waitingForUser")
+          .map((detail) => ({
+            sessionId: detail.sessionId,
+            summary: detail.summary,
+          })),
+      ).toEqual([
+        { sessionId: "session-2", summary: "June has a question." },
+        { sessionId: "session-2", summary: "June has a question." },
+      ]),
+    );
+    expect(statusDetails.some((detail) => detail.summary === "June needs approval.")).toBe(false);
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
   });
 
   it("retires a pending approval and explains when its runtime session is gone", async () => {

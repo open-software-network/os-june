@@ -216,6 +216,23 @@ describe("createHermesArtifactStore", () => {
     expect(artifacts[0].createdAt).toBe(now);
   });
 
+  it("records resumed live artifacts under the stored session id used by the drawer", () => {
+    const store = createHermesArtifactStore();
+    const runtimeEvent = toolClassified("tool.complete", "runtime-session", {
+      name: "write_file",
+      file_path: "/tmp/resumed.md",
+    });
+    store.record({ ...runtimeEvent, sessionId: "stored-session" }, "sandboxed");
+
+    expect(store.getRecordsForSession("runtime-session")).toEqual([]);
+    expect(store.getRecordsForSession("stored-session")).toMatchObject([
+      {
+        sessionId: "stored-session",
+        path: "/tmp/resumed.md",
+      },
+    ]);
+  });
+
   it("the timeline shows the real long path, not [redacted]", () => {
     // End-to-end: classify (which sanitizes) -> store.record -> drawer read.
     // Proves the artifact a user clicks opens the real file.

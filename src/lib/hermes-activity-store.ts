@@ -168,6 +168,7 @@ export function createHermesActivityStore(
     if (!sessionId) return;
 
     const existing = bySession.get(sessionId);
+    if (!existing && event.kind === "lifecycle" && event.flavor === "info") return;
     const row: InternalRecord = existing ?? {
       sessionId,
       mode,
@@ -225,12 +226,21 @@ export function createHermesActivityStore(
     return version;
   }
 
-  /** Keep the map within the cap by dropping the oldest (least recently active). */
+  /** Keep the map within the cap, preferring completed/errored rows over live work. */
   function evict(): void {
     while (bySession.size > ACTIVITY_SESSIONS_CAP) {
-      const oldest = bySession.keys().next().value;
-      if (oldest === undefined) break;
-      bySession.delete(oldest);
+      let evicted = false;
+      for (const [sessionId, row] of bySession) {
+        if (!ACTIVE_PHASES.has(row.phase)) {
+          bySession.delete(sessionId);
+          evicted = true;
+          break;
+        }
+      }
+      if (evicted) continue;
+      const oldestActive = bySession.keys().next().value;
+      if (oldestActive === undefined) break;
+      bySession.delete(oldestActive);
     }
   }
 
@@ -294,11 +304,14 @@ type InternalRecord = {
  * derived from event kind:
  * - `tool` (any phase)        -> running, and remember the tool name.
  * - `pending_action`          -> waiting (the agent is blocked on the user).
+ * - `pending_action_resolution`-> running (the user answered; the agent resumes).
  * - `background_activity`     -> background, and track the subagent's id/count.
  * - `error`                   -> error.
- * - `lifecycle`               -> complete when the status is terminal, else
- *                                running (the session is alive and progressing).
- * - `transcript` / `reasoning`-> running (the agent is producing output).
+ * - `lifecycle`               -> complete when the flavor is terminal, running when
+ *                                the flavor is running, no-op when informational.
+ * - `transcript`              -> complete on message completion, else running.
+ * - `reasoning`               -> running (the agent is producing output).
+ * - `steering`                -> no phase change (local transcript marker).
  * - `unsupported`             -> no phase change (don't let an unknown frame
  *                                misreport the session's state).
  */
@@ -308,10 +321,14 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "running";
       if (nonEmpty(event.name)) row.currentTool = event.name;
       // A finished tool call leaves no tool in flight.
-      if (event.phase === "complete") row.currentTool = undefined;
+      if (event.phase === "complete" || event.phase === "failed") row.currentTool = undefined;
       return;
     case "pending_action":
       row.phase = "waiting";
+      return;
+    case "pending_action_resolution":
+      // The user answered, so the run resumes unless a terminal event already won.
+      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
       return;
     case "background_activity":
       applyBackgroundActivity(row, event);
@@ -320,13 +337,31 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "error";
       return;
     case "lifecycle":
-      row.phase = isTerminalLifecycleStatus(event.status) ? "complete" : "running";
+      // Genuine completions arrive as terminal-flavored frames (lifecycle.complete(d),
+      // session/turn/background completions, plus the workspace's synthetic terminal
+      // write). An info frame's status text must never retire a live row, and info
+      // frames must not flip idle rows to running; this matches main's event-driven
+      // spinner semantics.
+      if (event.flavor === "terminal") row.phase = "complete";
+      if (event.flavor === "running") row.phase = "running";
       return;
     case "transcript":
+      if (event.complete) {
+        row.phase = "complete";
+        row.currentTool = undefined;
+        return;
+      }
+      // The agent is actively producing output — running, unless it has already
+      // reached a terminal state this turn (a late delta shouldn't un-complete).
+      if (row.phase !== "complete") row.phase = "running";
+      return;
     case "reasoning":
       // The agent is actively producing output — running, unless it has already
       // reached a terminal state this turn (a late delta shouldn't un-complete).
-      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
+      if (row.phase !== "complete") row.phase = "running";
+      return;
+    case "steering":
+      // Steering is a local transcript marker, not evidence of new agent work.
       return;
     case "unsupported":
       // An event June can't model must not silently change the reported phase.
@@ -416,27 +451,6 @@ function countActiveSubagents(subagents: Map<string, BackgroundHermesActivity>):
 }
 
 /**
- * Whether a lifecycle status string means the session is done. The classifier
- * sets `status` to the payload's status field or the raw type (e.g.
- * `session.complete`), so match terminal-flavored strings defensively. Mirrors
- * the spirit of AgentWorkspace's `isTerminalHermesEvent`.
- */
-function isTerminalLifecycleStatus(status: string | undefined): boolean {
-  if (typeof status !== "string") return false;
-  const normalized = status.toLowerCase();
-  return (
-    normalized === "complete" ||
-    normalized === "completed" ||
-    normalized === "done" ||
-    normalized === "finished" ||
-    normalized === "cancelled" ||
-    normalized === "canceled" ||
-    normalized.endsWith(".complete") ||
-    normalized.endsWith(".completed")
-  );
-}
-
-/**
  * The session id an event rolls up under. Most kinds carry a non-optional
  * `sessionId`, but the classifier uses `""` when a frame had none, and a couple
  * of kinds make it optional — treat empty/missing as unattributable.
@@ -446,14 +460,12 @@ function sessionIdOf(event: JuneHermesEvent): string | undefined {
 }
 
 /**
- * Resolve an event's timestamp to epoch ms. Background activity carries an ISO
- * `lastEventAt` from the classifier; everything else is "now" (the moment we
- * processed it). A bad ISO string falls back to now rather than NaN.
+ * Resolve an event's observed timestamp to epoch ms. The classifier stamps
+ * every kind with `receivedAt`; a bad ISO string falls back to now rather than
+ * NaN.
  */
 function eventTimestamp(event: JuneHermesEvent): number {
-  if (event.kind === "background_activity") {
-    const parsed = Date.parse(event.activity.lastEventAt);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
+  const parsed = Date.parse(event.receivedAt);
+  if (!Number.isNaN(parsed)) return parsed;
   return Date.now();
 }

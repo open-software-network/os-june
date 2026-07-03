@@ -41,8 +41,8 @@ export function parseHermesMode(value: unknown): HermesMode | undefined {
 /**
  * An action the agent is blocked on until the user responds. Surfaced through
  * `pending_action` events and resolved with the matching method in
- * `methods.ts` (clarify/approval responses flow through the existing chat
- * runtime today; sudo/secret are wired by later features).
+ * `methods.ts`; matching `*.response` frames surface separately as
+ * `pending_action_resolution` events.
  */
 export type PendingHermesAction =
   | { kind: "clarify"; requestId: string; question: string; choices?: string[] }
@@ -50,7 +50,9 @@ export type PendingHermesAction =
       kind: "approval";
       requestId: string;
       toolName?: string;
+      command?: string;
       description?: string;
+      allowPermanent: boolean;
       payload?: unknown;
     }
   | {
@@ -67,6 +69,41 @@ export type PendingHermesAction =
       reason?: string;
       /** Discriminator and a guarantee: the secret value is never carried on
        * this event, only the request for one. */
+      redacted: true;
+    };
+
+/** A user response that resolves a previously pending Hermes action. These
+ * events are distinct from `pending_action`: the user already answered, so the
+ * agent is expected to resume rather than remain blocked. */
+export type PendingHermesActionResolution =
+  | {
+      kind: "clarify";
+      requestId: string;
+      question: string;
+      choices: string[];
+      answer: string;
+    }
+  | {
+      kind: "approval";
+      requestId: string;
+      command: string;
+      description: string;
+      allowPermanent: boolean;
+      choice?: "once" | "session" | "always" | "deny";
+    }
+  | {
+      kind: "sudo";
+      requestId: string;
+      mode?: HermesMode;
+      granted?: boolean;
+    }
+  | {
+      kind: "secret";
+      requestId: string;
+      keyName?: string;
+      reason?: string;
+      /** Discriminator and a guarantee: a resolved secret event still carries
+       * only metadata, never the value the user entered. */
       redacted: true;
     };
 
@@ -99,9 +136,19 @@ export type BackgroundHermesActivity = {
   currentTool?: string;
   /** A short preview of the subagent's latest output or completion summary. */
   resultPreview?: string;
+  /** Zero-based task position when Hermes reports a fan-out batch. */
+  taskIndex?: number;
+  /** Total task count when Hermes reports a fan-out batch. */
+  taskCount?: number;
   /** ISO timestamp this activity was observed (the event's `receivedAt` when
    * available, else classification time). */
   lastEventAt: string;
+};
+
+/** Common fields all normalized June events carry. */
+type JuneHermesEventBase = {
+  /** ISO timestamp when June observed or minted the event. */
+  receivedAt: string;
 };
 
 /**
@@ -111,44 +158,103 @@ export type BackgroundHermesActivity = {
  * event.
  */
 export type JuneHermesEvent =
-  | {
+  | (JuneHermesEventBase & {
       kind: "transcript";
       sessionId: string;
       messageId?: string;
       delta?: string;
       complete?: boolean;
+      failed: boolean;
       role?: "assistant" | "user" | "system";
-    }
-  | { kind: "reasoning"; sessionId: string; delta: string }
-  | {
+    })
+  | (JuneHermesEventBase & { kind: "reasoning"; sessionId: string; delta: string })
+  | (JuneHermesEventBase & {
       kind: "tool";
       sessionId: string;
       toolCallId?: string;
-      phase: "start" | "progress" | "complete";
+      phase: "start" | "progress" | "complete" | "failed";
+      key: string;
       name?: string;
-      payload?: unknown;
-    }
-  | { kind: "pending_action"; sessionId: string; action: PendingHermesAction }
-  | {
+      text: string;
+      isClarify: boolean;
+      /** Sanitized opaque payload for display/details. Keep consumers from
+       * depending on raw wire structure. */
+      sanitizedPayload?: unknown;
+    })
+  | (JuneHermesEventBase & {
+      kind: "pending_action";
+      sessionId: string;
+      action: PendingHermesAction;
+    })
+  | (JuneHermesEventBase & {
+      kind: "pending_action_resolution";
+      sessionId: string;
+      action: PendingHermesActionResolution;
+    })
+  | (JuneHermesEventBase & {
       kind: "background_activity";
       sessionId: string;
       activity: BackgroundHermesActivity;
-    }
-  | { kind: "lifecycle"; sessionId?: string; status: string; payload?: unknown }
-  | {
+    })
+  | (JuneHermesEventBase & {
+      kind: "steering";
+      sessionId: string;
+      text: string;
+    })
+  | (JuneHermesEventBase & {
+      kind: "lifecycle";
+      sessionId?: string;
+      flavor: "terminal" | "running" | "info";
+      status: string;
+      text: string;
+      payload?: unknown;
+    })
+  | (JuneHermesEventBase & {
       kind: "error";
       sessionId?: string;
       message: string;
       code?: number;
       recoverable?: boolean;
-    }
-  | {
+    })
+  | (JuneHermesEventBase & {
       kind: "unsupported";
       sessionId?: string;
       rawType?: string;
       sanitizedPayload?: unknown;
-    };
+    });
 
 /** The discriminant strings of {@link JuneHermesEvent}, handy for tests and
  * exhaustiveness assertions. */
 export type JuneHermesEventKind = JuneHermesEvent["kind"];
+
+/** True for classified events that end the current workspace turn. */
+export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
+  switch (event.kind) {
+    case "error":
+      return true;
+    case "transcript":
+      return event.complete === true;
+    case "lifecycle":
+      return event.flavor === "terminal";
+    default:
+      return false;
+  }
+}
+
+/**
+ * Build a first-party steering event for a user instruction sent into an
+ * already-running session. This is local June state, NEVER produced by
+ * `classifyHermesEvent`, because steering is not a Hermes wire frame.
+ */
+export function createSteeringEvent(
+  sessionId: string,
+  text: string,
+  receivedAt: string,
+): JuneHermesEvent {
+  return {
+    kind: "steering",
+    sessionId,
+    text,
+    receivedAt,
+  };
+}

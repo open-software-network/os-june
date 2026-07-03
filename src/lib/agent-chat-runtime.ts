@@ -4,7 +4,6 @@ import type {
   AgentToolEventStatus,
   HermesSessionMessage,
 } from "./tauri";
-import type { HermesGatewayEvent } from "./hermes-gateway";
 import {
   isContextOverflowErrorSentinel,
   isContextOverflowMessage,
@@ -13,13 +12,8 @@ import {
 import { isScheduledRunPreamble, stripScheduledRunPreamble } from "./hermes-adapter";
 import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
-import { STEER_EVENT_TYPE, steeringPartText } from "./hermes-session-steer";
-import { parseHermesMode } from "./hermes-control-plane";
+import type { JuneHermesEvent } from "./hermes-control-plane";
 import { toolActivityLabel } from "./agent-tool-labels";
-
-export type LiveHermesEvent = HermesGatewayEvent & {
-  receivedAt: string;
-};
 
 export type AgentChatTextPart = {
   type: "text";
@@ -179,7 +173,7 @@ function sortAgentChatTurns(turns: AgentChatTurn[]) {
 export function buildAgentChatTurns(
   messages: AgentMessageDto[],
   toolEvents: AgentToolEventDto[],
-  liveEvents: LiveHermesEvent[] = [],
+  liveEvents: JuneHermesEvent[] = [],
 ): AgentChatTurn[] {
   const turns = messages.map(messageToTurn);
   appendPersistedToolEvents(turns, toolEvents);
@@ -193,7 +187,7 @@ export function buildAgentChatTurns(
 
 export function buildHermesSessionChatTurns(
   messages: HermesSessionMessage[],
-  liveEvents: LiveHermesEvent[] = [],
+  liveEvents: JuneHermesEvent[] = [],
 ): AgentChatTurn[] {
   const turns: AgentChatTurn[] = [];
   const toolResults = new Map<string, HermesSessionMessage>();
@@ -308,7 +302,7 @@ export function repairContractionSpacing(text: string): string {
   );
 }
 
-export function completedHermesMessageText(events: LiveHermesEvent[]) {
+export function completedHermesMessageText(events: JuneHermesEvent[]) {
   const turn = buildAgentChatTurns([], [], events)
     .filter((item) => item.role === "assistant")
     .at(-1);
@@ -422,345 +416,280 @@ function assistantTurnForTimestamp(turns: AgentChatTurn[], createdAt: string | u
   return undefined;
 }
 
-function appendLiveHermesEvents(turns: AgentChatTurn[], events: LiveHermesEvent[]) {
+function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[]) {
   let currentAssistant: AgentChatTurn | null = null;
   const toolCreatedTurns = new Set<AgentChatTurn>();
 
   for (const event of events) {
-    const text = eventText(event);
-    if (event.type === STEER_EVENT_TYPE) {
-      // A user instruction steered into the running turn (feature 06). It is a
-      // local, first-party event — not a Hermes frame — so it gets its own
-      // quiet system turn at its `receivedAt` order. Close any open assistant
-      // turn so the instruction reads as a beat between what June was doing and
-      // what it does next.
-      const instruction = steeringPartText(event.payload).trim();
-      if (instruction) {
-        turns.push({
-          id: `steering:${event.receivedAt}:${turns.length}`,
-          role: "system",
-          createdAt: event.receivedAt,
-          status: "complete",
-          parts: [{ type: "steering", text: instruction }],
-        });
-        currentAssistant = null;
-      }
-      continue;
-    }
-
-    if (event.type === "message.start") {
-      currentAssistant = createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = "running";
-      continue;
-    }
-
-    if (event.type === "message.delta") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = "running";
-      appendAssistantTextPart(currentAssistant.parts, deltaEventText(event), "running");
-      continue;
-    }
-
-    if (event.type === "message.complete") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const payload = event.payload as Record<string, unknown> | undefined;
-      // A billing failure is recognizable from its "Error:" text prefix; a
-      // context overflow is not, so only fold it when the turn actually failed
-      // — an ordinary sentence that mentions "context length" stays prose.
-      const failed = stringValue(payload?.status)?.toLowerCase() === "error";
-      const notice = text
-        ? (creditsNoticeFromTurnText(text) ?? (failed ? contextOverflowNotice(text) : undefined))
-        : undefined;
-      if (notice) {
-        // The complete text is authoritative for the turn (see
-        // completeAssistantTextPart); when it's a billing failure, any
-        // partially streamed text is superseded along with it.
-        currentAssistant.parts = currentAssistant.parts.filter((part) => part.type !== "text");
-        currentAssistant.parts.push(notice);
-      } else if (text) {
-        completeAssistantTextPart(currentAssistant.parts, text);
-      }
-      currentAssistant.status = "complete";
-      completeRunningParts(currentAssistant.parts);
-      currentAssistant = null;
-      continue;
-    }
-
-    if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = "running";
-      appendReasoningPart(currentAssistant.parts, deltaEventText(event));
-      continue;
-    }
-
-    if (event.type.startsWith("subagent.")) {
-      // Delegated subagents (the model's `delegate_task`) stream their own
-      // lifecycle: subagent.start / .tool / .progress / .thinking / .complete,
-      // each carrying the subagent's goal and identity. The gateway forwards
-      // them over the same socket as everything else; without this branch they
-      // were silently dropped and the spawn never appeared in the chat. Render
-      // each subagent as a tool-style row keyed by its id, so N parallel
-      // subagents show as N live rows that resolve as they finish.
-      if (!currentAssistant) {
-        currentAssistant = createAssistantTurn(turns, event.receivedAt);
-        toolCreatedTurns.add(currentAssistant);
-      }
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const subagentId = stringValue(payload?.subagent_id);
-      const taskIndexRaw = payload?.task_index;
-      const taskIndex = typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
-      const key = subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
-      const partId = `subagent:${key}`;
-      const goal = stringValue(payload?.goal);
-      const taskCountRaw = payload?.task_count;
-      const taskCount = typeof taskCountRaw === "number" ? taskCountRaw : undefined;
-      // Keep the richest label we have seen for this subagent: progress and
-      // tool events often omit the goal, and downgrading to the generic
-      // "Subagent" would make the row flicker. Prefer the goal, else the name
-      // already shown, else a task-position label.
-      const existingName = currentAssistant.parts.find(
-        (part): part is AgentChatToolPart => part.type === "tool" && part.id === partId,
-      )?.name;
-      const label = goal
-        ? `Subagent: ${goal}`
-        : (existingName ??
-          (taskCount && taskCount > 1 && taskIndex !== undefined
-            ? `Subagent ${taskIndex + 1} of ${taskCount}`
-            : "Subagent"));
-      // Terminal on `subagent.complete` or any failure-flavored subtype the
-      // gateway might add (fail/cancel/timeout/abort/interrupt). Keyed off the
-      // subtype, not a fixed allow-list, so a new terminal event can't strand
-      // a row as "running" forever.
-      const subtype = event.type.slice("subagent.".length).toLowerCase();
-      const reportedStatus = stringValue(payload?.status)?.toLowerCase() ?? "";
-      const failurePattern = /fail|error|cancel|timeout|abort|interrupt/;
-      const failed = failurePattern.test(subtype) || failurePattern.test(reportedStatus);
-      const completed = subtype === "complete" || subtype === "done" || failed;
-      const status: AgentChatToolPart["status"] = completed
-        ? failed
-          ? "failed"
-          : "complete"
-        : "running";
-      if (status === "running") {
-        currentAssistant.status = "running";
-      } else if (toolCreatedTurns.has(currentAssistant)) {
-        currentAssistant.status = "complete";
-      }
-      // The live line: a completion summary, else whatever the subagent is
-      // doing now (its latest tool preview).
-      const activity =
-        stringValue(payload?.summary) ??
-        stringValue(payload?.tool_preview) ??
-        (completed ? undefined : stringValue(payload?.text));
-      upsertToolPart(currentAssistant.parts, {
-        id: partId,
-        name: label,
-        text: activity ?? "",
-        status,
-      });
-      continue;
-    }
-
-    if (event.type.startsWith("tool.")) {
-      if (isClarifyToolEvent(event)) {
-        if (event.type.includes("complete") || event.type.includes("fail")) {
-          completePendingClarifyParts((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? []);
+    switch (event.kind) {
+      case "steering": {
+        // A user instruction steered into the running turn (feature 06). It is
+        // local first-party state, so it gets its own quiet system turn at its
+        // `receivedAt` order. Close any open assistant turn so the instruction
+        // reads as a beat between what June was doing and what it does next.
+        const instruction = event.text.trim();
+        if (instruction) {
+          turns.push({
+            id: `steering:${event.receivedAt}:${turns.length}`,
+            role: "system",
+            createdAt: event.receivedAt,
+            status: "complete",
+            parts: [{ type: "steering", text: instruction }],
+          });
+          currentAssistant = null;
         }
-        continue;
+        break;
       }
-      if (!currentAssistant) {
-        currentAssistant = createAssistantTurn(turns, event.receivedAt);
-        toolCreatedTurns.add(currentAssistant);
-      }
-      const status = toolEventStatus(event);
-      if (status === "running") {
-        currentAssistant.status = "running";
-      } else if (toolCreatedTurns.has(currentAssistant)) {
-        // A turn that exists only because of tool events has nothing left to
-        // stream once its tool reaches a terminal state.
+
+      case "transcript": {
+        if (!event.complete && event.delta === undefined) {
+          currentAssistant = createAssistantTurn(turns, event.receivedAt);
+          currentAssistant.status = "running";
+          break;
+        }
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        if (!event.complete) {
+          currentAssistant.status = "running";
+          appendAssistantTextPart(currentAssistant.parts, event.delta ?? "", "running");
+          break;
+        }
+        const text = event.delta ?? "";
+        // A billing failure is recognizable from its "Error:" text prefix; a
+        // context overflow is not, so only fold it when the turn actually
+        // failed — an ordinary sentence that mentions "context length" stays prose.
+        const notice = text
+          ? (creditsNoticeFromTurnText(text) ??
+            (event.failed ? contextOverflowNotice(text) : undefined))
+          : undefined;
+        if (notice) {
+          // The complete text is authoritative for the turn (see
+          // completeAssistantTextPart); when it's a billing failure, any
+          // partially streamed text is superseded along with it.
+          currentAssistant.parts = currentAssistant.parts.filter((part) => part.type !== "text");
+          currentAssistant.parts.push(notice);
+        } else if (text) {
+          completeAssistantTextPart(currentAssistant.parts, text);
+        }
         currentAssistant.status = "complete";
+        completeRunningParts(currentAssistant.parts);
+        currentAssistant = null;
+        break;
       }
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const name =
-        stringValue(payload?.name) ??
-        stringValue(payload?.tool_name) ??
-        stringValue(payload?.tool) ??
-        "tool";
-      upsertToolPart(currentAssistant.parts, {
-        id: toolEventKey(event),
-        name: toolActivityLabel(name, payload),
-        text,
-        status,
-      });
-      continue;
-    }
 
-    if (event.type === "clarify.request") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = "running";
-      const payload = event.payload as Record<string, unknown> | undefined;
-      upsertClarifyPart(currentAssistant.parts, {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `clarify:${event.receivedAt}`,
-        sessionId: event.session_id,
-        question:
-          stringValue(payload?.question, true) ?? "Hermes needs clarification before continuing.",
-        choices: stringArrayValue(payload?.choices),
-        status: "pending",
-      });
-      continue;
-    }
+      case "reasoning": {
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        currentAssistant.status = "running";
+        appendReasoningPart(currentAssistant.parts, event.delta);
+        break;
+      }
 
-    if (event.type === "clarify.response") {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      upsertClarifyPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `clarify:${event.receivedAt}`,
-        sessionId: event.session_id,
-        question: stringValue(payload?.question, true) ?? "",
-        choices: stringArrayValue(payload?.choices),
-        answer: stringValue(payload?.answer, true) ?? "",
-        status: "resolved",
-      });
-      continue;
-    }
-
-    if (event.type === "approval.request") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = "running";
-      const payload = event.payload as Record<string, unknown> | undefined;
-      upsertApprovalPart(currentAssistant.parts, {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `approval:${event.receivedAt}`,
-        command: stringValue(payload?.command, true) ?? "",
-        description:
-          stringValue(payload?.description, true) ?? "Hermes needs approval before continuing.",
-        sessionId: event.session_id,
-        allowPermanent: payload?.allow_permanent !== false,
-        status: "pending",
-      });
-      continue;
-    }
-
-    if (event.type === "approval.response") {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      upsertApprovalPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `approval:${event.receivedAt}`,
-        command: stringValue(payload?.command, true) ?? "",
-        description: stringValue(payload?.description, true) ?? "",
-        sessionId: event.session_id,
-        allowPermanent: payload?.allow_permanent !== false,
-        choice: approvalChoiceValue(payload?.choice),
-        status: "resolved",
-      });
-      continue;
-    }
-
-    if (event.type === "sudo.request") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = "running";
-      const payload = event.payload as Record<string, unknown> | undefined;
-      upsertSudoPart(currentAssistant.parts, {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `sudo:${event.receivedAt}`,
-        sessionId: event.session_id,
-        command: stringValue(payload?.command, true),
-        reason: stringValue(payload?.reason, true),
-        mode: parseHermesMode(payload?.mode),
-        status: "pending",
-      });
-      continue;
-    }
-
-    if (event.type === "sudo.response") {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      // Hermes spells the outcome `granted`; `approved` is accepted as a synonym
-      // so a slightly different gateway build still resolves the card.
-      const granted =
-        typeof payload?.granted === "boolean"
-          ? payload.granted
-          : typeof payload?.approved === "boolean"
-            ? payload.approved
-            : undefined;
-      upsertSudoPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `sudo:${event.receivedAt}`,
-        sessionId: event.session_id,
-        mode: parseHermesMode(payload?.mode),
-        approved: granted,
-        status: "resolved",
-      });
-      continue;
-    }
-
-    if (event.type === "secret.request") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = "running";
-      const payload = event.payload as Record<string, unknown> | undefined;
-      // Read ONLY the metadata fields — never `value`/`api_key`, even if the
-      // gateway erroneously includes them, so the secret value can never reach
-      // a part or the serialized turn tree.
-      upsertSecretPart(currentAssistant.parts, {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `secret:${event.receivedAt}`,
-        sessionId: event.session_id,
-        keyName:
-          stringValue(payload?.key_name) ??
-          stringValue(payload?.keyName) ??
-          stringValue(payload?.key) ??
-          stringValue(payload?.name),
-        reason: stringValue(payload?.reason, true),
-        status: "pending",
-      });
-      continue;
-    }
-
-    if (event.type === "secret.response") {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      // Again metadata only: the response carries a `provided` flag, never the
-      // value the user typed.
-      upsertSecretPart((currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [], {
-        id:
-          stringValue(payload?.request_id) ??
-          stringValue(payload?.id) ??
-          `secret:${event.receivedAt}`,
-        sessionId: event.session_id,
-        status: "resolved",
-      });
-      continue;
-    }
-
-    if (event.type === "error") {
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const notice = text ? turnNotice(text) : undefined;
-      if (notice) {
-        currentAssistant.parts.push(notice);
-      } else {
+      case "background_activity": {
+        // Delegated subagents (the model's `delegate_task`) stream lifecycle
+        // and progress over the same live channel. Render each subagent as a
+        // tool-style row keyed by its id, so N parallel subagents show as N live
+        // rows that resolve as they finish.
+        if (!currentAssistant) {
+          currentAssistant = createAssistantTurn(turns, event.receivedAt);
+          toolCreatedTurns.add(currentAssistant);
+        }
+        const { activity } = event;
+        const key =
+          activity.subagentId === "subagent" && activity.taskIndex !== undefined
+            ? `task-${activity.taskIndex}`
+            : activity.subagentId;
+        const partId = `subagent:${key}`;
+        // Keep the richest label we have seen for this subagent: progress and
+        // tool events often omit the goal, and downgrading to the generic
+        // "Subagent" would make the row flicker. Prefer the goal, else the name
+        // already shown, else a task-position label.
+        const existingName = currentAssistant.parts.find(
+          (part): part is AgentChatToolPart => part.type === "tool" && part.id === partId,
+        )?.name;
+        const label = activity.goal
+          ? `Subagent: ${activity.goal}`
+          : (existingName ??
+            (activity.taskCount && activity.taskCount > 1 && activity.taskIndex !== undefined
+              ? `Subagent ${activity.taskIndex + 1} of ${activity.taskCount}`
+              : "Subagent"));
+        // `blocked` is resumable, mirroring the activity store's non-terminal phase.
+        const status: AgentChatToolPart["status"] =
+          activity.phase === "complete"
+            ? "complete"
+            : activity.phase === "error"
+              ? "failed"
+              : "running";
+        if (status === "running") {
+          currentAssistant.status = "running";
+        } else if (toolCreatedTurns.has(currentAssistant)) {
+          currentAssistant.status = "complete";
+        }
         upsertToolPart(currentAssistant.parts, {
-          id: `error:${event.receivedAt}`,
-          name: "Error",
-          text: text || "The agent reported an error.",
-          status: "failed",
+          id: partId,
+          name: label,
+          text: activity.resultPreview ?? "",
+          status,
         });
+        break;
       }
-      currentAssistant.status = "complete";
-      completeRunningParts(currentAssistant.parts);
-      currentAssistant = null;
+
+      case "tool": {
+        if (event.isClarify) {
+          if (event.phase === "complete" || event.phase === "failed") {
+            completePendingClarifyParts(
+              (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
+            );
+          }
+          break;
+        }
+        if (!currentAssistant) {
+          currentAssistant = createAssistantTurn(turns, event.receivedAt);
+          toolCreatedTurns.add(currentAssistant);
+        }
+        const status: AgentChatToolPart["status"] =
+          event.phase === "complete" ? "complete" : event.phase === "failed" ? "failed" : "running";
+        if (status === "running") {
+          currentAssistant.status = "running";
+        } else if (toolCreatedTurns.has(currentAssistant)) {
+          // A turn that exists only because of tool events has nothing left to
+          // stream once its tool reaches a terminal state.
+          currentAssistant.status = "complete";
+        }
+        upsertToolPart(currentAssistant.parts, {
+          id: event.key,
+          name: toolActivityLabel(event.name ?? "tool", event.sanitizedPayload),
+          text: event.text,
+          status,
+        });
+        break;
+      }
+
+      case "pending_action": {
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        currentAssistant.status = "running";
+        const { action } = event;
+        switch (action.kind) {
+          case "clarify":
+            upsertClarifyPart(currentAssistant.parts, {
+              id: action.requestId,
+              sessionId: optionalSessionId(event.sessionId),
+              question: action.question,
+              choices: action.choices ?? [],
+              status: "pending",
+            });
+            break;
+          case "approval":
+            upsertApprovalPart(currentAssistant.parts, {
+              id: action.requestId,
+              command: action.command ?? "",
+              description: action.description ?? "Hermes needs approval before continuing.",
+              sessionId: optionalSessionId(event.sessionId),
+              allowPermanent: action.allowPermanent,
+              status: "pending",
+            });
+            break;
+          case "sudo":
+            upsertSudoPart(currentAssistant.parts, {
+              id: action.requestId,
+              sessionId: optionalSessionId(event.sessionId),
+              command: action.command,
+              reason: action.reason,
+              mode: action.mode,
+              status: "pending",
+            });
+            break;
+          case "secret":
+            upsertSecretPart(currentAssistant.parts, {
+              id: action.requestId,
+              sessionId: optionalSessionId(event.sessionId),
+              keyName: action.keyName,
+              reason: action.reason,
+              status: "pending",
+            });
+            break;
+        }
+        break;
+      }
+
+      case "pending_action_resolution": {
+        const targetParts = (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [];
+        const { action } = event;
+        switch (action.kind) {
+          case "clarify":
+            upsertClarifyPart(targetParts, {
+              id: action.requestId,
+              sessionId: optionalSessionId(event.sessionId),
+              question: action.question,
+              choices: action.choices,
+              answer: action.answer,
+              status: "resolved",
+            });
+            break;
+          case "approval":
+            upsertApprovalPart(targetParts, {
+              id: action.requestId,
+              command: action.command,
+              description: action.description,
+              sessionId: optionalSessionId(event.sessionId),
+              allowPermanent: action.allowPermanent,
+              choice: action.choice,
+              status: "resolved",
+            });
+            break;
+          case "sudo":
+            upsertSudoPart(targetParts, {
+              id: action.requestId,
+              sessionId: optionalSessionId(event.sessionId),
+              mode: action.mode,
+              approved: action.granted,
+              status: "resolved",
+            });
+            break;
+          case "secret":
+            upsertSecretPart(targetParts, {
+              id: action.requestId,
+              sessionId: optionalSessionId(event.sessionId),
+              keyName: action.keyName,
+              reason: action.reason,
+              status: "resolved",
+            });
+            break;
+        }
+        break;
+      }
+
+      case "error": {
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        const notice = event.message ? turnNotice(event.message) : undefined;
+        if (notice) {
+          currentAssistant.parts.push(notice);
+        } else {
+          upsertToolPart(currentAssistant.parts, {
+            id: `error:${event.receivedAt}`,
+            name: "Error",
+            text: event.message || "The agent reported an error.",
+            status: "failed",
+          });
+        }
+        currentAssistant.status = "complete";
+        completeRunningParts(currentAssistant.parts);
+        currentAssistant = null;
+        break;
+      }
+
+      case "lifecycle": {
+        if (event.flavor === "terminal") {
+          const target = currentAssistant ?? lastAssistantTurn(turns);
+          if (target?.status === "running") {
+            target.status = "complete";
+            completeRunningParts(target.parts);
+          }
+          currentAssistant = null;
+        }
+        break;
+      }
+
+      case "unsupported":
+        break;
     }
   }
 }
@@ -799,6 +728,10 @@ function lastAssistantTurn(turns: AgentChatTurn[]) {
     if (turns[index]?.role === "assistant") return turns[index];
   }
   return undefined;
+}
+
+function optionalSessionId(sessionId: string | undefined) {
+  return sessionId || undefined;
 }
 
 function appendAssistantTextPart(
@@ -1041,41 +974,6 @@ function upsertSecretPart(
   });
 }
 
-function eventText(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
-  if (!payload) return "";
-  for (const key of [
-    "text",
-    "delta",
-    "message",
-    "summary",
-    "status",
-    "content",
-    "output",
-    "result",
-    "command",
-  ]) {
-    const value = stringValue(
-      payload[key],
-      key === "text" || key === "delta" || key === "message" || key === "content",
-    );
-    if (value) return value;
-  }
-  return "";
-}
-
-// Streaming deltas must be appended verbatim — including whitespace-only
-// chunks — so this intentionally bypasses the trimming in `stringValue`.
-function deltaEventText(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
-  if (!payload) return "";
-  for (const key of ["text", "delta", "message", "content"]) {
-    const value = payload[key];
-    if (typeof value === "string" && value) return value;
-  }
-  return "";
-}
-
 function messageTimestamp(message: HermesSessionMessage) {
   return timestampString(message.timestamp ?? message.created_at);
 }
@@ -1246,25 +1144,6 @@ function stringifyObject(value: unknown) {
   }
 }
 
-export function toolEventKey(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
-  return (
-    stringValue(payload?.tool_id) ??
-    stringValue(payload?.id) ??
-    stringValue(payload?.call_id) ??
-    stringValue(payload?.tool_call_id) ??
-    stringValue(payload?.name) ??
-    `tool:${event.type}:${(event as LiveHermesEvent).receivedAt}`
-  );
-}
-
-function isClarifyToolEvent(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
-  const name =
-    stringValue(payload?.name) ?? stringValue(payload?.tool_name) ?? stringValue(payload?.tool);
-  return name?.toLowerCase() === "clarify";
-}
-
 function completePendingClarifyParts(parts: AgentChatPart[]) {
   const pending = [...parts]
     .reverse()
@@ -1272,12 +1151,6 @@ function completePendingClarifyParts(parts: AgentChatPart[]) {
       (part): part is AgentChatClarifyPart => part.type === "clarify" && part.status === "pending",
     );
   if (pending) pending.status = "resolved";
-}
-
-function toolEventStatus(event: HermesGatewayEvent): AgentChatToolPart["status"] {
-  if (event.type.includes("complete")) return "complete";
-  if (event.type.includes("error") || event.type.includes("fail")) return "failed";
-  return "running";
 }
 
 function toolStatus(status: AgentToolEventStatus): AgentChatToolPart["status"] {
@@ -1303,25 +1176,12 @@ function partText(part: AgentChatPart) {
   return part.text;
 }
 
-function approvalChoiceValue(value: unknown): AgentApprovalChoice | undefined {
-  if (value === "once" || value === "session" || value === "always" || value === "deny") {
-    return value;
-  }
-  return undefined;
-}
-
 function appendLogText(current: string, next: string) {
   if (!next.trim()) return current;
   if (!current) return next;
   if (current.endsWith(next)) return current;
   const separator = /\n$/.test(current) || /^\s/.test(next) || /^[.,!?;:]/.test(next) ? "" : "\n";
   return `${current}${separator}${next}`;
-}
-
-function stringArrayValue(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
 }
 
 function stringValue(value: unknown, preserveWhitespace = false) {

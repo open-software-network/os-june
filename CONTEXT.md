@@ -113,7 +113,9 @@ _Avoid_: control plane, API.
 
 **Control plane**:
 The typed seam (`src/lib/hermes-control-plane/`) that turns raw Hermes frames
-into the total `JuneHermesEvent` union and typed outbound methods.
+into the total `JuneHermesEvent` union and typed outbound methods. The union
+also carries locally minted first-party events (see **Steer**) that the
+classifier never emits.
 _Avoid_: gateway, adapter.
 
 **Runtime mode**:
@@ -137,6 +139,15 @@ A `/name arg` handled client-side before submit — builtin `/model` and
 `/file`, plus skill slash commands. (There is no `/image` builtin on `main`;
 image *generation* is an upstream Hermes tool, not a June slash command.)
 _Avoid_: gateway command.
+
+**Steer**:
+A user instruction delivered into a still-running agent session without
+interrupting it. A steer is first-party and local to June — never a Hermes
+wire frame. A steer the run never consumed is resent as an ordinary follow-up
+when the run completes cleanly, and dropped when the run fails or is
+cancelled.
+_Avoid_: interrupt/stop (a steer never halts the run), follow-up (that is the
+fallback delivery, not the steer), mid-run message.
 
 **Model capability**:
 An authoritative boolean flag from the live Venice catalog `capabilities`

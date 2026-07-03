@@ -10,6 +10,7 @@ import type {
   JuneHermesEvent,
   JuneHermesEventKind,
   PendingHermesAction,
+  PendingHermesActionResolution,
 } from "../lib/hermes-control-plane";
 
 // Recorded raw-frame corpus. Fixture DATA lives beside the module
@@ -47,7 +48,9 @@ const KNOWN_KINDS: readonly JuneHermesEventKind[] = [
   "reasoning",
   "tool",
   "pending_action",
+  "pending_action_resolution",
   "background_activity",
+  "steering",
   "lifecycle",
   "error",
   "unsupported",
@@ -58,7 +61,7 @@ const KNOWN_KIND_SET = new Set<string>(KNOWN_KINDS);
  * `pending_action` frames so approval/clarify/sudo/secret stay distinct. */
 type FrameExpectation = {
   kind: JuneHermesEventKind;
-  action?: PendingHermesAction["kind"];
+  action?: PendingHermesAction["kind"] | PendingHermesActionResolution["kind"];
 };
 
 type FixtureCase = {
@@ -104,22 +107,19 @@ const CASES: Record<string, FixtureCase> = {
   },
   "approval-request-response": {
     fixture: approvalRequestResponse as HermesReplayFixture,
-    // The .response is not a new pending action; it currently lands in
-    // `unsupported` (locked; see existing classifier test asserting a response
-    // is never a pending_action).
-    expected: [k("pending_action", "approval"), k("unsupported")],
+    expected: [k("pending_action", "approval"), k("pending_action_resolution", "approval")],
   },
   "clarify-request-response": {
     fixture: clarifyRequestResponse as HermesReplayFixture,
-    expected: [k("pending_action", "clarify"), k("unsupported")],
+    expected: [k("pending_action", "clarify"), k("pending_action_resolution", "clarify")],
   },
   "sudo-request-response": {
     fixture: sudoRequestResponse as HermesReplayFixture,
-    expected: [k("pending_action", "sudo"), k("unsupported")],
+    expected: [k("pending_action", "sudo"), k("pending_action_resolution", "sudo")],
   },
   "secret-request-response": {
     fixture: secretRequestResponse as HermesReplayFixture,
-    expected: [k("pending_action", "secret"), k("unsupported")],
+    expected: [k("pending_action", "secret"), k("pending_action_resolution", "secret")],
   },
   "subagent-lifecycle": {
     fixture: subagentLifecycle as HermesReplayFixture,
@@ -239,12 +239,12 @@ describe("hermes replay — family-specific expectations", () => {
           `${name}#${index} (raw type "${raw.type}") expected ${want.kind}, got ${event.kind}`,
         ).toBe(want.kind);
         if (want.action) {
-          expect(event.kind).toBe("pending_action");
-          if (event.kind === "pending_action") {
-            expect(
-              event.action.kind,
-              `${name}#${index} expected pending action ${want.action}`,
-            ).toBe(want.action);
+          if (event.kind === "pending_action" || event.kind === "pending_action_resolution") {
+            expect(event.action.kind, `${name}#${index} expected action ${want.action}`).toBe(
+              want.action,
+            );
+          } else {
+            throw new Error(`${name}#${index} expected action ${want.action}`);
           }
         }
       }
