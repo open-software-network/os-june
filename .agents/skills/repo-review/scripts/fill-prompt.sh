@@ -51,8 +51,10 @@ fi
 case "$fixed_point" in
   origin/*)
     # Remote-tracking refs go stale too; refresh before pinning the baseline.
-    git fetch --quiet origin "${fixed_point#origin/}" 2>/dev/null \
-      || echo "warning: fetch failed; $fixed_point may be stale" >&2 ;;
+    # Fail closed: reviewing against a stale baseline silently mis-scopes the
+    # diff. To review offline, pass a SHA or local ref explicitly.
+    git fetch --quiet origin "${fixed_point#origin/}" \
+      || { echo "error: fetch failed for $fixed_point — refusing a possibly stale baseline (pass a SHA or local ref to review offline)" >&2; exit 1; } ;;
 esac
 git rev-parse --verify --quiet "${fixed_point}^{commit}" >/dev/null \
   || { echo "error: ref does not resolve: $fixed_point" >&2; exit 1; }

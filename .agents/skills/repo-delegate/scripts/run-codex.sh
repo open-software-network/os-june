@@ -40,12 +40,20 @@ if [ "$dry_run" = 1 ]; then
 fi
 
 out=${out:-$(mktemp "${TMPDIR:-/tmp}/repo-delegate-codex.XXXXXX")}
-head_before=$(git -C "$worktree" rev-parse HEAD)
-printf '%s\n' "$prompt" | codex exec -s workspace-write -C "$worktree" -o "$out" -
-head_after=$(git -C "$worktree" rev-parse HEAD)
-if [ "$head_before" != "$head_after" ]; then
-  echo "error: delegate moved HEAD ($head_before -> $head_after) — the no-commit contract was violated; inspect before trusting the worktree" >&2
+
+# HEAD + every ref (branches, tags, stash) + staged paths. Working-tree edits
+# are the delegate's job; everything else in git is off limits.
+git_state() { git -C "$1" rev-parse HEAD; git -C "$1" for-each-ref; git -C "$1" diff --cached --name-status; }
+
+state_before=$(git_state "$worktree")
+harness_rc=0
+printf '%s\n' "$prompt" | codex exec -s workspace-write -C "$worktree" -o "$out" - \
+  || harness_rc=$?
+state_after=$(git_state "$worktree")
+if [ "$state_before" != "$state_after" ]; then
+  echo "error: delegate mutated git state (HEAD/refs/index) — the no-commit contract was violated; inspect before trusting the worktree" >&2
   exit 1
 fi
+[ "$harness_rc" -eq 0 ] || { echo "error: harness exited $harness_rc" >&2; exit "$harness_rc"; }
 printf '\n--- report (%s) ---\n' "$out"
 cat "$out"
