@@ -2541,7 +2541,10 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
         .into_iter()
         .filter_map(|root| root.path.canonicalize().ok())
         .collect::<Vec<_>>();
-    allowed_roots.extend(["images"].into_iter().filter_map(|relative| {
+    // "image_cache" is where the Hermes runtime copies tool-result images;
+    // assistant MEDIA: references point at those copies, so dropping it breaks
+    // inline rendering and download of every tool-generated image.
+    allowed_roots.extend(["images", "image_cache"].into_iter().filter_map(|relative| {
         hermes_home.join(relative).canonicalize().ok()
     }));
     let allowed = allowed_roots
