@@ -10,12 +10,11 @@ third party directly, the access token never leaves the Rust process, and every
 generation/edit is billed to the signed-in user automatically.
 
 Generated and edited images are written to a dedicated images directory (passed
-as the second argument) so the model can reference a prior image by a stable
-filename when it wants to edit it. Source images are resolved from that directory
-and any extra read directories passed after it, such as Hermes's workspace
-uploads for `/image` fast-path and user-attached images. The model may pass a
-bare filename or a path, but paths must canonicalize inside those configured
-source directories.
+as the second argument) so the model can reference a prior image by an edit-safe
+source reference when it wants to edit it. Source images are resolved from that
+process-local reference and must still canonicalize inside the configured source
+directories. Bare filenames and paths inside those global roots are not accepted
+as edit sources.
 
 It depends only on the Python standard library so it can run inside the Hermes
 runtime venv without extra packaging.
@@ -24,11 +23,13 @@ runtime venv without extra packaging.
 from __future__ import annotations
 
 import base64
+import builtins
 import json
 import mimetypes
 import os
 import socket
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -42,6 +43,8 @@ REQUEST_MAX_ATTEMPTS = 2
 TOKEN_ENV_VAR = "JUNE_IMAGE_PROXY_TOKEN"
 MAX_EDIT_SOURCE_IMAGE_BYTES = 50 * 1024 * 1024
 IMAGE_SIGNATURE_READ_BYTES = 32
+EDIT_SOURCE_MARKER = ".june-source-"
+EDIT_SOURCE_TOKEN_HEX_LEN = 32
 
 # Venice always returns png for generation; edits echo the requested output
 # format. Map the response mime to a file extension for the on-disk name.
@@ -64,8 +67,9 @@ TOOLS: list[dict[str, Any]] = [
             "Generate an image from a text description and show it to the user "
             "in the conversation. Use this when the user asks you to draw, "
             "create, make, or generate an image, picture, illustration, logo, "
-            "or similar. Returns the image inline plus a `filename`; pass that "
-            "same filename to `edit_image` if the user then asks to change it."
+            "or similar. Returns the image inline plus an edit-safe `filename`; "
+            "pass that exact filename to `edit_image` if the user then asks to "
+            "change it."
         ),
         "inputSchema": {
             "type": "object",
@@ -84,14 +88,15 @@ TOOLS: list[dict[str, Any]] = [
             "Edit an existing image (image-to-image) and show the result in the "
             "conversation. Use this whenever the user asks to change, modify, "
             "adjust, refine, or reframe an image you generated, edited, or "
-            "received as an attachment earlier, including reframing like wider, "
+            "received from this tool earlier, including reframing like wider, "
             "zoom out, bigger perspective, or closer, plus recoloring, "
             "restyling, and adding or removing elements. This transforms the "
-            "image file directly: you do "
-            "NOT need to see, analyze, or describe the image to edit it. "
+            "image file directly: you do NOT need to see, analyze, or describe "
+            "the image to edit it. "
             "`source_filename` MUST be a filename from a previous image tool "
-            "result or an attached image in this conversation. Returns the "
-            "edited image inline plus a new `filename` you can edit again."
+            "result from this running June image tool. Bare file names and paths "
+            "copied from disk are rejected. Returns the edited image inline plus "
+            "a new edit-safe `filename` you can edit again."
         ),
         "inputSchema": {
             "type": "object",
@@ -99,9 +104,8 @@ TOOLS: list[dict[str, Any]] = [
                 "source_filename": {
                     "type": "string",
                     "description": (
-                        "The filename or safe June image path of the image to "
-                        "edit, exactly as returned by a prior image tool call "
-                        "or attached in this conversation."
+                        "The edit-safe filename of the image to edit, exactly "
+                        "as returned by a prior June image tool call."
                     ),
                 },
                 "instruction": {
@@ -124,6 +128,7 @@ def main() -> None:
     base_url = sys.argv[1].rstrip("/")
     images_dir = sys.argv[2]
     source_dirs = [images_dir, *sys.argv[3:]]
+    source_registry = EditSourceRegistry()
     # The proxy token is passed via the environment rather than argv so it does
     # not show up in process listings.
     token = os.environ.get(TOKEN_ENV_VAR, "")
@@ -132,7 +137,7 @@ def main() -> None:
         if message is None:
             return
         response_message = handle_message(
-            base_url, images_dir, source_dirs, token, message
+            base_url, images_dir, source_dirs, source_registry, token, message
         )
         if response_message is not None:
             write_message(response_message)
@@ -178,6 +183,7 @@ def handle_message(
     base_url: str,
     images_dir: str,
     source_dirs: list[str],
+    source_registry: "EditSourceRegistry",
     token: str,
     message: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -204,6 +210,7 @@ def handle_message(
             base_url,
             images_dir,
             source_dirs,
+            source_registry,
             token,
             request_id,
             message.get("params") or {},
@@ -218,6 +225,7 @@ def call_tool(
     base_url: str,
     images_dir: str,
     source_dirs: list[str],
+    source_registry: "EditSourceRegistry",
     token: str,
     request_id: Any,
     params: dict[str, Any],
@@ -226,9 +234,11 @@ def call_tool(
     arguments = params.get("arguments") or {}
     try:
         if name == "generate_image":
-            result = generate_image(base_url, images_dir, token, arguments)
+            result = generate_image(base_url, images_dir, source_registry, token, arguments)
         elif name == "edit_image":
-            result = edit_image(base_url, images_dir, source_dirs, token, arguments)
+            result = edit_image(
+                base_url, images_dir, source_dirs, source_registry, token, arguments
+            )
         else:
             return error_response(request_id, -32602, f"Unknown tool: {name}")
     except Exception as exc:
@@ -277,7 +287,11 @@ def call_tool(
 
 
 def generate_image(
-    base_url: str, images_dir: str, token: str, arguments: dict[str, Any]
+    base_url: str,
+    images_dir: str,
+    source_registry: "EditSourceRegistry",
+    token: str,
+    arguments: dict[str, Any],
 ) -> dict[str, Any]:
     prompt = str(arguments.get("prompt") or "").strip()
     if not prompt:
@@ -296,11 +310,12 @@ def generate_image(
     if not image_base64:
         raise RuntimeError("June returned an empty image.")
     filename = write_image(images_dir, image_base64, mime_type)
+    source_filename = source_registry.register(os.path.join(images_dir, filename))
     return {
         "image_base64": image_base64,
         "mime_type": mime_type,
         "model": envelope.get("model"),
-        "filename": filename,
+        "filename": source_filename,
         "label": prompt,
     }
 
@@ -309,6 +324,7 @@ def edit_image(
     base_url: str,
     images_dir: str,
     source_dirs: list[str],
+    source_registry: "EditSourceRegistry",
     token: str,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
@@ -318,7 +334,7 @@ def edit_image(
         raise ValueError("source_filename is required")
     if not instruction:
         raise ValueError("instruction is required")
-    source_base64, source_mime = read_image(source_dirs, source_filename)
+    source_base64, source_mime = read_image(source_dirs, source_filename, source_registry)
     request_id = new_request_id()
     envelope = call_proxy(
         base_url,
@@ -336,11 +352,12 @@ def edit_image(
     if not image_base64:
         raise RuntimeError("June returned an empty edited image.")
     filename = write_image(images_dir, image_base64, mime_type)
+    next_source_filename = source_registry.register(os.path.join(images_dir, filename))
     return {
         "image_base64": image_base64,
         "mime_type": mime_type,
         "model": envelope.get("model"),
-        "filename": filename,
+        "filename": next_source_filename,
         "label": instruction,
     }
 
@@ -360,8 +377,10 @@ def write_image(images_dir: str, image_base64: str, mime_type: str) -> str:
     return filename
 
 
-def read_image(source_dirs: list[str], filename: str) -> tuple[str, str]:
-    path = resolve_source_image_path(source_dirs, filename)
+def read_image(
+    source_dirs: list[str], filename: str, source_registry: "EditSourceRegistry"
+) -> tuple[str, str]:
+    path = resolve_source_image_path(source_dirs, filename, source_registry)
     safe_name = os.path.basename(path)
     mime_type = source_image_mime_type(path, safe_name)
     size = os.path.getsize(path)
@@ -401,28 +420,73 @@ def source_image_mime_type(path: str, safe_name: str) -> str:
     return mime_type
 
 
-def resolve_source_image_path(source_dirs: list[str], filename: str) -> str:
+class EditSourceRegistry:
+    def __init__(self) -> None:
+        self._paths_by_token: dict[str, str] = {}
+
+    def register(self, path: str) -> str:
+        canonical = canonical_path(path)
+        safe_name = os.path.basename(canonical)
+        if not safe_name:
+            raise ValueError("source_filename is required")
+        token = uuid.uuid4().hex
+        self._paths_by_token[token] = canonical
+        return edit_source_reference(safe_name, token)
+
+    def path_for(self, token: str) -> str | None:
+        return self._paths_by_token.get(token)
+
+
+def edit_source_reference(safe_name: str, token: str) -> str:
+    stem, extension = os.path.splitext(safe_name)
+    if not stem:
+        stem = "image"
+    return f"{stem}{EDIT_SOURCE_MARKER}{token}{extension}"
+
+
+def parse_edit_source_reference(reference: str) -> tuple[str, str] | None:
+    stripped = reference.strip()
+    safe_name = os.path.basename(stripped)
+    if not safe_name or safe_name != stripped:
+        return None
+    stem_with_token, extension = os.path.splitext(safe_name)
+    stem, marker, token = stem_with_token.rpartition(EDIT_SOURCE_MARKER)
+    if not marker or not stem or len(token) != EDIT_SOURCE_TOKEN_HEX_LEN:
+        return None
+    if any(char not in "0123456789abcdef" for char in token):
+        return None
+    return token, f"{stem}{extension}"
+
+
+def resolve_source_image_path(
+    source_dirs: list[str], filename: str, source_registry: EditSourceRegistry
+) -> str:
     reference = filename.strip()
-    safe_name = os.path.basename(reference)
-    if not safe_name:
-        raise ValueError("source_filename is required")
+    parsed = parse_edit_source_reference(reference)
+    if parsed is None:
+        safe_name = os.path.basename(reference)
+        if not safe_name:
+            raise ValueError("source_filename is required")
+        if os.path.isabs(reference) or safe_name != reference:
+            raise ValueError("source_filename must be an edit-safe filename from this tool.")
+        raise ValueError(
+            f"No editable image named {safe_name}. Use the edit-safe filename returned by June's image tool."
+        )
+
+    token, expected_name = parsed
+    path = source_registry.path_for(token)
+    if path is None:
+        raise ValueError("source_filename must be an edit-safe filename from this tool.")
+
+    safe_name = os.path.basename(path)
+    if safe_name != expected_name:
+        raise ValueError("source_filename must match the image it was issued for.")
 
     roots = [canonical_path(source_dir) for source_dir in source_dirs if source_dir]
-    candidates: list[str] = []
-    if os.path.isabs(reference):
-        candidates.append(canonical_path(reference))
-    else:
-        candidates.extend(canonical_path(os.path.join(root, reference)) for root in roots)
+    if any(path_is_within(path, root) for root in roots) and os.path.isfile(path):
+        return path
 
-    for candidate in unique_strings(candidates):
-        if any(path_is_within(candidate, root) for root in roots) and os.path.isfile(candidate):
-            return candidate
-
-    if os.path.isabs(reference) or safe_name != reference:
-        raise ValueError("source_filename must refer to an image from this conversation.")
-    raise ValueError(
-        f"No image named {safe_name}. Use an image filename from this conversation."
-    )
+    raise ValueError("source_filename must refer to an available June image source.")
 
 
 def canonical_path(path: str) -> str:
@@ -434,17 +498,6 @@ def path_is_within(candidate: str, root: str) -> bool:
         return os.path.commonpath([candidate, root]) == root
     except ValueError:
         return False
-
-
-def unique_strings(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        result.append(value)
-    return result
 
 
 def new_request_id() -> str:
@@ -500,6 +553,82 @@ def transport_error_reason(exc: BaseException) -> str:
 
 def run_smoke_tests() -> None:
     smoke_test_proxy_retry_reuses_request_id()
+    smoke_test_registered_edit_source_resolves_and_reads()
+    smoke_test_unregistered_upload_source_is_rejected_before_read()
+    smoke_test_registered_source_outside_roots_is_rejected()
+
+
+def write_test_png(path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"\x89PNG\r\n\x1a\n" + b"test-png")
+
+
+def assert_raises_value_error(expected: str, action: Any) -> None:
+    try:
+        action()
+    except ValueError as exc:
+        if expected not in str(exc):
+            raise AssertionError(f"wrong error: {exc}") from exc
+        return
+    raise AssertionError("expected ValueError")
+
+
+def smoke_test_registered_edit_source_resolves_and_reads() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        images_dir = os.path.join(temp_dir, "images")
+        image_path = os.path.join(images_dir, "generated-image-ok.png")
+        write_test_png(image_path)
+        registry = EditSourceRegistry()
+        source_ref = registry.register(image_path)
+
+        resolved = resolve_source_image_path([images_dir], source_ref, registry)
+        if resolved != canonical_path(image_path):
+            raise AssertionError("registered source resolved to the wrong path")
+
+        source_base64, source_mime = read_image([images_dir], source_ref, registry)
+        if source_mime != "image/png":
+            raise AssertionError("registered source returned the wrong mime type")
+        if not base64.b64decode(source_base64).startswith(b"\x89PNG\r\n\x1a\n"):
+            raise AssertionError("registered source returned the wrong bytes")
+
+
+def smoke_test_unregistered_upload_source_is_rejected_before_read() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        uploads_dir = os.path.join(temp_dir, "uploads")
+        image_path = os.path.join(uploads_dir, "other-session.png")
+        write_test_png(image_path)
+        registry = EditSourceRegistry()
+        source_ref = edit_source_reference("other-session.png", "0" * EDIT_SOURCE_TOKEN_HEX_LEN)
+        original_open = builtins.open
+
+        def fail_on_read(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("unregistered source was opened")
+
+        try:
+            builtins.open = fail_on_read
+            assert_raises_value_error(
+                "edit-safe filename",
+                lambda: read_image([uploads_dir], source_ref, registry),
+            )
+        finally:
+            builtins.open = original_open
+
+
+def smoke_test_registered_source_outside_roots_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        images_dir = os.path.join(temp_dir, "images")
+        uploads_dir = os.path.join(temp_dir, "uploads")
+        other_session_uploads = os.path.join(temp_dir, "other-session-uploads")
+        image_path = os.path.join(other_session_uploads, "attached.png")
+        write_test_png(image_path)
+        registry = EditSourceRegistry()
+        source_ref = registry.register(image_path)
+
+        assert_raises_value_error(
+            "available June image source",
+            lambda: read_image([images_dir, uploads_dir], source_ref, registry),
+        )
 
 
 def smoke_test_proxy_retry_reuses_request_id() -> None:
