@@ -35,30 +35,36 @@ APP_VISIBLE_NOTE_BODY_SQL = (
     "ELSE coalesce(n.generated_content, '') END"
 )
 
-# The app's transcript view (transcriptToText in NoteEditor.tsx) shows the
-# turn-based rows when any exist and otherwise falls back to the latest
-# whole-file transcript - never a mix. Mirror both halves: `turns_text`
-# matches source_transcripts in db/repositories.rs (same filter, same
-# canonical order - turns land out of insertion order because dual-source
-# recordings interleave by start_ms and a note can stack several recording
-# sessions), and `latest_text` matches latest_transcript. Callers pick
-# turns_text first, latest_text as the fallback.
-TRANSCRIPT_TEXT_SUBQUERIES = """
-    (
-        SELECT group_concat(text, char(10)) FROM (
-            SELECT t.text
-            FROM transcripts t
-            LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
-            WHERE t.note_id = n.id
+# Turn text queries share this filter/order. The fragments expect transcript
+# rows aliased as `t` and recording sessions aliased as `rs`.
+TURN_TEXT_FILTER_SQL = """
               AND t.recording_session_id IS NOT NULL
               AND t.turn_index IS NOT NULL
               AND trim(coalesce(t.text, '')) != ''
+"""
+
+TURN_TEXT_ORDER_SQL = """
             ORDER BY COALESCE(rs.started_at, t.created_at) ASC,
                      COALESCE(rs.rowid, 9223372036854775807) ASC,
                      COALESCE(t.turn_index, 999999),
                      COALESCE(t.start_ms, 999999999),
                      t.created_at ASC,
                      t.rowid ASC
+"""
+
+# The app's transcript view (transcriptToText in NoteEditor.tsx) shows turn
+# rows when any visible turn exists and otherwise falls back to the latest
+# whole-file transcript - never a mix. `turns_text` stays unlabeled for search;
+# `get_meeting_note` formats labeled turn blocks from a second row query.
+TRANSCRIPT_TEXT_SUBQUERIES = f"""
+    (
+        SELECT group_concat(text, char(10)) FROM (
+            SELECT t.text
+            FROM transcripts t
+            LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
+            WHERE t.note_id = n.id
+{TURN_TEXT_FILTER_SQL}
+{TURN_TEXT_ORDER_SQL}
         )
     ) AS turns_text,
     (
@@ -81,16 +87,49 @@ TRANSCRIPT_TEXT_SUBQUERIES = """
     ) AS latest_text
 """
 
+LABELED_TURN_TEXT_SQL = f"""
+    SELECT t.source, t.start_ms, t.end_ms, t.text
+    FROM transcripts t
+    LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
+    WHERE t.note_id = ?
+{TURN_TEXT_FILTER_SQL}
+{TURN_TEXT_ORDER_SQL}
+"""
+
 
 def transcript_text_from_row(row: sqlite3.Row) -> str:
-    """The transcript the app itself would show. The app takes the turns
-    branch whenever any visible turn row exists — including all-failed turns
-    (empty text, lastError set), which render as an empty transcript — so an
-    older whole-file transcript must not resurface behind them. Only a note
-    with no visible turn rows at all falls back to the latest transcript."""
+    """The unlabeled transcript used by search.
+
+    It still follows the app's turn-vs-whole-file branch decision so an older
+    whole-file transcript cannot resurface behind visible turn rows.
+    """
     if row["visible_turn_rows"]:
         return row["turns_text"] or ""
     return row["latest_text"] or ""
+
+
+def labeled_transcript_from_turn_rows(rows: list[sqlite3.Row]) -> str:
+    blocks = []
+    for row in rows:
+        text = row["text"] or ""
+        if not text.strip():
+            continue
+        label = "System" if row["source"] == "system" else "Microphone"
+        turn_time = format_turn_time(row["start_ms"], row["end_ms"])
+        meta = f"{label} {turn_time}" if turn_time else label
+        blocks.append(f"{meta}\n{text}")
+    return "\n\n".join(blocks)
+
+
+def format_turn_time(start_ms: Any, end_ms: Any) -> str | None:
+    if start_ms is None or end_ms is None or end_ms <= start_ms:
+        return None
+
+    def format_ms(value: Any) -> str:
+        seconds = int(max(0, value) / 1000 + 0.5)
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+    return f"{format_ms(start_ms)}-{format_ms(end_ms)}"
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -351,6 +390,9 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
     items = []
     for row in rows:
         note_text = row["note_body"] or ""
+        # Search intentionally keeps turn transcripts unlabeled: labels would
+        # make queries like "system" match every dual-source note and spend
+        # snippet budget on metadata instead of user text.
         transcript_text = transcript_text_from_row(row)
         items.append(
             {
@@ -392,8 +434,11 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
         LIMIT 1
     """
 
+    turn_rows: list[sqlite3.Row] = []
     with connect_readonly(db_path) as conn:
         row = conn.execute(sql, [note_id]).fetchone()
+        if row is not None and row["visible_turn_rows"]:
+            turn_rows = conn.execute(LABELED_TURN_TEXT_SQL, [note_id]).fetchall()
 
     if row is None:
         return {
@@ -404,7 +449,10 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
 
     note_text = row["note_body"] or ""
     note_content, note_content_truncated = capped_text(note_text)
-    transcript_text = transcript_text_from_row(row)
+    if row["visible_turn_rows"]:
+        transcript_text = labeled_transcript_from_turn_rows(turn_rows)
+    else:
+        transcript_text = row["latest_text"] or ""
     transcript, transcript_truncated = capped_text(transcript_text)
 
     result = {
