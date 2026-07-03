@@ -298,31 +298,43 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
     if query:
         needle = f"%{query.lower()}%"
         where = """
-        WHERE lower(coalesce(n.title, '')) LIKE ?
-           OR lower(coalesce(n.generated_content, '')) LIKE ?
-           OR lower(coalesce(n.edited_content, '')) LIKE ?
-           OR EXISTS (
-                SELECT 1
-                FROM transcripts tx
-                WHERE tx.note_id = n.id
-                  AND lower(coalesce(tx.text, '')) LIKE ?
-           )
+        WHERE lower(coalesce(title, '')) LIKE ?
+           OR lower(coalesce(generated_content, '')) LIKE ?
+           OR lower(coalesce(edited_content, '')) LIKE ?
+           OR lower(coalesce(
+                CASE WHEN visible_turn_rows > 0 THEN turns_text ELSE latest_text END,
+                ''
+           )) LIKE ?
         """
         params.extend([needle, needle, needle, needle])
 
     sql = f"""
         SELECT
-            n.id,
-            n.title,
-            n.generated_content,
-            n.edited_content,
-            n.processing_status,
-            n.created_at,
-            n.updated_at,
-            {TRANSCRIPT_TEXT_SUBQUERIES}
-        FROM notes n
+            id,
+            title,
+            generated_content,
+            edited_content,
+            processing_status,
+            created_at,
+            updated_at,
+            turns_text,
+            visible_turn_rows,
+            latest_text
+        FROM (
+            SELECT
+                n.rowid AS note_rowid,
+                n.id,
+                n.title,
+                n.generated_content,
+                n.edited_content,
+                n.processing_status,
+                n.created_at,
+                n.updated_at,
+                {TRANSCRIPT_TEXT_SUBQUERIES}
+            FROM notes n
+        )
         {where}
-        ORDER BY n.updated_at DESC, n.created_at DESC, n.rowid DESC
+        ORDER BY updated_at DESC, created_at DESC, note_rowid DESC
         LIMIT ?
     """
     params.append(limit)
