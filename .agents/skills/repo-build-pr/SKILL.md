@@ -3,7 +3,9 @@ name: repo-build-pr
 description: >-
   Use when the user invokes /repo-build-pr (or $repo-build-pr in Codex), or asks
   to build, implement, ship, or fix something in os-june from a feature prompt,
-  bug report, screenshot, PR comment, or freeform repo task: study the prompt,
+  bug report, screenshot, PR comment, tracker task id, or freeform repo task —
+  optionally with a cross-harness implementer directive like
+  "/repo-build-pr JUN-200 with codex": study the prompt,
   ask the clarifying questions that change what gets built up front,
   plan and architect on the most capable model while delegating bulk
   implementation to cheaper strong models,
@@ -26,14 +28,15 @@ To hand this entire workflow to a *different* harness as orchestrator (e.g. disp
 
 Treat everything after `/repo-build-pr` (or `$repo-build-pr` in Codex) as the build prompt. If the user did not use the literal command but asks to build, implement, ship, or fix something in the repo, use this skill anyway.
 
-1. Read the prompt carefully and restate the concrete objective, constraints, and likely affected surface area.
+1. Read the prompt carefully and restate the concrete objective, constraints, and likely affected surface area. A trailing implementer directive (`with codex` in Claude Code, `with claude` in Codex) selects a cross-harness implementer — see Model orchestration.
 2. Read repo instructions before editing:
    - `AGENTS.md`
    - `CLAUDE.md`
    - any referenced project plan or spec relevant to the task
-3. Inspect the current checkout with `git status -sb`. A dirty checkout is fine, but never implement in it: all work happens in a worktree branched from freshly fetched `origin/main` (see Worktree strategy).
-4. Fetch the target base branch. Use `origin/main` unless the user explicitly names another base.
-5. Search the codebase with `rg` and read the narrowest relevant files before deciding on the implementation.
+3. If the prompt names a tracker task (a `JUN-xxx` id or an os-platform issue reference — issues live on os-platform, org `june`, per `docs/agents/issue-tracker.md`): fetch it via the `os-platform` skill and validate it is actually implementable against the codebase (root cause, affected files, acceptance criteria — apply the `os-task-prep` diagnosis discipline if the issue is thin, and update the issue with what you learn). Then take it before writing code: assign it to the current user and set status to in-progress through the documented platform API (append-only, probe-then-verify). Include `Closes <TASK-ID>` in the eventual PR body.
+4. Inspect the current checkout with `git status -sb`. A dirty checkout is fine, but never implement in it: all work happens in a worktree branched from freshly fetched `origin/main` (see Worktree strategy).
+5. Fetch the target base branch. Use `origin/main` unless the user explicitly names another base.
+6. Search the codebase with `rg` and read the narrowest relevant files before deciding on the implementation.
 
 ### Clarifying questions
 
@@ -76,6 +79,20 @@ Delegation rules:
 - Right-size the overhead: if the brief would be longer than the diff, skip delegation and do the work directly on the top model.
 - Expect subagents to die on transient failures (API overload, timeouts). Resume the same agent so it keeps its context instead of respawning from scratch; the same applies when sending follow-up scope or defect reports to an agent that already knows the code.
 - Do not delegate the plan, the contracts, or the final go/no-go. If the orchestrating model finds itself writing bulk code, delegate; if a subagent starts making architectural decisions, pull them back up.
+
+### Cross-harness implementer (`with codex` / `with claude`)
+
+When the build prompt carries an implementer directive (e.g. `/repo-build-pr JUN-200 with codex`), the named harness implements every delegated brief; the session model keeps everything that determines whether the PR is right — intake, the tracker lifecycle, architecture, chunking, verification, review, and publish.
+
+1. Plan first, as above (including clarifying questions — the session is interactive even when the implementer is not). Then split the plan into small, independently verifiable chunks: each chunk gets its own brief file written to the contract standard above, plus the narrowest gate command that proves it.
+2. Dispatch each chunk to the implementer in the active worktree via `repo-delegate`:
+   ```bash
+   .agents/skills/repo-delegate/scripts/run-codex.sh -t <chunk-brief.md> -C <worktree> -g "<chunk gate>"
+   ```
+   (`run-claude.sh` when orchestrating from Codex.) The delegate edits and runs the gate but never commits, and its runners require a clean tracked tree — so verify the diff, then commit each chunk before dispatching the next. Atomic commits fall out of the loop naturally.
+3. Chunks run sequentially in one worktree. Genuinely independent tracks get separate worktrees (strategy below), one delegate stream per worktree.
+4. Verify every chunk yourself against the diff and real gate output; a delegate report is a claim, not evidence. Route defects back as a follow-up brief that references the original chunk.
+5. In the pre-publish battery, the adversarial axis must go to a harness that did **not** write the diff: with Codex as implementer, run it on a Claude sub-agent (or `repo-review/scripts/run-claude.sh`); never send the diff back to its own author for the adversarial pass.
 
 ## Worktree strategy
 
@@ -175,7 +192,7 @@ The upload reads the os-platform API key from `june-api/.env` (`JUNE__ISSUE_REPO
 
 Green checks and a passing walkthrough are necessary, not sufficient: they prove the code does what its tests say, not that the diff is free of defects the tests never imagined. For any non-trivial diff, run the `repo-review` battery locally before opening the draft PR (load `.agents/skills/repo-review/SKILL.md`; `$repo-review` in Codex):
 
-1. Run all three axes over `origin/main...HEAD` — Standards and Spec as parallel sub-agents, and dispatch the adversarial axis to the *other* harness so the reviewer is not the model that wrote the change: from Claude Code, `.agents/skills/repo-review/scripts/run-codex.sh -a adversarial`; from Codex, `.../run-claude.sh -a adversarial` (policy-level enforcement — for branches this session authored, never unvetted third-party diffs).
+1. Run all three axes over `origin/main...HEAD` — Standards and Spec as parallel sub-agents, and dispatch the adversarial axis to a harness that did *not* write the diff: from Claude Code with in-session implementation, `.agents/skills/repo-review/scripts/run-codex.sh -a adversarial`; from Codex, `.../run-claude.sh -a adversarial` (policy-level enforcement — for branches this session authored, never unvetted third-party diffs); with a cross-harness implementer (see Model orchestration), pick a reviewer that is not the implementer.
 2. Triage every finding to a disposition per the battery's aggregate step — fix-now, deliberate (amend the spec file), pre-existing parity (follow-up, checked against the fixed point), or refuted (with evidence). Verify before fixing; plausible-sounding findings that cannot name a failure scenario are noise.
 3. Route confirmed defects back to the implementer agent that owns the code, with the evidence, re-run the relevant validation, then re-run the adversarial axis until it approves (the battery's convergence loop).
 
