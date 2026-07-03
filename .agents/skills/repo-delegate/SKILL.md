@@ -32,7 +32,10 @@ orchestrating model (see repo-build-pr's model orchestration rules).
 1. **Write the task brief to a file.** Like a contract: exact scope and file
    ownership, the interface to build against, repo conventions to follow, and
    an instruction to report deviations instead of improvising. If the brief
-   would be longer than the diff, don't delegate.
+   would be longer than the diff, don't delegate. For a defect fix, make the
+   gate fail first: encode the bug as a failing regression check (test or
+   fixture assertion) before dispatch and say so in the brief — the
+   delegate's "gate passed" is then proof the defect died, not a claim.
 2. **Fill and dispatch** (`-t` is the brief file; gate defaults to
    `pnpm check && pnpm typecheck && pnpm test`):
 

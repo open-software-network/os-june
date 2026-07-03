@@ -46,6 +46,7 @@ Prioritize the kinds of failures that are expensive, dangerous, or hard to detec
 - empty-state, null, timeout, and degraded dependency behavior
 - version skew, schema drift, migration hazards, and compatibility regressions
 - observability gaps that would hide failure or make recovery harder
+- divergence between a new read path and the canonical user-facing path over the same data: when the change exposes existing data through a new surface (a tool, an API, an export), diff its selection, filtering, ordering, fallback, and formatting against what the application itself shows for the same records — every undocumented divergence is a defect (data the app suppresses must not resurface; order the app guarantees must hold; labels the app renders must survive)
 </attack_surface>
 
 <review_method>
