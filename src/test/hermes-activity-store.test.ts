@@ -149,14 +149,34 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(1);
   });
 
-  it("falls back to terminal payload status for info lifecycle flavor", () => {
+  it("leaves a running row active when info lifecycle status text looks terminal", () => {
     const store = createHermesActivityStore();
     store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
 
     store.record(classified("lifecycle.update", "s1", { status: "completed" }), "sandboxed");
 
-    expect(store.getRecord("s1")?.phase).toBe("complete");
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+  });
+
+  it("ignores info lifecycle status text for an absent row", () => {
+    const store = createHermesActivityStore();
+
+    store.record(classified("lifecycle.update", "s1", { status: "done" }), "sandboxed");
+
+    expect(store.getRecord("s1")).toBeUndefined();
     expect(store.activeCount()).toBe(0);
+  });
+
+  it("keeps accepting transcript deltas after info lifecycle status text looks terminal", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    store.record(classified("lifecycle.update", "s1", { status: "done" }), "sandboxed");
+
+    store.record(classified("message.delta", "s1", { delta: "still streaming" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
   });
 
   it("message completion flips the session to phase 'complete'", () => {

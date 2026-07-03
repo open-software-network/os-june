@@ -40,6 +40,21 @@ describe("createHermesTraceBuffer", () => {
     expect(entries[0].observedAt).toBe("2026-06-24T12:00:00.000Z");
   });
 
+  it("keys inbound frames by stored session id while preserving the runtime id", () => {
+    const buffer = createHermesTraceBuffer();
+
+    buffer.recordInbound(rawFrame("message.delta", "runtime-s1", { delta: "hi" }), {
+      storedSessionId: "stored-s1",
+    });
+
+    expect(buffer.entriesFor("runtime-s1")).toHaveLength(0);
+    const entries = buffer.entriesFor("stored-s1");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].sessionId).toBe("stored-s1");
+    expect(entries[0].runtimeSessionId).toBe("runtime-s1");
+    expect(buffer.exportSanitizedTrace("stored-s1").entries[0].rawType).toBe("message.delta");
+  });
+
   it("records an outbound method call with its method name and sanitized params", () => {
     const buffer = createHermesTraceBuffer();
     buffer.recordOutbound({

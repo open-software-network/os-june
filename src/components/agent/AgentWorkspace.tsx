@@ -4176,19 +4176,19 @@ export function AgentWorkspace({
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
       // sanitizes internally; nothing raw is retained.
-      hermesTraceBuffer.recordInbound(liveEvent);
-      if (classified.kind === "unsupported") {
+      hermesTraceBuffer.recordInbound(liveEvent, { storedSessionId });
+      if (storedClassified.kind === "unsupported") {
         // Feed the bounded per-session store so the user gets a recoverable
         // notice (when this is the active session) and developers get a
         // sanitized, issue-report-safe export. The payload is already sanitized
         // by the classifier; nothing raw is retained or logged.
-        unsupportedEventStore.record(classified);
+        unsupportedEventStore.record(storedClassified);
         if (import.meta.env.DEV) {
           // biome-ignore lint/suspicious/noConsole: dev-only unsupported-event diagnostic
           console.debug(
             "[hermes] unsupported event",
-            classified.rawType,
-            classified.sanitizedPayload,
+            storedClassified.rawType,
+            storedClassified.sanitizedPayload,
           );
         }
       } else if (storedClassified.kind === "pending_action") {

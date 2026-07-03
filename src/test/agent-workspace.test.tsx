@@ -25,6 +25,7 @@ import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-act
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
+import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -4157,6 +4158,58 @@ describe("AgentWorkspace", () => {
         pendingActionStore.openRecords().some((record) => record.requestId === "approval-runtime"),
       ).toBe(false),
     );
+  });
+
+  it("keys inbound diagnostics by the stored session id", async () => {
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-diagnostics-session",
+          stored_session_id: "stored-diagnostics-session",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "inspect diagnostics",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-diagnostics-session",
+        text: "inspect diagnostics",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "future.diagnostic",
+          session_id: "runtime-diagnostics-session",
+          payload: { detail: "unknown" },
+        });
+      }
+    });
+
+    expect(unsupportedEventStore.activeNotice("runtime-diagnostics-session")).toBeUndefined();
+    expect(unsupportedEventStore.activeNotice("stored-diagnostics-session")?.type).toBe(
+      "future.diagnostic",
+    );
+    expect(hermesTraceBuffer.entriesFor("runtime-diagnostics-session")).toHaveLength(0);
+    const traceEntry = hermesTraceBuffer
+      .entriesFor("stored-diagnostics-session")
+      .find((entry) => entry.rawType === "future.diagnostic");
+    expect(traceEntry).toBeDefined();
+    expect(traceEntry?.sessionId).toBe("stored-diagnostics-session");
+    expect(traceEntry?.runtimeSessionId).toBe("runtime-diagnostics-session");
   });
 
   it("treats lifecycle.complete as a terminal workspace edge", async () => {

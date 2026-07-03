@@ -40,7 +40,7 @@ import type {
   HermesMode,
   JuneHermesEvent,
 } from "./hermes-control-plane";
-import { isTerminalHermesLifecycleStatus, nonEmpty } from "./hermes-control-plane";
+import { nonEmpty } from "./hermes-control-plane";
 import { pendingActionStore } from "./hermes-pending-actions";
 
 /**
@@ -168,6 +168,7 @@ export function createHermesActivityStore(
     if (!sessionId) return;
 
     const existing = bySession.get(sessionId);
+    if (!existing && event.kind === "lifecycle" && event.flavor === "info") return;
     const row: InternalRecord = existing ?? {
       sessionId,
       mode,
@@ -307,7 +308,7 @@ type InternalRecord = {
  * - `background_activity`     -> background, and track the subagent's id/count.
  * - `error`                   -> error.
  * - `lifecycle`               -> complete when the flavor is terminal, running when
- *                                the flavor is running, else fall back to status.
+ *                                the flavor is running, no-op when informational.
  * - `transcript`              -> complete on message completion, else running.
  * - `reasoning`               -> running (the agent is producing output).
  * - `steering`                -> no phase change (local transcript marker).
@@ -336,13 +337,13 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "error";
       return;
     case "lifecycle":
-      // Raw terminal frames can carry non-terminal status words such as "success".
-      // A running flavor is a type-derived liveness signal and status text must not override it.
-      row.phase =
-        event.flavor === "terminal" ||
-        (event.flavor === "info" && isTerminalHermesLifecycleStatus(event.status))
-          ? "complete"
-          : "running";
+      // Genuine completions arrive as terminal-flavored frames (lifecycle.complete(d),
+      // session/turn/background completions, plus the workspace's synthetic terminal
+      // write). An info frame's status text must never retire a live row, and info
+      // frames must not flip idle rows to running; this matches main's event-driven
+      // spinner semantics.
+      if (event.flavor === "terminal") row.phase = "complete";
+      if (event.flavor === "running") row.phase = "running";
       return;
     case "transcript":
       if (event.complete) {

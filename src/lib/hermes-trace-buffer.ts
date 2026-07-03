@@ -57,6 +57,8 @@ export type HermesTraceEntry = {
   direction: HermesTraceDirection;
   observedAt: string;
   sessionId?: string;
+  /** Inbound only: the live Hermes runtime/wire session id, when it differs. */
+  runtimeSessionId?: string;
   /** Inbound only: the raw wire `type`. */
   rawType?: string;
   /** Inbound only: the kind the classifier mapped the frame to. */
@@ -81,6 +83,11 @@ export type SanitizedTraceBundle = {
 /** Inbound recording takes the raw gateway frame and classifies it internally. */
 export type InboundTraceInput = HermesGatewayEvent;
 
+/** Optional stored-session remap for inbound frames whose wire id is transient. */
+export type InboundTraceOptions = {
+  storedSessionId?: string;
+};
+
 /** Outbound recording: the typed method call that was sent to the gateway. */
 export type OutboundTraceInput = {
   sessionId?: string;
@@ -97,7 +104,7 @@ export type ErrorTraceInput = {
 
 export type HermesTraceBuffer = {
   /** Record one inbound raw frame, classifying it for the normalized column. */
-  recordInbound(frame: InboundTraceInput): void;
+  recordInbound(frame: InboundTraceInput, options?: InboundTraceOptions): void;
   /** Record one outbound method call (params sanitized). */
   recordOutbound(call: OutboundTraceInput): void;
   /** Record one error/rejection. */
@@ -142,15 +149,17 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     emit();
   }
 
-  function recordInbound(frame: InboundTraceInput): void {
+  function recordInbound(frame: InboundTraceInput, options: InboundTraceOptions = {}): void {
     const classified: JuneHermesEvent = classifyHermesEvent(frame);
-    const sessionId = nonEmpty(frame?.session_id) ?? nonEmpty(eventSession(classified));
+    const runtimeSessionId = nonEmpty(frame?.session_id) ?? nonEmpty(eventSession(classified));
+    const sessionId = nonEmpty(options.storedSessionId) ?? runtimeSessionId;
     const { payloadKeys, payloadPreview } = describePayload(frame?.payload);
     push(sessionId, {
       id: nextId++,
       direction: "inbound",
       observedAt: new Date().toISOString(),
       sessionId,
+      runtimeSessionId: runtimeSessionId !== sessionId ? runtimeSessionId : undefined,
       rawType: nonEmpty(typeof frame?.type === "string" ? frame.type : undefined),
       normalizedKind: classified.kind,
       payloadKeys,
