@@ -1623,6 +1623,22 @@ export async function generateImage(prompt: string, model?: string) {
   });
 }
 
+export async function editImage(input: {
+  imageBase64: string;
+  prompt: string;
+  mimeType?: string;
+  model?: string;
+}) {
+  return invoke<GeneratedImageDto>("edit_image", {
+    request: {
+      image: input.imageBase64,
+      prompt: input.prompt,
+      mimeType: input.mimeType,
+      model: input.model,
+    },
+  });
+}
+
 /** Persists the local endpoint, model id, and optional API key. Strictly
  * validated backend-side (any http/https URL with a host is accepted) and it
  * never changes the active provider — enabling is a separate step. */

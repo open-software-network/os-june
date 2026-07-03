@@ -163,6 +163,14 @@ export type AgentChatTurn = {
   isScheduledRun?: boolean;
 };
 
+const MEDIA_IMAGE_EXTENSION_PATTERN = "png|jpe?g|gif|webp|tiff?|bmp|avif";
+const MEDIA_IMAGE_REFERENCE_PATTERN = new RegExp(
+  `MEDIA:(/[^\\r\\n]+?\\.(?:${MEDIA_IMAGE_EXTENSION_PATTERN}))(?:[)\\].,;:]?)(?=\\s|$)`,
+  "gi",
+);
+const mediaImageReferencePattern = () =>
+  new RegExp(MEDIA_IMAGE_REFERENCE_PATTERN.source, MEDIA_IMAGE_REFERENCE_PATTERN.flags);
+
 function sortAgentChatTurns(turns: AgentChatTurn[]) {
   return turns
     .map((turn, index) => ({ turn, index }))
@@ -215,6 +223,8 @@ export function buildHermesSessionChatTurns(
     }
 
     const content = displayContentForHermesMessage(message);
+    const messageImageParts =
+      message.role === "assistant" ? imagePartsFromHermesContent(message.content) : [];
     const contextPart = content ? contextCompactionPartForHermesContent(content) : undefined;
 
     const turn: AgentChatTurn = {
@@ -260,15 +270,20 @@ export function buildHermesSessionChatTurns(
       }
 
       if (content) {
-        turn.parts.push(
-          (turn.role === "assistant"
+        const notice =
+          turn.role === "assistant"
             ? (creditsNoticeFromTurnText(content) ?? persistedContextOverflowNotice(content))
-            : undefined) ?? {
+            : undefined;
+        turn.parts.push(
+          notice ?? {
             type: "text",
             text: content,
             status: "complete",
           },
         );
+      }
+      if (!contextPart && turn.role === "assistant") {
+        appendImageParts(turn.parts, messageImageParts);
       }
     }
 
@@ -463,9 +478,11 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
         // A billing failure is recognizable from its "Error:" text prefix; a
         // context overflow is not, so only fold it when the turn actually
         // failed — an ordinary sentence that mentions "context length" stays prose.
-        const notice = text
-          ? (creditsNoticeFromTurnText(text) ??
-            (event.failed ? contextOverflowNotice(text) : undefined))
+        const displayText = stripMediaImageReferences(text);
+        const imageParts = imagePartsFromHermesContent(text);
+        const notice = displayText
+          ? (creditsNoticeFromTurnText(displayText) ??
+            (event.failed ? contextOverflowNotice(displayText) : undefined))
           : undefined;
         if (notice) {
           // The complete text is authoritative for the turn (see
@@ -474,7 +491,12 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
           currentAssistant.parts = currentAssistant.parts.filter((part) => part.type !== "text");
           currentAssistant.parts.push(notice);
         } else if (text) {
-          completeAssistantTextPart(currentAssistant.parts, text);
+          if (displayText.trim()) {
+            completeAssistantTextPart(currentAssistant.parts, displayText);
+          } else if (imageParts.length) {
+            removeAssistantTextParts(currentAssistant.parts);
+          }
+          appendImageParts(currentAssistant.parts, imageParts);
         }
         currentAssistant.status = "complete";
         completeRunningParts(currentAssistant.parts);
@@ -809,6 +831,24 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   }
 }
 
+function removeAssistantTextParts(parts: AgentChatPart[]) {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (parts[index]?.type === "text") parts.splice(index, 1);
+  }
+}
+
+function appendImageParts(parts: AgentChatPart[], images: AgentChatImagePart[]) {
+  for (const image of images) {
+    const exists = parts.some(
+      (part) =>
+        part.type === "image" &&
+        ((image.path && part.path === image.path) ||
+          (image.dataUrl && part.dataUrl === image.dataUrl)),
+    );
+    if (!exists) parts.push(image);
+  }
+}
+
 // True when `complete` can be derived from `streamed` purely by deleting
 // whitespace characters. Deliberately rejects whitespace substitutions:
 // deletions are the only damage joining trimmed chunks can do, so anything
@@ -1130,7 +1170,8 @@ export function textFromHermesContent(value: unknown, depth = 0): string | undef
       const parsedText = textFromHermesContent(parsed, depth + 1);
       if (parsedText?.trim()) return parsedText;
     }
-    return value;
+    const text = stripMediaImageReferences(value);
+    return text.trim() ? text : undefined;
   }
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
@@ -1156,6 +1197,56 @@ function parseLikelyJsonContent(value: string) {
   const trimmed = value.trim();
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return undefined;
   return safeJsonParse(trimmed);
+}
+
+function stripMediaImageReferences(value: string) {
+  return value
+    .replace(mediaImageReferencePattern(), "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+function mediaImageReferences(value: unknown, depth = 0): string[] {
+  if (value === null || value === undefined || depth > 4) return [];
+  if (typeof value === "string") {
+    const parsed = parseLikelyJsonContent(value);
+    const nested = parsed !== undefined ? mediaImageReferences(parsed, depth + 1) : [];
+    const direct = [...value.matchAll(mediaImageReferencePattern())]
+      .map((match) => match[1]?.trim())
+      .filter((path): path is string => Boolean(path));
+    return uniqueStrings([...nested, ...direct]);
+  }
+  if (Array.isArray(value)) {
+    return uniqueStrings(value.flatMap((item) => mediaImageReferences(item, depth + 1)));
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return uniqueStrings(
+      ["text", "output_text", "content", "message", "delta", "summary", "url", "image_url"].flatMap(
+        (key) => mediaImageReferences(record[key], depth + 1),
+      ),
+    );
+  }
+  return [];
+}
+
+function mediaImagePart(path: string): AgentChatImagePart {
+  return {
+    type: "image",
+    status: "complete",
+    prompt: "Generated image",
+    path,
+    name: filenameFromPath(path),
+  };
+}
+
+function filenameFromPath(path: string) {
+  const name = path.split(/[\\/]/).pop()?.trim();
+  return name || "generated-image.png";
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)];
 }
 
 type McpImageBlock = { data: string; mimeType: string };
@@ -1229,15 +1320,16 @@ function mcpImageMetadata(value: unknown, depth = 0): { label?: string; filename
  * enters the session context the model reads. */
 export function imagePartsFromHermesContent(content: unknown): AgentChatImagePart[] {
   const blocks = mcpImageContentBlocks(content);
-  if (!blocks.length) return [];
   const meta = mcpImageMetadata(content);
-  return blocks.map((block) => ({
-    type: "image",
-    status: "complete",
+  const blockParts = blocks.map((block) => ({
+    type: "image" as const,
+    status: "complete" as const,
     prompt: meta.label?.trim() || "Generated image",
     dataUrl: `data:${block.mimeType};base64,${block.data}`,
     ...(meta.filename ? { name: meta.filename } : {}),
   }));
+  const mediaParts = mediaImageReferences(content).map(mediaImagePart);
+  return [...blockParts, ...mediaParts];
 }
 
 function stripHermesContextMarkers(value: string) {

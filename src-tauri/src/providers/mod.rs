@@ -399,6 +399,18 @@ pub struct GenerateImageRequest {
     pub model: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditImageRequest {
+    pub image: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    /// Optional edit-model override; absent uses June API's default edit model.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 /// Generates an image from a prompt via the June API, defaulting to the saved
 /// image model. Provider keys and the upstream call live in June API; this
 /// command only resolves the model and forwards the prompt.
@@ -416,6 +428,37 @@ pub async fn generate_image(
         .filter(|model| !model.is_empty())
         .unwrap_or_else(image_model);
     crate::june_api::generate_image(prompt, model, Some(image_safe_mode())).await
+}
+
+/// Edits a source image through June API. Provider keys and the upstream call
+/// live in June API; this command only validates and forwards the image bytes.
+#[tauri::command]
+pub async fn edit_image(
+    request: EditImageRequest,
+) -> Result<crate::june_api::GeneratedImageDto, AppError> {
+    let image = request.image.trim().to_string();
+    if image.is_empty() {
+        return Err(AppError::new(
+            "image_source_required",
+            "Choose an image to edit.",
+        ));
+    }
+    let prompt = request.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err(AppError::new(
+            "image_prompt_required",
+            "Enter an edit instruction.",
+        ));
+    }
+    let model = request
+        .model
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty());
+    let mime_type = request
+        .mime_type
+        .map(|mime_type| mime_type.trim().to_string())
+        .filter(|mime_type| !mime_type.is_empty());
+    crate::june_api::edit_image(image, prompt, mime_type, model, Some(image_safe_mode())).await
 }
 
 #[tauri::command]

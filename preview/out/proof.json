@@ -1,0 +1,11 @@
+{
+  "console": [
+    "[preview] image.attach_bytes generated-image.png runtime-session-1"
+  ],
+  "checks": [
+    "slash menu exposes /image while the model trigger shows Kimi K2.6",
+    "/image renders inline without a composer chip",
+    "follow-up used image.attach_bytes before prompt.submit in the preview gateway",
+    "persisted Hermes tool messages render generate_image and edit_image images inline"
+  ]
+}

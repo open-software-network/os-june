@@ -35,6 +35,7 @@ const HERO_GREETING = new RegExp(
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
+  editImage: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
   finalizeHermesBridgeBranch: vi.fn(),
   generateImage: vi.fn(),
@@ -93,6 +94,7 @@ vi.mock("../lib/tauri", () => ({
   invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
+  editImage: mocks.editImage,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
   generateImage: mocks.generateImage,
@@ -6252,6 +6254,33 @@ describe("AgentWorkspace", () => {
     expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalledWith(screenshotPath);
   });
 
+  it("renders Hermes MEDIA image references as inline generated images", async () => {
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/image_cache/img_ce347dc6e27a.png";
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: [
+          "Here is the regenerated wolf:",
+          "",
+          `MEDIA:${mediaPath}`,
+          "",
+          "A majestic wolf rendered in a misty forest at dawn.",
+        ].join("\n"),
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Here is the regenerated wolf:")).toBeInTheDocument();
+    const image = await screen.findByRole("img", { name: "Generated image" });
+    expect(image).toHaveAttribute("src", "data:image/png;base64,cHJldmlldw==");
+    expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
+    expect(mocks.hermesBridgeFilePreview).toHaveBeenCalledWith(mediaPath);
+  });
+
   it("imports dropped files into the Hermes workspace before submitting", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
@@ -6939,6 +6968,7 @@ describe("AgentWorkspace", () => {
   });
 
   it("generates an image from the /image slash command and renders it inline in the thread", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
     const user = userEvent.setup();
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
@@ -6979,33 +7009,227 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("starts a /image session on a vision-capable model instead of the non-vision default", async () => {
+  it("restores a /image prompt and generated image with context after remount", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    const { unmount } = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "generated-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(screen.getByText("a red bicycle")).toBeInTheDocument();
+
+    unmount();
+    resetAgentSessionContinuity();
+    mocks.gatewayRequest.mockClear();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("a red bicycle")).toBeInTheDocument();
+    const restoredImage = await screen.findByRole("img", { name: "a red bicycle" });
+    expect(restoredImage).toHaveAttribute("src", "data:image/png;base64,cHJldmlldw==");
+
+    await user.type(await screen.findByRole("textbox"), "what do you think");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+        session_id: "runtime-session-1",
+        mime_type: "image/png",
+        content_base64: "cHJldmlldw==",
+        filename: "generated-image.png",
+      }),
+    );
+    const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "image.attach_bytes",
+    );
+    const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(attachIndex).toBeGreaterThanOrEqual(0);
+    expect(submitIndex).toBeGreaterThan(attachIndex);
+  });
+
+  it("edits the latest /image output directly for obvious image edit follow-ups", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValueOnce({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.editImage.mockResolvedValueOnce({
+      imageBase64: "Zm9yZXN0",
+      mimeType: "image/png",
+      model: "venice-edit",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes
+      .mockResolvedValueOnce({
+        name: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+        rootLabel: "Workspace",
+        size: 5,
+        previewDataUrl: "data:image/png;base64,preview",
+      })
+      .mockResolvedValueOnce({
+        name: "edited-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/edited-image.png",
+        rootLabel: "Workspace",
+        size: 6,
+        previewDataUrl: "data:image/png;base64,edited",
+      });
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("img", { name: "a red bicycle" });
+
+    mocks.gatewayRequest.mockClear();
+    await user.type(await screen.findByRole("textbox"), "let's add forest");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await screen.findByRole("img", { name: "let's add forest" });
+    expect(mocks.editImage).toHaveBeenCalledWith({
+      imageBase64: "cHJldmlldw==",
+      prompt: "let's add forest",
+      mimeType: "image/png",
+      model: undefined,
+    });
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+    expect(
+      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
+    ).toBe(false);
+  });
+
+  it("regenerates a fresh image from the original /image prompt for retry follow-ups", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage
+      .mockResolvedValueOnce({
+        imageBase64: "aGVsbG8=",
+        mimeType: "image/png",
+        model: "venice-sd35",
+        provider: "venice",
+      })
+      .mockResolvedValueOnce({
+        imageBase64: "bmV3LWltYWdl",
+        mimeType: "image/png",
+        model: "venice-sd35",
+        provider: "venice",
+      });
+    mocks.editImage.mockResolvedValueOnce({
+      imageBase64: "cmVkLWltYWdl",
+      mimeType: "image/png",
+      model: "venice-edit",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes
+      .mockResolvedValueOnce({
+        name: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+        rootLabel: "Workspace",
+        size: 5,
+        previewDataUrl: "data:image/png;base64,preview",
+      })
+      .mockResolvedValueOnce({
+        name: "edited-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/edited-image.png",
+        rootLabel: "Workspace",
+        size: 6,
+        previewDataUrl: "data:image/png;base64,edited",
+      })
+      .mockResolvedValueOnce({
+        name: "regenerated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/regenerated-image.png",
+        rootLabel: "Workspace",
+        size: 9,
+        previewDataUrl: "data:image/png;base64,new",
+      });
+
+    await user.type(
+      await screen.findByRole("textbox"),
+      "/image june the AI agent focused on privacy",
+    );
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("img", { name: "june the AI agent focused on privacy" });
+
+    await user.type(
+      await screen.findByRole("textbox"),
+      "nice, can you change the color from blue to red?",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("img", { name: "nice, can you change the color from blue to red?" });
+
+    mocks.gatewayRequest.mockClear();
+    mocks.editImage.mockClear();
+    await user.type(await screen.findByRole("textbox"), "let's try another shot with new image");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await screen.findByRole("img", { name: "let's try another shot with new image" });
+    expect(mocks.generateImage).toHaveBeenLastCalledWith(
+      "june the AI agent focused on privacy",
+      undefined,
+    );
+    expect(mocks.editImage).not.toHaveBeenCalled();
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+    expect(
+      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
+    ).toBe(false);
+  });
+
+  it("blocks /image on a non-vision model until the user switches explicitly", async () => {
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessions.mockResolvedValue([]);
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling", "supportsVision"],
+      },
+    ];
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
       selectedModel: "zai-org-glm-5-2",
-      models: [
-        {
-          provider: "venice",
-          id: "zai-org-glm-5-2",
-          name: "GLM 5.2",
-          modelType: "text",
-          privacy: "private",
-          traits: [],
-          capabilities: ["functionCalling"],
-        },
-        {
-          provider: "venice",
-          id: "kimi-k2-6",
-          name: "Kimi K2.6",
-          modelType: "text",
-          privacy: "private",
-          traits: [],
-          capabilities: ["functionCalling", "supportsVision"],
-        },
-      ],
+      models: catalog,
     });
     mocks.setVeniceModel.mockResolvedValue(undefined);
     mocks.generateImage.mockResolvedValueOnce({
@@ -7018,11 +7242,39 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
-    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(
+      await screen.findByText(
+        "GLM 5.2 can't read images. Switch to a vision model before using /image.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
 
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "kimi-k2-6",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "kimi-k2-6",
+      models: catalog,
+    });
+    await user.click(screen.getByRole("button", { name: "Switch to Kimi K2.6" }));
     await waitFor(() =>
       expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "kimi-k2-6"),
     );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Start session" })).not.toBeDisabled(),
+    );
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
     await screen.findByRole("img", { name: "a red bicycle" });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith(
       "session.create",
@@ -7183,12 +7435,39 @@ describe("AgentWorkspace", () => {
   });
 
   it("falls back to a path-in-prompt for a /image image on a non-vision model (JUN-171 Phase A)", async () => {
-    // The default model (GLM 5.2) has no vision: the held /image image can't be
-    // "seen", so the follow-up's prompt names the image file (the existing
-    // unsupported-image fallback) instead of calling image.attach_bytes.
+    // `/image` itself must start from a vision-capable chat. If the user later
+    // switches that chat to a text-only model, the held generated image falls
+    // back to a path-in-prompt instead of calling image.attach_bytes.
+    mocks.listHermesSessions.mockResolvedValue([{ ...existingSession, model: "kimi-k2-6" }]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "kimi-k2-6",
+          name: "Kimi K2.6",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling", "supportsVision"],
+        },
+      ],
+    });
     const user = userEvent.setup();
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Model: Kimi K2.6" })).toBeInTheDocument();
 
     mocks.generateImage.mockResolvedValueOnce({
       imageBase64: "aGVsbG8=",
@@ -7200,6 +7479,16 @@ describe("AgentWorkspace", () => {
     await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
     fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
     await screen.findByRole("img", { name: "a red bicycle" });
+
+    await user.click(screen.getByRole("button", { name: "Model: Kimi K2.6" }));
+    const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+    await user.click(within(dialog).getByRole("option", { name: /GLM 5\.2/ }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
+        session_id: "session-1",
+        command: "/model zai-org-glm-5-2",
+      }),
+    );
 
     await user.type(await screen.findByRole("textbox"), "what do you think");
     const sendButton = screen.getByRole("button", { name: "Send message" });

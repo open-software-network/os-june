@@ -2440,6 +2440,14 @@ input:focus-visible,
   border-radius: inherit;
 }
 
+.agent-generated-image-loading {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1 / 1;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
 .agent-generated-image-bar {
   display: flex;
   align-items: center;

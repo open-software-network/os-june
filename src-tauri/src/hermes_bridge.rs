@@ -53,7 +53,11 @@ const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // larger buffer is minimal. A body over this cap is genuinely beyond any model
 // window and degrades to the context-overflow notice (recognizable wording in
 // `read_http_request`).
-const JUNE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 3 * 1024 * 1024;
+const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 3 * 1024 * 1024;
+// Image edit requests carry the source image as base64 inside JSON. A 50 MiB
+// import can expand to about 67 MiB before JSON overhead, so image endpoints get
+// a separate loopback-only cap instead of the chat context-window cap.
+const JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES: usize = 80 * 1024 * 1024;
 const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
@@ -125,6 +129,7 @@ Web tools: you have a `june_web` MCP toolset with `web_search` and `web_fetch`. 
 /// capability.
 const JUNE_SOUL_IMAGE_MD: &str = r#"
 Image tools: you have a `june_image` MCP toolset with `generate_image` and `edit_image`. Use `generate_image` when the user asks you to draw, create, make, or generate an image, picture, illustration, or logo; the result is shown to the user in the conversation and the tool returns a `filename`.
+Use this toolset instead of any generic image, media, or vision-analysis tool for image creation or edits, so June can display the returned image and keep the returned filename in context.
 When the user asks to change, adjust, refine, or reframe an image you just made or an image attached in this conversation, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the visible filename as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image you already produced or that the user attached, even if you cannot see it. Only pass a `source_filename` from a prior image tool result or an attached image in this conversation.
 "#;
 
@@ -2523,7 +2528,7 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
     if !requested.is_file() {
         return Err(AppError::new(
             "hermes_file_download_failed",
-            "Only files in the Hermes workspace or memory can be downloaded.",
+            "Only files in the Hermes workspace, memory, or generated image cache can be downloaded.",
         ));
     }
     if is_hidden_secret_path(&requested) {
@@ -2532,14 +2537,22 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
             "This Hermes file is hidden or sensitive.",
         ));
     }
-    let allowed = filesystem_roots(&hermes_home)?
+    let mut allowed_roots = filesystem_roots(&hermes_home)?
         .into_iter()
         .filter_map(|root| root.path.canonicalize().ok())
+        .collect::<Vec<_>>();
+    allowed_roots.extend(
+        ["images", "image_cache"]
+            .into_iter()
+            .filter_map(|relative| hermes_home.join(relative).canonicalize().ok()),
+    );
+    let allowed = allowed_roots
+        .into_iter()
         .any(|root| requested.starts_with(root));
     if !allowed {
         return Err(AppError::new(
             "hermes_file_download_denied",
-            "Only files in this app's Hermes workspace or memory can be downloaded.",
+            "Only files in this app's Hermes workspace, memory, or generated image cache can be downloaded.",
         ));
     }
     Ok(requested)
@@ -6774,17 +6787,18 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
             }
         })
         .unwrap_or(0);
-    if content_length > JUNE_PROVIDER_PROXY_MAX_BODY_BYTES {
-        // The handler turns this into a 400 for the client. Phrase it as a
-        // context overflow (JUN-169): the wording carries the tokens Hermes'
-        // overflow patterns match ("maximum context length") and the frontend
-        // classifier keys on (`prompt_too_long`), so an over-cap body degrades
-        // into the recoverable context-overflow notice instead of a raw
-        // transport error that re-wedges or dead-ends the session.
+    if content_length > provider_proxy_max_body_bytes(&path) {
+        // The handler turns this into a 400 for the client. Chat bodies are
+        // phrased as a context overflow (JUN-169): the wording carries the
+        // tokens Hermes' overflow patterns match ("maximum context length") and
+        // the frontend classifier keys on (`prompt_too_long`), so an over-cap
+        // chat body degrades into the recoverable context-overflow notice
+        // instead of a raw transport error that re-wedges or dead-ends the
+        // session. Image bodies use an image-specific message because they are
+        // bounded by upload size, not model context.
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "prompt_too_long: the request body exceeds the model's maximum \
-             context length. Reduce the length of the messages and retry.",
+            provider_proxy_body_too_large_message(&path),
         ));
     }
     let mut body = buffer[header_end..].to_vec();
@@ -6802,6 +6816,26 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         headers,
         body,
     })
+}
+
+fn provider_proxy_max_body_bytes(path: &str) -> usize {
+    match path {
+        "/v1/image/generate" | "/v1/image/edit" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
+        _ => JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES,
+    }
+}
+
+fn provider_proxy_body_too_large_message(path: &str) -> &'static str {
+    match path {
+        "/v1/image/generate" | "/v1/image/edit" => {
+            "image_request_too_large: the image request body is too large for June. \
+             Use a smaller image and retry."
+        }
+        _ => {
+            "prompt_too_long: the request body exceeds the model's maximum \
+             context length. Reduce the length of the messages and retry."
+        }
+    }
 }
 
 /// Rewrites the backend's `prompt_too_long` rejection into wording the agent
@@ -7507,6 +7541,42 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn provider_proxy_uses_larger_body_cap_for_image_tools() {
+        assert_eq!(
+            provider_proxy_max_body_bytes("/v1/chat/completions"),
+            JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES
+        );
+        assert_eq!(
+            provider_proxy_max_body_bytes("/v1/image/edit"),
+            JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES
+        );
+        assert_eq!(
+            provider_proxy_max_body_bytes("/v1/image/generate"),
+            JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES
+        );
+        assert!(
+            provider_proxy_max_body_bytes("/v1/image/edit")
+                > provider_proxy_max_body_bytes("/v1/chat/completions")
+        );
+    }
+
+    #[test]
+    fn provider_proxy_uses_context_overflow_wording_only_for_chat_body_cap() {
+        assert!(
+            provider_proxy_body_too_large_message("/v1/chat/completions")
+                .contains("prompt_too_long")
+        );
+        assert!(
+            provider_proxy_body_too_large_message("/v1/chat/completions")
+                .contains("maximum context length")
+        );
+
+        let image_message = provider_proxy_body_too_large_message("/v1/image/edit");
+        assert!(image_message.contains("image_request_too_large"));
+        assert!(!image_message.contains("maximum context length"));
     }
 
     #[test]

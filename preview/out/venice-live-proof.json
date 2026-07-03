@@ -1,0 +1,67 @@
+{
+  "validated_at_unix": 1782994786,
+  "base_url": "https://api.venice.ai/api/v1",
+  "requests": [
+    {
+      "name": "generate",
+      "path": "/image/generate",
+      "payload_keys": [
+        "model",
+        "prompt",
+        "format",
+        "width",
+        "height",
+        "safe_mode"
+      ],
+      "model": "venice-sd35",
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "safe_mode": true,
+      "status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "duration_ms": 12036,
+      "body_bytes": 1688900
+    },
+    {
+      "name": "edit",
+      "path": "/image/edit",
+      "payload_keys": [
+        "model",
+        "prompt",
+        "image",
+        "output_format",
+        "safe_mode"
+      ],
+      "model": "firered-image-edit",
+      "output_format": "png",
+      "safe_mode": true,
+      "source_image_bytes": 1266319,
+      "status": 200,
+      "content_type": "image/png",
+      "duration_ms": 9525,
+      "body_bytes": 747390
+    }
+  ],
+  "outputs": {
+    "generated": {
+      "path": "preview/out/venice-live-generated.png",
+      "bytes": 1266319,
+      "sha256": "d0e404ec5c640c19ed0e6517ebe22e8348b02e467b4709716107acfc0aa2731f",
+      "magic_hex": "89504e470d0a1a0a",
+      "is_png": true,
+      "data_url_prefix": null,
+      "images_count": 1,
+      "response_has_id": true,
+      "response_has_timing": true
+    },
+    "edited": {
+      "path": "preview/out/venice-live-edited.png",
+      "bytes": 747390,
+      "sha256": "5f48d12f3671d6c2df7fc782c6400c02a61d66f7664cfd390ddf0b4e8a995b8f",
+      "magic_hex": "89504e470d0a1a0a",
+      "is_png": true,
+      "different_from_source": true
+    }
+  }
+}

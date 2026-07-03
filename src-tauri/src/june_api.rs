@@ -405,6 +405,19 @@ struct ImageGenerateBody {
     safe_mode: Option<bool>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageEditBody {
+    image: String,
+    prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_mode: Option<bool>,
+}
+
 /// Forwards a prompt to June API image generation with the user's access token.
 /// `safe_mode` carries the on-device setting (blur adult content); `None` leaves
 /// it unset so June API applies its own default.
@@ -422,6 +435,29 @@ pub async fn generate_image(
             safe_mode,
         },
         send_venice_api_key,
+    )
+    .await
+}
+
+/// Edits an existing image through June API. The edit model is optional; when it
+/// is absent June API uses its default image-edit model, matching the MCP tool.
+pub async fn edit_image(
+    image: String,
+    prompt: String,
+    mime_type: Option<String>,
+    model: Option<String>,
+    safe_mode: Option<bool>,
+) -> Result<GeneratedImageDto, AppError> {
+    post_json(
+        "/v1/image/edit",
+        &ImageEditBody {
+            image,
+            prompt,
+            model,
+            mime_type,
+            safe_mode,
+        },
+        true,
     )
     .await
 }

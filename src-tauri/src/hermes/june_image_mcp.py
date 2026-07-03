@@ -11,9 +11,11 @@ generation/edit is billed to the signed-in user automatically.
 
 Generated and edited images are written to a dedicated images directory (passed
 as the second argument) so the model can reference a prior image by a stable
-filename when it wants to edit it. Source images are resolved by bare filename
-from that directory and any extra read directories passed after it, such as
-Hermes's workspace uploads for `/image` fast-path and user-attached images.
+filename when it wants to edit it. Source images are resolved from that directory
+and any extra read directories passed after it, such as Hermes's workspace
+uploads for `/image` fast-path and user-attached images. The model may pass a
+bare filename or a path, but paths must canonicalize inside those configured
+source directories.
 
 It depends only on the Python standard library so it can run inside the Hermes
 runtime venv without extra packaging.
@@ -88,9 +90,9 @@ TOOLS: list[dict[str, Any]] = [
                 "source_filename": {
                     "type": "string",
                     "description": (
-                        "The filename of the image to edit, exactly as returned "
-                        "by a prior image tool call or attached in this "
-                        "conversation."
+                        "The filename or safe June image path of the image to "
+                        "edit, exactly as returned by a prior image tool call "
+                        "or attached in this conversation."
                     ),
                 },
                 "instruction": {
@@ -342,21 +344,8 @@ def write_image(images_dir: str, image_base64: str, mime_type: str) -> str:
 
 
 def read_image(source_dirs: list[str], filename: str) -> tuple[str, str]:
-    # Guard against path traversal: only a bare filename inside the configured
-    # source dirs is allowed, never a path that escapes them.
-    safe_name = os.path.basename(filename)
-    if not safe_name or safe_name != filename:
-        raise ValueError("source_filename must be a plain image filename.")
-    path = None
-    for source_dir in source_dirs:
-        candidate = os.path.join(source_dir, safe_name)
-        if os.path.isfile(candidate):
-            path = candidate
-            break
-    if path is None:
-        raise ValueError(
-            f"No image named {safe_name}. Use an image filename from this conversation."
-        )
+    path = resolve_source_image_path(source_dirs, filename)
+    safe_name = os.path.basename(path)
     with open(path, "rb") as handle:
         data = handle.read()
     extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else "png"
@@ -365,6 +354,52 @@ def read_image(source_dirs: list[str], filename: str) -> tuple[str, str]:
         "image/png",
     )
     return base64.b64encode(data).decode("ascii"), mime_type
+
+
+def resolve_source_image_path(source_dirs: list[str], filename: str) -> str:
+    reference = filename.strip()
+    safe_name = os.path.basename(reference)
+    if not safe_name:
+        raise ValueError("source_filename is required")
+
+    roots = [canonical_path(source_dir) for source_dir in source_dirs if source_dir]
+    candidates: list[str] = []
+    if os.path.isabs(reference):
+        candidates.append(canonical_path(reference))
+    else:
+        candidates.extend(canonical_path(os.path.join(root, reference)) for root in roots)
+
+    for candidate in unique_strings(candidates):
+        if any(path_is_within(candidate, root) for root in roots) and os.path.isfile(candidate):
+            return candidate
+
+    if os.path.isabs(reference) or safe_name != reference:
+        raise ValueError("source_filename must refer to an image from this conversation.")
+    raise ValueError(
+        f"No image named {safe_name}. Use an image filename from this conversation."
+    )
+
+
+def canonical_path(path: str) -> str:
+    return os.path.realpath(os.path.abspath(path))
+
+
+def path_is_within(candidate: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([candidate, root]) == root
+    except ValueError:
+        return False
+
+
+def unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def call_proxy(

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeBase64,
+  editChatImage,
   generateChatImage,
   generatedImageDataUrl,
+  type EditChatImageDeps,
   type GenerateChatImageDeps,
 } from "../lib/chat-image-generation";
 import { parseImageDataUrl } from "../lib/hermes-image-attach";
@@ -128,6 +130,46 @@ describe("chat image generation", () => {
     const result = await generateChatImage("anything", deps);
 
     expect(result.status).toBe("error");
+    expect(deps.importImageBytes).not.toHaveBeenCalled();
+  });
+
+  it("edits, imports, and returns a composer attachment for inline display", async () => {
+    const file = importedFile();
+    const deps: EditChatImageDeps = {
+      readImageData: vi.fn().mockResolvedValue(`data:image/png;base64,${HELLO_BASE64}`),
+      edit: vi.fn().mockResolvedValue(pngImage()),
+      importImageBytes: vi.fn().mockResolvedValue(file),
+    };
+
+    const result = await editChatImage(file, "add a forest", deps);
+
+    expect(deps.readImageData).toHaveBeenCalledWith(file.path);
+    expect(deps.edit).toHaveBeenCalledWith(HELLO_BASE64, "add a forest", "image/png", undefined);
+    const [name, bytes] = (deps.importImageBytes as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(name).toMatch(/^generated-image-\d+\.png$/);
+    expect(Array.from(bytes as Uint8Array)).toEqual(HELLO_BYTES);
+
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.attachment.kind).toBe("image");
+    expect(result.file).toBe(file);
+    expect(parseImageDataUrl(result.dataUrl)).not.toBeNull();
+  });
+
+  it("rejects an unreadable source image without calling the edit endpoint", async () => {
+    const deps: EditChatImageDeps = {
+      readImageData: vi.fn().mockResolvedValue(null),
+      edit: vi.fn(),
+      importImageBytes: vi.fn(),
+    };
+
+    const result = await editChatImage(importedFile(), "add a forest", deps);
+
+    expect(result).toEqual({
+      status: "error",
+      message: "June couldn't read the source image.",
+    });
+    expect(deps.edit).not.toHaveBeenCalled();
     expect(deps.importImageBytes).not.toHaveBeenCalled();
   });
 });

@@ -1493,6 +1493,75 @@ describe("Agent chat runtime", () => {
     expect(tool?.type === "tool" ? tool.text : "").not.toContain("aGVsbG8=");
   });
 
+  it("renders Hermes MEDIA image references inline instead of as visible paths", () => {
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_ce347dc6e27a.png";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: [
+          "Here is the regenerated wolf:",
+          "",
+          `MEDIA:${mediaPath}`,
+          "",
+          "A majestic wolf rendered in a misty forest at dawn.",
+        ].join("\n"),
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Here is the regenerated wolf:\n\nA majestic wolf rendered in a misty forest at dawn.",
+        status: "complete",
+      },
+      {
+        type: "image",
+        status: "complete",
+        prompt: "Generated image",
+        path: mediaPath,
+        name: "img_ce347dc6e27a.png",
+      },
+    ]);
+  });
+
+  it("normalizes live complete messages that contain Hermes MEDIA image references", () => {
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_live.png";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {},
+        },
+        {
+          type: "message.delta",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { delta: `MEDIA:${mediaPath}` },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          payload: { text: `MEDIA:${mediaPath}` },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "image",
+        status: "complete",
+        prompt: "Generated image",
+        path: mediaPath,
+        name: "img_live.png",
+      },
+    ]);
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],
