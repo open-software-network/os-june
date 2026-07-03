@@ -1729,6 +1729,22 @@ export function App() {
 
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
+    // sourceMode derives from systemGranted, so when the system source is not
+    // currently ready, intent alone cannot bring it back to
+    // microphonePlusSystem. That covers a mic-only preflight having stored a
+    // readiness result with no system entry, and an entry that is present but
+    // not ready (e.g. Windows with no output device connected at the last
+    // check). Re-probe the full mode through the existing refresh channel:
+    // the effect above polls immediately and stops as soon as the system
+    // source reports ready, and it self-gates on systemGranted, so this bump
+    // is a no-op whenever system audio is already usable. Safe on every
+    // platform: the macOS denied path cannot reach here (both switches are
+    // disabled while denied, and its Enable button bumps this channel through
+    // handleEnableSystemAudio instead), and for other not-ready macOS states
+    // the probe matches what the mount and focus refreshes already do.
+    if (next === "microphonePlusSystem" && !systemGranted) {
+      setSystemAudioRefreshRequest((request) => request + 1);
+    }
   }
 
   // Explicit "Enable" action when system audio is denied. Sets intent on

@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import type { NoteDto, RecoverableRecordingDto } from "../lib/tauri";
+import { resetSystemAudioSupportForTests } from "../lib/use-system-audio-support";
 
 const now = "2026-05-19T10:00:00Z";
 
@@ -82,6 +83,12 @@ function stubNavigatorPlatform(platform: string, userAgent: string) {
 }
 
 describe("NoteEditor", () => {
+  beforeEach(() => {
+    // The remembered system-audio support is module-scoped on purpose (it must
+    // survive remounts in the app); tests reset it so cases stay independent.
+    resetSystemAudioSupportForTests();
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -711,10 +718,12 @@ describe("NoteEditor", () => {
     expect(onEnableSystemAudio).toHaveBeenCalledOnce();
   });
 
-  it("hides system audio recording options on Windows", () => {
+  it("hides system audio recording options when the system source is unsupported", () => {
+    // A platform without a system-audio backend reports "unsupported" from the
+    // stub backend; the recording options stay hidden regardless of host OS.
     const restoreNavigator = stubNavigatorPlatform(
-      "Win32",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Linux x86_64",
+      "Mozilla/5.0 (X11; Linux x86_64)",
     );
     try {
       render(
@@ -753,6 +762,216 @@ describe("NoteEditor", () => {
       expect(
         screen.queryByText("System audio requires macOS 14.2 or later."),
       ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("shows system audio recording options on Windows when supported", async () => {
+    // Windows ships a WASAPI loopback backend, so readiness reports the system
+    // source as granted and the recording options appear like they do on macOS.
+    const user = userEvent.setup();
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      render(
+        <NoteEditor
+          {...props}
+          note={note()}
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: true,
+            checkedAt: now,
+            sources: [
+              {
+                source: "microphone",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+              {
+                source: "system",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+            ],
+          }}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Recording options" }));
+      const systemSwitch = screen.getByRole("switch", { name: "Capture system audio" });
+      expect(systemSwitch).toBeEnabled();
+      expect(
+        screen.queryByText("System audio requires macOS 14.2 or later."),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("hides recording options on Windows until source readiness first loads", () => {
+    // Before the first readiness check resolves, sourceReadiness is undefined.
+    // Non-macOS hosts must treat that unknown state as unsupported so nothing
+    // flashes on platforms whose backend will report "unsupported".
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      render(<NoteEditor {...props} note={note()} sourceReadiness={undefined} />);
+
+      expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Recording options" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Capture system audio")).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("keeps recording options on Windows after a mic-only readiness check", async () => {
+    // Turning system audio off makes the recording preflight store a
+    // microphoneOnly readiness with no system source. Backend support is a
+    // property of the host, not of the last-checked mode, so the options must
+    // stay visible or the user could never turn system audio back on.
+    const user = userEvent.setup();
+    const onSourceModeChange = vi.fn();
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    const microphoneSource = {
+      source: "microphone" as const,
+      required: true,
+      ready: true,
+      permissionState: "granted" as const,
+      deviceAvailable: true,
+      captureAvailable: true,
+    };
+    try {
+      const { rerender } = render(
+        <NoteEditor
+          {...props}
+          note={note()}
+          sourceMode="microphonePlusSystem"
+          onSourceModeChange={onSourceModeChange}
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: true,
+            checkedAt: now,
+            sources: [
+              microphoneSource,
+              {
+                source: "system",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+            ],
+          }}
+        />,
+      );
+
+      // System audio switched off; the preflight readiness now covers only
+      // the microphone.
+      rerender(
+        <NoteEditor
+          {...props}
+          note={note()}
+          sourceMode="microphoneOnly"
+          onSourceModeChange={onSourceModeChange}
+          sourceReadiness={{
+            sourceMode: "microphoneOnly",
+            ready: true,
+            checkedAt: now,
+            sources: [microphoneSource],
+          }}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Recording options" }));
+      const systemSwitch = screen.getByRole("switch", { name: "Capture system audio" });
+      expect(systemSwitch).toBeEnabled();
+
+      // And the user can turn system audio back on.
+      await user.click(systemSwitch);
+      expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("keeps recording options on Windows across a remount after a mic-only check", async () => {
+    // Support is remembered at module scope, not per component instance: a
+    // NoteEditor mounted after a mic-only preflight overwrote sourceReadiness
+    // (e.g. the user navigated away and back) must still show the options, or
+    // navigation would reintroduce the lost-toggle bug.
+    const user = userEvent.setup();
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    const microphoneSource = {
+      source: "microphone" as const,
+      required: true,
+      ready: true,
+      permissionState: "granted" as const,
+      deviceAvailable: true,
+      captureAvailable: true,
+    };
+    try {
+      // First mount sees a readiness result that covers the system source.
+      const { unmount } = render(
+        <NoteEditor
+          {...props}
+          note={note()}
+          sourceMode="microphonePlusSystem"
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: true,
+            checkedAt: now,
+            sources: [
+              microphoneSource,
+              {
+                source: "system",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+            ],
+          }}
+        />,
+      );
+      unmount();
+
+      // A fresh instance mounts while the stored readiness is mic-only.
+      render(
+        <NoteEditor
+          {...props}
+          note={note()}
+          sourceMode="microphoneOnly"
+          sourceReadiness={{
+            sourceMode: "microphoneOnly",
+            ready: true,
+            checkedAt: now,
+            sources: [microphoneSource],
+          }}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Recording options" }));
+      expect(screen.getByRole("switch", { name: "Capture system audio" })).toBeEnabled();
     } finally {
       restoreNavigator();
     }
