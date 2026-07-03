@@ -60,13 +60,7 @@ export type ArtifactKind = "file" | "image" | "directory" | "url" | "unknown";
  * means the user attached an image into the session via the structured
  * `image.attach_bytes` flow — it shows in the timeline like any other artifact.
  */
-export type ArtifactAction =
-  | "created"
-  | "modified"
-  | "read"
-  | "downloaded"
-  | "failed"
-  | "attached";
+export type ArtifactAction = "created" | "modified" | "read" | "downloaded" | "failed" | "attached";
 
 /**
  * One file/url an agent touched. `path` is the location as Hermes reported it
@@ -293,14 +287,12 @@ export const hermesArtifactStore = createHermesArtifactStore();
  * The payload here is already sanitized by the classifier, so secret-bearing
  * fields are redacted before we ever read them.
  */
-export function artifactsFromToolEvent(
-  event: JuneHermesEvent,
-): AgentArtifact[] {
+export function artifactsFromToolEvent(event: JuneHermesEvent): AgentArtifact[] {
   if (event.kind !== "tool" || event.phase !== "complete") return [];
   const sessionId = nonEmpty(event.sessionId);
   if (!sessionId) return [];
 
-  const payload = asRecord(event.payload);
+  const payload = asRecord(event.sanitizedPayload);
   if (!payload) return [];
 
   const locations = locationsFromPayload(payload);
@@ -377,12 +369,7 @@ const SINGULAR_LOCATION_KEYS = [
 const PATH_SHAPED_LOCATION_KEYS = ["destination", "dest"] as const;
 
 // Known array payload keys holding multiple paths.
-const ARRAY_LOCATION_KEYS = [
-  "paths",
-  "file_paths",
-  "filePaths",
-  "files",
-] as const;
+const ARRAY_LOCATION_KEYS = ["paths", "file_paths", "filePaths", "files"] as const;
 
 /**
  * Infer the action from the tool name. Defaults to `read` (the least-privileged,
@@ -395,8 +382,7 @@ function actionFromToolName(name: string | undefined): ArtifactAction {
   if (/import/.test(lower)) return "downloaded";
   if (/(edit|modif|update|patch|append|replace)/.test(lower)) return "modified";
   if (/(write|create|save|generate|export|new)/.test(lower)) return "created";
-  if (/(read|cat|open|view|get|fetch|list|search|grep|find)/.test(lower))
-    return "read";
+  if (/(read|cat|open|view|get|fetch|list|search|grep|find)/.test(lower)) return "read";
   // Unknown tool that nonetheless reported a path: treat as a read so we don't
   // falsely imply a mutation.
   return "read";
@@ -405,15 +391,9 @@ function actionFromToolName(name: string | undefined): ArtifactAction {
 /** Whether the payload signals the tool call errored. Conservative: only known
  * boolean/string error fields, never inferred from output text. */
 function hasError(payload: Record<string, unknown>): boolean {
-  if (
-    payload.error !== undefined &&
-    payload.error !== null &&
-    payload.error !== false
-  )
-    return true;
+  if (payload.error !== undefined && payload.error !== null && payload.error !== false) return true;
   if (payload.failed === true) return true;
-  const status =
-    typeof payload.status === "string" ? payload.status.toLowerCase() : "";
+  const status = typeof payload.status === "string" ? payload.status.toLowerCase() : "";
   return status === "error" || status === "failed" || status === "denied";
 }
 
@@ -461,10 +441,7 @@ function basename(location: string): string {
   // Strip a query/hash off urls first so the name isn't "report.pdf?token=…".
   const withoutQuery = location.split(/[?#]/, 1)[0];
   const trimmed = withoutQuery.replace(/[/\\]+$/, "");
-  const lastSlash = Math.max(
-    trimmed.lastIndexOf("/"),
-    trimmed.lastIndexOf("\\"),
-  );
+  const lastSlash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   const base = lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
   return base || location;
 }

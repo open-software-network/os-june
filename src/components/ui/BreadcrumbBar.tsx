@@ -18,9 +18,7 @@ type Props = {
 export function BreadcrumbBar({ backLabel, onBack, items, actions }: Props) {
   return (
     <div className="detail-bar" data-tauri-drag-region>
-      {onBack ? (
-        <BackButton label={backLabel ?? "Back"} onClick={onBack} />
-      ) : null}
+      {onBack ? <BackButton label={backLabel ?? "Back"} onClick={onBack} /> : null}
       <nav className="detail-breadcrumb" aria-label="Breadcrumb">
         <ol>
           {items.map((item, index) => {
@@ -33,20 +31,12 @@ export function BreadcrumbBar({ backLabel, onBack, items, actions }: Props) {
                   </span>
                 ) : null}
                 {item.onClick && !current ? (
-                  <button
-                    type="button"
-                    className="detail-breadcrumb-link"
-                    onClick={item.onClick}
-                  >
+                  <button type="button" className="detail-breadcrumb-link" onClick={item.onClick}>
                     {item.label}
                   </button>
                 ) : (
                   <span
-                    className={
-                      current
-                        ? "detail-breadcrumb-current"
-                        : "detail-breadcrumb-label"
-                    }
+                    className={current ? "detail-breadcrumb-current" : "detail-breadcrumb-label"}
                   >
                     {item.label}
                   </span>

@@ -17,12 +17,7 @@
  * `hermes-control-plane/parse`), same "missing in, undefined out" contract.
  */
 
-import {
-  asRecord,
-  finiteNumber,
-  pickNumber,
-  pickString,
-} from "./hermes-control-plane";
+import { asRecord, pickNumber, pickString } from "./hermes-control-plane";
 
 /** Normalized, UI-ready result for one `session.compress` call. All metrics
  * optional: a field is present only when the gateway reported a usable value. */
@@ -44,10 +39,7 @@ export type CompressSessionResult = {
  * fields left `undefined`. `sessionId` is always carried through from the caller
  * so the UI can label which session it describes even when the payload omits it.
  */
-export function parseCompressSessionResult(
-  sessionId: string,
-  raw: unknown,
-): CompressSessionResult {
+export function parseCompressSessionResult(sessionId: string, raw: unknown): CompressSessionResult {
   const root = asRecord(raw);
   // Token deltas may live at the root or under a `usage` / `tokens` /
   // `context` sub-object depending on the pin.

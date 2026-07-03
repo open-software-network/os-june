@@ -1,0 +1,107 @@
+# June ↔ Hermes gateway — integration gotchas
+
+Hard-won facts about talking to the embedded Hermes runtime. Companion to
+[hermes-architecture.md](hermes-architecture.md) (the layer map); this page is
+the list of things that LOOK like they should work and do not, mostly learned
+stabilizing the MCP surfaces (JUN-137, PR #610). Everything here is specific to
+the pinned runtime version — re-verify on a pin bump
+([hermes-upgrade-checklist.md](hermes-upgrade-checklist.md)).
+
+## Lifecycle
+
+**Restart the runtime through June's bridge, never through Hermes' own API.**
+`POST /api/gateway/restart` exists upstream, but it spawns `hermes gateway
+restart`, which kills the very process serving the request: the action poll
+dies mid-flight, and the replacement gateway is a child of the dying dashboard,
+not of June — outside June's supervision. June owns the process, so a restart
+is `stop_hermes_bridge` + `start_hermes_bridge` (see the MCP page's
+`restartRuntime`).
+
+**Every spawn mints new credentials.** The gateway port, the session token, and
+the provider-proxy port/token all change on respawn. Anything that captured
+them — every `hermes-admin` client, cache, lifecycle — is dead after a restart.
+Rebuild the whole admin engine from a fresh `hermesBridgeStatus()`; do not try
+to "reconnect" existing clients.
+
+**Dev machines: the gateway keep-alives.** Hermes installs an
+`ai.hermes.gateway` LaunchAgent; a plain `kill` respawns the gateway. Stop it
+with `launchctl bootout gui/$UID/ai.hermes.gateway`. June re-registers it on
+next launch.
+
+## Config
+
+**`config.yaml` has two writers — June must merge, never overwrite.** June
+renders its per-spawn keys (proxy routing, `june_context` / `june_web`) and the
+jailed dashboard persists admin changes into the same file. See
+[ADR 0009](adr/0009-hermes-config-shared-ownership-merge.md); the enforcement
+point is `merge_hermes_config`. Corollary: adding a key to
+`render_hermes_config` claims per-spawn ownership of it.
+
+**Config writes are whole-tree replaces.** `PUT /api/config` takes
+`{ config: <tree> }` and `save_config` replaces the file; a `{ path, value }`
+body 422s and there is no `DELETE /api/config`. Every June-side write is
+therefore read-modify-write of the full tree, and a multi-leaf change must
+batch into ONE put (`config.applyWritesAtSegments`) or a mid-sequence failure
+leaves config half-mutated.
+
+**Secrets are write-only.** Server listings strip `env` and `headers` values;
+June can never read them back. "Edit" therefore only covers non-secret
+connection fields; changing a secret is delete-and-re-add.
+
+## MCP OAuth
+
+**`hermes mcp login` requires a TTY.** The whole OAuth flow gates on
+`sys.stdin.isatty()`; `HERMES_NONINTERACTIVE` is not read on that path, and
+there is no print-the-URL fallback before the gate. June wraps the CLI in
+`/usr/bin/script -q /dev/null` on macOS so it sees a real PTY, runs its own
+browser flow, and captures the localhost callback itself. (No Windows story
+yet.)
+
+**The login CLI exits 0 on failure.** `cmd_mcp_login` prints "Authentication
+failed: ..." and returns success. Classify from output markers first
+(`mcp_login_succeeded`); require the explicit "Authenticated" line for
+success.
+
+**Consent-screen identity comes from config.** The OAuth client registers with
+`mcp_servers.<name>.oauth.client_name` (default "Hermes Agent"). June writes
+`"June"` before every sign-in (never overwriting a custom name); a re-login
+wipes tokens AND cached client registration, so the rename applies
+retroactively. `logo_uri` is NOT forwarded by the pinned runtime — a consent
+icon needs an upstream change plus a publicly hosted image.
+
+**Auth status is not reported for every transport.** The server listing often
+carries no token state (`auth_status` absent, transport labeled plain `http`
+even for OAuth servers). June derives "signed in" from fresher signals: a
+completed login this session, or a successful test probe (which needed the
+cached token to connect). Detection of "this server is OAuth at all" also
+falls back to the config's `oauth` marker and OAuth-shaped probe errors.
+
+## Events
+
+**The control plane fails loudly on unknown event types — by design.** A new
+raw type renders as the red "event June does not support yet" banner until it
+gets a branch in `classifyHermesEvent` (`hermes-control-plane/event-classifier.ts`)
+and a member in the `JuneHermesEvent` union. That is the fix path; do not
+suppress the banner.
+
+**Reasoning arrives two ways.** Streaming models emit `reasoning.delta` /
+`thinking.delta` chunks (append). Whole-block reasoning models emit
+`reasoning.available` / `thinking.available` once with the FULL text —
+classified with `full: true`, and consumers REPLACE the thought instead of
+appending so a post-delta replay cannot duplicate it.
+
+## Upstream (via june-api)
+
+**One bad tool schema can brick every chat request.** The AI upstream rejects a
+tool parameter schema carrying both `type` and a sibling `allOf` (valid JSON
+Schema draft-07; Todoist's MCP emits it) with "Conflict in schema definitions
+for key 'type'" — a 400 on EVERY request while that server is connected, which
+june-api used to rebrand as a bare 502. june-api now strips `allOf` beside
+`type` before forwarding (`sanitize_tool_schemas` in
+`june-api/crates/providers/src/venice.rs`) and logs a capped preview of the
+upstream error body.
+
+**Debugging trick: replay the request dumps.** Hermes writes failing agent
+requests to `$HERMES_HOME/sessions/request_dump_*.json` — the exact body,
+tools included. Replaying them against the upstream with tool-subset bisection
+is how the schema conflict above was isolated to one tool in minutes.

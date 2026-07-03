@@ -9,25 +9,23 @@ const STYLE_OPTIONS = [
   { value: "formal" as const, label: "Formal" },
 ];
 
-const SAMPLES: Record<DictationStyle, { description: string; sample: string }> =
-  {
-    standard: {
-      description: "Sentence case with light cleanup. Keeps your natural tone.",
-      sample:
-        "Got it. Let me know when you're free to chat about the Q3 plan. Happy to jump on in the morning.",
-    },
-    casualLowercase: {
-      description: "Lowercase sentences, contractions, minimal cleanup.",
-      sample:
-        "got it. let me know when you're free to chat about the q3 plan. happy to jump on in the morning.",
-    },
-    formal: {
-      description:
-        "Polished phrasing, full words, conventional capitalization.",
-      sample:
-        "Understood. Please let me know when you have time to discuss the Q3 plan. I am available to meet in the morning.",
-    },
-  };
+const SAMPLES: Record<DictationStyle, { description: string; sample: string }> = {
+  standard: {
+    description: "Sentence case with light cleanup. Keeps your natural tone.",
+    sample:
+      "Got it. Let me know when you're free to chat about the Q3 plan. Happy to jump on in the morning.",
+  },
+  casualLowercase: {
+    description: "Lowercase sentences, contractions, minimal cleanup.",
+    sample:
+      "got it. let me know when you're free to chat about the q3 plan. happy to jump on in the morning.",
+  },
+  formal: {
+    description: "Full words and conventional capitalization. Keeps your wording.",
+    sample:
+      "Got it. Let me know when you are free to chat about the Q3 plan. Happy to jump on in the morning.",
+  },
+};
 
 export function StyleSettingsSection() {
   const [style, setStyle] = useState<DictationStyle>("standard");

@@ -37,8 +37,7 @@ export function MoveNoteToFolderDialog({
   // The "currently in" exclusion only makes sense when every selected note
   // shares the same first folder; a mixed selection excludes nothing.
   const sharedFolderId =
-    notes.length > 0 &&
-    notes.every((note) => note.folderIds[0] === notes[0].folderIds[0])
+    notes.length > 0 && notes.every((note) => note.folderIds[0] === notes[0].folderIds[0])
       ? notes[0].folderIds[0]
       : undefined;
   const currentFolderId = sharedFolderId;
@@ -50,9 +49,7 @@ export function MoveNoteToFolderDialog({
     const normalized = query.trim().toLowerCase();
     const filtered = normalized
       ? available.filter((folder) =>
-          `${folder.name} ${folder.description ?? ""}`
-            .toLowerCase()
-            .includes(normalized),
+          `${folder.name} ${folder.description ?? ""}`.toLowerCase().includes(normalized),
         )
       : available;
     return [...filtered].sort((a, b) =>
@@ -100,12 +97,7 @@ export function MoveNoteToFolderDialog({
       initialFocusSelector='input[name="move-note-search"]'
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
           <button
@@ -153,9 +145,7 @@ export function MoveNoteToFolderDialog({
                     <span className="add-notes-body">
                       <span className="add-notes-title">{folder.name}</span>
                       {folder.description ? (
-                        <span className="add-notes-preview">
-                          {folder.description}
-                        </span>
+                        <span className="add-notes-preview">{folder.description}</span>
                       ) : null}
                     </span>
                     <span className="add-notes-check" aria-hidden>

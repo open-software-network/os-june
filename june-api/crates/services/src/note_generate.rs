@@ -1,16 +1,20 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        zero_receipt,
     },
     error::ServiceError,
+    metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
     pricing::PricingTable,
     prompts,
 };
 use june_domain::{
     ActionSlug, Credits, GeneratedNote, GenerationRequest, Generator, ModelId, ModelKind,
-    OsAccountsClient, Receipt, UserId,
+    OsAccountsClient, ProviderCredentials, Receipt, UserId,
 };
 use std::sync::Arc;
+
+pub const NOTE_GENERATE_PROMPT_VERSION: &str = "notes-mvp-v5";
 
 pub struct NoteGenerateServiceDeps {
     pub pricing: Arc<PricingTable>,
@@ -45,6 +49,36 @@ impl NoteGenerateService {
     ) -> Result<NoteGenerateOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        if uses_user_venice_key_for_model(
+            &self.pricing,
+            &params.model_id.0,
+            &params.provider_credentials,
+        ) {
+            let generated = self
+                .generator
+                .generate(GenerationRequest {
+                    title: params.title,
+                    transcript: params.transcript,
+                    transcript_source_labels: params.transcript_source_labels,
+                    manual_notes: params.manual_notes,
+                    language: params.language,
+                    existing_generated_note: params.existing_generated_note,
+                    model: params.model_id.clone(),
+                    system_prompt: prompts::NOTE_GENERATE.to_string(),
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await?;
+            log_skipped_user_venice_key(
+                ActionSlug::NoteGenerate,
+                &params.user_id,
+                &params.model_id.0,
+            );
+            return Ok(NoteGenerateOutput {
+                generated,
+                receipt: zero_receipt(),
+                prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
+            });
+        }
         // Flat-estimate mode — see note_transcribe.rs. The actual charge below
         // is still computed from real token usage; only the Hold size changes.
         let estimate = Credits(self.flat_estimate_credits);
@@ -67,6 +101,7 @@ impl NoteGenerateService {
                 existing_generated_note: params.existing_generated_note,
                 model: params.model_id.clone(),
                 system_prompt: prompts::NOTE_GENERATE.to_string(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let actual = self
@@ -75,7 +110,7 @@ impl NoteGenerateService {
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "note_generate:{}:{}:{}",
-            params.user_id.0, params.note_id, params.prompt_version
+            params.user_id.0, params.note_id, NOTE_GENERATE_PROMPT_VERSION
         );
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -90,7 +125,11 @@ impl NoteGenerateService {
             &params.model_id.0,
             &receipt,
         );
-        Ok(NoteGenerateOutput { generated, receipt })
+        Ok(NoteGenerateOutput {
+            generated,
+            receipt,
+            prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
+        })
     }
 }
 
@@ -106,10 +145,12 @@ pub struct NoteGenerateParams {
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
     pub model_id: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
 pub struct NoteGenerateOutput {
     pub generated: GeneratedNote,
     pub receipt: Receipt,
+    pub prompt_version: String,
 }

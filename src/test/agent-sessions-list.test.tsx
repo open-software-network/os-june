@@ -12,8 +12,7 @@ const hermesMocks = vi.hoisted(() => ({
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
   deleteHermesSession: hermesMocks.deleteHermesSession,
-  sessionTimestamp: (session: HermesSessionInfo) =>
-    session.last_active ?? session.started_at ?? "",
+  sessionTimestamp: (session: HermesSessionInfo) => session.last_active ?? session.started_at ?? "",
 }));
 
 const sessions: HermesSessionInfo[] = [
@@ -74,18 +73,10 @@ describe("AgentSessionsList", () => {
       />,
     );
 
-    expect(screen.getByRole("status", { name: "Needs you" })).toHaveTextContent(
-      "Needs you",
-    );
-    expect(screen.getByRole("status", { name: "Working" })).toHaveTextContent(
-      "Working",
-    );
-    expect(screen.getByRole("status", { name: "Needs you" })).not.toHaveClass(
-      "folder-note-time",
-    );
-    expect(screen.getByRole("status", { name: "Working" })).not.toHaveClass(
-      "folder-note-time",
-    );
+    expect(screen.getByRole("status", { name: "Needs you" })).toHaveTextContent("Needs you");
+    expect(screen.getByRole("status", { name: "Working" })).toHaveTextContent("Working");
+    expect(screen.getByRole("status", { name: "Needs you" })).not.toHaveClass("folder-note-time");
+    expect(screen.getByRole("status", { name: "Working" })).not.toHaveClass("folder-note-time");
 
     const list = screen.getByRole("list");
     expect(list.querySelector(".agent-session-row")).toBeTruthy();
@@ -118,16 +109,11 @@ describe("AgentSessionsList", () => {
     await user.click(screen.getByLabelText("Select Waiting session"));
     await user.click(screen.getByLabelText("Select Running session"));
 
-    expect(
-      screen.getByRole("toolbar", { name: "Selection" }),
-    ).toHaveTextContent("2 selected");
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
 
     await user.click(screen.getByRole("button", { name: "Move" }));
 
-    expect(onOpenMoveSessions).toHaveBeenCalledWith([
-      "waiting-session",
-      "running-session",
-    ]);
+    expect(onOpenMoveSessions).toHaveBeenCalledWith(["waiting-session", "running-session"]);
   });
 
   it("keeps the exiting bulk bar actions inert after selection clears", async () => {
@@ -184,14 +170,8 @@ describe("AgentSessionsList", () => {
     await user.click(screen.getByRole("button", { name: "Delete sessions" }));
 
     expect(hermesMocks.deleteHermesSession).toHaveBeenCalledTimes(2);
-    expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(
-      1,
-      "waiting-session",
-    );
-    expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(
-      2,
-      "running-session",
-    );
+    expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(1, "waiting-session");
+    expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(2, "running-session");
   });
 });
 
@@ -217,25 +197,15 @@ describe("MoveSessionToProjectDialog", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("heading", { name: "Move 2 sessions" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Move 2 sessions" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
 
     await user.click(screen.getByRole("option", { name: /Beta/ }));
     await user.click(screen.getByRole("button", { name: "Move" }));
 
     expect(onSetFolder).toHaveBeenCalledTimes(2);
-    expect(onSetFolder).toHaveBeenNthCalledWith(
-      1,
-      "waiting-session",
-      "project-beta",
-    );
-    expect(onSetFolder).toHaveBeenNthCalledWith(
-      2,
-      "running-session",
-      "project-beta",
-    );
+    expect(onSetFolder).toHaveBeenNthCalledWith(1, "waiting-session", "project-beta");
+    expect(onSetFolder).toHaveBeenNthCalledWith(2, "running-session", "project-beta");
     expect(onMoved).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });

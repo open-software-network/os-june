@@ -11,9 +11,7 @@ import {
 import type { HermesBridgeConnection } from "../lib/tauri";
 import type { HermesActionStatus } from "../lib/hermes-admin";
 
-function connection(
-  overrides: Partial<HermesBridgeConnection> = {},
-): HermesBridgeConnection {
+function connection(overrides: Partial<HermesBridgeConnection> = {}): HermesBridgeConnection {
   return {
     baseUrl: "http://127.0.0.1:1000",
     wsUrl: "ws://127.0.0.1:1000/api/ws",
@@ -30,13 +28,8 @@ function connection(
   };
 }
 
-function makeCache(
-  profile = "default",
-  overrides: Partial<HermesBridgeConnection> = {},
-) {
-  return new AdminStateCache(
-    adminTargetFromConnection(connection(overrides), profile),
-  );
+function makeCache(profile = "default", overrides: Partial<HermesBridgeConnection> = {}) {
+  return new AdminStateCache(adminTargetFromConnection(connection(overrides), profile));
 }
 
 describe("application timing — one map, consistent semantics", () => {
@@ -86,25 +79,15 @@ describe("invalidation rules — each mutation names its resources", () => {
   });
 
   it("hub install invalidates skills, hub, and toolsets", () => {
-    expect(resourcesForMutation("skill.hubInstall")).toEqual([
-      "skills",
-      "hubSearch",
-      "toolsets",
-    ]);
+    expect(resourcesForMutation("skill.hubInstall")).toEqual(["skills", "hubSearch", "toolsets"]);
   });
 
   it("MCP add/remove/test invalidate both MCP servers and toolsets", () => {
     // A test can change which tools a server exposes (auth now valid, server
     // now reachable), so it refreshes toolsets too, per spec 02.
     expect(resourcesForMutation("mcp.add")).toEqual(["mcpServers", "toolsets"]);
-    expect(resourcesForMutation("mcp.remove")).toEqual([
-      "mcpServers",
-      "toolsets",
-    ]);
-    expect(resourcesForMutation("mcp.test")).toEqual([
-      "mcpServers",
-      "toolsets",
-    ]);
+    expect(resourcesForMutation("mcp.remove")).toEqual(["mcpServers", "toolsets"]);
+    expect(resourcesForMutation("mcp.test")).toEqual(["mcpServers", "toolsets"]);
   });
 
   it("catalog install invalidates servers, catalog, and toolsets", () => {
@@ -116,10 +99,7 @@ describe("invalidation rules — each mutation names its resources", () => {
   });
 
   it("env writes invalidate env config and gateway status", () => {
-    expect(resourcesForMutation("env.set")).toEqual([
-      "envConfig",
-      "gatewayStatus",
-    ]);
+    expect(resourcesForMutation("env.set")).toEqual(["envConfig", "gatewayStatus"]);
   });
 
   it("gateway restart invalidates the full post-restart set", () => {
@@ -254,9 +234,7 @@ describe("AdminStateCache — profile isolation", () => {
     sandboxedWork.set("skills", ["work-skill"]);
 
     // Keys differ; the underlying entries do not leak across caches.
-    expect(sandboxedDefault.keyFor("skills")).not.toBe(
-      sandboxedWork.keyFor("skills"),
-    );
+    expect(sandboxedDefault.keyFor("skills")).not.toBe(sandboxedWork.keyFor("skills"));
     expect(sandboxedDefault.get<string[]>("skills")).toEqual(["default-skill"]);
     expect(sandboxedWork.get<string[]>("skills")).toEqual(["work-skill"]);
   });

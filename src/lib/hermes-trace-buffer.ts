@@ -57,6 +57,8 @@ export type HermesTraceEntry = {
   direction: HermesTraceDirection;
   observedAt: string;
   sessionId?: string;
+  /** Inbound only: the live Hermes runtime/wire session id, when it differs. */
+  runtimeSessionId?: string;
   /** Inbound only: the raw wire `type`. */
   rawType?: string;
   /** Inbound only: the kind the classifier mapped the frame to. */
@@ -81,6 +83,11 @@ export type SanitizedTraceBundle = {
 /** Inbound recording takes the raw gateway frame and classifies it internally. */
 export type InboundTraceInput = HermesGatewayEvent;
 
+/** Optional stored-session remap for inbound frames whose wire id is transient. */
+export type InboundTraceOptions = {
+  storedSessionId?: string;
+};
+
 /** Outbound recording: the typed method call that was sent to the gateway. */
 export type OutboundTraceInput = {
   sessionId?: string;
@@ -97,7 +104,7 @@ export type ErrorTraceInput = {
 
 export type HermesTraceBuffer = {
   /** Record one inbound raw frame, classifying it for the normalized column. */
-  recordInbound(frame: InboundTraceInput): void;
+  recordInbound(frame: InboundTraceInput, options?: InboundTraceOptions): void;
   /** Record one outbound method call (params sanitized). */
   recordOutbound(call: OutboundTraceInput): void;
   /** Record one error/rejection. */
@@ -142,19 +149,18 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     emit();
   }
 
-  function recordInbound(frame: InboundTraceInput): void {
+  function recordInbound(frame: InboundTraceInput, options: InboundTraceOptions = {}): void {
     const classified: JuneHermesEvent = classifyHermesEvent(frame);
-    const sessionId =
-      nonEmpty(frame?.session_id) ?? nonEmpty(eventSession(classified));
+    const runtimeSessionId = nonEmpty(frame?.session_id) ?? nonEmpty(eventSession(classified));
+    const sessionId = nonEmpty(options.storedSessionId) ?? runtimeSessionId;
     const { payloadKeys, payloadPreview } = describePayload(frame?.payload);
     push(sessionId, {
       id: nextId++,
       direction: "inbound",
       observedAt: new Date().toISOString(),
       sessionId,
-      rawType: nonEmpty(
-        typeof frame?.type === "string" ? frame.type : undefined,
-      ),
+      runtimeSessionId: runtimeSessionId !== sessionId ? runtimeSessionId : undefined,
+      rawType: nonEmpty(typeof frame?.type === "string" ? frame.type : undefined),
       normalizedKind: classified.kind,
       payloadKeys,
       payloadPreview,
@@ -163,7 +169,14 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
 
   function recordOutbound(call: OutboundTraceInput): void {
     const sessionId = nonEmpty(call.sessionId);
-    const { payloadKeys, payloadPreview } = describePayload(call.params);
+    // A `secret.respond` frame carries the user's secret answer under `value`,
+    // a key that is intentionally NOT globally sensitive (it is usually benign
+    // tool output). Mark it sensitive for this frame only, so a short OTP that
+    // the value-shape backstop can't catch is still masked.
+    const { payloadKeys, payloadPreview } = describePayload(
+      call.params,
+      isSecretResponseMethod(call.method) ? SECRET_RESPONSE_SENSITIVE_KEYS : undefined,
+    );
     push(sessionId, {
       id: nextId++,
       direction: "outbound",
@@ -197,9 +210,7 @@ export function createHermesTraceBuffer(): HermesTraceBuffer {
     return [...bySession.keys()].filter((key) => key !== NO_SESSION_KEY);
   }
 
-  function exportSanitizedTrace(
-    sessionId: string | undefined,
-  ): SanitizedTraceBundle {
+  function exportSanitizedTrace(sessionId: string | undefined): SanitizedTraceBundle {
     return {
       sessionId: nonEmpty(sessionId),
       exportedAt: new Date().toISOString(),
@@ -245,19 +256,33 @@ function eventSession(event: JuneHermesEvent): string | undefined {
   return "sessionId" in event ? event.sessionId : undefined;
 }
 
+/** Param keys that hold a secret only in a `secret.respond` context. `value` is
+ * the user's answer to a `secret.request`; it is deliberately not globally
+ * sensitive (see `sanitize.ts`), so we scope it to this frame. */
+const SECRET_RESPONSE_SENSITIVE_KEYS = ["value"] as const;
+
+/** Whether an outbound method delivers a secret answer back to the gateway. The
+ * raw value rides in its params, so its trace entry needs the extra key mask. */
+function isSecretResponseMethod(method: string): boolean {
+  return /secret/i.test(method);
+}
+
 /**
  * Turns a (possibly raw) payload into the export-safe shape: top-level keys plus
  * a capped JSON preview. Always runs {@link sanitizePayload} first, so a raw
  * frame is never `JSON.stringify`-ed and secret values are masked at any depth.
  */
-function describePayload(value: unknown): {
+function describePayload(
+  value: unknown,
+  extraSensitiveKeys?: readonly string[],
+): {
   payloadKeys: string[];
   payloadPreview?: string;
 } {
   if (value === null || value === undefined) {
     return { payloadKeys: [] };
   }
-  const safe = sanitizePayload(value);
+  const safe = sanitizePayload(value, extraSensitiveKeys ? { extraSensitiveKeys } : undefined);
   const payloadKeys =
     typeof safe === "object" && safe !== null && !Array.isArray(safe)
       ? Object.keys(safe as Record<string, unknown>)
@@ -267,9 +292,7 @@ function describePayload(value: unknown): {
     const json = JSON.stringify(safe, null, 2);
     if (typeof json === "string") {
       payloadPreview =
-        json.length > PREVIEW_MAX_LENGTH
-          ? `${json.slice(0, PREVIEW_MAX_LENGTH)}…`
-          : json;
+        json.length > PREVIEW_MAX_LENGTH ? `${json.slice(0, PREVIEW_MAX_LENGTH)}…` : json;
     }
   } catch {
     // A value that can't be stringified (shouldn't happen post-sanitize) just

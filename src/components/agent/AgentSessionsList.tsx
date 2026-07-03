@@ -52,352 +52,325 @@ export type AgentSessionsListHandle = {
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 const NO_SESSIONS: HermesSessionInfo[] = [];
 
-export const AgentSessionsList = forwardRef<
-  AgentSessionsListHandle,
-  AgentSessionsListProps
->(function AgentSessionsList(
-  {
-    sessions: allSessions,
-    folders,
-    sessionFolderIds,
-    workingSessionIds = EMPTY_SESSION_IDS,
-    waitingSessionIds = EMPTY_SESSION_IDS,
-    onSelectSession,
-    onNewSession,
-    onOpenMoveDialog,
-    onOpenMoveSessions,
-    onRemoveFromProject,
-  },
-  ref,
-) {
-  // __emptyStates() preview (dev console): render the page as a fresh
-  // install would see it, real data untouched underneath.
-  const sessions = useForcedEmptyStates() ? NO_SESSIONS : allSessions;
-  const [query, setQuery] = useState("");
-  const newSessionShortcut = primaryShortcutLabel("N");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
-  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
-  const [exit, setExit] = useState<null | "slide" | "fade">(null);
-  const exitCauseRef = useRef<"slide" | "fade">("fade");
+export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessionsListProps>(
+  function AgentSessionsList(
+    {
+      sessions: allSessions,
+      folders,
+      sessionFolderIds,
+      workingSessionIds = EMPTY_SESSION_IDS,
+      waitingSessionIds = EMPTY_SESSION_IDS,
+      onSelectSession,
+      onNewSession,
+      onOpenMoveDialog,
+      onOpenMoveSessions,
+      onRemoveFromProject,
+    },
+    ref,
+  ) {
+    // __emptyStates() preview (dev console): render the page as a fresh
+    // install would see it, real data untouched underneath.
+    const sessions = useForcedEmptyStates() ? NO_SESSIONS : allSessions;
+    const [query, setQuery] = useState("");
+    const newSessionShortcut = primaryShortcutLabel("N");
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+    const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+    const [exit, setExit] = useState<null | "slide" | "fade">(null);
+    const exitCauseRef = useRef<"slide" | "fade">("fade");
 
-  const sortedSessions = useMemo(
-    () =>
-      [...sessions].sort((a, b) => {
-        const statusDelta =
-          sessionStatusPriority(b.id, workingSessionIds, waitingSessionIds) -
-          sessionStatusPriority(a.id, workingSessionIds, waitingSessionIds);
-        if (statusDelta !== 0) return statusDelta;
-        return sessionTimestamp(b).localeCompare(sessionTimestamp(a));
-      }),
-    [sessions, waitingSessionIds, workingSessionIds],
-  );
-  const filteredSessions = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return sortedSessions;
-    return sortedSessions.filter((session) =>
-      `${session.title ?? ""} ${session.preview ?? ""} ${sessionStatusLabel(
-        sessionStatus(session.id, workingSessionIds, waitingSessionIds),
-      )}`
-        .toLowerCase()
-        .includes(normalized),
+    const sortedSessions = useMemo(
+      () =>
+        [...sessions].sort((a, b) => {
+          const statusDelta =
+            sessionStatusPriority(b.id, workingSessionIds, waitingSessionIds) -
+            sessionStatusPriority(a.id, workingSessionIds, waitingSessionIds);
+          if (statusDelta !== 0) return statusDelta;
+          return sessionTimestamp(b).localeCompare(sessionTimestamp(a));
+        }),
+      [sessions, waitingSessionIds, workingSessionIds],
     );
-  }, [sortedSessions, query, waitingSessionIds, workingSessionIds]);
-  const selectedSessionIds = useMemo(
-    () =>
-      sortedSessions
-        .filter((session) => selectedIds.has(session.id))
-        .map((session) => session.id),
-    [sortedSessions, selectedIds],
-  );
-  const visibleSelectedCount = filteredSessions.filter((session) =>
-    selectedIds.has(session.id),
-  ).length;
-  const selectedCount = selectedSessionIds.length;
-  const hasUnselectedVisibleSessions =
-    filteredSessions.length > 0 &&
-    visibleSelectedCount < filteredSessions.length;
+    const filteredSessions = useMemo(() => {
+      const normalized = query.trim().toLowerCase();
+      if (!normalized) return sortedSessions;
+      return sortedSessions.filter((session) =>
+        `${session.title ?? ""} ${session.preview ?? ""} ${sessionStatusLabel(
+          sessionStatus(session.id, workingSessionIds, waitingSessionIds),
+        )}`
+          .toLowerCase()
+          .includes(normalized),
+      );
+    }, [sortedSessions, query, waitingSessionIds, workingSessionIds]);
+    const selectedSessionIds = useMemo(
+      () =>
+        sortedSessions
+          .filter((session) => selectedIds.has(session.id))
+          .map((session) => session.id),
+      [sortedSessions, selectedIds],
+    );
+    const visibleSelectedCount = filteredSessions.filter((session) =>
+      selectedIds.has(session.id),
+    ).length;
+    const selectedCount = selectedSessionIds.length;
+    const hasUnselectedVisibleSessions =
+      filteredSessions.length > 0 && visibleSelectedCount < filteredSessions.length;
 
-  const lastCountRef = useRef(selectedCount);
-  if (selectedCount > 0) lastCountRef.current = selectedCount;
-  const displayCount = selectedCount > 0 ? selectedCount : lastCountRef.current;
+    const lastCountRef = useRef(selectedCount);
+    if (selectedCount > 0) lastCountRef.current = selectedCount;
+    const displayCount = selectedCount > 0 ? selectedCount : lastCountRef.current;
 
-  const previousCountRef = useRef(0);
-  useEffect(() => {
-    const previousCount = previousCountRef.current;
-    previousCountRef.current = selectedCount;
-    if (selectedCount > 0) {
-      setExit(null);
-      return;
+    const previousCountRef = useRef(0);
+    useEffect(() => {
+      const previousCount = previousCountRef.current;
+      previousCountRef.current = selectedCount;
+      if (selectedCount > 0) {
+        setExit(null);
+        return;
+      }
+      if (previousCount === 0) return;
+      const cause = exitCauseRef.current;
+      exitCauseRef.current = "fade";
+      setExit((current) => current ?? cause);
+    }, [selectedCount]);
+
+    const barMounted = selectedCount > 0 || exit !== null;
+    const isExiting = selectedCount === 0 && exit !== null;
+
+    useEffect(() => {
+      const sessionIds = new Set(sessions.map((session) => session.id));
+      setSelectedIds((previous) => {
+        const next = new Set([...previous].filter((id) => sessionIds.has(id)));
+        return next.size === previous.size ? previous : next;
+      });
+      if (sessions.length === 0) {
+        setConfirmBulkDelete(false);
+        setBulkDeleteError(null);
+      }
+    }, [sessions]);
+
+    function toggleSelected(sessionId: string) {
+      setSelectedIds((previous) => {
+        const next = new Set(previous);
+        if (next.has(sessionId)) next.delete(sessionId);
+        else next.add(sessionId);
+        return next;
+      });
     }
-    if (previousCount === 0) return;
-    const cause = exitCauseRef.current;
-    exitCauseRef.current = "fade";
-    setExit((current) => current ?? cause);
-  }, [selectedCount]);
 
-  const barMounted = selectedCount > 0 || exit !== null;
-  const isExiting = selectedCount === 0 && exit !== null;
-
-  useEffect(() => {
-    const sessionIds = new Set(sessions.map((session) => session.id));
-    setSelectedIds((previous) => {
-      const next = new Set([...previous].filter((id) => sessionIds.has(id)));
-      return next.size === previous.size ? previous : next;
-    });
-    if (sessions.length === 0) {
+    const resetSelection = useCallback(() => {
+      exitCauseRef.current = "slide";
+      setSelectedIds(new Set());
       setConfirmBulkDelete(false);
       setBulkDeleteError(null);
+    }, []);
+
+    useImperativeHandle(ref, () => ({ resetSelection }), [resetSelection]);
+
+    function selectAllVisibleSessions() {
+      setSelectedIds((previous) => {
+        const next = new Set(previous);
+        for (const session of filteredSessions) {
+          next.add(session.id);
+        }
+        return next;
+      });
     }
-  }, [sessions]);
 
-  function toggleSelected(sessionId: string) {
-    setSelectedIds((previous) => {
-      const next = new Set(previous);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
-      return next;
-    });
-  }
-
-  const resetSelection = useCallback(() => {
-    exitCauseRef.current = "slide";
-    setSelectedIds(new Set());
-    setConfirmBulkDelete(false);
-    setBulkDeleteError(null);
-  }, []);
-
-  useImperativeHandle(ref, () => ({ resetSelection }), [resetSelection]);
-
-  function selectAllVisibleSessions() {
-    setSelectedIds((previous) => {
-      const next = new Set(previous);
-      for (const session of filteredSessions) {
-        next.add(session.id);
-      }
-      return next;
-    });
-  }
-
-  function deselectAllVisibleSessions() {
-    setSelectedIds((previous) => {
-      const next = new Set(previous);
-      for (const session of filteredSessions) {
-        next.delete(session.id);
-      }
-      return next;
-    });
-  }
-
-  useEffect(() => {
-    if (selectedCount === 0 || confirmBulkDelete) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") resetSelection();
+    function deselectAllVisibleSessions() {
+      setSelectedIds((previous) => {
+        const next = new Set(previous);
+        for (const session of filteredSessions) {
+          next.delete(session.id);
+        }
+        return next;
+      });
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selectedCount, confirmBulkDelete, resetSelection]);
 
-  async function handleBulkDelete() {
-    try {
-      for (const sessionId of selectedSessionIds) {
-        await deleteHermesSession(sessionId);
-        window.setTimeout(() => {
-          window.dispatchEvent(
-            new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
-              detail: { sessionId },
-            }),
-          );
-        }, 0);
+    useEffect(() => {
+      if (selectedCount === 0 || confirmBulkDelete) return;
+      function onKey(event: KeyboardEvent) {
+        if (event.key === "Escape") resetSelection();
       }
-      resetSelection();
-    } catch (err) {
-      setBulkDeleteError(messageFromError(err));
-      throw err;
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    }, [selectedCount, confirmBulkDelete, resetSelection]);
+
+    async function handleBulkDelete() {
+      try {
+        for (const sessionId of selectedSessionIds) {
+          await deleteHermesSession(sessionId);
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+                detail: { sessionId },
+              }),
+            );
+          }, 0);
+        }
+        resetSelection();
+      } catch (err) {
+        setBulkDeleteError(messageFromError(err));
+        throw err;
+      }
     }
-  }
 
-  return (
-    <section
-      className="all-notes-workspace agent-sessions-workspace"
-      aria-label="Sessions"
-    >
-      <header className="folders-header">
-        <div className="folders-heading">
-          <h1>
-            Sessions
-            {sessions.length > 0 ? (
-              <span className="folders-count">{sessions.length}</span>
-            ) : null}
-          </h1>
-        </div>
-        <button
-          type="button"
-          className="primary-action primary-solid folders-create"
-          onClick={onNewSession}
-        >
-          <IconPlusMedium size={13} />
-          New session
-          <kbd className="primary-action-kbd" aria-hidden>
-            {newSessionShortcut}
-          </kbd>
-        </button>
-      </header>
+    return (
+      <section className="all-notes-workspace agent-sessions-workspace" aria-label="Sessions">
+        <header className="folders-header">
+          <div className="folders-heading">
+            <h1>
+              Sessions
+              {sessions.length > 0 ? (
+                <span className="folders-count">{sessions.length}</span>
+              ) : null}
+            </h1>
+          </div>
+          <button
+            type="button"
+            className="primary-action primary-solid folders-create"
+            onClick={onNewSession}
+          >
+            <IconPlusMedium size={13} />
+            New session
+            <kbd className="primary-action-kbd" aria-hidden>
+              {newSessionShortcut}
+            </kbd>
+          </button>
+        </header>
 
-      {sessions.length > 0 ? (
-        <div className="folders-controls">
-          <label className="folders-search">
-            <IconMagnifyingGlass size={14} />
-            <input
-              type="search"
-              placeholder="Search"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-            />
-          </label>
-        </div>
-      ) : null}
+        {sessions.length > 0 ? (
+          <div className="folders-controls">
+            <label className="folders-search">
+              <IconMagnifyingGlass size={14} />
+              <input
+                type="search"
+                placeholder="Search"
+                value={query}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+              />
+            </label>
+          </div>
+        ) : null}
 
-      {sessions.length === 0 ? (
-        <EmptyState
-          label="Start your first session"
-          icon={<IconBubble3 size={28} />}
-          title="Put June to work"
-          description="Ask June to check on your computer, dig through your files, or research a topic. Each session keeps one task's conversation and everything it produces in one place."
-          action={
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              onClick={onNewSession}
-            >
-              <IconPlusMedium size={13} />
-              Start your first session
-            </button>
-          }
-        />
-      ) : filteredSessions.length === 0 ? (
-        <div className="folders-empty">
-          <p>No sessions match “{query.trim()}”.</p>
-        </div>
-      ) : (
-        <ul
-          className="folder-notes all-notes-list"
-          role="list"
-          data-selecting={selectedCount > 0}
-        >
-          {filteredSessions.map((session) => (
-            <AgentSessionListRow
-              key={session.id}
-              session={session}
-              projectName={projectNameFor(
-                session.id,
-                sessionFolderIds,
-                folders,
-              )}
-              currentFolderId={sessionFolderIds[session.id]?.[0]}
-              status={sessionStatus(
-                session.id,
-                workingSessionIds,
-                waitingSessionIds,
-              )}
-              checked={selectedIds.has(session.id)}
-              onToggleSelected={() => toggleSelected(session.id)}
-              onSelect={() => onSelectSession(session)}
-              onOpenMove={() => onOpenMoveDialog(session.id)}
-              onRemoveFromProject={(folderId) =>
-                onRemoveFromProject(session.id, folderId)
-              }
-            />
-          ))}
-        </ul>
-      )}
-
-      {barMounted ? (
-        <div
-          className="meetings-bulk-bar"
-          role="toolbar"
-          aria-label="Selection"
-          data-exit={isExiting ? exit : undefined}
-          onAnimationEnd={(event) => {
-            if (!isExiting || event.target !== event.currentTarget) return;
-            if (
-              event.animationName &&
-              !event.animationName.startsWith("meetings-bulk-bar-out")
-            ) {
-              return;
+        {sessions.length === 0 ? (
+          <EmptyState
+            label="Start your first session"
+            icon={<IconBubble3 size={28} />}
+            title="Put June to work"
+            description="Ask June to check on your computer, dig through your files, or research a topic. Each session keeps one task's conversation and everything it produces in one place."
+            action={
+              <button type="button" className="primary-action primary-solid" onClick={onNewSession}>
+                <IconPlusMedium size={13} />
+                Start your first session
+              </button>
             }
-            setExit(null);
-          }}
-        >
-          <span className="meetings-bulk-count">{displayCount} selected</span>
-          {hasUnselectedVisibleSessions ? (
+          />
+        ) : filteredSessions.length === 0 ? (
+          <div className="folders-empty">
+            <p>No sessions match “{query.trim()}”.</p>
+          </div>
+        ) : (
+          <ul
+            className="folder-notes all-notes-list"
+            role="list"
+            data-selecting={selectedCount > 0}
+          >
+            {filteredSessions.map((session) => (
+              <AgentSessionListRow
+                key={session.id}
+                session={session}
+                projectName={projectNameFor(session.id, sessionFolderIds, folders)}
+                currentFolderId={sessionFolderIds[session.id]?.[0]}
+                status={sessionStatus(session.id, workingSessionIds, waitingSessionIds)}
+                checked={selectedIds.has(session.id)}
+                onToggleSelected={() => toggleSelected(session.id)}
+                onSelect={() => onSelectSession(session)}
+                onOpenMove={() => onOpenMoveDialog(session.id)}
+                onRemoveFromProject={(folderId) => onRemoveFromProject(session.id, folderId)}
+              />
+            ))}
+          </ul>
+        )}
+
+        {barMounted ? (
+          <div
+            className="meetings-bulk-bar"
+            role="toolbar"
+            aria-label="Selection"
+            data-exit={isExiting ? exit : undefined}
+            onAnimationEnd={(event) => {
+              if (!isExiting || event.target !== event.currentTarget) return;
+              if (event.animationName && !event.animationName.startsWith("meetings-bulk-bar-out")) {
+                return;
+              }
+              setExit(null);
+            }}
+          >
+            <span className="meetings-bulk-count">{displayCount} selected</span>
+            {hasUnselectedVisibleSessions ? (
+              <button
+                type="button"
+                className="meetings-bulk-action"
+                onClick={selectAllVisibleSessions}
+                disabled={isExiting}
+              >
+                Select all
+              </button>
+            ) : null}
             <button
               type="button"
               className="meetings-bulk-action"
-              onClick={selectAllVisibleSessions}
+              onClick={deselectAllVisibleSessions}
               disabled={isExiting}
             >
-              Select all
+              Deselect all
             </button>
-          ) : null}
-          <button
-            type="button"
-            className="meetings-bulk-action"
-            onClick={deselectAllVisibleSessions}
-            disabled={isExiting}
-          >
-            Deselect all
-          </button>
-          <button
-            type="button"
-            className="meetings-bulk-action"
-            onClick={() => onOpenMoveSessions(selectedSessionIds)}
-            disabled={isExiting}
-          >
-            Move
-          </button>
-          <button
-            type="button"
-            className="meetings-bulk-action"
-            onClick={() => setConfirmBulkDelete(true)}
-            disabled={isExiting}
-          >
-            Delete
-          </button>
-          <button
-            type="button"
-            className="meetings-bulk-dismiss"
-            aria-label="Clear selection"
-            onClick={resetSelection}
-            disabled={isExiting}
-          >
-            <IconCrossMedium size={14} />
-          </button>
-        </div>
-      ) : null}
+            <button
+              type="button"
+              className="meetings-bulk-action"
+              onClick={() => onOpenMoveSessions(selectedSessionIds)}
+              disabled={isExiting}
+            >
+              Move
+            </button>
+            <button
+              type="button"
+              className="meetings-bulk-action"
+              onClick={() => setConfirmBulkDelete(true)}
+              disabled={isExiting}
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              className="meetings-bulk-dismiss"
+              aria-label="Clear selection"
+              onClick={resetSelection}
+              disabled={isExiting}
+            >
+              <IconCrossMedium size={14} />
+            </button>
+          </div>
+        ) : null}
 
-      <ConfirmDialog
-        open={confirmBulkDelete}
-        onClose={() => {
-          setConfirmBulkDelete(false);
-          setBulkDeleteError(null);
-        }}
-        onConfirm={() => handleBulkDelete()}
-        title={`Delete ${selectedCount} ${
-          selectedCount === 1 ? "session" : "sessions"
-        }?`}
-        description={
-          bulkDeleteError ||
-          "This cannot be undone. These agent sessions will be removed."
-        }
-        confirmLabel={
-          selectedCount === 1 ? "Delete session" : "Delete sessions"
-        }
-        destructive
-      />
-    </section>
-  );
-});
+        <ConfirmDialog
+          open={confirmBulkDelete}
+          onClose={() => {
+            setConfirmBulkDelete(false);
+            setBulkDeleteError(null);
+          }}
+          onConfirm={() => handleBulkDelete()}
+          title={`Delete ${selectedCount} ${selectedCount === 1 ? "session" : "sessions"}?`}
+          description={
+            bulkDeleteError || "This cannot be undone. These agent sessions will be removed."
+          }
+          confirmLabel={selectedCount === 1 ? "Delete session" : "Delete sessions"}
+          destructive
+        />
+      </section>
+    );
+  },
+);
 
 function projectNameFor(
   sessionId: string,
@@ -458,8 +431,7 @@ function AgentSessionListRow({
   onOpenMove: () => void;
   onRemoveFromProject: (folderId: string) => void;
 }) {
-  const title =
-    session.title?.trim() || session.preview?.trim() || "Untitled session";
+  const title = session.title?.trim() || session.preview?.trim() || "Untitled session";
   const preview = session.preview?.trim() || "No messages yet";
   const statusLabel = sessionStatusLabel(status);
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
@@ -550,9 +522,7 @@ function AgentSessionListRow({
             {statusLabel}
           </span>
         ) : (
-          <span className="folder-note-time">
-            {formatSessionTime(sessionTimestamp(session))}
-          </span>
+          <span className="folder-note-time">{formatSessionTime(sessionTimestamp(session))}</span>
         )}
         <span className="folder-note-actions">
           <button
@@ -593,11 +563,7 @@ function AgentSessionListRow({
                 onOpenMove();
               }}
             >
-              {currentFolderId ? (
-                <IconMoveFolder size={14} />
-              ) : (
-                <IconFolderAddRight size={14} />
-              )}
+              {currentFolderId ? <IconMoveFolder size={14} /> : <IconFolderAddRight size={14} />}
               {currentFolderId ? "Change project" : "Add to project"}
             </button>
             {currentFolderId ? (
@@ -662,9 +628,7 @@ function formatSessionTime(iso: string): string {
       minute: "2-digit",
     });
   }
-  const diffDays = Math.floor(
-    (now.getTime() - date.getTime()) / (24 * 60 * 60 * 1000),
-  );
+  const diffDays = Math.floor((now.getTime() - date.getTime()) / (24 * 60 * 60 * 1000));
   if (diffDays < 7) {
     return date.toLocaleDateString(undefined, { weekday: "short" });
   }

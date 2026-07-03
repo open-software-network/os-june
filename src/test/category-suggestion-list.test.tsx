@@ -27,9 +27,7 @@ describe("category suggestion list", () => {
     );
 
     expect(screen.getByText("Bug report")).toBeInTheDocument();
-    expect(
-      screen.queryByText("Something isn't working right"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Something isn't working right")).not.toBeInTheDocument();
     expect(screen.getByText("Skills")).toBeInTheDocument();
     expect(screen.getByText("skill-creator")).toBeInTheDocument();
     expect(
@@ -38,9 +36,7 @@ describe("category suggestion list", () => {
 
     fireEvent.focus(screen.getByRole("option", { name: /skill-creator/i }));
 
-    expect(
-      screen.getByText("Create new skills and improve existing skills."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Create new skills and improve existing skills.")).toBeInTheDocument();
   });
 
   it("keeps the hover detail matched to the active skill row", () => {
@@ -70,20 +66,14 @@ describe("category suggestion list", () => {
         />,
       );
 
-      fireEvent.mouseEnter(
-        screen.getByRole("option", { name: /apple-notes/i }),
-      );
+      fireEvent.mouseEnter(screen.getByRole("option", { name: /apple-notes/i }));
       act(() => vi.advanceTimersByTime(150));
-      expect(
-        screen.getByText("Manage Apple Notes via memo CLI."),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Manage Apple Notes via memo CLI.")).toBeInTheDocument();
 
       fireEvent.mouseEnter(screen.getByRole("option", { name: /airtable/i }));
       act(() => vi.advanceTimersByTime(150));
       expect(screen.getByText("Manage Airtable records.")).toBeInTheDocument();
-      expect(
-        screen.queryByText("Manage Apple Notes via memo CLI."),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Manage Apple Notes via memo CLI.")).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

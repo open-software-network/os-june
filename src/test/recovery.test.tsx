@@ -18,13 +18,7 @@ describe("NoteRecoveryPrompt", () => {
     const user = userEvent.setup();
     const onRecover = vi.fn();
     const onDiscard = vi.fn();
-    render(
-      <NoteRecoveryPrompt
-        recovery={recovery}
-        onRecover={onRecover}
-        onDiscard={onDiscard}
-      />,
-    );
+    render(<NoteRecoveryPrompt recovery={recovery} onRecover={onRecover} onDiscard={onDiscard} />);
 
     expect(screen.getByText(/recording was interrupted/i)).toBeInTheDocument();
     expect(screen.getByText(/4\.0 KB/)).toBeInTheDocument();

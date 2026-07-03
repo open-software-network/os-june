@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  playRecordingSound,
-  preloadRecordingSounds,
-} from "../lib/recording-sounds";
+import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 
 describe("playRecordingSound", () => {
   const originalAudio = globalThis.Audio;

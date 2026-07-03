@@ -1,6 +1,6 @@
 [package]
 name = "os-june"
-version = "0.0.23"
+version = "0.0.29"
 description = "June"
 authors = ["Open Software Network"]
 license = "MIT"
@@ -27,8 +27,12 @@ dotenvy = "0.15"
 hound = "3.5"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# Matches the version tauri-plugin-updater resolves, so the version_comparator
+# closure can name the same `semver::Version` the updater hands it.
+semver = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 sha2 = "0.10"
 # Avoid the SQLx umbrella crate here. Its optional macro/database dependencies
 # put unused MySQL/Postgres packages into Cargo.lock and cargo-audit.
@@ -60,11 +64,14 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSMenu",
     "NSMenuItem",
     "NSResponder",
+    "NSRunningApplication",
+    "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSString",
     "NSValue",
+    "NSData",
     "NSGeometry",
     "objc2-core-foundation",
 ] }

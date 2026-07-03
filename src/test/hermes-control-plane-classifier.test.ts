@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { HermesGatewayEvent } from "../lib/hermes-gateway";
 import {
   classifyHermesEvent,
+  createSteeringEvent,
+  isTerminalHermesEvent,
   isSensitiveKey,
   parseHermesMode,
   sanitizePayload,
@@ -11,6 +13,8 @@ import type {
   JuneHermesEvent,
   PendingHermesAction,
 } from "../lib/hermes-control-plane";
+
+const RECEIVED_AT = "2026-06-24T12:00:00.000Z";
 
 // Every name the gateway currently models (HermesGatewayEventName), so the
 // classifier's exhaustiveness is pinned to the transport's surface. If the
@@ -31,6 +35,10 @@ const CURRENT_GATEWAY_EVENT_NAMES = [
   "clarify.response",
   "approval.request",
   "approval.response",
+  "sudo.request",
+  "sudo.response",
+  "secret.request",
+  "secret.response",
   "subagent.start",
   "subagent.tool",
   "subagent.progress",
@@ -40,7 +48,7 @@ const CURRENT_GATEWAY_EVENT_NAMES = [
 ] as const;
 
 function event<P>(type: string, payload?: P, sessionId = "sess-1") {
-  return { type, session_id: sessionId, payload } as HermesGatewayEvent<P>;
+  return { type, session_id: sessionId, payload, receivedAt: RECEIVED_AT } as HermesGatewayEvent<P>;
 }
 
 describe("classifyHermesEvent — totality", () => {
@@ -53,9 +61,7 @@ describe("classifyHermesEvent — totality", () => {
   });
 
   it("classifies an unknown event name as unsupported, never undefined", () => {
-    const result = classifyHermesEvent(
-      event("some.future.event", { foo: "bar" }),
-    );
+    const result = classifyHermesEvent(event("some.future.event", { foo: "bar" }));
     expect(result).toBeDefined();
     expect(result.kind).toBe("unsupported");
     if (result.kind === "unsupported") {
@@ -71,13 +77,41 @@ describe("classifyHermesEvent — totality", () => {
     } as unknown as HermesGatewayEvent);
     expect(result.kind).toBe("unsupported");
   });
+
+  it("carries receivedAt on every JuneHermesEvent kind", () => {
+    const samples = [
+      classifyHermesEvent(event("message.start", {})),
+      classifyHermesEvent(event("reasoning.delta", { delta: "thinking" })),
+      classifyHermesEvent(event("tool.start", { name: "read_file" })),
+      classifyHermesEvent(event("clarify.request", { request_id: "c1" })),
+      classifyHermesEvent(event("clarify.response", { request_id: "c1" })),
+      classifyHermesEvent(event("subagent.start", { subagent_id: "sub-1" })),
+      createSteeringEvent("sess-1", "focus on tests", RECEIVED_AT),
+      classifyHermesEvent(event("session.complete", {})),
+      classifyHermesEvent(event("error", { message: "boom" })),
+      classifyHermesEvent(event("future.event", {})),
+    ];
+    expect(samples.map((sample) => sample.kind).sort()).toEqual(
+      [
+        "background_activity",
+        "error",
+        "lifecycle",
+        "pending_action",
+        "pending_action_resolution",
+        "reasoning",
+        "steering",
+        "tool",
+        "transcript",
+        "unsupported",
+      ].sort(),
+    );
+    for (const sample of samples) expect(sample.receivedAt).toBe(RECEIVED_AT);
+  });
 });
 
 describe("classifyHermesEvent — transcript", () => {
   it("maps message.start/delta/complete to transcript with the right flags", () => {
-    const start = classifyHermesEvent(
-      event("message.start", { message_id: "m1" }),
-    );
+    const start = classifyHermesEvent(event("message.start", { message_id: "m1" }));
     expect(start).toMatchObject({
       kind: "transcript",
       sessionId: "sess-1",
@@ -85,9 +119,7 @@ describe("classifyHermesEvent — transcript", () => {
       complete: false,
     });
 
-    const delta = classifyHermesEvent(
-      event("message.delta", { message_id: "m1", delta: "Hel" }),
-    );
+    const delta = classifyHermesEvent(event("message.delta", { message_id: "m1", delta: "Hel" }));
     expect(delta).toMatchObject({
       kind: "transcript",
       delta: "Hel",
@@ -100,6 +132,7 @@ describe("classifyHermesEvent — transcript", () => {
     expect(complete).toMatchObject({
       kind: "transcript",
       complete: true,
+      failed: false,
     });
     if (complete.kind === "transcript") {
       expect(complete.delta).toBe("Hello");
@@ -114,6 +147,18 @@ describe("classifyHermesEvent — transcript", () => {
       throw new Error("expected transcript");
     }
   });
+
+  it("marks failed completes and reads complete text from the builder's summary chain", () => {
+    const complete = classifyHermesEvent(
+      event("message.complete", { summary: "  Summary only  ", status: "ERROR" }),
+    );
+    expect(complete.kind).toBe("transcript");
+    if (complete.kind === "transcript") {
+      expect(complete.complete).toBe(true);
+      expect(complete.failed).toBe(true);
+      expect(complete.delta).toBe("Summary only");
+    }
+  });
 });
 
 describe("classifyHermesEvent — reasoning", () => {
@@ -124,6 +169,22 @@ describe("classifyHermesEvent — reasoning", () => {
         kind: "reasoning",
         sessionId: "sess-1",
         delta: "mmm",
+      });
+      expect((result as { full?: boolean }).full).toBeUndefined();
+    }
+  });
+
+  // Regression: whole-block reasoning models emit `reasoning.available` with
+  // the full text; it used to land as `unsupported` and raise the scary
+  // "event June does not support yet" banner mid-answer.
+  it("maps thinking.available and reasoning.available to full reasoning", () => {
+    for (const name of ["thinking.available", "reasoning.available"]) {
+      const result = classifyHermesEvent(event(name, { text: "the whole thought" }));
+      expect(result).toMatchObject({
+        kind: "reasoning",
+        sessionId: "sess-1",
+        delta: "the whole thought",
+        full: true,
       });
     }
   });
@@ -142,11 +203,15 @@ describe("classifyHermesEvent — tools", () => {
       kind: "tool",
       phase: "start",
       toolCallId: "tc1",
+      key: "tc1",
       name: "read_file",
+      text: "",
+      isClarify: false,
     });
     if (start.kind === "tool") {
-      // The raw payload is preserved so a tool card can render arguments.
-      expect(start.payload).toMatchObject({ path: "/tmp/x" });
+      // The sanitized payload is preserved so a tool card can render arguments.
+      expect("payload" in start).toBe(false);
+      expect(start.sanitizedPayload).toMatchObject({ path: "/tmp/x" });
     }
 
     expect(classifyHermesEvent(event("tool.progress", {}))).toMatchObject({
@@ -160,12 +225,30 @@ describe("classifyHermesEvent — tools", () => {
   });
 
   it("falls back across tool_name / tool field aliases", () => {
-    const byToolName = classifyHermesEvent(
-      event("tool.start", { tool_name: "shell" }),
-    );
+    const byToolName = classifyHermesEvent(event("tool.start", { tool_name: "shell" }));
     if (byToolName.kind === "tool") expect(byToolName.name).toBe("shell");
     const byTool = classifyHermesEvent(event("tool.start", { tool: "grep" }));
     if (byTool.kind === "tool") expect(byTool.name).toBe("grep");
+  });
+
+  it("classifies the broader tool.* family and marks tool.error as failed", () => {
+    const result = classifyHermesEvent(
+      event("tool.error", {
+        tool_id: "tool-id",
+        id: "event-id",
+        tool_call_id: "call-id",
+        name: "clarify",
+        summary: "Need an answer",
+      }),
+    );
+    expect(result.kind).toBe("tool");
+    if (result.kind === "tool") {
+      expect(result.phase).toBe("failed");
+      expect(result.toolCallId).toBe("call-id");
+      expect(result.key).toBe("tool-id");
+      expect(result.text).toBe("Need an answer");
+      expect(result.isClarify).toBe(true);
+    }
   });
 });
 
@@ -203,7 +286,9 @@ describe("classifyHermesEvent — pending actions", () => {
     if (result.kind === "pending_action" && result.action.kind === "approval") {
       expect(result.action.requestId).toBe("a1");
       expect(result.action.toolName).toBe("shell");
+      expect(result.action.command).toBe("pnpm build");
       expect(result.action.description).toBe("Run the build");
+      expect(result.action.allowPermanent).toBe(true);
     }
   });
 
@@ -253,11 +338,78 @@ describe("classifyHermesEvent — pending actions", () => {
   });
 });
 
-describe("classifyHermesEvent — clarify/approval responses are lifecycle, not pending", () => {
-  it("does not surface a .response as a new pending action", () => {
-    for (const name of ["clarify.response", "approval.response"]) {
-      const result = classifyHermesEvent(event(name, { request_id: "x" }));
-      expect(result.kind).not.toBe("pending_action");
+describe("classifyHermesEvent — pending action resolutions", () => {
+  it("maps clarify.response to a resolved clarify action", () => {
+    const result = classifyHermesEvent(
+      event("clarify.response", {
+        request_id: "c1",
+        question: "Which file?",
+        choices: ["a.ts", "b.ts"],
+        answer: "a.ts",
+      }),
+    );
+    expect(result.kind).toBe("pending_action_resolution");
+    if (result.kind === "pending_action_resolution" && result.action.kind === "clarify") {
+      expect(result.action.requestId).toBe("c1");
+      expect(result.action.question).toBe("Which file?");
+      expect(result.action.choices).toEqual(["a.ts", "b.ts"]);
+      expect(result.action.answer).toBe("a.ts");
+    }
+  });
+
+  it("maps approval.response to a resolved approval action", () => {
+    const result = classifyHermesEvent(
+      event("approval.response", {
+        request_id: "a1",
+        command: "pnpm build",
+        description: "Run the build",
+        allow_permanent: false,
+        choice: "session",
+      }),
+    );
+    expect(result.kind).toBe("pending_action_resolution");
+    if (result.kind === "pending_action_resolution" && result.action.kind === "approval") {
+      expect(result.action.requestId).toBe("a1");
+      expect(result.action.command).toBe("pnpm build");
+      expect(result.action.description).toBe("Run the build");
+      expect(result.action.allowPermanent).toBe(false);
+      expect(result.action.choice).toBe("session");
+    }
+  });
+
+  it("maps sudo.response to a resolved sudo action with approved as a granted synonym", () => {
+    const result = classifyHermesEvent(
+      event("sudo.response", {
+        request_id: "su1",
+        mode: "unrestricted",
+        approved: true,
+      }),
+    );
+    expect(result.kind).toBe("pending_action_resolution");
+    if (result.kind === "pending_action_resolution" && result.action.kind === "sudo") {
+      expect(result.action.requestId).toBe("su1");
+      expect(result.action.mode).toBe("unrestricted");
+      expect(result.action.granted).toBe(true);
+    }
+  });
+
+  it("maps secret.response to metadata-only resolution and never carries a value", () => {
+    const result = classifyHermesEvent(
+      event("secret.response", {
+        request_id: "se1",
+        key_name: "OPENAI_API_KEY",
+        reason: "needed for an API",
+        api_key: "sk-leak-me",
+        value: "sk-leak-me",
+      }),
+    );
+    expect(result.kind).toBe("pending_action_resolution");
+    if (result.kind === "pending_action_resolution" && result.action.kind === "secret") {
+      expect(result.action.requestId).toBe("se1");
+      expect(result.action.keyName).toBe("OPENAI_API_KEY");
+      expect(result.action.reason).toBe("needed for an API");
+      expect(result.action.redacted).toBe(true);
+      expect(JSON.stringify(result.action)).not.toContain("sk-leak-me");
     }
   });
 });
@@ -281,45 +433,64 @@ describe("classifyHermesEvent — background activity", () => {
       expect(activity.lastEventAt).toBeTruthy();
     }
 
-    expect(
-      classifyHermesEvent(event("subagent.tool", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
-    expect(
-      classifyHermesEvent(event("subagent.progress", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
-    expect(
-      classifyHermesEvent(event("subagent.thinking", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
-    expect(
-      classifyHermesEvent(event("subagent.complete", { subagent_id: "s" })),
-    ).toMatchObject({ kind: "background_activity" });
+    expect(classifyHermesEvent(event("subagent.tool", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
+    expect(classifyHermesEvent(event("subagent.progress", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
+    expect(classifyHermesEvent(event("subagent.thinking", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
+    expect(classifyHermesEvent(event("subagent.complete", { subagent_id: "s" }))).toMatchObject({
+      kind: "background_activity",
+    });
   });
 
   it("maps subagent.error and subagent.blocked to their phases", () => {
-    const err = classifyHermesEvent(
-      event("subagent.error", { subagent_id: "s" }),
-    );
+    const err = classifyHermesEvent(event("subagent.error", { subagent_id: "s" }));
     if (err.kind === "background_activity") {
       expect(err.activity.phase).toBe("error");
     } else {
       throw new Error("expected background_activity");
     }
-    const blocked = classifyHermesEvent(
-      event("subagent.blocked", { subagent_id: "s" }),
-    );
+    const blocked = classifyHermesEvent(event("subagent.blocked", { subagent_id: "s" }));
     if (blocked.kind === "background_activity") {
       expect(blocked.activity.phase).toBe("blocked");
     }
   });
 
   it("accepts handle as an alias for subagent id", () => {
-    const result = classifyHermesEvent(
-      event("subagent.progress", { handle: "h-9", tool: "grep" }),
-    );
+    const result = classifyHermesEvent(event("subagent.progress", { handle: "h-9", tool: "grep" }));
     if (result.kind === "background_activity") {
       expect(result.activity.subagentId).toBe("h-9");
       expect(result.activity.handle).toBe("h-9");
       expect(result.activity.currentTool).toBe("grep");
+    }
+  });
+
+  it("carries task index/count when Hermes reports numeric fan-out metadata", () => {
+    const result = classifyHermesEvent(
+      event("subagent.progress", {
+        subagent_id: "s",
+        task_index: 1,
+        task_count: 3,
+      }),
+    );
+    expect(result.kind).toBe("background_activity");
+    if (result.kind === "background_activity") {
+      expect(result.activity.taskIndex).toBe(1);
+      expect(result.activity.taskCount).toBe(3);
+    }
+  });
+
+  it("marks a subagent failed from reported status even when the subtype is non-terminal", () => {
+    const result = classifyHermesEvent(
+      event("subagent.progress", { subagent_id: "s", status: "timeout waiting for worker" }),
+    );
+    expect(result.kind).toBe("background_activity");
+    if (result.kind === "background_activity") {
+      expect(result.activity.phase).toBe("error");
     }
   });
 });
@@ -339,7 +510,58 @@ describe("classifyHermesEvent — lifecycle", () => {
       expect(result.kind, `expected lifecycle for ${name}`).toBe("lifecycle");
       if (result.kind === "lifecycle") {
         expect(result.status).toBeTruthy();
+        expect(result.text).toBe("ready");
       }
+    }
+  });
+
+  it("maps lifecycle and turn/background completion aliases to terminal lifecycle events", () => {
+    for (const name of [
+      "lifecycle.complete",
+      "lifecycle.completed",
+      "message.completed",
+      "turn.complete",
+      "turn.completed",
+      "background.complete",
+      "background.completed",
+    ]) {
+      const result = classifyHermesEvent(event(name, {}));
+      expect(result.kind, `expected lifecycle for ${name}`).toBe("lifecycle");
+      if (result.kind === "lifecycle") {
+        expect(result.status).toBe(name);
+        expect(result.flavor).toBe("terminal");
+        expect(isTerminalHermesEvent(result)).toBe(true);
+      }
+    }
+  });
+
+  it("keys terminal lifecycle flavor from raw type rather than payload status", () => {
+    const result = classifyHermesEvent(event("turn.complete", { status: "success" }));
+    expect(result.kind).toBe("lifecycle");
+    if (result.kind === "lifecycle") {
+      expect(result.status).toBe("success");
+      expect(result.flavor).toBe("terminal");
+      expect(isTerminalHermesEvent(result)).toBe(true);
+    }
+  });
+
+  it("keeps status.update running even when payload status sounds terminal", () => {
+    const result = classifyHermesEvent(event("status.update", { status: "done" }));
+    expect(result.kind).toBe("lifecycle");
+    if (result.kind === "lifecycle") {
+      expect(result.status).toBe("done");
+      expect(result.flavor).toBe("running");
+      expect(isTerminalHermesEvent(result)).toBe(false);
+    }
+  });
+
+  it("keeps lifecycle.update non-terminal", () => {
+    const result = classifyHermesEvent(event("lifecycle.update", { status: "done" }));
+    expect(result.kind).toBe("lifecycle");
+    if (result.kind === "lifecycle") {
+      expect(result.status).toBe("done");
+      expect(result.flavor).toBe("info");
+      expect(isTerminalHermesEvent(result)).toBe(false);
     }
   });
 });
@@ -370,6 +592,14 @@ describe("classifyHermesEvent — error redaction", () => {
     const result = classifyHermesEvent(event("error", { code: 500 }));
     if (result.kind === "error") {
       expect(result.message).toBeTruthy();
+    }
+  });
+
+  it("reads error text from the broad rendered summary chain", () => {
+    const result = classifyHermesEvent(event("error", { summary: "  Summary-only failure  " }));
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toBe("Summary-only failure");
     }
   });
 });
@@ -420,12 +650,8 @@ describe("sanitizePayload", () => {
     ]) {
       expect(out[key], `${key} should be redacted`).toBe("[redacted]");
     }
-    expect(
-      (out.nested as Record<string, Record<string, unknown>>).deep.secret,
-    ).toBe("[redacted]");
-    expect((out.list as Record<string, unknown>[])[0].password).toBe(
-      "[redacted]",
-    );
+    expect((out.nested as Record<string, Record<string, unknown>>).deep.secret).toBe("[redacted]");
+    expect((out.list as Record<string, unknown>[])[0].password).toBe("[redacted]");
     expect(out.keep).toBe("ok");
   });
 
@@ -468,8 +694,12 @@ describe("exhaustive switch ergonomics", () => {
           return "tool";
         case "pending_action":
           return "pending";
+        case "pending_action_resolution":
+          return "resolved";
         case "background_activity":
           return "background";
+        case "steering":
+          return "steering";
         case "lifecycle":
           return "lifecycle";
         case "error":
@@ -488,6 +718,7 @@ describe("exhaustive switch ergonomics", () => {
         kind: "pending_action",
         sessionId: "s",
         action,
+        receivedAt: RECEIVED_AT,
       }),
     ).toBe("pending");
   });

@@ -13,6 +13,8 @@ pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
+pub mod theme_icon;
+pub mod updates;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -131,6 +133,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            theme_icon::set_dock_icon,
             commands::bootstrap_app,
             commands::create_note,
             commands::list_notes,
@@ -159,18 +162,32 @@ pub fn run() {
             commands::save_agent_hermes_session,
             commands::suggest_agent_session_title,
             commands::submit_issue_report,
+            commands::finalize_hermes_bridge_branch,
             commands::explain_agent_approval,
             commands::cancel_agent_task,
             commands::retry_agent_task,
             commands::list_agent_tool_events,
             hermes_bridge::hermes_bridge_status,
             hermes_bridge::ensure_hermes_bridge_gateway,
+            hermes_bridge::hermes_admin_request,
+            hermes_bridge::hermes_mcp_oauth_login,
+            hermes_bridge::hermes_reset_bundled_skill,
+            hermes_bridge::hermes_skill_tap_list,
+            hermes_bridge::hermes_skill_tap_add,
+            hermes_bridge::hermes_skill_tap_remove,
+            hermes_bridge::hermes_inspect_external_dirs,
+            hermes_bridge::hermes_list_skill_bundles,
+            hermes_bridge::hermes_save_skill_bundle,
+            hermes_bridge::hermes_delete_skill_bundle,
             hermes_bridge::hermes_bridge_skills,
+            hermes_bridge::hermes_pending_skill_writes,
+            hermes_bridge::hermes_resolve_pending_skill_write,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
             hermes_bridge::hermes_bridge_filesystem_snapshot,
             hermes_bridge::download_hermes_bridge_file,
             hermes_bridge::hermes_bridge_file_preview,
+            hermes_bridge::hermes_bridge_image_data_url,
             hermes_bridge::hermes_bridge_file_text,
             hermes_bridge::import_hermes_bridge_file,
             hermes_bridge::import_hermes_bridge_file_bytes,
@@ -197,6 +214,7 @@ pub fn run() {
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
             commands::june_open_verify_page,
+            commands::june_open_community_page,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -234,13 +252,27 @@ pub fn run() {
             providers::provider_model_settings,
             providers::list_venice_models,
             providers::set_venice_model,
+            providers::set_venice_api_key,
+            providers::clear_venice_api_key,
+            providers::set_image_safe_mode,
+            providers::generate_image,
+            providers::edit_image,
+            providers::save_local_generation_settings,
+            providers::set_local_generation_enabled,
+            providers::probe_local_generation_endpoint,
             os_accounts::os_accounts_status,
+            os_accounts::os_accounts_status_local,
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
             os_accounts::os_accounts_upgrade,
+            os_accounts::os_accounts_change_plan,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
+            updates::get_release_channel,
+            updates::set_release_channel,
+            updates::fetch_update,
+            updates::install_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
@@ -249,6 +281,7 @@ pub fn run() {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
+            updates::setup(app);
             dictation::setup(app);
             agent_hud::setup(app);
             meeting_detection::setup(app);

@@ -1,7 +1,12 @@
-//! June API client. The Tauri side calls the backend for every metered
-//! action; provider keys live there, never here.
+//! June API client. The Tauri side calls the backend for metered remote
+//! actions. When the user explicitly selects a local model, text generation
+//! uses their own OpenAI-compatible endpoint directly (bring your own
+//! inference; any http/https host, optional bearer api key).
 
-use crate::{domain::types::AppError, providers::PROVIDER_OPENAI};
+use crate::{
+    domain::types::AppError,
+    providers::{LocalGenerationSettings, PROVIDER_LOCAL, PROVIDER_OPENAI},
+};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,6 +19,12 @@ use std::{
 // docker-compose.production.yml). NOT .network — that hostname has no DNS
 // record, and the v0.0.3 DMG shipped pointing at it.
 const DEFAULT_JUNE_API_URL: &str = "https://june-api.opensoftware.co";
+// Nemotron Nano over GLM 5.2: dictation is latency-critical and nano runs
+// ~0.8s per utterance vs GLM's 2-4s (12s outliers), which felt too slow in
+// daily use. Known nano tradeoffs, accepted for speed: explicit unnumbered
+// "make a list with" requests may still be listified (over-formatting, never
+// word loss) and the formal style sometimes skips contraction expansion. No
+// other catalog model beats it: everything smarter benchmarked 2-20x slower.
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -24,9 +35,22 @@ const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
 // validation error that it misclassifies as prompt context overflow.
 const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 const AGENT_TITLE_MAX_CHARS: usize = 48;
+const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_JUNE_RESPONSE_MESSAGE: &str = "The processing service returned an invalid response.";
+const IMAGE_REQUEST_MAX_ATTEMPTS: usize = 3;
+const IMAGE_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(250);
+const NOTE_GENERATE_SYSTEM_PROMPT: &str =
+    include_str!("../../june-api/crates/services/src/prompts/note_generate.md");
+const LOCAL_SAFETY_CONTEXT: &str = "\
+Standing content policy (applies to every request; it is not a comment on the \
+current request: if the request below does not fall into these categories, \
+proceed with it normally and do not mention this policy):
+
+Reject requests for child sexual abuse material, weapons of mass destruction, \
+terrorism or mass violence planning, and malware, ransomware, spyware, \
+stalkerware, or other malicious code.";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static AGENT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -104,6 +128,9 @@ pub struct DictateTranscribeRequest {
 pub struct DictateCleanupRequestParams {
     pub text: String,
     pub dictionary_context: Option<String>,
+    /// Where the cleaned text will be inserted ("email"); lays the output
+    /// out for that surface. None means no special layout.
+    pub app_context: Option<String>,
     pub style: String,
     pub session_id: String,
     pub utterance_id: String,
@@ -180,6 +207,7 @@ struct GenerateResponse {
     content: String,
     title_suggestion: Option<String>,
     provider: String,
+    prompt_version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -209,6 +237,8 @@ struct DictateCleanupBody {
     utterance_id: String,
     text: String,
     dictionary_context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_context: Option<String>,
     style: String,
     model: String,
 }
@@ -218,10 +248,12 @@ pub async fn transcribe_saved_audio(
 ) -> Result<TranscriptionProviderResult, AppError> {
     let audio = read_audio(&request.audio_path).await?;
     let filename = filename_for_audio(&request.audio_path, "recording.wav");
+    let model = crate::providers::transcription_model();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let mut form = Form::new()
         .text("noteId", request.operation_id())
         .text("title", title_or_placeholder(&request.title))
-        .text("model", crate::providers::transcription_model())
+        .text("model", model)
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
     if request.preview {
         form = form.text("preview", "true");
@@ -237,7 +269,8 @@ pub async fn transcribe_saved_audio(
     if let Some(language) = normalized_language(request.language.as_deref()) {
         form = form.text("language", language.to_string());
     }
-    let response: TranscribeResponse = post_multipart("/v1/notes/transcribe", form).await?;
+    let response: TranscribeResponse =
+        post_multipart("/v1/notes/transcribe", form, send_venice_api_key).await?;
     Ok(TranscriptionProviderResult {
         text: response.text,
         language: response.language,
@@ -255,6 +288,11 @@ pub async fn generate_note_from_transcript(
             "Transcript is empty, so a note cannot be generated.",
         ));
     }
+    if crate::providers::generation_provider() == PROVIDER_LOCAL {
+        return generate_note_from_transcript_local(request).await;
+    }
+    let model = crate::providers::generation_model();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let body = GenerateBody {
         note_id: request.operation_id(),
         prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
@@ -264,14 +302,17 @@ pub async fn generate_note_from_transcript(
         manual_notes: request.manual_notes,
         language: request.language,
         existing_generated_note: request.existing_generated_note,
-        model: crate::providers::generation_model(),
+        model,
     };
-    let response: GenerateResponse = post_json("/v1/notes/generate", &body).await?;
+    let response: GenerateResponse =
+        post_json("/v1/notes/generate", &body, send_venice_api_key).await?;
     Ok(GenerationProviderResult {
         content: response.content,
         title_suggestion: response.title_suggestion,
         provider: response.provider,
-        prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
+        prompt_version: response
+            .prompt_version
+            .unwrap_or_else(|| crate::domain::processing::PROMPT_VERSION.to_string()),
     })
 }
 
@@ -280,10 +321,12 @@ pub async fn dictate_transcribe(
 ) -> Result<TranscriptionProviderResult, AppError> {
     let audio = read_audio(&request.audio_path).await?;
     let filename = filename_for_audio(&request.audio_path, "dictation.wav");
+    let model = crate::providers::transcription_model();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let form = Form::new()
         .text("sessionId", request.session_id)
         .text("utteranceId", request.utterance_id)
-        .text("model", crate::providers::transcription_model())
+        .text("model", model)
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
     let mut form = form;
     if let Some(context) = request
@@ -297,7 +340,8 @@ pub async fn dictate_transcribe(
     if let Some(language) = normalized_language(request.language.as_deref()) {
         form = form.text("language", language.to_string());
     }
-    let response: TranscribeResponse = post_multipart("/v1/dictate", form).await?;
+    let response: TranscribeResponse =
+        post_multipart("/v1/dictate", form, send_venice_api_key).await?;
     Ok(TranscriptionProviderResult {
         text: response.text,
         language: response.language,
@@ -315,15 +359,19 @@ fn normalized_language(language: Option<&str>) -> Option<&str> {
 }
 
 pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String, AppError> {
+    let model = DEFAULT_DICTATION_CLEANUP_MODEL.to_string();
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
     let body = DictateCleanupBody {
         session_id: params.session_id,
         utterance_id: params.utterance_id,
         text: params.text,
         dictionary_context: params.dictionary_context,
+        app_context: params.app_context,
         style: params.style,
-        model: DEFAULT_DICTATION_CLEANUP_MODEL.to_string(),
+        model,
     };
-    let response: CleanupResponse = post_json("/v1/dictate/cleanup", &body).await?;
+    let response: CleanupResponse =
+        post_json("/v1/dictate/cleanup", &body, send_venice_api_key).await?;
     Ok(response.text)
 }
 
@@ -338,17 +386,120 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
     parse_response("/v1/models", response).await
 }
 
+/// One generated image from the June API `/v1/image/generate` endpoint. The
+/// bytes arrive base64-encoded so the frontend can wrap them in a data URL for
+/// the existing inline image display path.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImageDto {
+    pub image_base64: String,
+    pub mime_type: String,
+    pub model: String,
+    pub provider: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageGenerateBody {
+    prompt: String,
+    model: String,
+    request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_mode: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageEditBody {
+    image: String,
+    prompt: String,
+    request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_mode: Option<bool>,
+}
+
+/// Forwards a prompt to June API image generation with the user's access token.
+/// `safe_mode` carries the on-device setting (blur adult content); `None` leaves
+/// it unset so June API applies its own default.
+pub async fn generate_image(
+    prompt: String,
+    model: String,
+    safe_mode: Option<bool>,
+    request_id: Option<String>,
+) -> Result<GeneratedImageDto, AppError> {
+    let send_venice_api_key = model_accepts_venice_api_key(&model);
+    post_json_image_retryable(
+        "/v1/image/generate",
+        &ImageGenerateBody {
+            prompt,
+            model,
+            request_id: request_id.unwrap_or_else(new_image_request_id),
+            safe_mode,
+        },
+        send_venice_api_key,
+    )
+    .await
+}
+
+/// Edits an existing image through June API. The edit model is optional; when it
+/// is absent June API uses its default image-edit model, matching the MCP tool.
+pub async fn edit_image(
+    image: String,
+    prompt: String,
+    mime_type: Option<String>,
+    model: Option<String>,
+    safe_mode: Option<bool>,
+    request_id: Option<String>,
+) -> Result<GeneratedImageDto, AppError> {
+    post_json_image_retryable(
+        "/v1/image/edit",
+        &ImageEditBody {
+            image,
+            prompt,
+            request_id: request_id.unwrap_or_else(new_image_request_id),
+            model,
+            mime_type,
+            safe_mode,
+        },
+        true,
+    )
+    .await
+}
+
+fn new_image_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 pub async fn proxy_agent_chat_completions(
     mut body: serde_json::Value,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
     normalize_agent_chat_request_for_proxy(&mut body);
+    if crate::providers::generation_provider() == PROVIDER_LOCAL {
+        return proxy_local_agent_chat_completions(body).await;
+    }
+    // Remote provider safety net: a Hermes session started while local mode was
+    // on keeps sending the local model id (Hermes loads its model at spawn and
+    // does not reload on a settings change), which the remote backend rejects
+    // via require_priced_model and would hard-fail every message until restart.
+    // Degrade a stale local model id to the current global model instead.
+    let local_model_id = crate::providers::local_generation_settings().model_id;
+    let global_model = crate::providers::generation_model();
+    redirect_stale_local_model(&mut body, &local_model_id, &global_model);
+    // Computed after the redirect so a degraded stale-local body is gated on the
+    // real (global) model, not the local id it arrived with.
+    let send_venice_api_key = body_model_accepts_venice_api_key(&body);
     let url = format!("{}/v1/chat/completions", june_api_url());
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
-        let response = agent_http_client()
+        let request = agent_http_client()
             .post(&url)
             .bearer_auth(&token)
-            .json(&body)
+            .json(&body);
+        let response = with_venice_api_key("/v1/chat/completions", request, send_venice_api_key)
             .send()
             .await
             .map_err(network_error)?;
@@ -372,6 +523,160 @@ pub async fn proxy_agent_chat_completions(
     Err(AppError::new("unauthorized", "Not signed in."))
 }
 
+async fn generate_note_from_transcript_local(
+    request: GenerationRequest,
+) -> Result<GenerationProviderResult, AppError> {
+    let settings = local_generation_settings_or_error()?;
+    let title_hint = request.title.trim();
+    let user_message = format!(
+        "Current title: {}\nDetected language: {}\n\n{}",
+        if title_hint.is_empty() {
+            "New note"
+        } else {
+            title_hint
+        },
+        request.language.as_deref().unwrap_or("unknown"),
+        generation_source_text(
+            request.existing_generated_note.as_deref(),
+            request.manual_notes.as_deref(),
+            request.transcript.trim(),
+            request.transcript_source_labels,
+        )
+    );
+    let body = serde_json::json!({
+        "model": settings.model_id,
+        "messages": [
+            { "role": "system", "content": LOCAL_SAFETY_CONTEXT },
+            { "role": "system", "content": NOTE_GENERATE_SYSTEM_PROMPT.trim() },
+            { "role": "user", "content": user_message }
+        ]
+    });
+    let local_request = with_local_auth(
+        agent_http_client().post(local_chat_completions_url(&settings)?),
+        &settings,
+    );
+    let response = local_request
+        .json(&body)
+        .send()
+        .await
+        .map_err(network_error)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(network_error)?;
+    if !status.is_success() {
+        return Err(AppError::new(
+            "local_model_failed",
+            format!("Local model returned status {}.", status.as_u16()),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|error| AppError::new("local_model_invalid", error.to_string()))?;
+    let content = extract_chat_completion_text(&value)
+        .map(|text| {
+            if request.transcript_source_labels {
+                cleanup_generated_note_text(&text, request.transcript.trim())
+            } else {
+                text
+            }
+        })
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| {
+            AppError::new(
+                "local_model_empty",
+                "Local model did not return generated note text.",
+            )
+        })?;
+    Ok(GenerationProviderResult {
+        content,
+        title_suggestion: Some(if title_hint.is_empty() {
+            "New note".to_string()
+        } else {
+            title_hint.to_string()
+        }),
+        provider: PROVIDER_LOCAL.to_string(),
+        prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
+    })
+}
+
+async fn proxy_local_agent_chat_completions(
+    mut body: serde_json::Value,
+) -> Result<AgentChatCompletionsResponse, AppError> {
+    let settings = local_generation_settings_or_error()?;
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(settings.model_id.clone()),
+        );
+        inject_local_safety_context(object);
+    }
+    let request = with_local_auth(
+        agent_http_client().post(local_chat_completions_url(&settings)?),
+        &settings,
+    );
+    let response = request.json(&body).send().await.map_err(network_error)?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    Ok(AgentChatCompletionsResponse {
+        status,
+        content_type,
+        upstream: response,
+    })
+}
+
+fn local_generation_settings_or_error() -> Result<LocalGenerationSettings, AppError> {
+    let settings = crate::providers::local_generation_settings();
+    if settings.base_url.trim().is_empty() || settings.model_id.trim().is_empty() {
+        return Err(AppError::new(
+            "local_model_not_configured",
+            "Configure a local model endpoint and model ID first.",
+        ));
+    }
+    Ok(settings)
+}
+
+/// Attaches `Authorization: Bearer {api_key}` when the user configured an api
+/// key for their local endpoint (Ollama needs none; vLLM / LiteLLM / a hosted
+/// gateway may). No header is sent when the key is empty.
+fn with_local_auth(
+    request: reqwest::RequestBuilder,
+    settings: &LocalGenerationSettings,
+) -> reqwest::RequestBuilder {
+    let api_key = settings.api_key.trim();
+    if api_key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
+}
+
+fn local_chat_completions_url(settings: &LocalGenerationSettings) -> Result<String, AppError> {
+    let base_url = settings.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err(AppError::new(
+            "local_model_not_configured",
+            "Configure a local model endpoint first.",
+        ));
+    }
+    Ok(format!("{base_url}/chat/completions"))
+}
+
+fn inject_local_safety_context(object: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(messages) = object
+        .get_mut("messages")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+    messages.insert(
+        0,
+        serde_json::json!({ "role": "system", "content": LOCAL_SAFETY_CONTEXT }),
+    );
+}
+
 /// A buffered June API response forwarded verbatim to the local web MCP.
 pub struct WebProxyResponse {
     pub status: u16,
@@ -388,7 +693,7 @@ pub async fn forward_web_request(
     path: &str,
     body: &serde_json::Value,
 ) -> Result<WebProxyResponse, AppError> {
-    let response = authed_send(path, |client, url, token| {
+    let response = authed_send(path, true, |client, url, token| {
         client.post(url).bearer_auth(token).json(body)
     })
     .await?;
@@ -405,6 +710,18 @@ pub async fn forward_web_request(
         content_type,
         body: bytes.to_vec(),
     })
+}
+
+/// Forwards an image tool request (`/v1/image/generate` or `/v1/image/edit`) to
+/// the June API with the user's access token, returning the raw response so the
+/// loopback proxy can pass the metered envelope straight through to the local
+/// image MCP. Same token-injection guarantee as the web proxy path: the access
+/// token never leaves this process.
+pub async fn forward_image_request(
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<WebProxyResponse, AppError> {
+    forward_web_request(path, body).await
 }
 
 fn limit_agent_chat_messages_for_proxy(body: &mut serde_json::Value) {
@@ -430,6 +747,54 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
     }
     clamp_agent_chat_output_tokens(object, "max_tokens");
     clamp_agent_chat_output_tokens(object, "max_completion_tokens");
+}
+
+/// The frontend's synthetic catalog id prefix for the local model option
+/// (`LOCAL_GENERATION_OPTION_ID_PREFIX` in `src/lib/local-generation.ts`).
+/// The prefix exists so the synthetic id can never collide with a real
+/// remote model id, which makes it sufficient on its own to identify a local
+/// reference — no need to decode the percent-encoded remainder.
+const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
+
+/// True when `model` names a local model: the configured raw id, or ANY id in
+/// the frontend's prefixed synthetic catalog form. Defense in depth: the
+/// synthetic id is translated to the raw id at the Hermes boundary, but
+/// sessions persisted before that fix can still carry the prefixed form —
+/// and a prefixed id is by construction never a valid remote model, even
+/// when it encodes a since-changed local id.
+fn is_local_model_reference(model: &str, local_model_id: &str) -> bool {
+    (!local_model_id.is_empty() && model == local_model_id)
+        || model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX)
+}
+
+/// Rewrites a request that still carries a local model reference to the
+/// current global generation model, for the remote proxy path only. Mirrors
+/// the local path's unconditional model stomp: when the global provider is
+/// remote, a body still naming the local model is a stale spawn-time default
+/// from a session created while local mode was on, and the remote backend
+/// would reject it. Genuine remote per-session overrides (any non-synthetic
+/// id other than the configured local model id) are left untouched, so an
+/// explicit `/model` switch to a real remote model still wins.
+fn redirect_stale_local_model(
+    body: &mut serde_json::Value,
+    local_model_id: &str,
+    global_model: &str,
+) {
+    let local_model_id = local_model_id.trim();
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let is_stale_local = object
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_some_and(|model| is_local_model_reference(model, local_model_id));
+    if is_stale_local {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(global_model.to_string()),
+        );
+    }
 }
 
 fn clamp_agent_chat_output_tokens(
@@ -584,7 +949,7 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
         "messages": [
             {
                 "role": "system",
-                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations."
+                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title in sentence case: capitalize the first word and proper nouns only, never every word. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations."
             },
             {
                 "role": "user",
@@ -695,7 +1060,7 @@ pub async fn submit_issue_report(
             .map_err(|error| AppError::new("issue_report_attachment_invalid", error.to_string()))?;
         form = form.part("attachment", part);
     }
-    post_multipart("/v1/issue-reports", form).await
+    post_multipart("/v1/issue-reports", form, false).await
 }
 
 fn issue_attachment_mime(path: &str) -> &'static str {
@@ -846,6 +1211,119 @@ fn trim_to_sentence_boundary(text: &str) -> String {
     }
 }
 
+fn generation_source_text(
+    existing_generated_note: Option<&str>,
+    manual_notes: Option<&str>,
+    transcript: &str,
+    transcript_source_labels: bool,
+) -> String {
+    let mut sections = Vec::new();
+    if let Some(existing_generated_note) = existing_generated_note
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!(
+            "<existing_generated_note_context>\n{existing_generated_note}\n</existing_generated_note_context>"
+        ));
+    }
+    if let Some(manual_notes) = manual_notes
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!(
+            "<new_manual_notes_context>\n{manual_notes}\n</new_manual_notes_context>"
+        ));
+    }
+    if transcript_source_labels {
+        sections.push(
+            "<transcript_source_metadata>\nTranscript lines may begin with source labels such as Microphone: or System:. These labels identify the audio source only. They are not spoken words and must not appear in the generated note.\n</transcript_source_metadata>".to_string(),
+        );
+    }
+    sections.push(format!(
+        "<new_transcript>\n{}\n</new_transcript>",
+        transcript.trim()
+    ));
+    let output_contract = if transcript_source_labels {
+        "Return only the new note block for the new transcript. Do not repeat existing note content. Do not output manual note labels or transcript source labels. Do not add wrapper headings."
+    } else {
+        "Return only the new note block for the new transcript. Do not repeat existing note content. Do not output manual note labels. Do not add wrapper headings."
+    };
+    sections.push(format!(
+        "<output_contract>\n{output_contract}\n</output_contract>"
+    ));
+    sections.join("\n\n")
+}
+
+fn cleanup_generated_note_text(text: &str, labeled_transcript: &str) -> String {
+    let spoken_lines = labeled_transcript_spoken_lines(labeled_transcript);
+    text.lines()
+        .map(|line| strip_generated_source_label(line, &spoken_lines))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn strip_generated_source_label(line: &str, spoken_lines: &[String]) -> String {
+    let trimmed = line.trim_start();
+    let indent_len = line.len() - trimmed.len();
+    let indent = &line[..indent_len];
+    let (markdown_marker, text) = markdown_line_marker(trimmed);
+    let Some(rest) = strip_source_label_prefix(text) else {
+        return line.to_string();
+    };
+    let stripped = rest.trim_start();
+    if spoken_lines
+        .iter()
+        .any(|spoken| spoken.eq_ignore_ascii_case(stripped))
+    {
+        format!("{indent}{markdown_marker}{stripped}")
+    } else {
+        line.to_string()
+    }
+}
+
+fn labeled_transcript_spoken_lines(labeled_transcript: &str) -> Vec<String> {
+    labeled_transcript
+        .lines()
+        .filter_map(|line| strip_source_label_prefix(line.trim_start()))
+        .map(|line| line.trim_start().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn markdown_line_marker(value: &str) -> (&str, &str) {
+    let bytes = value.as_bytes();
+    let heading_len = bytes.iter().take_while(|byte| **byte == b'#').count();
+    if (1..=6).contains(&heading_len) && bytes.get(heading_len) == Some(&b' ') {
+        return value.split_at(heading_len + 1);
+    }
+    if bytes.len() >= 2 && matches!(bytes[0], b'-' | b'*' | b'+' | b'>') && bytes[1] == b' ' {
+        return value.split_at(2);
+    }
+    let digit_len = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digit_len > 0
+        && matches!(bytes.get(digit_len), Some(b'.' | b')'))
+        && bytes.get(digit_len + 1) == Some(&b' ')
+    {
+        return value.split_at(digit_len + 2);
+    }
+    ("", value)
+}
+
+fn strip_source_label_prefix(value: &str) -> Option<&str> {
+    let lower = value.to_ascii_lowercase();
+    for prefix in ["microphone:", "system:"] {
+        if lower.starts_with(prefix) {
+            return Some(&value[prefix.len()..]);
+        }
+    }
+    None
+}
+
 fn clean_agent_session_title(value: &str) -> Option<String> {
     let mut title = value
         .trim()
@@ -887,7 +1365,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ")
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
-        .trim_end_matches(|ch: char| matches!(ch, '.' | ':' | '-'))
+        .trim_end_matches(['.', ':', '-'])
         .trim()
         .to_string();
     if title.is_empty() {
@@ -900,19 +1378,70 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
     Some(title)
 }
 
-async fn post_json<T, B>(path: &str, body: &B) -> Result<T, AppError>
+async fn post_json<T, B>(path: &str, body: &B, send_venice_api_key: bool) -> Result<T, AppError>
 where
     T: for<'de> Deserialize<'de>,
     B: Serialize,
 {
-    let response = authed_send(path, |client, url, token| {
+    let response = authed_send(path, send_venice_api_key, |client, url, token| {
         client.post(url).bearer_auth(token).json(body)
     })
     .await?;
     parse_response(path, response).await
 }
 
-async fn post_multipart<T>(path: &str, form: Form) -> Result<T, AppError>
+async fn post_json_image_retryable<T, B>(
+    path: &str,
+    body: &B,
+    send_venice_api_key: bool,
+) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+    B: Serialize,
+{
+    for attempt in 0..IMAGE_REQUEST_MAX_ATTEMPTS {
+        match authed_send(path, send_venice_api_key, |client, url, token| {
+            client.post(url).bearer_auth(token).json(body)
+        })
+        .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                if image_retryable_status(status) && attempt + 1 < IMAGE_REQUEST_MAX_ATTEMPTS {
+                    let delay = response_retry_after_ms(&response)
+                        .map(Duration::from_millis)
+                        .unwrap_or(IMAGE_REQUEST_RETRY_DELAY);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return parse_response(path, response).await;
+            }
+            Err(error)
+                if image_transport_retryable(&error)
+                    && attempt + 1 < IMAGE_REQUEST_MAX_ATTEMPTS =>
+            {
+                tokio::time::sleep(IMAGE_REQUEST_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(AppError::new("june_request_failed", "Couldn't reach June."))
+}
+
+fn image_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::TOO_MANY_REQUESTS
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn image_transport_retryable(error: &AppError) -> bool {
+    error.code == "june_request_failed"
+}
+
+async fn post_multipart<T>(path: &str, form: Form, send_venice_api_key: bool) -> Result<T, AppError>
 where
     T: for<'de> Deserialize<'de>,
 {
@@ -922,17 +1451,19 @@ where
     // possible here anyway.
     let url = format!("{}{}", june_api_url(), path);
     let token = crate::os_accounts::access_token().await?;
-    let response = http_client()
-        .post(&url)
-        .bearer_auth(token)
-        .multipart(form)
+    let request = http_client().post(&url).bearer_auth(token).multipart(form);
+    let response = with_venice_api_key(path, request, send_venice_api_key)
         .send()
         .await
         .map_err(network_error)?;
     parse_response(path, response).await
 }
 
-async fn authed_send<F>(path: &str, build: F) -> Result<reqwest::Response, AppError>
+async fn authed_send<F>(
+    path: &str,
+    send_venice_api_key: bool,
+    build: F,
+) -> Result<reqwest::Response, AppError>
 where
     F: Fn(&reqwest::Client, String, String) -> reqwest::RequestBuilder,
 {
@@ -940,7 +1471,8 @@ where
     let url = format!("{}{}", june_api_url(), path);
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
-        let response = build(client, url.clone(), token.clone())
+        let request = build(client, url.clone(), token.clone());
+        let response = with_venice_api_key(path, request, send_venice_api_key)
             .send()
             .await
             .map_err(network_error)?;
@@ -1019,6 +1551,50 @@ fn response_retry_after_ms(response: &reqwest::Response) -> Option<u64> {
         .map(|seconds| seconds.saturating_mul(1_000))
 }
 
+fn with_venice_api_key(
+    path: &str,
+    request: reqwest::RequestBuilder,
+    model_accepts_venice_api_key: bool,
+) -> reqwest::RequestBuilder {
+    if !request_accepts_venice_api_key(path, model_accepts_venice_api_key) {
+        return request;
+    }
+    match crate::providers::venice_api_key() {
+        Some(api_key) => request.header(VENICE_API_KEY_HEADER, api_key),
+        None => request,
+    }
+}
+
+fn path_accepts_venice_api_key(path: &str) -> bool {
+    matches!(
+        path,
+        "/v1/notes/transcribe"
+            | "/v1/notes/generate"
+            | "/v1/dictate"
+            | "/v1/dictate/cleanup"
+            | "/v1/chat/completions"
+            | "/v1/image/generate"
+            | "/v1/image/edit"
+            | "/v1/web/search"
+            | "/v1/web/fetch"
+    )
+}
+
+fn request_accepts_venice_api_key(path: &str, model_accepts_venice_api_key: bool) -> bool {
+    model_accepts_venice_api_key && path_accepts_venice_api_key(path)
+}
+
+fn model_accepts_venice_api_key(model: &str) -> bool {
+    crate::providers::transcription_provider_for_model(model.trim())
+        == crate::providers::PROVIDER_VENICE
+}
+
+fn body_model_accepts_venice_api_key(body: &serde_json::Value) -> bool {
+    body.get("model")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(model_accepts_venice_api_key)
+}
+
 fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -1073,6 +1649,49 @@ fn june_api_url() -> String {
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or_else(|| DEFAULT_JUNE_API_URL.to_string())
+}
+
+async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {
+    if !path.exists() {
+        return Err(AppError::new(
+            "audio_artifact_missing",
+            "Saved audio is missing and cannot be transcribed.",
+        ));
+    }
+    tokio::fs::read(path)
+        .await
+        .map_err(|error| AppError::new("audio_artifact_missing", error.to_string()))
+}
+
+fn filename_for_audio(path: &Path, fallback: &str) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn audio_part(audio: Vec<u8>, filename: &str, path: &Path) -> Result<Part, AppError> {
+    Part::bytes(audio)
+        .file_name(filename.to_string())
+        .mime_str(audio_mime(path))
+        .map_err(|error| AppError::new("june_request_failed", error.to_string()))
+}
+
+fn audio_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("m4a") | Some("mp4") => "audio/mp4",
+        _ => "audio/wav",
+    }
+}
+
+fn network_error(error: reqwest::Error) -> AppError {
+    let _ = PROVIDER_OPENAI;
+    AppError::new("june_request_failed", error.to_string())
 }
 
 #[cfg(test)]
@@ -1148,10 +1767,10 @@ mod tests {
         );
         assert_eq!(
             clean_agent_session_title(
-                "Create a Quarterly Planning Briefing With Follow Up Action Items",
+                "Create a quarterly planning briefing with follow-up action items",
             )
             .as_deref(),
-            Some("Create a Quarterly Planning Briefing With Follow")
+            Some("Create a quarterly planning briefing with follow")
         );
         assert_eq!(clean_agent_session_title("   "), None);
     }
@@ -1207,6 +1826,78 @@ mod tests {
     }
 
     #[test]
+    fn remote_proxy_redirects_stale_local_model_to_global_model() {
+        // A session started while local mode was on keeps sending the local
+        // model id; on the remote path it must degrade to the global model
+        // rather than hard-fail against require_priced_model.
+        let mut body = serde_json::json!({
+            "model": "llama3.1:8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
+    }
+
+    #[test]
+    fn remote_proxy_redirects_prefixed_synthetic_local_model_to_global_model() {
+        // A session persisted before the Hermes-boundary translation can carry
+        // the frontend's synthetic catalog id (prefix + encodeURIComponent of
+        // the raw id). The guard must recognize and rewrite that form too.
+        let mut body = serde_json::json!({
+            "model": "__june_local_generation__:llama3.1%3A8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
+    }
+
+    #[test]
+    fn remote_proxy_redirects_any_prefixed_synthetic_id_even_without_local_settings() {
+        // A prefixed id is never a valid remote model, so it degrades to the
+        // global model even when the encoded id no longer matches the saved
+        // local settings (here: local settings cleared entirely).
+        let mut body = serde_json::json!({
+            "model": "__june_local_generation__:other-model",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
+    }
+
+    #[test]
+    fn remote_proxy_preserves_genuine_remote_model_override() {
+        // A real remote per-session override (an explicit /model switch) must
+        // survive the guard so the session keeps the model the user chose.
+        let mut body = serde_json::json!({
+            "model": "kimi-k2-6",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("kimi-k2-6"));
+    }
+
+    #[test]
+    fn remote_proxy_stale_local_redirect_is_noop_without_local_model() {
+        // No local model configured: never touch the request model.
+        let mut body = serde_json::json!({
+            "model": "kimi-k2-6",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        redirect_stale_local_model(&mut body, "   ", "zai-org-glm-5-2");
+
+        assert_eq!(body["model"], serde_json::json!("kimi-k2-6"));
+    }
+
+    #[test]
     fn agent_proxy_fills_missing_model_from_settings() {
         let mut body = serde_json::json!({
             "messages": [{ "role": "user", "content": "hello" }],
@@ -1233,6 +1924,47 @@ mod tests {
             body["model"],
             serde_json::json!(crate::providers::generation_model())
         );
+    }
+
+    #[test]
+    fn venice_key_gate_rejects_openai_transcription_models() {
+        assert!(request_accepts_venice_api_key(
+            "/v1/notes/transcribe",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_TRANSCRIPTION_MODEL)
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/notes/transcribe",
+            model_accepts_venice_api_key("gpt-4o-mini-transcribe")
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/dictate",
+            model_accepts_venice_api_key("whisper-1")
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/issue-reports",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_TRANSCRIPTION_MODEL)
+        ));
+        assert!(request_accepts_venice_api_key(
+            "/v1/image/generate",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_IMAGE_MODEL)
+        ));
+        assert!(request_accepts_venice_api_key(
+            "/v1/image/edit",
+            model_accepts_venice_api_key(crate::providers::DEFAULT_IMAGE_MODEL)
+        ));
+    }
+
+    #[test]
+    fn agent_proxy_venice_key_gate_uses_normalized_model() {
+        let mut body = serde_json::json!({
+            "messages": [{ "role": "user", "content": "hello" }],
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert!(body_model_accepts_venice_api_key(&body));
+        body["model"] = serde_json::json!("gpt-4o-mini-transcribe");
+        assert!(!body_model_accepts_venice_api_key(&body));
     }
 
     #[test]
@@ -1398,47 +2130,320 @@ mod tests {
         assert_eq!(messages[2]["role"], "tool");
         assert_eq!(messages[7]["content"], "result 5");
     }
+
+    #[test]
+    fn local_generation_source_text_marks_source_labels_as_metadata() {
+        let source = generation_source_text(
+            Some("# Existing"),
+            Some("Follow up with Sam"),
+            "Microphone: We need to ship.\nSystem: The demo starts now.",
+            true,
+        );
+
+        assert!(source.contains("<existing_generated_note_context>"));
+        assert!(source.contains("<new_manual_notes_context>"));
+        assert!(source.contains("<transcript_source_metadata>"));
+        assert!(source.contains("Do not output manual note labels or transcript source labels."));
+    }
+
+    #[test]
+    fn local_generation_cleanup_strips_echoed_source_labels() {
+        let cleaned = cleanup_generated_note_text(
+            "- Microphone: We need to ship.\n- System: The demo starts now.",
+            "Microphone: We need to ship.\nSystem: The demo starts now.",
+        );
+
+        assert_eq!(cleaned, "- We need to ship.\n- The demo starts now.");
+    }
+
+    #[test]
+    fn local_agent_proxy_injects_safety_context() {
+        let mut object = serde_json::json!({
+            "messages": [{ "role": "user", "content": "hello" }]
+        });
+        inject_local_safety_context(object.as_object_mut().unwrap());
+
+        let messages = object["messages"].as_array().expect("messages");
+        assert_eq!(messages[0]["role"], "system");
+        assert!(messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Standing content policy"));
+    }
 }
 
-async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {
-    if !path.exists() {
-        return Err(AppError::new(
-            "audio_artifact_missing",
-            "Saved audio is missing and cannot be transcribed.",
-        ));
+/// Live tests against a real OpenAI-compatible local endpoint (e.g. Ollama).
+///
+/// Every test is `#[ignore]`d so CI and the normal `cargo test` run never
+/// need a model server. To run them, start the endpoint and pull a model:
+///
+/// ```sh
+/// ollama serve &
+/// ollama pull llama3.1:8b
+/// cargo test --locked -- --ignored live_local
+/// ```
+///
+/// Configuration comes from the environment:
+/// - `JUNE_QA_LOCAL_BASE_URL`: OpenAI-compatible base URL
+///   (default `http://127.0.0.1:11434/v1`)
+/// - `JUNE_QA_LOCAL_MODEL`: model id the endpoint serves
+///   (default `llama3.1:8b`)
+///
+/// Each test skips (passes with a stderr note) when the endpoint is
+/// unreachable, so an accidental `--include-ignored` run does not fail.
+///
+/// The generation tests install settings into the process-wide provider
+/// store that `crate::providers::current_settings()` reads, which is shared
+/// global state. They serialize themselves through a module-local mutex, so
+/// the default parallel test runner is safe for `-- --ignored live_local`;
+/// mixing them with other settings-mutating tests in one run
+/// (`--include-ignored`) requires `--test-threads=1`.
+#[cfg(test)]
+mod live_local_tests {
+    use super::*;
+    use crate::providers::{
+        probe_local_generation_endpoint, LocalGenerationSettings,
+        ProbeLocalGenerationEndpointRequest, PROVIDER_LOCAL,
+    };
+    use std::sync::{Mutex, MutexGuard};
+
+    const DEFAULT_LIVE_BASE_URL: &str = "http://127.0.0.1:11434/v1";
+    const DEFAULT_LIVE_MODEL: &str = "llama3.1:8b";
+
+    fn live_base_url() -> String {
+        std::env::var("JUNE_QA_LOCAL_BASE_URL")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_LIVE_BASE_URL.to_string())
     }
-    tokio::fs::read(path)
+
+    fn live_model() -> String {
+        std::env::var("JUNE_QA_LOCAL_MODEL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_LIVE_MODEL.to_string())
+    }
+
+    /// True when the live endpoint answers `GET {base}/models`. Used to skip
+    /// gracefully instead of failing when no server is running.
+    async fn live_server_reachable(base_url: &str) -> bool {
+        let Ok(client) = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+        else {
+            return false;
+        };
+        match client.get(format!("{base_url}/models")).send().await {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        }
+    }
+
+    fn skip_message(base_url: &str) -> String {
+        format!(
+            "SKIPPED: no OpenAI-compatible server reachable at {base_url}. \
+             Start one (e.g. `ollama serve`) or set JUNE_QA_LOCAL_BASE_URL."
+        )
+    }
+
+    /// Serializes the tests that mutate the process-wide provider settings
+    /// and restores the defaults afterwards, even on panic.
+    struct LiveSettingsGuard(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl Drop for LiveSettingsGuard {
+        fn drop(&mut self) {
+            crate::providers::replace_current_settings_for_tests(
+                crate::providers::default_settings_for_tests(),
+            );
+        }
+    }
+
+    fn install_live_local_provider(base_url: &str, model_id: &str) -> LiveSettingsGuard {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = crate::providers::default_settings_for_tests();
+        settings.generation_provider = PROVIDER_LOCAL.to_string();
+        settings.generation_model = model_id.to_string();
+        settings.local_generation = LocalGenerationSettings {
+            base_url: base_url.to_string(),
+            model_id: model_id.to_string(),
+            api_key: String::new(),
+        };
+        crate::providers::replace_current_settings_for_tests(settings);
+        LiveSettingsGuard(guard)
+    }
+
+    /// Exercises the real probe path (`probe_local_generation_endpoint`:
+    /// reqwest GET `{base}/models` + `parse_local_models_response`) against
+    /// the live server and expects the configured model in the list.
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible server"]
+    async fn live_local_probe_lists_pulled_models() {
+        let base_url = live_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+
+        let probe = probe_local_generation_endpoint(ProbeLocalGenerationEndpointRequest {
+            base_url: base_url.clone(),
+            api_key: String::new(),
+        })
         .await
-        .map_err(|error| AppError::new("audio_artifact_missing", error.to_string()))
-}
+        .expect("probe against the live endpoint should succeed");
 
-fn filename_for_audio(path: &Path, fallback: &str) -> String {
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(fallback)
-        .to_string()
-}
-
-fn audio_part(audio: Vec<u8>, filename: &str, path: &Path) -> Result<Part, AppError> {
-    Part::bytes(audio)
-        .file_name(filename.to_string())
-        .mime_str(audio_mime(path))
-        .map_err(|error| AppError::new("june_request_failed", error.to_string()))
-}
-
-fn audio_mime(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("m4a") | Some("mp4") => "audio/mp4",
-        _ => "audio/wav",
+        let model = live_model();
+        assert!(
+            !probe.models.is_empty(),
+            "live endpoint advertised no models"
+        );
+        assert!(
+            probe.models.iter().any(|id| id == &model),
+            "expected model {model:?} in the live endpoint's model list {:?}; \
+             pull it first (e.g. `ollama pull {model}`)",
+            probe.models
+        );
     }
-}
 
-fn network_error(error: reqwest::Error) -> AppError {
-    let _ = PROVIDER_OPENAI;
-    AppError::new("june_request_failed", error.to_string())
+    /// Drives `generate_note_from_transcript` end to end on the local path
+    /// with a source-labeled transcript: real prompt assembly, real
+    /// completion parsing, and the source-label cleanup pass.
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible server"]
+    async fn live_local_note_generation_returns_clean_markdown() {
+        let base_url = live_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_model();
+        let _guard = install_live_local_provider(&base_url, &model);
+
+        let transcript = "\
+Microphone: Alright, let's kick off the weekly sync. First up is the release timeline.
+System: Thanks. The desktop build is ready, but the updater feed still points at staging.
+Microphone: Okay, so the action item is to repoint the updater feed before Thursday.
+System: Agreed. I also want to flag that onboarding drop-off improved after the copy change.
+Microphone: Great. Let's ship the feed fix this week, then review the onboarding metrics next Monday.";
+
+        let result = generate_note_from_transcript(GenerationRequest {
+            provider: PROVIDER_LOCAL.to_string(),
+            operation_id: Some("live-local-test".to_string()),
+            title: "Weekly sync".to_string(),
+            existing_generated_note: None,
+            transcript: transcript.to_string(),
+            transcript_source_labels: true,
+            manual_notes: None,
+            language: Some("en".to_string()),
+        })
+        .await
+        .expect("live local note generation should succeed");
+
+        assert_eq!(result.provider, PROVIDER_LOCAL);
+        assert!(
+            !result.content.trim().is_empty(),
+            "generated note should not be empty"
+        );
+        // Visible with --nocapture: lets a live QA run eyeball the note the
+        // model actually produced.
+        eprintln!("live note generation ({model}):\n{}\n", result.content);
+        // The audio source labels are transcript metadata; neither the model
+        // (instructed via <transcript_source_metadata>) nor the cleanup pass
+        // may let them through to the note.
+        for line in result.content.lines() {
+            let (_, text) = markdown_line_marker(line.trim_start());
+            assert!(
+                strip_source_label_prefix(text.trim_start()).is_none(),
+                "transcript source label leaked into the generated note line {line:?};\nfull note:\n{}",
+                result.content
+            );
+        }
+    }
+
+    /// Drives `proxy_agent_chat_completions` on the local path: buffered
+    /// JSON first, then `stream: true` asserting SSE framing terminated by
+    /// `data: [DONE]` (the shape Hermes consumes through the proxy).
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible server"]
+    async fn live_local_agent_proxy_completes_buffered_and_streaming() {
+        let base_url = live_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_model();
+        let _guard = install_live_local_provider(&base_url, &model);
+
+        // Buffered request, exactly what the session-title path sends.
+        let response = proxy_agent_chat_completions(serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "Reply with the single word: pong" }
+            ],
+            "stream": false,
+            "max_tokens": 512,
+        }))
+        .await
+        .expect("live local agent proxy call should succeed");
+        assert_eq!(response.status, 200);
+        assert!(
+            response.content_type.contains("json"),
+            "expected a JSON content type, got {:?}",
+            response.content_type
+        );
+        let body = response
+            .collect_body()
+            .await
+            .expect("proxy body should be readable");
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).expect("proxy body should be an OpenAI completion");
+        let content = extract_chat_completion_text(&value)
+            .expect("completion should carry non-empty assistant content");
+        assert!(!content.trim().is_empty());
+
+        // Streaming request, the shape Hermes actually uses.
+        let mut response = proxy_agent_chat_completions(serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "Reply with the single word: pong" }
+            ],
+            "stream": true,
+            "max_tokens": 512,
+        }))
+        .await
+        .expect("live local streaming proxy call should succeed");
+        assert_eq!(response.status, 200);
+        assert!(
+            response.content_type.starts_with("text/event-stream"),
+            "expected an SSE content type for stream: true, got {:?}",
+            response.content_type
+        );
+        let mut raw = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .expect("SSE chunk should be readable")
+        {
+            raw.extend_from_slice(&chunk);
+        }
+        let stream = String::from_utf8_lossy(&raw);
+        assert!(
+            stream.contains("data: [DONE]"),
+            "SSE stream should terminate with data: [DONE]; got tail {:?}",
+            &stream[stream.len().saturating_sub(200)..]
+        );
+        let has_parseable_delta = stream
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter(|data| *data != "[DONE]")
+            .any(|data| {
+                serde_json::from_str::<serde_json::Value>(data)
+                    .is_ok_and(|event| event.get("choices").is_some())
+            });
+        assert!(
+            has_parseable_delta,
+            "SSE stream should contain at least one parseable chat.completion.chunk"
+        );
+    }
 }

@@ -1,4 +1,4 @@
-use june_config::{ModelPriceConfig, ModelType, PriceUnit};
+use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use june_domain::{Credits, ModelKind, TokenUsage};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -53,6 +53,12 @@ impl PricingTable {
 
     pub fn has_model(&self, model_id: &str) -> bool {
         self.models.contains_key(model_id)
+    }
+
+    pub fn is_venice_model(&self, model_id: &str) -> bool {
+        self.models
+            .get(model_id)
+            .is_some_and(|model| model.provider == ModelProvider::Venice)
     }
 
     pub fn ensure_model_kind(&self, model_id: &str, kind: ModelKind) -> Result<(), PricingError> {
@@ -300,5 +306,22 @@ mod tests {
         )]));
         assert!(table.has_model("known"));
         assert!(!table.has_model("unknown"));
+    }
+
+    #[test]
+    fn identifies_venice_models_from_pricing_metadata() {
+        let mut models = models([
+            ("openai-asr", PriceUnit::Seconds, 1, 0, ModelType::Asr),
+            ("venice-text", PriceUnit::Tokens, 1, 1, ModelType::Text),
+        ]);
+        models
+            .get_mut("venice-text")
+            .expect("model exists")
+            .provider = ModelProvider::Venice;
+        let table = PricingTable::new(models);
+
+        assert!(!table.is_venice_model("openai-asr"));
+        assert!(table.is_venice_model("venice-text"));
+        assert!(!table.is_venice_model("missing"));
     }
 }

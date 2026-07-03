@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { isMacLikePlatform } from "../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
@@ -52,8 +52,8 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
   return (
     <div className="welcome-screen">
       <div className="welcome-card">
-        <span className="welcome-mark" aria-hidden>
-          <JuneMark />
+        <span className="welcome-mark welcome-mark-symbol" aria-hidden>
+          <JuneGradientMark />
         </span>
         <h1 className="welcome-title">Welcome to June</h1>
         <p className="welcome-subtitle">{subtitle}</p>
@@ -78,10 +78,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
                 </button>
               </div>
             ) : (
-              <BrandPrimaryButton
-                disabled={loading}
-                onClick={() => void handleSignIn()}
-              >
+              <BrandPrimaryButton disabled={loading} onClick={() => void handleSignIn()}>
                 <OsMark />
                 <span>Continue with OpenSoftware</span>
               </BrandPrimaryButton>
@@ -100,19 +97,11 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
           {/* opensoftware.network serves nothing; the accounts portal is the
               live domain we control, so legal pages can be published there
               without shipping a new desktop build. */}
-          <a
-            href="https://accounts.opensoftware.co/terms"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a href="https://accounts.opensoftware.co/terms" target="_blank" rel="noreferrer">
             Terms
           </a>{" "}
           and{" "}
-          <a
-            href="https://accounts.opensoftware.co/privacy"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a href="https://accounts.opensoftware.co/privacy" target="_blank" rel="noreferrer">
             Privacy Policy
           </a>
           .
@@ -124,29 +113,50 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
 
 export function JuneMark() {
   return (
-    <svg
-      width="24"
-      height="28"
-      viewBox="0 0 12 14"
-      fill="currentColor"
-      aria-hidden
-    >
-      <path d="M11.5 6.5C11.7761 6.5 12 6.72386 12 7V8.5C12 8.77614 11.7761 9 11.5 9H10.4141C10.2815 9.00002 10.1543 9.05273 10.0605 9.14648L9.64648 9.56055C9.55273 9.6543 9.50002 9.78148 9.5 9.91406V11C9.5 11.2761 9.27614 11.5 9 11.5H3.41406C3.28148 11.5 3.1543 11.5527 3.06055 11.6465L2.64648 12.0605C2.55273 12.1543 2.50002 12.2815 2.5 12.4141V13.5C2.5 13.7761 2.27614 14 2 14H0.5C0.223858 14 0 13.7761 0 13.5V12C4.02663e-09 11.7239 0.223858 11.5 0.5 11.5H1.58594C1.71852 11.5 1.8457 11.4473 1.93945 11.3535L2.35352 10.9395C2.44727 10.8457 2.49998 10.7185 2.5 10.5859V9.5C2.5 9.22386 2.72386 9 3 9H8.58594C8.71852 8.99998 8.8457 8.94727 8.93945 8.85352L9.35352 8.43945C9.44727 8.3457 9.49998 8.21852 9.5 8.08594V7C9.5 6.72386 9.72386 6.5 10 6.5H11.5Z" />
-      <path d="M11.5 0C11.7761 4.02663e-09 12 0.223858 12 0.5V2C12 2.27614 11.7761 2.5 11.5 2.5H10.4141C10.2815 2.50002 10.1543 2.55273 10.0605 2.64648L9.64648 3.06055C9.55273 3.1543 9.50002 3.28148 9.5 3.41406V4.5C9.5 4.77614 9.27614 5 9 5H3.41406C3.28148 5.00002 3.1543 5.05273 3.06055 5.14648L2.64648 5.56055C2.55273 5.6543 2.50002 5.78148 2.5 5.91406V7C2.5 7.27614 2.27614 7.5 2 7.5H0.5C0.223858 7.5 0 7.27614 0 7V5.5C4.02663e-09 5.22386 0.223858 5 0.5 5H1.58594C1.71852 4.99998 1.8457 4.94727 1.93945 4.85352L2.35352 4.43945C2.44727 4.3457 2.49998 4.21852 2.5 4.08594V3C2.5 2.72386 2.72386 2.5 3 2.5H8.58594C8.71852 2.49998 8.8457 2.44727 8.93945 2.35352L9.35352 1.93945C9.44727 1.8457 9.49998 1.71852 9.5 1.58594V0.5C9.5 0.223858 9.72386 0 10 0H11.5Z" />
+    <svg width="24" height="28" viewBox="0 0 12 14" fill="currentColor" aria-hidden>
+      <title>June</title>
+      <JuneMarkPaths />
     </svg>
+  );
+}
+
+export function JuneGradientMark() {
+  const gradientId = `june-gradient-${useId().replace(/:/g, "")}`;
+
+  return (
+    <svg width="40" height="46" viewBox="0 0 12 14" fill="none" aria-hidden>
+      <title>June</title>
+      <defs>
+        <linearGradient id={gradientId} x1="6" y1="0" x2="6" y2="14" gradientUnits="userSpaceOnUse">
+          <stop style={{ stopColor: "color-mix(in oklch, var(--brand) 55%, white)" }} />
+          <stop offset="1" style={{ stopColor: "var(--brand)" }} />
+        </linearGradient>
+      </defs>
+      <JuneMarkPaths fill={`url(#${gradientId})`} />
+    </svg>
+  );
+}
+
+function JuneMarkPaths({ fill }: { fill?: string }) {
+  return (
+    <>
+      <path
+        fill={fill}
+        d="M11.5 6.5C11.7761 6.5 12 6.72386 12 7V8.5C12 8.77614 11.7761 9 11.5 9H10.4141C10.2815 9.00002 10.1543 9.05273 10.0605 9.14648L9.64648 9.56055C9.55273 9.6543 9.50002 9.78148 9.5 9.91406V11C9.5 11.2761 9.27614 11.5 9 11.5H3.41406C3.28148 11.5 3.1543 11.5527 3.06055 11.6465L2.64648 12.0605C2.55273 12.1543 2.50002 12.2815 2.5 12.4141V13.5C2.5 13.7761 2.27614 14 2 14H0.5C0.223858 14 0 13.7761 0 13.5V12C4.02663e-09 11.7239 0.223858 11.5 0.5 11.5H1.58594C1.71852 11.5 1.8457 11.4473 1.93945 11.3535L2.35352 10.9395C2.44727 10.8457 2.49998 10.7185 2.5 10.5859V9.5C2.5 9.22386 2.72386 9 3 9H8.58594C8.71852 8.99998 8.8457 8.94727 8.93945 8.85352L9.35352 8.43945C9.44727 8.3457 9.49998 8.21852 9.5 8.08594V7C9.5 6.72386 9.72386 6.5 10 6.5H11.5Z"
+      />
+      <path
+        fill={fill}
+        d="M11.5 0C11.7761 4.02663e-09 12 0.223858 12 0.5V2C12 2.27614 11.7761 2.5 11.5 2.5H10.4141C10.2815 2.50002 10.1543 2.55273 10.0605 2.64648L9.64648 3.06055C9.55273 3.1543 9.50002 3.28148 9.5 3.41406V4.5C9.5 4.77614 9.27614 5 9 5H3.41406C3.28148 5.00002 3.1543 5.05273 3.06055 5.14648L2.64648 5.56055C2.55273 5.6543 2.50002 5.78148 2.5 5.91406V7C2.5 7.27614 2.27614 7.5 2 7.5H0.5C0.223858 7.5 0 7.27614 0 7V5.5C4.02663e-09 5.22386 0.223858 5 0.5 5H1.58594C1.71852 4.99998 1.8457 4.94727 1.93945 4.85352L2.35352 4.43945C2.44727 4.3457 2.49998 4.21852 2.5 4.08594V3C2.5 2.72386 2.72386 2.5 3 2.5H8.58594C8.71852 2.49998 8.8457 2.44727 8.93945 2.35352L9.35352 1.93945C9.44727 1.8457 9.49998 1.71852 9.5 1.58594V0.5C9.5 0.223858 9.72386 0 10 0H11.5Z"
+      />
+    </>
   );
 }
 
 // The "OS" wordmark, drawn in currentColor for the sign-in button.
 export function OsMark() {
   return (
-    <svg
-      width="28"
-      height="16"
-      viewBox="-1 -1 30 18"
-      fill="currentColor"
-      aria-hidden
-    >
+    <svg width="28" height="16" viewBox="-1 -1 30 18" fill="currentColor" aria-hidden>
+      <title>Open Software</title>
       <path
         fillRule="evenodd"
         clipRule="evenodd"

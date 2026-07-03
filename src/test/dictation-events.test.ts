@@ -22,6 +22,18 @@ describe("parseDictationHelperEvent", () => {
     );
   });
 
+  it("parses helper_unavailable events with a reason", () => {
+    expect(
+      parseDictationHelperEvent({
+        type: "helper_unavailable",
+        payload: { reason: "restarting", message: "Dictation stopped and is restarting." },
+      }),
+    ).toEqual({
+      type: "helper_unavailable",
+      payload: { reason: "restarting", message: "Dictation stopped and is restarting." },
+    });
+  });
+
   it("ignores malformed payloads and events without a string type", () => {
     expect(parseDictationHelperEvent("{")).toBeUndefined();
     expect(parseDictationHelperEvent({ payload: {} })).toBeUndefined();

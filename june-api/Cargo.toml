@@ -40,6 +40,11 @@ tower-http = { version = "0.6", features = ["trace", "timeout", "limit", "cors"]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
+uuid = { version = "1", features = ["v7"] }
+# Pure-Rust, offline trigram language detector used to fill in the transcript
+# language server-side (Venice ASR never returns one). No network or model
+# downloads, so it is safe to run inside the TEE.
+whatlang = "0.18"
 zeroize = { version = "1", features = ["derive"] }
 
 pretty_assertions = "1"

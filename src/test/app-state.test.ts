@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createInitialState, notesReducer } from "../app/state/app-state";
-import type {
-  BootstrapResponse,
-  NoteDto,
-  RecordingStatusDto,
-} from "../lib/tauri";
+import type { BootstrapResponse, NoteDto, RecordingStatusDto } from "../lib/tauri";
 
 const now = "2026-05-19T10:00:00Z";
 
@@ -25,13 +21,8 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
 describe("notesReducer", () => {
   it("loads bootstrap data and selects the first note", () => {
     const payload: BootstrapResponse = {
-      folders: [
-        { id: "folder-1", name: "Ideas", createdAt: now, updatedAt: now },
-      ],
-      notes: [
-        note({ id: "note-2", title: "Second" }),
-        note({ id: "note-1", title: "First" }),
-      ],
+      folders: [{ id: "folder-1", name: "Ideas", createdAt: now, updatedAt: now }],
+      notes: [note({ id: "note-2", title: "Second" }), note({ id: "note-1", title: "First" })],
       activeRecoveries: [],
       providerConfigured: true,
     };
@@ -225,14 +216,10 @@ describe("notesReducer", () => {
       }),
     });
 
-    expect(state.selectedNote?.title).toBe(
-      "Budget review, Hiring plan, and Product launch",
-    );
+    expect(state.selectedNote?.title).toBe("Budget review, Hiring plan, and Product launch");
     expect(state.selectedNote?.generatedContent).toBe("Finished notes");
     expect(state.selectedNote?.processingStatus).toBe("ready");
-    expect(state.notes[0].title).toBe(
-      "Budget review, Hiring plan, and Product launch",
-    );
+    expect(state.notes[0].title).toBe("Budget review, Hiring plan, and Product launch");
   });
 
   it("keeps source transcript rows on authoritative processing updates", () => {
@@ -273,9 +260,10 @@ describe("notesReducer", () => {
     });
 
     expect(state.selectedNote?.processingStatus).toBe("ready");
-    expect(
-      state.selectedNote?.sourceTranscripts?.map((turn) => turn.text),
-    ).toEqual(["System first", "Microphone second"]);
+    expect(state.selectedNote?.sourceTranscripts?.map((turn) => turn.text)).toEqual([
+      "System first",
+      "Microphone second",
+    ]);
     expect(state.notes[0].processingStatus).toBe("ready");
   });
 
@@ -322,10 +310,7 @@ describe("notesReducer", () => {
       },
     });
 
-    expect(initial.folders.map((folder) => folder.name)).toEqual([
-      "Archive",
-      "Inbox",
-    ]);
+    expect(initial.folders.map((folder) => folder.name)).toEqual(["Archive", "Inbox"]);
 
     const renamed = notesReducer(initial, {
       type: "folderRenamed",
@@ -336,22 +321,15 @@ describe("notesReducer", () => {
         updatedAt: now,
       },
     });
-    expect(renamed.folders.map((folder) => folder.name)).toEqual([
-      "Archive",
-      "Triage",
-    ]);
+    expect(renamed.folders.map((folder) => folder.name)).toEqual(["Archive", "Triage"]);
 
     const deleted = notesReducer(renamed, {
       type: "folderDeleted",
       folderId: "folder-1",
     });
     expect(deleted.folders.map((folder) => folder.id)).toEqual(["folder-2"]);
-    expect(
-      deleted.notes.find((item) => item.id === "note-2")?.folderIds,
-    ).toEqual(["folder-2"]);
-    expect(
-      deleted.notes.find((item) => item.id === "note-1")?.folderIds,
-    ).toEqual([]);
+    expect(deleted.notes.find((item) => item.id === "note-2")?.folderIds).toEqual(["folder-2"]);
+    expect(deleted.notes.find((item) => item.id === "note-1")?.folderIds).toEqual([]);
   });
 
   it("clears recording status after finish processing starts", () => {

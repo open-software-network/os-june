@@ -18,12 +18,8 @@ function time(hour: number, minute: number) {
 describe("humanizeSchedule", () => {
   it("translates daily schedules", () => {
     expect(humanizeSchedule("0 8 * * *")).toBe(`Every day at ${time(8, 0)}`);
-    expect(humanizeSchedule("30 17 * * *")).toBe(
-      `Every day at ${time(17, 30)}`,
-    );
-    expect(humanizeSchedule("0 9,17 * * *")).toBe(
-      `Every day at ${time(9, 0)} and ${time(17, 0)}`,
-    );
+    expect(humanizeSchedule("30 17 * * *")).toBe(`Every day at ${time(17, 30)}`);
+    expect(humanizeSchedule("0 9,17 * * *")).toBe(`Every day at ${time(9, 0)} and ${time(17, 0)}`);
   });
 
   it("translates minute and hour cadences", () => {
@@ -39,54 +35,34 @@ describe("humanizeSchedule", () => {
     expect(humanizeSchedule("0 9 * * 1-5")).toBe(`Weekdays at ${time(9, 0)}`);
     expect(humanizeSchedule("0 10 * * 0,6")).toBe(`Weekends at ${time(10, 0)}`);
     expect(humanizeSchedule("0 8 * * 1")).toBe(`Every Monday at ${time(8, 0)}`);
-    expect(humanizeSchedule("0 8 * * mon")).toBe(
-      `Every Monday at ${time(8, 0)}`,
-    );
+    expect(humanizeSchedule("0 8 * * mon")).toBe(`Every Monday at ${time(8, 0)}`);
     // Cron allows 7 for Sunday alongside 0.
     expect(humanizeSchedule("0 8 * * 7")).toBe(`Every Sunday at ${time(8, 0)}`);
     expect(humanizeSchedule("0 8 * * 1,3,5")).toBe(
       `Every Monday, Wednesday, and Friday at ${time(8, 0)}`,
     );
-    expect(humanizeSchedule("0 8 * * 1-3")).toBe(
-      `Every Monday to Wednesday at ${time(8, 0)}`,
-    );
+    expect(humanizeSchedule("0 8 * * 1-3")).toBe(`Every Monday to Wednesday at ${time(8, 0)}`);
     expect(humanizeSchedule("0 8 * * 0-6")).toBe(`Every day at ${time(8, 0)}`);
   });
 
   it("translates monthly and yearly schedules", () => {
-    expect(humanizeSchedule("0 9 1 * *")).toBe(
-      `Monthly on the 1st at ${time(9, 0)}`,
-    );
-    expect(humanizeSchedule("0 9 1,15 * *")).toBe(
-      `Monthly on the 1st and 15th at ${time(9, 0)}`,
-    );
-    expect(humanizeSchedule("0 9 22 * *")).toBe(
-      `Monthly on the 22nd at ${time(9, 0)}`,
-    );
-    expect(humanizeSchedule("0 9 11 6 *")).toBe(
-      `Every year on Jun 11 at ${time(9, 0)}`,
-    );
-    expect(humanizeSchedule("0 9 11 jun *")).toBe(
-      `Every year on Jun 11 at ${time(9, 0)}`,
-    );
+    expect(humanizeSchedule("0 9 1 * *")).toBe(`Monthly on the 1st at ${time(9, 0)}`);
+    expect(humanizeSchedule("0 9 1,15 * *")).toBe(`Monthly on the 1st and 15th at ${time(9, 0)}`);
+    expect(humanizeSchedule("0 9 22 * *")).toBe(`Monthly on the 22nd at ${time(9, 0)}`);
+    expect(humanizeSchedule("0 9 11 6 *")).toBe(`Every year on Jun 11 at ${time(9, 0)}`);
+    expect(humanizeSchedule("0 9 11 jun *")).toBe(`Every year on Jun 11 at ${time(9, 0)}`);
   });
 
   it("translates macros", () => {
     expect(humanizeSchedule("@hourly")).toBe("Every hour");
     expect(humanizeSchedule("@daily")).toBe(`Every day at ${time(0, 0)}`);
     expect(humanizeSchedule("@weekly")).toBe(`Every Sunday at ${time(0, 0)}`);
-    expect(humanizeSchedule("@monthly")).toBe(
-      `Monthly on the 1st at ${time(0, 0)}`,
-    );
-    expect(humanizeSchedule("@yearly")).toBe(
-      `Every year on Jan 1 at ${time(0, 0)}`,
-    );
+    expect(humanizeSchedule("@monthly")).toBe(`Monthly on the 1st at ${time(0, 0)}`);
+    expect(humanizeSchedule("@yearly")).toBe(`Every year on Jan 1 at ${time(0, 0)}`);
   });
 
   it("accepts a cron: prefix", () => {
-    expect(humanizeSchedule("cron: 0 8 * * *")).toBe(
-      `Every day at ${time(8, 0)}`,
-    );
+    expect(humanizeSchedule("cron: 0 8 * * *")).toBe(`Every day at ${time(8, 0)}`);
   });
 
   it("passes non-cron schedules through unchanged", () => {
@@ -113,9 +89,7 @@ describe("humanizeSchedule", () => {
 describe("compactScheduleLabel", () => {
   it("removes redundant at before clock times", () => {
     expect(compactScheduleLabel("0 9 * * 1-5")).toBe(`Weekdays ${time(9, 0)}`);
-    expect(compactScheduleLabel("0 8 * * 1")).toBe(
-      `Every Monday ${time(8, 0)}`,
-    );
+    expect(compactScheduleLabel("0 8 * * 1")).toBe(`Every Monday ${time(8, 0)}`);
   });
 
   it("leaves non-clock at phrases unchanged", () => {
@@ -125,30 +99,18 @@ describe("compactScheduleLabel", () => {
 
 describe("scheduleFromDraft", () => {
   it("renders day-based drafts as five-field cron", () => {
-    expect(scheduleFromDraft({ kind: "daily", time: "09:00" })).toBe(
-      "0 9 * * *",
-    );
-    expect(scheduleFromDraft({ kind: "weekdays", time: "08:30" })).toBe(
-      "30 8 * * 1-5",
-    );
-    expect(scheduleFromDraft({ kind: "weekly", day: 5, time: "16:00" })).toBe(
-      "0 16 * * 5",
-    );
+    expect(scheduleFromDraft({ kind: "daily", time: "09:00" })).toBe("0 9 * * *");
+    expect(scheduleFromDraft({ kind: "weekdays", time: "08:30" })).toBe("30 8 * * 1-5");
+    expect(scheduleFromDraft({ kind: "weekly", day: 5, time: "16:00" })).toBe("0 16 * * 5");
   });
 
   it("renders intervals in Hermes's grammar, preferring hours", () => {
-    expect(scheduleFromDraft({ kind: "interval", minutes: 30 })).toBe(
-      "every 30m",
-    );
-    expect(scheduleFromDraft({ kind: "interval", minutes: 120 })).toBe(
-      "every 2h",
-    );
+    expect(scheduleFromDraft({ kind: "interval", minutes: 30 })).toBe("every 30m");
+    expect(scheduleFromDraft({ kind: "interval", minutes: 120 })).toBe("every 2h");
   });
 
   it("passes custom expressions through trimmed", () => {
-    expect(
-      scheduleFromDraft({ kind: "custom", expression: " 0 9 1 * * " }),
-    ).toBe("0 9 1 * *");
+    expect(scheduleFromDraft({ kind: "custom", expression: " 0 9 1 * * " })).toBe("0 9 1 * *");
   });
 });
 

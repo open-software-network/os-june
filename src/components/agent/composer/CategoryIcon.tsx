@@ -20,12 +20,10 @@ export function CategoryIcon({
 }) {
   if (filled) {
     if (category === "bug") return <IconBugFilled size={size} aria-hidden />;
-    if (category === "feedback")
-      return <IconBubbleTextFilled size={size} aria-hidden />;
+    if (category === "feedback") return <IconBubbleTextFilled size={size} aria-hidden />;
     return <IconFeatureFilled size={size} aria-hidden />;
   }
   if (category === "bug") return <IconBug size={size} aria-hidden />;
-  if (category === "feedback")
-    return <IconBubbleText size={size} aria-hidden />;
+  if (category === "feedback") return <IconBubbleText size={size} aria-hidden />;
   return <IconFeature size={size} aria-hidden />;
 }

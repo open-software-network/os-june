@@ -44,3 +44,10 @@ accepted
   entry in `latest.json` and silently will not auto-update.
 - Builds that predate the updater cannot auto-update; the first updater-capable
   build must be installed manually once, automatic for every release thereafter.
+
+## Update (2026-07-01)
+
+Builds are now **universal** (x86_64 + arm64), so the `aarch64`-only consequence
+above no longer applies: Intel Macs receive a matching `platforms` entry and
+auto-update. The rc/stable release-channel switching is recorded in
+[ADR-0003](0003-release-candidate-channel-and-promotion.md).

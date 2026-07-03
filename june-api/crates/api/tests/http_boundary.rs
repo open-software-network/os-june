@@ -5,18 +5,22 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
-use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
+use june_config::{
+    DEFAULT_MAX_IMAGE_EDIT_BYTES, ModelPriceConfig, ModelProvider, ModelType, PriceUnit,
+};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
+    GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageEditRequest, ImageEditor,
+    ImageGenerationRequest, ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient,
     Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
     WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use june_services::{
-    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
-    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
+    ImageService, ImageServiceDeps, NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService,
+    NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
+    WebAugmentService, WebAugmentServiceDeps,
 };
 use pretty_assertions::assert_eq;
 use std::{
@@ -73,7 +77,34 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["content"], "Generated note body");
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
+    assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
     assert_eq!(body["data"]["creditsCharged"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_forwards_venice_api_key_header() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "model": "text-model"
+        }),
+        "vc_user_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(
+        body["data"]["content"],
+        "Generated note body with user Venice key"
+    );
+    assert!(!body.to_string().contains("vc_user_key"));
     Ok(())
 }
 
@@ -232,6 +263,74 @@ async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), B
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
     assert_eq!(body["message"], "unsupported_audio_format");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_dictate_fills_language_when_provider_returns_none()
+-> Result<(), Box<dyn Error>> {
+    // Venice ASR never returns a detected language, so the provider yields
+    // `None` and the service must fill it in from the transcript text (JUN-180).
+    let state = test_state_with_sinks_and_transcriber(
+        Arc::new(RecordingIssueReportSink::default()),
+        test_attestation(),
+        Arc::new(LanguagelessTranscriber),
+    );
+    let response = match router(state)
+        .oneshot(multipart_request(
+            "/v1/dictate",
+            multipart_body([
+                text_part("model", "asr-model"),
+                text_part("sessionId", "session-1"),
+                text_part("utteranceId", "utterance-1"),
+                file_part("audio", "dictation.wav", valid_wav()),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["language"], "en");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_dictate_prefers_requested_language_over_detection()
+-> Result<(), Box<dyn Error>> {
+    // When the user configured a dictation language, that explicit choice must
+    // reach enrichment and win over text detection (JUN-180 P2). The transcript
+    // text is English, but the request asks for Polish.
+    let state = test_state_with_sinks_and_transcriber(
+        Arc::new(RecordingIssueReportSink::default()),
+        test_attestation(),
+        Arc::new(LanguagelessTranscriber),
+    );
+    let response = match router(state)
+        .oneshot(multipart_request(
+            "/v1/dictate",
+            multipart_body([
+                text_part("model", "asr-model"),
+                text_part("sessionId", "session-1"),
+                text_part("utteranceId", "utterance-1"),
+                text_part("language", "pl"),
+                file_part("audio", "dictation.wav", valid_wav()),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["language"], "pl");
     Ok(())
 }
 
@@ -418,6 +517,189 @@ async fn integration_web_fetch_rejects_private_network_url() -> Result<(), Box<d
 }
 
 #[tokio::test]
+async fn integration_image_generate_returns_enveloped_image() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "a red bicycle", "model": "venice-sd35" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["imageBase64"], "aGVsbG8=");
+    assert_eq!(body["data"]["mimeType"], "image/png");
+    assert_eq!(body["data"]["model"], "venice-sd35");
+    assert_eq!(body["data"]["provider"], "fake-image");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_requires_auth() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "a red bicycle", "model": "venice-sd35" }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error_code"], 3001);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_rejects_blank_prompt() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "   ", "model": "venice-sd35" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "prompt_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_maps_upstream_failure_to_502() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "boom", "model": "venice-sd35" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "upstream_provider_failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_generate_rejects_unpriced_model() -> Result<(), Box<dyn Error>> {
+    // A model with no configured image price is rejected at the metering
+    // boundary (before Venice is called) rather than generating for free.
+    let response = send(json_request(
+        "/v1/image/generate",
+        &serde_json::json!({ "prompt": "a red bicycle", "model": "unpriced-image-model" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "model_not_priced");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_edit_returns_enveloped_image() -> Result<(), Box<dyn Error>> {
+    // No model is sent (the image MCP names none); the default edit model is used
+    // and its base64 result comes back in the standard envelope.
+    let response = send(json_request(
+        "/v1/image/edit",
+        &serde_json::json!({ "image": "aGVsbG8=", "prompt": "make it fluffier" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["imageBase64"], "ZWRpdGVk");
+    assert_eq!(body["data"]["mimeType"], "image/png");
+    assert_eq!(body["data"]["model"], "firered-image-edit");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_edit_requires_a_source_image() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/edit",
+        &serde_json::json!({ "image": "   ", "prompt": "make it fluffier" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "image_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_edit_maps_upstream_failure_to_502() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/image/edit",
+        &serde_json::json!({ "image": "aGVsbG8=", "prompt": "boom" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "upstream_provider_failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_edit_accepts_body_at_configured_limit() -> Result<(), Box<dyn Error>> {
+    let body = image_edit_body_with_len(DEFAULT_MAX_IMAGE_EDIT_BYTES)?;
+    let router = router(test_state());
+    let response = match router
+        .oneshot(raw_json_request_with_venice_api_key(
+            "/v1/image/edit",
+            body,
+            "vc_user_key",
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["imageBase64"], "ZWRpdGVk");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_image_edit_rejects_body_over_configured_limit() -> Result<(), Box<dyn Error>> {
+    let body = format!(
+        "{} ",
+        image_edit_body_with_len(DEFAULT_MAX_IMAGE_EDIT_BYTES)?
+    );
+    let router = router(test_state());
+    let response = match router
+        .oneshot(raw_json_request_with_venice_api_key(
+            "/v1/image/edit",
+            body,
+            "vc_user_key",
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> {
     let response = send(get_request("/verify")?).await;
 
@@ -504,13 +786,32 @@ fn test_state_with_sinks(
     issue_reports: Arc<dyn IssueReportSink>,
     attestation: AttestationInfo,
 ) -> ApiState {
+    test_state_with_sinks_and_transcriber(issue_reports, attestation, Arc::new(FakeTranscriber))
+}
+
+fn test_state_with_sinks_and_transcriber(
+    issue_reports: Arc<dyn IssueReportSink>,
+    attestation: AttestationInfo,
+    transcriber: Arc<dyn Transcriber>,
+) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
     let os_accounts = Arc::new(FakeOsAccounts);
-    let transcriber = Arc::new(FakeTranscriber);
     let generator = Arc::new(FakeGenerator);
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
     let chat_completer = Arc::new(FakeChatCompleter);
+    let image = Arc::new(ImageService::new(ImageServiceDeps {
+        os_accounts: os_accounts.clone(),
+        generator: Arc::new(FakeImageGenerator),
+        editor: Arc::new(FakeImageEditor),
+        pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
+        edit_pricing: BTreeMap::from([(
+            "firered-image-edit".to_string(),
+            ImageModelPrice::venice(80),
+        )]),
+        default_edit_model: "firered-image-edit".to_string(),
+        hold_ttl_seconds: 30,
+    }));
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
@@ -556,10 +857,12 @@ fn test_state_with_sinks(
             fetch_credits: 20,
             hold_ttl_seconds: 30,
         })),
+        image,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
+            max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
             request_timeout_secs: 5,
         },
         attestation,
@@ -630,6 +933,55 @@ fn json_request(
         builder = builder.header(header::AUTHORIZATION, authorization);
     }
     builder.body(Body::from(value.to_string()))
+}
+
+fn json_request_with_venice_api_key(
+    uri: &str,
+    value: &serde_json::Value,
+    venice_api_key: &str,
+) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .header("x-venice-api-key", venice_api_key)
+        .body(Body::from(value.to_string()))
+}
+
+fn raw_json_request_with_venice_api_key(
+    uri: &str,
+    body: String,
+    venice_api_key: &str,
+) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .header("x-venice-api-key", venice_api_key)
+        .body(Body::from(body))
+}
+
+fn image_edit_body_with_len(total_len: usize) -> Result<String, Box<dyn Error>> {
+    let prefix = "{\"image\":\"";
+    for extra_prompt_chars in 0..4 {
+        let prompt = format!("boundary{}", "x".repeat(extra_prompt_chars));
+        let suffix = format!(
+            "\",\"prompt\":\"{prompt}\",\"mimeType\":\"image/png\",\"requestId\":\"boundary-req\"}}"
+        );
+        let overhead = prefix.len() + suffix.len();
+        if overhead <= total_len && (total_len - overhead).is_multiple_of(4) {
+            let image_len = total_len - overhead;
+            let mut body = String::with_capacity(total_len);
+            body.push_str(prefix);
+            body.push_str(&"A".repeat(image_len));
+            body.push_str(&suffix);
+            assert_eq!(body.len(), total_len);
+            return Ok(body);
+        }
+    }
+    Err("could not construct image edit body at requested length".into())
 }
 
 fn get_request(uri: &str) -> Result<Request<Body>, axum::http::Error> {
@@ -779,11 +1131,11 @@ struct FakeOsAccounts;
 
 #[async_trait]
 impl OsAccountsClient for FakeOsAccounts {
-    async fn authorize(&self, _request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+    async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
         Ok(Authorization {
             allowed: true,
             action_token: Some("agt_test".to_string()),
-            cap_credits: None,
+            cap_credits: Some(request.estimate),
             reason: None,
         })
     }
@@ -817,13 +1169,35 @@ impl Transcriber for FakeTranscriber {
     }
 }
 
+/// Mirrors Venice ASR: returns a real transcript but never a detected language,
+/// so the service layer must fill it in from the text.
+struct LanguagelessTranscriber;
+
+#[async_trait]
+impl Transcriber for LanguagelessTranscriber {
+    async fn transcribe(&self, _request: TranscriptionRequest) -> Result<Transcript, DomainError> {
+        Ok(Transcript {
+            text: "Let us schedule a call for next week to discuss the project roadmap and the budget."
+                .to_string(),
+            language: None,
+            provider: "fake-transcriber".to_string(),
+        })
+    }
+}
+
 struct FakeGenerator;
 
 #[async_trait]
 impl Generator for FakeGenerator {
-    async fn generate(&self, _request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+    async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+        let content =
+            if request.provider_credentials.venice_api_key.as_deref() == Some("vc_user_key") {
+                "Generated note body with user Venice key"
+            } else {
+                "Generated note body"
+            };
         Ok(GeneratedNote {
-            content: "Generated note body".to_string(),
+            content: content.to_string(),
             title_suggestion: Some("Generated title".to_string()),
             provider: "fake-generator".to_string(),
             usage: TokenUsage {
@@ -866,6 +1240,43 @@ impl AgentChatCompleter for FakeChatCompleter {
                 prompt_tokens: 100,
                 completion_tokens: 100,
             },
+        })
+    }
+}
+
+struct FakeImageGenerator;
+
+#[async_trait]
+impl ImageGenerator for FakeImageGenerator {
+    async fn generate(
+        &self,
+        request: ImageGenerationRequest,
+    ) -> Result<GeneratedImage, DomainError> {
+        if request.prompt.contains("boom") {
+            return Err(DomainError::UpstreamProvider);
+        }
+        Ok(GeneratedImage {
+            image_base64: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+            model: request.model.0,
+            provider: "fake-image".to_string(),
+        })
+    }
+}
+
+struct FakeImageEditor;
+
+#[async_trait]
+impl ImageEditor for FakeImageEditor {
+    async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError> {
+        if request.prompt.contains("boom") {
+            return Err(DomainError::UpstreamProvider);
+        }
+        Ok(GeneratedImage {
+            image_base64: "ZWRpdGVk".to_string(),
+            mime_type: "image/png".to_string(),
+            model: request.model.0,
+            provider: "fake-image".to_string(),
         })
     }
 }

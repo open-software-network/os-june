@@ -40,9 +40,7 @@ export function MoveSessionToProjectDialog({
   const sharedFolderId =
     sessions.length > 0 &&
     sessions.every(
-      (session) =>
-        sessionFolderIds[session.id]?.[0] ===
-        sessionFolderIds[sessions[0].id]?.[0],
+      (session) => sessionFolderIds[session.id]?.[0] === sessionFolderIds[sessions[0].id]?.[0],
     )
       ? sessionFolderIds[sessions[0].id]?.[0]
       : undefined;
@@ -55,9 +53,7 @@ export function MoveSessionToProjectDialog({
     const normalized = query.trim().toLowerCase();
     const filtered = normalized
       ? available.filter((folder) =>
-          `${folder.name} ${folder.description ?? ""}`
-            .toLowerCase()
-            .includes(normalized),
+          `${folder.name} ${folder.description ?? ""}`.toLowerCase().includes(normalized),
         )
       : available;
     return [...filtered].sort((a, b) =>
@@ -103,12 +99,7 @@ export function MoveSessionToProjectDialog({
       initialFocusSelector='input[name="move-session-search"]'
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
           <button
@@ -156,9 +147,7 @@ export function MoveSessionToProjectDialog({
                     <span className="add-notes-body">
                       <span className="add-notes-title">{folder.name}</span>
                       {folder.description ? (
-                        <span className="add-notes-preview">
-                          {folder.description}
-                        </span>
+                        <span className="add-notes-preview">{folder.description}</span>
                       ) : null}
                     </span>
                     <span className="add-notes-check" aria-hidden>

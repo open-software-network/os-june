@@ -1,16 +1,19 @@
 use crate::{
     charge_flow::{
         AsyncChargeParams, AuthorizeParams, authorize_or_deny, clamp_to_cap, spawn_charge,
+        zero_receipt,
     },
     error::ServiceError,
+    language::fill_missing_language,
+    metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
     pricing::PricingTable,
     prompts,
     util::ceil_seconds,
 };
 use june_domain::{
     ActionSlug, AudioDurationProbe, AudioFormat, CleanedText, Cleaner, CleanupRequest, Credits,
-    ModelId, ModelKind, OsAccountsClient, Receipt, Transcriber, Transcript, TranscriptionRequest,
-    UserId,
+    ModelId, ModelKind, OsAccountsClient, ProviderCredentials, Receipt, Transcriber, Transcript,
+    TranscriptionRequest, UserId,
 };
 use std::sync::Arc;
 
@@ -61,8 +64,40 @@ impl DictateService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
-        // Flat-estimate mode — see the matching comment in note_transcribe.rs.
-        let estimate = Credits(self.flat_estimate_credits);
+        // Captured before `params.language` is moved into the request below, so
+        // enrichment can fall back to the user-configured language.
+        let requested_language = params.language.clone();
+        if uses_user_venice_key_for_model(
+            &self.pricing,
+            &params.model_id.0,
+            &params.provider_credentials,
+        ) {
+            let transcript = self
+                .transcriber
+                .transcribe(TranscriptionRequest {
+                    audio: params.audio,
+                    format: AudioFormat::from_filename(&params.filename),
+                    context: params.context,
+                    language: params.language,
+                    model: params.model_id.clone(),
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await
+                .map_err(ServiceError::from)?;
+            let transcript = fill_missing_language(transcript, requested_language.as_deref());
+            log_skipped_user_venice_key(
+                ActionSlug::DictateTranscribe,
+                &params.user_id,
+                &params.model_id.0,
+            );
+            return Ok(DictateTranscribeOutput {
+                transcript,
+                receipt: zero_receipt(),
+            });
+        }
+        // Hold covers the already-known price, floored at the flat estimate —
+        // see the matching comment in note_transcribe.rs.
+        let estimate = Credits(actual.0.max(self.flat_estimate_credits));
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
@@ -79,9 +114,11 @@ impl DictateService {
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await
             .map_err(ServiceError::from)?;
+        let transcript = fill_missing_language(transcript, requested_language.as_deref());
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "dictate_transcribe:{}:{}:{}",
@@ -109,6 +146,33 @@ impl DictateService {
     ) -> Result<DictateCleanupOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        if uses_user_venice_key_for_model(
+            &self.pricing,
+            &params.model_id.0,
+            &params.provider_credentials,
+        ) {
+            let cleaned = self
+                .cleaner
+                .cleanup(CleanupRequest {
+                    text: params.text,
+                    dictionary_context: params.dictionary_context,
+                    app_context: params.app_context,
+                    style: params.style,
+                    model: params.model_id.clone(),
+                    system_prompt: prompts::DICTATE_CLEANUP.to_string(),
+                    provider_credentials: params.provider_credentials.clone(),
+                })
+                .await?;
+            log_skipped_user_venice_key(
+                ActionSlug::DictateCleanup,
+                &params.user_id,
+                &params.model_id.0,
+            );
+            return Ok(DictateCleanupOutput {
+                cleaned,
+                receipt: zero_receipt(),
+            });
+        }
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
@@ -122,9 +186,11 @@ impl DictateService {
             .cleanup(CleanupRequest {
                 text: params.text,
                 dictionary_context: params.dictionary_context,
+                app_context: params.app_context,
                 style: params.style,
                 model: params.model_id.clone(),
                 system_prompt: prompts::DICTATE_CLEANUP.to_string(),
+                provider_credentials: params.provider_credentials.clone(),
             })
             .await?;
         let actual = self
@@ -164,6 +230,7 @@ pub struct DictateTranscribeParams {
     pub context: Option<String>,
     pub language: Option<String>,
     pub model_id: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -173,8 +240,11 @@ pub struct DictateCleanupParams {
     pub utterance_id: String,
     pub text: String,
     pub dictionary_context: Option<String>,
+    /// Recognized insertion-surface slug ("email"); shapes output layout.
+    pub app_context: Option<String>,
     pub style: String,
     pub model_id: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]

@@ -23,30 +23,29 @@ export type SkillSourceMeta = {
   blurb: string;
 };
 
-const SOURCE_META: Readonly<Record<HermesSkillSource, SkillSourceMeta>> =
-  Object.freeze({
-    bundled: {
-      source: "bundled",
-      label: "Bundled",
-      blurb: "Ships with Hermes.",
-    },
-    hub: {
-      source: "hub",
-      label: "Hub",
-      blurb: "Installed from the Skills Hub.",
-    },
-    external: {
-      source: "external",
-      label: "External",
-      blurb:
-        "Loaded from an external directory. May be shared with other tools and read-only in June.",
-    },
-    unknown: {
-      source: "unknown",
-      label: "Skill",
-      blurb: "Source not reported by Hermes.",
-    },
-  });
+const SOURCE_META: Readonly<Record<HermesSkillSource, SkillSourceMeta>> = Object.freeze({
+  bundled: {
+    source: "bundled",
+    label: "Bundled",
+    blurb: "Ships with Hermes.",
+  },
+  hub: {
+    source: "hub",
+    label: "Hub",
+    blurb: "Installed from the Skills Hub.",
+  },
+  external: {
+    source: "external",
+    label: "External",
+    blurb:
+      "Loaded from an external directory. May be shared with other tools and read-only in June.",
+  },
+  unknown: {
+    source: "unknown",
+    label: "Skill",
+    blurb: "Source not reported by Hermes.",
+  },
+});
 
 /** The display metadata for a skill's source. */
 export function sourceMeta(source: HermesSkillSource): SkillSourceMeta {
@@ -57,9 +56,7 @@ export function sourceMeta(source: HermesSkillSource): SkillSourceMeta {
  * reports one, e.g. `{ platforms: ["macos"] }` or `os: "linux"`. Returned as a
  * ready-to-render list of OS labels, or undefined when none is reported. June
  * does not invent restrictions — only what Hermes sends is shown. */
-export function platformRestrictions(
-  skill: HermesSkillInfo,
-): string[] | undefined {
+export function platformRestrictions(skill: HermesSkillInfo): string[] | undefined {
   const record = asRecord(skill.raw);
   if (!record) return undefined;
   const raw =
@@ -84,9 +81,7 @@ export type SkillActivation = {
 /** Extracts conditional-activation toolset metadata from a skill's raw payload,
  * tolerating a few shapes (`requires_toolsets`, `activation.requires`, ...).
  * Returns undefined when neither requires nor fallback is present. */
-export function skillActivation(
-  skill: HermesSkillInfo,
-): SkillActivation | undefined {
+export function skillActivation(skill: HermesSkillInfo): SkillActivation | undefined {
   const record = asRecord(skill.raw);
   if (!record) return undefined;
   const activation = asRecord(record.activation) ?? record;
@@ -97,9 +92,7 @@ export function skillActivation(
       record.requires_toolsets,
   );
   const fallback = toStringList(
-    activation.fallback ??
-      activation.fallback_toolsets ??
-      record.fallback_toolsets,
+    activation.fallback ?? activation.fallback_toolsets ?? record.fallback_toolsets,
   );
   if (!requires && !fallback) return undefined;
   return {
@@ -129,9 +122,7 @@ export function skillPath(skill: HermesSkillInfo): string | undefined {
  * source label so every skill lands in exactly one group. */
 export function skillCategory(skill: HermesSkillInfo): string {
   const record = asRecord(skill.raw);
-  const category = record
-    ? pickString(record, ["category", "group", "collection"])
-    : undefined;
+  const category = record ? pickString(record, ["category", "group", "collection"]) : undefined;
   return category ?? sourceMeta(skill.source).label;
 }
 
@@ -200,10 +191,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function pickString(
-  record: Record<string, unknown>,
-  keys: string[],
-): string | undefined {
+function pickString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0) {

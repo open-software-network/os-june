@@ -24,9 +24,7 @@ const SCHEDULED_PREAMBLE =
 describe("scheduled-run helpers", () => {
   it("recognizes the cron delivery preamble, not arbitrary bracketed text", () => {
     expect(isScheduledRunPreamble(SCHEDULED_PREAMBLE)).toBe(true);
-    expect(isScheduledRunPreamble("[IMPORTANT] read this carefully")).toBe(
-      false,
-    );
+    expect(isScheduledRunPreamble("[IMPORTANT] read this carefully")).toBe(false);
     expect(isScheduledRunPreamble("Summarize today's standup")).toBe(false);
   });
 
@@ -55,11 +53,9 @@ describe("scheduled-run helpers", () => {
     });
     const session = sessions[0];
     expect(isScheduledRunSession(session as HermesSessionInfo)).toBe(true);
-    expect(session?.title).toBe("Summarize Github Activity for the Team");
+    expect(session?.title).toBe("Summarize GitHub activity for the team");
     expect(session?.title).not.toContain("IMPORTANT");
-    expect(session?.preview?.startsWith("Summarize GitHub activity")).toBe(
-      true,
-    );
+    expect(session?.preview?.startsWith("Summarize GitHub activity")).toBe(true);
   });
 
   it("derives the title from a cron title that is itself the raw preamble", () => {
@@ -74,7 +70,7 @@ describe("scheduled-run helpers", () => {
         },
       ],
     });
-    expect(sessions[0]?.title).toBe("Post the Weekly Metrics Digest");
+    expect(sessions[0]?.title).toBe("Post the weekly metrics digest");
   });
 
   it("derives the title when the cron session still has the placeholder title", () => {
@@ -89,14 +85,12 @@ describe("scheduled-run helpers", () => {
         },
       ],
     });
-    expect(sessions[0]?.title).toBe("Prepare the Morning Brief for Today");
+    expect(sessions[0]?.title).toBe("Prepare the morning brief for today");
   });
 
   it("extracts the routine job id from a cron run session id", () => {
     // The scheduler mints run ids as cron_<job id>_<YYYYMMDD_HHMMSS>.
-    expect(scheduledRunJobId("cron_a1b2c3d4e5f6_20260611_093045")).toBe(
-      "a1b2c3d4e5f6",
-    );
+    expect(scheduledRunJobId("cron_a1b2c3d4e5f6_20260611_093045")).toBe("a1b2c3d4e5f6");
     // A job id containing underscores keeps the trailing timestamp out.
     expect(scheduledRunJobId("cron_my_job_20260611_093045")).toBe("my_job");
     expect(scheduledRunJobId("ordinary-session-id")).toBeUndefined();
@@ -106,9 +100,7 @@ describe("scheduled-run helpers", () => {
   it("treats empty, placeholder, and cron-scaffolded titles as replaceable", () => {
     expect(isReplaceableScheduledRunTitle("")).toBe(true);
     expect(isReplaceableScheduledRunTitle("Untitled session")).toBe(true);
-    expect(
-      isReplaceableScheduledRunTitle("[IMPORTANT: You are running as"),
-    ).toBe(true);
+    expect(isReplaceableScheduledRunTitle("[IMPORTANT: You are running as")).toBe(true);
     expect(isReplaceableScheduledRunTitle("Morning brief")).toBe(false);
   });
 });
@@ -221,9 +213,7 @@ describe("Hermes adapter", () => {
     });
 
     const runs = await listScheduledRunSessions();
-    expect(runs.map((run) => run.id)).toEqual([
-      "cron_a1b2c3d4e5f6_20260611_090000",
-    ]);
+    expect(runs.map((run) => run.id)).toEqual(["cron_a1b2c3d4e5f6_20260611_090000"]);
   });
 
   it("includes active scheduled runs from the session store", async () => {
@@ -260,9 +250,7 @@ describe("Hermes adapter", () => {
       status: "running",
       last_active: "2026-06-11T09:00:05Z",
     });
-    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(
-      true,
-    );
+    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(true);
   });
 
   it("marks recent zero-message scheduled runs as pending", async () => {
@@ -301,12 +289,8 @@ describe("Hermes adapter", () => {
     });
     expect(pending?.title).toBeUndefined();
     expect(pending?.preview).toBeUndefined();
-    expect(isRunningScheduledRunSession(pending as HermesSessionInfo)).toBe(
-      true,
-    );
-    expect(isRunningScheduledRunSession(finished as HermesSessionInfo)).toBe(
-      false,
-    );
+    expect(isRunningScheduledRunSession(pending as HermesSessionInfo)).toBe(true);
+    expect(isRunningScheduledRunSession(finished as HermesSessionInfo)).toBe(false);
   });
 
   it("does not mark old zero-message scheduled runs as running", async () => {
@@ -328,9 +312,7 @@ describe("Hermes adapter", () => {
     const runs = await listScheduledRunSessions({ includeActive: true });
 
     expect(runs).toHaveLength(1);
-    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(
-      false,
-    );
+    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(false);
   });
 
   it("normalizes raw gateway session lists and sorts by recent activity", () => {
@@ -375,10 +357,7 @@ describe("Hermes adapter", () => {
       ],
     });
 
-    expect(messages.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-    ]);
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages.map((message) => message.id)).toEqual(["1", "m2"]);
   });
 
@@ -414,16 +393,16 @@ describe("Hermes adapter", () => {
         last_active: 1_780_603_200 as unknown as string,
       }),
     ).toBe("2026-06-04T20:00:00.000Z");
-    expect(titleFromPrompt("  Write   a note  ")).toBe("Write a Note");
+    expect(titleFromPrompt("  Write   a note  ")).toBe("Write a note");
     expect(titleFromPrompt("I want you to keep this running in my CLI")).toBe(
-      "Keep This Running in My CLI",
+      "Keep this running in my CLI",
     );
-    expect(titleFromPrompt("Help me to organize files")).toBe("Organize Files");
+    expect(titleFromPrompt("Help me to organize files")).toBe("Organize files");
     expect(
       titleFromPrompt(
         "please summarize the key points from today's standup\n\n--- Attached Context ---\n{}",
       ),
-    ).toBe("Summarize the Key Points from Today's");
+    ).toBe("Summarize the key points from today's");
     expect(titleFromPrompt("")).toBe("Untitled session");
   });
 });

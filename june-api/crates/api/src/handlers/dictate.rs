@@ -1,6 +1,6 @@
 use crate::{
     audio::validate_audio,
-    auth::authenticated_user,
+    auth::{authenticated_user, provider_credentials},
     envelope::ApiResponse,
     error::ApiError,
     handlers::notes::{require_priced_model, required},
@@ -25,6 +25,7 @@ pub(crate) async fn transcribe(
     multipart: Multipart,
 ) -> Result<Json<ApiResponse<DictateTranscribeResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     let limits = state.limits();
     let mut form = MultipartFields::collect(multipart, limits.max_audio_bytes).await?;
     let audio = form.required_audio()?;
@@ -62,6 +63,7 @@ pub(crate) async fn transcribe(
             context,
             language,
             model_id: ModelId(model_id),
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(DictateTranscribeResponse::from(
@@ -75,6 +77,7 @@ pub(crate) async fn cleanup(
     Json(request): Json<DictateCleanupRequest>,
 ) -> Result<Json<ApiResponse<DictateCleanupResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
@@ -87,11 +90,20 @@ pub(crate) async fn cleanup(
             utterance_id: required(request.utterance_id, "utterance_id_required")?,
             text: request.text,
             dictionary_context: request.dictionary_context,
+            app_context: recognized_app_context(request.app_context.as_deref()),
             style: request.style,
             model_id: ModelId(model_id),
+            provider_credentials,
         })
         .await?;
     Ok(Json(ApiResponse::ok(DictateCleanupResponse::from(output))))
+}
+
+/// Only contexts this API knows how to lay out reach the model; unknown
+/// slugs from older or newer clients are dropped rather than rejected.
+fn recognized_app_context(app_context: Option<&str>) -> Option<String> {
+    let slug = app_context?.trim().to_ascii_lowercase();
+    (slug == "email").then_some(slug)
 }
 
 impl DictateCleanupRequest {
@@ -112,6 +124,11 @@ impl DictateCleanupRequest {
             self.dictionary_context.as_deref(),
             validation::MAX_TRANSCRIPTION_CONTEXT_CHARS,
         )?;
+        validation::validate_optional_text_len(
+            "app_context",
+            self.app_context.as_deref(),
+            validation::MAX_ID_CHARS,
+        )?;
         validation::validate_text_len("style", &self.style, validation::MAX_DICTATION_STYLE_CHARS)?;
         Ok(())
     }
@@ -124,6 +141,9 @@ pub struct DictateCleanupRequest {
     pub utterance_id: Option<String>,
     pub text: String,
     pub dictionary_context: Option<String>,
+    /// Where the cleaned text will be inserted ("email"). Unrecognized
+    /// values are ignored so client and API can evolve independently.
+    pub app_context: Option<String>,
     pub style: String,
     pub model: Option<String>,
 }

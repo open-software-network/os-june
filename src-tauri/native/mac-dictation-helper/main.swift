@@ -82,6 +82,82 @@ func requestAccessibilityPermission() {
     emit("permission_status", permissionPayload())
 }
 
+/// Pure decision for the accessibility-trust poller: re-emit only when the
+/// trust bit actually flips. `previous` is nil until the first observation
+/// (seeded at start without emitting, since the launch-time diagnostics already
+/// report the initial state), so the first real change always emits.
+func accessibilityTrustChanged(previous: Bool?, current: Bool) -> Bool {
+    previous != current
+}
+
+/// Surfaces Accessibility-trust changes proactively.
+///
+/// The paste path already fails loud when trust is missing at paste time, but a
+/// user whose grant was revoked mid-session (commonly after an app update
+/// changes the helper's signature) would otherwise only discover it by losing a
+/// dictation — during dictation they are focused in another app, so nothing
+/// re-checks. This polls `AXIsProcessTrusted()` on a low-frequency timer plus on
+/// wake and app activation, and re-emits `permission_status` the moment the bit
+/// changes so the existing in-app banner appears (or clears) without waiting for
+/// a failed paste.
+final class AccessibilityTrustMonitor {
+    static let shared = AccessibilityTrustMonitor()
+
+    // 30s is well under a human's patience for "why won't paste work" while
+    // costing nothing: AXIsProcessTrusted() is a cheap local check and we emit
+    // only on change, so a stable grant produces no events.
+    private let pollInterval: TimeInterval = 30
+    private var lastTrusted: Bool?
+    private var timer: DispatchSourceTimer?
+
+    private init() {}
+
+    func start() {
+        // Seed without emitting: the launch-time get_permission_status /
+        // emitDiagnostics already reported the current state, so a second
+        // identical event here would just be noise.
+        lastTrusted = AXIsProcessTrusted()
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval)
+        timer.setEventHandler { [weak self] in
+            self?.poll()
+        }
+        self.timer = timer
+        timer.resume()
+
+        // Wake (timers don't advance during sleep) and system-wide app
+        // activation each warrant an immediate re-check so permission changes
+        // are not gated on the next timer tick.
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(
+            self,
+            selector: #selector(handleWorkspaceEvent(_:)),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleWorkspaceEvent(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleWorkspaceEvent(_: Notification) {
+        poll()
+    }
+
+    private func poll() {
+        let trusted = AXIsProcessTrusted()
+        guard accessibilityTrustChanged(previous: lastTrusted, current: trusted) else {
+            return
+        }
+        lastTrusted = trusted
+        emit("permission_status", permissionPayload())
+    }
+}
+
 func helperBundleIdentifier() -> String {
     Bundle.main.bundleIdentifier ?? "unknown"
 }
@@ -909,6 +985,15 @@ final class FocusTargetController {
         return app.localizedName ?? app.bundleIdentifier ?? "\(app.processIdentifier)"
     }
 
+    /// Bundle id of the app `activateLastExternalApp()` will paste into, so
+    /// the main process can shape cleanup for the same target it pastes to.
+    func targetBundleIdentifier() -> String? {
+        guard let app = lastExternalApp, !app.isTerminated else {
+            return nil
+        }
+        return app.bundleIdentifier
+    }
+
     @objc private func applicationDidActivate(_ notification: Notification) {
         guard
             let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
@@ -1599,6 +1684,7 @@ final class DictationController {
         emit("recording_ready", [
             "path": recordingURL.path,
             "observedAudioLevel": String(format: "%.4f", maxObservedAudioLevel),
+            "targetBundleIdentifier": FocusTargetController.shared.targetBundleIdentifier() ?? "",
         ])
     }
 
@@ -1839,6 +1925,24 @@ enum PasteboardInserter {
             return
         }
 
+        // The synthetic Cmd+V below is a CGEvent keystroke, which macOS
+        // silently drops unless this helper holds Accessibility trust. That
+        // trust is commonly invalidated when an app update changes the
+        // helper's signature. Without this gate we'd post the keystroke into
+        // the void, emit paste_completed anyway, then restore the clipboard —
+        // so the transcript would vanish and the paste would look successful
+        // while nothing landed. When untrusted, leave the transcript on the
+        // clipboard for a manual paste, tell the user, and refresh the
+        // permission state so the in-app Accessibility banner appears.
+        guard AXIsProcessTrusted() else {
+            emit("permission_status", permissionPayload())
+            emit("error", [
+                "code": "accessibility_permission_missing",
+                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            ])
+            return
+        }
+
         let targetActivated = FocusTargetController.shared.activateLastExternalApp()
         emit("paste_target", [
             "app": FocusTargetController.shared.targetDescription(),
@@ -2004,6 +2108,7 @@ app.setActivationPolicy(.accessory)
 emit("ready")
 ShortcutKeyMonitor.shared.start()
 FocusTargetController.shared.start()
+AccessibilityTrustMonitor.shared.start()
 dictation.emitDiagnostics()
 
 Thread.detachNewThread {

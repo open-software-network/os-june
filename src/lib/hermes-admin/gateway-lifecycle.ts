@@ -18,7 +18,7 @@
  */
 
 import { timingForMutation, type AdminMutation } from "./application-timing";
-import { AdminStateCache, type AdminResource } from "./cache";
+import type { AdminStateCache, AdminResource } from "./cache";
 import type { HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import type { HermesActionStatus } from "./schemas";
@@ -64,26 +64,25 @@ function describe(
     case "changes-apply-next-session":
       return {
         label: "Applies next session",
-        detail:
-          "Your changes take effect in new sessions. Current sessions are unaffected.",
+        detail: "Your changes take effect in new sessions. Current sessions are unaffected.",
         canRestart: false,
       };
     case "gateway-restart-required":
       return {
-        label: "Restart required",
-        detail: "Restart the Hermes gateway to apply your changes.",
+        label: "Restart to apply your changes",
+        detail: "Your changes are saved. Restart the agent to start using them.",
         canRestart: true,
       };
     case "restart-in-progress":
       return {
-        label: "Restarting gateway",
+        label: "Restarting",
         detail: "Applying your changes. This can take a moment.",
         canRestart: false,
       };
     case "restart-failed":
       return {
         label: "Restart failed",
-        detail: "The gateway did not restart. You can try again.",
+        detail: "The agent did not restart. You can try again.",
         canRestart: true,
       };
     case "reindex-in-progress":
@@ -101,8 +100,7 @@ function describe(
     case "active-session-should-restart":
       return {
         label: "Restart the session to apply",
-        detail:
-          "A session is running. Restart it for this change to take effect.",
+        detail: "A session is running. Restart it for this change to take effect.",
         canRestart: true,
       };
   }
@@ -146,9 +144,7 @@ export class GatewayLifecycle {
   private readonly client: HermesAdminClient;
   private readonly cache: AdminStateCache;
   private snapshot: GatewayLifecycleSnapshot;
-  private readonly subscribers = new Set<
-    (snapshot: GatewayLifecycleSnapshot) => void
-  >();
+  private readonly subscribers = new Set<(snapshot: GatewayLifecycleSnapshot) => void>();
 
   constructor(client: HermesAdminClient, cache: AdminStateCache) {
     this.client = client;
@@ -163,9 +159,7 @@ export class GatewayLifecycle {
 
   /** Subscribes to lifecycle changes. Fires immediately with the current
    * snapshot, then on every transition. Returns an unsubscribe. */
-  subscribe(
-    listener: (snapshot: GatewayLifecycleSnapshot) => void,
-  ): () => void {
+  subscribe(listener: (snapshot: GatewayLifecycleSnapshot) => void): () => void {
     this.subscribers.add(listener);
     listener(this.snapshot);
     return () => {
@@ -228,14 +222,10 @@ export class GatewayLifecycle {
    * refreshes the post-restart resources. Never throws — failures resolve as
    * `{ ok: false, error }` and leave the banner in `restart-failed`.
    */
-  async requestRestart(
-    options: RequestRestartOptions = {},
-  ): Promise<RestartOutcome> {
+  async requestRestart(options: RequestRestartOptions = {}): Promise<RestartOutcome> {
     // Never interrupt a live session without explicit confirmation.
     if (options.hasActiveSession) {
-      const proceed = options.confirmInterrupt
-        ? await options.confirmInterrupt()
-        : false;
+      const proceed = options.confirmInterrupt ? await options.confirmInterrupt() : false;
       if (!proceed) {
         return { ok: false, declined: true };
       }
@@ -268,10 +258,7 @@ export class GatewayLifecycle {
       this.transition("clean");
       return { ok: true, status, invalidated };
     } catch (error) {
-      const adminError = HermesAdminError.from(
-        "POST /api/gateway/restart",
-        error,
-      );
+      const adminError = HermesAdminError.from("POST /api/gateway/restart", error);
       this.transition("restart-failed", { error: adminError.safeMessage });
       return { ok: false, error: adminError };
     }
@@ -284,12 +271,7 @@ export class GatewayLifecycle {
    * read retries) rather than throwing out of the restart flow.
    */
   private async refreshAfterRestart(): Promise<readonly AdminResource[]> {
-    const resources: AdminResource[] = [
-      "mcpServers",
-      "toolsets",
-      "skills",
-      "gatewayStatus",
-    ];
+    const resources: AdminResource[] = ["mcpServers", "toolsets", "skills", "gatewayStatus"];
     this.cache.invalidate(resources);
 
     // Best-effort eager reload so subscribers see fresh data immediately. Each
@@ -303,10 +285,7 @@ export class GatewayLifecycle {
     return resources;
   }
 
-  private async reload(
-    resource: AdminResource,
-    load: () => Promise<unknown>,
-  ): Promise<void> {
+  private async reload(resource: AdminResource, load: () => Promise<unknown>): Promise<void> {
     try {
       this.cache.set(resource, await load());
     } catch {
@@ -331,10 +310,7 @@ export class GatewayLifecycle {
     };
   }
 
-  private transition(
-    state: GatewayLifecycleState,
-    extra?: { error?: string },
-  ): void {
+  private transition(state: GatewayLifecycleState, extra?: { error?: string }): void {
     this.snapshot = this.snapshotFor(state, extra);
     this.emit();
   }

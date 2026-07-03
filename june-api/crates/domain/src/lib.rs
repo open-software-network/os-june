@@ -18,6 +18,8 @@ pub enum ActionSlug {
     AgentChat,
     DictateCleanup,
     DictateTranscribe,
+    ImageEdit,
+    ImageGenerate,
     NoteGenerate,
     NoteTranscribe,
     WebFetch,
@@ -30,6 +32,8 @@ impl ActionSlug {
             Self::AgentChat => "agent_chat",
             Self::DictateCleanup => "dictate_cleanup",
             Self::DictateTranscribe => "dictate_transcribe",
+            Self::ImageEdit => "image_edit",
+            Self::ImageGenerate => "image_generate",
             Self::NoteGenerate => "note_generate",
             Self::NoteTranscribe => "note_transcribe",
             Self::WebFetch => "web_fetch",
@@ -98,6 +102,20 @@ impl TokenUsage {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProviderCredentials {
+    pub venice_api_key: Option<String>,
+}
+
+impl ProviderCredentials {
+    pub fn has_venice_api_key(&self) -> bool {
+        self.venice_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Authorization {
@@ -163,6 +181,7 @@ pub struct TranscriptionRequest {
     pub context: Option<String>,
     pub language: Option<String>,
     pub model: ModelId,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
@@ -175,21 +194,70 @@ pub struct GenerationRequest {
     pub existing_generated_note: Option<String>,
     pub model: ModelId,
     pub system_prompt: String,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
 pub struct CleanupRequest {
     pub text: String,
     pub dictionary_context: Option<String>,
+    /// Recognized insertion-surface slug ("email"); shapes output layout.
+    pub app_context: Option<String>,
     pub style: String,
     pub model: ModelId,
     pub system_prompt: String,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug)]
 pub struct AgentChatRequest {
     pub body: serde_json::Value,
     pub model: ModelId,
+    pub provider_credentials: ProviderCredentials,
+}
+
+/// What an image generator needs: a prompt, the model, optional pixel
+/// dimensions, and provider credentials. Deliberately carries no user id,
+/// so the provider sees only the inference inputs and the upstream key.
+#[derive(Clone, Debug)]
+pub struct ImageGenerationRequest {
+    pub prompt: String,
+    pub model: ModelId,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// Venice `safe_mode` (blurs adult content). `None` leaves it unset so Venice
+    /// applies its own default; a value forces it on/off. Carried so the on-device
+    /// safe-mode setting can flow through to generation.
+    pub safe_mode: Option<bool>,
+    pub provider_credentials: ProviderCredentials,
+}
+
+/// What an image editor needs: the source image bytes (base64, no `data:`
+/// prefix) plus its mime, the edit instruction, the model, optional Venice
+/// safe mode, and provider credentials. Image editing is a SEPARATE
+/// Venice endpoint and model catalog from generation, with a raw-binary
+/// response, so it has its own domain type and provider rather than reusing
+/// the generator.
+#[derive(Clone, Debug)]
+pub struct ImageEditRequest {
+    pub image_base64: String,
+    pub mime_type: String,
+    pub prompt: String,
+    pub model: ModelId,
+    pub safe_mode: Option<bool>,
+    pub provider_credentials: ProviderCredentials,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImage {
+    /// Base64-encoded image bytes, no `data:` prefix. The frontend wraps this
+    /// in a data URL for the existing inline image display path.
+    pub image_base64: String,
+    /// IANA mime of the encoded bytes, e.g. `image/png`.
+    pub mime_type: String,
+    pub model: String,
+    pub provider: String,
 }
 
 /// Which upstream engine Venice should run a web search against. Brave is the
@@ -210,6 +278,7 @@ pub struct WebSearchRequest {
     /// `None` lets the provider apply its default.
     pub limit: Option<u32>,
     pub provider: WebSearchProvider,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -235,6 +304,7 @@ pub struct WebSearchResult {
 #[derive(Clone, Debug)]
 pub struct WebFetchRequest {
     pub url: String,
+    pub provider_credentials: ProviderCredentials,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -345,6 +415,19 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+}
+
+#[async_trait]
+pub trait ImageGenerator: Send + Sync {
+    async fn generate(
+        &self,
+        request: ImageGenerationRequest,
+    ) -> Result<GeneratedImage, DomainError>;
+}
+
+#[async_trait]
+pub trait ImageEditor: Send + Sync {
+    async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError>;
 }
 
 #[async_trait]

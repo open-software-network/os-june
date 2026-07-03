@@ -16,11 +16,7 @@ type GlobalRecorderPillProps = {
 // a recording is live but you've navigated off its note. It keeps the in-app
 // version quieter than the native HUD: a contained waveform. Click to return
 // to the note for controls.
-export function GlobalRecorderPill({
-  status,
-  title,
-  onOpen,
-}: GlobalRecorderPillProps) {
+export function GlobalRecorderPill({ status, title, onOpen }: GlobalRecorderPillProps) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const recording = status.state === "recording";
   useRecordingPresenceBounds(buttonRef);

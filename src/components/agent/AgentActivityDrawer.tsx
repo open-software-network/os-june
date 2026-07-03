@@ -29,16 +29,9 @@ import type {
   HermesMode,
 } from "../../lib/hermes-control-plane";
 import { nonEmpty } from "../../lib/hermes-control-plane";
-import type {
-  AgentActivityPhase,
-  AgentActivityRecord,
-} from "../../lib/hermes-activity-store";
+import type { AgentActivityPhase, AgentActivityRecord } from "../../lib/hermes-activity-store";
 import { toolActivityLabel } from "../../lib/agent-tool-labels";
-import type {
-  AgentArtifact,
-  ArtifactAction,
-  ArtifactKind,
-} from "../../lib/hermes-artifact-store";
+import type { AgentArtifact, ArtifactAction, ArtifactKind } from "../../lib/hermes-artifact-store";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { fileTypeIconComponent } from "./FileTypeIcon";
 
@@ -99,9 +92,7 @@ export function AgentActivityDrawer({
   /** Resolve a session id to a display title; `undefined` → row falls back to the id. */
   titleForSession: (sessionId: string) => string | undefined;
   /** Optional model/provider resolver (e.g. from feature 09's usage). */
-  modelForSession?: (
-    sessionId: string,
-  ) => { model?: string; provider?: string } | undefined;
+  modelForSession?: (sessionId: string) => { model?: string; provider?: string } | undefined;
   /** Open the owning session in the workspace. */
   onOpenSession: (sessionId: string) => void;
   /** Steer the live session (opens it and focuses the composer's steer input). */
@@ -145,9 +136,7 @@ export function AgentActivityDrawer({
   if (!open) return null;
 
   const hasActivity = records.length > 0;
-  const activeCount = records.filter((record) =>
-    isActivePhase(record.phase),
-  ).length;
+  const activeCount = records.filter((record) => isActivePhase(record.phase)).length;
 
   return (
     <section className="agent-activity-drawer" aria-label="Agent activity">
@@ -175,8 +164,7 @@ export function AgentActivityDrawer({
         <p className="agent-activity-drawer-state">Loading activity…</p>
       ) : !hasActivity ? (
         <p className="agent-activity-drawer-state">
-          No agents are working right now. Activity shows up here when a session
-          starts running.
+          No agents are working right now. Activity shows up here when a session starts running.
         </p>
       ) : (
         <ul className="agent-activity-drawer-list">
@@ -190,9 +178,7 @@ export function AgentActivityDrawer({
               onOpen={() => onOpenSession(record.sessionId)}
               onSteer={() => onSteerSession(record.sessionId)}
               canSteer={
-                canSteerSession
-                  ? canSteerSession(record.sessionId)
-                  : isActivePhase(record.phase)
+                canSteerSession ? canSteerSession(record.sessionId) : isActivePhase(record.phase)
               }
               onStop={() => onStopSession(record.sessionId)}
               subagentStop={stop}
@@ -268,13 +254,9 @@ type SubagentStopController = {
 };
 
 function useSubagentStop(
-  onStopSubagent:
-    | ((target: SubagentStopTarget) => void | Promise<unknown>)
-    | undefined,
+  onStopSubagent: ((target: SubagentStopTarget) => void | Promise<unknown>) | undefined,
 ): SubagentStopController {
-  const [stoppingIds, setStoppingIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const [stoppingIds, setStoppingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [pending, setPending] = useState<{
     sessionId: string;
     interruptId: string;
@@ -293,9 +275,7 @@ function useSubagentStop(
       // finished: stay quiet and let the event stream settle the row — drop the
       // optimistic overlay so it reconciles to its real (terminal) phase rather
       // than reading "stopping" forever.
-      void Promise.resolve(
-        onStopSubagent?.({ sessionId, subagentId: interruptId }),
-      ).catch(() => {
+      void Promise.resolve(onStopSubagent?.({ sessionId, subagentId: interruptId })).catch(() => {
         setStoppingIds((current) => {
           if (!current.has(interruptId)) return current;
           const next = new Set(current);
@@ -368,11 +348,7 @@ function ActivityRow({
 
   return (
     <li className="agent-activity-row" data-phase={record.phase}>
-      <span
-        className="agent-activity-row-icon"
-        data-phase={record.phase}
-        aria-hidden
-      >
+      <span className="agent-activity-row-icon" data-phase={record.phase} aria-hidden>
         {phase.icon}
       </span>
       <div className="agent-activity-row-body">
@@ -385,9 +361,7 @@ function ActivityRow({
             {phase.label}
           </span>
           {record.phase === "running" && nonEmpty(record.currentTool) ? (
-            <span className="agent-activity-row-tool">
-              {toolActivityLabel(record.currentTool)}
-            </span>
+            <span className="agent-activity-row-tool">{toolActivityLabel(record.currentTool)}</span>
           ) : null}
           {record.pendingActionCount > 0 ? (
             <span
@@ -420,9 +394,7 @@ function ActivityRow({
             {formatAge(record.lastEventAt, now)}
           </span>
         </div>
-        {modelLabel ? (
-          <p className="agent-activity-row-model">{modelLabel}</p>
-        ) : null}
+        {modelLabel ? <p className="agent-activity-row-model">{modelLabel}</p> : null}
       </div>
       <div className="agent-activity-row-actions">
         {canSteer ? (
@@ -545,12 +517,8 @@ function SubagentRow({
   // moment a terminal event (complete/error) reconciles the row, the real phase
   // WINS — a lingering id in the overlay set is ignored — so the row settles to
   // its true outcome rather than reading "stopping" forever.
-  const stopping =
-    !terminal &&
-    interruptId !== undefined &&
-    subagentStop.isStopping(interruptId);
-  const canStop =
-    subagentStop.enabled && interruptId !== undefined && !terminal && !stopping;
+  const stopping = !terminal && interruptId !== undefined && subagentStop.isStopping(interruptId);
+  const canStop = subagentStop.enabled && interruptId !== undefined && !terminal && !stopping;
 
   // While the optimistic overlay is on, the row reads "Stopping" instead of its
   // last reported phase — until a terminal event reconciles it (see
@@ -565,11 +533,7 @@ function SubagentRow({
       data-subagent-handle={nonEmpty(subagent.handle) ?? undefined}
       data-stopping={stopping ? "true" : undefined}
     >
-      <span
-        className="agent-activity-subagent-icon"
-        data-phase={subagent.phase}
-        aria-hidden
-      >
+      <span className="agent-activity-subagent-icon" data-phase={subagent.phase} aria-hidden>
         <IconRobot size={13} />
       </span>
       <div className="agent-activity-subagent-body">
@@ -596,9 +560,7 @@ function SubagentRow({
             </span>
           ) : null}
         </div>
-        {preview ? (
-          <p className="agent-activity-subagent-summary">{preview}</p>
-        ) : null}
+        {preview ? <p className="agent-activity-subagent-summary">{preview}</p> : null}
       </div>
       {/* Feature 13: the per-subagent stop button, targeting the trustworthy id.
           Only for an active subagent with such an id and a wired handler;
@@ -636,9 +598,7 @@ function SubagentRow({
  * with no id/handle at all): interrupting a made-up id could hit the wrong
  * subagent, so such a row stays read-only.
  */
-function trustworthyInterruptId(
-  subagent: BackgroundHermesActivity,
-): string | undefined {
+function trustworthyInterruptId(subagent: BackgroundHermesActivity): string | undefined {
   const handle = nonEmpty(subagent.handle);
   if (handle && handle !== "subagent") return handle;
   const id = nonEmpty(subagent.subagentId);
@@ -730,9 +690,7 @@ function isActivePhase(phase: AgentActivityPhase): boolean {
 }
 
 /** "model · provider", "model", or undefined. Middle dot, not a dash. */
-function formatModel(
-  model: { model?: string; provider?: string } | undefined,
-): string | undefined {
+function formatModel(model: { model?: string; provider?: string } | undefined): string | undefined {
   const name = nonEmpty(model?.model);
   const provider = nonEmpty(model?.provider);
   if (name && provider) return `${name} · ${provider}`;
@@ -814,52 +772,30 @@ export function AgentArtifactsSection({
   );
 }
 
-function ArtifactRow({
-  artifact,
-  onOpen,
-}: {
-  artifact: AgentArtifact;
-  onOpen: () => void;
-}) {
-  const name =
-    nonEmpty(artifact.displayName) ?? nonEmpty(artifact.path) ?? "File";
+function ArtifactRow({ artifact, onOpen }: { artifact: AgentArtifact; onOpen: () => void }) {
+  const name = nonEmpty(artifact.displayName) ?? nonEmpty(artifact.path) ?? "File";
   const action = actionMeta(artifact.action);
   const safety = pathSafetyMeta(artifact);
 
   return (
-    <li
-      className="agent-artifacts-row"
-      data-action={artifact.action}
-      data-kind={artifact.kind}
-    >
+    <li className="agent-artifacts-row" data-action={artifact.action} data-kind={artifact.kind}>
       <button
         type="button"
         className="agent-artifacts-button"
         onClick={onOpen}
         title={artifact.path ?? name}
       >
-        <span
-          className="agent-artifacts-icon"
-          data-action={artifact.action}
-          aria-hidden
-        >
+        <span className="agent-artifacts-icon" data-action={artifact.action} aria-hidden>
           {kindIcon(artifact.kind, name)}
         </span>
         <span className="agent-artifacts-body">
           <span className="agent-artifacts-name">{name}</span>
           <span className="agent-artifacts-meta">
-            <span
-              className="agent-artifacts-action"
-              data-action={artifact.action}
-            >
+            <span className="agent-artifacts-action" data-action={artifact.action}>
               {action.icon}
               {action.label}
             </span>
-            <span
-              className="agent-artifacts-safety"
-              data-safety={safety.key}
-              title={safety.title}
-            >
+            <span className="agent-artifacts-safety" data-safety={safety.key} title={safety.title}>
               {safety.icon}
               {safety.label}
             </span>

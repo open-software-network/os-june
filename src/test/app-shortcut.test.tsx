@@ -1,20 +1,10 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
-import {
-  AGENT_NEW_SESSION_EVENT,
-  AGENT_SESSIONS_CHANGED_EVENT,
-} from "../lib/agent-events";
+import { AGENT_NEW_SESSION_EVENT, AGENT_SESSIONS_CHANGED_EVENT } from "../lib/agent-events";
 import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type {
   AccountStatus,
@@ -88,6 +78,7 @@ const mocks = vi.hoisted(() => ({
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
+  finalizeHermesBridgeBranch: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeStatus: vi.fn(),
@@ -140,9 +131,8 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
 }));
 
 vi.mock("../app/update-decision", async () => {
-  const actual = await vi.importActual<typeof import("../app/update-decision")>(
-    "../app/update-decision",
-  );
+  const actual =
+    await vi.importActual<typeof import("../app/update-decision")>("../app/update-decision");
   return {
     ...actual,
     startPeriodicJuneUpdateChecks: mocks.startPeriodicJuneUpdateChecks,
@@ -151,6 +141,10 @@ vi.mock("../app/update-decision", async () => {
 
 vi.mock("../lib/tauri", () => ({
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  // The agent workspace mounts the pending skill-writes tray, whose loader
+  // reaches the Rust bridge through this named `invoke`. A quiet stub keeps
+  // these shortcut tests focused on the meetings surfaces.
+  invoke: vi.fn(async () => []),
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,
@@ -177,6 +171,7 @@ vi.mock("../lib/tauri", () => ({
   dictationHelperCommand: mocks.dictationHelperCommand,
   listDictationHistory: mocks.listDictationHistory,
   osAccountsStatus: mocks.osAccountsStatus,
+  osAccountsStatusLocal: mocks.osAccountsStatus,
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
@@ -184,6 +179,7 @@ vi.mock("../lib/tauri", () => ({
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
+  finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -191,6 +187,14 @@ vi.mock("../lib/tauri", () => ({
   juneVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: mocks.providerModelSettings,
   listVeniceModels: mocks.listVeniceModels,
+  setVeniceApiKey: vi.fn(async () => ({
+    generationModel: "",
+    veniceApiKeyConfigured: true,
+  })),
+  clearVeniceApiKey: vi.fn(async () => ({
+    generationModel: "",
+    veniceApiKeyConfigured: false,
+  })),
   startHermesBridge: mocks.startHermesBridge,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
 }));
@@ -255,9 +259,7 @@ function microphoneOnlyReadiness(): RecordingSourceReadinessDto {
   };
 }
 
-function recordingSession(
-  overrides: Partial<RecordingSessionDto> = {},
-): RecordingSessionDto {
+function recordingSession(overrides: Partial<RecordingSessionDto> = {}): RecordingSessionDto {
   return {
     id: "rec-1",
     noteId: "note-1",
@@ -346,11 +348,9 @@ describe("App shortcuts", () => {
       running: false,
     });
     mocks.startPeriodicJuneUpdateChecks.mockReturnValue(vi.fn());
-    mocks.suggestAgentSessionTitle.mockImplementation(
-      async (prompt: string) => ({
-        title: prompt,
-      }),
-    );
+    mocks.suggestAgentSessionTitle.mockImplementation(async (prompt: string) => ({
+      title: prompt,
+    }));
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
@@ -366,10 +366,7 @@ describe("App shortcuts", () => {
     });
     mocks.listeners.clear();
     mocks.listen.mockImplementation(
-      async (
-        event: string,
-        handler: (event: { payload?: unknown }) => void,
-      ) => {
+      async (event: string, handler: (event: { payload?: unknown }) => void) => {
         mocks.listeners.set(event, handler);
         return () => mocks.listeners.delete(event);
       },
@@ -387,15 +384,25 @@ describe("App shortcuts", () => {
       render(<App />);
 
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-      await waitFor(() =>
-        expect(mocks.startPeriodicJuneUpdateChecks).toHaveBeenCalledOnce(),
-      );
-      expect(mocks.startPeriodicJuneUpdateChecks.mock.calls[0]?.[0]).toEqual(
-        expect.any(Function),
-      );
+      await waitFor(() => expect(mocks.startPeriodicJuneUpdateChecks).toHaveBeenCalledOnce());
+      expect(mocks.startPeriodicJuneUpdateChecks.mock.calls[0]?.[0]).toEqual(expect.any(Function));
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("clears the OS Accounts browser session from sidebar sign-out", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await user.click(screen.getByRole("button", { name: "alex@example.com, account menu" }));
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+
+    expect(mocks.osAccountsLogout).toHaveBeenCalledWith({ clearBrowserSession: true });
+    expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
   });
 
   it("starts a new session with Command-N", async () => {
@@ -416,6 +423,49 @@ describe("App shortcuts", () => {
     }
   });
 
+  it("opens a report draft from the account menu while a session is active", async () => {
+    const user = userEvent.setup();
+    const activeSession = {
+      id: "session-1",
+      title: "Existing session",
+      preview: "Existing session preview",
+      last_active: now,
+    };
+
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [activeSession],
+            selectedSessionId: undefined,
+            workingSessionIds: [],
+            waitingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    for (const [menuItem, chipLabel] of [
+      ["Report a bug", "Bug report"],
+      ["Send feedback", "Feedback"],
+      ["Request a feature", "Feature request"],
+    ] as const) {
+      await user.click(await screen.findByRole("button", { name: "Existing session" }));
+      expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /account menu/i }));
+      await user.click(screen.getByRole("menuitem", { name: menuItem }));
+
+      expect(await screen.findByText(chipLabel)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    }
+  });
+
   it("keeps a newly started chat attached to its tab before sessions hydrate", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "MacIntel",
@@ -430,16 +480,12 @@ describe("App shortcuts", () => {
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
     });
-    mocks.listHermesSessions.mockImplementation(
-      () => new Promise(() => undefined),
-    );
+    mocks.listHermesSessions.mockImplementation(() => new Promise(() => undefined));
 
     try {
       render(<App />);
 
-      expect(
-        await screen.findByRole("heading", { name: HERO_GREETING }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
 
       window.dispatchEvent(
         new CustomEvent(AGENT_NEW_SESSION_EVENT, {
@@ -454,9 +500,7 @@ describe("App shortcuts", () => {
         }),
       );
       await waitFor(() =>
-        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
-          0,
-        ),
+        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(0),
       );
 
       const chatTab = await screen.findByRole("tab", {
@@ -465,20 +509,14 @@ describe("App shortcuts", () => {
       expect(chatTab).toHaveAttribute("data-active", "true");
 
       await user.click(screen.getByRole("button", { name: "New tab" }));
-      expect(
-        await screen.findByRole("heading", { name: HERO_GREETING }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
 
       fireEvent.keyDown(window, { key: "1", metaKey: true });
 
       await waitFor(() =>
-        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
-          0,
-        ),
+        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(0),
       );
-      expect(
-        screen.queryByRole("heading", { name: HERO_GREETING }),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
@@ -498,16 +536,12 @@ describe("App shortcuts", () => {
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
     });
-    mocks.listHermesSessions.mockImplementation(
-      () => new Promise(() => undefined),
-    );
+    mocks.listHermesSessions.mockImplementation(() => new Promise(() => undefined));
 
     try {
       render(<App />);
 
-      expect(
-        await screen.findByRole("heading", { name: HERO_GREETING }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
 
       act(() => {
         window.dispatchEvent(
@@ -522,15 +556,11 @@ describe("App shortcuts", () => {
       });
 
       await waitFor(() =>
-        expect(
-          screen.queryByRole("heading", { name: HERO_GREETING }),
-        ).not.toBeInTheDocument(),
+        expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument(),
       );
 
       await user.click(screen.getByRole("button", { name: "New tab" }));
-      expect(
-        await screen.findByRole("heading", { name: HERO_GREETING }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
 
       fireEvent.keyDown(window, { key: "1", metaKey: true });
 
@@ -547,9 +577,10 @@ describe("App shortcuts", () => {
         }),
       );
       await waitFor(() =>
-        expect(
-          screen.getByRole("tab", { name: "triage the launch checklist" }),
-        ).toHaveAttribute("data-active", "true"),
+        expect(screen.getByRole("tab", { name: "triage the launch checklist" })).toHaveAttribute(
+          "data-active",
+          "true",
+        ),
       );
     } finally {
       restoreNavigator();
@@ -566,9 +597,7 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
-      expect(
-        await screen.findByRole("heading", { name: HERO_GREETING }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
 
       const firstSession = {
         id: "session-1",
@@ -589,15 +618,17 @@ describe("App shortcuts", () => {
       });
 
       await waitFor(() =>
-        expect(
-          screen.getByRole("tab", { name: "First session" }),
-        ).toHaveAttribute("data-active", "true"),
+        expect(screen.getByRole("tab", { name: "First session" })).toHaveAttribute(
+          "data-active",
+          "true",
+        ),
       );
 
       await user.click(screen.getByRole("button", { name: "New tab" }));
-      expect(
-        await screen.findByRole("tab", { name: "New session" }),
-      ).toHaveAttribute("data-active", "true");
+      expect(await screen.findByRole("tab", { name: "New session" })).toHaveAttribute(
+        "data-active",
+        "true",
+      );
 
       const secondSession = {
         id: "session-2",
@@ -618,18 +649,20 @@ describe("App shortcuts", () => {
       });
 
       await waitFor(() =>
-        expect(
-          screen.getByRole("tab", { name: "Second session" }),
-        ).toHaveAttribute("data-active", "true"),
+        expect(screen.getByRole("tab", { name: "Second session" })).toHaveAttribute(
+          "data-active",
+          "true",
+        ),
       );
 
       await user.click(screen.getByRole("button", { name: "Show all 2 tabs" }));
       await user.click(screen.getByRole("menuitem", { name: "First session" }));
 
       await waitFor(() =>
-        expect(
-          screen.getByRole("tab", { name: "First session" }),
-        ).toHaveAttribute("data-active", "true"),
+        expect(screen.getByRole("tab", { name: "First session" })).toHaveAttribute(
+          "data-active",
+          "true",
+        ),
       );
     } finally {
       restoreNavigator();
@@ -646,14 +679,9 @@ describe("App shortcuts", () => {
 
     fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
 
+    await waitFor(() => expect(mocks.createNote).toHaveBeenCalledWith(undefined));
     await waitFor(() =>
-      expect(mocks.createNote).toHaveBeenCalledWith(undefined),
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
-        "data-active",
-        "true",
-      ),
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute("data-active", "true"),
     );
   });
 
@@ -663,42 +691,28 @@ describe("App shortcuts", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
-        "data-active",
-        "true",
-      ),
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute("data-active", "true"),
     );
 
     fireEvent.keyDown(window, { key: "w", metaKey: true });
 
     await waitFor(() =>
-      expect(
-        screen.queryByRole("tab", { name: "New note" }),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByRole("tab", { name: "New note" })).not.toBeInTheDocument(),
     );
-    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
-      "data-active",
-      "true",
-    );
+    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute("data-active", "true");
   });
 
   it("closes the active tab from the native close-tab menu event", async () => {
     render(<App />);
     const closeTabListenerCount = () =>
-      mocks.listen.mock.calls.filter(([event]) => event === CLOSE_TAB_EVENT)
-        .length;
+      mocks.listen.mock.calls.filter(([event]) => event === CLOSE_TAB_EVENT).length;
 
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    await waitFor(() =>
-      expect(mocks.listeners.has(CLOSE_TAB_EVENT)).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has(CLOSE_TAB_EVENT)).toBe(true));
     expect(closeTabListenerCount()).toBe(1);
     fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
-        "data-active",
-        "true",
-      ),
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute("data-active", "true"),
     );
     expect(closeTabListenerCount()).toBe(1);
 
@@ -706,47 +720,33 @@ describe("App shortcuts", () => {
     dialog.setAttribute("role", "dialog");
     document.body.appendChild(dialog);
     mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
-    expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
-      "data-active",
-      "true",
-    );
+    expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute("data-active", "true");
     dialog.remove();
 
     mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
 
     await waitFor(() =>
-      expect(
-        screen.queryByRole("tab", { name: "New note" }),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByRole("tab", { name: "New note" })).not.toBeInTheDocument(),
     );
-    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
-      "data-active",
-      "true",
-    );
+    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute("data-active", "true");
     expect(closeTabListenerCount()).toBe(1);
   });
 
   it("opens settings from the native app menu event", async () => {
     render(<App />);
 
-    await waitFor(() =>
-      expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
 
     mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
 
-    expect(
-      await screen.findByRole("heading", { name: "Appearance" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await waitFor(() =>
-      expect(mocks.listeners.has("dictation-event")).toBe(true),
-    );
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     mocks.dictationHelperCommand.mockClear();
@@ -780,6 +780,108 @@ describe("App shortcuts", () => {
     expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("accessibility");
   });
 
+  it("keeps refreshing Accessibility while access is missing", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    mocks.dictationHelperCommand.mockClear();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    expect(
+      await screen.findByText(
+        "Dictation can't paste into other apps until you grant accessibility access.",
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "get_permission_status",
+      }),
+    );
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "granted" },
+        }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Dictation can't paste into other apps until you grant accessibility access.",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("lets users dismiss the Accessibility reminder while access is missing", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    const message = "Dictation can't paste into other apps until you grant accessibility access.";
+    expect(await screen.findByText(message)).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Dismiss accessibility reminder",
+      }),
+    );
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "granted" },
+        }),
+      });
+    });
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+  });
+
   it("polls system audio readiness after opening the macOS permission pane", async () => {
     const user = userEvent.setup();
     const restoreNavigator = stubNavigatorPlatform(
@@ -795,25 +897,17 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
-      await waitFor(() =>
-        expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
-      );
+      await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
       act(() => {
         mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
       });
 
-      expect(
-        await screen.findByRole("heading", { name: "Appearance" }),
-      ).toBeInTheDocument();
-      const blockedRow = screen
-        .getByText("System audio")
-        .closest(".settings-row");
+      expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+      const blockedRow = screen.getByText("System audio").closest(".settings-row");
       expect(blockedRow).not.toBeNull();
-      expect(
-        within(blockedRow as HTMLElement).getByLabelText("Blocked"),
-      ).toBeInTheDocument();
+      expect(within(blockedRow as HTMLElement).getByLabelText("Blocked")).toBeInTheDocument();
 
       await user.click(
         within(blockedRow as HTMLElement).getByRole("button", {
@@ -822,17 +916,11 @@ describe("App shortcuts", () => {
       );
 
       expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
-      await waitFor(() =>
-        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2),
-      );
+      await waitFor(() => expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2));
       await waitFor(() => {
-        const allowedRow = screen
-          .getByText("System audio")
-          .closest(".settings-row");
+        const allowedRow = screen.getByText("System audio").closest(".settings-row");
         expect(allowedRow).not.toBeNull();
-        expect(
-          within(allowedRow as HTMLElement).getByLabelText("Allowed"),
-        ).toBeInTheDocument();
+        expect(within(allowedRow as HTMLElement).getByLabelText("Allowed")).toBeInTheDocument();
       });
     } finally {
       restoreNavigator();
@@ -855,21 +943,15 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
-      await waitFor(() =>
-        expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
-      );
+      await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
       act(() => {
         mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
       });
 
-      expect(
-        await screen.findByRole("heading", { name: "Appearance" }),
-      ).toBeInTheDocument();
-      const blockedRow = screen
-        .getByText("System audio")
-        .closest(".settings-row");
+      expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+      const blockedRow = screen.getByText("System audio").closest(".settings-row");
       expect(blockedRow).not.toBeNull();
 
       fireEvent.click(
@@ -878,9 +960,7 @@ describe("App shortcuts", () => {
         }),
       );
 
-      await waitFor(() =>
-        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2),
-      );
+      await waitFor(() => expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledTimes(2));
 
       await new Promise((resolve) => window.setTimeout(resolve, 1_200));
 
@@ -891,13 +971,9 @@ describe("App shortcuts", () => {
         await pendingProbe;
       });
       await waitFor(() => {
-        const allowedRow = screen
-          .getByText("System audio")
-          .closest(".settings-row");
+        const allowedRow = screen.getByText("System audio").closest(".settings-row");
         expect(allowedRow).not.toBeNull();
-        expect(
-          within(allowedRow as HTMLElement).getByLabelText("Allowed"),
-        ).toBeInTheDocument();
+        expect(within(allowedRow as HTMLElement).getByLabelText("Allowed")).toBeInTheDocument();
       });
     } finally {
       restoreNavigator();
@@ -914,20 +990,17 @@ describe("App shortcuts", () => {
       resolveProbe = resolve;
     });
     let systemReadinessCalls = 0;
-    mocks.checkRecordingSourceReadiness.mockImplementation(
-      async (mode: string) => {
-        if (mode === "microphoneOnly") return microphoneOnlyReadiness();
-        systemReadinessCalls += 1;
-        if (systemReadinessCalls === 1) return recordingReadiness(false);
-        return pendingProbe;
-      },
-    );
-    mocks.startRecording.mockImplementation(
-      async (noteId: string, sourceMode: string) =>
-        recordingSession({
-          noteId,
-          sourceMode: sourceMode as RecordingSessionDto["sourceMode"],
-        }),
+    mocks.checkRecordingSourceReadiness.mockImplementation(async (mode: string) => {
+      if (mode === "microphoneOnly") return microphoneOnlyReadiness();
+      systemReadinessCalls += 1;
+      if (systemReadinessCalls === 1) return recordingReadiness(false);
+      return pendingProbe;
+    });
+    mocks.startRecording.mockImplementation(async (noteId: string, sourceMode: string) =>
+      recordingSession({
+        noteId,
+        sourceMode: sourceMode as RecordingSessionDto["sourceMode"],
+      }),
     );
     mocks.getRecordingStatus.mockResolvedValue({
       sessionId: "rec-1",
@@ -943,13 +1016,9 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
+      await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
       await waitFor(() =>
-        expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
-      );
-      await waitFor(() =>
-        expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(
-          true,
-        ),
+        expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
       );
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
@@ -957,12 +1026,8 @@ describe("App shortcuts", () => {
         mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
       });
 
-      expect(
-        await screen.findByRole("heading", { name: "Appearance" }),
-      ).toBeInTheDocument();
-      const blockedRow = screen
-        .getByText("System audio")
-        .closest(".settings-row");
+      expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+      const blockedRow = screen.getByText("System audio").closest(".settings-row");
       expect(blockedRow).not.toBeNull();
 
       fireEvent.click(
@@ -983,10 +1048,7 @@ describe("App shortcuts", () => {
         }
         expect(mocks.startRecording).toHaveBeenCalled();
       });
-      expect(mocks.startRecording).toHaveBeenCalledWith(
-        expect.any(String),
-        "microphoneOnly",
-      );
+      expect(mocks.startRecording).toHaveBeenCalledWith(expect.any(String), "microphoneOnly");
 
       await new Promise((resolve) => window.setTimeout(resolve, 1_200));
 
@@ -1023,9 +1085,7 @@ describe("App shortcuts", () => {
       expect(mocks.createNote).not.toHaveBeenCalled();
 
       fireEvent.keyDown(window, { key: "n", ctrlKey: true, shiftKey: true });
-      await waitFor(() =>
-        expect(mocks.createNote).toHaveBeenCalledWith(undefined),
-      );
+      await waitFor(() => expect(mocks.createNote).toHaveBeenCalledWith(undefined));
     } finally {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
       restoreNavigator();
@@ -1056,24 +1116,16 @@ describe("App shortcuts", () => {
     render(<App />);
 
     // The app launches on the agent view; the notes list is one hop away.
-    await user.click(
-      await screen.findByRole("button", { name: "Meeting notes" }),
-    );
-    await user.click(
-      await screen.findByRole("button", { name: /^First note/ }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await user.click(await screen.findByRole("button", { name: /^First note/ }));
     await screen.findByDisplayValue("First note");
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open Testing folder" }),
+    fireEvent.click(screen.getByRole("button", { name: "Open Testing folder" }));
+
+    expect(await screen.findByRole("button", { name: /Rename project/ })).toHaveTextContent(
+      "Testing folder",
     );
 
-    expect(
-      await screen.findByRole("button", { name: /Rename project/ }),
-    ).toHaveTextContent("Testing folder");
-
-    await user.click(
-      screen.getByRole("button", { name: /back to first note/i }),
-    );
+    await user.click(screen.getByRole("button", { name: /back to first note/i }));
 
     expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
   });
@@ -1087,21 +1139,15 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    expect(
-      await screen.findByRole("heading", { name: "Welcome to June" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
 
-    await user.click(
-      screen.getByRole("button", { name: "Continue with OpenSoftware" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
     // Clearing the gate lands on a fresh agent session, not a new note.
-    expect(
-      await screen.findByRole("heading", { name: HERO_GREETING }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
     expect(mocks.createNote).not.toHaveBeenCalled();
   });
 
@@ -1126,16 +1172,10 @@ describe("App shortcuts", () => {
       ).toBeInTheDocument();
       expect(screen.queryByText(/dictate with/)).not.toBeInTheDocument();
 
-      await user.click(
-        screen.getByRole("button", { name: "Continue with OpenSoftware" }),
-      );
+      await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
-      expect(
-        await screen.findByRole("button", { name: "New note" }),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole("heading", { name: HERO_GREETING }),
-      ).not.toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "New note" })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
@@ -1151,12 +1191,8 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    expect(
-      screen.queryByRole("heading", { name: "Welcome to June" }),
-    ).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: "Continue with OpenSoftware" }),
-    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Welcome to June" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
 
     resolveStatus?.({
@@ -1167,9 +1203,7 @@ describe("App shortcuts", () => {
       subscription: { subscribed: true, status: "active" },
     });
 
-    expect(
-      await screen.findByRole("heading", { name: HERO_GREETING }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
   });
 
   it("bypasses account gates in dev when account status is unavailable", async () => {
@@ -1177,12 +1211,8 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    expect(
-      await screen.findByRole("heading", { name: HERO_GREETING }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
     expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
-    expect(
-      screen.queryByRole("button", { name: "Continue with OpenSoftware" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
   });
 });

@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GatewayLifecycleState } from "../lib/hermes-admin";
-import {
-  instantSleep,
-  makeAdminHarness,
-} from "./fixtures/hermes-admin-harness";
+import { instantSleep, makeAdminHarness } from "./fixtures/hermes-admin-harness";
 import {
   gatewayRestartFailsScenario,
   gatewayRestartPendingScenario,
@@ -29,14 +26,13 @@ describe("GatewayLifecycle — state machine and copy", () => {
       // Use the public markers / transitions reachable without a restart.
       if (state === "gateway-restart-required") lifecycle.markRestartRequired();
       if (state === "changes-apply-next-session") lifecycle.markNextSession();
-      if (state === "active-session-should-restart")
-        lifecycle.markActiveSessionShouldRestart();
+      if (state === "active-session-should-restart") lifecycle.markActiveSessionShouldRestart();
       if (state === "clean") lifecycle.reset();
     }
     // Spot check copy on a couple of states.
     lifecycle.markRestartRequired();
     let snap = lifecycle.getSnapshot();
-    expect(snap.label).toBe("Restart required");
+    expect(snap.label).toBe("Restart to apply your changes");
     expect(snap.canRestart).toBe(true);
     expect(snap.detail).not.toMatch(/[–—]/);
 
@@ -92,9 +88,7 @@ describe("GatewayLifecycle — state machine and copy", () => {
 
 describe("GatewayLifecycle — restart flow", () => {
   it("never restarts an active session without explicit confirmation", async () => {
-    const { lifecycle, server } = makeAdminHarness(
-      gatewayRestartPendingScenario(),
-    );
+    const { lifecycle, server } = makeAdminHarness(gatewayRestartPendingScenario());
     const before = server.requestLog.length;
     const outcome = await lifecycle.requestRestart({
       hasActiveSession: true,
@@ -103,17 +97,13 @@ describe("GatewayLifecycle — restart flow", () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.declined).toBe(true);
     // No restart request was sent.
-    expect(
-      server.requestLog
-        .slice(before)
-        .some((e) => e.path === "/api/gateway/restart"),
-    ).toBe(false);
+    expect(server.requestLog.slice(before).some((e) => e.path === "/api/gateway/restart")).toBe(
+      false,
+    );
   });
 
   it("restarts after confirmation, polling the action and refreshing the inventory", async () => {
-    const { lifecycle, cache, server } = makeAdminHarness(
-      gatewayRestartPendingScenario(),
-    );
+    const { lifecycle, cache, server } = makeAdminHarness(gatewayRestartPendingScenario());
     const transitions: GatewayLifecycleState[] = [];
     lifecycle.subscribe((snap) => transitions.push(snap.state));
 
@@ -134,20 +124,13 @@ describe("GatewayLifecycle — restart flow", () => {
     expect(transitions.at(-1)).toBe("clean");
 
     // Post-restart resources were invalidated and eagerly reloaded.
-    expect(outcome.invalidated).toEqual([
-      "mcpServers",
-      "toolsets",
-      "skills",
-      "gatewayStatus",
-    ]);
+    expect(outcome.invalidated).toEqual(["mcpServers", "toolsets", "skills", "gatewayStatus"]);
     // The eager reload populated the cache from the live runtime.
     expect(cache.get("mcpServers")).toBeDefined();
     expect(cache.isStale("mcpServers")).toBe(false);
 
     // The restart endpoint was actually called.
-    expect(
-      server.requestLog.some((e) => e.path === "/api/gateway/restart"),
-    ).toBe(true);
+    expect(server.requestLog.some((e) => e.path === "/api/gateway/restart")).toBe(true);
   });
 
   it("does not require confirmation when there is no active session", async () => {
@@ -169,13 +152,9 @@ describe("GatewayLifecycle — restart flow", () => {
   });
 
   it("lands in restart-failed when the restart request itself errors", async () => {
-    const { lifecycle, client } = makeAdminHarness(
-      gatewayRestartPendingScenario(),
-    );
+    const { lifecycle, client } = makeAdminHarness(gatewayRestartPendingScenario());
     // Force the restart endpoint to throw at the transport layer.
-    vi.spyOn(client.gateway, "restart").mockRejectedValueOnce(
-      new Error("network down"),
-    );
+    vi.spyOn(client.gateway, "restart").mockRejectedValueOnce(new Error("network down"));
     const outcome = await lifecycle.requestRestart({ sleep: instantSleep });
     expect(outcome.ok).toBe(false);
     expect(outcome.error).toBeDefined();

@@ -1,17 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  TRACE_ENTRIES_PER_SESSION_CAP,
-  createHermesTraceBuffer,
-} from "../lib/hermes-trace-buffer";
+import { TRACE_ENTRIES_PER_SESSION_CAP, createHermesTraceBuffer } from "../lib/hermes-trace-buffer";
 
 // A raw gateway frame the buffer ingests. The buffer classifies it itself (it
 // owns the raw->normalized pairing), so tests pass raw frames, not classified
 // events.
-function rawFrame(
-  type: string,
-  sessionId: string | undefined,
-  payload?: unknown,
-) {
+function rawFrame(type: string, sessionId: string | undefined, payload?: unknown) {
   return { type, session_id: sessionId, payload };
 }
 
@@ -47,6 +40,21 @@ describe("createHermesTraceBuffer", () => {
     expect(entries[0].observedAt).toBe("2026-06-24T12:00:00.000Z");
   });
 
+  it("keys inbound frames by stored session id while preserving the runtime id", () => {
+    const buffer = createHermesTraceBuffer();
+
+    buffer.recordInbound(rawFrame("message.delta", "runtime-s1", { delta: "hi" }), {
+      storedSessionId: "stored-s1",
+    });
+
+    expect(buffer.entriesFor("runtime-s1")).toHaveLength(0);
+    const entries = buffer.entriesFor("stored-s1");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].sessionId).toBe("stored-s1");
+    expect(entries[0].runtimeSessionId).toBe("runtime-s1");
+    expect(buffer.exportSanitizedTrace("stored-s1").entries[0].rawType).toBe("message.delta");
+  });
+
   it("records an outbound method call with its method name and sanitized params", () => {
     const buffer = createHermesTraceBuffer();
     buffer.recordOutbound({
@@ -59,9 +67,7 @@ describe("createHermesTraceBuffer", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].direction).toBe("outbound");
     expect(entries[0].method).toBe("session.steer");
-    expect(entries[0].payloadKeys).toEqual(
-      expect.arrayContaining(["session_id", "text"]),
-    );
+    expect(entries[0].payloadKeys).toEqual(expect.arrayContaining(["session_id", "text"]));
   });
 
   it("records an error/rejection entry", () => {
@@ -182,9 +188,7 @@ describe("createHermesTraceBuffer", () => {
 
       const entry = buffer.entriesFor("s1")[0];
       const serialized = JSON.stringify(entry);
-      expect(serialized).not.toContain(
-        "Bearer abcdef0123456789abcdef0123456789",
-      );
+      expect(serialized).not.toContain("Bearer abcdef0123456789abcdef0123456789");
       expect(serialized).not.toContain("sk-abcdef0123456789abcdef0123456789");
       expect(serialized).toContain("[redacted]");
       // Safe text is preserved.

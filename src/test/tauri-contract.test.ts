@@ -4,6 +4,7 @@ import {
   ensureHermesBridgeGateway,
   finishRecording,
   getNote,
+  juneOpenCommunityPage,
   recoverRecording,
   retryProcessing,
   startRecording,
@@ -51,13 +52,9 @@ describe("Tauri command contracts", () => {
     await startRecording("note-1", "microphonePlusSystem");
     await finishRecording("session-1");
 
-    expect(mocks.invoke).toHaveBeenNthCalledWith(
-      1,
-      "check_recording_source_readiness",
-      {
-        request: { sourceMode: "microphonePlusSystem" },
-      },
-    );
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "check_recording_source_readiness", {
+      request: { sourceMode: "microphonePlusSystem" },
+    });
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "start_recording", {
       request: { noteId: "note-1", sourceMode: "microphonePlusSystem" },
     });
@@ -86,5 +83,11 @@ describe("Tauri command contracts", () => {
     await ensureHermesBridgeGateway();
 
     expect(mocks.invoke).toHaveBeenCalledWith("ensure_hermes_bridge_gateway");
+  });
+
+  it("opens the June community through a dedicated command", async () => {
+    await juneOpenCommunityPage();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("june_open_community_page");
   });
 });

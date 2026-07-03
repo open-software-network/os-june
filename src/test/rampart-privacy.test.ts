@@ -35,24 +35,18 @@ describe("agent privacy guard", () => {
   it("stores mode changes and dispatches a change event", () => {
     const events: string[] = [];
     window.addEventListener(AGENT_PRIVACY_GUARD_MODE_CHANGED_EVENT, (event) => {
-      events.push(
-        (event as CustomEvent<{ mode: string }>).detail?.mode ?? "missing",
-      );
+      events.push((event as CustomEvent<{ mode: string }>).detail?.mode ?? "missing");
     });
 
     setAgentPrivacyGuardMode("structured");
 
-    expect(window.localStorage.getItem(AGENT_PRIVACY_GUARD_MODE_KEY)).toBe(
-      "structured",
-    );
+    expect(window.localStorage.getItem(AGENT_PRIVACY_GUARD_MODE_KEY)).toBe("structured");
     expect(getAgentPrivacyGuardMode()).toBe("structured");
     expect(events).toEqual(["structured"]);
 
     setAgentPrivacyGuardMode("off");
 
-    expect(
-      window.localStorage.getItem(AGENT_PRIVACY_GUARD_MODE_KEY),
-    ).toBeNull();
+    expect(window.localStorage.getItem(AGENT_PRIVACY_GUARD_MODE_KEY)).toBeNull();
     expect(getAgentPrivacyGuardMode()).toBe("off");
     expect(events).toEqual(["structured", "off"]);
   });
@@ -91,18 +85,15 @@ describe("agent privacy guard", () => {
         guard: {
           protect: async (text: string) => {
             const placeholders: string[] = [];
-            const protectedText = text.replace(
-              /[\w.-]+@[\w.-]+\.[a-z]+/gi,
-              (email) => {
-                let placeholder = placeholdersByEmail.get(email);
-                if (!placeholder) {
-                  placeholder = `[EMAIL_${placeholdersByEmail.size + 1}]`;
-                  placeholdersByEmail.set(email, placeholder);
-                }
-                placeholders.push(placeholder);
-                return placeholder;
-              },
-            );
+            const protectedText = text.replace(/[\w.-]+@[\w.-]+\.[a-z]+/gi, (email) => {
+              let placeholder = placeholdersByEmail.get(email);
+              if (!placeholder) {
+                placeholder = `[EMAIL_${placeholdersByEmail.size + 1}]`;
+                placeholdersByEmail.set(email, placeholder);
+              }
+              placeholders.push(placeholder);
+              return placeholder;
+            });
             return { text: protectedText, placeholders };
           },
         },

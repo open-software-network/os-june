@@ -2,18 +2,19 @@ use clap::{Parser, Subcommand};
 use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 use june_config::{
     AppConfig, ModelPriceConfig, ModelProvider, OPENAI_API_KEY_PLACEHOLDER,
-    VENICE_API_KEY_PLACEHOLDER,
+    VENICE_API_KEY_PLACEHOLDER, image_client_timeout_secs,
 };
 use june_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
     MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceModelCatalog,
-    client_with_timeout, default_client, jwks_client,
+    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceImageEditor,
+    VeniceImageGenerator, VeniceModelCatalog, client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
-    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
-    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
+    ImageService, ImageServiceDeps, NoteGenerateService, NoteGenerateServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
+    WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -46,8 +47,16 @@ async fn serve() -> anyhow::Result<()> {
     let upstream_http = client_with_timeout(Duration::from_secs(
         config.server.request_timeout_secs.max(1),
     ));
+    let image_http = client_with_timeout(Duration::from_secs(image_client_timeout_secs(
+        config.server.request_timeout_secs,
+    )));
     let pricing = load_pricing(&config, upstream_http.clone()).await;
-    let app = build_router(&config, &http, &upstream_http, pricing);
+    let clients = HttpClients {
+        default: &http,
+        upstream: &upstream_http,
+        image: &image_http,
+    };
+    let app = build_router(&config, clients, pricing);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "june-api listening");
     axum::serve(listener, app).await?;
@@ -79,10 +88,14 @@ async fn load_pricing(
     pricing
 }
 
+// The dependency-injection composition root: it wires every provider and
+// service into the router, so its length grows by a line or two with each new
+// capability (image generation is the latest). Splitting it further would scatter
+// the wiring without making it clearer.
+#[allow(clippy::too_many_lines)]
 fn build_router(
     config: &AppConfig,
-    http: &reqwest::Client,
-    upstream_http: &reqwest::Client,
+    clients: HttpClients<'_>,
     mut pricing_config: BTreeMap<String, ModelPriceConfig>,
 ) -> axum::Router {
     if config.local_dev.enabled {
@@ -96,33 +109,33 @@ fn build_router(
         .collect::<Vec<_>>();
 
     let pricing = Arc::new(PricingTable::new(pricing_config));
-    let os_accounts = build_os_accounts_client(config, http);
+    let os_accounts = build_os_accounts_client(config, clients.default);
     let transcriber: Arc<dyn june_domain::Transcriber> = Arc::new(RoutingTranscriber::from_config(
-        upstream_http.clone(),
+        clients.upstream.clone(),
         &config.upstreams,
         openai_model_ids,
     ));
     let generator: Arc<dyn june_domain::Generator> = Arc::new(VeniceGenerator::from_config(
-        upstream_http.clone(),
+        clients.upstream.clone(),
         &config.upstreams.venice,
     ));
     let cleaner: Arc<dyn june_domain::Cleaner> = Arc::new(VeniceCleaner::from_config(
-        upstream_http.clone(),
+        clients.upstream.clone(),
         &config.upstreams.venice,
     ));
     let agent_chat_completer: Arc<dyn june_domain::AgentChatCompleter> = Arc::new(
-        VeniceAgentChat::from_config(upstream_http.clone(), &config.upstreams.venice),
+        VeniceAgentChat::from_config(clients.upstream.clone(), &config.upstreams.venice),
     );
     // One client backs both web traits (search + fetch) over the same Venice
     // credential and base URL.
     let web_augment = Arc::new(VeniceAugment::from_config(
-        upstream_http.clone(),
+        clients.upstream.clone(),
         &config.upstreams.venice,
     ));
     let duration_probe: Arc<dyn june_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
-    let issue_reports = build_issue_report_sink(config, http);
+    let issue_reports = build_issue_report_sink(config, clients.default);
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
 
@@ -157,6 +170,25 @@ fn build_router(
         fetch_credits: config.os_accounts.web_fetch_credits,
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_web_secs,
     }));
+    let image = Arc::new(ImageService::new(ImageServiceDeps {
+        os_accounts: os_accounts.clone(),
+        generator: build_image_generator(clients.image, &config.upstreams.venice),
+        editor: build_image_editor(clients.image, &config.upstreams.venice),
+        pricing: config
+            .image_pricing
+            .iter()
+            .map(|(model, credits)| (model.clone(), ImageModelPrice::venice(*credits)))
+            .collect(),
+        edit_pricing: config
+            .image_edit_pricing
+            .iter()
+            .map(|(model, credits)| (model.clone(), ImageModelPrice::venice(*credits)))
+            .collect(),
+        default_edit_model: config.default_image_edit_model.clone(),
+        // Edits are the same latency class as generation, so they reuse the
+        // image hold TTL rather than adding a second knob.
+        hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_image_secs,
+    }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
         pricing: pricing.clone(),
         os_accounts,
@@ -178,10 +210,12 @@ fn build_router(
         agent_chat,
         dictate,
         web,
+        image,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
+            max_image_edit_bytes: config.server.max_image_edit_bytes,
             request_timeout_secs: config.server.request_timeout_secs,
         },
         attestation: AttestationInfo {
@@ -192,6 +226,33 @@ fn build_router(
         },
     });
     june_api::router(state)
+}
+
+#[derive(Clone, Copy)]
+struct HttpClients<'a> {
+    default: &'a reqwest::Client,
+    upstream: &'a reqwest::Client,
+    image: &'a reqwest::Client,
+}
+
+fn build_image_generator(
+    upstream_http: &reqwest::Client,
+    venice: &june_config::UpstreamConfig,
+) -> Arc<dyn june_domain::ImageGenerator> {
+    Arc::new(VeniceImageGenerator::from_config(
+        upstream_http.clone(),
+        venice,
+    ))
+}
+
+fn build_image_editor(
+    upstream_http: &reqwest::Client,
+    venice: &june_config::UpstreamConfig,
+) -> Arc<dyn june_domain::ImageEditor> {
+    Arc::new(VeniceImageEditor::from_config(
+        upstream_http.clone(),
+        venice,
+    ))
 }
 
 fn build_os_accounts_client(

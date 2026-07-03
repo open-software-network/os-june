@@ -1,5 +1,10 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
+// Re-exported so modules that build their own command calls (e.g. the Hermes
+// admin Rust transport) route through the same `invoke` the rest of the app's
+// bindings use, rather than reaching into `@tauri-apps/api/core` directly.
+export { invoke };
+
 export type ProcessingStatus =
   | "draft"
   | "recording"
@@ -157,6 +162,7 @@ export type DictationHelperEvent = {
     selectedID?: string;
     shortcut?: DictationShortcutSetting;
     message?: string;
+    reason?: string;
     code?: string;
     path?: string;
     durationMs?: number | string;
@@ -166,12 +172,33 @@ export type DictationHelperEvent = {
   };
 };
 
-export type ProviderModelMode = "transcription" | "generation";
+export type ProviderModelMode = "transcription" | "generation" | "image";
 
 export type ProviderModelSettingsDto = {
   transcriptionProvider: string;
+  generationProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  remoteGenerationModel: string;
+  imageModel: string;
+  veniceApiKeyConfigured: boolean;
+  localGeneration: LocalGenerationSettingsDto;
+  /** Venice safe mode for image generation/editing (blurs adult content). Off
+   * by default (privacy-first); the user opts in via Settings. */
+  imageSafeMode: boolean;
+};
+
+export type LocalGenerationSettingsDto = {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
+};
+
+export type GeneratedImageDto = {
+  imageBase64: string;
+  mimeType: string;
+  model: string;
+  provider: string;
 };
 
 export type ProviderModelSettingsResponse = {
@@ -326,12 +353,7 @@ export type AgentTaskStatus =
 
 export type AgentMessageRole = "system" | "assistant" | "user";
 
-export type AgentToolEventStatus =
-  | "proposed"
-  | "running"
-  | "completed"
-  | "failed"
-  | "blocked";
+export type AgentToolEventStatus = "proposed" | "running" | "completed" | "failed" | "blocked";
 
 export type AgentMessageDto = {
   id: string;
@@ -622,12 +644,7 @@ export type SourceReadinessDto = {
   source: RecordingSource;
   required: boolean;
   ready: boolean;
-  permissionState:
-    | "unknown"
-    | "granted"
-    | "denied"
-    | "restricted"
-    | "unsupported";
+  permissionState: "unknown" | "granted" | "denied" | "restricted" | "unsupported";
   deviceAvailable: boolean;
   captureAvailable: boolean;
   recoveryAction?:
@@ -649,11 +666,19 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
+export const JUNE_COMMUNITY_URL = "https://t.me/osjune";
+
 /** Opens the june-api /verify page (attestation, routing, retention) in
  * the default browser. Routed through Rust because the webview drops
  * target="_blank" anchors. */
 export async function juneOpenVerifyPage() {
   return invoke<void>("june_open_verify_page");
+}
+
+/** Opens the June community in the default browser. Routed through Rust for
+ * the same target="_blank" reliability reason as the verify page. */
+export async function juneOpenCommunityPage() {
+  return invoke<void>("june_open_community_page");
 }
 
 export async function createNote(folderId?: string) {
@@ -672,11 +697,7 @@ export async function deleteFolder(folderId: string, deleteNotes: boolean) {
   });
 }
 
-export async function renameFolder(
-  folderId: string,
-  name: string,
-  description?: string,
-) {
+export async function renameFolder(folderId: string, name: string, description?: string) {
   return invoke<FolderDto>("rename_folder", {
     request: { folderId, name, description },
   });
@@ -702,19 +723,13 @@ export async function listSessionFolders() {
   return invoke<SessionFolderDto[]>("list_session_folders");
 }
 
-export async function assignSessionToFolder(
-  sessionId: string,
-  folderId: string,
-) {
+export async function assignSessionToFolder(sessionId: string, folderId: string) {
   return invoke<void>("assign_session_to_folder", {
     request: { sessionId, folderId },
   });
 }
 
-export async function removeSessionFromFolder(
-  sessionId: string,
-  folderId: string,
-) {
+export async function removeSessionFromFolder(sessionId: string, folderId: string) {
   return invoke<void>("remove_session_from_folder", {
     request: { sessionId, folderId },
   });
@@ -730,10 +745,7 @@ export async function createDictionaryEntry(input: { phrase: string }) {
   });
 }
 
-export async function updateDictionaryEntry(input: {
-  entryId: string;
-  phrase: string;
-}) {
+export async function updateDictionaryEntry(input: { entryId: string; phrase: string }) {
   return invoke<DictionaryEntryDto>("update_dictionary_entry", {
     request: input,
   });
@@ -790,31 +802,22 @@ export async function sendAgentMessage(input: {
   return invoke<AgentTaskDto>("send_agent_message", { request: input });
 }
 
-export async function saveAgentAssistantMessage(input: {
-  taskId: string;
-  content: string;
-}) {
+export async function saveAgentAssistantMessage(input: { taskId: string; content: string }) {
   return invoke<AgentTaskDto>("save_agent_assistant_message", {
     request: input,
   });
 }
 
-export async function saveAgentHermesSession(input: {
-  taskId: string;
-  hermesSessionId: string;
-}) {
+export async function saveAgentHermesSession(input: { taskId: string; hermesSessionId: string }) {
   return invoke<AgentTaskDto>("save_agent_hermes_session", {
     request: input,
   });
 }
 
 export async function suggestAgentSessionTitle(prompt: string) {
-  return invoke<SuggestAgentSessionTitleResponse>(
-    "suggest_agent_session_title",
-    {
-      request: { prompt },
-    },
-  );
+  return invoke<SuggestAgentSessionTitleResponse>("suggest_agent_session_title", {
+    request: { prompt },
+  });
 }
 
 export type SubmitIssueReportRequest = {
@@ -840,16 +843,30 @@ export async function submitIssueReport(request: SubmitIssueReportRequest) {
   return invoke<SubmitIssueReportResponse>("submit_issue_report", { request });
 }
 
+export type FinalizeHermesBranchResponse = {
+  branchSessionId: string;
+  keptMessageCount: number;
+  removedMessageCount: number;
+};
+
+export async function finalizeHermesBridgeBranch(input: {
+  branchSessionId: string;
+  sourceSessionId: string;
+  throughMessageId?: string;
+  keepMessageCount?: number;
+}) {
+  return invoke<FinalizeHermesBranchResponse>("finalize_hermes_bridge_branch", {
+    request: input,
+  });
+}
+
 export type ExplainAgentApprovalResponse = {
   explanation: string;
 };
 
 /** One-shot generation call that explains a pending approval request in
  * plain language — the agent runtime stays parked on the approval. */
-export async function explainAgentApproval(input: {
-  description: string;
-  command?: string;
-}) {
+export async function explainAgentApproval(input: { description: string; command?: string }) {
   return invoke<ExplainAgentApprovalResponse>("explain_agent_approval", {
     request: input,
   });
@@ -887,37 +904,26 @@ export async function getHermesBridgeSkill(name: string) {
   });
 }
 
-export async function updateHermesBridgeSkill(input: {
-  name: string;
-  content: string;
-}) {
+export async function updateHermesBridgeSkill(input: { name: string; content: string }) {
   return invoke<HermesSkillDocument>("update_hermes_bridge_skill", {
     request: input,
   });
 }
 
-export async function toggleHermesBridgeSkill(input: {
-  name: string;
-  enabled: boolean;
-}) {
-  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
-    "toggle_hermes_bridge_skill",
-    { request: input },
-  );
+export async function toggleHermesBridgeSkill(input: { name: string; enabled: boolean }) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>("toggle_hermes_bridge_skill", {
+    request: input,
+  });
 }
 
 export async function hermesBridgeToolsets() {
   return invoke<HermesToolsetInfo[]>("hermes_bridge_toolsets");
 }
 
-export async function toggleHermesBridgeToolset(input: {
-  name: string;
-  enabled: boolean;
-}) {
-  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
-    "toggle_hermes_bridge_toolset",
-    { request: input },
-  );
+export async function toggleHermesBridgeToolset(input: { name: string; enabled: boolean }) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>("toggle_hermes_bridge_toolset", {
+    request: input,
+  });
 }
 
 export type AgentCliAccessStatus = {
@@ -939,9 +945,7 @@ export async function setHermesAgentCliAccess(enabled: boolean) {
 }
 
 export async function hermesBridgeMessagingPlatforms() {
-  return invoke<HermesMessagingPlatformsResponse>(
-    "hermes_bridge_messaging_platforms",
-  );
+  return invoke<HermesMessagingPlatformsResponse>("hermes_bridge_messaging_platforms");
 }
 
 export async function hermesBridgeFilesystemSnapshot() {
@@ -954,6 +958,12 @@ export async function downloadHermesBridgeFile(path: string) {
 
 export async function hermesBridgeFilePreview(path: string) {
   return invoke<string | null>("hermes_bridge_file_preview", {
+    request: { path },
+  });
+}
+
+export async function hermesBridgeImageDataUrl(path: string) {
+  return invoke<string | null>("hermes_bridge_image_data_url", {
     request: { path },
   });
 }
@@ -975,10 +985,7 @@ export async function importHermesBridgeFile(path: string) {
 // DOM drops in WKWebView carry no filesystem path, so the file's contents go
 // over as the raw invoke payload with the name in a header (URI-encoded:
 // header values must be ASCII).
-export async function importHermesBridgeFileBytes(
-  name: string,
-  bytes: Uint8Array,
-) {
+export async function importHermesBridgeFileBytes(name: string, bytes: Uint8Array) {
   return invoke<ImportedHermesFile>("import_hermes_bridge_file_bytes", bytes, {
     headers: { "x-file-name": encodeURIComponent(name) },
   });
@@ -1000,10 +1007,9 @@ export async function hermesBridgeSessions(
 }
 
 export async function hermesBridgeSessionMessages(sessionId: string) {
-  return invoke<HermesSessionMessagesResponse>(
-    "hermes_bridge_session_messages",
-    { request: { sessionId } },
-  );
+  return invoke<HermesSessionMessagesResponse>("hermes_bridge_session_messages", {
+    request: { sessionId },
+  });
 }
 
 export async function deleteHermesBridgeSession(sessionId: string) {
@@ -1063,10 +1069,7 @@ export async function createHermesBridgeCronJob(input: {
   });
 }
 
-export async function updateHermesBridgeCronJob(
-  jobId: string,
-  updates: Record<string, unknown>,
-) {
+export async function updateHermesBridgeCronJob(jobId: string, updates: Record<string, unknown>) {
   return invoke<HermesCronJobRecord>("update_hermes_bridge_cron_job", {
     request: { jobId, updates },
   });
@@ -1092,10 +1095,9 @@ export async function updateHermesBridgeMessagingPlatform(input: {
   enabled?: boolean;
   env?: Record<string, string>;
 }) {
-  return invoke<{ ok: boolean; platform: string }>(
-    "update_hermes_bridge_messaging_platform",
-    { request: input },
-  );
+  return invoke<{ ok: boolean; platform: string }>("update_hermes_bridge_messaging_platform", {
+    request: input,
+  });
 }
 
 /** `fullMode` is an explicit mode choice: passing it restarts a running
@@ -1107,17 +1109,262 @@ export async function startHermesBridge(cwd?: string, fullMode?: boolean) {
   });
 }
 
-export async function stopHermesBridge() {
-  return invoke<HermesBridgeStatus>("stop_hermes_bridge");
+/** Stops the Hermes runtime. With `mode`, stops ONLY that runtime (the MCP
+ * page's restart flow targets one mode and must not take down a live session
+ * in the other); without it, stops everything (historical behavior). */
+export async function stopHermesBridge(mode?: "sandboxed" | "unrestricted") {
+  return invoke<HermesBridgeStatus>("stop_hermes_bridge", { mode });
 }
 
+/** The redacted result of an MCP OAuth login attempt. The Rust bridge runs
+ * `hermes mcp login <server>`, opens the authorization URL in the OS browser,
+ * and waits for the CLI to finish. It NEVER returns a token: only whether the
+ * login succeeded, an already-redacted status message, and the (token-free)
+ * authorization URL so June can offer a manual "open in browser" fallback.
+ * `timedOut` is true when the wait elapsed before the CLI completed (the browser
+ * sign-in is still the user's to finish; June never blocks on it). */
+export type HermesMcpOauthLoginResult = {
+  ok: boolean;
+  /** A safe, already-redacted status message, or null when the CLI said nothing
+   * quotable. Never carries a token, bearer value, or auth code. */
+  message: string | null;
+  /** The authorization URL the CLI emitted (token-free), or null. */
+  authUrl: string | null;
+  /** True when the wait elapsed before the CLI reported a terminal state. */
+  timedOut: boolean;
+};
+
+/**
+ * Runs the MCP OAuth sign-in for one server through the Rust bridge:
+ * `hermes mcp login <server>` against the chosen runtime's profile, opening the
+ * authorization URL in the OS browser. `mode` selects the runtime explicitly
+ * (sandboxed vs unrestricted) — Rust never falls back to the first connection.
+ * The result is redacted in Rust and re-checked in the view layer; no token is
+ * ever returned to the webview.
+ */
+export async function hermesMcpOauthLogin(input: {
+  mode: "sandboxed" | "unrestricted";
+  server: string;
+  profile?: string;
+}) {
+  return invoke<HermesMcpOauthLoginResult>("hermes_mcp_oauth_login", {
+    request: input,
+  });
+}
+
+/** The redacted result of a bundled-skill reset. Carries no skill content and no
+ * secret-shaped CLI output: only whether the CLI reported success, an already
+ * redacted status message, and whether the bounded wait elapsed. */
+export type HermesResetSkillResult = {
+  ok: boolean;
+  /** A safe, already-redacted status message, or null when the CLI said nothing
+   * quotable. */
+  message: string | null;
+  /** True when the wait elapsed before the CLI reported a terminal state. */
+  timedOut: boolean;
+};
+
+/**
+ * Resets (or restores) a bundled skill to its shipped baseline through the Rust
+ * bridge: `hermes skills reset <name> [--restore]` against the chosen runtime's
+ * profile. The dashboard exposes no reset endpoint, so this is the narrow CLI
+ * fallback. `mode` selects the runtime explicitly (sandboxed vs unrestricted) —
+ * Rust never falls back to the first connection. The skill name is validated
+ * argument-safe on both sides and passed as a discrete CLI argument (no shell).
+ * The result is redacted in Rust; no skill content is returned to the webview.
+ */
+export async function hermesResetBundledSkill(input: {
+  mode: "sandboxed" | "unrestricted";
+  name: string;
+  profile?: string;
+  restore?: boolean;
+}) {
+  return invoke<HermesResetSkillResult>("hermes_reset_bundled_skill", {
+    request: input,
+  });
+}
+
+/** One configured custom GitHub skill tap, as parsed from `hermes skills tap
+ * list` by the Rust bridge. Carries only a validated `owner/repo`, an optional
+ * safe path, and a trust marker. Never a token. Mirrors the Rust `HermesSkillTap`
+ * (camelCase). */
+export type HermesSkillTapDto = {
+  /** The tap repository as `owner/repo` (validated argument-safe). */
+  repo: string;
+  /** The path override inside the repo, when the tap declares one. */
+  path?: string;
+  /** True only when Hermes explicitly marks the tap trusted/verified. The UI
+   * treats every other tap as community. */
+  trusted: boolean;
+};
+
+/** The result of listing taps. `taps` is the parsed list; `message` is an
+ * already-redacted status line when the CLI failed. */
+export type HermesSkillTapListResult = {
+  ok: boolean;
+  taps: HermesSkillTapDto[];
+  /** A safe, already-redacted status message, or null. Never carries a token. */
+  message: string | null;
+  /** True when the bounded wait elapsed before the CLI reported a result. */
+  timedOut: boolean;
+};
+
+/** The redacted result of a tap add/remove. Carries no token: only whether the
+ * CLI reported success, an already-redacted status message, and whether the
+ * bounded wait elapsed. */
+export type HermesSkillTapWriteResult = {
+  ok: boolean;
+  message: string | null;
+  timedOut: boolean;
+};
+
+/**
+ * Lists the configured custom GitHub skill taps for the chosen runtime/profile.
+ * The dashboard (v2026.6.19) exposes no tap endpoints, so this runs the pinned
+ * `hermes skills tap list` CLI through the Rust bridge. `mode` selects the
+ * runtime explicitly (sandboxed vs unrestricted) with no first-connection
+ * fallback. The output is parsed and redacted in Rust; no token is returned.
+ */
+export async function hermesSkillTapList(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+}) {
+  return invoke<HermesSkillTapListResult>("hermes_skill_tap_list", {
+    request: input,
+  });
+}
+
+/**
+ * Adds a custom GitHub skill tap (`owner/repo`, optional path override) through
+ * the Rust bridge: `hermes skills tap add <owner/repo> [--path <path>]`. The repo
+ * and path are validated argument-safe on both sides and passed as discrete CLI
+ * arguments (no shell). `mode` selects the runtime explicitly. The result is
+ * redacted in Rust; no token is returned.
+ */
+export async function hermesSkillTapAdd(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  repo: string;
+  path?: string;
+}) {
+  return invoke<HermesSkillTapWriteResult>("hermes_skill_tap_add", {
+    request: input,
+  });
+}
+
+/**
+ * Removes a custom GitHub skill tap by `owner/repo` through the Rust bridge:
+ * `hermes skills tap remove <owner/repo>`. The repo is validated argument-safe on
+ * both sides and passed as a discrete CLI argument (no shell).
+ */
+export async function hermesSkillTapRemove(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  repo: string;
+}) {
+  return invoke<HermesSkillTapWriteResult>("hermes_skill_tap_remove", {
+    request: input,
+  });
+}
+
+/** The read-only filesystem status of one configured external skill directory,
+ * as reported by the June-side `hermes_inspect_external_dirs` command. Carries
+ * both the raw configured path and the resolved one. Mirrors the Rust
+ * `ExternalDirStatus` (camelCase). */
+export type ExternalDirStatus = {
+  /** The path exactly as configured (with `~`/`${VAR}` unexpanded). */
+  rawPath: string;
+  /** The expanded absolute path, or null when a variable could not be resolved. */
+  resolvedPath: string | null;
+  /** The name of an unresolved environment variable referenced in the path, or
+   * null. Never the variable's value. */
+  unresolvedVar: string | null;
+  /** True when the resolved path exists. */
+  exists: boolean;
+  /** True when the resolved path exists and is a directory. */
+  isDir: boolean;
+  /** True when June could list the directory. */
+  readable: boolean;
+  /** True/false when writability was safely detected, null when ambiguous. */
+  writable: boolean | null;
+  /** Count of discovered skills, or null when missing/unreadable. */
+  skillCount: number | null;
+  /** Discovered skill names (for shadowing explanation). */
+  skillNames: string[];
+};
+
+/**
+ * Inspects the configured external skill directories read-only through June's
+ * own (non-jailed) Rust process: expands `~`/`${VAR}`, stats each path, probes
+ * readability/writability, and counts discovered skills. No mutation, no
+ * file-content reads, no secrets returned. The CONFIG itself is written through
+ * Hermes' `PUT /api/config` (so the jailed dashboard owns the config.yaml
+ * write); this command only reports filesystem status the dashboard can't.
+ */
+export async function hermesInspectExternalDirs(dirs: string[]) {
+  return invoke<ExternalDirStatus[]>("hermes_inspect_external_dirs", {
+    request: { dirs },
+  });
+}
+
+/** A Hermes skill bundle as June reads/writes it. `slug` is the file stem and
+ * the slash command; `skills` is the ordered member list; `instructions` is the
+ * optional prompt text Hermes prepends at invocation. Mirrors the Rust
+ * `HermesSkillBundle`. */
+export type HermesSkillBundleDto = {
+  slug: string;
+  name?: string;
+  description?: string;
+  skills: string[];
+  instructions?: string;
+};
+
+/**
+ * Lists the skill bundles for the chosen runtime/profile. The dashboard exposes
+ * no bundle endpoints, so this reads the per-profile `skill-bundles` directory
+ * through the Rust bridge. `mode` selects the runtime explicitly (sandboxed vs
+ * unrestricted) with no first-connection fallback. Returns an empty list when no
+ * bundles exist yet.
+ */
+export async function hermesListSkillBundles(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+}) {
+  return invoke<HermesSkillBundleDto[]>("hermes_list_skill_bundles", {
+    request: input,
+  });
+}
+
+/**
+ * Creates or updates a bundle by writing its YAML file. `previousSlug`, when it
+ * differs from `bundle.slug`, removes the old file after the new one is written
+ * (a rename). The slug is validated argument/path safe on both sides; the write
+ * is confined to the bundles directory. Returns the saved bundle.
+ */
+export async function hermesSaveSkillBundle(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  bundle: HermesSkillBundleDto;
+  previousSlug?: string;
+}) {
+  return invoke<HermesSkillBundleDto>("hermes_save_skill_bundle", {
+    request: input,
+  });
+}
+
+/** Deletes a bundle's YAML file. The slug is validated and the path confined to
+ * the bundles directory; a missing file is treated as success. */
+export async function hermesDeleteSkillBundle(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  slug: string;
+}) {
+  return invoke<void>("hermes_delete_skill_bundle", { request: input });
+}
 /** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
  * window. `unrestricted` mirrors the session's mode so the debug session runs
  * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */
-export async function openHermesTuiDebug(input: {
-  sessionId: string;
-  unrestricted: boolean;
-}) {
+export async function openHermesTuiDebug(input: { sessionId: string; unrestricted: boolean }) {
   return invoke<void>("open_hermes_tui_debug", { request: input });
 }
 
@@ -1146,20 +1393,13 @@ export async function updateNote(input: {
   return invoke<NoteDto>("update_note", { request: input });
 }
 
-export async function checkRecordingSourceReadiness(
-  sourceMode: RecordingSourceMode,
-) {
-  return invoke<RecordingSourceReadinessDto>(
-    "check_recording_source_readiness",
-    {
-      request: { sourceMode },
-    },
-  );
+export async function checkRecordingSourceReadiness(sourceMode: RecordingSourceMode) {
+  return invoke<RecordingSourceReadinessDto>("check_recording_source_readiness", {
+    request: { sourceMode },
+  });
 }
 
-export async function openPrivacySettings(
-  pane: "microphone" | "accessibility" | "systemAudio",
-) {
+export async function openPrivacySettings(pane: "microphone" | "accessibility" | "systemAudio") {
   return invoke<void>("open_privacy_settings", { request: { pane } });
 }
 
@@ -1211,10 +1451,7 @@ export async function retryProcessing(noteId: string) {
   });
 }
 
-export async function recoverRecording(
-  sessionId: string,
-  action: "validate" | "discard",
-) {
+export async function recoverRecording(sessionId: string, action: "validate" | "discard") {
   return invoke<NoteDto>("recover_recording", {
     request: { sessionId, action },
   });
@@ -1232,17 +1469,32 @@ export type AccountBalance = {
   /** Present whenever the backend snapshot succeeds; optional so older
    * payload shapes (and test fixtures) without it don't lock the app. */
   credits?: number;
+  /** Normalized usage remaining for the current plan or free allowance.
+   * Optional while the app can still receive older accounts API payloads. */
+  usageRemainingPercent?: number;
   usdMillis: number;
 };
+
+export type SubscriptionPlan = "pro" | "max";
 
 export type AccountSubscription = {
   subscribed: boolean;
   status?: "trialing" | "active" | "past_due" | "canceled" | (string & {});
+  /** Plan slug from OS Accounts. Absent on accounts APIs that predate plan
+   * tiers and on legacy subscription rows, which are all Pro. */
+  plan?: SubscriptionPlan | (string & {});
+  /** Monthly plan credits returned by OS Accounts. Used as a fallback for
+   * deployments whose balance endpoint does not expose usageRemainingPercent. */
+  planCredits?: number;
   trialEnd?: string;
   currentPeriodEnd?: string;
   /** Trial length from the Stripe price config, available pre-subscription.
    * Absent on accounts APIs that don't expose it yet. */
   trialPeriodDays?: number;
+  /** Plan a scheduled downgrade switches to at the period end. Additive on
+   * the plan-change endpoint; absent everywhere else. */
+  scheduledPlan?: SubscriptionPlan | (string & {});
+  scheduledPlanCredits?: number;
 };
 
 export type AccountStatus = {
@@ -1273,6 +1525,13 @@ export async function osAccountsStatus() {
   return invoke<AccountStatus>("os_accounts_status");
 }
 
+/** Keychain-only status with no network I/O — the launch fast-path so first
+ * paint doesn't block on the account snapshot. User/balance stay unknown until
+ * the full `osAccountsStatus` lands. */
+export async function osAccountsStatusLocal() {
+  return invoke<AccountStatus>("os_accounts_status_local");
+}
+
 export async function osAccountsLogin() {
   return invoke<AccountStatus>("os_accounts_login");
 }
@@ -1281,12 +1540,29 @@ export async function osAccountsCancelLogin() {
   return invoke<void>("os_accounts_cancel_login");
 }
 
-export async function osAccountsLogout() {
-  return invoke<void>("os_accounts_logout");
+export type AccountsLogoutOptions = {
+  clearBrowserSession?: boolean;
+};
+
+export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
+  return invoke<void>("os_accounts_logout", {
+    request: { clearBrowserSession: options.clearBrowserSession ?? false },
+  });
 }
 
-export async function osAccountsUpgrade() {
-  return invoke<void>("os_accounts_upgrade");
+/** Opens subscription checkout in the browser. Omitting `plan` keeps the
+ * accounts-API default (Pro). */
+export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
+  return invoke<void>("os_accounts_upgrade", { plan });
+}
+
+/** Changes the plan on the caller's existing subscription in place (Pro to
+ * Max). OS Accounts prorates the charge and grants the new plan's credits
+ * immediately, so there is no browser round-trip; the resolved subscription
+ * reflects the new plan. Callers should refresh account status afterwards to
+ * pick up the freshly granted balance. */
+export async function osAccountsChangePlan(plan: SubscriptionPlan) {
+  return invoke<AccountSubscription>("os_accounts_change_plan", { plan });
 }
 
 /** Opens the accounts portal in the default browser — the webview swallows
@@ -1327,12 +1603,90 @@ export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
   });
 }
 
+export async function setVeniceApiKey(apiKey: string) {
+  return invoke<ProviderModelSettingsDto>("set_venice_api_key", {
+    request: { apiKey },
+  });
+}
+
+export async function clearVeniceApiKey() {
+  return invoke<ProviderModelSettingsDto>("clear_venice_api_key");
+}
+
+// Toggles Venice safe mode for image generation/editing. Off by default; when
+// on, Venice blurs adult content.
+export async function setImageSafeMode(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_image_safe_mode", {
+    request: { enabled },
+  });
+}
+
+// Generates an image from a prompt via the June API. `model` is optional; the
+// backend falls back to the saved default image model when it is omitted.
+// `safeMode` pins the safe-mode value a retry must replay; omitted uses the
+// live saved setting.
+export async function generateImage(
+  prompt: string,
+  model?: string,
+  requestId?: string,
+  safeMode?: boolean,
+) {
+  return invoke<GeneratedImageDto>("generate_image", {
+    request: { prompt, model, requestId, safeMode },
+  });
+}
+
+export async function editImage(input: {
+  imageBase64: string;
+  prompt: string;
+  mimeType?: string;
+  model?: string;
+  requestId?: string;
+}) {
+  return invoke<GeneratedImageDto>("edit_image", {
+    request: {
+      image: input.imageBase64,
+      prompt: input.prompt,
+      mimeType: input.mimeType,
+      model: input.model,
+      requestId: input.requestId,
+    },
+  });
+}
+
+/** Persists the local endpoint, model id, and optional API key. Strictly
+ * validated backend-side (any http/https URL with a host is accepted) and it
+ * never changes the active provider — enabling is a separate step. */
+export async function saveLocalGenerationSettings(input: {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
+}) {
+  return invoke<ProviderModelSettingsDto>("save_local_generation_settings", {
+    request: input,
+  });
+}
+
+/** Flips generation between the saved local endpoint and the remote model.
+ * Enabling requires saved settings (the backend errors otherwise); disabling
+ * restores the remote provider without touching the stored local fields. */
+export async function setLocalGenerationEnabled(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_local_generation_enabled", {
+    request: { enabled },
+  });
+}
+
+/** GETs {baseUrl}/models with an optional bearer token (~10s timeout) and
+ * returns the advertised model ids, for the settings "Test connection" flow. */
+export async function probeLocalGenerationEndpoint(input: { baseUrl: string; apiKey: string }) {
+  return invoke<{ models: string[] }>("probe_local_generation_endpoint", {
+    request: input,
+  });
+}
+
 export async function setDictationShortcut(
   kind: DictationShortcutKind,
-  shortcut: Pick<
-    DictationShortcutSetting,
-    "code" | "modifiers" | "label" | "pressCount"
-  >,
+  shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label" | "pressCount">,
 ) {
   return invoke<DictationSettingsDto>("set_dictation_shortcut", {
     kind,

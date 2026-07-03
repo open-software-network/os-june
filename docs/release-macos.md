@@ -36,6 +36,9 @@ Create or confirm these before cutting the first updater release:
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
+- Optional fast release runner: a dedicated self-hosted Mac Studio runner with
+  the `desktop-release` label. See
+  [desktop-release-runner.md](desktop-release-runner.md).
 
 The updater keypair is separate from the Apple Developer ID certificate. The
 public key is embedded in `src-tauri/tauri.conf.json`; the private key must live
@@ -55,34 +58,74 @@ the `.pub` contents as the updater `pubkey`.
 
 ## Cutting a production release
 
-Use the manual workflow:
+Releases go through the release-candidate channel: build an RC, test it via the
+in-app updater, then promote it to stable. There is no direct stable-build path.
+
+### 1. Build a release candidate
 
 ```text
-GitHub Actions -> production-desktop-release -> Run workflow -> version X.Y.Z
+GitHub Actions -> rc-desktop-release -> Run workflow
+  base-version = X.Y.Z   (the version you are heading toward)
+  rc-number    = 1        (2, 3, ... for later candidates)
+  macos-runner = mac-studio
 ```
 
-The workflow performs the release steps in order:
+`rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
+version `X.Y.Z-rc.N` (bundling the Hermes runtime), and publishes it to a fixed
+`rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
+It records the source commit in `rc-build.json` (so promote can rebuild the same
+tree) and does NOT touch `main`.
 
-1. Checks out `main`.
-2. Validates required secrets.
-3. Validates the requested version is plain semver and greater than the current
-   version.
-4. Bumps `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and
-   `package.json`, refreshes `src-tauri/Cargo.lock`, commits
-   `release: vX.Y.Z`, and pushes to `main`.
-5. Runs `pnpm lint`, `pnpm test`, and `pnpm test:rust`.
-6. Builds the bundled Hermes runtime (`scripts/bundle-hermes-runtime.sh`):
-   the pinned hermes-agent checkout, a relocatable CPython, hash-verified
-   Python deps, and the prebuilt dashboard UI, signed Mach-O by Mach-O and
-   shipped under `Resources/native/hermes` so first launch needs no network
-   install. Adds roughly 110 MB compressed to the DMG.
-7. Builds the `universal-apple-darwin` app and DMG with `tauri-action`.
-8. Signs with the Apple Developer ID cert, notarizes the app with Apple API key
-   credentials, and signs updater artifacts with the Ed25519 updater key.
-9. Submits the generated DMG itself to Apple notarization, staples the DMG
-   ticket, verifies Gatekeeper install assessment, then overwrites the
-   versioned DMG asset plus the stable download aliases in
-   `open-software-network/os-june-releases`.
+### 2. Test the candidate
+
+In the app: Settings -> About -> Release channel -> Release candidate, then check
+for updates. The app follows `latest-rc.json` and installs the RC. Iterate with a
+higher `rc-number` until it is good.
+
+### 3. Promote to stable
+
+```text
+GitHub Actions -> promote-desktop-release -> Run workflow
+  rc-version = X.Y.Z-rc.N   (required; must match the current rc release exactly)
+  macos-runner = mac-studio
+```
+
+`rc-version` is required and must equal the version the `rc` release currently
+holds; a mismatch (or a blank field) fails the run, so you can never promote a
+different candidate than you intend.
+
+`promote-desktop-release` checks out the exact commit the RC was built from,
+stamps the clean `X.Y.Z`, and reruns the full sign + notarize path, so stable
+ships the same source you tested with a clean version string. It then:
+
+- publishes the `vX.Y.Z` stable release (marked latest) with the DMG, updater
+  archive + signature, a regenerated `latest.json`, and a `stable-build.json`
+  recording the source commit (so the Windows build reuses the same tree);
+- generates the changelog (first-parent commits since the previous `release: v...`)
+  and embeds it in both the GitHub release notes and `latest.json`;
+- commits `release: vX.Y.Z` directly to `main` (the release bot is on the
+  branch-protection bypass list), advancing the version files so the next RC's
+  gate and the next changelog can anchor on it. No PR to merge.
+
+### 4. Cut the Windows release
+
+The version bump lands on `main` automatically, so there is nothing to merge.
+The Windows release rebuilds from the commit recorded in `stable-build.json`, so
+it does not depend on the bump and can run as soon as promote finishes (see
+`release-windows.md`).
+
+## Release notifications
+
+Stable releases are announced in Slack by the org's GitHub Slack app. Subscribe a
+channel once with:
+
+```text
+/github subscribe open-software-network/os-june-releases releases
+```
+
+It posts when a `vX.Y.Z` stable release is published. RC builds reuse the fixed
+`rc` release tag and are edited in place rather than re-published, so they do not
+reliably trigger a Slack post; watch the `rc` release page for candidates.
 
 The app polls:
 

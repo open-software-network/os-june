@@ -7,11 +7,7 @@ import {
 
 // A raw gateway frame whose `type` the classifier doesn't model yet → it
 // classifies as `{ kind: "unsupported" }`, which is the store's only input.
-function unsupportedClassified(
-  type: string,
-  sessionId: string | undefined,
-  payload?: unknown,
-) {
+function unsupportedClassified(type: string, sessionId: string | undefined, payload?: unknown) {
   const event = classifyHermesEvent({
     type,
     session_id: sessionId,
@@ -47,9 +43,7 @@ describe("createUnsupportedEventStore", () => {
 
   it("records an unsupported event into the bounded buffer for its session", () => {
     const store = createUnsupportedEventStore();
-    store.record(
-      unsupportedClassified("future.kind", "s1", { hello: "world" }),
-    );
+    store.record(unsupportedClassified("future.kind", "s1", { hello: "world" }));
 
     const records = store.recordsFor("s1");
     expect(records).toHaveLength(1);
@@ -70,9 +64,7 @@ describe("createUnsupportedEventStore", () => {
     const types = records.map((r) => r.type);
     // The very first type was evicted; the last one survives.
     expect(types).not.toContain("future.kind.0");
-    expect(types).toContain(
-      `future.kind.${UNSUPPORTED_EVENTS_PER_SESSION_CAP}`,
-    );
+    expect(types).toContain(`future.kind.${UNSUPPORTED_EVENTS_PER_SESSION_CAP}`);
   });
 
   it("keeps each session's buffer independent and bounded", () => {
@@ -158,9 +150,7 @@ describe("createUnsupportedEventStore", () => {
 
   it("does not throw on an unsupported event with no session or payload", () => {
     const store = createUnsupportedEventStore();
-    expect(() =>
-      store.record(unsupportedClassified("future.kind", undefined)),
-    ).not.toThrow();
+    expect(() => store.record(unsupportedClassified("future.kind", undefined))).not.toThrow();
     // Session-less events are retained under a stable bucket and excluded from
     // any active-session notice.
     expect(store.toRecords()).toHaveLength(1);

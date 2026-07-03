@@ -112,17 +112,13 @@ describe("DictationHistoryView", () => {
     });
     render(<DictationHistoryView />);
 
-    await waitFor(() =>
-      expect(screen.getByText("Send the follow up.")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("Send the follow up.")).toBeInTheDocument());
     expect(screen.getByText("Push to talk")).toBeInTheDocument();
     expect(screen.getByText("Hands-free")).toBeInTheDocument();
     expect(screen.getByLabelText("Shortcut Ctrl+Opt+T")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Copy" }));
-    await waitFor(() =>
-      expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "),
-    );
+    await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
   });
 
   it("does not advertise shortcut dictation on Windows", async () => {
@@ -138,13 +134,9 @@ describe("DictationHistoryView", () => {
 
       render(<DictationHistoryView />);
 
+      expect(await screen.findByText("Dictation is only supported on macOS")).toBeInTheDocument();
       expect(
-        await screen.findByText("Dictation is only supported on macOS"),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          "Meeting notes still work with microphone recording on this device.",
-        ),
+        screen.getByText("Meeting notes still work with microphone recording on this device."),
       ).toBeInTheDocument();
       expect(screen.queryByLabelText("Dictation shortcuts")).toBeNull();
       expect(screen.queryByText("Start dictating anywhere")).toBeNull();
@@ -166,12 +158,8 @@ describe("DictationHistoryView", () => {
   it("hides the 'Get more' card until dictation is adopted", async () => {
     // Only one recent dictation — below the adoption threshold.
     render(<DictationHistoryView />);
-    await waitFor(() =>
-      expect(screen.getByText("Send the follow up.")).toBeInTheDocument(),
-    );
-    expect(
-      screen.queryByText("Get more from dictation"),
-    ).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Send the follow up.")).toBeInTheDocument());
+    expect(screen.queryByText("Get more from dictation")).not.toBeInTheDocument();
   });
 
   it("surfaces only the unconfigured features once adopted", async () => {
@@ -201,9 +189,7 @@ describe("DictationHistoryView", () => {
     mocks.listDictionaryEntries.mockResolvedValue([]);
 
     render(<DictationHistoryView />);
-    await waitFor(() =>
-      expect(screen.getByText("Get more from dictation")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("Get more from dictation")).toBeInTheDocument());
     expect(screen.getByText("Personal dictionary")).toBeInTheDocument();
     expect(screen.queryByText("Writing style")).not.toBeInTheDocument();
   });
@@ -231,26 +217,18 @@ describe("DictationHistoryView", () => {
         style: "casualLowercase",
       },
     });
-    mocks.listDictionaryEntries.mockResolvedValue([
-      { id: "e1", phrase: "Bismarck" },
-    ]);
+    mocks.listDictionaryEntries.mockResolvedValue([{ id: "e1", phrase: "Bismarck" }]);
 
     render(<DictationHistoryView />);
-    await waitFor(() =>
-      expect(screen.getByText("Transcript 0")).toBeInTheDocument(),
-    );
-    expect(
-      screen.queryByText("Get more from dictation"),
-    ).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Transcript 0")).toBeInTheDocument());
+    expect(screen.queryByText("Get more from dictation")).not.toBeInTheDocument();
   });
 
   it("deletes a transcription after confirmation", async () => {
     const user = userEvent.setup();
     render(<DictationHistoryView />);
 
-    await waitFor(() =>
-      expect(screen.getByText("Send the follow up.")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("Send the follow up.")).toBeInTheDocument());
 
     // Row trash icon opens the confirmation dialog rather than deleting.
     await user.click(screen.getByRole("button", { name: "Delete" }));
@@ -262,9 +240,7 @@ describe("DictationHistoryView", () => {
     await user.click(deleteButtons[deleteButtons.length - 1]);
 
     await waitFor(() =>
-      expect(mocks.deleteDictationHistoryItem).toHaveBeenCalledWith(
-        "dictation-1",
-      ),
+      expect(mocks.deleteDictationHistoryItem).toHaveBeenCalledWith("dictation-1"),
     );
     expect(screen.queryByText("Send the follow up.")).not.toBeInTheDocument();
   });

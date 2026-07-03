@@ -46,6 +46,8 @@ export type RawHermesEventName =
   | "message.complete"
   | "thinking.delta"
   | "reasoning.delta"
+  | "thinking.available"
+  | "reasoning.available"
   | "status.update"
   // Tools
   | "tool.start"
@@ -57,7 +59,9 @@ export type RawHermesEventName =
   | "approval.request"
   | "approval.response"
   | "sudo.request"
+  | "sudo.response"
   | "secret.request"
+  | "secret.response"
   // Subagents / background activity
   | "subagent.start"
   | "subagent.tool"

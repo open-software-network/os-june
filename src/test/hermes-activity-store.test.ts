@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { classifyHermesEvent } from "../lib/hermes-control-plane";
+import { classifyHermesEvent, createSteeringEvent } from "../lib/hermes-control-plane";
 import type { JuneHermesEvent } from "../lib/hermes-control-plane";
-import {
-  ACTIVITY_SESSIONS_CAP,
-  createHermesActivityStore,
-} from "../lib/hermes-activity-store";
+import { ACTIVITY_SESSIONS_CAP, createHermesActivityStore } from "../lib/hermes-activity-store";
 
 // Classify a raw frame and assert it produced the expected kind, so a test
 // can't silently feed the wrong event into the store.
@@ -38,10 +35,7 @@ describe("createHermesActivityStore", () => {
 
   it("a running tool call produces one active activity row", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("tool.start", "s1", { tool_name: "read_file" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "read_file" }), "sandboxed");
 
     const records = store.getRecords();
     expect(records).toHaveLength(1);
@@ -60,10 +54,7 @@ describe("createHermesActivityStore", () => {
       pendingCountFor: (sessionId) => pendingBySession.get(sessionId) ?? 0,
     });
     // The session is mid-run on a tool first.
-    store.record(
-      classified("tool.start", "s1", { tool_name: "bash" }),
-      "unrestricted",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "unrestricted");
     // Then the agent blocks on the user.
     store.record(
       classified("approval.request", "s1", {
@@ -79,12 +70,52 @@ describe("createHermesActivityStore", () => {
     expect(record?.pendingActionCount).toBe(2);
   });
 
-  it("completion flips the session to phase 'complete' but keeps the row", () => {
+  it("a pending action resolution moves a non-terminal session back to running", () => {
     const store = createHermesActivityStore();
     store.record(
-      classified("tool.start", "s1", { tool_name: "bash" }),
+      classified("clarify.request", "s1", {
+        request_id: "r1",
+        question: "Which file?",
+      }),
       "sandboxed",
     );
+    expect(store.getRecord("s1")?.phase).toBe("waiting");
+
+    store.record(
+      classified("clarify.response", "s1", {
+        request_id: "r1",
+        answer: "vite.config.ts",
+      }),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("running");
+  });
+
+  it("a failed tool event clears the in-flight tool", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    expect(store.getRecord("s1")?.currentTool).toBe("bash");
+
+    store.record(classified("tool.error", "s1", { tool_name: "bash" }), "sandboxed");
+    const record = store.getRecord("s1");
+    expect(record?.phase).toBe("running");
+    expect(record?.currentTool).toBeUndefined();
+  });
+
+  it("a steering event is a no-op for activity phase", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    store.record(
+      createSteeringEvent("s1", "focus on tests", new Date().toISOString()),
+      "sandboxed",
+    );
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.getRecord("s1")?.currentTool).toBe("bash");
+  });
+
+  it("completion flips the session to phase 'complete' but keeps the row", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("running");
 
     store.record(classified("session.complete", "s1"), "sandboxed");
@@ -98,12 +129,70 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(0);
   });
 
+  it("uses terminal lifecycle flavor even when the payload status is non-terminal", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+
+    store.record(classified("turn.complete", "s1", { status: "success" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("complete");
+    expect(store.activeCount()).toBe(0);
+  });
+
+  it("keeps running lifecycle flavor active even when the payload status is terminal", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+
+    store.record(classified("status.update", "s1", { status: "done" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+  });
+
+  it("leaves a running row active when info lifecycle status text looks terminal", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+
+    store.record(classified("lifecycle.update", "s1", { status: "completed" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+  });
+
+  it("ignores info lifecycle status text for an absent row", () => {
+    const store = createHermesActivityStore();
+
+    store.record(classified("lifecycle.update", "s1", { status: "done" }), "sandboxed");
+
+    expect(store.getRecord("s1")).toBeUndefined();
+    expect(store.activeCount()).toBe(0);
+  });
+
+  it("keeps accepting transcript deltas after info lifecycle status text looks terminal", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
+    store.record(classified("lifecycle.update", "s1", { status: "done" }), "sandboxed");
+
+    store.record(classified("message.delta", "s1", { delta: "still streaming" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+  });
+
+  it("message completion flips the session to phase 'complete'", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("message.start", "s1"), "sandboxed");
+    expect(store.getRecord("s1")?.phase).toBe("running");
+
+    store.record(classified("message.complete", "s1", { text: "Done" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("complete");
+    expect(store.activeCount()).toBe(0);
+  });
+
   it("an error frame moves the session to phase 'error'", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("tool.start", "s1", { tool_name: "bash" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
     store.record(classified("error", "s1", { message: "boom" }), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("error");
   });
@@ -125,10 +214,7 @@ describe("createHermesActivityStore", () => {
       "sandboxed",
     );
     // Repeat of a1 must NOT double-count.
-    store.record(
-      classified("subagent.tool", "s1", { subagent_id: "a1" }),
-      "sandboxed",
-    );
+    store.record(classified("subagent.tool", "s1", { subagent_id: "a1" }), "sandboxed");
 
     const record = store.getRecord("s1");
     expect(record?.phase).toBe("background");
@@ -151,10 +237,7 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(1);
 
     // Its LAST frame is subagent.complete — there is no trailing session.complete.
-    store.record(
-      classified("subagent.complete", "s1", { subagent_id: "a1" }),
-      "sandboxed",
-    );
+    store.record(classified("subagent.complete", "s1", { subagent_id: "a1" }), "sandboxed");
 
     const record = store.getRecord("s1");
     // The parent must derive a resting phase from its (now terminal) subagents
@@ -168,33 +251,29 @@ describe("createHermesActivityStore", () => {
 
   it("an errored subagent derives an 'error' parent phase once none remain active", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("subagent.start", "s1", { subagent_id: "a1" }),
-      "sandboxed",
-    );
-    store.record(
-      classified("subagent.error", "s1", { subagent_id: "a1" }),
-      "sandboxed",
-    );
+    store.record(classified("subagent.start", "s1", { subagent_id: "a1" }), "sandboxed");
+    store.record(classified("subagent.error", "s1", { subagent_id: "a1" }), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("error");
     expect(store.activeCount()).toBe(0);
   });
 
+  it("lets parent transcript streaming recover visibility after a subagent error", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("subagent.error", "s1", { subagent_id: "a1" }), "sandboxed");
+    expect(store.getRecord("s1")?.phase).toBe("error");
+
+    store.record(classified("message.delta", "s1", { delta: "Still streaming" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+  });
+
   it("keeps the parent in 'background' while any sibling subagent is still working", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("subagent.start", "s1", { subagent_id: "a1" }),
-      "sandboxed",
-    );
-    store.record(
-      classified("subagent.progress", "s1", { subagent_id: "a2" }),
-      "sandboxed",
-    );
+    store.record(classified("subagent.start", "s1", { subagent_id: "a1" }), "sandboxed");
+    store.record(classified("subagent.progress", "s1", { subagent_id: "a2" }), "sandboxed");
     // a1 finishes, but a2 is still working.
-    store.record(
-      classified("subagent.complete", "s1", { subagent_id: "a1" }),
-      "sandboxed",
-    );
+    store.record(classified("subagent.complete", "s1", { subagent_id: "a1" }), "sandboxed");
 
     const record = store.getRecord("s1");
     expect(record?.phase).toBe("background");
@@ -207,33 +286,21 @@ describe("createHermesActivityStore", () => {
   it("a later default 'sandboxed' event never downgrades an established 'unrestricted' row", () => {
     const store = createHermesActivityStore();
     // The session resolved as unrestricted (it can write outside the sandbox).
-    store.record(
-      classified("tool.start", "s1", { tool_name: "write_file" }),
-      "unrestricted",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "write_file" }), "unrestricted");
     expect(store.getRecord("s1")?.mode).toBe("unrestricted");
 
     // A later event whose mode defaults to 'sandboxed' (unresolved session)
     // must NOT flip the row back — that would show a green "Sandboxed" shield on
     // a session that can write outside the sandbox.
-    store.record(
-      classified("tool.progress", "s1", { tool_name: "write_file" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.progress", "s1", { tool_name: "write_file" }), "sandboxed");
     expect(store.getRecord("s1")?.mode).toBe("unrestricted");
   });
 
   it("keeps one record per session and tracks the latest tool", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("tool.start", "s1", { tool_name: "read_file" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "read_file" }), "sandboxed");
     advance(1000);
-    store.record(
-      classified("tool.start", "s1", { tool_name: "bash" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
 
     const records = store.getRecords();
     expect(records).toHaveLength(1);
@@ -243,15 +310,9 @@ describe("createHermesActivityStore", () => {
 
   it("orders records newest-first by last event", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("tool.start", "s1", { tool_name: "a" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "a" }), "sandboxed");
     advance(1000);
-    store.record(
-      classified("tool.start", "s2", { tool_name: "b" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s2", { tool_name: "b" }), "sandboxed");
 
     const ids = store.getRecords().map((r) => r.sessionId);
     expect(ids).toEqual(["s2", "s1"]);
@@ -259,10 +320,7 @@ describe("createHermesActivityStore", () => {
 
   it("clears a session's row on demand", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("tool.start", "s1", { tool_name: "a" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "a" }), "sandboxed");
     store.clearSession("s1");
     expect(store.getRecord("s1")).toBeUndefined();
     expect(store.getRecords()).toHaveLength(0);
@@ -271,10 +329,7 @@ describe("createHermesActivityStore", () => {
   it("bumps the version on every mutation for useSyncExternalStore", () => {
     const store = createHermesActivityStore();
     const before = store.getVersion();
-    store.record(
-      classified("tool.start", "s1", { tool_name: "a" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "a" }), "sandboxed");
     expect(store.getVersion()).toBeGreaterThan(before);
   });
 
@@ -282,42 +337,45 @@ describe("createHermesActivityStore", () => {
     const store = createHermesActivityStore();
     const listener = vi.fn();
     const unsubscribe = store.subscribe(listener);
-    store.record(
-      classified("tool.start", "s1", { tool_name: "a" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s1", { tool_name: "a" }), "sandboxed");
     expect(listener).toHaveBeenCalledTimes(1);
     unsubscribe();
-    store.record(
-      classified("tool.start", "s2", { tool_name: "b" }),
-      "sandboxed",
-    );
+    store.record(classified("tool.start", "s2", { tool_name: "b" }), "sandboxed");
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it("ignores events without a session id (nothing to attribute)", () => {
     const store = createHermesActivityStore();
     // reasoning with no session id classifies to sessionId "" — unattributable.
-    store.record(
-      classified("reasoning.delta", undefined, { text: "x" }),
-      "sandboxed",
-    );
+    store.record(classified("reasoning.delta", undefined, { text: "x" }), "sandboxed");
     expect(store.getRecords()).toHaveLength(0);
   });
 
   it("bounds the number of tracked sessions, evicting the oldest", () => {
     const store = createHermesActivityStore();
     for (let i = 0; i < ACTIVITY_SESSIONS_CAP + 5; i++) {
-      store.record(
-        classified("tool.start", `s${i}`, { tool_name: "a" }),
-        "sandboxed",
-      );
+      store.record(classified("tool.start", `s${i}`, { tool_name: "a" }), "sandboxed");
       advance(1);
     }
-    expect(store.getRecords().length).toBeLessThanOrEqual(
-      ACTIVITY_SESSIONS_CAP,
-    );
+    expect(store.getRecords().length).toBeLessThanOrEqual(ACTIVITY_SESSIONS_CAP);
     // The very first session should have been evicted.
     expect(store.getRecord("s0")).toBeUndefined();
+  });
+
+  it("evicts completed rows before an older live row when over capacity", () => {
+    const store = createHermesActivityStore();
+    store.record(classified("tool.start", "running", { tool_name: "bash" }), "sandboxed");
+    advance(1);
+
+    for (let i = 0; i < ACTIVITY_SESSIONS_CAP; i++) {
+      const sessionId = `complete-${i}`;
+      store.record(classified("tool.start", sessionId, { tool_name: "bash" }), "sandboxed");
+      store.record(classified("session.complete", sessionId), "sandboxed");
+      advance(1);
+    }
+
+    expect(store.getRecords()).toHaveLength(ACTIVITY_SESSIONS_CAP);
+    expect(store.getRecord("running")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
   });
 });

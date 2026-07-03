@@ -14,8 +14,8 @@ use crate::{
 use async_trait::async_trait;
 use june_config::UpstreamConfig;
 use june_domain::{
-    DomainError, WebFetchRequest, WebFetchResult, WebFetcher, WebSearchProvider, WebSearchRequest,
-    WebSearchResult, WebSearchResults, WebSearcher,
+    DomainError, ProviderCredentials, WebFetchRequest, WebFetchResult, WebFetcher,
+    WebSearchProvider, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use reqwest::StatusCode;
 use serde::{Serialize, de::DeserializeOwned};
@@ -49,25 +49,26 @@ impl VeniceAugment {
     /// retry, matching the chat path.
     async fn post_augment<B, T>(
         &self,
-        path: &str,
+        endpoint: AugmentEndpoint,
         body: &B,
-        client_error_reason: &'static str,
+        provider_credentials: &ProviderCredentials,
     ) -> Result<T, DomainError>
     where
         B: Serialize,
         T: DeserializeOwned,
     {
-        let url = format!("{}{}", self.base_url, path);
+        let endpoint = ResolvedAugmentEndpoint {
+            url: format!("{}{}", self.base_url, endpoint.path),
+            client_error_reason: endpoint.client_error_reason,
+        };
+        let api_key = venice_api_key(&self.api_key, provider_credentials);
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-            let error = match self
-                .post_augment_once(&url, body, client_error_reason)
-                .await
-            {
+            let error = match self.post_augment_once(&endpoint, body, api_key).await {
                 Ok(parsed) => return Ok(parsed),
                 Err(error) => error,
             };
             if error.retryable && attempt + 1 < retry::UPSTREAM_ATTEMPTS {
-                tracing::warn!(%url, attempt, "venice augment: transient failure, retrying");
+                tracing::warn!(url = %endpoint.url, attempt, "venice augment: transient failure, retrying");
                 tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
                 continue;
             }
@@ -78,9 +79,9 @@ impl VeniceAugment {
 
     async fn post_augment_once<B, T>(
         &self,
-        url: &str,
+        endpoint: &ResolvedAugmentEndpoint,
         body: &B,
-        client_error_reason: &'static str,
+        api_key: &str,
     ) -> Result<T, UpstreamAttemptError>
     where
         B: Serialize,
@@ -88,14 +89,14 @@ impl VeniceAugment {
     {
         let response = self
             .http
-            .post(url)
-            .bearer_auth(&self.api_key)
+            .post(&endpoint.url)
+            .bearer_auth(api_key)
             .json(body)
             .send()
             .await
             .map_err(|error| {
                 let retryable = retry::is_retryable_transport_error(&error);
-                tracing::error!(%error, %url, retryable, "venice augment: transport error");
+                tracing::error!(%error, url = %endpoint.url, retryable, "venice augment: transport error");
                 UpstreamAttemptError {
                     error: DomainError::UpstreamProvider,
                     retryable,
@@ -105,14 +106,14 @@ impl VeniceAugment {
         if !status.is_success() {
             let retryable = retry::is_retryable_status(status);
             let body_text = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, body_bytes = body_text.len(), retryable, "venice augment: non-success response");
+            tracing::error!(%status, url = %endpoint.url, body_bytes = body_text.len(), retryable, "venice augment: non-success response");
             // Only a 400 means the upstream rejected this specific input.
             // Auth/billing/config failures (401, 403, 402, ...) are ours, not
             // the user's, and must stay provider failures so they are not
             // reported to the agent as a fixable bad request.
             if status == StatusCode::BAD_REQUEST {
                 return Err(UpstreamAttemptError::fatal(DomainError::InvalidInput {
-                    reason: client_error_reason.to_string(),
+                    reason: endpoint.client_error_reason.to_string(),
                 }));
             }
             return Err(UpstreamAttemptError {
@@ -124,7 +125,7 @@ impl VeniceAugment {
             // A body we can't parse means the experimental schema drifted (or
             // an upstream error leaked through as 200). Fail closed rather than
             // hand the agent half-parsed data.
-            tracing::error!(%error, %url, "venice augment: response JSON parse failed");
+            tracing::error!(%error, url = %endpoint.url, "venice augment: response JSON parse failed");
             UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
         })
     }
@@ -136,13 +137,16 @@ impl WebSearcher for VeniceAugment {
         let provider = request.provider;
         let wire: AugmentSearchResponse = self
             .post_augment(
-                "/augment/search",
+                AugmentEndpoint {
+                    path: "/augment/search",
+                    client_error_reason: "web_search_rejected",
+                },
                 &AugmentSearchRequest {
                     query: &request.query,
                     limit: request.limit,
                     search_provider: search_provider_param(provider),
                 },
-                "web_search_rejected",
+                &request.provider_credentials,
             )
             .await?;
         let results = wire
@@ -171,9 +175,12 @@ impl WebFetcher for VeniceAugment {
     async fn fetch(&self, request: WebFetchRequest) -> Result<WebFetchResult, DomainError> {
         let wire: AugmentScrapeResponse = self
             .post_augment(
-                "/augment/scrape",
+                AugmentEndpoint {
+                    path: "/augment/scrape",
+                    client_error_reason: "web_fetch_unsupported_url",
+                },
                 &AugmentScrapeRequest { url: &request.url },
-                "web_fetch_unsupported_url",
+                &request.provider_credentials,
             )
             .await?;
         Ok(WebFetchResult {
@@ -199,6 +206,26 @@ fn non_empty(value: String) -> Option<String> {
     } else {
         Some(value)
     }
+}
+
+fn venice_api_key<'a>(configured: &'a str, credentials: &'a ProviderCredentials) -> &'a str {
+    credentials
+        .venice_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(configured)
+}
+
+#[derive(Clone, Copy)]
+struct AugmentEndpoint {
+    path: &'static str,
+    client_error_reason: &'static str,
+}
+
+struct ResolvedAugmentEndpoint {
+    url: String,
+    client_error_reason: &'static str,
 }
 
 // --- Venice augment wire shapes (experimental; keep confined to this file) ---
@@ -250,7 +277,8 @@ mod tests {
     use crate::http;
     use june_config::UpstreamConfig;
     use june_domain::{
-        DomainError, WebFetchRequest, WebFetcher, WebSearchProvider, WebSearchRequest, WebSearcher,
+        DomainError, ProviderCredentials, WebFetchRequest, WebFetcher, WebSearchProvider,
+        WebSearchRequest, WebSearcher,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -306,6 +334,7 @@ mod tests {
                 query: "rust async".to_string(),
                 limit: Some(5),
                 provider: WebSearchProvider::Brave,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("search should succeed");
@@ -341,6 +370,7 @@ mod tests {
                 query: "anything".to_string(),
                 limit: None,
                 provider: WebSearchProvider::Google,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("search should succeed");
@@ -367,6 +397,7 @@ mod tests {
         let fetched = augment(&server)
             .fetch(WebFetchRequest {
                 url: "https://example.com/post".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect("fetch should succeed");
@@ -392,6 +423,7 @@ mod tests {
         let error = augment(&server)
             .fetch(WebFetchRequest {
                 url: "https://x.com/some/post".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect_err("blocked site should error");
@@ -420,6 +452,7 @@ mod tests {
         let error = augment(&server)
             .fetch(WebFetchRequest {
                 url: "https://example.com/post".to_string(),
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect_err("auth failure should error");
@@ -443,6 +476,7 @@ mod tests {
                 query: "anything".to_string(),
                 limit: None,
                 provider: WebSearchProvider::Brave,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect_err("malformed schema should error");
@@ -464,6 +498,7 @@ mod tests {
                 query: "anything".to_string(),
                 limit: None,
                 provider: WebSearchProvider::Brave,
+                provider_credentials: ProviderCredentials::default(),
             })
             .await
             .expect_err("a 5xx should surface as an upstream failure");

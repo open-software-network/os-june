@@ -9,6 +9,10 @@ type ConfirmDialogProps = {
   title: ReactNode;
   description?: ReactNode;
   confirmLabel?: string;
+  /** Label shown on the confirm button while onConfirm is in flight, for
+   * consequential actions whose pending state should read as progress
+   * ("Upgrading...") rather than a frozen button. */
+  confirmBusyLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
 };
@@ -20,6 +24,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel = "Confirm",
+  confirmBusyLabel,
   cancelLabel = "Cancel",
   destructive = false,
 }: ConfirmDialogProps) {
@@ -49,23 +54,17 @@ export function ConfirmDialog({
       width={420}
       footer={
         <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onClose}
-            disabled={submitting}
-          >
+          <button type="button" className="primary-action" onClick={onClose} disabled={submitting}>
             {cancelLabel}
           </button>
           <button
             type="button"
-            className={`primary-action primary-solid${
-              destructive ? " primary-destructive" : ""
-            }`}
+            className={`primary-action primary-solid${destructive ? " primary-destructive" : ""}`}
             onClick={() => void handleConfirm()}
             disabled={submitting}
+            aria-busy={submitting || undefined}
           >
-            {confirmLabel}
+            {submitting && confirmBusyLabel ? confirmBusyLabel : confirmLabel}
           </button>
         </>
       }

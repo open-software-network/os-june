@@ -30,9 +30,7 @@ export function useForcedEmptyStates(): boolean {
 
 export function registerEmptyStatesDemo() {
   if (typeof window === "undefined") return;
-  (window as unknown as Record<string, unknown>).__emptyStates = (
-    on?: boolean,
-  ) => {
+  (window as unknown as Record<string, unknown>).__emptyStates = (on?: boolean) => {
     forced = on ?? !forced;
     window.dispatchEvent(new Event(EMPTY_STATES_DEMO_EVENT));
     return forced

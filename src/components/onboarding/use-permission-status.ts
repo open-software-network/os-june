@@ -1,10 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
-import {
-  checkRecordingSourceReadiness,
-  dictationHelperCommand,
-} from "../../lib/tauri";
+import { checkRecordingSourceReadiness, dictationHelperCommand } from "../../lib/tauri";
 
 export type PermissionStatuses = {
   /** AVCaptureDevice vocabulary: "granted" | "denied" | "restricted" | "undetermined". */
@@ -20,9 +17,7 @@ export function isMicrophoneGranted(statuses: PermissionStatuses) {
 }
 
 export function isMicrophoneDenied(statuses: PermissionStatuses) {
-  return (
-    statuses.microphone === "denied" || statuses.microphone === "restricted"
-  );
+  return statuses.microphone === "denied" || statuses.microphone === "restricted";
 }
 
 export function isAccessibilityGranted(statuses: PermissionStatuses) {
@@ -40,12 +35,7 @@ export function isAccessibilityGranted(statuses: PermissionStatuses) {
  * screen the whole time, so the usual focus-refresh in App.tsx isn't
  * running yet.
  */
-export type SystemAudioStatus =
-  | "unknown"
-  | "probing"
-  | "granted"
-  | "denied"
-  | "unsupported";
+export type SystemAudioStatus = "unknown" | "probing" | "granted" | "denied" | "unsupported";
 
 /**
  * System-audio permission state for the onboarding wizard.
@@ -62,9 +52,7 @@ export function useSystemAudioStatus(active: boolean): {
   probe: () => void;
 } {
   const demoEnabled = browserOnboardingDemoEnabled();
-  const [status, setStatus] = useState<SystemAudioStatus>(
-    demoEnabled ? "granted" : "unknown",
-  );
+  const [status, setStatus] = useState<SystemAudioStatus>(demoEnabled ? "granted" : "unknown");
   const statusRef = useRef(status);
   statusRef.current = status;
   const inflightRef = useRef(false);
@@ -79,17 +67,12 @@ export function useSystemAudioStatus(active: boolean): {
     setStatus((prev) => (prev === "unknown" ? "probing" : prev));
     checkRecordingSourceReadiness("microphonePlusSystem")
       .then((readiness) => {
-        const system = readiness.sources.find(
-          (source) => source.source === "system",
-        );
+        const system = readiness.sources.find((source) => source.source === "system");
         if (!system || system.permissionState === "unsupported") {
           setStatus("unsupported");
         } else if (system.permissionState === "granted") {
           setStatus("granted");
-        } else if (
-          system.permissionState === "denied" ||
-          system.permissionState === "restricted"
-        ) {
+        } else if (system.permissionState === "denied" || system.permissionState === "restricted") {
           setStatus("denied");
         } else {
           setStatus(system.ready ? "granted" : "unknown");
@@ -150,12 +133,8 @@ export function usePermissionStatuses(active: boolean): PermissionStatuses {
       const accessibility = helperEvent.payload?.accessibility;
       setStatuses((prev) => ({
         checked: true,
-        microphone:
-          typeof microphone === "string" ? microphone : prev.microphone,
-        accessibility:
-          typeof accessibility === "string"
-            ? accessibility
-            : prev.accessibility,
+        microphone: typeof microphone === "string" ? microphone : prev.microphone,
+        accessibility: typeof accessibility === "string" ? accessibility : prev.accessibility,
       }));
     }).then((cleanup) => {
       if (aborted) cleanup();
@@ -171,9 +150,7 @@ export function usePermissionStatuses(active: boolean): PermissionStatuses {
     if (demoEnabled) return;
     if (!active) return;
     function poll() {
-      void dictationHelperCommand({ type: "get_permission_status" }).catch(
-        () => undefined,
-      );
+      void dictationHelperCommand({ type: "get_permission_status" }).catch(() => undefined);
     }
     poll();
     const interval = window.setInterval(poll, 1500);
@@ -189,7 +166,5 @@ export function usePermissionStatuses(active: boolean): PermissionStatuses {
 
 function browserOnboardingDemoEnabled() {
   if (!import.meta.env.DEV || typeof window === "undefined") return false;
-  return (
-    new URLSearchParams(window.location.search).get("juneDemoAccount") === "1"
-  );
+  return new URLSearchParams(window.location.search).get("juneDemoAccount") === "1";
 }

@@ -15,9 +15,7 @@ export type HermesSessionListOptions = {
   query?: string;
 };
 
-export async function listHermesSessions(
-  options: HermesSessionListOptions = {},
-) {
+export async function listHermesSessions(options: HermesSessionListOptions = {}) {
   const response = await hermesBridgeSessions({
     limit: 100,
     offset: 0,
@@ -67,15 +65,11 @@ function sessionSource(session: HermesSessionInfo) {
 }
 
 function sessionKind(session: HermesSessionInfo) {
-  return normalizeSessionMarker(
-    session.session_type ?? session.sessionType ?? session.kind,
-  );
+  return normalizeSessionMarker(session.session_type ?? session.sessionType ?? session.kind);
 }
 
 function hasSubagentId(session: HermesSessionInfo) {
-  return Boolean(
-    normalizeSessionMarker(session.subagent_id ?? session.subagentId),
-  );
+  return Boolean(normalizeSessionMarker(session.subagent_id ?? session.subagentId));
 }
 
 function normalizeSessionMarker(value: unknown) {
@@ -108,9 +102,7 @@ export type ScheduledRunListOptions = {
 };
 
 /** Recent scheduled-routine runs, newest first. */
-export async function listScheduledRunSessions(
-  options: ScheduledRunListOptions = {},
-) {
+export async function listScheduledRunSessions(options: ScheduledRunListOptions = {}) {
   const listOptions: HermesSessionListOptions = {
     limit: SCHEDULED_RUN_FETCH_LIMIT,
   };
@@ -126,15 +118,10 @@ export async function listScheduledRunSessions(
 }
 
 export function isRunningScheduledRunSession(session: HermesSessionInfo) {
-  return (
-    isScheduledRunSession(session) &&
-    (session.active === true || session.is_active === true)
-  );
+  return isScheduledRunSession(session) && (session.active === true || session.is_active === true);
 }
 
-function withScheduledRunActivity(
-  session: HermesSessionInfo,
-): HermesSessionInfo {
+function withScheduledRunActivity(session: HermesSessionInfo): HermesSessionInfo {
   if (!isScheduledRunSession(session)) return session;
   if (!isRunningScheduledRunSession(session) && !isRecentPendingRun(session)) {
     return session;
@@ -159,16 +146,13 @@ function isRecentPendingRun(session: HermesSessionInfo) {
 function hasSessionEnded(session: HermesSessionInfo) {
   return Boolean(
     stringPresent(session.ended_at) ||
-    stringPresent(session.endedAt) ||
-    stringPresent(session.end_reason),
+      stringPresent(session.endedAt) ||
+      stringPresent(session.end_reason),
   );
 }
 
 function hasScheduledRunContent(session: HermesSessionInfo) {
-  return (
-    Boolean(session.preview?.trim()) ||
-    !isReplaceableScheduledRunTitle(session.title)
-  );
+  return Boolean(session.preview?.trim()) || !isReplaceableScheduledRunTitle(session.title);
 }
 
 function stringPresent(value: unknown) {
@@ -180,9 +164,7 @@ function stringPresent(value: unknown) {
  * scheduled cron job. … nothing more.]`. Recognized by that exact opener so a
  * user message that merely starts with "[IMPORTANT" is never mistaken for it. */
 export function isScheduledRunPreamble(content: string) {
-  return /^\s*\[IMPORTANT:\s*You are running as a scheduled cron job\.?/i.test(
-    content,
-  );
+  return /^\s*\[IMPORTANT:\s*You are running as a scheduled cron job\.?/i.test(content);
 }
 
 /** Strips the leading delivery preamble from a scheduled run's prompt, leaving
@@ -220,9 +202,7 @@ export function isReplaceableScheduledRunTitle(title: unknown) {
 /** Gives a scheduled-run session a readable title and a clean preview when the
  * stored ones are empty or still the raw delivery preamble, so every list
  * surface stops showing "[IMPORTANT…". Non-cron sessions pass through. */
-function withScheduledRunDisplay(
-  session: HermesSessionInfo,
-): HermesSessionInfo {
+function withScheduledRunDisplay(session: HermesSessionInfo): HermesSessionInfo {
   if (!isScheduledRunSession(session)) return session;
   const cleanedPreview = stripScheduledRunPreamble(session.preview ?? "");
   const storedTitle = session.title?.trim() ?? "";
@@ -237,9 +217,7 @@ function withScheduledRunDisplay(
 }
 
 export function normalizeHermesSessionMessagesResponse(response: unknown) {
-  return extractList(response, "messages").flatMap(
-    normalizeHermesSessionMessage,
-  );
+  return extractList(response, "messages").flatMap(normalizeHermesSessionMessage);
 }
 
 export function sessionTimestamp(session: HermesSessionInfo) {
@@ -266,7 +244,7 @@ export function titleFromPrompt(prompt: string) {
     .split(" ")
     .filter(Boolean)
     .slice(0, 6);
-  const title = titleCaseSessionTitle(words.join(" "));
+  const title = sentenceCaseSessionTitle(words.join(" "));
   if (title.length <= 72) return title || UNTITLED_SESSION_TITLE;
   return `${title.slice(0, 69).trim()}...`;
 }
@@ -305,48 +283,16 @@ function stripRequestPrefix(value: string) {
   return title;
 }
 
-function titleCaseSessionTitle(value: string) {
-  const smallWords = new Set([
-    "a",
-    "an",
-    "and",
-    "as",
-    "at",
-    "but",
-    "by",
-    "for",
-    "from",
-    "in",
-    "into",
-    "of",
-    "on",
-    "or",
-    "the",
-    "to",
-    "with",
-  ]);
-  return value
-    .split(" ")
-    .map((word, index) => {
-      if (!word) return word;
-      if (/[A-Z]/.test(word) && word === word.toUpperCase()) return word;
-      const lower = word.toLowerCase();
-      if (index > 0 && smallWords.has(lower)) return lower;
-      return lower.replace(/^([a-z])/, (match) => match.toUpperCase());
-    })
-    .join(" ")
-    .trim();
+// Sentence case per spec/sentence-case.md: capitalize the first word and keep
+// the user's own casing elsewhere (acronyms and proper nouns survive as typed).
+function sentenceCaseSessionTitle(value: string) {
+  return value.trim().replace(/^([a-z])/, (match) => match.toUpperCase());
 }
 
 function extractList(response: unknown, preferredKey: "sessions" | "messages") {
   if (!response || typeof response !== "object") return [];
   const record = response as Record<string, unknown>;
-  const candidates = [
-    record[preferredKey],
-    record.items,
-    record.data,
-    record.results,
-  ];
+  const candidates = [record[preferredKey], record.items, record.data, record.results];
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) return candidate;
   }
@@ -367,8 +313,7 @@ function normalizeHermesSessionMessage(value: unknown): HermesSessionMessage[] {
     id?: unknown;
     role?: unknown;
   };
-  if (typeof message.id !== "string" && typeof message.id !== "number")
-    return [];
+  if (typeof message.id !== "string" && typeof message.id !== "number") return [];
   if (
     message.role !== "system" &&
     message.role !== "user" &&
@@ -382,8 +327,7 @@ function normalizeHermesSessionMessage(value: unknown): HermesSessionMessage[] {
 function timestampString(value: unknown) {
   if (typeof value === "string" && value.trim()) return value;
   if (typeof value === "number" && Number.isFinite(value)) {
-    const milliseconds =
-      value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+    const milliseconds = value > 0 && value < 10_000_000_000 ? value * 1000 : value;
     return new Date(milliseconds).toISOString();
   }
   if (value instanceof Date && !Number.isNaN(value.getTime())) {

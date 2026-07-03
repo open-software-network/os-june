@@ -5,6 +5,7 @@ import { App } from "./app/App";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { replayOnboarding } from "./lib/onboarding";
 import { initTheme } from "./lib/theme";
+import { initBrand } from "./lib/brand";
 import "./styles/app.css";
 
 declare global {
@@ -21,6 +22,7 @@ if (import.meta.env.DEV) {
 }
 
 initTheme();
+initBrand();
 installNativeContextMenuGuard();
 
 // Console driver for the agent HUD overlay window: __agentHud("demo") etc.
@@ -51,6 +53,14 @@ if (import.meta.env.DEV) {
   // call again or __emptyStates(false) to reset. Real data is untouched.
   void import("./lib/empty-states-demo").then(({ registerEmptyStatesDemo }) =>
     registerEmptyStatesDemo(),
+  );
+  // __billingDemo("pro") parks the Account → Billing card in any plan state;
+  // __billingDemo("all") stacks every variant; __billingDemo("off") resets.
+  void import("./lib/billing-demo").then(({ registerBillingDemo }) => registerBillingDemo());
+  // __usageDemo("half") parks the session usage panel in any state;
+  // __usageDemo("off") resets.
+  void import("./lib/usage-panel-demo").then(({ registerUsagePanelDemo }) =>
+    registerUsagePanelDemo(),
   );
 }
 

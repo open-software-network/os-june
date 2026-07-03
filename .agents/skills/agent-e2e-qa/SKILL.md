@@ -26,7 +26,10 @@ Pick the narrowest surface that proves the behavior.
 
 - **Web preview**: Use `pnpm dev` and Browser for React-only flows, standalone
   preview pages, onboarding preview, HUD demo pages, and visual smoke tests that
-  do not require real Tauri commands.
+  do not require real Tauri commands. The browser-surface technique (faking the
+  Tauri IPC bridge, Playwright/CDP driving, screenshot suites, PR-embeddable
+  GIFs) is owned by the `browser-test-tauri-fe` skill — read it before driving
+  this surface.
 - **Background browser video**: Use the bundled Playwright helper for
   web-reachable agent flows when the user is actively using the desktop or does
   not need to watch the run. This avoids foreground macOS screen capture. It may
@@ -166,7 +169,9 @@ Prefer semantic automation where available, then visual inspection.
   findings.
 
 When a tool-specific skill is available for Browser, Chrome, or Computer Use,
-read that skill before using the tool.
+read that skill before using the tool. For the Browser surface in this repo
+that is `browser-test-tauri-fe` (fake Tauri IPC bridge, Playwright/CDP,
+screenshots and GIFs).
 
 ## Walkthrough Loop
 

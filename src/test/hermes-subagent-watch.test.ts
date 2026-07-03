@@ -30,9 +30,7 @@ function classified(
 }
 
 // Replay a recorded fixture's frames through the store under one mode.
-function replayFrames(
-  frames: RawFrame[],
-): ReturnType<typeof createHermesActivityStore> {
+function replayFrames(frames: RawFrame[]): ReturnType<typeof createHermesActivityStore> {
   const store = createHermesActivityStore();
   for (const frame of frames) {
     store.record(
@@ -125,9 +123,7 @@ describe("hermes-activity-store — subagent watch records", () => {
   });
 
   it("a background completion links to the parent session by handle (same row)", () => {
-    const store = replayFrames(
-      subagentBackgroundCompletion.frames as RawFrame[],
-    );
+    const store = replayFrames(subagentBackgroundCompletion.frames as RawFrame[]);
 
     // The frames carry only a `handle` and a parent_session_id; both progress
     // and complete must fold into ONE record on the parent session.
@@ -146,14 +142,8 @@ describe("hermes-activity-store — subagent watch records", () => {
 
   it("tracks distinct subagents as separate records", () => {
     const store = createHermesActivityStore();
-    store.record(
-      classified("subagent.start", "s1", { subagent_id: "a1", goal: "A" }),
-      "sandboxed",
-    );
-    store.record(
-      classified("subagent.start", "s1", { subagent_id: "a2", goal: "B" }),
-      "sandboxed",
-    );
+    store.record(classified("subagent.start", "s1", { subagent_id: "a1", goal: "A" }), "sandboxed");
+    store.record(classified("subagent.start", "s1", { subagent_id: "a2", goal: "B" }), "sandboxed");
 
     const record = store.getRecord("s1");
     expect(record?.subagentCount).toBe(2);

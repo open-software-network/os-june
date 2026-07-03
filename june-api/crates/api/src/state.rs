@@ -1,7 +1,7 @@
 use june_domain::{IssueReportSink, TokenVerifier};
 use june_services::{
-    AgentChatService, DictateService, NoteGenerateService, NoteTranscribeService, PricingTable,
-    WebAugmentService,
+    AgentChatService, DictateService, ImageService, NoteGenerateService, NoteTranscribeService,
+    PricingTable, WebAugmentService,
 };
 use std::sync::Arc;
 
@@ -18,6 +18,10 @@ struct ApiStateInner {
     agent_chat: Arc<AgentChatService>,
     dictate: Arc<DictateService>,
     web: Arc<WebAugmentService>,
+    // Image generation is metered (authorize -> generate -> charge), so it is
+    // held as a service like the other billed surfaces rather than the bare
+    // provider.
+    image: Arc<ImageService>,
     issue_reports: Arc<dyn IssueReportSink>,
     limits: ApiLimits,
     attestation: AttestationInfo,
@@ -27,6 +31,7 @@ struct ApiStateInner {
 pub struct ApiLimits {
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
+    pub max_image_edit_bytes: usize,
     pub request_timeout_secs: u64,
 }
 
@@ -49,6 +54,7 @@ pub struct ApiStateParams {
     pub agent_chat: Arc<AgentChatService>,
     pub dictate: Arc<DictateService>,
     pub web: Arc<WebAugmentService>,
+    pub image: Arc<ImageService>,
     pub issue_reports: Arc<dyn IssueReportSink>,
     pub limits: ApiLimits,
     pub attestation: AttestationInfo,
@@ -65,6 +71,7 @@ impl ApiState {
                 agent_chat: params.agent_chat,
                 dictate: params.dictate,
                 web: params.web,
+                image: params.image,
                 issue_reports: params.issue_reports,
                 limits: params.limits,
                 attestation: params.attestation,
@@ -98,6 +105,10 @@ impl ApiState {
 
     pub(crate) fn web(&self) -> &WebAugmentService {
         &self.inner.web
+    }
+
+    pub(crate) fn image(&self) -> &ImageService {
+        &self.inner.image
     }
 
     pub(crate) fn issue_reports(&self) -> &dyn IssueReportSink {

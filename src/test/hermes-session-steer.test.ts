@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  STEER_EVENT_TYPE,
   normalizeSteerText,
   steerErrorNotice,
   steeringLiveEvent,
-  steeringPartText,
 } from "../lib/hermes-session-steer";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { buildHermesSessionChatTurns } from "../lib/agent-chat-runtime";
@@ -20,25 +18,19 @@ describe("normalizeSteerText", () => {
   });
 
   it("keeps interior whitespace and newlines intact", () => {
-    expect(normalizeSteerText("  line one\nline two ")).toBe(
-      "line one\nline two",
-    );
+    expect(normalizeSteerText("  line one\nline two ")).toBe("line one\nline two");
   });
 });
 
 describe("steerErrorNotice", () => {
   it("explains the session is busy on a 4009 rejection without leaking the code", () => {
-    const notice = steerErrorNotice(
-      new HermesGatewayError("session busy", 4009),
-    );
+    const notice = steerErrorNotice(new HermesGatewayError("session busy", 4009));
     expect(notice).toMatch(/busy|already working|finish/i);
     expect(notice).not.toMatch(/4009/);
   });
 
   it("explains a dropped connection when the gateway is disconnected", () => {
-    const notice = steerErrorNotice(
-      new Error("Hermes bridge did not return a gateway URL."),
-    );
+    const notice = steerErrorNotice(new Error("Hermes bridge did not return a gateway URL."));
     expect(notice).toMatch(/connection|disconnected|reconnect|bridge/i);
   });
 
@@ -66,16 +58,17 @@ describe("steerErrorNotice", () => {
 });
 
 describe("steeringLiveEvent", () => {
-  it("builds a synthetic local event carrying the instruction text and timestamp", () => {
+  it("builds a first-party local event carrying the instruction text and timestamp", () => {
     const event = steeringLiveEvent({
       sessionId: "sess-1",
       text: "focus on tests",
       receivedAt: "2026-06-24T10:00:00.000Z",
     });
-    expect(event.type).toBe(STEER_EVENT_TYPE);
-    expect(event.session_id).toBe("sess-1");
+    expect(event.kind).toBe("steering");
+    if (event.kind !== "steering") throw new Error("expected steering event");
+    expect(event.sessionId).toBe("sess-1");
     expect(event.receivedAt).toBe("2026-06-24T10:00:00.000Z");
-    expect(steeringPartText(event.payload)).toBe("focus on tests");
+    expect(event.text).toBe("focus on tests");
   });
 });
 
@@ -130,9 +123,12 @@ describe("steering transcript item via buildHermesSessionChatTurns", () => {
       [],
       [
         {
-          type: "message.delta",
+          kind: "transcript",
+          sessionId: "",
           receivedAt,
-          payload: { text: "Working on the current plan." },
+          delta: "Working on the current plan.",
+          complete: false,
+          failed: false,
         },
         steeringLiveEvent({
           sessionId: "sess-1",
@@ -142,9 +138,6 @@ describe("steering transcript item via buildHermesSessionChatTurns", () => {
       ],
     );
 
-    expect(turns.map((turn) => turn.parts[0]?.type)).toEqual([
-      "text",
-      "steering",
-    ]);
+    expect(turns.map((turn) => turn.parts[0]?.type)).toEqual(["text", "steering"]);
   });
 });

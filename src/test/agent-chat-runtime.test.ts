@@ -1,47 +1,146 @@
 import { describe, expect, it } from "vitest";
+import { isTerminalHermesEvent, type JuneHermesEvent } from "../lib/hermes-control-plane";
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
   displayedComposerUserMessageText,
   repairContractionSpacing,
-  toolEventKey,
 } from "../lib/agent-chat-runtime";
 import { categoryPrompt } from "../lib/issue-report-prompt";
 import { explicitSkillInvocationPrompt } from "../lib/skill-slash-commands";
 import type { AgentMessageDto, HermesSessionMessage } from "../lib/tauri";
 
+const DEFAULT_RECEIVED_AT = "2026-06-04T10:00:00.000Z";
+
+type TranscriptEvent = Extract<JuneHermesEvent, { kind: "transcript" }>;
+type ReasoningEvent = Extract<JuneHermesEvent, { kind: "reasoning" }>;
+type ToolEvent = Extract<JuneHermesEvent, { kind: "tool" }>;
+type PendingActionEvent = Extract<JuneHermesEvent, { kind: "pending_action" }>;
+type PendingActionResolutionEvent = Extract<JuneHermesEvent, { kind: "pending_action_resolution" }>;
+type BackgroundActivityEvent = Extract<JuneHermesEvent, { kind: "background_activity" }>;
+type ErrorEvent = Extract<JuneHermesEvent, { kind: "error" }>;
+type LifecycleEvent = Extract<JuneHermesEvent, { kind: "lifecycle" }>;
+
+function transcriptEvent(event: Partial<TranscriptEvent> = {}): TranscriptEvent {
+  return {
+    kind: "transcript",
+    sessionId: "",
+    complete: false,
+    failed: false,
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function reasoningEvent(
+  event: Pick<ReasoningEvent, "delta"> & Partial<ReasoningEvent>,
+): ReasoningEvent {
+  return {
+    kind: "reasoning",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function toolEvent(event: Partial<ToolEvent> & Pick<ToolEvent, "key">): ToolEvent {
+  return {
+    kind: "tool",
+    sessionId: "",
+    phase: "progress",
+    text: "",
+    isClarify: false,
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function pendingActionEvent(
+  event: Pick<PendingActionEvent, "action"> & Partial<PendingActionEvent>,
+): PendingActionEvent {
+  return {
+    kind: "pending_action",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function pendingActionResolutionEvent(
+  event: Pick<PendingActionResolutionEvent, "action"> & Partial<PendingActionResolutionEvent>,
+): PendingActionResolutionEvent {
+  return {
+    kind: "pending_action_resolution",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function backgroundActivityEvent(
+  event: Omit<Partial<BackgroundActivityEvent>, "activity"> & {
+    activity: Partial<BackgroundActivityEvent["activity"]> &
+      Pick<BackgroundActivityEvent["activity"], "phase">;
+  },
+): BackgroundActivityEvent {
+  const receivedAt = event.receivedAt ?? DEFAULT_RECEIVED_AT;
+  const { activity, ...rest } = event;
+  return {
+    kind: "background_activity",
+    sessionId: "",
+    receivedAt,
+    ...rest,
+    activity: {
+      ...activity,
+      subagentId: activity.subagentId ?? "subagent",
+      lastEventAt: activity.lastEventAt ?? receivedAt,
+    },
+  };
+}
+
+function errorEvent(event: Partial<ErrorEvent> = {}): ErrorEvent {
+  return {
+    kind: "error",
+    message: "The agent reported an error.",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function lifecycleEvent(event: Partial<LifecycleEvent> = {}): LifecycleEvent {
+  return {
+    kind: "lifecycle",
+    sessionId: "",
+    flavor: "info",
+    status: "status.update",
+    text: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
 describe("repairContractionSpacing", () => {
   it("re-inserts the space the gateway drops after a contraction", () => {
     // Real cases pulled from the persisted Hermes store.
     expect(repairContractionSpacing("it'snot")).toBe("it's not");
-    expect(repairContractionSpacing("you'rereferring")).toBe(
-      "you're referring",
-    );
+    expect(repairContractionSpacing("you'rereferring")).toBe("you're referring");
     expect(repairContractionSpacing("Mac'scamera")).toBe("Mac's camera");
-    expect(repairContractionSpacing("here'swhat'sthere:")).toBe(
-      "here's what's there:",
-    );
+    expect(repairContractionSpacing("here'swhat'sthere:")).toBe("here's what's there:");
     expect(repairContractionSpacing("we'vechecked and they'lldo it")).toBe(
       "we've checked and they'll do it",
     );
-    expect(repairContractionSpacing("I'mdone, don'tworry")).toBe(
-      "I'm done, don't worry",
-    );
+    expect(repairContractionSpacing("I'mdone, don'tworry")).toBe("I'm done, don't worry");
   });
 
   it("leaves correctly spaced and non-contraction text untouched", () => {
     // Idempotent: already-spaced text has no match.
     expect(repairContractionSpacing("it's not there")).toBe("it's not there");
-    expect(repairContractionSpacing("its not a contraction")).toBe(
-      "its not a contraction",
-    );
+    expect(repairContractionSpacing("its not a contraction")).toBe("its not a contraction");
     // Trailing punctuation, not a following word, isn't a dropped space.
     expect(repairContractionSpacing("that's it.")).toBe("that's it.");
     // Names with apostrophes aren't contraction enclitics.
-    expect(repairContractionSpacing("d'Artagnan and O'Brien")).toBe(
-      "d'Artagnan and O'Brien",
-    );
+    expect(repairContractionSpacing("d'Artagnan and O'Brien")).toBe("d'Artagnan and O'Brien");
   });
 
   it("does not corrupt a plural possessive glued to the next word", () => {
@@ -110,9 +209,7 @@ describe("Agent chat runtime", () => {
 
     expect(turns).toHaveLength(2);
     expect(turns[0]?.role).toBe("user");
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Hi", status: "complete" },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Hi", status: "complete" }]);
     expect(turns[1]?.parts).toEqual([
       {
         type: "reasoning",
@@ -270,11 +367,13 @@ describe("Agent chat runtime", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
-      Array.from({ length: 12 }, (_, index) => ({
-        type: "message.complete",
-        receivedAt,
-        payload: { text: `Reply ${index}` },
-      })),
+      Array.from({ length: 12 }, (_, index) =>
+        transcriptEvent({
+          receivedAt,
+          complete: true,
+          delta: `Reply ${index}`,
+        }),
+      ),
     );
 
     expect(
@@ -503,21 +602,17 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "thinking.delta",
+        }),
+        reasoningEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "I should prefer" },
-        },
-        {
-          type: "thinking.delta",
+          delta: "I should prefer",
+        }),
+        reasoningEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "ably use Homebrew." },
-        },
+          delta: "ably use Homebrew.",
+        }),
       ],
     );
 
@@ -530,26 +625,123 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  // Regression: `reasoning.available` replays the FULL thought after streamed
+  // deltas (or arrives alone from a whole-block reasoning model). Replace, not
+  // append — exactly one copy of the thought either way.
+  it("replaces the thought on a full reasoning event instead of duplicating it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          delta: "I should prefer",
+        }),
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.200Z",
+          delta: "ably use Homebrew.",
+        }),
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.300Z",
+          delta: "I should preferably use Homebrew.",
+          full: true,
+        }),
+      ],
+    );
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "I should preferably use Homebrew.",
+        status: "running",
+      },
+    ]);
+
+    // Whole-block models emit ONLY the full frame: the part is created.
+    const soloTurns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          delta: "One whole thought.",
+          full: true,
+        }),
+      ],
+    );
+    expect(soloTurns[0]?.parts).toEqual([
+      { type: "reasoning", text: "One whole thought.", status: "running" },
+    ]);
+  });
+
+  it("closes a running reasoning turn when only a terminal lifecycle event follows", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        reasoningEvent({
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          delta: "Checking the workspace.",
+        }),
+        lifecycleEvent({
+          sessionId: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          flavor: "terminal",
+          status: "turn.complete",
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.status).toBe("complete");
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "Checking the workspace.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("does not create a turn for a terminal lifecycle event without an assistant turn", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        lifecycleEvent({
+          sessionId: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          flavor: "terminal",
+          status: "turn.complete",
+        }),
+      ],
+    );
+
+    expect(turns).toEqual([]);
+  });
+
   it("renders live clarify requests as answerable chat parts", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-1", name: "clarify" },
-        },
-        {
-          type: "clarify.request",
-          session_id: "runtime-session",
+          name: "clarify",
+          isClarify: true,
+          sanitizedPayload: { tool_id: "tool-1", name: "clarify" },
+        }),
+        pendingActionEvent({
+          sessionId: "runtime-session",
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: {
-            request_id: "clarify-1",
+          action: {
+            kind: "clarify",
+            requestId: "clarify-1",
             question: "Which email provider should I configure?",
             choices: ["Gmail", "Fastmail"],
           },
-        },
+        }),
       ],
     );
 
@@ -570,25 +762,33 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "clarify.request",
+        pendingActionEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
-            request_id: "clarify-1",
+          action: {
+            kind: "clarify",
+            requestId: "clarify-1",
             question: "Use Gmail?",
             choices: ["Yes", "No"],
           },
-        },
-        {
-          type: "clarify.response",
+        }),
+        pendingActionResolutionEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { request_id: "clarify-1", answer: "Yes" },
-        },
-        {
-          type: "tool.complete",
+          action: {
+            kind: "clarify",
+            requestId: "clarify-1",
+            question: "",
+            choices: [],
+            answer: "Yes",
+          },
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: { tool_id: "tool-1", name: "clarify" },
-        },
+          name: "clarify",
+          isClarify: true,
+          sanitizedPayload: { tool_id: "tool-1", name: "clarify" },
+        }),
       ],
     );
 
@@ -609,23 +809,29 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "approval.request",
-          session_id: "runtime-session",
+        pendingActionEvent({
+          sessionId: "runtime-session",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
-            request_id: "approval-1",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
             command: "python script.py",
             description: "Run this command?",
-            allow_permanent: true,
+            allowPermanent: true,
           },
-        },
-        {
-          type: "approval.response",
-          session_id: "runtime-session",
+        }),
+        pendingActionResolutionEvent({
+          sessionId: "runtime-session",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { request_id: "approval-1", choice: "session" },
-        },
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "",
+            description: "",
+            allowPermanent: true,
+            choice: "session",
+          },
+        }),
       ],
     );
 
@@ -648,32 +854,25 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "Hello" },
-        },
-        {
-          type: "message.delta",
+          delta: "Hello",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "\n\n" },
-        },
-        {
-          type: "message.delta",
+          delta: "\n\n",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.300Z",
-          payload: { text: "World" },
-        },
+          delta: "World",
+        }),
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Hello\n\nWorld", status: "running" },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Hello\n\nWorld", status: "running" }]);
   });
 
   it("appends repeated deltas verbatim instead of dropping them", () => {
@@ -681,27 +880,21 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "no" },
-        },
-        {
-          type: "message.delta",
+          delta: "no",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "no" },
-        },
+          delta: "no",
+        }),
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "nono", status: "running" },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "nono", status: "running" }]);
   });
 
   it("keeps legitimate repeated lines and paragraphs in persisted messages", () => {
@@ -727,28 +920,23 @@ describe("Agent chat runtime", () => {
         status: "complete",
       },
     ]);
-    expect(turns[1]?.parts).toEqual([
-      { type: "text", text: "Yes.\n\nYes.", status: "complete" },
-    ]);
+    expect(turns[1]?.parts).toEqual([{ type: "text", text: "Yes.\n\nYes.", status: "complete" }]);
   });
 
   it("returns the raw completed message text for persistence", () => {
     const text = completedHermesMessageText([
-      {
-        type: "message.start",
+      transcriptEvent({
         receivedAt: "2026-06-04T10:00:00.000Z",
-        payload: {},
-      },
-      {
-        type: "message.delta",
+      }),
+      transcriptEvent({
         receivedAt: "2026-06-04T10:00:00.100Z",
-        payload: { text: "Yes.\n\nYes." },
-      },
-      {
-        type: "message.complete",
+        delta: "Yes.\n\nYes.",
+      }),
+      transcriptEvent({
         receivedAt: "2026-06-04T10:00:01.000Z",
-        payload: { text: "Yes.\n\nYes." },
-      },
+        complete: true,
+        delta: "Yes.\n\nYes.",
+      }),
     ]);
 
     expect(text).toBe("Yes.\n\nYes.");
@@ -759,45 +947,45 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "Let me check." },
-        },
-        {
-          type: "tool.start",
+          delta: "Let me check.",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { tool_id: "tool-1", name: "search" },
-        },
-        {
-          type: "tool.complete",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:00.300Z",
-          payload: { tool_id: "tool-1", name: "search" },
-        },
-        {
-          type: "message.delta",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.400Z",
-          payload: { text: "Here is the answer." },
-        },
-        {
-          type: "message.complete",
+          delta: "Here is the answer.",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "Let me check.Here is the answer." },
-        },
+          complete: true,
+          delta: "Let me check.Here is the answer.",
+        }),
       ],
     );
 
     expect(turns[0]?.status).toBe("complete");
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["Let me check.", "tool", "Here is the answer."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "Let me check.",
+      "tool",
+      "Here is the answer.",
+    ]);
   });
 
   it("replaces streamed text wholesale when the complete text disagrees", () => {
@@ -805,34 +993,33 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Partial garble" },
-        },
-        {
-          type: "tool.start",
+          delta: "Partial garble",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { tool_id: "tool-1", name: "search" },
-        },
-        {
-          type: "message.delta",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.200Z",
-          payload: { text: "more" },
-        },
-        {
-          type: "message.complete",
+          delta: "more",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "The authoritative answer." },
-        },
+          complete: true,
+          delta: "The authoritative answer.",
+        }),
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["tool", "The authoritative answer."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "tool",
+      "The authoritative answer.",
+    ]);
   });
 
   it("keeps the verbatim stream when the complete text drops a boundary space", () => {
@@ -840,24 +1027,21 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Let me explore it." },
-        },
-        {
-          type: "message.complete",
+          delta: "Let me explore it.",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "Let me exploreit." },
-        },
+          complete: true,
+          delta: "Let me exploreit.",
+        }),
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["Let me explore it."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "Let me explore it.",
+    ]);
   });
 
   it("honors a complete payload that corrects streamed whitespace", () => {
@@ -865,24 +1049,21 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "return\nvalue" },
-        },
-        {
-          type: "message.complete",
+          delta: "return\nvalue",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "return value" },
-        },
+          complete: true,
+          delta: "return value",
+        }),
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["return value"]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "return value",
+    ]);
   });
 
   it("does not truncate streamed text when the complete payload lags behind", () => {
@@ -890,24 +1071,21 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Here is the full answer." },
-        },
-        {
-          type: "message.complete",
+          delta: "Here is the full answer.",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: "Here is the full" },
-        },
+          complete: true,
+          delta: "Here is the full",
+        }),
       ],
     );
 
-    expect(
-      turns[0]?.parts.map((part) =>
-        part.type === "text" ? part.text : part.type,
-      ),
-    ).toEqual(["Here is the full answer."]);
+    expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "Here is the full answer.",
+    ]);
   });
 
   it("assigns unique turn ids to turns created in the same millisecond", () => {
@@ -916,10 +1094,10 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        { type: "message.start", receivedAt, payload: {} },
-        { type: "message.complete", receivedAt, payload: { text: "One" } },
-        { type: "message.start", receivedAt, payload: {} },
-        { type: "message.complete", receivedAt, payload: { text: "Two" } },
+        transcriptEvent({ receivedAt }),
+        transcriptEvent({ receivedAt, complete: true, delta: "One" }),
+        transcriptEvent({ receivedAt }),
+        transcriptEvent({ receivedAt, complete: true, delta: "Two" }),
       ],
     );
 
@@ -928,24 +1106,32 @@ describe("Agent chat runtime", () => {
   });
 
   it("keys tool events by tool_id so terminal events update the same part", () => {
-    expect(
-      toolEventKey({ type: "tool.start", payload: { tool_id: "tool-9" } }),
-    ).toBe("tool-9");
+    const event = toolEvent({
+      key: "tool-9",
+      phase: "start",
+      receivedAt: "2026-06-04T10:00:00.000Z",
+      sanitizedPayload: { tool_id: "tool-9" },
+    });
+    expect(event.key).toBe("tool-9");
 
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-9",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-9", name: "search", text: "Searching" },
-        },
-        {
-          type: "tool.complete",
+          name: "search",
+          text: "Searching",
+          sanitizedPayload: { tool_id: "tool-9", name: "search", text: "Searching" },
+        }),
+        toolEvent({
+          key: "tool-9",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { tool_id: "tool-9" },
-        },
+          sanitizedPayload: { tool_id: "tool-9" },
+        }),
       ],
     );
 
@@ -954,21 +1140,61 @@ describe("Agent chat runtime", () => {
     expect(toolParts?.[0]?.status).toBe("complete");
   });
 
+  it("ignores message.completed for transcript turns while keeping it terminal", () => {
+    const completed = lifecycleEvent({
+      sessionId: "runtime-session",
+      flavor: "terminal",
+      status: "message.completed",
+      text: "Should not render",
+      payload: { text: "Should not render" },
+    });
+
+    expect(isTerminalHermesEvent(completed)).toBe(true);
+    expect(buildAgentChatTurns([], [], [completed])).toEqual([]);
+  });
+
+  it("does not duplicate assistant text when message.completed follows message.complete", () => {
+    const complete = transcriptEvent({
+      sessionId: "runtime-session",
+      complete: true,
+      failed: false,
+      delta: "Done.",
+    });
+    const completed = lifecycleEvent({
+      sessionId: "runtime-session",
+      flavor: "terminal",
+      status: "message.completed",
+      text: "Done.",
+      payload: { text: "Done." },
+    });
+
+    const turns = buildAgentChatTurns([], [], [complete, completed]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Done.", status: "complete" }]);
+  });
+
   it("does not merge same-name tool calls with distinct tool ids", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-a",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-a", name: "search", text: "First" },
-        },
-        {
-          type: "tool.start",
+          name: "search",
+          text: "First",
+          sanitizedPayload: { tool_id: "tool-a", name: "search", text: "First" },
+        }),
+        toolEvent({
+          key: "tool-b",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { tool_id: "tool-b", name: "search", text: "Second" },
-        },
+          name: "search",
+          text: "Second",
+          sanitizedPayload: { tool_id: "tool-b", name: "search", text: "Second" },
+        }),
       ],
     );
 
@@ -1030,9 +1256,7 @@ describe("Agent chat runtime", () => {
 
     const firstAssistant = turns.find((turn) => turn.id === "m2");
     const secondAssistant = turns.find((turn) => turn.id === "m4");
-    expect(
-      firstAssistant?.parts.filter((part) => part.type === "tool"),
-    ).toEqual([
+    expect(firstAssistant?.parts.filter((part) => part.type === "tool")).toEqual([
       {
         type: "tool",
         id: "evt-1",
@@ -1041,9 +1265,7 @@ describe("Agent chat runtime", () => {
         status: "complete",
       },
     ]);
-    expect(
-      secondAssistant?.parts.filter((part) => part.type === "tool"),
-    ).toEqual([
+    expect(secondAssistant?.parts.filter((part) => part.type === "tool")).toEqual([
       {
         type: "tool",
         id: "evt-2",
@@ -1086,12 +1308,8 @@ describe("Agent chat runtime", () => {
     ]);
 
     expect(turns).toHaveLength(2);
-    expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Earlier answer", status: "complete" },
-    ]);
-    expect(turns[1]?.parts.filter((part) => part.type === "tool")).toHaveLength(
-      2,
-    );
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "Earlier answer", status: "complete" }]);
+    expect(turns[1]?.parts.filter((part) => part.type === "tool")).toHaveLength(2);
     expect(turns[1]?.status).toBe("complete");
   });
 
@@ -1100,11 +1318,14 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "tool.complete",
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { tool_id: "tool-1", name: "search", text: "Done" },
-        },
+          name: "search",
+          text: "Done",
+          sanitizedPayload: { tool_id: "tool-1", name: "search", text: "Done" },
+        }),
       ],
     );
 
@@ -1116,15 +1337,17 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
+          name: "terminal",
+          sanitizedPayload: {
             tool_id: "tool-1",
             name: "terminal",
             command: "curl https://example.com/docs",
           },
-        },
+        }),
       ],
     );
 
@@ -1140,31 +1363,37 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "tool.start",
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
+          name: "terminal",
+          sanitizedPayload: {
             tool_id: "tool-1",
             name: "terminal",
             command: "curl https://example.com/docs",
           },
-        },
-        {
-          type: "tool.progress",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "progress",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: {
+          text: "Fetched 42 lines",
+          sanitizedPayload: {
             tool_id: "tool-1",
             output: "Fetched 42 lines",
           },
-        },
-        {
-          type: "tool.complete",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: {
+          text: "Done",
+          sanitizedPayload: {
             tool_id: "tool-1",
             result: "Done",
           },
-        },
+        }),
       ],
     );
 
@@ -1173,9 +1402,7 @@ describe("Agent chat runtime", () => {
       name: "Browsing",
       status: "complete",
     });
-    expect(tool?.type === "tool" ? tool.text : "").toContain(
-      "Fetched 42 lines",
-    );
+    expect(tool?.type === "tool" ? tool.text : "").toContain("Fetched 42 lines");
   });
 
   it("keeps inferred labels when persisted tool result messages arrive", () => {
@@ -1213,26 +1440,161 @@ describe("Agent chat runtime", () => {
     expect(tool?.type === "tool" ? tool.text : "").toContain("src/App.tsx");
   });
 
+  it("renders an MCP image tool result as an inline image part (JUN-171 Phase B)", () => {
+    // The june_image MCP returns an image content block plus a JSON text block
+    // carrying the filename/label. The image must render in-thread (so it also
+    // enters the model's context) and its base64 must NOT leak into the
+    // collapsed tool row's text.
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-06-04T10:00:00.000Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: {
+              name: "generate_image",
+              arguments: { prompt: "a red bicycle" },
+            },
+          },
+        ]),
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "generate_image",
+        content: [
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+          {
+            type: "text",
+            text: JSON.stringify({
+              filename: "generated-image-abc.png",
+              label: "a red bicycle",
+              model: "venice-sd35",
+            }),
+          },
+        ],
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    const image = turns[0]?.parts.find((part) => part.type === "image");
+    expect(image).toMatchObject({
+      type: "image",
+      status: "complete",
+      prompt: "a red bicycle",
+      dataUrl: "data:image/png;base64,aGVsbG8=",
+      name: "generated-image-abc.png",
+    });
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.text : "").not.toContain("aGVsbG8=");
+  });
+
+  it("renders Hermes MEDIA image references inline instead of as visible paths", () => {
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_ce347dc6e27a.png";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: [
+          "Here is the regenerated wolf:",
+          "",
+          `MEDIA:${mediaPath}`,
+          "",
+          "A majestic wolf rendered in a misty forest at dawn.",
+        ].join("\n"),
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Here is the regenerated wolf:\n\nA majestic wolf rendered in a misty forest at dawn.",
+        status: "complete",
+      },
+      {
+        type: "image",
+        status: "complete",
+        prompt: "Generated image",
+        path: mediaPath,
+        name: "img_ce347dc6e27a.png",
+      },
+    ]);
+  });
+
+  it("keeps user-authored MEDIA image references as text", () => {
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_ce347dc6e27a.png";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "user-1",
+        role: "user",
+        content: `Please explain why this literal path matters: MEDIA:${mediaPath}`,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: `Please explain why this literal path matters: MEDIA:${mediaPath}`,
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("normalizes live complete messages that contain Hermes MEDIA image references", () => {
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_live.png";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:00.000Z",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          delta: `MEDIA:${mediaPath}`,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          delta: `MEDIA:${mediaPath}`,
+          complete: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "image",
+        status: "complete",
+        prompt: "Generated image",
+        path: mediaPath,
+        name: "img_live.png",
+      },
+    ]);
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "message.start",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {},
-        },
-        {
-          type: "message.delta",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.100Z",
-          payload: { text: "Working on it" },
-        },
-        {
-          type: "error",
+          delta: "Working on it",
+        }),
+        errorEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: {},
-        },
+        }),
       ],
     );
 
@@ -1256,17 +1618,26 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "error",
+        errorEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { message: CREDITS_ERROR },
-        },
+          message: CREDITS_ERROR,
+        }),
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
+  });
+
+  it("folds a summary-only classified error into the same notice path", () => {
+    const event = errorEvent({
+      sessionId: "runtime-session",
+      message: CREDITS_ERROR,
+    });
+    expect(event.kind).toBe("error");
+
+    const turns = buildAgentChatTurns([], [], [event]);
+
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("folds a persisted insufficient-credits error turn into a credits notice", () => {
@@ -1279,53 +1650,47 @@ describe("Agent chat runtime", () => {
       },
     ]);
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("drops partially streamed text when the turn completes as a credits failure", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
-        {
-          type: "message.delta",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { text: "Let me check" },
-        },
-        {
-          type: "message.complete",
+          delta: "Let me check",
+        }),
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: CREDITS_ERROR, status: "error" },
-        },
+          complete: true,
+          delta: CREDITS_ERROR,
+          failed: true,
+        }),
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("folds an insufficient-credits message.complete into a credits notice", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
-        {
-          type: "message.complete",
+        transcriptEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { text: CREDITS_ERROR, status: "error" },
-        },
+          complete: true,
+          delta: CREDITS_ERROR,
+          failed: true,
+        }),
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([
-      { type: "notice", kind: "credits", text: CREDITS_ERROR },
-    ]);
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
   it("keeps assistant prose about credits as ordinary text", () => {
-    const prose =
-      "If you see insufficient_credits errors, upgrade from settings.";
+    const prose = "If you see insufficient_credits errors, upgrade from settings.";
     const turns = buildHermesSessionChatTurns([
       {
         id: "1",
@@ -1335,9 +1700,155 @@ describe("Agent chat runtime", () => {
       },
     ]);
 
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  // The terminal error Hermes surfaces when a single oversized turn cannot be
+  // compressed below the window (JUN-169) — reaches us as a live error event,
+  // a failed message.complete, and persisted assistant text.
+  const OVERFLOW_ERROR = "Context length exceeded (66,919 tokens). Cannot compress further.";
+
+  it("folds a live context-overflow error event into a context-overflow notice", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        errorEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          message: OVERFLOW_ERROR,
+        }),
+      ],
+    );
+
     expect(turns[0]?.parts).toEqual([
-      { type: "text", text: prose, status: "complete" },
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
     ]);
+  });
+
+  it("folds a live string_too_long rejection into a context-overflow notice", () => {
+    // A single oversized string (per-string cap) is a hard size failure too;
+    // the classifier catches the raw token so it degrades like the aggregate
+    // overflow instead of surfacing raw (JUN-169 review).
+    const text = "string_too_long: a single field exceeded the size limit.";
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        errorEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          message: text,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "context-overflow", text }]);
+  });
+
+  it("folds a failed context-overflow message.complete into a context-overflow notice", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: OVERFLOW_ERROR,
+          failed: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
+    ]);
+  });
+
+  it("folds a persisted context-overflow assistant turn into a context-overflow notice", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: OVERFLOW_ERROR,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: OVERFLOW_ERROR },
+    ]);
+  });
+
+  it("keeps a persisted assistant answer that mentions context length as prose", () => {
+    // A saved answer, not an error — the persisted path has no failure flag, so
+    // it must fold only on unambiguous error sentinels, never on prose that
+    // merely discusses context length (JUN-169 review: persisted prose
+    // misclassification would drop the real answer on reload).
+    const prose = "The maximum context length for GLM 5.2 is 200k tokens.";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: prose,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  it("keeps a persisted answer that explains the error tokens as prose", () => {
+    // June discussing its own error codes in a saved answer must not reload as
+    // an overflow notice: the sentinel is anchored to the start of the message,
+    // so a mid-sentence mention of prompt_too_long/string_too_long stays text
+    // (JUN-169 review).
+    const prose =
+      "The agent API can return prompt_too_long or string_too_long when a request is too big.";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: prose,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  it("folds a persisted prefixed overflow error into a context-overflow notice", () => {
+    // Hermes persists a provider failure with the runtime "Error:" prefix (the
+    // same shape as the credits path); a prefixed prompt_too_long must still
+    // fold on reload, not fall back to the raw dead-end (JUN-169 review).
+    const persisted =
+      "Error: Error code: 400 - {'message': 'prompt_too_long: the request exceeds the maximum context length'}";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: persisted,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "context-overflow", text: persisted },
+    ]);
+  });
+
+  it("keeps a successful message.complete that mentions context length as prose", () => {
+    const prose = "The maximum context length for GLM 5.2 is 200k tokens.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: prose,
+          failed: false,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
   });
 
   it("renders delegated subagents as live tool rows (regression: silently dropped)", () => {
@@ -1345,44 +1856,44 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: {
-            subagent_id: "sa-1",
-            task_index: 0,
-            task_count: 2,
+          activity: {
+            subagentId: "sa-1",
+            phase: "start",
+            taskIndex: 0,
+            taskCount: 2,
             goal: "Write the privacy page",
           },
-        },
-        {
-          type: "subagent.start",
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.050Z",
-          payload: {
-            subagent_id: "sa-2",
-            task_index: 1,
-            task_count: 2,
+          activity: {
+            subagentId: "sa-2",
+            phase: "start",
+            taskIndex: 1,
+            taskCount: 2,
             goal: "Write the terms page",
           },
-        },
-        {
-          type: "subagent.tool",
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: {
-            subagent_id: "sa-1",
+          activity: {
+            subagentId: "sa-1",
+            phase: "tool",
             goal: "Write the privacy page",
-            tool_preview: "edit privacy.tsx",
+            resultPreview: "edit privacy.tsx",
           },
-        },
-        {
-          type: "subagent.complete",
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: {
-            subagent_id: "sa-1",
+          activity: {
+            subagentId: "sa-1",
+            phase: "complete",
             goal: "Write the privacy page",
-            summary: "Done: 1 file written",
+            resultPreview: "Done: 1 file written",
           },
-        },
+        }),
       ],
     );
 
@@ -1400,12 +1911,8 @@ describe("Agent chat runtime", () => {
       status: "running",
     });
     // The first subagent's row accumulated its activity then its summary.
-    expect((tools?.[0] as { text?: string }).text).toContain(
-      "edit privacy.tsx",
-    );
-    expect((tools?.[0] as { text?: string }).text).toContain(
-      "Done: 1 file written",
-    );
+    expect((tools?.[0] as { text?: string }).text).toContain("edit privacy.tsx");
+    expect((tools?.[0] as { text?: string }).text).toContain("Done: 1 file written");
   });
 
   it("keeps the goal label when a later subagent event omits it", () => {
@@ -1413,17 +1920,15 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
-        },
+          activity: { subagentId: "sa-1", phase: "start", goal: "Write the privacy page" },
+        }),
         // A tool event carrying only the id + preview, no goal.
-        {
-          type: "subagent.tool",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { subagent_id: "sa-1", tool_preview: "edit privacy.tsx" },
-        },
+          activity: { subagentId: "sa-1", phase: "tool", resultPreview: "edit privacy.tsx" },
+        }),
       ],
     );
     const tool = turns[0]?.parts.find((part) => part.type === "tool");
@@ -1439,17 +1944,15 @@ describe("Agent chat runtime", () => {
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
-        },
+          activity: { subagentId: "sa-1", phase: "start", goal: "Write the privacy page" },
+        }),
         // A subtype not in the documented union; must still terminate the row.
-        {
-          type: "subagent.timeout",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:05.000Z",
-          payload: { subagent_id: "sa-1" },
-        },
+          activity: { subagentId: "sa-1", phase: "error" },
+        }),
       ],
     );
     const tool = turns[0]?.parts.find((part) => part.type === "tool");
@@ -1459,21 +1962,41 @@ describe("Agent chat runtime", () => {
     });
   });
 
+  it("keeps blocked subagent rows running because they can resume", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        backgroundActivityEvent({
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          activity: { subagentId: "sa-1", phase: "start", goal: "Write the privacy page" },
+        }),
+        backgroundActivityEvent({
+          receivedAt: "2026-06-04T10:00:05.000Z",
+          activity: { subagentId: "sa-1", phase: "blocked" },
+        }),
+      ],
+    );
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Subagent: Write the privacy page",
+      status: "running",
+    });
+  });
+
   it("labels a goal-less subagent by its task position and marks failures", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
       [
-        {
-          type: "subagent.start",
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:00.000Z",
-          payload: { task_index: 2, task_count: 5 },
-        },
-        {
-          type: "subagent.complete",
+          activity: { phase: "start", taskIndex: 2, taskCount: 5 },
+        }),
+        backgroundActivityEvent({
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { task_index: 2, task_count: 5, status: "failed" },
-        },
+          activity: { phase: "error", taskIndex: 2, taskCount: 5 },
+        }),
       ],
     );
     const tool = turns[0]?.parts.find((part) => part.type === "tool");

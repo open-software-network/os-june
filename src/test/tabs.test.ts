@@ -47,9 +47,7 @@ describe("tab navigation snapshots", () => {
 
   it("distinguishes agent tabs by session and origin", () => {
     const base: TabNav = { view: "agent", agentSessionId: "s1" };
-    expect(navEquals(base, { view: "agent", agentSessionId: "s2" })).toBe(
-      false,
-    );
+    expect(navEquals(base, { view: "agent", agentSessionId: "s2" })).toBe(false);
     // The title is fallback display metadata, not tab identity.
     expect(
       navEquals(
@@ -88,14 +86,9 @@ describe("tab navigation snapshots", () => {
   });
 
   it("distinguishes projects by folder id", () => {
+    expect(navEquals({ view: "folders" }, { view: "folders", folderId: "f1" })).toBe(false);
     expect(
-      navEquals({ view: "folders" }, { view: "folders", folderId: "f1" }),
-    ).toBe(false);
-    expect(
-      navEquals(
-        { view: "folders", folderId: "f1" },
-        { view: "folders", folderId: "f1" },
-      ),
+      navEquals({ view: "folders", folderId: "f1" }, { view: "folders", folderId: "f1" }),
     ).toBe(true);
   });
 });

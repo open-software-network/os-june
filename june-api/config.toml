@@ -4,13 +4,14 @@ port = 8080
 request_timeout_secs = 600
 max_audio_bytes = 26214400
 max_json_bytes = 524288
+max_image_edit_bytes = 69921452
 
 # Public facts shown on the /verify attestation page. source_commit is not
 # set here — the Docker build stamps it via JUNE__ATTESTATION__SOURCE_COMMIT.
 [attestation]
 source_repo_url = "https://github.com/open-software-network/os-june"
 image_repo = "ghcr.io/open-software-network/june-api"
-trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
+trust_center_url = "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
 
 [issue_reports]
 # User-submitted issue reports are filed as os-platform Issues in the June
@@ -58,9 +59,12 @@ base_url = "https://api.openai.com/v1"
 [upstreams.venice]
 base_url = "https://api.venice.ai/api/v1"
 
+# Usage credit prices include June's 1.2x retail multiplier over upstream cost.
+# OpenAI lists ASR prices per MINUTE of audio ($0.003/min mini, $0.006/min 4o);
+# these are the per-second conversions: $/min ÷ 60 × 1.2 × 1000 credits/$ × 1e6.
 [pricing."gpt-4o-mini-transcribe"]
 unit = "seconds"
-credits_per_million_seconds = 1000000
+credits_per_million_seconds = 60000
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o mini transcribe"
@@ -72,7 +76,7 @@ capabilities = []
 
 [pricing."gpt-4o-transcribe"]
 unit = "seconds"
-credits_per_million_seconds = 2000000
+credits_per_million_seconds = 120000
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o transcribe"
@@ -84,7 +88,7 @@ capabilities = []
 
 [pricing."nvidia/parakeet-tdt-0.6b-v3"]
 unit = "seconds"
-credits_per_million_seconds = 100000
+credits_per_million_seconds = 120000
 provider = "venice"
 model_type = "asr"
 display_name = "Parakeet TDT 0.6B v3"
@@ -95,8 +99,8 @@ privacy = "private"
 # DEFAULT_GENERATION_MODEL in the Tauri providers module.
 [pricing."zai-org-glm-5-2"]
 unit = "tokens"
-input_credits_per_million_tokens = 1750
-output_credits_per_million_tokens = 5500
+input_credits_per_million_tokens = 2100
+output_credits_per_million_tokens = 6600
 provider = "venice"
 model_type = "text"
 display_name = "GLM 5.2"
@@ -112,19 +116,28 @@ capabilities = [
 
 [pricing."kimi-k2-6"]
 unit = "tokens"
-input_credits_per_million_tokens = 850
-output_credits_per_million_tokens = 4660
+input_credits_per_million_tokens = 1020
+output_credits_per_million_tokens = 5592
 provider = "venice"
 model_type = "text"
 display_name = "Kimi K2.6"
 privacy = "private"
 context_tokens = 256000
-capabilities = ["supportsFunctionCalling"]
+# Kimi K2.6 is natively multimodal (Venice supportsVision); it is the
+# image-input fallback the app switches to. Keep in sync with the kimi-k2-6
+# entry in default_pricing() (crates/config/src/lib.rs) so the fallback still
+# resolves to a vision model when the live Venice catalog is unreachable and
+# this packaged config is what /models serves.
+capabilities = [
+  "supportsFunctionCalling",
+  "supportsVision",
+  "supportsMultipleImages",
+]
 
 [pricing."zai-org-glm-5-1"]
 unit = "tokens"
-input_credits_per_million_tokens = 1750
-output_credits_per_million_tokens = 5500
+input_credits_per_million_tokens = 2100
+output_credits_per_million_tokens = 6600
 provider = "venice"
 model_type = "text"
 display_name = "GLM 5.1"
@@ -140,8 +153,8 @@ capabilities = [
 
 [pricing."zai-org-glm-5"]
 unit = "tokens"
-input_credits_per_million_tokens = 1000
-output_credits_per_million_tokens = 3200
+input_credits_per_million_tokens = 1200
+output_credits_per_million_tokens = 3840
 provider = "venice"
 model_type = "text"
 display_name = "GLM 5"
@@ -151,8 +164,8 @@ capabilities = ["supportsFunctionCalling"]
 
 [pricing."nvidia-nemotron-3-nano-30b-a3b"]
 unit = "tokens"
-input_credits_per_million_tokens = 70
-output_credits_per_million_tokens = 300
+input_credits_per_million_tokens = 84
+output_credits_per_million_tokens = 360
 provider = "venice"
 model_type = "text"
 display_name = "Nemotron Nano 30B (dictation cleanup)"

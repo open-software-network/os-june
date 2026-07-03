@@ -11,15 +11,9 @@ type RecorderBarProps = {
   onDone: (sessionId: string) => void;
 };
 
-export function RecorderBar({
-  status,
-  onPause,
-  onResume,
-  onDone,
-}: RecorderBarProps) {
+export function RecorderBar({ status, onPause, onResume, onDone }: RecorderBarProps) {
   const paused = status.state === "paused";
-  const controlsEnabled =
-    status.state === "recording" || status.state === "paused";
+  const controlsEnabled = status.state === "recording" || status.state === "paused";
   // status.level is mic-only; status.sources carries mic+system when available.
   const meterLevel =
     status.sources && status.sources.length > 0
@@ -39,9 +33,7 @@ export function RecorderBar({
         type="button"
         className="recorder-icon-button"
         disabled={!controlsEnabled}
-        onClick={() =>
-          paused ? onResume(status.sessionId) : onPause(status.sessionId)
-        }
+        onClick={() => (paused ? onResume(status.sessionId) : onPause(status.sessionId))}
         aria-label={pauseLabel}
         title={pauseLabel}
       >

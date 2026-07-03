@@ -122,9 +122,7 @@ describe("RecorderBar", () => {
       />,
     );
 
-    expect(
-      screen.queryByText("Microphone input appears silent"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Microphone input appears silent")).not.toBeInTheDocument();
   });
 
   it("drives the waveform from system audio when the mic is quiet", () => {

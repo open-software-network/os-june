@@ -25,6 +25,8 @@ import { HermesAdminError } from "./errors";
 import {
   parseActionHandle,
   parseActionStatus,
+  parseConfigResult,
+  parseConfigWriteResult,
   parseEnvListing,
   parseEnvRevealResult,
   parseEnvWriteResult,
@@ -34,11 +36,18 @@ import {
   parseMcpServer,
   parseMcpServerList,
   parseMcpTestResult,
+  parseProfileCreateResult,
+  parseProfileList,
+  parseProfileSessionList,
+  parseSkillContent,
   parseSkillList,
+  parseSkillScan,
   parseToggleResult,
   parseToolsetList,
   type HermesActionState,
   type HermesActionStatus,
+  type HermesConfigResult,
+  type HermesConfigWriteResult,
   type HermesEnvListing,
   type HermesEnvRevealResult,
   type HermesEnvWriteResult,
@@ -47,15 +56,16 @@ import {
   type HermesMcpCatalogEntry,
   type HermesMcpServerInfo,
   type HermesMcpTestResult,
+  type HermesProfileCreateResult,
+  type HermesProfileSession,
+  type HermesProfileSummary,
+  type HermesSkillContent,
   type HermesSkillInfo,
+  type HermesSkillScan,
   type HermesToggleResult,
   type HermesToolsetInfo,
 } from "./schemas";
-import {
-  createAdminTransport,
-  type AdminTransportOptions,
-  type AdminTransport,
-} from "./transport";
+import { createAdminTransport, type AdminTransportOptions, type AdminTransport } from "./transport";
 import type { HermesAdminTarget } from "./target";
 
 /** A mutation result paired with WHEN it applies, so a caller never has to
@@ -100,6 +110,13 @@ const DEFAULT_POLL_TIMEOUT_MS = 120_000;
  * include/exclude/filter field, so MCP tool filtering is not configured here
  * (see the removed `setToolFilters` note below). Extra keys are tolerated by the
  * server but not part of the contract. */
+/** One segment-aware config write in a batch: set a value at a leaf, or delete
+ * a leaf (a cleared field). Structurally identical to the MCP edit plan's
+ * `McpEditWrite` so an edit plan can be applied directly. */
+export type ConfigSegmentWrite =
+  | { op: "set"; segments: string[]; value: unknown }
+  | { op: "delete"; segments: string[] };
+
 export type HermesAddMcpServerPayload = {
   name: string;
   command?: string;
@@ -121,6 +138,28 @@ export type HermesInstallCatalogPayload = {
   profile?: string;
 } & Record<string, unknown>;
 
+/** Payload for `POST /api/profiles`, matching the dashboard's `ProfileCreate`
+ * schema (v2026.6.19). `name` is the only required field. `clone_from_default`
+ * seeds the new profile from June's default (so it inherits June's identity and
+ * bundled skills unless `no_skills` is set); `keep_skills` narrows which bundled
+ * skills survive; `hub_skills` installs optional hub skills at create time;
+ * `mcp_servers` attaches MCP servers. `provider`/`model` set the generation
+ * model. The SOUL/instructions are NOT part of this body — they are written
+ * after create via `PUT /api/profiles/{name}/soul`. */
+export type HermesCreateProfilePayload = {
+  name: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  clone_from?: string;
+  clone_from_default?: boolean;
+  clone_all?: boolean;
+  no_skills?: boolean;
+  keep_skills?: string[];
+  hub_skills?: string[];
+  mcp_servers?: HermesAddMcpServerPayload[];
+} & Record<string, unknown>;
+
 /**
  * The typed admin surface. A frozen object of method groups. Built by
  * {@link createHermesAdminClient}.
@@ -132,31 +171,39 @@ export type HermesAdminClient = {
 
   readonly skills: {
     list(): Promise<HermesSkillInfo[]>;
-    toggle(
-      name: string,
-      enabled: boolean,
-    ): Promise<MutationOutcome<HermesToggleResult>>;
+    toggle(name: string, enabled: boolean): Promise<MutationOutcome<HermesToggleResult>>;
+    /** Reads a skill's raw SKILL.md text for the detail viewer/editor.
+     * `GET /api/skills/content?name=&profile=`. */
+    getContent(name: string): Promise<HermesSkillContent>;
+    /** Rewrites a skill's SKILL.md (full replace). `PUT /api/skills/content`
+     * with `SkillContentUpdate` (`{ name, content, profile? }`). The content is
+     * validated by the caller BEFORE this is invoked; this only transports it.
+     * Applies next session (the skill index/frontmatter is read at session
+     * start), like {@link toggle}. */
+    updateContent(name: string, content: string): Promise<MutationOutcome<HermesSkillContent>>;
     hubSearch(query: string, source?: string): Promise<HermesHubSkillResult[]>;
+    /** Audits / re-scans an installed hub skill by identifier.
+     * `GET /api/skills/hub/scan?identifier=`. Returns the scan verdict +
+     * findings so June can surface "what running this skill entails" without
+     * mutating anything. Read-only: applies immediately. */
+    hubScan(identifier: string): Promise<HermesSkillScan>;
+    /** Installs a skill by identifier. `force` is sent ONLY when explicitly
+     * true (the user completed the security review); it is omitted otherwise so
+     * a `force: true` can never leak in by default. */
     hubInstall(
       identifier: string,
+      options?: { force?: boolean },
     ): Promise<MutationOutcome<HermesActionStatus | undefined>>;
-    hubUninstall(
-      name: string,
-    ): Promise<MutationOutcome<HermesActionStatus | undefined>>;
+    hubUninstall(name: string): Promise<MutationOutcome<HermesActionStatus | undefined>>;
     /** Updates installed hub skills. The dashboard's `SkillsUpdateRequest`
      * scopes by profile only (there is no per-skill name in the body), so
      * `subject` is used solely for the notification label, not sent. */
-    hubUpdate(
-      subject?: string,
-    ): Promise<MutationOutcome<HermesActionStatus | undefined>>;
+    hubUpdate(subject?: string): Promise<MutationOutcome<HermesActionStatus | undefined>>;
   };
 
   readonly toolsets: {
     list(): Promise<HermesToolsetInfo[]>;
-    toggle(
-      name: string,
-      enabled: boolean,
-    ): Promise<MutationOutcome<HermesToggleResult>>;
+    toggle(name: string, enabled: boolean): Promise<MutationOutcome<HermesToggleResult>>;
   };
 
   readonly mcp: {
@@ -165,10 +212,7 @@ export type HermesAdminClient = {
       payload: HermesAddMcpServerPayload,
     ): Promise<MutationOutcome<HermesMcpServerInfo | undefined>>;
     testServer(name: string): Promise<MutationOutcome<HermesMcpTestResult>>;
-    setEnabled(
-      name: string,
-      enabled: boolean,
-    ): Promise<MutationOutcome<HermesToggleResult>>;
+    setEnabled(name: string, enabled: boolean): Promise<MutationOutcome<HermesToggleResult>>;
     removeServer(name: string): Promise<MutationOutcome<{ ok: boolean }>>;
     // NOTE: no setToolFilters. The v2026.6.19 dashboard exposes no
     // `PUT /api/mcp/servers/{name}/tools` endpoint, and `MCPServerCreate`
@@ -179,6 +223,31 @@ export type HermesAdminClient = {
     installCatalogEntry(
       payload: HermesInstallCatalogPayload,
     ): Promise<MutationOutcome<HermesActionStatus | undefined>>;
+  };
+
+  readonly profiles: {
+    /** Lists the Hermes profiles. `GET /api/profiles`. Used by the builder to
+     * dedupe the new profile's name/slug against existing ones and to offer a
+     * clone source. NOT profile-scoped — it lists ALL profiles. */
+    list(): Promise<HermesProfileSummary[]>;
+    /** Creates a profile. `POST /api/profiles` with `ProfileCreate`. NOT
+     * profile-scoped (it creates a new profile; the active-profile query would
+     * be meaningless). Applies next session — the new profile is available to
+     * sessions started under it, it does not alter the running gateway. */
+    create(
+      payload: HermesCreateProfilePayload,
+    ): Promise<MutationOutcome<HermesProfileCreateResult>>;
+    /** Writes a profile's SOUL/instructions. `PUT /api/profiles/{name}/soul`
+     * with `ProfileSoulUpdate` (`{ content }`). Called after create when the
+     * builder collected a custom SOUL. */
+    setSoul(name: string, content: string): Promise<MutationOutcome<{ ok: boolean }>>;
+    /** Lists live/recent profile sessions. `GET /api/profiles/sessions`. The
+     * builder polls this to confirm a started test session is running. */
+    sessions(): Promise<HermesProfileSession[]>;
+    /** Starts a test session for a profile by making it active and opening a
+     * terminal. `POST /api/profiles/active` then
+     * `POST /api/profiles/{name}/open-terminal`. */
+    startTestSession(name: string): Promise<MutationOutcome<{ ok: boolean }>>;
   };
 
   readonly gateway: {
@@ -199,10 +268,7 @@ export type HermesAdminClient = {
     list(): Promise<HermesEnvListing>;
     /** `PUT /api/env` with `{ key, value, profile? }` (`EnvVarUpdate`). The
      * value is write-only from June and is never logged. */
-    set(
-      key: string,
-      value: string,
-    ): Promise<MutationOutcome<HermesEnvWriteResult>>;
+    set(key: string, value: string): Promise<MutationOutcome<HermesEnvWriteResult>>;
     /** `DELETE /api/env` with `{ key, profile? }` (`EnvVarDelete`). The key is
      * in the BODY, not the path. */
     delete(key: string): Promise<MutationOutcome<HermesEnvWriteResult>>;
@@ -213,6 +279,50 @@ export type HermesAdminClient = {
     reveal(key: string): Promise<HermesEnvRevealResult>;
   };
 
+  readonly config: {
+    /** Reads the config tree for the target profile. `GET /api/config`. A caller
+     * reads a dotted path (e.g. `skills.config.<skill>.<key>`) out of the
+     * result. Non-secret: skill config is not sensitive, so values ARE returned
+     * here (unlike env). */
+    get(): Promise<HermesConfigResult>;
+    /** Writes a single dotted config path. `PUT /api/config` with
+     * `{ path, value, profile? }`. Used for non-secret skill config under
+     * `skills.config`; applies next session (the runtime reads config at session
+     * start). */
+    set(path: string, value: string): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /** Writes a non-scalar config value (an array or object) at a dotted path.
+     * `PUT /api/config` with `{ path, value, profile? }`, where `value` is the
+     * whole structure (e.g. the full `skills.external_dirs` list). The external
+     * skill directories manager uses this to write the list it has already
+     * read-merged client-side. Routes the write through Hermes' REST surface so
+     * the jailed dashboard owns the `config.yaml` write (no June-side EPERM). */
+    setValue(path: string, value: unknown): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /** Segment-aware variant of {@link set}/{@link setValue}: writes `value` at
+     * the exact path SEGMENTS, so a dynamic segment (a skill or MCP server name)
+     * that itself contains a dot is written as ONE key, not mis-split into nested
+     * keys. Use with `skillConfigPathSegments` / `toolsConfigPath`. */
+    setValueAtSegments(
+      segments: string[],
+      value: unknown,
+    ): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /** Clears a single dotted config path back to its default. `DELETE
+     * /api/config` with `{ path, profile? }` (the path is in the BODY). */
+    delete(path: string): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /** Segment-aware variant of {@link delete} (see {@link setValueAtSegments}). */
+    deleteAtSegments(segments: string[]): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /**
+     * Applies MULTIPLE segment-aware writes (set / delete) to ONE fetched
+     * config tree and persists them with ONE `PUT /api/config`, so a
+     * multi-field change (an MCP server edit touching command AND args) lands
+     * atomically: every leaf applies or none does. The per-leaf variants each
+     * run their own read-modify-write, which could leave config.yaml
+     * half-mutated when a later write fails.
+     */
+    applyWritesAtSegments(
+      writes: ConfigSegmentWrite[],
+    ): Promise<MutationOutcome<HermesConfigWriteResult>>;
+  };
+
   /**
    * Drives a backgrounded action to a terminal state by polling
    * `/api/actions/{name}/status`. Resolves with the final status (which may be
@@ -220,10 +330,7 @@ export type HermesAdminClient = {
    * timeout, or abort. Used by the cache/lifecycle layer after hub installs and
    * gateway restarts.
    */
-  pollAction(
-    actionName: string,
-    options?: PollActionOptions,
-  ): Promise<HermesActionStatus>;
+  pollAction(actionName: string, options?: PollActionOptions): Promise<HermesActionStatus>;
 };
 
 /** Builds a typed admin client bound to one target. */
@@ -238,6 +345,7 @@ export function createHermesAdminClient(
     skills: makeSkills(send),
     toolsets: makeToolsets(send),
     mcp: makeMcp(send),
+    profiles: makeProfiles(send),
     gateway: makeGateway(send),
     actions: {
       status(actionName: string) {
@@ -251,6 +359,7 @@ export function createHermesAdminClient(
       },
     },
     env: makeEnv(send),
+    config: makeConfig(send),
     pollAction(actionName: string, pollOptions: PollActionOptions = {}) {
       return pollAction(send, actionName, pollOptions);
     },
@@ -259,11 +368,7 @@ export function createHermesAdminClient(
 
 /** Wraps a mutation result with its timing metadata. Only ever called on a 2xx
  * (the transport throws on non-2xx), so `ok` is unconditionally true here. */
-function outcome<T>(
-  mutation: AdminMutation,
-  result: T,
-  action?: string,
-): MutationOutcome<T> {
+function outcome<T>(mutation: AdminMutation, result: T, action?: string): MutationOutcome<T> {
   return {
     ok: true,
     result,
@@ -290,6 +395,31 @@ function makeSkills(send: AdminTransport): HermesAdminClient["skills"] {
       );
       return outcome("skill.toggle", result);
     },
+    getContent(name) {
+      return send(
+        {
+          method: "GET",
+          path: "/api/skills/content",
+          query: { name },
+        },
+        parseSkillContent,
+      );
+    },
+    async updateContent(name, content) {
+      // SkillContentUpdate is `{ name, content, profile? }`; the profile rides
+      // the query param the transport injects for every call, so it is not
+      // duplicated in the body. The body is never logged at info level (the
+      // transport redacts), but SKILL.md is non-secret content anyway.
+      const result = await send(
+        {
+          method: "PUT",
+          path: "/api/skills/content",
+          body: { name, content },
+        },
+        parseSkillContent,
+      );
+      return outcome("skill.editContent", result);
+    },
     hubSearch(query, source) {
       return send(
         {
@@ -300,14 +430,34 @@ function makeSkills(send: AdminTransport): HermesAdminClient["skills"] {
         parseHubSearch,
       );
     },
-    async hubInstall(identifier) {
-      // SkillInstallRequest is `{ identifier, profile? }` — no source/force
-      // field exists in this contract, so the body is just the identifier.
+    hubScan(identifier) {
+      // GET /api/skills/hub/scan?identifier=<id>. The dashboard contract types
+      // the body loosely (`{}`); parse it through the same defensive scan parser
+      // the install review uses, defaulting to an `unknown` verdict when the
+      // wire carries nothing scan-shaped rather than asserting "safe".
+      return send(
+        {
+          method: "GET",
+          path: "/api/skills/hub/scan",
+          query: { identifier },
+        },
+        (raw) =>
+          parseSkillScan(raw) ?? {
+            verdict: "unknown",
+            raw,
+          },
+      );
+    },
+    async hubInstall(identifier, options) {
+      // SkillInstallRequest is `{ identifier, profile?, force? }`. `force` rides
+      // the body ONLY when the caller explicitly opts in (after the security
+      // review); it is omitted entirely otherwise so a default install can never
+      // carry `force: true`.
       const action = await send(
         {
           method: "POST",
           path: "/api/skills/hub/install",
-          body: { identifier },
+          body: options?.force ? { identifier, force: true } : { identifier },
         },
         actionFromMutationResponse,
       );
@@ -336,10 +486,7 @@ function makeSkills(send: AdminTransport): HermesAdminClient["skills"] {
 function makeToolsets(send: AdminTransport): HermesAdminClient["toolsets"] {
   return {
     list() {
-      return send(
-        { method: "GET", path: "/api/tools/toolsets" },
-        parseToolsetList,
-      );
+      return send({ method: "GET", path: "/api/tools/toolsets" }, parseToolsetList);
     },
     async toggle(name, enabled) {
       const result = await send(
@@ -358,10 +505,7 @@ function makeToolsets(send: AdminTransport): HermesAdminClient["toolsets"] {
 function makeMcp(send: AdminTransport): HermesAdminClient["mcp"] {
   return {
     listServers() {
-      return send(
-        { method: "GET", path: "/api/mcp/servers" },
-        parseMcpServerList,
-      );
+      return send({ method: "GET", path: "/api/mcp/servers" }, parseMcpServerList);
     },
     async addServer(payload) {
       const result = await send(
@@ -420,13 +564,91 @@ function makeMcp(send: AdminTransport): HermesAdminClient["mcp"] {
   };
 }
 
+function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
+  return {
+    list() {
+      // Lists ALL profiles — not scoped to the active one.
+      return send(
+        { method: "GET", path: "/api/profiles", scopeToProfile: false },
+        parseProfileList,
+      );
+    },
+    async create(payload) {
+      // Create is global (it makes a new profile); the active-profile query is
+      // meaningless here, so it opts out of profile scoping. The body carries no
+      // secret-shaped fields (model/skill ids, not keys); MCP env values, if
+      // any, are redacted by the transport's structural sanitizer.
+      const result = await send(
+        {
+          method: "POST",
+          path: "/api/profiles",
+          body: payload,
+          scopeToProfile: false,
+        },
+        (raw) => parseProfileCreateResult(payload.name, raw),
+      );
+      return outcome("profile.create", result);
+    },
+    async setSoul(name, content) {
+      const result = await send(
+        {
+          method: "PUT",
+          path: `/api/profiles/${encodeURIComponent(name)}/soul`,
+          body: { content },
+          scopeToProfile: false,
+        },
+        (raw) => ({ ok: okFrom(raw) }),
+      );
+      return outcome("profile.setSoul", result);
+    },
+    sessions() {
+      return send(
+        {
+          method: "GET",
+          path: "/api/profiles/sessions",
+          scopeToProfile: false,
+        },
+        parseProfileSessionList,
+      );
+    },
+    async startTestSession(name) {
+      // Make the new profile active, then open a terminal session under it. Both
+      // are global profile operations, so neither is profile-query-scoped.
+      const activated = await send(
+        {
+          method: "POST",
+          path: "/api/profiles/active",
+          body: { name },
+          scopeToProfile: false,
+        },
+        (raw) => ({ ok: okFrom(raw) }),
+      );
+      // Stop if the switch failed (a body-level { ok: false } on a 2xx):
+      // opening a terminal would run under the wrong profile and falsely report
+      // success. Surface the failure through the same outcome, matching create.
+      if (!activated.ok) {
+        return outcome("profile.create", activated);
+      }
+      const result = await send(
+        {
+          method: "POST",
+          path: `/api/profiles/${encodeURIComponent(name)}/open-terminal`,
+          scopeToProfile: false,
+        },
+        (raw) => ({ ok: okFrom(raw) }),
+      );
+      // Reuse the create timing/notification surface — starting a session is the
+      // immediate consequence of a create, so the caller treats it as part of
+      // the create flow rather than a distinct durable mutation.
+      return outcome("profile.create", result);
+    },
+  };
+}
+
 function makeGateway(send: AdminTransport): HermesAdminClient["gateway"] {
   // Gateway lifecycle is not profile-scoped — it acts on the single runtime
   // process — so these opt out of the profile query.
-  const lifecycle = (
-    mutation: Extract<AdminMutation, "gateway.restart">,
-    path: string,
-  ) =>
+  const lifecycle = (mutation: Extract<AdminMutation, "gateway.restart">, path: string) =>
     async function run() {
       const action = await send(
         { method: "POST", path, scopeToProfile: false },
@@ -470,17 +692,15 @@ function makeEnv(send: AdminTransport): HermesAdminClient["env"] {
     },
     async set(key, value) {
       // PUT /api/env with EnvVarUpdate { key, value }; profile rides the query.
-      const result = await send(
-        { method: "PUT", path: "/api/env", body: { key, value } },
-        (raw) => parseEnvWriteResult(key, raw),
+      const result = await send({ method: "PUT", path: "/api/env", body: { key, value } }, (raw) =>
+        parseEnvWriteResult(key, raw),
       );
       return outcome("env.set", result);
     },
     async delete(key) {
       // DELETE /api/env with EnvVarDelete { key } in the BODY (not the path).
-      const result = await send(
-        { method: "DELETE", path: "/api/env", body: { key } },
-        (raw) => parseEnvWriteResult(key, raw),
+      const result = await send({ method: "DELETE", path: "/api/env", body: { key } }, (raw) =>
+        parseEnvWriteResult(key, raw),
       );
       return outcome("env.delete", result);
     },
@@ -500,12 +720,123 @@ function makeEnv(send: AdminTransport): HermesAdminClient["env"] {
   };
 }
 
+/** Sets a value at the given path SEGMENTS on a config tree in place, creating
+ * intermediate objects as needed. Replaces any non-object node in the way.
+ * Segments (not a dotted string) so a dynamic key that itself contains a dot —
+ * a skill or MCP server name — is written as ONE key, never split. */
+function setConfigAtPath(tree: Record<string, unknown>, segments: string[], value: unknown): void {
+  let node = tree;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const key = segments[i]!;
+    const next = node[key];
+    if (typeof next !== "object" || next === null || Array.isArray(next)) {
+      node[key] = {};
+    }
+    node = node[key] as Record<string, unknown>;
+  }
+  node[segments[segments.length - 1]!] = value;
+}
+
+/** Deletes a value at the given path SEGMENTS from a config tree in place. No-op
+ * if any segment is missing. Segment-based for the same dotted-name reason as
+ * {@link setConfigAtPath}. */
+function deleteConfigAtPath(tree: Record<string, unknown>, segments: string[]): void {
+  let node = tree;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const next = node[segments[i]!];
+    if (typeof next !== "object" || next === null || Array.isArray(next)) return;
+    node = next as Record<string, unknown>;
+  }
+  delete node[segments[segments.length - 1]!];
+}
+
+function makeConfig(send: AdminTransport): HermesAdminClient["config"] {
+  // Hermes' `PUT /api/config` (`ConfigUpdate`) takes the WHOLE config object
+  // and `save_config` replaces the tree (only env-ref templates are preserved),
+  // and there is NO `DELETE /api/config` route. So every write is a
+  // read-modify-write: GET the tree, change one dotted path, PUT it back under
+  // `{ config }`. This is why a `{ path, value }` body fails with a 422.
+  async function writePath(
+    label: "config.set" | "config.delete",
+    path: string,
+    apply: (tree: Record<string, unknown>) => void,
+  ): Promise<MutationOutcome<HermesConfigWriteResult>> {
+    const current = await send({ method: "GET", path: "/api/config" }, parseConfigResult);
+    const next = structuredClone(current.config);
+    apply(next);
+    const result = await send(
+      { method: "PUT", path: "/api/config", body: { config: next } },
+      (raw) => parseConfigWriteResult(path, raw),
+    );
+    return outcome(label, result);
+  }
+
+  return {
+    get() {
+      // GET /api/config (profile via the centrally-added ?profile= query).
+      return send({ method: "GET", path: "/api/config" }, parseConfigResult);
+    },
+    async set(path, value) {
+      // Read-modify-write a single dotted path. Skill config is non-secret, but
+      // the value is still not logged — the structural sanitizer masks any
+      // credential-shaped value defensively. A dotted string is safe here only
+      // because every caller of `set` uses a STATIC path (no dynamic name);
+      // dynamic-name writers must use `setValueAtSegments` instead.
+      const segments = path.split(".");
+      return writePath("config.set", path, (tree) => setConfigAtPath(tree, segments, value));
+    },
+    async setValue(path, value) {
+      // Same read-modify-write as `set`, but `value` is an arbitrary structure
+      // (array/object) rather than a string. Used by the external directories
+      // manager to write the whole `skills.external_dirs` list (a static path).
+      const segments = path.split(".");
+      return writePath("config.set", path, (tree) => setConfigAtPath(tree, segments, value));
+    },
+    async setValueAtSegments(segments, value) {
+      // Segment-aware write: a skill or MCP server name may contain a dot, so a
+      // dotted path would mis-nest it. Callers pass discrete segments
+      // (skillConfigPathSegments / toolsConfigPath) so the value lands under the
+      // exact key Hermes reads it from.
+      return writePath("config.set", segments.join("."), (tree) =>
+        setConfigAtPath(tree, segments, value),
+      );
+    },
+    async delete(path) {
+      // Clears a dotted path. Hermes has no DELETE /api/config, so this is a
+      // read-modify-write that removes the key and PUTs the tree back.
+      const segments = path.split(".");
+      return writePath("config.delete", path, (tree) => deleteConfigAtPath(tree, segments));
+    },
+    async deleteAtSegments(segments) {
+      // Segment-aware variant of `delete` (see `setValueAtSegments`).
+      return writePath("config.delete", segments.join("."), (tree) =>
+        deleteConfigAtPath(tree, segments),
+      );
+    },
+    async applyWritesAtSegments(writes) {
+      // ONE read-modify-write for the whole batch: every leaf is applied to
+      // the SAME fetched tree and persisted with a single PUT, so a
+      // multi-field edit can never land half-applied (the per-leaf variants
+      // each PUT their own tree, and a later failure would leave the earlier
+      // leaf already committed).
+      const path = writes.map((write) => write.segments.join(".")).join(", ");
+      return writePath("config.set", path, (tree) => {
+        for (const write of writes) {
+          if (write.op === "set") {
+            setConfigAtPath(tree, write.segments, write.value);
+          } else {
+            deleteConfigAtPath(tree, write.segments);
+          }
+        }
+      });
+    },
+  };
+}
+
 /** Parses a mutation response that MAY return an action handle into an
  * {@link HermesActionStatus} when it does, or `undefined` for a synchronous
  * mutation (no handle). */
-function actionFromMutationResponse(
-  raw: unknown,
-): HermesActionStatus | undefined {
+function actionFromMutationResponse(raw: unknown): HermesActionStatus | undefined {
   const handle = parseActionHandle(raw);
   if (!handle) return undefined;
   // Seed an initial status from the same body; the caller polls from here.
@@ -535,10 +866,7 @@ async function pollAction(
   const deadline = Date.now() + timeoutMs;
 
   // Terminal states stop the loop; everything else keeps polling.
-  const terminal: ReadonlySet<HermesActionState> = new Set([
-    "succeeded",
-    "failed",
-  ]);
+  const terminal: ReadonlySet<HermesActionState> = new Set(["succeeded", "failed"]);
 
   for (;;) {
     if (options.signal?.aborted) {

@@ -1,8 +1,7 @@
 import type { ChatGuard } from "@nationaldesignstudio/rampart";
 
 export const AGENT_PRIVACY_GUARD_MODE_KEY = "june:agent:privacyGuardMode";
-export const AGENT_PRIVACY_GUARD_MODE_CHANGED_EVENT =
-  "june:agent:privacy-guard-mode-changed";
+export const AGENT_PRIVACY_GUARD_MODE_CHANGED_EVENT = "june:agent:privacy-guard-mode-changed";
 
 export type AgentPrivacyGuardMode = "off" | "structured" | "full";
 export type AgentPrivacyGuardActiveMode = Exclude<AgentPrivacyGuardMode, "off">;
@@ -37,11 +36,7 @@ export type AgentPrivacyProtection = {
   redacted: boolean;
 };
 
-const VALID_PRIVACY_GUARD_MODES: AgentPrivacyGuardMode[] = [
-  "off",
-  "structured",
-  "full",
-];
+const VALID_PRIVACY_GUARD_MODES: AgentPrivacyGuardMode[] = ["off", "structured", "full"];
 
 export function getAgentPrivacyGuardMode(): AgentPrivacyGuardMode {
   try {
@@ -63,10 +58,9 @@ export function setAgentPrivacyGuardMode(mode: AgentPrivacyGuardMode) {
     // The current session still receives the change event below.
   }
   window.dispatchEvent(
-    new CustomEvent<AgentPrivacyGuardModeChangedDetail>(
-      AGENT_PRIVACY_GUARD_MODE_CHANGED_EVENT,
-      { detail: { mode } },
-    ),
+    new CustomEvent<AgentPrivacyGuardModeChangedDetail>(AGENT_PRIVACY_GUARD_MODE_CHANGED_EVENT, {
+      detail: { mode },
+    }),
   );
 }
 
@@ -107,10 +101,7 @@ export async function protectAgentPromptText(
 export function createAgentPrivacyGuardSession(
   options: { loadGuard?: AgentPrivacyGuardLoader } = {},
 ): AgentPrivacyGuardSession {
-  const guardPromises = new Map<
-    AgentPrivacyGuardActiveMode,
-    Promise<LoadedAgentPrivacyGuard>
-  >();
+  const guardPromises = new Map<AgentPrivacyGuardActiveMode, Promise<LoadedAgentPrivacyGuard>>();
   const loadGuard = options.loadGuard ?? createRampartGuard;
 
   async function loadSessionGuard(
@@ -186,11 +177,8 @@ async function createRampartGuard(
   }
 }
 
-function isAgentPrivacyGuardMode(
-  value: unknown,
-): value is AgentPrivacyGuardMode {
+function isAgentPrivacyGuardMode(value: unknown): value is AgentPrivacyGuardMode {
   return (
-    typeof value === "string" &&
-    VALID_PRIVACY_GUARD_MODES.includes(value as AgentPrivacyGuardMode)
+    typeof value === "string" && VALID_PRIVACY_GUARD_MODES.includes(value as AgentPrivacyGuardMode)
   );
 }

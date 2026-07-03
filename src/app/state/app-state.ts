@@ -45,14 +45,10 @@ export function createInitialState(): NotesState {
   };
 }
 
-export function notesReducer(
-  state: NotesState,
-  action: NotesAction,
-): NotesState {
+export function notesReducer(state: NotesState, action: NotesAction): NotesState {
   switch (action.type) {
     case "bootstrapLoaded": {
-      const selectedNoteId =
-        state.selectedNoteId ?? action.payload.notes[0]?.id;
+      const selectedNoteId = state.selectedNoteId ?? action.payload.notes[0]?.id;
       return {
         ...state,
         folders: sortFolders(action.payload.folders),
@@ -107,28 +103,20 @@ export function notesReducer(
       return {
         ...state,
         folders: sortFolders(
-          state.folders.map((folder) =>
-            folder.id === action.folder.id ? action.folder : folder,
-          ),
+          state.folders.map((folder) => (folder.id === action.folder.id ? action.folder : folder)),
         ),
       };
     case "folderDeleted":
       return {
         ...state,
-        folders: state.folders.filter(
-          (folder) => folder.id !== action.folderId,
-        ),
+        folders: state.folders.filter((folder) => folder.id !== action.folderId),
         selectedFolderId:
-          state.selectedFolderId === action.folderId
-            ? undefined
-            : state.selectedFolderId,
+          state.selectedFolderId === action.folderId ? undefined : state.selectedFolderId,
         notes: state.notes.map((note) =>
           note.folderIds.includes(action.folderId)
             ? {
                 ...note,
-                folderIds: note.folderIds.filter(
-                  (id) => id !== action.folderId,
-                ),
+                folderIds: note.folderIds.filter((id) => id !== action.folderId),
               }
             : note,
         ),
@@ -183,10 +171,7 @@ function mergeNoteUpdate(state: NotesState, note: NoteDto): NoteDto {
       : state.notes.find((item) => item.id === note.id);
   if (!current) return note;
 
-  const processingStatus = mergeProcessingStatus(
-    current.processingStatus,
-    note.processingStatus,
-  );
+  const processingStatus = mergeProcessingStatus(current.processingStatus, note.processingStatus);
   if (processingStatus === note.processingStatus) return note;
   if (
     isTerminalProcessingStatus(current.processingStatus) &&
@@ -248,9 +233,7 @@ function upsertNote(state: NotesState, note: NoteDto): NotesState {
   const existing = state.notes.filter((item) => item.id !== note.id);
   return {
     ...state,
-    notes: [toListItem(note), ...existing].sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt),
-    ),
+    notes: [toListItem(note), ...existing].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
   };
 }
 

@@ -1,8 +1,6 @@
 import type { DictationHelperEvent } from "./tauri";
 
-export function parseDictationHelperEvent(
-  payload: unknown,
-): DictationHelperEvent | undefined {
+export function parseDictationHelperEvent(payload: unknown): DictationHelperEvent | undefined {
   try {
     const value = typeof payload === "string" ? JSON.parse(payload) : payload;
     if (!value || typeof value !== "object") return undefined;

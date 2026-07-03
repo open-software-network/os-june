@@ -16,12 +16,7 @@ type NotePreviewProps = {
   emptyPlaceholder?: string;
 };
 
-export function NotePreview({
-  noteId,
-  markdown,
-  onChange,
-  emptyPlaceholder,
-}: NotePreviewProps) {
+export function NotePreview({ noteId, markdown, onChange, emptyPlaceholder }: NotePreviewProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<{ x: number; y: number } | null>(null);
   const initialHtml = useMemo(() => markdownToHtml(markdown), [noteId]);
@@ -232,10 +227,7 @@ function getToolbarPosition(editor: Editor | null) {
 /* ---- markdown <-> html (tiny subset: headings, lists, paragraphs, bold) -- */
 
 function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function inlineToHtml(text: string) {

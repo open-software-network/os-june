@@ -24,6 +24,9 @@ import { asRecord, nonEmptyString, pickString } from "./hermes-control-plane";
 export type BranchSessionResult = {
   /** The gateway-minted id of the new (forked) session. Authoritative. */
   sessionId: string;
+  /** Live runtime id for the fork, when Hermes returns one separately from the
+   * stored id. Fresh forks can submit through this without a resume round-trip. */
+  runtimeSessionId?: string;
   /** The session this fork came from. */
   sourceSessionId: string;
   /** The message the fork started from, when the branch was message-level. */
@@ -46,25 +49,46 @@ export function parseBranchSessionResult(
 ): BranchSessionResult | undefined {
   const root = asRecord(raw);
   const nested = asRecord(root?.session);
-  const sessionId = pickString(
+  const sessionIdKeyedByNewSession = pickString([root, nested], ["new_session_id", "newSessionId"]);
+  const sessionId =
+    sessionIdKeyedByNewSession ?? pickString([root, nested], ["session_id", "sessionId", "id"]);
+  const explicitRuntimeSessionId = pickString(
     [root, nested],
-    ["new_session_id", "newSessionId", "session_id", "sessionId", "id"],
+    [
+      "runtime_session_id",
+      "runtimeSessionId",
+      "new_runtime_session_id",
+      "newRuntimeSessionId",
+      "live_session_id",
+      "liveSessionId",
+    ],
   );
   // No new id, or an id that merely echoes the source, is not a fork.
   if (!sessionId || sessionId === fallback.sourceSessionId) return undefined;
+  const runtimeSessionId =
+    explicitRuntimeSessionId ??
+    // Some pins return the stored fork under `new_session_id` and the live fork
+    // under `session_id`; when `new_session_id` was the id source, preserve that
+    // secondary value as the runtime id.
+    (sessionIdKeyedByNewSession
+      ? pickString([root, nested], ["session_id", "sessionId"])
+      : undefined);
 
   const sourceSessionId =
-    pickString(
-      [root],
-      ["source_session_id", "sourceSessionId", "from_session_id"],
-    ) ?? fallback.sourceSessionId;
+    pickString([root], ["source_session_id", "sourceSessionId", "from_session_id"]) ??
+    fallback.sourceSessionId;
   const sourceMessageId =
-    pickString(
-      [root],
-      ["from_message_id", "fromMessageId", "source_message_id"],
-    ) ?? fallback.sourceMessageId;
+    pickString([root], ["from_message_id", "fromMessageId", "source_message_id"]) ??
+    fallback.sourceMessageId;
 
-  return { sessionId, sourceSessionId, sourceMessageId };
+  return {
+    sessionId,
+    ...(runtimeSessionId && runtimeSessionId !== fallback.sourceSessionId
+      ? { runtimeSessionId }
+      : {}),
+    sourceSessionId,
+    sourceMessageId,
+  };
 }
 
 /**
@@ -86,7 +110,5 @@ const SYNTHETIC_TURN_ID_PREFIXES = ["assistant:", "error:", "pending:"];
 export function isBranchableMessageId(id: string | undefined): boolean {
   const trimmed = nonEmptyString(id);
   if (!trimmed) return false;
-  return !SYNTHETIC_TURN_ID_PREFIXES.some((prefix) =>
-    trimmed.startsWith(prefix),
-  );
+  return !SYNTHETIC_TURN_ID_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
