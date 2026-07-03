@@ -234,7 +234,7 @@ pub struct ImageGenerationRequest {
 
 /// What an image editor needs: the source image bytes (base64, no `data:`
 /// prefix) plus its mime, the edit instruction, the model, optional Venice
-/// safe mode, and provider credentials. Image editing (img2img) is a SEPARATE
+/// safe mode, and provider credentials. Image editing is a SEPARATE
 /// Venice endpoint and model catalog from generation, with a raw-binary
 /// response, so it has its own domain type and provider rather than reusing
 /// the generator.

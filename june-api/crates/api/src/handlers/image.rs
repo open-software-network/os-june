@@ -33,7 +33,7 @@ pub struct ImageGenerateRequest {
     pub safe_mode: Option<bool>,
 }
 
-/// An image edit (img2img): the source image as raw base64 plus an instruction.
+/// An image edit: the source image as raw base64 plus an instruction.
 /// `model` is optional — omitted requests use June API's default edit model
 /// (the image MCP never names one). `mimeType` describes the source bytes.
 #[derive(Debug, Deserialize)]
@@ -113,7 +113,7 @@ pub(crate) async fn generate(
     Ok(Json(ApiResponse::ok(output.image.into())))
 }
 
-/// Edits an existing image (img2img) via Venice. Metered like generation: the
+/// Edits an existing image via Venice. Metered like generation: the
 /// service holds an estimate, edits, then charges the edit model's flat price
 /// (a separate catalog). A user Venice key skips June credit metering. An
 /// unpriced model is rejected `model_not_priced`; an out-of-credits user

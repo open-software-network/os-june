@@ -1,4 +1,4 @@
-//! Venice image editing (img2img): proxies the `/image/edit` endpoint.
+//! Venice image editing: proxies the `/image/edit` endpoint.
 //!
 //! Unlike `/image/generate` (which returns base64 strings in an `images`
 //! array), the edit endpoint responds with the RAW edited image bytes, so this

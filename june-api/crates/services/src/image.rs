@@ -161,7 +161,7 @@ impl ImageService {
         Ok(ImageGenerateOutput { image, receipt })
     }
 
-    /// Metered image edit (img2img), mirroring `generate`: resolve the edit
+    /// Metered image edit, mirroring `generate`: resolve the edit
     /// model (requests name none, so the default governs), reject an unpriced
     /// model before any wallet/Venice call, authorize a hold, edit, then charge
     /// the flat edit price under a unique key. A failed/rejected edit returns the
