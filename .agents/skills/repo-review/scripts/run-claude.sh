@@ -56,6 +56,6 @@ printf '%s\n' "$prompt" | claude -p \
   --permission-mode plan \
   --allowedTools "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)" \
   --disallowedTools "Edit" "Write" "NotebookEdit" \
-  "${add_dir_args[@]}" \
+  ${add_dir_args[@]+"${add_dir_args[@]}"} \
   | tee "$out"
 printf '\n--- verdict (%s) ---\n' "$out"
