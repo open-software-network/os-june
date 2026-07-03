@@ -901,6 +901,8 @@ type AgentWorkspaceProps = {
   origin?: AgentWorkspaceOrigin;
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
   onTopUp?: () => void | Promise<void>;
+  updateReadyToRelaunch?: boolean;
+  onRelaunch?: () => void;
   topUpLabel?: string;
 };
 
@@ -956,6 +958,7 @@ const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
 const ISSUE_REPORT_SENT_MESSAGE =
   "Your report was sent to the June team. Thank you for helping improve June.";
+const DICTATION_UPDATE_READY_MESSAGE = "Dictation is paused until you relaunch to finish updating.";
 const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
 const ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS = 1500;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
@@ -1373,6 +1376,8 @@ export function AgentWorkspace({
   origin,
   onSessionSelected,
   onTopUp,
+  updateReadyToRelaunch = false,
+  onRelaunch,
   topUpLabel = "Upgrade",
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
@@ -2250,6 +2255,10 @@ export function AgentWorkspace({
   const visibleErrorRetryable =
     visibleError != null &&
     (GATEWAY_CONNECTION_ERROR.test(visibleError) || visibleError === HERMES_SERVER_ERROR_MESSAGE);
+  const visibleErrorPrimaryAction =
+    visibleError === DICTATION_UPDATE_READY_MESSAGE && updateReadyToRelaunch && onRelaunch
+      ? { label: "Relaunch June", onClick: onRelaunch }
+      : undefined;
   const visibleIssueReportNotice =
     issueReportNotice && issueReportNotice.sessionId === (selectedHermesSessionId ?? null)
       ? issueReportNotice.message
@@ -3963,6 +3972,10 @@ export function AgentWorkspace({
   // the same command the hotkey path sends. The helper records, shows the HUD,
   // and pastes the transcription into the focused field (the composer).
   async function startDictation() {
+    if (updateReadyToRelaunch) {
+      setError(DICTATION_UPDATE_READY_MESSAGE);
+      return;
+    }
     composerEditorRef.current?.focus();
     try {
       await dictationHelperCommand({
@@ -7421,6 +7434,7 @@ export function AgentWorkspace({
             <AgentErrorBanner
               message={visibleError}
               onRetry={visibleErrorRetryable ? () => void retryGatewayConnection() : undefined}
+              primaryAction={visibleErrorPrimaryAction}
               onReportBug={
                 visibleErrorState?.issueReport
                   ? () => void sendErrorIssueReport(visibleErrorState)
@@ -7491,6 +7505,7 @@ export function AgentWorkspace({
                 <AgentErrorBanner
                   message={visibleError}
                   onRetry={visibleErrorRetryable ? () => void retryGatewayConnection() : undefined}
+                  primaryAction={visibleErrorPrimaryAction}
                   onReportBug={
                     visibleErrorState?.issueReport
                       ? () => void sendErrorIssueReport(visibleErrorState)
@@ -9927,12 +9942,14 @@ function AgentErrorBanner({
   message,
   onDismiss,
   onReportBug,
+  primaryAction,
   onRetry,
   reportBugSubmitting = false,
 }: {
   message: string;
   onDismiss: () => void;
   onReportBug?: () => void;
+  primaryAction?: { label: string; onClick: () => void };
   onRetry?: () => void;
   reportBugSubmitting?: boolean;
 }) {
@@ -9943,6 +9960,17 @@ function AgentErrorBanner({
         {onRetry ? (
           <button type="button" onClick={onRetry}>
             Try again
+          </button>
+        ) : null}
+        {primaryAction ? (
+          <button
+            type="button"
+            onClick={() => {
+              onDismiss();
+              primaryAction.onClick();
+            }}
+          >
+            {primaryAction.label}
           </button>
         ) : null}
         {onReportBug ? (

@@ -2902,6 +2902,8 @@ export function App() {
                   onSessionSelected={setActiveAgentSession}
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
+                  updateReadyToRelaunch={readyUpdate != null}
+                  onRelaunch={handleRelaunchUpdate}
                   origin={
                     agentOriginFolder
                       ? {

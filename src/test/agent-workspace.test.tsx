@@ -31,6 +31,7 @@ const HERO_GREETING = new RegExp(
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
+  dictationHelperCommand: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
   finalizeHermesBridgeBranch: vi.fn(),
   generateImage: vi.fn(),
@@ -89,6 +90,7 @@ vi.mock("../lib/tauri", () => ({
   invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
+  dictationHelperCommand: mocks.dictationHelperCommand,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
   generateImage: mocks.generateImage,
@@ -335,6 +337,34 @@ describe("AgentWorkspace", () => {
       }
       return Promise.resolve({});
     });
+    mocks.dictationHelperCommand.mockResolvedValue(undefined);
+  });
+
+  it("prompts relaunch instead of starting composer dictation when an update is ready", async () => {
+    const user = userEvent.setup();
+    const onRelaunch = vi.fn();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(<AgentWorkspace updateReadyToRelaunch onRelaunch={onRelaunch} />);
+
+    expect(await screen.findByRole("textbox")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dictate" }));
+
+    expect(mocks.dictationHelperCommand).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("Dictation is paused until you relaunch to finish updating."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Relaunch June" }));
+
+    expect(onRelaunch).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText("Dictation is paused until you relaunch to finish updating."),
+    ).not.toBeInTheDocument();
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {
