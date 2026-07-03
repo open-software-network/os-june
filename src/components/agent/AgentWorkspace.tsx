@@ -9963,7 +9963,13 @@ function AgentErrorBanner({
           </button>
         ) : null}
         {primaryAction ? (
-          <button type="button" onClick={primaryAction.onClick}>
+          <button
+            type="button"
+            onClick={() => {
+              onDismiss();
+              primaryAction.onClick();
+            }}
+          >
             {primaryAction.label}
           </button>
         ) : null}

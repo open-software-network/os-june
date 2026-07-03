@@ -354,10 +354,7 @@ describe("AgentWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Dictate" }));
 
-    expect(mocks.dictationHelperCommand).not.toHaveBeenCalledWith({
-      type: "toggle_listening",
-      shortcut: "Dictation",
-    });
+    expect(mocks.dictationHelperCommand).not.toHaveBeenCalled();
     expect(
       await screen.findByText("Dictation is paused until you relaunch to finish updating."),
     ).toBeInTheDocument();
@@ -365,6 +362,9 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Relaunch June" }));
 
     expect(onRelaunch).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText("Dictation is paused until you relaunch to finish updating."),
+    ).not.toBeInTheDocument();
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {
