@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   getHermesBridgeSkill: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeFilePreview: vi.fn(),
+  hermesBridgeImageDataUrl: vi.fn(),
   hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
   hermesBridgeSkills: vi.fn(),
@@ -102,6 +103,7 @@ vi.mock("../lib/tauri", () => ({
   getHermesBridgeSkill: mocks.getHermesBridgeSkill,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
+  hermesBridgeImageDataUrl: mocks.hermesBridgeImageDataUrl,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
@@ -295,9 +297,13 @@ describe("AgentWorkspace", () => {
     }));
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     // Mirrors the Rust image_preview_data_url: an image path yields a
-    // data url, anything else null. Feature 19's structured image attach reads
-    // the bytes through this command at attach time.
+    // thumbnail data url, anything else null.
     mocks.hermesBridgeFilePreview.mockImplementation(async (path: string) =>
+      /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path) ? "data:image/png;base64,cHJldmlldw==" : null,
+    );
+    // Feature 19's structured image attach reads full image bytes through the
+    // image-source capped command at attach time.
+    mocks.hermesBridgeImageDataUrl.mockImplementation(async (path: string) =>
       /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path) ? "data:image/png;base64,cHJldmlldw==" : null,
     );
     mocks.hermesBridgeFileText.mockResolvedValue(null);
@@ -7009,7 +7015,7 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("restores a /image prompt and generated image with context after remount", async () => {
+  it("restores a /image prompt and generated image above the preview cap with context after remount", async () => {
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
     const user = userEvent.setup();
     const { unmount } = render(<AgentWorkspace />);
@@ -7037,11 +7043,11 @@ describe("AgentWorkspace", () => {
     unmount();
     resetAgentSessionContinuity();
     mocks.gatewayRequest.mockClear();
+    mocks.hermesBridgeFilePreview.mockResolvedValue(null);
+    mocks.hermesBridgeImageDataUrl.mockResolvedValue("data:image/png;base64,ZnVsbC1zaXpl");
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("a red bicycle")).toBeInTheDocument();
-    const restoredImage = await screen.findByRole("img", { name: "a red bicycle" });
-    expect(restoredImage).toHaveAttribute("src", "data:image/png;base64,cHJldmlldw==");
 
     await user.type(await screen.findByRole("textbox"), "what do you think");
     await user.click(screen.getByRole("button", { name: "Send message" }));
@@ -7050,9 +7056,12 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
         session_id: "runtime-session-1",
         mime_type: "image/png",
-        content_base64: "cHJldmlldw==",
+        content_base64: "ZnVsbC1zaXpl",
         filename: "generated-image.png",
       }),
+    );
+    expect(mocks.hermesBridgeImageDataUrl).toHaveBeenCalledWith(
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
     );
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "image.attach_bytes",

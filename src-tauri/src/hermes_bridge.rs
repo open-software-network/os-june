@@ -2404,6 +2404,15 @@ pub async fn hermes_bridge_file_preview(
 }
 
 #[tauri::command]
+pub async fn hermes_bridge_image_data_url(
+    app: AppHandle,
+    request: HermesFilePreviewRequest,
+) -> Result<Option<String>, AppError> {
+    let requested = validate_hermes_file_path(&app, &request.path)?;
+    image_source_data_url(&requested)
+}
+
+#[tauri::command]
 pub async fn hermes_bridge_file_text(
     app: AppHandle,
     request: HermesFilePreviewRequest,
@@ -2696,6 +2705,26 @@ fn image_preview_data_url(path: &Path) -> Result<Option<String>, AppError> {
     }
     let bytes = fs::read(path)
         .map_err(|error| AppError::new("hermes_file_preview_failed", error.to_string()))?;
+    Ok(Some(format!(
+        "data:{mime_type};base64,{}",
+        BASE64_STANDARD.encode(bytes)
+    )))
+}
+
+fn image_source_data_url(path: &Path) -> Result<Option<String>, AppError> {
+    let Some(mime_type) = image_mime_type(path) else {
+        return Ok(None);
+    };
+    let metadata = fs::metadata(path)
+        .map_err(|error| AppError::new("hermes_file_image_failed", error.to_string()))?;
+    if metadata.len() > HERMES_IMPORT_MAX_BYTES {
+        return Err(AppError::new(
+            "hermes_file_image_denied",
+            "Image files must be 50 MB or smaller.",
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| AppError::new("hermes_file_image_failed", error.to_string()))?;
     Ok(Some(format!(
         "data:{mime_type};base64,{}",
         BASE64_STANDARD.encode(bytes)

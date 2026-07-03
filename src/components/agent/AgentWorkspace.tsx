@@ -87,6 +87,7 @@ import {
   getHermesBridgeSkill,
   ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
+  hermesBridgeImageDataUrl,
   hermesBridgeMessagingPlatforms,
   hermesBridgeFilePreview,
   hermesBridgeFileText,
@@ -4272,11 +4273,10 @@ export function AgentWorkspace({
   /**
    * Attach this turn's pending images to the live session via image.attach_bytes
    * (feature 19), updating each chip's status and feeding the artifact timeline.
-   * The base64 is read on demand from the workspace file (hermesBridgeFilePreview
-   * returns a data url), passed straight to the typed attachImage, and discarded;
-   * it never lands on composer state and the trace entry is redacted to a byte
-   * count. Throws a single blocking error if any image failed so the prompt is
-   * not sent with a missing image.
+   * The base64 is read on demand from the workspace file, passed straight to
+   * the typed attachImage, and discarded; it never lands on composer state and
+   * the trace entry is redacted to a byte count. Throws a single blocking error
+   * if any image failed so the prompt is not sent with a missing image.
    */
   async function attachPendingImages(
     gateway: HermesGatewayClient,
@@ -4297,7 +4297,7 @@ export function AgentWorkspace({
     const deps = {
       attachImage: methods.attachImage,
       readImageData: async (path: string) =>
-        heldImageDataByPath.get(path) ?? (await hermesBridgeFilePreview(path)),
+        heldImageDataByPath.get(path) ?? (await hermesBridgeImageDataUrl(path)),
       isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
     };
     const mode = hermesModeFor(storedSessionId);

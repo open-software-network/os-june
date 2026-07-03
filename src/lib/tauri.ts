@@ -962,6 +962,12 @@ export async function hermesBridgeFilePreview(path: string) {
   });
 }
 
+export async function hermesBridgeImageDataUrl(path: string) {
+  return invoke<string | null>("hermes_bridge_image_data_url", {
+    request: { path },
+  });
+}
+
 // Null when the file can't be shown as text (too large or binary) — the
 // caller falls back to a download affordance instead of erroring.
 export async function hermesBridgeFileText(path: string) {
