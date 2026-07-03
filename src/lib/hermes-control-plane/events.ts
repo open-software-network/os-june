@@ -227,26 +227,6 @@ export type JuneHermesEvent =
  * exhaustiveness assertions. */
 export type JuneHermesEventKind = JuneHermesEvent["kind"];
 
-/**
- * Whether a lifecycle status string means the session is done. The classifier
- * sets `status` to the payload's status field or the raw type (for example
- * `session.complete`), so match terminal-flavored strings defensively.
- */
-export function isTerminalHermesLifecycleStatus(status: string | undefined): boolean {
-  if (typeof status !== "string") return false;
-  const normalized = status.toLowerCase();
-  return (
-    normalized === "complete" ||
-    normalized === "completed" ||
-    normalized === "done" ||
-    normalized === "finished" ||
-    normalized === "cancelled" ||
-    normalized === "canceled" ||
-    normalized.endsWith(".complete") ||
-    normalized.endsWith(".completed")
-  );
-}
-
 /** True for classified events that end the current workspace turn. */
 export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
   switch (event.kind) {
