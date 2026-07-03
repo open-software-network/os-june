@@ -170,6 +170,11 @@ enum RecordingCueSound: String {
 enum RecordingCuePlayer {
     private static var sounds: [RecordingCueSound: NSSound] = [:]
 
+    static func prepare() {
+        _ = sounds[.start] ?? load(.start)
+        _ = sounds[.stop] ?? load(.stop)
+    }
+
     static func play(_ cue: RecordingCueSound) {
         let sound = sounds[cue] ?? load(cue)
         guard let sound else {
@@ -1458,7 +1463,7 @@ final class DictationController {
         emitMicrophones()
     }
 
-    /// Invalidates pending dictation starts. `AVCaptureDevice.requestAccess`
+    /// Invalidates pending recording starts. `AVCaptureDevice.requestAccess`
     /// can fire its callback long after the request — the user reading the
     /// macOS permission prompt — and a graze's discard arrives in between:
     /// without this, accepting the prompt later would open the microphone
@@ -1474,22 +1479,11 @@ final class DictationController {
 
         dictationStartGeneration += 1
         let generation = dictationStartGeneration
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
-            // Hop to main: commands (including the discard that may have
-            // cancelled this start) are handled there, so the generation
-            // comparison is ordered against them.
-            DispatchQueue.main.async {
-                guard let self, self.dictationStartGeneration == generation else {
-                    return
-                }
-                guard microphoneAllowed else {
-                    emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
-                    emit("permission_status", permissionPayload())
-                    return
-                }
-                self.startRecording(purpose: .dictation, durationSeconds: nil)
-            }
-        }
+        startAfterMicrophoneAccess(
+            generation: generation,
+            purpose: .dictation,
+            durationSeconds: nil
+        )
     }
 
     func stop() {
@@ -1507,20 +1501,17 @@ final class DictationController {
             return
         }
 
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
-            guard microphoneAllowed else {
-                emit("mic_test_error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
-                emit("permission_status", permissionPayload())
-                return
-            }
-            self?.startRecording(
-                purpose: .micTest,
-                durationSeconds: max(1, min(15, durationSeconds))
-            )
-        }
+        dictationStartGeneration += 1
+        let generation = dictationStartGeneration
+        startAfterMicrophoneAccess(
+            generation: generation,
+            purpose: .micTest,
+            durationSeconds: max(1, min(15, durationSeconds))
+        )
     }
 
     func discardMicTest() {
+        dictationStartGeneration += 1
         if isListening, recordingPurpose == .micTest {
             resetRecordingState()
         }
@@ -1551,6 +1542,46 @@ final class DictationController {
         if wasListening {
             emit("recording_discarded")
         }
+    }
+
+    private func startAfterMicrophoneAccess(
+        generation: Int,
+        purpose: RecordingPurpose,
+        durationSeconds: Double?
+    ) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            startRecording(purpose: purpose, durationSeconds: durationSeconds)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
+                // Hop to main: commands (including the discard that may have
+                // cancelled this start) are handled there, so the generation
+                // comparison is ordered against them.
+                DispatchQueue.main.async {
+                    guard let self, self.dictationStartGeneration == generation else {
+                        return
+                    }
+                    guard microphoneAllowed else {
+                        self.emitMicrophonePermissionMissing(purpose: purpose)
+                        return
+                    }
+                    self.startRecording(purpose: purpose, durationSeconds: durationSeconds)
+                }
+            }
+        case .denied, .restricted:
+            emitMicrophonePermissionMissing(purpose: purpose)
+        @unknown default:
+            emitMicrophonePermissionMissing(purpose: purpose)
+        }
+    }
+
+    private func emitMicrophonePermissionMissing(purpose: RecordingPurpose) {
+        emitRecordingError(
+            purpose: purpose,
+            code: "microphone_permission_missing",
+            message: "Microphone permission is required."
+        )
+        emit("permission_status", permissionPayload())
     }
 
     func shutdown() {
@@ -1706,7 +1737,6 @@ final class DictationController {
         durationSeconds: Double?
     ) {
         isListening = true
-        RecordingCuePlayer.play(.start)
         if purpose == .micTest {
             scheduleMicTestStop(after: durationSeconds ?? 5)
             emitJSON("mic_test_started", [
@@ -1719,6 +1749,7 @@ final class DictationController {
                 "microphone": microphone,
             ])
         }
+        RecordingCuePlayer.play(.start)
     }
 
     private func stopActiveRecording() {
@@ -2110,6 +2141,7 @@ ShortcutKeyMonitor.shared.start()
 FocusTargetController.shared.start()
 AccessibilityTrustMonitor.shared.start()
 dictation.emitDiagnostics()
+RecordingCuePlayer.prepare()
 
 Thread.detachNewThread {
     while let line = readLine() {
