@@ -141,3 +141,50 @@ Trade-offs and risks:
   picker alongside the existing Image generation model.
 
 Reference: Venice image edit API - https://docs.venice.ai/api-reference/endpoint/image/edit
+
+## Addendum - 2026-07-03 (post-review hardening: billing retries and edit-source capabilities)
+
+PR #584 shipped phases A-C and then went through 12 adversarial review rounds.
+Three design decisions came out of them that this ADR did not anticipate;
+recorded here because each is load-bearing and none is obvious from the code
+alone.
+
+**1. Charge keys are unique per attempt; retry dedupe is a separate ledger.**
+Every settled generation/edit charges under a fresh UUID v7 operation id.
+Charge keys are deliberately NEVER derived from the client `requestId`: a
+requestId-derived key lets a replayed id run fresh Venice work while OS
+Accounts dedupes the settlement as a replay - free images (review round 3).
+Retry safety comes instead from an in-process request ledger keyed
+user + requestId + request shape: settled entries replay the stored output
+without touching Venice or the wallet; concurrent duplicates coalesce; a
+post-provider charge failure parks the output with a stable settlement key
+(charge-pending) and a retry re-charges that same key rather than re-running
+the provider. Entries expire (settled: 10 min / capped; pending: the hold TTL)
+and eviction is per-user with waiter notification.
+
+**Accepted boundary:** the ledger is per-process. A retry that crosses a June
+API restart, an eviction, or an instance switch can re-run the provider and
+settle a duplicate flat charge. Durable request state is issue #613; until
+then this is a documented residual risk, bounded by the client's short retry
+window and flat 20-80 credit prices. Do not "fix" it by reusing requestId as
+the charge key - that reopens the round-3 bypass.
+
+**2. Timeout ordering is a config invariant.** The image upstream client
+timeout sits below the route timeout with a settlement margin, and the image
+hold TTL sits above the request timeout (`request_timeout_secs` + 30);
+`june-config` validation rejects violations. Post-provider settlement runs on
+a spawned task so an outer route timeout cannot cancel between Venice success
+and the charge. Clients (desktop command and MCP) mint ONE requestId per
+logical turn, pin the request shape (model, safe mode) at turn creation, and
+replay transport failures plus 429/503/504 with the identical payload.
+
+**3. Edit sources are host-minted capability refs.** `edit_image` accepts only
+opaque refs the Rust loopback proxy minted when returning a generated/edited
+image: an HMAC over filename + content hash, keyed by a secret stored in app
+data outside Hermes home (the Seatbelt profile denies runtime reads). The
+Python MCP holds no secret and reads no source bytes. Consequence: the runtime
+cannot mint or retarget refs (overwriting a stored file invalidates its ref),
+and user-uploaded attachments are NOT tool-path edit sources - Hermes provides
+no per-call session identity to MCP servers, so a conversation-scoped
+allow-list is impossible on this transport. Restoring attachment editing needs
+a session-identity mechanism first (recorded as a PR followup).
