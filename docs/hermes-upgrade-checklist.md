@@ -169,6 +169,23 @@ credentials, Automation Blueprints vs the Routines editor, inline rendering of
 edited `image_generate` output, and whether the dashboard profile builder and
 Skills Hub browsing become first-class June surfaces.
 
+## Vendored skills
+
+Review `src-tauri/resources/hermes-skills/` on every Hermes pin bump. These are
+June-bundled read-only skills that ship outside the pinned runtime because the
+desired upstream skill was not available in a tagged Hermes release at the time
+it was added.
+
+For each vendored skill:
+
+- Check whether the new Hermes pin now includes the same skill upstream.
+- If upstream now includes it and June does not need local differences, remove
+  the vendored copy and its provenance note.
+- If June keeps vendoring it, update the provenance commit and document why the
+  duplicate remains intentional.
+- Re-check `skills.external_dirs` ordering so user and profile-installed skills
+  still shadow bundled copies.
+
 ## Known gaps
 
 List every surface that is present upstream but not honestly `supported` in
