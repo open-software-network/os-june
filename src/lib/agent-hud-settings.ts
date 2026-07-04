@@ -31,3 +31,36 @@ export function setAgentHudEnabled(enabled: boolean) {
     )
     .catch(() => {});
 }
+
+export const AGENT_HUD_PLACEMENT_KEY = "june:agent-hud:placement";
+export const AGENT_HUD_PLACEMENT_CHANGED_EVENT = "june:agent-hud:placement-changed";
+
+/** Where the HUD window parks: the classic top-right notification spot, or
+ * docked into the camera housing (notch) of the built-in display. Notch
+ * placement floats a top-center pill on displays without a housing. */
+export type AgentHudPlacement = "top-right" | "notch";
+
+export type AgentHudPlacementChangedDetail = {
+  placement: AgentHudPlacement;
+};
+
+export function getAgentHudPlacement(): AgentHudPlacement {
+  return localStorage.getItem(AGENT_HUD_PLACEMENT_KEY) === "notch" ? "notch" : "top-right";
+}
+
+export function setAgentHudPlacement(placement: AgentHudPlacement) {
+  localStorage.setItem(AGENT_HUD_PLACEMENT_KEY, placement);
+  const detail: AgentHudPlacementChangedDetail = { placement };
+  window.dispatchEvent(
+    new CustomEvent<AgentHudPlacementChangedDetail>(AGENT_HUD_PLACEMENT_CHANGED_EVENT, {
+      detail,
+    }),
+  );
+  void import("@tauri-apps/api/event")
+    .then((api) =>
+      typeof api.emit === "function"
+        ? api.emit(AGENT_HUD_PLACEMENT_CHANGED_EVENT, detail)
+        : undefined,
+    )
+    .catch(() => {});
+}

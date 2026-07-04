@@ -16,14 +16,25 @@ import {
 } from "./lib/agent-events";
 import {
   AGENT_HUD_ENABLED_KEY,
+  AGENT_HUD_PLACEMENT_CHANGED_EVENT,
+  AGENT_HUD_PLACEMENT_KEY,
   AGENT_HUD_VISIBILITY_CHANGED_EVENT,
   getAgentHudEnabled,
+  getAgentHudPlacement,
   setAgentHudEnabled,
+  type AgentHudPlacement,
+  type AgentHudPlacementChangedDetail,
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
-import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
+import {
+  agentHudHide,
+  agentHudNotchInfo,
+  agentHudOpenAgent,
+  agentHudSetLayout,
+  agentHudShow,
+} from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
-import type { HermesSessionInfo } from "./lib/tauri";
+import type { AgentHudNotchInfo, HermesSessionInfo } from "./lib/tauri";
 import { subscribeBrand } from "./lib/brand";
 import "./styles/agent-hud.css";
 
@@ -61,6 +72,9 @@ const WINDOW_FADE_MS = 300;
 // How long the CSS collapse animation gets to play before the native
 // window shrinks underneath it (--t-med plus slack).
 const COLLAPSE_RESIZE_DELAY_MS = 200;
+// Rounded lip the docked bar extends below the camera housing. Mirrors
+// NOTCH_CHIN_HEIGHT in agent_hud.rs, which owns the native window size.
+const NOTCH_CHIN_HEIGHT = 10;
 
 const hud = document.querySelector<HTMLElement>("#agent-hud");
 const pill = document.querySelector<HTMLButtonElement>("#agent-hud-pill");
@@ -77,6 +91,7 @@ installNativeContextMenuGuard();
 
 const state = {
   enabled: getAgentHudEnabled(),
+  placement: getAgentHudPlacement(),
   expanded: localStorage.getItem(EXPANDED_KEY) === "true",
   focused: false,
   hovered: false,
@@ -98,6 +113,7 @@ const state = {
 let lastWaitingEntryIds = new Set<string>();
 
 let lastLayoutKey = "";
+let lastSyncedPlacement = "";
 let lastStackKey = "";
 let lastRenderedExpanded = false;
 let lastWindowHeight = 0;
@@ -185,6 +201,53 @@ function applyVisibility(enabled: boolean) {
     state.menuOpen = false;
   }
   render();
+}
+
+// Metrics of the camera housing when docked in the notch; null while in the
+// top-right placement, on notchless displays, or in the standalone browser
+// page (where the invoke rejects and the fallback styling applies).
+let notchInfo: AgentHudNotchInfo | null = null;
+
+function applyPlacement(placement: AgentHudPlacement) {
+  if (state.placement === placement && (placement !== "notch" || notchInfo)) return;
+  state.placement = placement;
+  void refreshPlacement();
+}
+
+/** Re-reads the notch metrics for the current placement, restyles the DOM,
+ * and forces the next render to push a fresh native layout. */
+async function refreshPlacement() {
+  notchInfo = state.placement === "notch" ? await fetchNotchInfo() : null;
+  applyPlacementToDom();
+  lastLayoutKey = "";
+  render();
+}
+
+async function fetchNotchInfo() {
+  try {
+    return (await agentHudNotchInfo()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function applyPlacementToDom() {
+  if (!hud) return;
+  // Three visual modes: the top-right notification pill, the notch-docked
+  // bar, and the top-center floating pill that notch placement degrades to
+  // on displays without a camera housing.
+  const mode = state.placement === "notch" ? (notchInfo ? "notch" : "notch-fallback") : "top-right";
+  hud.dataset.placement = mode;
+  if (notchInfo) {
+    hud.style.setProperty("--agent-hud-notch-width", `${notchInfo.notchWidth}px`);
+    hud.style.setProperty(
+      "--agent-hud-notch-bar-height",
+      `${notchInfo.notchHeight + NOTCH_CHIN_HEIGHT}px`,
+    );
+  } else {
+    hud.style.removeProperty("--agent-hud-notch-width");
+    hud.style.removeProperty("--agent-hud-notch-bar-height");
+  }
 }
 
 function render() {
@@ -684,7 +747,7 @@ function statusSubject(record: StatusRecord) {
 async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries: boolean) {
   const menuOpen = state.menuOpen;
   const visible = state.enabled && hasEntries;
-  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}`;
+  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}:${state.placement}`;
   if (key === lastLayoutKey) return;
   lastLayoutKey = key;
   if (!visible) {
@@ -700,17 +763,22 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
       expanded,
       cardCount: rowCount,
       ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
+      placement: state.placement === "notch" ? "notch" : "topRight",
     }).catch(() => {});
     if (!windowShown) {
       await agentHudShow().catch(() => {});
       windowShown = true;
     }
   };
+  // A placement change re-anchors the window rather than animating a
+  // collapse, so it must never sit behind the shrink delay below.
+  const placementChanged = lastSyncedPlacement !== state.placement;
+  lastSyncedPlacement = state.placement;
   // Growing: the window must be at full size before the CSS reveal plays.
   // Shrinking: the reveal collapses first, then the window snaps down under
   // the (already pill-sized) surface; resizing immediately would clip the
   // animation mid-flight.
-  if (windowShown && height < lastWindowHeight) {
+  if (windowShown && height < lastWindowHeight && !placementChanged) {
     resizeTimer = window.setTimeout(() => {
       resizeTimer = undefined;
       void apply();
@@ -721,9 +789,15 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   lastWindowHeight = height;
 }
 
-/* Mirrors agent_hud_window_size in agent_hud.rs, only to tell growth from
- * shrinkage; the Rust side stays the source of truth for the real size. */
+/* Mirrors agent_hud_window_size / agent_hud_notch_window_size in
+ * agent_hud.rs, only to tell growth from shrinkage; the Rust side stays the
+ * source of truth for the real size. */
 function nativeWindowHeight(expanded: boolean, rowCount: number, menuOpen: boolean) {
+  if (notchInfo) {
+    const bar = notchInfo.notchHeight + NOTCH_CHIN_HEIGHT;
+    const height = !expanded || rowCount === 0 ? bar + 14 : bar + Math.min(rowCount, 3) * 46 + 14;
+    return menuOpen ? Math.max(height, bar + 104) : height;
+  }
   const height = !expanded || rowCount === 0 ? 58 : 8 + 36 + Math.min(rowCount, 3) * 46 + 6 + 14;
   return menuOpen ? Math.max(height, 104) : height;
 }
@@ -963,6 +1037,11 @@ window.addEventListener(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) => {
   if (detail) applyVisibility(detail.enabled);
 });
 
+window.addEventListener(AGENT_HUD_PLACEMENT_CHANGED_EVENT, (event) => {
+  const detail = (event as CustomEvent<AgentHudPlacementChangedDetail>).detail;
+  if (detail) applyPlacement(detail.placement);
+});
+
 window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, (event) => {
   applySessionsChanged((event as CustomEvent<AgentSessionsChangedDetail>).detail);
 });
@@ -974,6 +1053,9 @@ window.addEventListener(AGENT_SESSION_STATUS_EVENT, (event) => {
 window.addEventListener("storage", (event) => {
   if (event.key === AGENT_HUD_ENABLED_KEY) {
     applyVisibility(event.newValue !== "false");
+  }
+  if (event.key === AGENT_HUD_PLACEMENT_KEY) {
+    applyPlacement(event.newValue === "notch" ? "notch" : "top-right");
   }
 });
 
@@ -989,6 +1071,10 @@ void listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT,
   applyVisibility(event.payload.enabled),
 ).catch(() => {});
 
+void listen<AgentHudPlacementChangedDetail>(AGENT_HUD_PLACEMENT_CHANGED_EVENT, (event) =>
+  applyPlacement(event.payload.placement),
+).catch(() => {});
+
 // The native panel intercepts the right-/ctrl-click and asks us to open the
 // menu. The click never reaches the DOM, so there is no competing
 // pointerdown to close it again (the window pointerdown handler only fires
@@ -996,7 +1082,11 @@ void listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT,
 void listen(AGENT_HUD_CONTEXT_MENU_EVENT, () => openMenu()).catch(() => {});
 
 setIcon(pillChevron, IconChevronDownSmall, 14);
+applyPlacementToDom();
 render();
+// Notch metrics arrive async; the initial render above runs with the
+// fallback styling and this re-render carves the housing out of the pill.
+if (state.placement === "notch") void refreshPlacement();
 
 // Console driver for this page when served standalone in a browser:
 // __agentHud("waiting") etc. See lib/agent-hud-demo.ts.

@@ -14,7 +14,10 @@ import {
 import {
   AGENT_HUD_VISIBILITY_CHANGED_EVENT,
   getAgentHudEnabled,
+  getAgentHudPlacement,
   setAgentHudEnabled,
+  setAgentHudPlacement,
+  type AgentHudPlacement,
   type AgentHudVisibilityChangedDetail,
 } from "../../lib/agent-hud-settings";
 import { withTimeout } from "../../lib/async-timeout";
@@ -22,6 +25,7 @@ import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
+import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
 
 type AgentSettingsPanel = "messaging" | "files";
@@ -39,6 +43,7 @@ export function AgentSettingsSection() {
   const [selectedPlatformId, setSelectedPlatformId] = useState<string>();
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
   const [agentHudEnabled, setAgentHudEnabledState] = useState(() => getAgentHudEnabled());
+  const [agentHudPlacement, setAgentHudPlacementState] = useState(() => getAgentHudPlacement());
   // null until the stored value loads, so the switch never flashes a wrong
   // default for a setting with security weight.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(null);
@@ -105,6 +110,12 @@ export function AgentSettingsSection() {
     } catch (err) {
       setError(messageFromError(err));
     }
+  }
+
+  function handleAgentHudPlacementChange(placement: AgentHudPlacement) {
+    setAgentHudPlacementState(placement);
+    // The HUD window listens for the change event and re-docks itself.
+    setAgentHudPlacement(placement);
   }
 
   async function loadMessagingPlatforms() {
@@ -212,6 +223,26 @@ export function AgentSettingsSection() {
                 checked={agentHudEnabled}
                 onCheckedChange={(enabled) => void handleAgentHudEnabledChange(enabled)}
                 aria-label="Show sessions HUD"
+              />
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">HUD position</h3>
+              <p className="settings-row-description">
+                Notch docks the pill into the camera housing of the built-in display. Screens
+                without a notch show a floating pill at the top center instead.
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <SegmentedControl
+                value={agentHudPlacement}
+                onValueChange={handleAgentHudPlacementChange}
+                options={[
+                  { value: "top-right", label: "Top right" },
+                  { value: "notch", label: "Notch" },
+                ]}
+                aria-label="Sessions HUD position"
               />
             </div>
           </div>

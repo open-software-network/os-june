@@ -773,8 +773,20 @@ export async function agentHudSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
   contextMenuOpen?: boolean;
+  placement?: "topRight" | "notch";
 }) {
   return invoke<void>("agent_hud_set_layout", { request: input });
+}
+
+/** Camera-housing metrics of the notched built-in display in logical px;
+ * null when no notched display is attached (or off macOS). */
+export type AgentHudNotchInfo = {
+  notchWidth: number;
+  notchHeight: number;
+};
+
+export async function agentHudNotchInfo() {
+  return invoke<AgentHudNotchInfo | null>("agent_hud_notch_info");
 }
 
 export async function agentHudOpenAgent(session?: HermesSessionInfo) {

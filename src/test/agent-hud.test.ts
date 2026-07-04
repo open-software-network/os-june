@@ -56,7 +56,7 @@ describe("agent HUD", () => {
     expect(stackElement().querySelector(".dot-spinner > span")).toBeTruthy();
     expect(stackElement()).toHaveAttribute("aria-hidden", "true");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: false, cardCount: 0 },
+      request: { expanded: false, cardCount: 0, placement: "topRight" },
     });
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
   });
@@ -153,7 +153,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: true, cardCount: 1 },
+      request: { expanded: true, cardCount: 1, placement: "topRight" },
     });
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
   });
@@ -581,11 +581,98 @@ describe("agent HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
   });
+
+  it("docks into the notch when the placement preference is notch", async () => {
+    localStorage.setItem("june:agent-hud:placement", "notch");
+    mockNotchInfo({ notchWidth: 200, notchHeight: 32 });
+    await loadAgentHud();
+
+    expect(hudElement().dataset.placement).toBe("notch");
+    expect(hudElement().style.getPropertyValue("--agent-hud-notch-width")).toBe("200px");
+    // Bar height = housing height plus the 10px chin.
+    expect(hudElement().style.getPropertyValue("--agent-hud-notch-bar-height")).toBe("42px");
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, placement: "notch" },
+    });
+  });
+
+  it("falls back to a floating pill when notch placement finds no notch", async () => {
+    localStorage.setItem("june:agent-hud:placement", "notch");
+    // Explicit: clearAllMocks does not drop a prior mockImplementation.
+    mockNotchInfo(null);
+    await loadAgentHud();
+
+    expect(hudElement().dataset.placement).toBe("notch-fallback");
+    expect(hudElement().style.getPropertyValue("--agent-hud-notch-width")).toBe("");
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+
+    // The native side still receives the notch preference and applies the
+    // top-center fallback position itself.
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, placement: "notch" },
+    });
+  });
+
+  it("re-docks when the placement preference changes at runtime", async () => {
+    mockNotchInfo({ notchWidth: 180, notchHeight: 32 });
+    await loadAgentHud();
+
+    expect(hudElement().dataset.placement).toBe("top-right");
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+
+    window.dispatchEvent(
+      new CustomEvent("june:agent-hud:placement-changed", {
+        detail: { placement: "notch" },
+      }),
+    );
+    await flushPromises();
+
+    expect(hudElement().dataset.placement).toBe("notch");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, placement: "notch" },
+    });
+
+    window.dispatchEvent(
+      new CustomEvent("june:agent-hud:placement-changed", {
+        detail: { placement: "top-right" },
+      }),
+    );
+    await flushPromises();
+
+    expect(hudElement().dataset.placement).toBe("top-right");
+    expect(hudElement().style.getPropertyValue("--agent-hud-notch-width")).toBe("");
+  });
 });
 
 async function loadAgentHud() {
   await import("../agent-hud");
   await flushPromises();
+}
+
+function mockNotchInfo(info: { notchWidth: number; notchHeight: number } | null) {
+  mocks.invoke.mockImplementation((command: string) =>
+    Promise.resolve(command === "agent_hud_notch_info" ? info : undefined),
+  );
 }
 
 function emitStatus(detail: {
@@ -692,6 +779,7 @@ function agentHudMarkup() {
             aria-hidden="true"
           ></span>
           <span id="agent-hud-pill-label" class="agent-hud-pill-label"></span>
+          <span class="agent-hud-notch-spacer" aria-hidden="true"></span>
           <span class="agent-hud-pill-end">
             <span
               id="agent-hud-pill-badge"

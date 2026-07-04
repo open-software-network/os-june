@@ -502,6 +502,83 @@ body {
   outline-offset: -2px;
 }
 
+/* Notch dock -------------------------------------------------------------- */
+
+/* agent-hud.ts sets data-placement from the placement preference plus the
+ * native notch metrics: "notch" docks the surface into the camera housing
+ * (agent_hud.rs raises the window over the menu bar and centers it on the
+ * notched screen), "notch-fallback" floats the regular pill at the top
+ * center when no notched display is attached. --agent-hud-notch-width and
+ * --agent-hud-notch-bar-height come from agent_hud_notch_info. */
+
+/* Occupies the span covered by the physical housing so no pill content ever
+ * sits under the bezel; content flanks it in the wings. */
+.agent-hud-notch-spacer {
+  display: none;
+}
+
+.agent-hud[data-placement="notch"] .agent-hud-notch-spacer {
+  display: block;
+  height: 1px;
+}
+
+.agent-hud[data-placement="notch"] .agent-hud-surface,
+.agent-hud[data-placement="notch-fallback"] .agent-hud-surface {
+  right: 0;
+  left: 0;
+  margin-inline: auto;
+}
+
+.agent-hud[data-placement="notch"] .agent-hud-surface {
+  top: 0;
+  width: 100%;
+  max-width: none;
+  /* Flush with the screen's top edge; only the bottom corners round, so the
+   * bar reads as the notch flowing out rather than a card taped over it. */
+  border-radius: 0 0 18px 18px;
+  /* True black to blend with the physical bezel, not the dark glass. */
+  background: #000;
+}
+
+.agent-hud[data-placement="notch"][data-expanded="true"] .agent-hud-surface {
+  width: 100%;
+  border-radius: 0 0 var(--r-xl) var(--r-xl);
+}
+
+/* The bar spans housing height plus chin in every state (the rows drop out
+ * below it), and the flexing spacer column spans the housing so the label
+ * stays in the left wing and the badge/chevron cluster in the right one.
+ * The label cap is the wing (132px, mirrors NOTCH_WING_WIDTH in
+ * agent_hud.rs) minus the pill inset, mark column, and gap before the
+ * label, so text ellipsizes before it can run under the bezel. */
+.agent-hud[data-placement="notch"] .agent-hud-pill[data-count-only] {
+  --notch-wing: 132px;
+
+  height: var(--agent-hud-notch-bar-height, 44px);
+  padding: 0 14px;
+  border-radius: 0;
+  grid-template-columns:
+    var(--hud-icon-col)
+    minmax(0, calc(var(--notch-wing) - 14px - var(--hud-icon-col) - var(--hud-col-gap)))
+    minmax(var(--agent-hud-notch-width, 0px), 1fr)
+    auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* The docked bar slides out from under the housing instead of scaling. */
+  .agent-hud[data-placement="notch"] .agent-hud-surface {
+    transform: translateY(-8px);
+  }
+
+  .agent-hud[data-placement="notch"][data-visible="true"] .agent-hud-surface {
+    transform: translateY(0);
+  }
+}
+
+.agent-hud[data-placement="notch"] .agent-hud-menu {
+  top: calc(var(--agent-hud-notch-bar-height, 44px) + var(--sp-1));
+}
+
 @keyframes agent-hud-breathe {
   0%,
   100% {
