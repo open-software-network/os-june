@@ -30,6 +30,7 @@ This is the repo's entry-point skill; it orchestrates and defers. Each fact live
 - `agent-e2e-qa` — live QA process: surface decision tree, video recording/compression, os-platform upload, PASS/FAIL/BLOCKED evidence format.
 - `browser-test-tauri-fe` — browser-surface technique: fake Tauri IPC bridge, Playwright/CDP driving, screenshot suites, PR-embeddable GIFs.
 - `os-platform` / `os-task-prep` — tracker reads, task diagnosis and enrichment (intake step 3).
+- `repo-retrospect` — post-cycle: mine the session, PR threads, and user feedback for lessons and fold them into the owning skill files.
 
 ## Intake
 
