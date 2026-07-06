@@ -5713,7 +5713,15 @@ if (!(Test-Path (Join-Path $installDir "pyproject.toml"))) {
   try {
     $archive = Join-Path $tmpDir "hermes-agent.tar.gz"
     Invoke-WebRequest -Uri $sourceTarballUrl -OutFile $archive
-    $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($archive)
+    try {
+      $hashBytes = $sha256.ComputeHash($stream)
+      $actualSha256 = ([System.BitConverter]::ToString($hashBytes) -replace '-', '').ToLowerInvariant()
+    } finally {
+      $stream.Dispose()
+      $sha256.Dispose()
+    }
     if ($actualSha256 -ne $sourceTarballSha256) {
       throw "Hermes source archive checksum mismatch. Expected $sourceTarballSha256, got $actualSha256."
     }
