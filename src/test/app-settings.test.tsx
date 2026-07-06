@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   setVeniceModel: vi.fn(),
   setVeniceApiKey: vi.fn(),
   clearVeniceApiKey: vi.fn(),
+  setImageSafeMode: vi.fn(),
+  setImageSafeModePromptDismissed: vi.fn(),
   saveLocalGenerationSettings: vi.fn(),
   setLocalGenerationEnabled: vi.fn(),
   probeLocalGenerationEndpoint: vi.fn(),
@@ -79,6 +81,8 @@ vi.mock("../lib/tauri", () => ({
   setVeniceModel: mocks.setVeniceModel,
   setVeniceApiKey: mocks.setVeniceApiKey,
   clearVeniceApiKey: mocks.clearVeniceApiKey,
+  setImageSafeMode: mocks.setImageSafeMode,
+  setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
   saveLocalGenerationSettings: mocks.saveLocalGenerationSettings,
   setLocalGenerationEnabled: mocks.setLocalGenerationEnabled,
   probeLocalGenerationEndpoint: mocks.probeLocalGenerationEndpoint,
@@ -185,6 +189,8 @@ function buildProviderSettings() {
       modelId: localState.modelId,
       apiKey: localState.apiKey,
     },
+    imageSafeMode: true,
+    imageSafeModePromptDismissed: false,
   };
 }
 
@@ -249,6 +255,8 @@ describe("AppSettings", () => {
           modelId: "",
           apiKey: "",
         },
+        imageSafeMode: true,
+        imageSafeModePromptDismissed: false,
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -391,6 +399,8 @@ describe("AppSettings", () => {
         modelId: localState.modelId,
         apiKey: localState.apiKey,
       },
+      imageSafeMode: true,
+      imageSafeModePromptDismissed: false,
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
       ...buildProviderSettings(),

@@ -61,11 +61,17 @@ pub struct ProviderModelSettings {
     #[serde(default)]
     pub local_generation: LocalGenerationSettings,
     /// When true, Venice `safe_mode` blurs adult content on generated/edited
-    /// images. June defaults it OFF (privacy-first: no server-side censoring of
-    /// the user's own image work); the user opts in via Settings. Defaulted so
-    /// settings files predating this field still deserialize (to `false`).
-    #[serde(default)]
+    /// images. June defaults it ON; the user opts out via Settings or the
+    /// generation-time consent dialog. Defaulted so settings files predating
+    /// this field still deserialize to the current default.
+    #[serde(default = "default_image_safe_mode")]
     pub image_safe_mode: bool,
+    /// When true, the user chose "don't ask again" on the safe-mode consent
+    /// dialog: June stops offering to turn safe mode off before
+    /// potentially-explicit generations. Reset to false whenever safe mode is
+    /// explicitly re-enabled, so re-opting into safety re-arms the prompt.
+    #[serde(default)]
+    pub image_safe_mode_prompt_dismissed: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -92,6 +98,7 @@ pub struct ProviderModelSettingsDto {
     pub venice_api_key_configured: bool,
     pub local_generation: LocalGenerationSettings,
     pub image_safe_mode: bool,
+    pub image_safe_mode_prompt_dismissed: bool,
 }
 
 impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
@@ -109,6 +116,7 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
                 .is_some_and(|value| !value.trim().is_empty()),
             local_generation: settings.local_generation.clone(),
             image_safe_mode: settings.image_safe_mode,
+            image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
         }
     }
 }
@@ -275,9 +283,9 @@ pub fn venice_api_key() -> Option<String> {
     current_settings().venice_api_key
 }
 
-/// Whether Venice safe mode is on for image generation/editing. `false` (the
-/// default) means June sends `safe_mode: false` so it never server-side-censors
-/// the user's own image work; the user can turn it on in Settings.
+/// Whether Venice safe mode is on for image generation/editing. The default is
+/// `true`, so June asks Venice to blur adult content unless the user opts out
+/// via Settings or the generation-time consent dialog.
 pub fn image_safe_mode() -> bool {
     current_settings().image_safe_mode
 }
@@ -381,16 +389,50 @@ pub struct SetImageSafeModeRequest {
     pub enabled: bool,
 }
 
-/// Persists the image safe-mode toggle. Off by default (privacy-first); the
-/// value flows into every image generation/edit request from the loopback proxy
-/// and the fast path.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetImageSafeModePromptDismissedRequest {
+    pub dismissed: bool,
+}
+
+/// Persists the image safe-mode toggle. On by default; the user can opt out
+/// via Settings or the generation-time consent dialog. The value flows into
+/// every image generation/edit request from the loopback proxy and the fast
+/// path.
 #[tauri::command]
 pub fn set_image_safe_mode(
     state: State<'_, ProviderSettingsState>,
     request: SetImageSafeModeRequest,
 ) -> Result<ProviderModelSettingsDto, AppError> {
-    update_settings(&state, |settings| {
+    set_image_safe_mode_impl(&state, request)
+}
+
+fn set_image_safe_mode_impl(
+    state: &ProviderSettingsState,
+    request: SetImageSafeModeRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    update_settings(state, |settings| {
         settings.image_safe_mode = request.enabled;
+        if request.enabled {
+            settings.image_safe_mode_prompt_dismissed = false;
+        }
+    })
+}
+
+#[tauri::command]
+pub fn set_image_safe_mode_prompt_dismissed(
+    state: State<'_, ProviderSettingsState>,
+    request: SetImageSafeModePromptDismissedRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    set_image_safe_mode_prompt_dismissed_impl(&state, request)
+}
+
+fn set_image_safe_mode_prompt_dismissed_impl(
+    state: &ProviderSettingsState,
+    request: SetImageSafeModePromptDismissedRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    update_settings(state, |settings| {
+        settings.image_safe_mode_prompt_dismissed = request.dismissed;
     })
 }
 
@@ -775,7 +817,8 @@ fn default_settings() -> ProviderModelSettings {
         image_model: DEFAULT_IMAGE_MODEL.to_string(),
         venice_api_key: None,
         local_generation: LocalGenerationSettings::default(),
-        image_safe_mode: false,
+        image_safe_mode: true,
+        image_safe_mode_prompt_dismissed: false,
     }
 }
 
@@ -797,6 +840,10 @@ fn default_generation_model() -> String {
 
 fn default_image_model() -> String {
     DEFAULT_IMAGE_MODEL.to_string()
+}
+
+fn default_image_safe_mode() -> bool {
+    true
 }
 
 fn provider_settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -863,6 +910,7 @@ fn sanitize_settings(
         venice_api_key: normalize_api_key_option(settings.venice_api_key),
         local_generation,
         image_safe_mode: settings.image_safe_mode,
+        image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
     }
 }
 
@@ -1152,6 +1200,28 @@ mod tests {
     }
 
     #[test]
+    fn default_settings_enable_image_safe_mode_without_prompt_dismissal() {
+        let settings = default_settings();
+
+        assert!(settings.image_safe_mode);
+        assert!(!settings.image_safe_mode_prompt_dismissed);
+    }
+
+    #[test]
+    fn provider_settings_deserialize_defaults_missing_image_safe_mode_fields() {
+        let settings: ProviderModelSettings = serde_json::from_value(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "zai-org-glm-5-2",
+            "imageModel": "venice-sd35"
+        }))
+        .unwrap();
+
+        assert!(settings.image_safe_mode);
+        assert!(!settings.image_safe_mode_prompt_dismissed);
+    }
+
+    #[test]
     fn venice_models_response_serializes_canonical_mode() {
         let response = VeniceModelsResponse {
             mode: ModelMode::Transcription,
@@ -1341,6 +1411,42 @@ mod tests {
     }
 
     static NEXT_TEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[test]
+    fn set_image_safe_mode_true_resets_dismissed_prompt() {
+        let state = test_state();
+        {
+            let mut settings = state.settings.lock().unwrap();
+            settings.image_safe_mode = false;
+            settings.image_safe_mode_prompt_dismissed = true;
+        }
+
+        let updated =
+            set_image_safe_mode_impl(&state, SetImageSafeModeRequest { enabled: true }).unwrap();
+
+        assert!(updated.image_safe_mode);
+        assert!(!updated.image_safe_mode_prompt_dismissed);
+        let saved: ProviderModelSettings =
+            serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
+        assert!(saved.image_safe_mode);
+        assert!(!saved.image_safe_mode_prompt_dismissed);
+    }
+
+    #[test]
+    fn set_image_safe_mode_prompt_dismissed_persists_flag() {
+        let state = test_state();
+
+        let updated = set_image_safe_mode_prompt_dismissed_impl(
+            &state,
+            SetImageSafeModePromptDismissedRequest { dismissed: true },
+        )
+        .unwrap();
+
+        assert!(updated.image_safe_mode_prompt_dismissed);
+        let saved: ProviderModelSettings =
+            serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
+        assert!(saved.image_safe_mode_prompt_dismissed);
+    }
 
     #[test]
     fn save_local_generation_settings_persists_without_activating() {

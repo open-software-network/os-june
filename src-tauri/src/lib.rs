@@ -255,6 +255,7 @@ pub fn run() {
             providers::set_venice_api_key,
             providers::clear_venice_api_key,
             providers::set_image_safe_mode,
+            providers::set_image_safe_mode_prompt_dismissed,
             providers::generate_image,
             providers::edit_image,
             providers::save_local_generation_settings,

@@ -7102,6 +7102,7 @@ describe("AgentWorkspace", () => {
         generationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
         imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
       },
     });
     mocks.generateImage.mockRejectedValueOnce(new Error("gateway timeout")).mockResolvedValueOnce({
@@ -7138,6 +7139,7 @@ describe("AgentWorkspace", () => {
         generationModel: "zai-org-glm-5-2",
         imageModel: "flux-2-pro",
         imageSafeMode: true,
+        imageSafeModePromptDismissed: false,
       },
     });
 
@@ -7224,6 +7226,7 @@ describe("AgentWorkspace", () => {
         generationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
         imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
       },
     });
     // The paid request never settles client-side - the app "exits" while the

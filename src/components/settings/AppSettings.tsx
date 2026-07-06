@@ -210,8 +210,9 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
     modelId: "",
     apiKey: "",
   },
-  // Off by default (privacy-first), matching the Rust providers default.
-  imageSafeMode: false,
+  // On by default, matching the Rust providers default.
+  imageSafeMode: true,
+  imageSafeModePromptDismissed: false,
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -1758,7 +1759,7 @@ export function AppSettings({
                       <div className="settings-row-info">
                         <h3 className="settings-row-title">Safe mode</h3>
                         <p className="settings-row-description">
-                          Blur adult content in generated and edited images. Off by default; your
+                          Blur adult content in generated and edited images. On by default; your
                           image work stays private either way.
                         </p>
                       </div>
