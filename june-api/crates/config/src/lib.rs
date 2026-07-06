@@ -37,7 +37,10 @@ pub const OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS: u64 = 60;
 pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 = DEFAULT_REQUEST_TIMEOUT_SECS
     - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
     - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
-pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS: u64 = 30;
+// 10s, not 30: the diagnosis runs inline before delivery, so its timeout is
+// user-facing "Sending" time. Typical completions land in 2-6s; anything
+// slower delivers undiagnosed rather than holding the dialog hostage.
+pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS: u64 = 10;
 /// Nobody files more than a handful of legitimate reports an hour; the cap
 /// only bounds June-funded diagnosis calls, never report delivery.
 pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_MAX_PER_USER_PER_HOUR: u64 = 6;

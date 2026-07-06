@@ -32,7 +32,7 @@ os_platform_reward_asset = "POINTS"
 # the timeout, a 1024-token output cap, and a per-user hourly cap that skips
 # the diagnosis (never the delivery) when exhausted.
 diagnosis_model = "zai-org-glm-5-2"
-diagnosis_timeout_secs = 30
+diagnosis_timeout_secs = 10
 diagnosis_max_per_user_per_hour = 6
 
 [os_accounts]
