@@ -355,12 +355,23 @@ impl VideoService {
                             });
                         }
                         Ok(completed) => {
-                            // Retrieve says COMPLETED. Race to own the single
-                            // charge; a loser loops and replays the winner's
-                            // result rather than charging again.
+                            // Build/validate the deliverable media BEFORE claiming the charge, so a
+                            // completed-but-unusable result (empty url + no bytes) cannot strand the
+                            // job in Charging with no settlement task to release waiters.
+                            let Ok(video) = generated_video(&job, completed) else {
+                                // Venice reported COMPLETED but returned no usable media:
+                                // terminal, no charge (we never entered Charging). Retrying
+                                // will not help.
+                                self.registry
+                                    .mark_failed(&job_id, "video_media_unavailable");
+                                return Ok(VideoStatusOutput::Failed {
+                                    reason: "video_media_unavailable".to_string(),
+                                });
+                            };
+                            // Retrieve says COMPLETED. Race to own the single charge; a loser loops
+                            // and replays the winner's result rather than charging again.
                             match self.registry.claim_charge(&job_id) {
                                 ChargeClaim::Won(ticket) => {
-                                    let video = generated_video(&job, completed)?;
                                     return self.settle_completed(ticket, &job, video).await;
                                 }
                                 ChargeClaim::Retry => {}

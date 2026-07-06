@@ -1042,6 +1042,49 @@ async fn completed_url_status_returns_the_download_url() {
     assert_eq!(charge_calls(&os.events()).len(), 1);
 }
 
+#[tokio::test]
+async fn completed_url_without_usable_media_fails_terminally_without_charging() {
+    let os = Arc::new(RecordingOsAccounts::new(true));
+    let provider = Arc::new(
+        MockVideoProvider::completed(0.11, vec![1])
+            .with_default_retrieve(MockRetrieve::CompletedUrl(String::new())),
+    );
+    let service = service(os.clone(), provider);
+    let handle = service
+        .generate(generate_params("wan-2.2-a14b-text-to-video"))
+        .await
+        .expect("generate succeeds");
+
+    let first = tokio::time::timeout(
+        Duration::from_secs(1),
+        service.status(usr("usr_1"), handle.job_id.clone()),
+    )
+    .await
+    .expect("first status should not hang")
+    .expect("first status resolves");
+    assert_eq!(
+        first,
+        VideoStatusOutput::Failed {
+            reason: "video_media_unavailable".to_string(),
+        }
+    );
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(1),
+        service.status(usr("usr_1"), handle.job_id),
+    )
+    .await
+    .expect("second status should not hang")
+    .expect("second status resolves");
+    assert_eq!(
+        second,
+        VideoStatusOutput::Failed {
+            reason: "video_media_unavailable".to_string(),
+        }
+    );
+    assert_eq!(charge_calls(&os.events()).len(), 0);
+}
+
 // --- registry eviction / ttl -------------------------------------------------
 
 #[test]
