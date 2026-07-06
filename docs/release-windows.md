@@ -102,8 +102,11 @@ run:
 $installer = "$env:USERPROFILE\Downloads\June_x64-setup.exe"
 Get-AuthenticodeSignature $installer | Format-List
 Start-Process -FilePath $installer -ArgumentList "/S" -Wait
-Start-Process "$env:LOCALAPPDATA\June\June.exe"
+Start-Process "$env:LOCALAPPDATA\June\os-june.exe"
 ```
+
+The installed app is branded as June, but the current Windows binary on disk is
+`os-june.exe` under `$env:LOCALAPPDATA\June`.
 
 Confirm the signature status is `Valid`, the publisher is Open Software Network,
 the app launches as June, the sign-in copy mentions recording and notes without
