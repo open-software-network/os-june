@@ -103,6 +103,7 @@ const JUNE_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 const JUNE_VIDEO_DEFAULT_ANIMATE_MODEL: &str = "wan-2.6-image-to-video";
 const JUNE_VIDEO_DEFAULT_DURATION: &str = "5s";
 const JUNE_VIDEO_DEFAULT_RESOLUTION: &str = "720p";
+const JUNE_VIDEO_DEFAULT_ASPECT_RATIO: &str = "16:9";
 const JUNE_WORKSPACE_UPLOADS_DIR_NAME: &str = "uploads";
 /// Environment variable the `june_image` MCP reads its loopback proxy token
 /// from. Kept out of argv so it does not appear in process listings.
@@ -8216,6 +8217,22 @@ fn ensure_video_defaults(body: &mut serde_json::Value) {
             serde_json::Value::String(JUNE_VIDEO_DEFAULT_RESOLUTION.to_string()),
         );
     }
+    // June API reads this field as camelCase `aspectRatio` (unlike the
+    // single-word keys above, whose snake and camel spellings coincide). Some
+    // models — for example wan-2.2-a14b — reject a queue that omits it, so
+    // inject the default under the key June API actually deserializes.
+    let has_aspect_ratio = object
+        .get("aspectRatio")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|aspect_ratio| !aspect_ratio.is_empty())
+        .unwrap_or(false);
+    if !has_aspect_ratio {
+        object.insert(
+            "aspectRatio".to_string(),
+            serde_json::Value::String(JUNE_VIDEO_DEFAULT_ASPECT_RATIO.to_string()),
+        );
+    }
 }
 
 async fn write_raw_response(
@@ -8335,6 +8352,35 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ensure_video_defaults_injects_missing_knobs_under_the_keys_june_api_reads() {
+        let mut body = serde_json::json!({ "prompt": "a calm lake" });
+        ensure_video_defaults(&mut body);
+        assert_eq!(body["duration"], serde_json::json!(JUNE_VIDEO_DEFAULT_DURATION));
+        assert_eq!(
+            body["resolution"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_RESOLUTION)
+        );
+        // June API deserializes this field as camelCase `aspectRatio`; a
+        // snake_case default would be silently dropped and models such as
+        // wan-2.2-a14b reject a queue that omits it (regression guard).
+        assert_eq!(
+            body["aspectRatio"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_ASPECT_RATIO)
+        );
+        assert!(body.get("aspect_ratio").is_none());
+    }
+
+    #[test]
+    fn ensure_video_defaults_preserves_caller_supplied_knobs() {
+        let mut body =
+            serde_json::json!({ "duration": "8s", "resolution": "1080p", "aspectRatio": "9:16" });
+        ensure_video_defaults(&mut body);
+        assert_eq!(body["duration"], serde_json::json!("8s"));
+        assert_eq!(body["resolution"], serde_json::json!("1080p"));
+        assert_eq!(body["aspectRatio"], serde_json::json!("9:16"));
+    }
 
     async fn provider_proxy_response(
         path: &str,

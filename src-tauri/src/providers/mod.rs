@@ -21,9 +21,12 @@ pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
-pub const DEFAULT_VIDEO_MODEL: &str = "seedance-2-0-fast-text-to-video";
+pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
 pub const DEFAULT_VIDEO_DURATION: &str = "5s";
 pub const DEFAULT_VIDEO_RESOLUTION: &str = "720p";
+/// Some models (for example wan-2.2-a14b) reject a queue request that omits
+/// `aspect_ratio`, so the fast path injects a default when the caller names none.
+pub const DEFAULT_VIDEO_ASPECT_RATIO: &str = "16:9";
 const VENICE_API_KEY_PREFIX: &str = "VENICE_INFERENCE_KEY_";
 const VENICE_API_BASE_URL: &str = "https://api.venice.ai/api/v1";
 const VENICE_API_KEY_VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -568,7 +571,8 @@ async fn video_generate_with_enabled(
     let aspect_ratio = request
         .aspect_ratio
         .map(|aspect_ratio| aspect_ratio.trim().to_string())
-        .filter(|aspect_ratio| !aspect_ratio.is_empty());
+        .filter(|aspect_ratio| !aspect_ratio.is_empty())
+        .or_else(|| Some(DEFAULT_VIDEO_ASPECT_RATIO.to_string()));
     crate::june_api::video_generate(crate::june_api::VideoGenerateParams {
         prompt,
         model,

@@ -716,10 +716,9 @@ fn default_image_edit_model() -> String {
 /// accepts >=6s and >=1080p, so no global default serves it; per-model
 /// duration/resolution selection (which re-admits it) is a follow-up.
 fn default_video_pricing() -> BTreeMap<String, u32> {
-    BTreeMap::from([
-        ("wan-2.2-a14b-text-to-video".to_string(), 2000),
-        ("seedance-2-0-fast-text-to-video".to_string(), 2000),
-    ])
+    // The original Seedance 2.0 default was delisted from Venice's live catalog
+    // (quote tolerated it, queue rejected it with a 400); dropped for wan-2.2.
+    BTreeMap::from([("wan-2.2-a14b-text-to-video".to_string(), 2000)])
 }
 
 /// Curated image-to-video (animate) allowlist — a separate Venice catalog from
@@ -1604,15 +1603,13 @@ mod tests {
     #[test]
     fn default_config_prices_the_curated_video_models() {
         let config = valid_config();
-        for model in [
-            "wan-2.2-a14b-text-to-video",
-            "seedance-2-0-fast-text-to-video",
-        ] {
-            assert!(
-                config.video_pricing.get(model).is_some_and(|m| *m > 0),
-                "missing video markup for {model}"
-            );
-        }
+        assert!(
+            config
+                .video_pricing
+                .get("wan-2.2-a14b-text-to-video")
+                .is_some_and(|markup| *markup > 0),
+            "the curated wan-2.2-a14b video model must have a positive markup"
+        );
         // The default animate model must be in its own allowlist, or every
         // MCP-driven animate fails model_not_priced.
         assert!(

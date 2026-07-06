@@ -230,3 +230,24 @@ Trade-offs and risks:
 
 Reference: Venice video API - `https://api.venice.ai/api/v1/swagger.yaml`
 (paths `/video/queue`, `/video/retrieve`, `/video/quote`, `/video/complete`).
+
+## Addendum (2026-07-06): Seedance delisted, default moved to wan-2.2-a14b
+
+Venice removed the entire Seedance line from its live catalog after the Step 0
+findings above were captured. The symptom was subtle: `/video/quote` prices
+leniently and still accepted `seedance-2-0-fast-text-to-video` (placing a credit
+hold), while `/video/queue` validates the model against the live catalog and
+rejected it with a `400`. The provider logged only `body_bytes`, hiding Venice's
+"unknown model" reason.
+
+Changes: default text-to-video model moved to `wan-2.2-a14b-text-to-video` (the
+other curated model, confirmed live and constrained to 5s / 720p-580p-480p /
+16:9-9:16-1:1, audio unsupported — a match for the fixed 5s/720p default);
+`seedance-2-0-fast-text-to-video` dropped from `DEFAULT_VIDEO_MODEL` (frontend +
+desktop), the `VIDEO_MODELS` picker list, and the `video_pricing` allowlist; and
+the video provider now logs a bounded upstream error-body snippet so the next
+catalog drift is self-diagnosing. This is a concrete instance of the already
+flagged "per-model options from live catalog" follow-up: a hardcoded model list
+drifts against a moving upstream, and the durable fix is to source the allowlist
+and per-model duration/resolution constraints from Venice's `/models` at
+build/deploy time rather than pinning IDs by hand.

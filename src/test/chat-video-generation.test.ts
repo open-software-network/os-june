@@ -17,7 +17,7 @@ describe("chat video generation", () => {
           path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/out.mp4",
           mimeType: "video/mp4",
           sizeBytes: 1234,
-          model: "seedance-2-0-fast-text-to-video",
+          model: "wan-2.2-a14b-text-to-video",
         }),
       onProgress: vi.fn(),
       sleep: vi.fn().mockResolvedValue(undefined),
@@ -26,13 +26,13 @@ describe("chat video generation", () => {
     const result = await generateChatVideo(
       "a calm lake",
       deps,
-      "seedance-2-0-fast-text-to-video",
+      "wan-2.2-a14b-text-to-video",
       "video-req-1",
     );
 
     expect(deps.startGenerate).toHaveBeenCalledWith(
       "a calm lake",
-      "seedance-2-0-fast-text-to-video",
+      "wan-2.2-a14b-text-to-video",
       "video-req-1",
       {},
     );
@@ -48,7 +48,7 @@ describe("chat video generation", () => {
       path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/out.mp4",
       mimeType: "video/mp4",
       sizeBytes: 1234,
-      model: "seedance-2-0-fast-text-to-video",
+      model: "wan-2.2-a14b-text-to-video",
     });
   });
 

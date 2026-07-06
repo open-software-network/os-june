@@ -9,7 +9,7 @@ describe("ModelPickerDialog", () => {
       <ModelPickerDialog
         open
         mode="video"
-        value="seedance-2-0-fast-text-to-video"
+        value="wan-2.2-a14b-text-to-video"
         options={VIDEO_MODELS}
         search=""
         onSearchChange={vi.fn()}
