@@ -80,8 +80,11 @@ skills hub) are bespoke slide-ins and are fine as-is.
 ## Menus and popovers
 
 Hand-rolled today (sidebar identity menu, context menus, composer `@` / slash
-menus). A shared positioning helper is flagged future work. Rule of thumb: one
-ambient shadow per popover composite (see [conventions.md](conventions.md)).
+menus). Dismiss behavior (close on outside pointer press or Escape, listeners
+gated on open) is standardized in `src/lib/use-dismiss.ts`; positioning is still
+hand-rolled and a shared positioning helper is flagged future work. Rule of
+thumb: one ambient shadow per popover composite (see
+[conventions.md](conventions.md)).
 
 ## Empty and loading states
 

@@ -16,6 +16,7 @@ import {
   useState,
 } from "react";
 import type { NoteListItemDto } from "../../lib/tauri";
+import { useDismiss } from "../../lib/use-dismiss";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { primaryShiftShortcutLabel } from "../../lib/platform";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -372,21 +373,7 @@ function AllNoteRow({
     note.preview.trim() || (liveRecording ? "Recording" : statusLabel(effectiveStatus));
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  useEffect(() => {
-    if (!menu) return;
-    function close() {
-      onCloseMenu();
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
-    }
-    window.addEventListener("click", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [menu, onCloseMenu]);
+  useDismiss(null, menu !== null, onCloseMenu, { pointerEvent: "click" });
 
   return (
     <li>
