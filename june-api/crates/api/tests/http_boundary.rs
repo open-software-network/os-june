@@ -13,14 +13,16 @@ use june_domain::{
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
     GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageEditRequest, ImageEditor,
     ImageGenerationRequest, ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
-    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
+    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+    VideoAnimationRequest, VideoGenerationRequest, VideoProvider, VideoQueued, VideoQuoteRequest,
+    VideoRetrieved, WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
+    WebSearchResults, WebSearcher,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
     ImageService, ImageServiceDeps, NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService,
     NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
-    WebAugmentService, WebAugmentServiceDeps,
+    VideoModelPrice, VideoService, VideoServiceDeps, WebAugmentService, WebAugmentServiceDeps,
 };
 use pretty_assertions::assert_eq;
 use std::{
@@ -723,6 +725,154 @@ async fn integration_image_edit_rejects_body_over_configured_limit() -> Result<(
 }
 
 #[tokio::test]
+async fn integration_video_generate_returns_job_id() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/video/generate",
+        &serde_json::json!({
+            "prompt": "a robot dancing",
+            "model": "wan-2.2-a14b-text-to-video",
+            "duration": "5s",
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert!(
+        body["data"]["jobId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "expected a non-empty jobId, got {body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_video_generate_rejects_blank_duration() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/video/generate",
+        &serde_json::json!({
+            "prompt": "a robot dancing",
+            "model": "wan-2.2-a14b-text-to-video",
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "duration_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_video_generate_rejects_unpriced_model() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/video/generate",
+        &serde_json::json!({
+            "prompt": "a robot dancing",
+            "model": "unpriced-video-model",
+            "duration": "5s",
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "model_not_priced");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_video_status_reports_processing_json() -> Result<(), Box<dyn Error>> {
+    // Generate and status must hit the SAME state (the in-process job registry),
+    // so drive both against one router rather than a fresh `send`.
+    let router = test_router();
+    let generate = match router
+        .clone()
+        .oneshot(json_request(
+            "/v1/video/generate",
+            &serde_json::json!({
+                "prompt": "a robot dancing",
+                "model": "wan-2.2-a14b-text-to-video",
+                "duration": "5s",
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    let job_id = response_json(generate).await?["data"]["jobId"]
+        .as_str()
+        .ok_or("missing jobId")?
+        .to_string();
+
+    let response = match router
+        .oneshot(get_request_with_auth(
+            &format!("/v1/video/status/{job_id}"),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["status"], "processing");
+    assert_eq!(body["data"]["averageExecutionMs"], 145_000);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_video_status_unknown_job_is_not_found() -> Result<(), Box<dyn Error>> {
+    let response = send(get_request_with_auth(
+        "/v1/video/status/nonexistent-job",
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "job_not_found");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_video_animate_rejects_body_over_configured_limit() -> Result<(), Box<dyn Error>>
+{
+    // Animate uses the image-edit body budget; a body one byte over is rejected
+    // by the route body limit before the handler runs.
+    let body = format!(
+        "{} ",
+        image_edit_body_with_len(DEFAULT_MAX_IMAGE_EDIT_BYTES)?
+    );
+    let router = router(test_state());
+    let response = match router
+        .oneshot(raw_json_request_with_venice_api_key(
+            "/v1/video/animate",
+            body,
+            "VENICE_INFERENCE_KEY_user",
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> {
     let response = send(get_request("/verify")?).await;
 
@@ -835,6 +985,21 @@ fn test_state_with_sinks_and_transcriber(
         default_edit_model: "firered-image-edit".to_string(),
         hold_ttl_seconds: 30,
     }));
+    let video = Arc::new(VideoService::new(VideoServiceDeps {
+        os_accounts: os_accounts.clone(),
+        provider: Arc::new(FakeVideoProvider),
+        pricing: BTreeMap::from([(
+            "wan-2.2-a14b-text-to-video".to_string(),
+            VideoModelPrice::venice(2000),
+        )]),
+        animate_pricing: BTreeMap::from([(
+            "wan-2.6-image-to-video".to_string(),
+            VideoModelPrice::venice(2000),
+        )]),
+        default_animate_model: "wan-2.6-image-to-video".to_string(),
+        max_credits_per_request: 20_000,
+        hold_ttl_seconds: 600,
+    }));
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
@@ -881,6 +1046,7 @@ fn test_state_with_sinks_and_transcriber(
             hold_ttl_seconds: 30,
         })),
         image,
+        video,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
@@ -1012,6 +1178,17 @@ fn get_request(uri: &str) -> Result<Request<Body>, axum::http::Error> {
         .method(Method::GET)
         .uri(uri)
         .body(Body::empty())
+}
+
+fn get_request_with_auth(
+    uri: &str,
+    authorization: Option<&str>,
+) -> Result<Request<Body>, axum::http::Error> {
+    let mut builder = Request::builder().method(Method::GET).uri(uri);
+    if let Some(authorization) = authorization {
+        builder = builder.header(header::AUTHORIZATION, authorization);
+    }
+    builder.body(Body::empty())
 }
 
 fn multipart_request(uri: &str, body: Vec<u8>) -> Result<Request<Body>, axum::http::Error> {
@@ -1301,6 +1478,42 @@ impl ImageEditor for FakeImageEditor {
             mime_type: "image/png".to_string(),
             model: request.model.0,
             provider: "fake-image".to_string(),
+        })
+    }
+}
+
+struct FakeVideoProvider;
+
+#[async_trait]
+impl VideoProvider for FakeVideoProvider {
+    async fn quote(&self, _request: VideoQuoteRequest) -> Result<f64, DomainError> {
+        Ok(0.11)
+    }
+
+    async fn queue(&self, request: VideoGenerationRequest) -> Result<VideoQueued, DomainError> {
+        if request.prompt.contains("boom") {
+            return Err(DomainError::UpstreamProvider);
+        }
+        Ok(VideoQueued {
+            venice_queue_id: "vq_boundary".to_string(),
+            download_url: None,
+        })
+    }
+
+    async fn queue_animation(
+        &self,
+        _request: VideoAnimationRequest,
+    ) -> Result<VideoQueued, DomainError> {
+        Ok(VideoQueued {
+            venice_queue_id: "vq_boundary_animate".to_string(),
+            download_url: None,
+        })
+    }
+
+    async fn retrieve(&self, _model: &str, _queue_id: &str) -> Result<VideoRetrieved, DomainError> {
+        Ok(VideoRetrieved::Processing {
+            average_execution_ms: 145_000,
+            execution_ms: 30_000,
         })
     }
 }

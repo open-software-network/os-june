@@ -1,7 +1,7 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_METERING, ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
-    TRANSIENT_RETRY_AFTER_SECS, error_response, error_response_with_retry_after,
+    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE,
+    ERR_UPSTREAM, TRANSIENT_RETRY_AFTER_SECS, error_response, error_response_with_retry_after,
 };
 use axum::{http::StatusCode, response::IntoResponse};
 use june_domain::AuthError;
@@ -16,6 +16,8 @@ pub enum ApiError {
     Unauthorized { code: i32, message: String },
     #[error("payload_too_large")]
     PayloadTooLarge,
+    #[error("not_found")]
+    NotFound { code: i32, message: String },
     #[error("unprocessable")]
     Unprocessable { code: i32, message: String },
     #[error("insufficient_credits")]
@@ -51,6 +53,13 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::NotFound {
+            code: ERR_NOT_FOUND,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -67,6 +76,9 @@ impl IntoResponse for ApiError {
                 ERR_PAYLOAD_TOO_LARGE,
                 "payload_too_large",
             ),
+            Self::NotFound { code, message } => {
+                error_response(StatusCode::NOT_FOUND, code, &message)
+            }
             Self::Unprocessable { code, message } => {
                 error_response(StatusCode::UNPROCESSABLE_ENTITY, code, &message)
             }
@@ -116,6 +128,8 @@ impl From<ServiceError> for ApiError {
             ServiceError::UpstreamProvider => Self::Upstream,
             ServiceError::MeteringProvider => Self::Metering,
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
+            ServiceError::JobNotFound => Self::not_found("job_not_found"),
+            ServiceError::ContentRejected { reason } => Self::unprocessable(reason),
         }
     }
 }

@@ -57,6 +57,39 @@ const IMAGE_EDIT_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
     base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
 
+// --- Video generation (ADR 0012) ---------------------------------------------
+//
+// Video is an async job billed at completion: the hold is minted at
+// `/v1/video/generate` and must stay valid until the completing status poll
+// charges. Unlike image (a single synchronous request), the hold has to cover
+// the whole job lifetime — queue, the Venice run, then the settlement charge —
+// yet OS Accounts still rejects any hold above 600s (`invalid_ttl`). So the
+// per-job budget is CAPPED so `job budget + settlement margin <= 600`; the
+// first-cut supported models/durations are chosen to complete within that
+// budget (ADR 0012 Decision 2). Widening it needs durable job state (#613).
+/// Worst-case seconds a supported video job may take from queue to a completing
+/// poll. The first-cut allowlist/durations are picked to finish within this.
+pub const DEFAULT_VIDEO_JOB_MAX_SECS: u64 = 450;
+/// Budget reserved after the job completes for the settlement charge path,
+/// sized like the image settlement margin (worst-case OS Accounts charge
+/// retries at the default HTTP timeout plus backoff).
+pub const VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS: u64 = IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+/// Video hold TTL: the job budget plus the settlement margin. Pinned at the OS
+/// Accounts platform cap; the job budget is what gets capped to keep it there.
+pub const DEFAULT_VIDEO_HOLD_TTL_SECS: u64 =
+    DEFAULT_VIDEO_JOB_MAX_SECS + VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+/// Defensive per-request credit ceiling: Venice caps a video at $10/request; at
+/// the 2.0x default markup that is 20000 credits (`$1 = 1000 credits`). A quote
+/// above this is rejected before authorize so a catalog change cannot authorize
+/// an unbounded hold (ADR 0012 Decision 1).
+pub const DEFAULT_VIDEO_MAX_CREDITS_PER_REQUEST: u64 = 20_000;
+// The hold must fit the platform cap; the job must fit inside the hold.
+const _: () = assert!(DEFAULT_VIDEO_HOLD_TTL_SECS <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
+const _: () = assert!(
+    DEFAULT_VIDEO_JOB_MAX_SECS + VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS
+        <= DEFAULT_VIDEO_HOLD_TTL_SECS
+);
+
 const fn base64_encoded_len(byte_count: usize) -> usize {
     byte_count.div_ceil(3) * 4
 }
@@ -99,6 +132,29 @@ pub struct AppConfig {
     /// `image_edit_pricing`, or edits fail `model_not_priced`.
     #[serde(default = "default_image_edit_model")]
     pub default_image_edit_model: String,
+    /// Markup (fixed-point thousandths, `2000` = 2.0x) applied to the live Venice
+    /// quote for each text-to-video model, keyed by model id. Video is
+    /// quote-priced, not flat-priced: `credits = ceil(quote_usd * markup_millis)`
+    /// (ADR 0012 Decision 1). A model absent here is rejected `model_not_priced`
+    /// at the `/video/generate` boundary before the wallet or Venice is touched,
+    /// so this doubles as the allowlist. `$1 = 1000 credits`.
+    #[serde(default = "default_video_pricing")]
+    pub video_pricing: BTreeMap<String, u32>,
+    /// Markup per IMAGE-to-video (animate) model, keyed by model id. Image-to-video
+    /// is a separate Venice catalog from text-to-video (mirroring
+    /// `image_edit_pricing`), so it has its own allowlist. Same units as
+    /// `video_pricing`.
+    #[serde(default = "default_video_animate_pricing")]
+    pub video_animate_pricing: BTreeMap<String, u32>,
+    /// The image-to-video model used when an animate request names none. Must be
+    /// a key in `video_animate_pricing`, or animate fails `model_not_priced`.
+    #[serde(default = "default_video_animate_model")]
+    pub default_video_animate_model: String,
+    /// Defensive per-request credit ceiling for a quoted video. A computed price
+    /// above this is rejected `price_overflow` before authorize, bounding a
+    /// catalog change from authorizing an unbounded hold.
+    #[serde(default = "default_video_max_credits_per_request")]
+    pub video_max_credits_per_request: u64,
 }
 
 impl Debug for AppConfig {
@@ -115,6 +171,16 @@ impl Debug for AppConfig {
             .field("image_pricing", &self.image_pricing)
             .field("image_edit_pricing", &self.image_edit_pricing)
             .field("default_image_edit_model", &self.default_image_edit_model)
+            .field("video_pricing", &self.video_pricing)
+            .field("video_animate_pricing", &self.video_animate_pricing)
+            .field(
+                "default_video_animate_model",
+                &self.default_video_animate_model,
+            )
+            .field(
+                "video_max_credits_per_request",
+                &self.video_max_credits_per_request,
+            )
             .finish()
     }
 }
@@ -307,6 +373,13 @@ pub struct OsAccountsConfig {
     pub authorize_hold_ttl_web_secs: u64,
     /// Hold TTL for the metered image generation action.
     pub authorize_hold_ttl_image_secs: u64,
+    /// Hold TTL for the metered video generation/animation actions. Video is an
+    /// async job billed at completion, so the hold must cover the whole job
+    /// lifetime (queue -> completing poll -> charge), not a single request. Sized
+    /// to the job budget plus the settlement margin and capped at the platform
+    /// max (ADR 0012 Decision 2).
+    #[serde(default = "default_video_hold_ttl_secs")]
+    pub authorize_hold_ttl_video_secs: u64,
 }
 
 impl Debug for OsAccountsConfig {
@@ -352,6 +425,10 @@ impl Debug for OsAccountsConfig {
             .field(
                 "authorize_hold_ttl_image_secs",
                 &self.authorize_hold_ttl_image_secs,
+            )
+            .field(
+                "authorize_hold_ttl_video_secs",
+                &self.authorize_hold_ttl_video_secs,
             )
             .finish()
     }
@@ -619,6 +696,38 @@ fn default_image_edit_model() -> String {
     "firered-image-edit".to_string()
 }
 
+/// Curated text-to-video allowlist with per-model markups (`2000` = 2.0x, the
+/// image margin). Every id must be a current Venice text-to-video model, and its
+/// worst-case run at the supported durations must fit `DEFAULT_VIDEO_JOB_MAX_SECS`
+/// so the hold covers the whole job (ADR 0012). `credits = ceil(quote_usd * markup)`.
+fn default_video_pricing() -> BTreeMap<String, u32> {
+    BTreeMap::from([
+        ("wan-2.2-a14b-text-to-video".to_string(), 2000),
+        ("seedance-2-0-fast-text-to-video".to_string(), 2000),
+        ("ltx-2-fast-text-to-video".to_string(), 2000),
+    ])
+}
+
+/// Curated image-to-video (animate) allowlist — a separate Venice catalog from
+/// text-to-video, keyed by model id with the same markup units.
+fn default_video_animate_pricing() -> BTreeMap<String, u32> {
+    BTreeMap::from([("wan-2.6-image-to-video".to_string(), 2000)])
+}
+
+/// The default image-to-video model — the one every MCP-driven animate uses
+/// (the tool never names a model). Must be a key in `video_animate_pricing`.
+fn default_video_animate_model() -> String {
+    "wan-2.6-image-to-video".to_string()
+}
+
+fn default_video_max_credits_per_request() -> u64 {
+    DEFAULT_VIDEO_MAX_CREDITS_PER_REQUEST
+}
+
+fn default_video_hold_ttl_secs() -> u64 {
+    DEFAULT_VIDEO_HOLD_TTL_SECS
+}
+
 fn text_model_config(model: TextModelFallback) -> ModelPriceConfig {
     ModelPriceConfig {
         unit: PriceUnit::Tokens,
@@ -670,6 +779,7 @@ impl Default for AppConfig {
                 web_fetch_credits: 20,
                 authorize_hold_ttl_web_secs: 30,
                 authorize_hold_ttl_image_secs: DEFAULT_IMAGE_HOLD_TTL_SECS,
+                authorize_hold_ttl_video_secs: DEFAULT_VIDEO_HOLD_TTL_SECS,
             },
             upstreams: UpstreamsConfig {
                 openai: UpstreamConfig {
@@ -694,6 +804,10 @@ impl Default for AppConfig {
             image_pricing: default_image_pricing(),
             image_edit_pricing: default_image_edit_pricing(),
             default_image_edit_model: default_image_edit_model(),
+            video_pricing: default_video_pricing(),
+            video_animate_pricing: default_video_animate_pricing(),
+            default_video_animate_model: default_video_animate_model(),
+            video_max_credits_per_request: default_video_max_credits_per_request(),
         }
     }
 }
@@ -832,6 +946,43 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         }
     }
     validate_image_pricing(config)?;
+    validate_video_pricing(config)?;
+    Ok(())
+}
+
+/// Video markups (thousandths) must be > 0 — a zero markup would charge nothing
+/// on a paid quote — and the ceiling must be > 0. The default animate model must
+/// be priced, since every MCP-driven animate uses it. Mirrors
+/// `validate_image_pricing`, adapted for quote-derived pricing.
+fn validate_video_pricing(config: &AppConfig) -> Result<(), ConfigError> {
+    for (model_id, markup) in config
+        .video_pricing
+        .iter()
+        .chain(config.video_animate_pricing.iter())
+    {
+        if *markup == 0 {
+            return Err(ConfigError::InvalidPricing {
+                model: model_id.clone(),
+                reason: "video markup_millis must be > 0".to_string(),
+            });
+        }
+    }
+    if config.video_max_credits_per_request == 0 {
+        return Err(ConfigError::InvalidRequired {
+            field: "video_max_credits_per_request",
+            reason: "must be > 0",
+        });
+    }
+    if !config
+        .video_animate_pricing
+        .contains_key(&config.default_video_animate_model)
+    {
+        return Err(ConfigError::InvalidPricing {
+            model: config.default_video_animate_model.clone(),
+            reason: "default_video_animate_model must be present in video_animate_pricing"
+                .to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -846,7 +997,22 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         config.server.max_image_edit_bytes,
     )?;
     validate_image_hold_ttl(config)?;
+    validate_video_hold_ttl(config)?;
     validate_hold_ttl_bounds(config)?;
+    Ok(())
+}
+
+/// The video hold has to cover the whole async job: the per-job budget plus the
+/// settlement margin for the completing poll's charge. A hold below that would
+/// expire mid-job and strand the charge (ADR 0012 Decision 2).
+fn validate_video_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
+    let minimum = DEFAULT_VIDEO_JOB_MAX_SECS.saturating_add(VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS);
+    if config.os_accounts.authorize_hold_ttl_video_secs < minimum {
+        return Err(ConfigError::InvalidRequired {
+            field: "os_accounts.authorize_hold_ttl_video_secs",
+            reason: "must cover the video job budget plus the settlement margin",
+        });
+    }
     Ok(())
 }
 
@@ -876,7 +1042,7 @@ fn validate_image_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
 /// past the cap is rejected `invalid_ttl` on every request, which surfaces to
 /// users as `metering_provider_failed` and disables the whole action.
 fn validate_hold_ttl_bounds(config: &AppConfig) -> Result<(), ConfigError> {
-    let ttls: [(&'static str, u64); 6] = [
+    let ttls: [(&'static str, u64); 7] = [
         (
             "os_accounts.authorize_hold_ttl_note_transcribe_secs",
             config.os_accounts.authorize_hold_ttl_note_transcribe_secs,
@@ -902,6 +1068,10 @@ fn validate_hold_ttl_bounds(config: &AppConfig) -> Result<(), ConfigError> {
         (
             "os_accounts.authorize_hold_ttl_image_secs",
             config.os_accounts.authorize_hold_ttl_image_secs,
+        ),
+        (
+            "os_accounts.authorize_hold_ttl_video_secs",
+            config.os_accounts.authorize_hold_ttl_video_secs,
         ),
     ];
     for (field, value) in ttls {
@@ -1050,11 +1220,13 @@ fn validate_positive_rate(
 mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
-        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS,
+        DEFAULT_VIDEO_JOB_MAX_SECS, IMAGE_EDIT_SOURCE_MAX_BYTES,
         IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
         OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
         OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
-        VENICE_API_KEY_PLACEHOLDERS, image_client_timeout_secs, validate,
+        VENICE_API_KEY_PLACEHOLDERS, VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS,
+        image_client_timeout_secs, validate,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -1399,6 +1571,105 @@ mod tests {
             result,
             Err(ConfigError::InvalidRequired {
                 field: "os_accounts.authorize_hold_ttl_image_secs",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn default_config_prices_the_curated_video_models() {
+        let config = valid_config();
+        for model in [
+            "wan-2.2-a14b-text-to-video",
+            "seedance-2-0-fast-text-to-video",
+            "ltx-2-fast-text-to-video",
+        ] {
+            assert!(
+                config.video_pricing.get(model).is_some_and(|m| *m > 0),
+                "missing video markup for {model}"
+            );
+        }
+        // The default animate model must be in its own allowlist, or every
+        // MCP-driven animate fails model_not_priced.
+        assert!(
+            config
+                .video_animate_pricing
+                .contains_key(&config.default_video_animate_model)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_video_markup() {
+        // A zero markup would charge nothing on a paid quote; reject it.
+        let mut config = valid_config();
+        config.video_pricing.insert("free-video".to_string(), 0);
+
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_video_ceiling() {
+        let mut config = valid_config();
+        config.video_max_credits_per_request = 0;
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "video_max_credits_per_request",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unpriced_default_video_animate_model() {
+        let mut config = valid_config();
+        config.default_video_animate_model = "not-in-the-allowlist".to_string();
+
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn default_video_hold_ttl_covers_job_budget_within_platform_cap() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.os_accounts.authorize_hold_ttl_video_secs,
+            DEFAULT_VIDEO_HOLD_TTL_SECS
+        );
+        // The hold covers the whole job (budget + settlement margin) ...
+        assert!(
+            config.os_accounts.authorize_hold_ttl_video_secs
+                >= DEFAULT_VIDEO_JOB_MAX_SECS + VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS
+        );
+        // ... and still fits inside the OS Accounts platform cap.
+        assert!(config.os_accounts.authorize_hold_ttl_video_secs <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
+        // The default ceiling is positive (a zero ceiling would reject every quote).
+        assert_eq!(config.video_max_credits_per_request, 20_000);
+    }
+
+    #[test]
+    fn validate_rejects_video_hold_ttl_below_job_budget() {
+        let mut config = valid_config();
+        config.os_accounts.authorize_hold_ttl_video_secs = DEFAULT_VIDEO_JOB_MAX_SECS;
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "os_accounts.authorize_hold_ttl_video_secs",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_video_hold_ttl_above_os_accounts_cap() {
+        let mut config = valid_config();
+        config.os_accounts.authorize_hold_ttl_video_secs = OS_ACCOUNTS_MAX_HOLD_TTL_SECS + 30;
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "os_accounts.authorize_hold_ttl_video_secs",
                 ..
             })
         ));

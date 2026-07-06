@@ -12,6 +12,7 @@ mod note_transcribe;
 mod pricing;
 mod prompts;
 mod util;
+mod video;
 mod web_augment;
 
 pub use agent_chat::{AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps};
@@ -32,6 +33,10 @@ pub use note_transcribe::{
     NoteTranscribeOutput, NoteTranscribeParams, NoteTranscribeService, NoteTranscribeServiceDeps,
 };
 pub use pricing::{PricingError, PricingTable};
+pub use video::{
+    JobId, VideoAnimateParams, VideoGenerateParams, VideoJobHandle, VideoModelPrice, VideoService,
+    VideoServiceDeps, VideoStatusOutput,
+};
 pub use web_augment::{
     WebAugmentService, WebAugmentServiceDeps, WebFetchOutput, WebFetchParams, WebSearchOutput,
     WebSearchParams,

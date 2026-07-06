@@ -6,4 +6,5 @@ pub(crate) mod issues;
 pub(crate) mod models;
 pub(crate) mod notes;
 pub(crate) mod verify;
+pub(crate) mod video;
 pub(crate) mod web;
