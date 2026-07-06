@@ -835,16 +835,29 @@ fn compute_transcript_coverage(
                     .zip(transcript.end_ms)
                     .is_some_and(|(start_ms, end_ms)| covers_full_source(start_ms, end_ms))
             });
+            // A no-speech outcome on a full-source sentinel means both the
+            // energy detector and the ASR agreed the source was silent (e.g.
+            // a muted microphone): silence must never count as missing
+            // speech, whether the failure row is visible or suppressed. Only
+            // real (non-no-speech) failures count the WAV as uncovered.
+            let non_silent_failed_turns = failed_transcripts
+                .iter()
+                .filter(|failure| failure.input.source == *source)
+                .filter(|failure| {
+                    !failure
+                        .input
+                        .warning
+                        .as_deref()
+                        .map(is_no_speech_message)
+                        .unwrap_or(false)
+                })
+                .count() as i64;
             let detected_speech_ms = if detected_sentinel {
                 if transcribed_sentinel {
                     0
-                } else if failed_turns > 0 {
+                } else if non_silent_failed_turns > 0 {
                     source_wav_duration_ms(source_path).unwrap_or_default()
                 } else {
-                    // A sentinel source with no persisted row and no visible
-                    // failure was suppressed as no-speech: the source was
-                    // silent (e.g. a muted microphone), not lost. Silence must
-                    // never count as missing speech.
                     0
                 }
             } else {
@@ -2650,7 +2663,7 @@ mod tests {
             &[],
             &[failed_candidate(
                 "microphone",
-                "No speech detected. Try speaking louder or moving closer to the microphone.",
+                "The transcription service was unavailable. Please try again.",
                 0,
             )],
         );
@@ -2659,6 +2672,47 @@ mod tests {
         assert_eq!(coverage.total_transcribed_ms, 0);
         assert_eq!(coverage.total_failed_turns, 1);
         assert!(coverage.warning);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transcript_coverage_treats_visible_no_speech_sentinel_as_silent() {
+        // Microphone no-speech failures stay visible (only system no-speech
+        // is suppressed), but a no-speech sentinel is still silence: both
+        // detectors agreed there was nothing to transcribe.
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-coverage-nospeech-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        write_loud_wav(&mic_path, 16_000, 16_000 * 90);
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                mic_path,
+                0,
+                0,
+                0,
+            )],
+            &[],
+            &[failed_candidate(
+                "microphone",
+                "No speech detected. Try speaking louder or moving closer to the microphone.",
+                0,
+            )],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert_eq!(coverage.total_failed_turns, 1);
+        assert!(!coverage.warning);
         let _ = std::fs::remove_dir_all(dir);
     }
 
