@@ -25,3 +25,4 @@ whatlang.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 pretty_assertions.workspace = true
+rstest.workspace = true

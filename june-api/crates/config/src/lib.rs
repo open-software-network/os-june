@@ -37,6 +37,7 @@ pub const OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS: u64 = 60;
 pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 = DEFAULT_REQUEST_TIMEOUT_SECS
     - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
     - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS: u64 = 30;
 /// The hold is minted after authorize returns and must cover generation
 /// plus settlement: 390 + 150 = 540, inside the 600-second platform cap.
 /// Anchoring on the route timeout instead produced 630, past the cap, and
@@ -147,6 +148,13 @@ pub struct IssueReportsConfig {
     /// sidesteps that. Empty omits the field and relies on the defaults.
     #[serde(default = "default_issue_report_reward_asset")]
     pub os_platform_reward_asset: String,
+    /// Optional model id used by June API to diagnose issue reports before
+    /// delivery. `None` preserves direct delivery with no upstream model call.
+    #[serde(default)]
+    pub diagnosis_model: Option<String>,
+    /// Wall-clock budget for the internal diagnosis call.
+    #[serde(default = "default_issue_report_diagnosis_timeout_secs")]
+    pub diagnosis_timeout_secs: u64,
 }
 
 fn default_issue_report_api_url() -> String {
@@ -169,6 +177,10 @@ fn default_issue_report_reward_asset() -> String {
     "POINTS".to_string()
 }
 
+fn default_issue_report_diagnosis_timeout_secs() -> u64 {
+    DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS
+}
+
 impl Default for IssueReportsConfig {
     fn default() -> Self {
         Self {
@@ -178,6 +190,8 @@ impl Default for IssueReportsConfig {
             os_platform_project: default_issue_report_project(),
             os_platform_label: default_issue_report_label(),
             os_platform_reward_asset: default_issue_report_reward_asset(),
+            diagnosis_model: None,
+            diagnosis_timeout_secs: default_issue_report_diagnosis_timeout_secs(),
         }
     }
 }
@@ -199,6 +213,8 @@ impl Debug for IssueReportsConfig {
             .field("os_platform_project", &self.os_platform_project)
             .field("os_platform_label", &self.os_platform_label)
             .field("os_platform_reward_asset", &self.os_platform_reward_asset)
+            .field("diagnosis_model", &self.diagnosis_model)
+            .field("diagnosis_timeout_secs", &self.diagnosis_timeout_secs)
             .finish()
     }
 }
@@ -787,6 +803,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         )?;
     }
     validate_request_limits(config)?;
+    validate_issue_report_diagnosis(config)?;
 
     let uses_openai = config
         .pricing
@@ -862,6 +879,22 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         }
     }
     validate_image_pricing(config)?;
+    Ok(())
+}
+
+fn validate_issue_report_diagnosis(config: &AppConfig) -> Result<(), ConfigError> {
+    if config
+        .issue_reports
+        .diagnosis_model
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|model| !model.is_empty())
+    {
+        validate_positive_config(
+            "issue_reports.diagnosis_timeout_secs",
+            config.issue_reports.diagnosis_timeout_secs,
+        )?;
+    }
     Ok(())
 }
 
@@ -1305,6 +1338,23 @@ mod tests {
         let result = validate(&config);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_issue_report_diagnosis_timeout_when_model_is_set() {
+        let mut config = valid_config();
+        config.issue_reports.diagnosis_model = Some("text-model".to_string());
+        config.issue_reports.diagnosis_timeout_secs = 0;
+
+        let result = validate(&config);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidRequired {
+                field: "issue_reports.diagnosis_timeout_secs",
+                reason: "must be > 0"
+            })
+        ));
     }
 
     #[test]
