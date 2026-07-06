@@ -74,6 +74,6 @@ harness_rc=0
 printf '%s\n' "$prompt" | claude -p \
   --permission-mode acceptEdits \
   --allowedTools "${allowed[@]}" \
-  --add-dir "$repo_root/.claude/worktrees" \
+  --add-dir "$repo_root/.worktrees" \
   | tee "$out" || harness_rc=$?
 [ "$harness_rc" -eq 0 ] || { echo "error: harness exited $harness_rc" >&2; exit "$harness_rc"; }
