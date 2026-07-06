@@ -296,7 +296,7 @@ type AppSettingsProps = {
   // Confirmed leave-rc reconcile: downloads and installs the current stable,
   // even if it is older than the running prerelease build (Q4-Q8).
   onReconcileToStable?: () => void;
-  // Opens Agent with the direct issue report popover preselected.
+  // Opens Agent with the direct issue report dialog preselected.
   onReportIssue?: (category: ReportCategory) => void;
   // Opens a new agent session that runs a skill bundle's slash command.
   onStartBundleChat?: (prompt: string) => void;

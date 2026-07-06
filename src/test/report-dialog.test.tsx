@@ -1,9 +1,9 @@
-import { createRef, useState } from "react";
+import { useState } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ReportPopover, type ReportPopoverAttachment } from "../components/agent/ReportPopover";
+import { ReportDialog, type ReportDialogAttachment } from "../components/agent/ReportDialog";
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
 
 const mocks = vi.hoisted(() => ({
@@ -23,22 +23,20 @@ function Harness({
 }: {
   initialCategory?: ReportCategory;
   initialDescription?: string;
-  initialAttachments?: ReportPopoverAttachment[];
+  initialAttachments?: ReportDialogAttachment[];
   onDropFiles?: (files: File[]) => void;
   onSent?: () => void;
 }) {
   const [category, setCategory] = useState(initialCategory);
   const [description, setDescription] = useState(initialDescription);
   const [attachments, setAttachments] = useState(initialAttachments);
-  const popoverRef = createRef<HTMLDivElement>();
 
   return (
-    <ReportPopover
+    <ReportDialog
       category={category}
       description={description}
       attachments={attachments}
       importingFiles={false}
-      popoverRef={popoverRef}
       onCategoryChange={setCategory}
       onDescriptionChange={setDescription}
       onAddFiles={vi.fn()}
@@ -52,7 +50,7 @@ function Harness({
   );
 }
 
-describe("ReportPopover", () => {
+describe("ReportDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
@@ -101,7 +99,7 @@ describe("ReportPopover", () => {
       />,
     );
 
-    await user.type(screen.getByRole("textbox", { name: "Report description" }), "Logs are noisy");
+    await user.type(screen.getByRole("textbox", { name: "Description" }), "Logs are noisy");
     await user.click(screen.getByRole("button", { name: "Send report" }));
 
     await waitFor(() =>
@@ -150,7 +148,7 @@ describe("ReportPopover", () => {
     render(<Harness onDropFiles={onDropFiles} />);
     const file = new File(["log"], "june.log", { type: "text/plain" });
 
-    fireEvent.drop(screen.getByRole("dialog", { name: "Issue report" }), {
+    fireEvent.drop(screen.getByRole("textbox", { name: "Description" }), {
       dataTransfer: { files: [file] },
     });
 
@@ -168,7 +166,7 @@ describe("ReportPopover", () => {
     render(<Harness initialDescription="Recorder bug" onDropFiles={onDropFiles} />);
     const file = new File(["log"], "june.log", { type: "text/plain" });
 
-    fireEvent.drop(screen.getByRole("dialog", { name: "Issue report" }), {
+    fireEvent.drop(screen.getByRole("textbox", { name: "Description" }), {
       dataTransfer: { files: [file] },
     });
 
@@ -179,12 +177,12 @@ describe("ReportPopover", () => {
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
   });
 
-  it("keeps the popover open with the typed input after a submit failure", async () => {
+  it("keeps the dialog open with the typed input after a submit failure", async () => {
     const user = userEvent.setup();
     mocks.submitIssueReport.mockRejectedValueOnce(new Error("Network down"));
     render(<Harness />);
 
-    const textarea = screen.getByRole("textbox", { name: "Report description" });
+    const textarea = screen.getByRole("textbox", { name: "Description" });
     await user.type(textarea, "The report should retry");
     await user.click(screen.getByRole("button", { name: "Send report" }));
 

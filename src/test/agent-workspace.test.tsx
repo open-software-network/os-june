@@ -681,7 +681,7 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("opens the issue report popover without submitting", async () => {
+  it("opens the issue report dialog without submitting", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
@@ -698,7 +698,7 @@ describe("AgentWorkspace", () => {
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
-  it("clears a stale new-session draft before opening a report popover", async () => {
+  it("clears a stale new-session draft before opening a report dialog", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -724,7 +724,7 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("opens a report popover immediately when the composer is already open", async () => {
+  it("opens a report dialog immediately when the composer is already open", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now() }),
@@ -750,7 +750,7 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
   });
 
-  it("opens a report popover while the current session is still running", async () => {
+  it("opens a report dialog while the current session is still running", async () => {
     const user = userEvent.setup();
     let resolveSubmit: (() => void) | undefined;
     mocks.gatewayRequest.mockImplementation((method: string) => {

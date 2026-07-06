@@ -269,7 +269,7 @@ import {
   REPORT_CATEGORIES,
   type ReportCategory,
 } from "./composer/reportCategory";
-import { ReportPopover } from "./ReportPopover";
+import { ReportDialog } from "./ReportDialog";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
@@ -741,7 +741,7 @@ export type { AgentSessionsChangedDetail };
 
 export type AgentNewSessionDetail = {
   prompt?: string;
-  /** Opens the direct issue report popover with the category preselected. No
+  /** Opens the direct issue report dialog with the category preselected. No
    * model runs, so there is nothing to charge. */
   category?: ReportCategory;
   /** Seeds the composer with a note chip (and skips auto-submit) so the user
@@ -1740,13 +1740,12 @@ export function AgentWorkspace({
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachTriggerRef = useRef<HTMLButtonElement | null>(null);
   const attachMenuRef = useRef<HTMLDivElement | null>(null);
-  const [reportPopoverOpen, setReportPopoverOpen] = useState(false);
-  const [reportPopoverCategory, setReportPopoverCategory] = useState<ReportCategory>("bug");
-  const [reportPopoverDescription, setReportPopoverDescription] = useState("");
-  const [reportPopoverAttachments, setReportPopoverAttachments] = useState<AgentAttachment[]>([]);
-  const reportPopoverRef = useRef<HTMLDivElement | null>(null);
-  // Bumped when a report is sent; see reportPopoverAppendForCurrentGeneration.
-  const reportPopoverGenerationRef = useRef(0);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const [reportDialogCategory, setReportDialogCategory] = useState<ReportCategory>("bug");
+  const [reportDialogDescription, setReportDialogDescription] = useState("");
+  const [reportDialogAttachments, setReportDialogAttachments] = useState<AgentAttachment[]>([]);
+  // Bumped when a report is sent; see reportDialogAppendForCurrentGeneration.
+  const reportDialogGenerationRef = useRef(0);
   const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
     const restored = continuity?.sessionItems ?? [];
     if (!initialSession) return restored;
@@ -2703,28 +2702,6 @@ export function AgentWorkspace({
       window.removeEventListener("keydown", onKey);
     };
   }, [attachMenuOpen]);
-
-  useEffect(() => {
-    if (!reportPopoverOpen) return;
-    function onPointer(event: MouseEvent) {
-      const target = event.target as Node;
-      if (reportPopoverRef.current?.contains(target)) return;
-      if (attachTriggerRef.current?.contains(target)) return;
-      setReportPopoverOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setReportPopoverOpen(false);
-      }
-    }
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [reportPopoverOpen]);
 
   useEffect(() => {
     if (!composerModelOpen) return;
@@ -4297,8 +4274,8 @@ export function AgentWorkspace({
     };
   }
 
-  function addReportPopoverAttachments(nextAttachments: AgentAttachment[]) {
-    setReportPopoverAttachments((current) => [...current, ...nextAttachments]);
+  function addReportDialogAttachments(nextAttachments: AgentAttachment[]) {
+    setReportDialogAttachments((current) => [...current, ...nextAttachments]);
   }
 
   async function importAttachments<T>(
@@ -6171,7 +6148,7 @@ export function AgentWorkspace({
     const seedCategory = request?.category ?? null;
     const seedNoteRef = seedCategory ? null : (request?.noteRef ?? null);
     const seedPrompt = request?.prompt?.trim() ?? "";
-    // A seeded report never auto-submits: the direct report popover opens for
+    // A seeded report never auto-submits: the direct report dialog opens for
     // the user to describe the issue and submit it without a model turn.
     // A seeded note reference follows the same rule: the chip lands in the
     // composer and the user decides what to send.
@@ -6199,7 +6176,7 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = undefined;
     composerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
     setSelectedHermesSessionId(undefined);
-    // Seed the report popover, a note chip, or the prompt. The editor may not
+    // Seed the report dialog, a note chip, or the prompt. The editor may not
     // be mounted yet on a cold open, so stash note chips for ComposerEditor's
     // onReady to pick up and also try to apply now.
     pendingSeedNoteRefRef.current = seedNoteRef
@@ -6211,7 +6188,7 @@ export function AgentWorkspace({
     if (seedCategory) {
       pendingSeedNoteRefRef.current = null;
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      openReportPopover(seedCategory);
+      openReportDialog(seedCategory);
     } else if (seedNoteRef) {
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
       seedComposerNoteRef({ defer: options.deferSeed });
@@ -6292,19 +6269,19 @@ export function AgentWorkspace({
     });
   }
 
-  function openReportPopover(categoryToOpen: ReportCategory) {
+  function openReportDialog(categoryToOpen: ReportCategory) {
     setAttachMenuOpen(false);
     // An entry point naming a DIFFERENT category is a new report intent:
     // start clean so a preserved draft's attachments (possibly sensitive)
     // cannot ride into it. Reopening with the same category resumes the
     // draft, and switching categories inside the popover keeps it too.
-    if (categoryToOpen !== reportPopoverCategory) {
-      reportPopoverGenerationRef.current += 1;
-      setReportPopoverDescription("");
-      setReportPopoverAttachments([]);
+    if (categoryToOpen !== reportDialogCategory) {
+      reportDialogGenerationRef.current += 1;
+      setReportDialogDescription("");
+      setReportDialogAttachments([]);
     }
-    setReportPopoverCategory(categoryToOpen);
-    setReportPopoverOpen(true);
+    setReportDialogCategory(categoryToOpen);
+    setReportDialogOpen(true);
     setIssueReportNotice(null);
   }
 
@@ -6312,32 +6289,32 @@ export function AgentWorkspace({
    * was sent: without this a slow import repopulates the cleared attachment
    * state and haunts the next report. A close without sending keeps the
    * generation, so a mid-flight import still completes the preserved draft. */
-  function reportPopoverAppendForCurrentGeneration() {
-    const generation = reportPopoverGenerationRef.current;
+  function reportDialogAppendForCurrentGeneration() {
+    const generation = reportDialogGenerationRef.current;
     return (attachments: AgentAttachment[]) => {
-      if (generation === reportPopoverGenerationRef.current) {
-        addReportPopoverAttachments(attachments);
+      if (generation === reportDialogGenerationRef.current) {
+        addReportDialogAttachments(attachments);
       }
     };
   }
 
-  function pickReportPopoverAttachments() {
-    return pickAttachments(reportPopoverAppendForCurrentGeneration());
+  function pickReportDialogAttachments() {
+    return pickAttachments(reportDialogAppendForCurrentGeneration());
   }
 
-  function importReportPopoverDroppedFiles(files: File[]) {
-    return importDroppedFiles(files, { onImported: reportPopoverAppendForCurrentGeneration() });
+  function importReportDialogDroppedFiles(files: File[]) {
+    return importDroppedFiles(files, { onImported: reportDialogAppendForCurrentGeneration() });
   }
 
-  function removeReportPopoverAttachment(id: string) {
-    setReportPopoverAttachments((current) => current.filter((item) => item.id !== id));
+  function removeReportDialogAttachment(id: string) {
+    setReportDialogAttachments((current) => current.filter((item) => item.id !== id));
   }
 
-  function handleReportPopoverSent() {
-    reportPopoverGenerationRef.current += 1;
-    setReportPopoverOpen(false);
-    setReportPopoverDescription("");
-    setReportPopoverAttachments([]);
+  function handleReportDialogSent() {
+    reportDialogGenerationRef.current += 1;
+    setReportDialogOpen(false);
+    setReportDialogDescription("");
+    setReportDialogAttachments([]);
     setError(null);
     setIssueReportNotice({
       message: ISSUE_REPORT_SENT_MESSAGE,
@@ -7417,7 +7394,7 @@ export function AgentWorkspace({
               aria-expanded={attachMenuOpen}
               data-open={attachMenuOpen || undefined}
               onClick={() => {
-                setReportPopoverOpen(false);
+                setReportDialogOpen(false);
                 setAttachMenuOpen((open) => !open);
               }}
             >
@@ -7567,7 +7544,7 @@ export function AgentWorkspace({
                 type="button"
                 role="menuitem"
                 onClick={() => {
-                  openReportPopover(reportCategory.key);
+                  openReportDialog(reportCategory.key);
                 }}
               >
                 <span className="agent-attach-menu-icon" data-category={reportCategory.key}>
@@ -7578,20 +7555,19 @@ export function AgentWorkspace({
             ))}
           </div>
         ) : null}
-        {reportPopoverOpen ? (
-          <ReportPopover
-            category={reportPopoverCategory}
-            description={reportPopoverDescription}
-            attachments={reportPopoverAttachments}
+        {reportDialogOpen ? (
+          <ReportDialog
+            category={reportDialogCategory}
+            description={reportDialogDescription}
+            attachments={reportDialogAttachments}
             importingFiles={importingFiles}
-            popoverRef={reportPopoverRef}
-            onCategoryChange={setReportPopoverCategory}
-            onDescriptionChange={setReportPopoverDescription}
-            onAddFiles={pickReportPopoverAttachments}
-            onDropFiles={importReportPopoverDroppedFiles}
-            onRemoveAttachment={removeReportPopoverAttachment}
-            onClose={() => setReportPopoverOpen(false)}
-            onSent={handleReportPopoverSent}
+            onCategoryChange={setReportDialogCategory}
+            onDescriptionChange={setReportDialogDescription}
+            onAddFiles={pickReportDialogAttachments}
+            onDropFiles={importReportDialogDroppedFiles}
+            onRemoveAttachment={removeReportDialogAttachment}
+            onClose={() => setReportDialogOpen(false)}
+            onSent={handleReportDialogSent}
           />
         ) : null}
         {composerModelOpen ? (
@@ -7709,7 +7685,7 @@ export function AgentWorkspace({
           // The sanitized, secret-free trace bundle for this session is the
           // payload an issue report should attach (payload previews come from
           // `sanitizePayload`). This trace affordance is not wired into the
-          // report popover yet, so keep logging in dev.
+          // report dialog yet, so keep logging in dev.
           if (import.meta.env.DEV) {
             // biome-ignore lint/suspicious/noConsole: dev-only trace-bundle diagnostic
             console.debug(

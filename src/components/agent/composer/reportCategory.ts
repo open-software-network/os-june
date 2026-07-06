@@ -1,6 +1,6 @@
 /**
  * The three issue report categories. New report entry points use them in the
- * direct-submit popover, where no model runs and the server creates the
+ * direct-submit dialog, where no model runs and the server creates the
  * team-facing diagnosis. The inline composer chip still uses the same values
  * for restored older drafts.
  */

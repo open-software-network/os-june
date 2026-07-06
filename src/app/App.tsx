@@ -2049,7 +2049,7 @@ export function App() {
     }
   }
 
-  // "Report an issue": navigate to Agent and open the direct report popover.
+  // "Report an issue": navigate to Agent and open the direct report dialog.
   // It submits through June API without a model turn, so there is nothing to
   // charge; June API creates the team-facing diagnosis.
   function handleReportIssue(category: ReportCategory = "bug") {

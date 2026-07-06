@@ -5560,144 +5560,34 @@ input:focus-visible,
   z-index: 40;
 }
 
-.agent-report-popover {
-  pointer-events: auto;
-  position: absolute;
-  left: var(--sp-3);
-  bottom: calc(var(--control-lg) + var(--sp-2));
-  z-index: 45;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  /* 420px is the popover's structural width, matching .agent-attach-menu's
-   * cap — a one-off outside the token scale, like the model popover's. */
-  width: min(420px, calc(100vw - var(--sp-6)));
-  padding: var(--sp-3);
-  border: 1px solid var(--popover-border);
-  border-radius: var(--r-lg);
-  background: var(--popover);
-  color: var(--popover-foreground);
-  box-shadow: var(--shadow-lg);
-}
-
-.agent-report-popover[data-drop-active="true"] {
-  background: color-mix(in oklch, var(--brand) 8%, var(--popover));
-}
-
-.agent-report-popover-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-}
-
-.agent-report-popover-title {
-  margin: 0;
-  font-size: var(--fs-md);
-  font-weight: 600;
-  line-height: 1.25;
-}
-
-.agent-report-popover-close {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: var(--control-sm);
-  height: var(--control-sm);
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.agent-report-popover-close:hover {
-  background: var(--surface-subtle);
-}
-
-.agent-report-popover-category.segmented {
+/* Issue report dialog extras. Chrome, textarea, field labels, and the
+ * footer come from the shared dialog-* classes; these cover the category
+ * segmented control, attachment rows, and the drag-drop state. */
+.report-dialog-category.segmented {
   display: flex;
   width: 100%;
 }
 
-.agent-report-popover-category.segmented button {
+.report-dialog-category.segmented button {
   flex: 1 1 0;
   min-width: 0;
   padding: 0 var(--sp-2);
 }
 
-.agent-report-popover-category-label {
+.report-dialog-category-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-report-popover-description {
-  /* One-offs outside the token scale: roughly five and ten text lines, the
-   * useful range for a report description before it should scroll. */
-  min-height: 116px;
-  max-height: 220px;
-  resize: vertical;
-  padding: var(--sp-3);
-  border: 1px solid var(--border-subtle);
+.report-dialog-drop[data-drop-active="true"] {
   border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-md);
-  line-height: 1.45;
+  outline: 2px solid var(--ring-focus);
+  outline-offset: var(--sp-1);
 }
 
-.agent-report-popover-description::placeholder {
-  color: var(--muted-foreground);
-}
-
-.agent-report-popover-description:focus {
-  outline: 2px solid color-mix(in oklch, var(--brand) 32%, transparent);
-  outline-offset: 1px;
-}
-
-.agent-report-popover-attachments {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-
-.agent-report-popover-add-files {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: 0;
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-md);
-  cursor: pointer;
-}
-
-.agent-report-popover-add-files:hover {
-  background: var(--muted);
-}
-
-.agent-report-popover-add-files:disabled,
-.agent-report-popover-submit:disabled,
-.agent-report-popover-file button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.agent-report-popover-drop-label {
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.25;
-}
-
-.agent-report-popover-file-list {
+.report-dialog-file-list {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
@@ -5706,7 +5596,7 @@ input:focus-visible,
   list-style: none;
 }
 
-.agent-report-popover-file {
+.report-dialog-file {
   display: grid;
   /* 18px = the 14px file icon plus optical breathing room (a one-off; icon
    * sizes are set as component props, not tokens). */
@@ -5719,14 +5609,14 @@ input:focus-visible,
   background: var(--surface-subtle);
 }
 
-.agent-report-popover-file img {
+.report-dialog-file img {
   width: 18px;
   height: 18px;
   border-radius: var(--r-xs);
   object-fit: cover;
 }
 
-.agent-report-popover-file-name {
+.report-dialog-file-name {
   min-width: 0;
   overflow: hidden;
   font-size: var(--fs-sm);
@@ -5735,7 +5625,7 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-report-popover-file button {
+.report-dialog-file button {
   display: inline-grid;
   place-items: center;
   width: var(--control-sm);
@@ -5748,44 +5638,30 @@ input:focus-visible,
   cursor: pointer;
 }
 
-.agent-report-popover-file button:hover {
+.report-dialog-file button:hover {
   background: color-mix(in oklch, var(--muted) 58%, transparent);
 }
 
-.agent-report-popover-error {
+.report-dialog-file button:disabled,
+.report-dialog-add-files:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.report-dialog-error {
   margin: 0;
   color: var(--destructive);
   font-size: var(--fs-sm);
   line-height: 1.35;
 }
 
-.agent-report-popover-actions {
-  display: flex;
-  justify-content: flex-end;
+/* The footer reads attach-left, send-right (dialog-footer right-aligns). */
+.report-dialog-add-files {
+  margin-right: auto;
+  color: var(--muted-foreground);
 }
 
-.agent-report-popover-submit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
-  padding: 0 var(--sp-4);
-  border: 0;
-  border-radius: var(--r-sm);
-  background: var(--foreground);
-  color: var(--background);
-  font: inherit;
-  font-size: var(--fs-md);
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.agent-report-popover-submit:hover {
-  background: color-mix(in oklch, var(--foreground) 88%, var(--muted));
-}
-
-.agent-report-popover-submit-spinner {
+.report-dialog-submit-spinner {
   color: currentColor;
 }
 

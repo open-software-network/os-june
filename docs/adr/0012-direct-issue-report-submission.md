@@ -31,7 +31,7 @@ would keep charging users.
 
 Reports no longer run a client-side model turn at all.
 
-- The client submits reports directly: a popover (reachable from the composer
+- The client submits reports directly: a dialog (reachable from the composer
   "+" menu, the sidebar, and settings) collects category, description, and
   file attachments, and calls `submit_issue_report` -> `/v1/issue-reports`.
   No Hermes session is involved, so there is nothing to authorize or charge.

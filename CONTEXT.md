@@ -152,7 +152,7 @@ _Avoid_: textbox.
 
 **Issue report**:
 A bug / feedback / feature submission to the June team, collected by the
-report popover (composer "+", sidebar, or settings) and sent straight to June
+report dialog (composer "+", sidebar, or settings) and sent straight to June
 API `/v1/issue-reports` — no agent turn runs and nothing is authorized or
 charged. The team-facing **diagnosis** is generated inside June API at
 delivery time on a server-configured model, at June's expense, and is never

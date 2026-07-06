@@ -822,7 +822,7 @@ export async function suggestAgentSessionTitle(prompt: string) {
 
 export type SubmitIssueReportRequest = {
   /** Which kind of report this is: "bug" | "feedback" | "feature". Drives the
-   * team's triage. Direct popover reports run no model turn, so there is
+   * team's triage. Direct dialog reports run no model turn, so there is
    * nothing to charge; June API creates the team-facing diagnosis. */
   category?: string;
   /** The user's report as they typed it, before the investigation wrapper. */
