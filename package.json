@@ -29,6 +29,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@nationaldesignstudio/rampart": "0.1.1",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-dialog": "^2.7.1",
@@ -66,6 +67,11 @@
     "vitest": "^2.1.8"
   },
   "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "@huggingface/transformers"
+      ]
+    },
     "neverBuiltDependencies": [
       "@central-icons-react/round-outlined-radius-3-stroke-2",
       "@central-icons-react/round-filled-radius-3-stroke-2"

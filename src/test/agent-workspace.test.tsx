@@ -18,6 +18,7 @@ import {
   E2EE_MODEL_DESCRIPTION,
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
 } from "../lib/model-privacy";
+import { AGENT_PRIVACY_GUARD_MODE_KEY } from "../lib/rampart-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
@@ -167,6 +168,79 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
     request = mocks.gatewayRequest;
   },
 }));
+
+vi.mock("@nationaldesignstudio/rampart", () => {
+  class SessionEntityTable {
+    private readonly forward = new Map<string, string>();
+    private readonly reverse = new Map<string, string>();
+    private readonly counters = new Map<string, number>();
+
+    scrub(
+      raw: string,
+      spans: ReadonlyArray<{ start: number; end: number; label: string; text: string }>,
+    ) {
+      const placeholders: string[] = [];
+      let text = raw;
+      for (const span of [...spans].sort((a, b) => b.start - a.start)) {
+        const token = this.placeholderFor(span.label, span.text);
+        placeholders.push(token);
+        text = `${text.slice(0, span.start)}${token}${text.slice(span.end)}`;
+      }
+      return { text, placeholders: placeholders.reverse() };
+    }
+
+    rehydrate(text: string) {
+      return text.replace(/\[[A-Z][A-Z_]*_\d+\]/g, (token) => this.reverse.get(token) ?? token);
+    }
+
+    private placeholderFor(label: string, value: string) {
+      const key = `${label}:${value.toLowerCase().replace(/\s+/g, " ").trim()}`;
+      const existing = this.forward.get(key);
+      if (existing) return existing;
+      const next = (this.counters.get(label) ?? 0) + 1;
+      this.counters.set(label, next);
+      const token = `[${label}_${next}]`;
+      this.forward.set(key, token);
+      this.reverse.set(token, value);
+      return token;
+    }
+  }
+
+  function detectHeuristics(text: string) {
+    const spans: Array<{ start: number; end: number; label: string; text: string }> = [];
+    for (const match of text.matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi)) {
+      if (match.index === undefined) continue;
+      spans.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        label: "EMAIL",
+        text: match[0],
+      });
+    }
+    for (const match of text.matchAll(/\b\d{3}-\d{2}-\d{4}\b/g)) {
+      if (match.index === undefined) continue;
+      spans.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        label: "SSN",
+        text: match[0],
+      });
+    }
+    return spans;
+  }
+
+  return {
+    SessionEntityTable,
+    detectHeuristics,
+    createGuard: vi.fn(async () => {
+      const table = new SessionEntityTable();
+      return {
+        protect: vi.fn(async (text: string) => table.scrub(text, detectHeuristics(text))),
+        reveal: vi.fn((text: string) => table.rehydrate(text)),
+      };
+    }),
+  };
+});
 
 const existingTask = {
   id: "task-1",
@@ -635,6 +709,223 @@ describe("AgentWorkspace", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("redacts agent prompts before sending when the privacy guard is enabled", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    render(<AgentWorkspace />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: {
+            prompt: "Email ada@example.com and note SSN 472-81-0094",
+          },
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "Email [EMAIL_1] and note SSN [SSN_1]",
+      }),
+    );
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledWith(
+      "Email [EMAIL_1] and note SSN [SSN_1]",
+    );
+    expect(
+      await screen.findByText("Privacy guard redacted 2 details before sending."),
+    ).toBeInTheDocument();
+  });
+
+  it("reveals privacy guard placeholders in persisted session replies", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    render(<AgentWorkspace />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: {
+            prompt: "Email ada@example.com",
+          },
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "Email [EMAIL_1]",
+      }),
+    );
+
+    const persistedAt = new Date().toISOString();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-reveal-user",
+        role: "user",
+        content: "Email [EMAIL_1]",
+        timestamp: persistedAt,
+      },
+      {
+        id: "message-reveal-assistant",
+        role: "assistant",
+        content: "I emailed [EMAIL_1].",
+        timestamp: persistedAt,
+      },
+    ]);
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    expect(await screen.findByText("I emailed ada@example.com.")).toBeInTheDocument();
+    expect(screen.queryByText("I emailed [EMAIL_1].")).toBeNull();
+    expect(screen.getAllByText("Email ada@example.com")).toHaveLength(1);
+  });
+
+  it("redacts delayed title suggestions for existing prompt-like sessions", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    const rawTitle = "I want you to email ada@example.com about launch";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-sensitive-title",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-sensitive-title",
+        role: "user",
+        content: rawTitle,
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({
+      title: "Launch Email",
+    });
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledWith(
+        "I want you to email [EMAIL_1] about launch",
+      ),
+    );
+    expect(JSON.stringify(mocks.suggestAgentSessionTitle.mock.calls)).not.toContain(
+      "ada@example.com",
+    );
+  });
+
+  it("keeps privacy guard placeholder state for a session across remounts", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    const user = userEvent.setup();
+    const { unmount } = render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Email ada@example.com");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Email [EMAIL_1]",
+      }),
+    );
+
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-remount-1",
+        role: "user",
+        content: "Email [EMAIL_1]",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "message-remount-2",
+        role: "assistant",
+        content: "Done.",
+        timestamp: "2026-06-04T12:00:05Z",
+      },
+    ]);
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-1" });
+      }
+    });
+    await screen.findByText("Done.");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop June" })).not.toBeInTheDocument(),
+    );
+    mocks.gatewayRequest.mockClear();
+    unmount();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(
+      screen.getByRole("textbox", { name: "Message June" }),
+      "Email grace@example.com",
+    );
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "Email [EMAIL_2]",
+      }),
+    );
+    expect(JSON.stringify(mocks.gatewayRequest.mock.calls)).not.toContain("grace@example.com");
+  });
+
+  it("redacts mid-run steering and its fallback follow-up when the privacy guard is enabled", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start this run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start this run",
+      }),
+    );
+    await screen.findByRole("button", { name: "Stop June" });
+
+    await user.type(composer, "Email ada@example.com next");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "Email [EMAIL_1] next",
+      }),
+    );
+    expect(
+      await screen.findByText("Privacy guard redacted 1 detail before sending."),
+    ).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-1" });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Email [EMAIL_1] next",
+      }),
+    );
+    expect(JSON.stringify(mocks.gatewayRequest.mock.calls)).not.toContain("ada@example.com");
   });
 
   it("never announces the restored session as selected while a New Session is pending", async () => {
@@ -6392,6 +6683,43 @@ describe("AgentWorkspace", () => {
     expect(submitted.text).toContain(
       "ask the user to describe the image or paste the relevant text",
     );
+  });
+
+  it("redacts privacy guard details in text fallback image filenames", async () => {
+    window.localStorage.setItem(AGENT_PRIVACY_GUARD_MODE_KEY, "structured");
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/receipt-ada@example.com.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("receipt-ada@example.com.png")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "what is in this image?");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
+    );
+
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain("--- Attached Context ---");
+    expect(submitted.text).toMatch(/\[EMAIL_\d+\]/);
+    expect(submitted.text).not.toContain("ada@example.com");
   });
 
   it("warns and offers a one-tap switch when an image is attached to a non-vision model", async () => {

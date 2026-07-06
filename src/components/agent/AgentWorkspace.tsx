@@ -281,6 +281,13 @@ import {
   stripAgentCliAccessRequest,
 } from "../../lib/agent-cli-access";
 import {
+  agentPrivacyGuardNoticeMessage,
+  createAgentPrivacyGuardSession,
+  getAgentPrivacyGuardMode,
+  type AgentPrivacyGuardSession,
+  type AgentPrivacyGuardMode,
+} from "../../lib/rampart-privacy";
+import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
@@ -1152,6 +1159,14 @@ type PreparedComposerSubmission = {
   typedMessage: string;
 };
 
+type PreparedAgentPrivacyContent = {
+  mode: AgentPrivacyGuardMode;
+  promptDisplayContent: string;
+  runtimeContent: string;
+  titleContent: string;
+  notice: { redactedDetails: number } | null;
+};
+
 type ComposerInputSizeWarning = {
   inputSignature: string;
   signature: string;
@@ -1228,6 +1243,7 @@ type AgentSessionContinuity = {
   reviewableIssueReports: Record<string, PendingIssueReport>;
   diagnosisRefreshIssueReportSessionIds: string[];
   submittingIssueReportSessionIds: string[];
+  privacyGuardSessions: Record<string, AgentPrivacyGuardSession>;
 };
 
 type IssueReportDeliveryResult = { sent: true } | { sent: false; errorMessage: string };
@@ -1370,6 +1386,7 @@ function captureSessionContinuity(state: {
   reviewableIssueReports: Record<string, PendingIssueReport>;
   diagnosisRefreshIssueReportSessionIds: Set<string>;
   submittingIssueReportSessionIds: Set<string>;
+  privacyGuardSessions: Record<string, AgentPrivacyGuardSession>;
 }): AgentSessionContinuity | null {
   const activeIds = activeHermesActivitySessionIds();
   for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
@@ -1385,6 +1402,9 @@ function captureSessionContinuity(state: {
     activeIds.add(sessionId);
   }
   for (const sessionId of state.submittingIssueReportSessionIds) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of Object.keys(state.privacyGuardSessions)) {
     activeIds.add(sessionId);
   }
   if (activeIds.size === 0) return null;
@@ -1404,6 +1424,7 @@ function captureSessionContinuity(state: {
     submittingIssueReportSessionIds: [...state.submittingIssueReportSessionIds].filter(
       (sessionId) => activeIds.has(sessionId),
     ),
+    privacyGuardSessions: pick(state.privacyGuardSessions),
   };
 }
 
@@ -1510,6 +1531,7 @@ function updateContinuityAfterIssueReportDelivery(detail: IssueReportDeliverySet
         (sessionId) => sessionId !== detail.sessionId,
       ),
     ),
+    privacyGuardSessions: sessionContinuity.privacyGuardSessions,
   });
 }
 
@@ -1540,6 +1562,7 @@ function updateContinuityAfterIssueReportFollowUpSubmitFailed(
       sessionContinuity.diagnosisRefreshIssueReportSessionIds,
     ),
     submittingIssueReportSessionIds: new Set(sessionContinuity.submittingIssueReportSessionIds),
+    privacyGuardSessions: sessionContinuity.privacyGuardSessions,
   });
 }
 
@@ -1679,6 +1702,7 @@ export function AgentWorkspace({
   // Confirmation that a submitted issue report reached the June team; shown
   // in the composer notice slot until dismissed by the next send.
   const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
+  const [privacyGuardNotice, setPrivacyGuardNotice] = useState<AgentWorkspaceNotice | null>(null);
   const [submittingErrorIssueReport, setSubmittingErrorIssueReport] = useState(false);
   const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
     null,
@@ -1859,6 +1883,9 @@ export function AgentWorkspace({
   const pendingSteerBySessionIdRef = useRef<
     Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
   >({});
+  const privacyGuardSessionsRef = useRef<Record<string, AgentPrivacyGuardSession>>(
+    continuity?.privacyGuardSessions ?? {},
+  );
   const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<Record<string, string>>(
     () => continuity?.runtimeSessionIds ?? {},
@@ -2390,10 +2417,11 @@ export function AgentWorkspace({
     composerSizeWarning?.inputSignature === composerInputSignature ? composerSizeWarning : null;
   const selectedHermesMessages = useMemo(() => {
     if (!selectedHermesSessionId) return [];
-    return [
+    const messages = [
       ...(hermesSessionMessages[selectedHermesSessionId] ?? []),
       ...(pendingHermesMessages[selectedHermesSessionId] ?? []),
     ];
+    return revealHermesMessagesForPrivacy(selectedHermesSessionId, messages);
   }, [hermesSessionMessages, pendingHermesMessages, selectedHermesSessionId]);
   const composerDraftKey = selectedHermesSessionId
     ? sessionComposerDraftKey(selectedHermesSessionId)
@@ -2488,6 +2516,10 @@ export function AgentWorkspace({
   const visibleIssueReportNotice =
     issueReportNotice && issueReportNotice.sessionId === (selectedHermesSessionId ?? null)
       ? issueReportNotice.message
+      : null;
+  const visiblePrivacyGuardNotice =
+    privacyGuardNotice && privacyGuardNotice.sessionId === selectedHermesSessionId
+      ? privacyGuardNotice.message
       : null;
   // The model-switch notice (feature 10) shows on the session it acted on; a
   // null sessionId is the default-only notice, shown while no session is open.
@@ -3439,6 +3471,7 @@ export function AgentWorkspace({
         reviewableIssueReports: reviewableIssueReportsRef.current,
         diagnosisRefreshIssueReportSessionIds: diagnosisRefreshIssueReportSessionIdsRef.current,
         submittingIssueReportSessionIds: submittingIssueReportSessionIdsRef.current,
+        privacyGuardSessions: privacyGuardSessionsRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -3613,6 +3646,180 @@ export function AgentWorkspace({
       titleContent: typedMessage,
       typedMessage,
     };
+  }
+
+  async function prepareAgentPrivacyContent(
+    promptDisplayContent: string,
+    runtimeContent: string,
+    titleContent: string,
+    privacyGuardSession: AgentPrivacyGuardSession,
+  ): Promise<PreparedAgentPrivacyContent> {
+    const mode = getAgentPrivacyGuardMode();
+    if (mode === "off") {
+      return {
+        mode,
+        promptDisplayContent,
+        runtimeContent,
+        titleContent,
+        notice: null,
+      };
+    }
+
+    const runtime = await privacyGuardSession.protectText(runtimeContent, {
+      mode,
+    });
+    const display =
+      promptDisplayContent === runtimeContent
+        ? runtime
+        : await privacyGuardSession.protectText(promptDisplayContent, {
+            mode,
+          });
+    const title =
+      titleContent === runtimeContent
+        ? runtime
+        : await privacyGuardSession.protectText(titleContent, { mode });
+    const placeholders = new Set([
+      ...runtime.placeholders,
+      ...display.placeholders,
+      ...title.placeholders,
+    ]);
+
+    return {
+      mode,
+      promptDisplayContent: display.text,
+      runtimeContent: runtime.text,
+      titleContent: title.text,
+      notice:
+        runtime.redacted || display.redacted || title.redacted
+          ? { redactedDetails: placeholders.size }
+          : null,
+    };
+  }
+
+  async function prepareAgentPrivacyFallbackContent(
+    text: string,
+    mode: AgentPrivacyGuardMode,
+    privacyGuardSession: AgentPrivacyGuardSession,
+  ): Promise<{
+    text: string;
+    notice: { redactedDetails: number } | null;
+  }> {
+    if (mode === "off") return { text, notice: null };
+    const protectedText = await privacyGuardSession.protectText(text, {
+      mode,
+    });
+    return {
+      text: protectedText.text,
+      notice: protectedText.redacted
+        ? { redactedDetails: protectedText.placeholders.length }
+        : null,
+    };
+  }
+
+  function mergeAgentPrivacyNotices(
+    ...notices: Array<{ redactedDetails: number } | null | undefined>
+  ) {
+    const redactedDetails = notices.reduce(
+      (sum, notice) => sum + (notice?.redactedDetails ?? 0),
+      0,
+    );
+    return redactedDetails > 0 ? { redactedDetails } : null;
+  }
+
+  async function prepareAgentPrivacySteer(
+    text: string,
+    privacyGuardSession: AgentPrivacyGuardSession,
+  ): Promise<{
+    text: string;
+    notice: { redactedDetails: number } | null;
+  }> {
+    const mode = getAgentPrivacyGuardMode();
+    if (mode === "off") return { text, notice: null };
+    const protectedText = await privacyGuardSession.protectText(text, {
+      mode,
+    });
+    return {
+      text: protectedText.text,
+      notice: protectedText.redacted
+        ? { redactedDetails: protectedText.placeholders.length }
+        : null,
+    };
+  }
+
+  function privacyGuardSessionForSession(sessionId: string) {
+    const existing = privacyGuardSessionsRef.current[sessionId];
+    if (existing) return existing;
+    const next = createAgentPrivacyGuardSession();
+    privacyGuardSessionsRef.current = {
+      ...privacyGuardSessionsRef.current,
+      [sessionId]: next,
+    };
+    return next;
+  }
+
+  function revealHermesMessagesForPrivacy(
+    sessionId: string,
+    messages: HermesSessionMessage[],
+  ): HermesSessionMessage[] {
+    const privacyGuardSession = privacyGuardSessionsRef.current[sessionId];
+    if (!privacyGuardSession) return messages;
+    return messages.map((message) => revealHermesMessageForPrivacy(message, privacyGuardSession));
+  }
+
+  function revealHermesMessageForPrivacy(
+    message: HermesSessionMessage,
+    privacyGuardSession: AgentPrivacyGuardSession,
+  ): HermesSessionMessage {
+    const next: HermesSessionMessage = { ...message };
+    let changed = false;
+    const revealField = (key: keyof HermesSessionMessage) => {
+      const current = next[key];
+      const revealed = revealAgentPrivacyValue(current, privacyGuardSession);
+      if (!Object.is(revealed, current)) {
+        changed = true;
+        next[key] = revealed as never;
+      }
+    };
+
+    revealField("content");
+    revealField("text");
+    revealField("context");
+    revealField("tool_calls");
+    revealField("reasoning");
+    revealField("reasoning_content");
+    revealField("reasoning_details");
+    revealField("codex_reasoning_items");
+    revealField("codex_message_items");
+
+    return changed ? next : message;
+  }
+
+  function revealAgentPrivacyValue(
+    value: unknown,
+    privacyGuardSession: AgentPrivacyGuardSession,
+    depth = 0,
+  ): unknown {
+    if (typeof value === "string") return privacyGuardSession.revealText(value);
+    if (!value || depth > 8) return value;
+    if (Array.isArray(value)) {
+      let changed = false;
+      const next = value.map((item) => {
+        const revealed = revealAgentPrivacyValue(item, privacyGuardSession, depth + 1);
+        if (!Object.is(revealed, item)) changed = true;
+        return revealed;
+      });
+      return changed ? next : value;
+    }
+    if (typeof value !== "object") return value;
+
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const revealed = revealAgentPrivacyValue(item, privacyGuardSession, depth + 1);
+      if (!Object.is(revealed, item)) changed = true;
+      next[key] = revealed;
+    }
+    return changed ? next : value;
   }
 
   async function handleBuiltinComposerSlashCommand(commandText: string) {
@@ -4009,6 +4216,16 @@ export function AgentWorkspace({
         return;
       }
       const steerSessionId = selectedHermesSessionId;
+      let protectedSteer: Awaited<ReturnType<typeof prepareAgentPrivacySteer>>;
+      try {
+        protectedSteer = await prepareAgentPrivacySteer(
+          message,
+          privacyGuardSessionForSession(steerSessionId),
+        );
+      } catch (err) {
+        setError(messageFromError(err));
+        return;
+      }
       // Delivery guarantee. Hermes only injects a steer into the next tool
       // result and rejects the RPC during a no-tool phase, so the steer alone
       // is unreliable. Record the text, attempt the steer (best effort — a
@@ -4016,7 +4233,11 @@ export function AgentWorkspace({
       // clean completion resend anything still pending as a follow-up.
       // `registered` tracks whether Hermes accepted the steer, so a
       // tool.complete only clears ones a tool could actually have drained.
-      const steerEntry = { text: message, accepted: false, toolDrained: false };
+      const steerEntry = {
+        text: protectedSteer.text,
+        accepted: false,
+        toolDrained: false,
+      };
       pendingSteerBySessionIdRef.current = {
         ...pendingSteerBySessionIdRef.current,
         [steerSessionId]: [
@@ -4024,7 +4245,15 @@ export function AgentWorkspace({
           steerEntry,
         ],
       };
-      void steerActiveSession(steerSessionId, message)
+      if (protectedSteer.notice) {
+        setPrivacyGuardNotice({
+          sessionId: steerSessionId,
+          message: agentPrivacyGuardNoticeMessage(protectedSteer.notice.redactedDetails),
+        });
+      } else {
+        setPrivacyGuardNotice(null);
+      }
+      void steerActiveSession(steerSessionId, protectedSteer.text)
         .then(() => {
           steerEntry.accepted = true;
         })
@@ -4907,12 +5136,24 @@ export function AgentWorkspace({
     },
   ): Promise<string | undefined> {
     const displayContent = options?.displayContent ?? content;
-    const titleContent = options?.titleContent ?? displayContent;
+    const rawTitleContent = options?.titleContent ?? displayContent;
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
         ? undefined
         : selectedHermesSessionId;
+    const privacyGuardSession = targetSessionId
+      ? privacyGuardSessionForSession(targetSessionId)
+      : createAgentPrivacyGuardSession();
+    setPrivacyGuardNotice(null);
+    const privacyContent = await prepareAgentPrivacyContent(
+      displayContent,
+      content,
+      rawTitleContent,
+      privacyGuardSession,
+    );
+    const runtimeContent = privacyContent.runtimeContent;
+    const titleContent = privacyContent.titleContent;
     // hermesModelIdFor: when local generation is active the default (and any
     // session row backfilled from it) carries the synthetic local option id,
     // which must never reach Hermes — session.create/ensure get the raw id.
@@ -4950,23 +5191,56 @@ export function AgentWorkspace({
     const targetGenerationModel = targetSessionModelId
       ? generationModelsRef.current.find((model) => model.id === targetSessionModelId)
       : undefined;
-    const imageInputFallbackContent =
-      // Only downgrade to the text-only fallback when the model is KNOWN to lack
-      // image input. An unresolved model id (stale or not-yet-loaded catalog)
-      // must NOT be assumed non-vision, or a vision-capable session would
-      // silently drop the image and never call attachPendingImages. Mirrors the
-      // composer banner's `!!generationModel && !modelSupportsImageInput` guard.
+    // Only downgrade to the text-only fallback when the model is KNOWN to lack
+    // image input. An unresolved model id (stale or not-yet-loaded catalog)
+    // must NOT be assumed non-vision, or a vision-capable session would
+    // silently drop the image and never call attachPendingImages. Mirrors the
+    // composer banner's `!!generationModel && !modelSupportsImageInput` guard.
+    const imageInputFallbackNameProtections =
+      pendingImages.length &&
+      targetGenerationModel &&
+      !modelSupportsImageInput(targetGenerationModel)
+        ? await Promise.all(
+            pendingImages.map((attachment) =>
+              privacyGuardSession.protectText(attachment.displayName, {
+                mode: privacyContent.mode,
+              }),
+            ),
+          )
+        : [];
+    const imageInputFallbackNamePlaceholders = new Set(
+      imageInputFallbackNameProtections.flatMap((protection) => protection.placeholders),
+    );
+    const imageInputFallbackNameNotice = imageInputFallbackNameProtections.some(
+      (protection) => protection.redacted,
+    )
+      ? { redactedDetails: imageInputFallbackNamePlaceholders.size }
+      : null;
+    const imageInputFallbackRawContent =
       pendingImages.length &&
       targetGenerationModel &&
       !modelSupportsImageInput(targetGenerationModel)
         ? unsupportedImageInputPrompt({
-            displayContent,
-            imageNames: pendingImages.map((attachment) => attachment.displayName),
+            displayContent: privacyContent.promptDisplayContent,
+            imageNames: imageInputFallbackNameProtections.map((protection) => protection.text),
             modelName: targetGenerationModel?.name ?? targetSessionModelId,
-            runtimeContent: content,
+            runtimeContent,
           })
         : undefined;
-    const promptSubmitContent = imageInputFallbackContent ?? content;
+    const imageInputFallbackPrivacy = imageInputFallbackRawContent
+      ? await prepareAgentPrivacyFallbackContent(
+          imageInputFallbackRawContent,
+          privacyContent.mode,
+          privacyGuardSession,
+        )
+      : undefined;
+    const imageInputFallbackContent = imageInputFallbackPrivacy?.text;
+    const privacyNotice = mergeAgentPrivacyNotices(
+      privacyContent.notice,
+      imageInputFallbackNameNotice,
+      imageInputFallbackPrivacy?.notice,
+    );
+    const promptSubmitContent = imageInputFallbackContent ?? runtimeContent;
     // Issue reports skip title suggestion: the content is the wrapped
     // investigation prompt, which would title the session after the wrapper.
     const titlePromise =
@@ -5026,6 +5300,12 @@ export function AgentWorkspace({
     })().catch(rollbackOptimisticBeforePrompt);
     storedSessionIdForRollback = storedSessionId;
     const queuedIssueReport = options?.issueReport;
+    if (!targetSessionId) {
+      privacyGuardSessionsRef.current = {
+        ...privacyGuardSessionsRef.current,
+        [storedSessionId]: privacyGuardSession,
+      };
+    }
     if (queuedIssueReport && targetSessionId) {
       queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
     }
@@ -5206,6 +5486,12 @@ export function AgentWorkspace({
         session_id: runtimeSessionId,
         text: promptSubmitContent,
       });
+      if (privacyNotice) {
+        setPrivacyGuardNotice({
+          sessionId: storedSessionId,
+          message: agentPrivacyGuardNoticeMessage(privacyNotice.redactedDetails),
+        });
+      }
       // JUN-171 (Phase A): the held fast-path images have now ridden along
       // with a successful follow-up prompt, either as structured image bytes or
       // in the non-vision path fallback. Clear only after prompt.submit accepts
@@ -5550,6 +5836,7 @@ export function AgentWorkspace({
       const retainedPending = retainUnpersistedPendingMessages(
         pendingHermesMessagesRef.current[sessionId] ?? [],
         messages,
+        privacyGuardSessionsRef.current[sessionId],
       );
       setHermesSessionMessages((current) => ({
         ...current,
@@ -6536,6 +6823,7 @@ export function AgentWorkspace({
     });
     scrubHermesSessionState(sessionId);
     pendingIssueReportsRef.current.delete(sessionId);
+    delete privacyGuardSessionsRef.current[sessionId];
     setReviewableIssueReport(sessionId, null);
     forgetComposerDraft(sessionComposerDraftKey(sessionId));
     // Every deletion funnels through here (the in-workspace delete and the
@@ -6580,7 +6868,26 @@ export function AgentWorkspace({
     const prompt = firstUserMessage ? visibleHermesMessageText(firstUserMessage).trim() : "";
     if (!prompt) return;
     titleSuggestionSessionIdsRef.current.add(sessionId);
-    const title = await agentSessionTitleForPrompt(prompt);
+    const mode = getAgentPrivacyGuardMode();
+    let titlePrompt = prompt;
+    if (mode !== "off") {
+      try {
+        const protectedPrompt = await privacyGuardSessionForSession(sessionId).protectText(prompt, {
+          mode,
+        });
+        titlePrompt = protectedPrompt.text;
+        if (protectedPrompt.redacted) {
+          setPrivacyGuardNotice({
+            sessionId,
+            message: agentPrivacyGuardNoticeMessage(protectedPrompt.placeholders.length),
+          });
+        }
+      } catch (err) {
+        setError(messageFromError(err), { sessionId });
+        return;
+      }
+    }
+    const title = await agentSessionTitleForPrompt(titlePrompt);
     sessionTitleOverridesRef.current = {
       ...sessionTitleOverridesRef.current,
       [sessionId]: title,
@@ -7158,6 +7465,18 @@ export function AgentWorkspace({
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
               {visibleIssueReportNotice}
+            </motion.p>
+          ) : visiblePrivacyGuardNotice ? (
+            <motion.p
+              key="privacy-guard-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              {visiblePrivacyGuardNotice}
             </motion.p>
           ) : visibleModelSwitchNotice ? (
             <motion.p
@@ -12526,17 +12845,20 @@ const PENDING_MATCH_SKEW_MS = 1500;
 function retainUnpersistedPendingMessages(
   pending: HermesSessionMessage[],
   persisted: HermesSessionMessage[],
+  privacyGuardSession?: AgentPrivacyGuardSession,
 ) {
   return pending.filter((pendingMessage) => {
     const pendingAt = hermesMessageTimestampMs(pendingMessage);
     return !persisted.some((message) => {
       if (message.role !== pendingMessage.role) return false;
-      if (
-        !sameVisibleMessageText(
-          visibleHermesMessageText(message),
-          visibleHermesMessageText(pendingMessage),
-        )
-      ) {
+      const persistedText = visibleHermesMessageText(message);
+      const pendingText = visibleHermesMessageText(pendingMessage);
+      const sameText =
+        sameVisibleMessageText(persistedText, pendingText) ||
+        (privacyGuardSession
+          ? sameVisibleMessageText(privacyGuardSession.revealText(persistedText), pendingText)
+          : false);
+      if (!sameText) {
         return false;
       }
       if (pendingAt === undefined) return true;
