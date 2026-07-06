@@ -152,9 +152,10 @@ _Avoid_: textbox.
 
 **Slash command**:
 A `/name arg` handled client-side before submit — builtin `/model`, `/file`,
-and `/image`, plus skill slash commands. `/image <prompt>` starts June's
-image generation fast path without invoking the model (kill switch:
-`IMAGE_GENERATION_ENABLED`).
+`/image`, and `/video`, plus skill slash commands. `/image <prompt>` starts
+June's image generation fast path without invoking the model (kill switch:
+`IMAGE_GENERATION_ENABLED`); `/video <prompt>` starts the video generation fast
+path (kill switch: `VIDEO_GENERATION_ENABLED`).
 _Avoid_: gateway command.
 
 **Steer**:
@@ -191,7 +192,7 @@ is UI; the reference is the token).
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, and `june_image`).
+`june_web`, `june_image`, and `june_video`).
 _Avoid_: using "tool" for all three.
 
 **Admin surface**:
@@ -238,6 +239,22 @@ Producing a new image by transforming an *existing* image plus an instruction
 a prior image (a generated one, by filename); never starts from a blank canvas.
 Distinct from **image generation**.
 _Avoid_: image-to-image jargon, regenerate (that's a fresh **image generation**).
+
+**Video generation**:
+Producing a new video from a text **prompt** (text-to-video), via Venice. Reached
+the same two ways as image generation — an explicit `/video` command (a fast,
+no-model shot) or the assistant calling it as a tool mid-conversation — but the
+Venice call is **asynchronous** (queue a job, poll until ready) and **priced per
+request** from a live quote, not flat per model. Distinct from **image-to-video**.
+See [ADR 0012](docs/adr/0012-video-generation-tools.md).
+_Avoid_: txt2vid jargon, rendering (say **video generation**).
+
+**Image-to-video**:
+Producing a video by animating an *existing* image plus a prompt, via Venice's
+image-to-video models. Always references a prior image (a generated one, by
+capability ref); the video-generation analog of **image editing**. Distinct from
+**video generation** (which starts from a text prompt only).
+_Avoid_: img2vid jargon, animate (unqualified — say **image-to-video**).
 
 **Credit price** (per upstream model):
 The number of OS Accounts credits June charges per unit of consumed work
