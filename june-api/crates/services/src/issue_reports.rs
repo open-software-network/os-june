@@ -4,7 +4,12 @@ use june_domain::{
     IssueReportSink, ModelId, ProviderCredentials,
 };
 use serde::Deserialize;
-use std::{fmt::Write as _, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt::Write as _,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use thiserror::Error;
 use tokio::time::timeout;
 
@@ -31,7 +36,20 @@ pub struct IssueReportService {
     chat_completer: Arc<dyn AgentChatCompleter>,
     diagnosis_model: Option<ModelId>,
     diagnosis_timeout: Duration,
+    diagnosis_hourly_cap: u64,
+    // The diagnosis call is June-funded and unmetered, so this window is the
+    // only per-user bound on upstream spend. In-memory is deliberate: a
+    // process restart forgiving the window is fine, an exceeded cap only
+    // skips the diagnosis — delivery is never limited.
+    diagnosis_windows: Mutex<HashMap<String, DiagnosisWindow>>,
 }
+
+struct DiagnosisWindow {
+    started: Instant,
+    count: u64,
+}
+
+const DIAGNOSIS_WINDOW: Duration = Duration::from_hours(1);
 
 impl IssueReportService {
     pub fn new(deps: IssueReportServiceDeps) -> Self {
@@ -40,6 +58,8 @@ impl IssueReportService {
             chat_completer: deps.chat_completer,
             diagnosis_model: configured_diagnosis_model(&deps.config),
             diagnosis_timeout: Duration::from_secs(deps.config.diagnosis_timeout_secs),
+            diagnosis_hourly_cap: deps.config.diagnosis_max_per_user_per_hour,
+            diagnosis_windows: Mutex::new(HashMap::new()),
         }
     }
 
@@ -50,12 +70,41 @@ impl IssueReportService {
         report.agent_diagnosis = None;
 
         if let Some(model) = self.diagnosis_model.as_ref()
+            && self.take_diagnosis_slot(&report)
             && let Some(diagnosis) = self.diagnose(&report, model.clone()).await
         {
             report.agent_diagnosis = Some(diagnosis);
         }
 
         self.sink.deliver(report).await
+    }
+
+    /// Counts this report against the user's hourly diagnosis window; false
+    /// means the cap is exhausted and the report delivers undiagnosed.
+    fn take_diagnosis_slot(&self, report: &IssueReport) -> bool {
+        // A poisoned lock must not block report delivery; skip the diagnosis
+        // rather than risk unbounded spend with no counter.
+        let Ok(mut windows) = self.diagnosis_windows.lock() else {
+            return false;
+        };
+        let now = Instant::now();
+        windows.retain(|_, window| now.duration_since(window.started) < DIAGNOSIS_WINDOW);
+        let window = windows
+            .entry(report.user_id.0.clone())
+            .or_insert(DiagnosisWindow {
+                started: now,
+                count: 0,
+            });
+        if window.count >= self.diagnosis_hourly_cap {
+            tracing::warn!(
+                user_id = %report.user_id.0,
+                cap = self.diagnosis_hourly_cap,
+                "issue_reports: per-user diagnosis cap reached; delivering report without diagnosis"
+            );
+            return false;
+        }
+        window.count += 1;
+        true
     }
 
     async fn diagnose(&self, report: &IssueReport, model: ModelId) -> Option<String> {
@@ -328,6 +377,49 @@ mod tests {
         let delivered = sink.delivered();
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].agent_diagnosis, None);
+    }
+
+    #[tokio::test]
+    async fn hourly_cap_skips_diagnosis_but_still_delivers() {
+        let sink = Arc::new(RecordingSink::default());
+        let completer = Arc::new(RecordingCompleter::with_behavior(CompleterBehavior::Text(
+            "server diagnosis".to_string(),
+        )));
+        let config = IssueReportsConfig {
+            diagnosis_model: Some("diagnosis-model".to_string()),
+            diagnosis_timeout_secs: 1,
+            diagnosis_max_per_user_per_hour: 1,
+            ..IssueReportsConfig::default()
+        };
+        let service = IssueReportService::new(IssueReportServiceDeps {
+            sink: sink.clone(),
+            chat_completer: completer.clone(),
+            config,
+        });
+
+        service
+            .submit(report_without_diagnosis())
+            .await
+            .expect("first report delivery succeeds");
+        service
+            .submit(report_without_diagnosis())
+            .await
+            .expect("capped report still delivers");
+        let mut other_user = report_without_diagnosis();
+        other_user.user_id = UserId("usr_other".to_string());
+        service
+            .submit(other_user)
+            .await
+            .expect("other user's report delivery succeeds");
+
+        // One call per user within the window: the same user's second report
+        // is delivered undiagnosed instead of spending again.
+        assert_eq!(completer.call_count(), 2);
+        let delivered = sink.delivered();
+        assert_eq!(delivered.len(), 3);
+        assert!(delivered[0].agent_diagnosis.is_some());
+        assert_eq!(delivered[1].agent_diagnosis, None);
+        assert!(delivered[2].agent_diagnosis.is_some());
     }
 
     #[test]

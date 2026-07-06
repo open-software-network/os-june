@@ -6294,6 +6294,15 @@ export function AgentWorkspace({
 
   function openReportPopover(categoryToOpen: ReportCategory) {
     setAttachMenuOpen(false);
+    // An entry point naming a DIFFERENT category is a new report intent:
+    // start clean so a preserved draft's attachments (possibly sensitive)
+    // cannot ride into it. Reopening with the same category resumes the
+    // draft, and switching categories inside the popover keeps it too.
+    if (categoryToOpen !== reportPopoverCategory) {
+      reportPopoverGenerationRef.current += 1;
+      setReportPopoverDescription("");
+      setReportPopoverAttachments([]);
+    }
     setReportPopoverCategory(categoryToOpen);
     setReportPopoverOpen(true);
     setIssueReportNotice(null);

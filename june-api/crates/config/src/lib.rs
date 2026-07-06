@@ -38,6 +38,9 @@ pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 = DEFAULT_REQUEST_TIMEOUT_SECS
     - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
     - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
 pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS: u64 = 30;
+/// Nobody files more than a handful of legitimate reports an hour; the cap
+/// only bounds June-funded diagnosis calls, never report delivery.
+pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_MAX_PER_USER_PER_HOUR: u64 = 6;
 /// The hold is minted after authorize returns and must cover generation
 /// plus settlement: 390 + 150 = 540, inside the 600-second platform cap.
 /// Anchoring on the route timeout instead produced 630, past the cap, and
@@ -155,6 +158,10 @@ pub struct IssueReportsConfig {
     /// Wall-clock budget for the internal diagnosis call.
     #[serde(default = "default_issue_report_diagnosis_timeout_secs")]
     pub diagnosis_timeout_secs: u64,
+    /// Per-user hourly cap on June-funded diagnosis calls. The cap only skips
+    /// the diagnosis; report delivery itself is never limited.
+    #[serde(default = "default_issue_report_diagnosis_max_per_user_per_hour")]
+    pub diagnosis_max_per_user_per_hour: u64,
 }
 
 fn default_issue_report_api_url() -> String {
@@ -181,6 +188,10 @@ fn default_issue_report_diagnosis_timeout_secs() -> u64 {
     DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS
 }
 
+fn default_issue_report_diagnosis_max_per_user_per_hour() -> u64 {
+    DEFAULT_ISSUE_REPORT_DIAGNOSIS_MAX_PER_USER_PER_HOUR
+}
+
 impl Default for IssueReportsConfig {
     fn default() -> Self {
         Self {
@@ -192,6 +203,7 @@ impl Default for IssueReportsConfig {
             os_platform_reward_asset: default_issue_report_reward_asset(),
             diagnosis_model: None,
             diagnosis_timeout_secs: default_issue_report_diagnosis_timeout_secs(),
+            diagnosis_max_per_user_per_hour: default_issue_report_diagnosis_max_per_user_per_hour(),
         }
     }
 }
@@ -215,6 +227,10 @@ impl Debug for IssueReportsConfig {
             .field("os_platform_reward_asset", &self.os_platform_reward_asset)
             .field("diagnosis_model", &self.diagnosis_model)
             .field("diagnosis_timeout_secs", &self.diagnosis_timeout_secs)
+            .field(
+                "diagnosis_max_per_user_per_hour",
+                &self.diagnosis_max_per_user_per_hour,
+            )
             .finish()
     }
 }
@@ -893,6 +909,10 @@ fn validate_issue_report_diagnosis(config: &AppConfig) -> Result<(), ConfigError
         validate_positive_config(
             "issue_reports.diagnosis_timeout_secs",
             config.issue_reports.diagnosis_timeout_secs,
+        )?;
+        validate_positive_config(
+            "issue_reports.diagnosis_max_per_user_per_hour",
+            config.issue_reports.diagnosis_max_per_user_per_hour,
         )?;
     }
     Ok(())
