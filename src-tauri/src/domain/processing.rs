@@ -634,17 +634,29 @@ pub async fn process_saved_source_audio(
         &persisted_transcripts,
         &visible_failures,
     );
-    repos
-        .add_checkpoint(
-            session_id,
-            "transcript_coverage",
-            Some(
-                serde_json::to_string(&transcript_coverage).map_err(|error| {
-                    AppError::new("transcript_coverage_failed", error.to_string())
-                })?,
-            ),
-        )
-        .await?;
+    // Coverage is diagnostic only and must never fail note processing: a
+    // checkpoint that cannot be serialized or persisted is logged and skipped.
+    match serde_json::to_string(&transcript_coverage) {
+        Ok(payload) => {
+            if let Err(error) = repos
+                .add_checkpoint(session_id, "transcript_coverage", Some(payload))
+                .await
+            {
+                tracing::warn!(
+                    session_id,
+                    %error,
+                    "failed to persist transcript_coverage checkpoint"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                %error,
+                "failed to serialize transcript_coverage checkpoint"
+            );
+        }
+    }
     let first_transcript_id = persisted_transcripts
         .first()
         .map(|transcript| transcript.id.clone());

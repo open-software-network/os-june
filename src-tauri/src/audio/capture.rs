@@ -233,14 +233,21 @@ pub fn start_capture(
     let started = Instant::now();
     let stream_error_for_callback = Arc::clone(&stream_error);
     let err_fn = move |error| {
-        if let Ok(mut issue) = stream_error_for_callback.try_lock() {
-            if issue.is_none() {
-                *issue = Some(MicrophoneStreamIssue {
-                    code: "microphone_stream_error".to_string(),
-                    message: format!("Microphone input stopped unexpectedly: {error}"),
-                    elapsed_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
-                });
-            }
+        // Always leave a raw trace, then record the first structured issue.
+        // A blocking lock is required: this is CPAL's error callback (not the
+        // realtime data callback), and a try_lock could silently drop the one
+        // error whenever a status poll holds the mutex at that instant.
+        eprintln!("audio stream error: {error}");
+        let mut issue = match stream_error_for_callback.lock() {
+            Ok(issue) => issue,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if issue.is_none() {
+            *issue = Some(MicrophoneStreamIssue {
+                code: "microphone_stream_error".to_string(),
+                message: format!("Microphone input stopped unexpectedly: {error}"),
+                elapsed_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+            });
         }
     };
 
