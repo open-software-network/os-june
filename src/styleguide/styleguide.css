@@ -1,0 +1,389 @@
+/*
+ * Styleguide page chrome. Every class is `sg-`-prefixed so nothing here can
+ * collide with the flat global namespace in app.css. Built only from
+ * theme-aware tokens (no raw colors), so light/dark and every brand preset
+ * just work. Quiet, document-like: a sticky left nav, a centered reading
+ * column, and specimen cards on --card with hairline --border-subtle edges.
+ */
+
+.sg-root {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "topbar topbar"
+    "nav content";
+  height: 100vh;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 400;
+}
+
+/* Top bar --------------------------------------------------------------- */
+.sg-topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--card);
+}
+
+.sg-topbar-title {
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+  margin: 0;
+}
+
+.sg-topbar-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.sg-control-group {
+  /* fieldset reset: it groups the controls for a11y, not for its native box. */
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.sg-control-label {
+  /* legend reset so it sits inline before the control instead of on its own row. */
+  float: left;
+  padding: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+/* Segmented theme control */
+.sg-seg {
+  display: inline-flex;
+  padding: var(--sp-px);
+  gap: var(--sp-px);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+
+.sg-seg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  height: var(--control-xs);
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.sg-seg-btn:hover {
+  background: var(--brand-tint);
+}
+
+.sg-seg-btn[aria-pressed="true"] {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Brand swatch picker */
+.sg-brand-swatches {
+  display: inline-flex;
+  gap: var(--sp-2);
+}
+
+.sg-brand-swatch {
+  appearance: none;
+  width: var(--control-xs);
+  height: var(--control-xs);
+  padding: 0;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: box-shadow var(--t-fast) var(--ease-out);
+}
+
+.sg-brand-swatch[aria-pressed="true"] {
+  box-shadow:
+    0 0 0 2px var(--card),
+    0 0 0 3px var(--brand);
+}
+
+/* Nav ------------------------------------------------------------------- */
+.sg-nav {
+  grid-area: nav;
+  overflow-y: auto;
+  padding: var(--sp-6) var(--sp-5);
+  border-right: 1px solid var(--border-subtle);
+  background: var(--sidebar);
+}
+
+.sg-nav-group {
+  margin-bottom: var(--sp-7);
+}
+
+.sg-nav-group-label {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  padding: 0 var(--sp-4);
+  margin-bottom: var(--sp-2);
+}
+
+.sg-nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.sg-nav-item:hover {
+  background: var(--brand-tint);
+}
+
+.sg-nav-item[aria-current="true"] {
+  background: var(--brand-tint-strong);
+  font-weight: var(--fw-medium);
+}
+
+.sg-nav-item-placeholder {
+  color: var(--muted-foreground);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
+  font-style: italic;
+}
+
+/* Content --------------------------------------------------------------- */
+.sg-content {
+  grid-area: content;
+  overflow-y: auto;
+  padding: var(--sp-12) var(--sp-8);
+}
+
+.sg-section {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.sg-section-heading {
+  font-family: var(--font-serif);
+  font-size: var(--fs-2xl);
+  font-weight: 400;
+  margin: 0 0 var(--sp-3);
+}
+
+.sg-section-intro {
+  color: var(--body-copy);
+  max-width: 60ch;
+  margin: 0 0 var(--sp-10);
+  line-height: 1.55;
+}
+
+.sg-subheading {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  margin: var(--sp-10) 0 var(--sp-5);
+}
+
+.sg-note {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  margin: var(--sp-5) 0 0;
+  max-width: 60ch;
+}
+
+/* Specimen cards + grids */
+.sg-grid {
+  display: grid;
+  gap: var(--sp-5);
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+
+.sg-card {
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  padding: var(--sp-6);
+}
+
+.sg-token-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+}
+
+.sg-token-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.sg-token-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-px);
+  margin-top: var(--sp-3);
+}
+
+/* Color swatches */
+.sg-swatch-block {
+  height: 56px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Type specimens */
+.sg-type-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sg-type-specimen {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sg-type-tag {
+  flex: none;
+  display: flex;
+  gap: var(--sp-4);
+  align-items: baseline;
+  color: var(--muted-foreground);
+}
+
+.sg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.sg-row {
+  display: flex;
+  gap: var(--sp-5);
+  flex-wrap: wrap;
+}
+
+.sg-row > .sg-card {
+  flex: 1 1 220px;
+}
+
+.sg-eyebrow {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  margin-bottom: var(--sp-2);
+}
+
+.sg-badge-ok {
+  display: inline-block;
+  font-size: var(--fs-2xs);
+  color: var(--success);
+  margin-bottom: var(--sp-2);
+}
+
+.sg-badge-no {
+  display: inline-block;
+  font-size: var(--fs-2xs);
+  color: var(--destructive);
+  margin-bottom: var(--sp-2);
+}
+
+.sg-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Spacing ruler */
+.sg-ruler-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-2) 0;
+}
+
+.sg-ruler-bar {
+  height: 12px;
+  background: var(--brand);
+  border-radius: var(--r-xs);
+  flex: none;
+}
+
+.sg-ruler-meta {
+  display: flex;
+  gap: var(--sp-4);
+  align-items: baseline;
+}
+
+/* Radius squares */
+.sg-radius-square {
+  width: 72px;
+  height: 72px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Elevation */
+.sg-elev-card {
+  background: var(--card);
+  border-radius: var(--r-lg);
+  padding: var(--sp-8) var(--sp-6);
+  min-height: 80px;
+}
+
+/* Motion tiles */
+.sg-motion-tile {
+  overflow: hidden;
+}
+
+.sg-motion-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  transition: transform var(--t-slow) var(--ease-out);
+}
+
+.sg-motion-tile:hover .sg-motion-dot {
+  transform: translateX(120px);
+}
+
+/* Controls ladder */
+.sg-control-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-6);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
