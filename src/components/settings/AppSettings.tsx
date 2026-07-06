@@ -85,7 +85,8 @@ import {
 import { ProviderLogo } from "./ProviderLogo";
 import { ModelMeta, ModelPickerDialog, modelOptions, selectedModel } from "./ModelPickerDialog";
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
-import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
+import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
+import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
@@ -204,6 +205,8 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   remoteGenerationModel: "zai-org-glm-5-2",
   // Mirrors DEFAULT_IMAGE_MODEL in the Rust providers module.
   imageModel: DEFAULT_IMAGE_MODEL,
+  // Mirrors DEFAULT_VIDEO_MODEL in the Rust providers module.
+  videoModel: DEFAULT_VIDEO_MODEL,
   veniceApiKeyConfigured: false,
   localGeneration: {
     baseUrl: "",
@@ -212,6 +215,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   },
   // Off by default (privacy-first), matching the Rust providers default.
   imageSafeMode: false,
+  videoSafeMode: false,
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -343,8 +347,10 @@ export function AppSettings({
     transcription: [],
     generation: [],
     // Image options come from a curated local list, not the fetched catalog;
-    // this stays empty and `imageOptions` supplies the picker.
+    // this stays empty and `imageOptions` supplies the picker. Video follows
+    // the same curated-local pattern while the first fast path is fixed-shape.
     image: [],
+    video: [],
   });
   const [microphones, setMicrophones] = useState<DictationMicrophoneDeviceDto[]>([]);
   const [defaultMicrophone, setDefaultMicrophone] = useState<DictationMicrophoneDeviceDto>();
@@ -836,7 +842,9 @@ export function AppSettings({
           ? "Transcription model updated."
           : mode === "image"
             ? "Image model updated."
-            : "Text model updated.",
+            : mode === "video"
+              ? "Video model updated."
+              : "Text model updated.",
       );
     } catch (error) {
       setStatus(messageFromError(error));
@@ -1069,6 +1077,9 @@ export function AppSettings({
   const imageOptions = IMAGE_GENERATION_ENABLED
     ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
     : [];
+  const videoOptions = VIDEO_GENERATION_ENABLED
+    ? modelOptions(VIDEO_MODELS, providerSettings.videoModel)
+    : [];
   const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
   const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
   const localDraftBaseUrl = localGenerationDraft.baseUrl.trim();
@@ -1118,12 +1129,14 @@ export function AppSettings({
   function modelOptionsForMode(mode: ProviderModelMode) {
     if (mode === "transcription") return transcriptionOptions;
     if (mode === "image") return IMAGE_GENERATION_ENABLED ? imageOptions : [];
+    if (mode === "video") return VIDEO_GENERATION_ENABLED ? videoOptions : [];
     return generationOptions;
   }
 
   function modelValueForMode(mode: ProviderModelMode) {
     if (mode === "transcription") return providerSettings.transcriptionModel;
     if (mode === "image") return providerSettings.imageModel;
+    if (mode === "video") return providerSettings.videoModel;
     if (localModelEnabled && providerSettings.localGeneration.modelId.trim()) {
       return localGenerationOptionId(providerSettings.localGeneration.modelId);
     }
@@ -1132,10 +1145,11 @@ export function AppSettings({
 
   function openModelPicker(mode: ProviderModelMode) {
     if (mode === "image" && !IMAGE_GENERATION_ENABLED) return;
+    if (mode === "video" && !VIDEO_GENERATION_ENABLED) return;
     setPickerMode(mode);
     setModelSearch("");
-    // Image models are a curated local list, not a fetched catalog.
-    if (mode !== "image") void requestVeniceModels(mode);
+    // Image and video models are curated local lists, not fetched catalogs.
+    if (mode !== "image" && mode !== "video") void requestVeniceModels(mode);
   }
 
   function microphonePopoverStyle(): CSSProperties {
@@ -1770,6 +1784,28 @@ export function AppSettings({
                         />
                       </div>
                     </div>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            {VIDEO_GENERATION_ENABLED ? (
+              <section className="settings-group" aria-labelledby="video-generation-heading">
+                <h2 id="video-generation-heading" className="settings-group-heading">
+                  Video generation
+                </h2>
+                <p className="settings-group-description">
+                  Choose the model June uses when you ask it to generate a video.
+                </p>
+                <div className="settings-card">
+                  <div className="settings-rows">
+                    <ModelRow
+                      title="Video"
+                      description="Used when you generate a video from chat."
+                      value={providerSettings.videoModel}
+                      options={videoOptions}
+                      onOpen={() => openModelPicker("video")}
+                    />
                   </div>
                 </div>
               </section>

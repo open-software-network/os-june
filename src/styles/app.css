@@ -2500,6 +2500,48 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+.agent-generated-video {
+  max-width: min(100%, 520px);
+  margin-block: var(--sp-2);
+}
+
+.agent-generated-video-placeholder {
+  display: grid;
+  place-items: center;
+  gap: var(--sp-2);
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.agent-generated-video-progress {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-generated-video-frame {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  overflow: hidden;
+}
+
+.agent-generated-video-frame video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--background);
+  object-fit: contain;
+}
+
 /* Artifact viewer ----------------------------------------------------
  * The files panel is its own card on the background surface — a sibling of
  * .main-panel, not a box inside it. It fixes to the window's right edge with

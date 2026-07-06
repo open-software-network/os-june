@@ -2,3 +2,7 @@
 // gaps that kept image generation out of the release: fast-path images enter
 // the model's context, and generation/editing work as LLM tools.
 export const IMAGE_GENERATION_ENABLED = true;
+
+// Kill switch for the /video fast path. Default off for the first ship,
+// mirroring IMAGE_GENERATION_ENABLED.
+export const VIDEO_GENERATION_ENABLED = false;

@@ -1,6 +1,6 @@
-import { IMAGE_GENERATION_ENABLED } from "./feature-flags";
+import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "./feature-flags";
 
-export type BuiltinComposerSlashCommandName = "model" | "file" | "image";
+export type BuiltinComposerSlashCommandName = "model" | "file" | "image" | "video";
 
 export type BuiltinComposerSlashCommandDef = {
   name: BuiltinComposerSlashCommandName;
@@ -43,18 +43,29 @@ const BASE_BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] = [
   },
 ];
 
-export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] =
-  IMAGE_GENERATION_ENABLED
+export const BUILTIN_COMPOSER_SLASH_COMMANDS: BuiltinComposerSlashCommandDef[] = [
+  ...BASE_BUILTIN_COMPOSER_SLASH_COMMANDS,
+  ...(IMAGE_GENERATION_ENABLED
     ? [
-        ...BASE_BUILTIN_COMPOSER_SLASH_COMMANDS,
         {
-          name: "image",
+          name: "image" as const,
           label: "Image",
           description: "Generate an image from a prompt.",
           insertText: "/image ",
         },
       ]
-    : BASE_BUILTIN_COMPOSER_SLASH_COMMANDS;
+    : []),
+  ...(VIDEO_GENERATION_ENABLED
+    ? [
+        {
+          name: "video" as const,
+          label: "Video",
+          description: "Generate a video from a prompt.",
+          insertText: "/video ",
+        },
+      ]
+    : []),
+];
 
 export function parseBuiltinComposerSlashCommand(
   input: string,
@@ -179,7 +190,7 @@ export function slashModelResolutionError(
 }
 
 function isBuiltinComposerSlashCommandName(name: string): name is BuiltinComposerSlashCommandName {
-  return name === "model" || name === "file" || name === "image";
+  return name === "model" || name === "file" || name === "image" || name === "video";
 }
 
 function normalizeSlashCommandQuery(value: string) {

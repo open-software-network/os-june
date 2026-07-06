@@ -67,6 +67,7 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
   // priced catalog the picker fetches, so there is no "Suggested" subset to
   // surface — the picker shows the full curated list.
   image: [],
+  video: [],
 };
 
 /**

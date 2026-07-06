@@ -148,6 +148,36 @@ export type AgentChatImagePart = {
   error?: string;
 };
 
+export type AgentChatVideoPart = {
+  type: "video";
+  status: "running" | "complete" | "error";
+  /** The prompt that produced the video. */
+  prompt: string;
+  /** Stable June API replay key for this logical `/video` turn. */
+  requestId?: string;
+  /** Video model pinned at turn creation for replay-shape stability. */
+  model?: string;
+  /** Safe-mode value pinned at turn creation for replay-shape stability. */
+  safeMode?: boolean;
+  /** Original synthetic user-turn timestamp, kept so retry can finish the same turn. */
+  userCreatedAt?: string;
+  /** Original synthetic assistant-turn timestamp, kept so retry can finish the same turn. */
+  videoCreatedAt?: string;
+  /** June API video job id, set once queueing succeeds. */
+  jobId?: string;
+  /** Last processing progress from the status poll. */
+  averageExecutionMs?: number;
+  executionMs?: number;
+  /** Local mp4 path; set once `status === "complete"`. */
+  path?: string;
+  /** Optional poster preview, reserved for future backend support. */
+  posterDataUrl?: string;
+  /** Display name of the local video file; set when complete. */
+  name?: string;
+  /** User-facing failure message; set when `status === "error"`. */
+  error?: string;
+};
+
 export type AgentChatPart =
   | AgentChatTextPart
   | AgentChatReasoningPart
@@ -159,7 +189,8 @@ export type AgentChatPart =
   | AgentChatSecretPart
   | AgentChatNoticePart
   | AgentChatSteeringPart
-  | AgentChatImagePart;
+  | AgentChatImagePart
+  | AgentChatVideoPart;
 
 export type AgentChatTurn = {
   id: string;
@@ -182,6 +213,13 @@ const MEDIA_IMAGE_REFERENCE_PATTERN = new RegExp(
 );
 const mediaImageReferencePattern = () =>
   new RegExp(MEDIA_IMAGE_REFERENCE_PATTERN.source, MEDIA_IMAGE_REFERENCE_PATTERN.flags);
+const MEDIA_VIDEO_EXTENSION_PATTERN = "mp4|mov|webm|m4v";
+const MEDIA_VIDEO_REFERENCE_PATTERN = new RegExp(
+  `MEDIA:(/[^\\r\\n]+?\\.(?:${MEDIA_VIDEO_EXTENSION_PATTERN}))(?:[)\\].,;:]?)(?=\\s|$)`,
+  "gi",
+);
+export const mediaVideoReferencePattern = () =>
+  new RegExp(MEDIA_VIDEO_REFERENCE_PATTERN.source, MEDIA_VIDEO_REFERENCE_PATTERN.flags);
 
 function sortAgentChatTurns(turns: AgentChatTurn[]) {
   return turns
@@ -224,11 +262,14 @@ export function buildHermesSessionChatTurns(
         text: textFromHermesContent(message.content) ?? "",
         status: "complete",
       });
-      // An image tool result carries its image inline (base64); render it as an
-      // image part so it shows in-thread instead of being lost to the collapsed
-      // tool row. The base64 is stripped from the tool text above.
+      // Media tool results render inline so they show in-thread instead of
+      // being lost to the collapsed tool row. Image base64 and MEDIA refs are
+      // stripped from the tool text above.
       for (const imagePart of imagePartsFromHermesContent(message.content)) {
         turn.parts.push(imagePart);
+      }
+      for (const videoPart of videoPartsFromHermesContent(message.content)) {
+        turn.parts.push(videoPart);
       }
       turn.status = "complete";
       continue;
@@ -237,6 +278,8 @@ export function buildHermesSessionChatTurns(
     const content = displayContentForHermesMessage(message);
     const messageImageParts =
       message.role === "assistant" ? imagePartsFromHermesContent(message.content) : [];
+    const messageVideoParts =
+      message.role === "assistant" ? videoPartsFromHermesContent(message.content) : [];
     const contextPart = content ? contextCompactionPartForHermesContent(content) : undefined;
 
     const turn: AgentChatTurn = {
@@ -296,6 +339,7 @@ export function buildHermesSessionChatTurns(
       }
       if (!contextPart && turn.role === "assistant") {
         appendImageParts(turn.parts, messageImageParts);
+        appendVideoParts(turn.parts, messageVideoParts);
       }
     }
 
@@ -490,8 +534,9 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
         // A billing failure is recognizable from its "Error:" text prefix; a
         // context overflow is not, so only fold it when the turn actually
         // failed — an ordinary sentence that mentions "context length" stays prose.
-        const displayText = stripMediaImageReferences(text);
+        const displayText = stripMediaReferences(text);
         const imageParts = imagePartsFromHermesContent(text);
+        const videoParts = videoPartsFromHermesContent(text);
         const notice = displayText
           ? (creditsNoticeFromTurnText(displayText) ??
             (event.failed ? contextOverflowNotice(displayText) : undefined))
@@ -505,10 +550,11 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
         } else if (text) {
           if (displayText.trim()) {
             completeAssistantTextPart(currentAssistant.parts, displayText);
-          } else if (imageParts.length) {
+          } else if (imageParts.length || videoParts.length) {
             removeAssistantTextParts(currentAssistant.parts);
           }
           appendImageParts(currentAssistant.parts, imageParts);
+          appendVideoParts(currentAssistant.parts, videoParts);
         }
         currentAssistant.status = "complete";
         completeRunningParts(currentAssistant.parts);
@@ -858,6 +904,15 @@ function appendImageParts(parts: AgentChatPart[], images: AgentChatImagePart[]) 
           (image.dataUrl && part.dataUrl === image.dataUrl)),
     );
     if (!exists) parts.push(image);
+  }
+}
+
+function appendVideoParts(parts: AgentChatPart[], videos: AgentChatVideoPart[]) {
+  for (const video of videos) {
+    const exists = parts.some(
+      (part) => part.type === "video" && video.path && part.path === video.path,
+    );
+    if (!exists) parts.push(video);
   }
 }
 
@@ -1231,8 +1286,13 @@ function parseLikelyJsonContent(value: string) {
 }
 
 function stripMediaImageReferences(value: string) {
+  return stripMediaReferences(value);
+}
+
+function stripMediaReferences(value: string) {
   return value
     .replace(mediaImageReferencePattern(), "")
+    .replace(mediaVideoReferencePattern(), "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n");
 }
@@ -1261,11 +1321,45 @@ function mediaImageReferences(value: unknown, depth = 0): string[] {
   return [];
 }
 
+export function mediaVideoReferences(value: unknown, depth = 0): string[] {
+  if (value === null || value === undefined || depth > 4) return [];
+  if (typeof value === "string") {
+    const parsed = parseLikelyJsonContent(value);
+    const nested = parsed !== undefined ? mediaVideoReferences(parsed, depth + 1) : [];
+    const direct = [...value.matchAll(mediaVideoReferencePattern())]
+      .map((match) => match[1]?.trim())
+      .filter((path): path is string => Boolean(path));
+    return uniqueStrings([...nested, ...direct]);
+  }
+  if (Array.isArray(value)) {
+    return uniqueStrings(value.flatMap((item) => mediaVideoReferences(item, depth + 1)));
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return uniqueStrings(
+      ["text", "output_text", "content", "message", "delta", "summary", "url", "video_url"].flatMap(
+        (key) => mediaVideoReferences(record[key], depth + 1),
+      ),
+    );
+  }
+  return [];
+}
+
 function mediaImagePart(path: string): AgentChatImagePart {
   return {
     type: "image",
     status: "complete",
     prompt: "Generated image",
+    path,
+    name: filenameFromPath(path),
+  };
+}
+
+export function mediaVideoPart(path: string): AgentChatVideoPart {
+  return {
+    type: "video",
+    status: "complete",
+    prompt: "Generated video",
     path,
     name: filenameFromPath(path),
   };
@@ -1363,6 +1457,12 @@ export function imagePartsFromHermesContent(content: unknown): AgentChatImagePar
   return [...blockParts, ...mediaParts];
 }
 
+/** Turns MCP video MEDIA refs into inline video parts, so tool-produced videos
+ * render in-thread the same way the `/video` fast path does. */
+export function videoPartsFromHermesContent(content: unknown): AgentChatVideoPart[] {
+  return mediaVideoReferences(content).map(mediaVideoPart);
+}
+
 function stripHermesContextMarkers(value: string) {
   const withoutWarnings = value.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
@@ -1409,6 +1509,7 @@ function partText(part: AgentChatPart) {
   // A generated image is meaningful even though it has no body text — report the
   // prompt so the turn isn't filtered out as empty and a copy reads sensibly.
   if (part.type === "image") return part.prompt;
+  if (part.type === "video") return part.prompt;
   return part.text;
 }
 

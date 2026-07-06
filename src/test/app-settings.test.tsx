@@ -179,12 +179,15 @@ function buildProviderSettings() {
     generationModel: localState.enabled ? localState.modelId : "zai-org-glm-5-2",
     remoteGenerationModel: "zai-org-glm-5-2",
     imageModel: "venice-sd35",
+    videoModel: "seedance-2-0-fast-text-to-video",
     veniceApiKeyConfigured: false,
     localGeneration: {
       baseUrl: localState.baseUrl,
       modelId: localState.modelId,
       apiKey: localState.apiKey,
     },
+    imageSafeMode: false,
+    videoSafeMode: false,
   };
 }
 
@@ -243,12 +246,15 @@ describe("AppSettings", () => {
         generationModel: "zai-org-glm-5-2",
         remoteGenerationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
+        videoModel: "seedance-2-0-fast-text-to-video",
         veniceApiKeyConfigured: false,
         localGeneration: {
           baseUrl: "",
           modelId: "",
           apiKey: "",
         },
+        imageSafeMode: false,
+        videoSafeMode: false,
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -385,12 +391,15 @@ describe("AppSettings", () => {
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       remoteGenerationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       imageModel: mode === "image" ? modelId : "venice-sd35",
+      videoModel: mode === "video" ? modelId : "seedance-2-0-fast-text-to-video",
       veniceApiKeyConfigured: false,
       localGeneration: {
         baseUrl: localState.baseUrl,
         modelId: localState.modelId,
         apiKey: localState.apiKey,
       },
+      imageSafeMode: false,
+      videoSafeMode: false,
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
       ...buildProviderSettings(),

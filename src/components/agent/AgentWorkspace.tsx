@@ -96,6 +96,7 @@ import {
   hermesAgentCliAccess,
   hermesBridgeSkills,
   generateImage,
+  localVideoFileSrc,
   hermesBridgeStatus,
   hermesBridgeToolsets,
   importHermesBridgeFile,
@@ -116,6 +117,8 @@ import {
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
+  videoGenerate,
+  videoStatus,
   type AgentTaskDto,
   type AgentTaskStatus,
   type HermesBridgeStatus,
@@ -254,7 +257,12 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage, newImageRequestId } from "../../lib/chat-image-generation";
-import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
+import {
+  generateChatVideo,
+  newVideoRequestId,
+  type GenerateChatVideoOptions,
+} from "../../lib/chat-video-generation";
+import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -864,6 +872,23 @@ type PersistedImageSlashTurn = {
   safeMode?: boolean;
 };
 
+type PersistedVideoSlashTurn = {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  path: string;
+  name: string;
+  createdAt: string;
+  videoCreatedAt: string;
+  pending?: boolean;
+  requestId?: string;
+  model?: string;
+  safeMode?: boolean;
+  jobId?: string;
+  averageExecutionMs?: number;
+  executionMs?: number;
+};
+
 function imageSlashUserTurn(turn: Pick<PersistedImageSlashTurn, "createdAt" | "id" | "prompt">) {
   return {
     id: `${turn.id}:user`,
@@ -963,12 +988,124 @@ function runningImageSlashTurns(input: {
   ];
 }
 
+function videoSlashUserTurn(turn: Pick<PersistedVideoSlashTurn, "createdAt" | "id" | "prompt">) {
+  return {
+    id: `${turn.id}:user`,
+    role: "user" as const,
+    createdAt: turn.createdAt,
+    status: "complete" as const,
+    parts: [{ type: "text" as const, text: turn.prompt, status: "complete" as const }],
+  };
+}
+
+function videoSlashAssistantTurn(
+  turn: Pick<
+    PersistedVideoSlashTurn,
+    | "id"
+    | "videoCreatedAt"
+    | "name"
+    | "path"
+    | "prompt"
+    | "createdAt"
+    | "pending"
+    | "requestId"
+    | "model"
+    | "safeMode"
+    | "jobId"
+    | "averageExecutionMs"
+    | "executionMs"
+  >,
+): AgentChatTurn {
+  if (turn.pending) {
+    return {
+      id: `${turn.id}:assistant`,
+      role: "assistant",
+      createdAt: turn.videoCreatedAt,
+      status: turn.jobId ? "running" : "complete",
+      parts: [
+        {
+          type: "video",
+          status: turn.jobId ? "running" : "error",
+          prompt: turn.prompt,
+          requestId: turn.requestId,
+          model: turn.model,
+          safeMode: turn.safeMode,
+          jobId: turn.jobId,
+          userCreatedAt: turn.createdAt,
+          videoCreatedAt: turn.videoCreatedAt,
+          averageExecutionMs: turn.averageExecutionMs,
+          executionMs: turn.executionMs,
+          error: turn.jobId ? undefined : "Generation was interrupted. Try again to resume.",
+        },
+      ],
+    };
+  }
+  return {
+    id: `${turn.id}:assistant`,
+    role: "assistant",
+    createdAt: turn.videoCreatedAt,
+    status: "complete",
+    parts: [
+      {
+        type: "video",
+        status: "complete",
+        prompt: turn.prompt,
+        path: turn.path,
+        name: turn.name,
+        model: turn.model,
+      },
+    ],
+  };
+}
+
+function runningVideoSlashTurns(input: {
+  id: string;
+  prompt: string;
+  requestId: string;
+  createdAt: string;
+  videoCreatedAt: string;
+  model?: string;
+  safeMode?: boolean;
+}): AgentChatTurn[] {
+  return [
+    videoSlashUserTurn(input),
+    {
+      id: `${input.id}:assistant`,
+      role: "assistant",
+      createdAt: input.videoCreatedAt,
+      status: "running",
+      parts: [
+        {
+          type: "video",
+          status: "running",
+          prompt: input.prompt,
+          requestId: input.requestId,
+          model: input.model,
+          safeMode: input.safeMode,
+          userCreatedAt: input.createdAt,
+          videoCreatedAt: input.videoCreatedAt,
+        },
+      ],
+    },
+  ];
+}
+
 function imageSlashTurnsBySessionFromStored(): Record<string, AgentChatTurn[]> {
   const turns = storedImageSlashTurns();
   return Object.fromEntries(
     Object.entries(turns).map(([sessionId, sessionTurns]) => [
       sessionId,
       sessionTurns.flatMap((turn) => [imageSlashUserTurn(turn), imageSlashAssistantTurn(turn)]),
+    ]),
+  );
+}
+
+function videoSlashTurnsBySessionFromStored(): Record<string, AgentChatTurn[]> {
+  const turns = storedVideoSlashTurns();
+  return Object.fromEntries(
+    Object.entries(turns).map(([sessionId, sessionTurns]) => [
+      sessionId,
+      sessionTurns.flatMap((turn) => [videoSlashUserTurn(turn), videoSlashAssistantTurn(turn)]),
     ]),
   );
 }
@@ -1122,6 +1259,125 @@ function removeStoredImageSlashSession(sessionId: string) {
   writeStoredImageSlashTurns(turns);
 }
 
+function storedVideoSlashTurns(): Record<string, PersistedVideoSlashTurn[]> {
+  try {
+    const raw = window.localStorage.getItem(VIDEO_SLASH_TURNS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([sessionId, value]) => [
+          sessionId,
+          Array.isArray(value)
+            ? value
+                .map((item) => persistedVideoSlashTurn(sessionId, item))
+                .filter((item): item is PersistedVideoSlashTurn => item !== undefined)
+            : [],
+        ])
+        .filter(([, turns]) => turns.length > 0),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistedVideoSlashTurn(
+  sessionId: string,
+  value: unknown,
+): PersistedVideoSlashTurn | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<PersistedVideoSlashTurn>;
+  const pending =
+    candidate.pending === true &&
+    typeof candidate.requestId === "string" &&
+    candidate.requestId.trim() !== "";
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.prompt !== "string" ||
+    typeof candidate.path !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.createdAt !== "string" ||
+    typeof candidate.videoCreatedAt !== "string" ||
+    !candidate.id.trim() ||
+    !candidate.prompt.trim() ||
+    (!pending && !candidate.path.trim()) ||
+    Number.isNaN(Date.parse(candidate.createdAt)) ||
+    Number.isNaN(Date.parse(candidate.videoCreatedAt))
+  ) {
+    return undefined;
+  }
+  return {
+    id: candidate.id,
+    sessionId,
+    prompt: candidate.prompt,
+    path: candidate.path,
+    name: candidate.name,
+    createdAt: candidate.createdAt,
+    videoCreatedAt: candidate.videoCreatedAt,
+    ...(pending
+      ? {
+          pending: true,
+          requestId: candidate.requestId,
+          model: typeof candidate.model === "string" ? candidate.model : undefined,
+          safeMode: typeof candidate.safeMode === "boolean" ? candidate.safeMode : undefined,
+          jobId: typeof candidate.jobId === "string" ? candidate.jobId : undefined,
+          averageExecutionMs:
+            typeof candidate.averageExecutionMs === "number"
+              ? candidate.averageExecutionMs
+              : undefined,
+          executionMs:
+            typeof candidate.executionMs === "number" ? candidate.executionMs : undefined,
+        }
+      : {
+          model: typeof candidate.model === "string" ? candidate.model : undefined,
+        }),
+  };
+}
+
+function writeStoredVideoSlashTurns(turns: Record<string, PersistedVideoSlashTurn[]>) {
+  try {
+    const entries = Object.entries(turns)
+      .map(([sessionId, sessionTurns]) => [
+        sessionId,
+        sessionTurns
+          .slice()
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+          .slice(-50),
+      ])
+      .filter(([, sessionTurns]) => (sessionTurns as PersistedVideoSlashTurn[]).length > 0);
+    if (!entries.length) {
+      window.localStorage.removeItem(VIDEO_SLASH_TURNS_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      VIDEO_SLASH_TURNS_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(entries)),
+    );
+  } catch {
+    // Best-effort restore only; the live in-memory turns still render.
+  }
+}
+
+function upsertStoredVideoSlashTurn(turn: PersistedVideoSlashTurn) {
+  const turns = storedVideoSlashTurns();
+  const sessionTurns = turns[turn.sessionId] ?? [];
+  turns[turn.sessionId] = [...sessionTurns.filter((item) => item.id !== turn.id), turn];
+  writeStoredVideoSlashTurns(turns);
+}
+
+function removeStoredVideoSlashSession(sessionId: string) {
+  const turns = storedVideoSlashTurns();
+  if (!turns[sessionId]) return;
+  delete turns[sessionId];
+  writeStoredVideoSlashTurns(turns);
+}
+
+function filenameFromWorkspacePath(path: string, fallback: string) {
+  const name = path.split(/[\\/]/).pop()?.trim();
+  return name || fallback;
+}
+
 function uniqueAttachmentsByWorkspacePath(attachments: AgentAttachment[]) {
   const seen = new Set<string>();
   return attachments.filter((attachment) => {
@@ -1249,6 +1505,7 @@ const NEW_SESSION_DRAFT_KEY = "new-session";
 const NEW_SESSION_DRAFT_STORAGE_KEY = "june:agent:new-session-draft";
 const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY = "june:agent:reviewable-issue-reports";
 const IMAGE_SLASH_TURNS_STORAGE_KEY = "june:agent:image-slash-turns";
+const VIDEO_SLASH_TURNS_STORAGE_KEY = "june:agent:video-slash-turns";
 const ISSUE_REPORT_DELIVERY_SETTLED_EVENT = "june-agent-issue-report-delivery-settled";
 const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
@@ -1669,6 +1926,7 @@ export function AgentWorkspace({
   // Reuses the importingFiles busy-gating (set alongside it); this flag only
   // tailors the composer placeholder copy while an image is generating.
   const [generatingImage, setGeneratingImage] = useState(false);
+  const [generatingVideo, setGeneratingVideo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
@@ -1813,6 +2071,18 @@ export function AgentWorkspace({
   const [imageTurnsBySession, setImageTurnsBySession] = useState<Record<string, AgentChatTurn[]>>(
     imageSlashTurnsBySessionFromStored,
   );
+  const [videoTurnsBySession, setVideoTurnsBySession] = useState<Record<string, AgentChatTurn[]>>(
+    videoSlashTurnsBySessionFromStored,
+  );
+
+  useEffect(() => {
+    const pending = Object.values(storedVideoSlashTurns())
+      .flat()
+      .filter((turn) => turn.pending && turn.jobId && turn.requestId);
+    for (const turn of pending) {
+      void resumePendingVideoSlashTurn(turn);
+    }
+  }, []);
   // JUN-171 (Phase A): the `/image` fast path renders in-thread but never enters
   // the model's session history, so a follow-up ("do you think it's nice?")
   // reaches an empty context. Hold each generated image here, keyed by session,
@@ -2266,7 +2536,9 @@ export function AgentWorkspace({
       return next;
     });
     setImageTurnsBySession((current) => omitRecordKey(current, sessionId));
+    setVideoTurnsBySession((current) => omitRecordKey(current, sessionId));
     removeStoredImageSlashSession(sessionId);
+    removeStoredVideoSlashSession(sessionId);
     // Feature 11: a deleted session has no activity to show, so drop its row
     // from the activity drawer's store as well.
     hermesActivityStore.clearSession(sessionId);
@@ -3634,6 +3906,15 @@ export function AgentWorkspace({
       return true;
     }
 
+    if (parsed.name === "video") {
+      if (!VIDEO_GENERATION_ENABLED) {
+        setError("Video generation is not available.");
+        return true;
+      }
+      await runVideoSlashCommand(parsed.argument, commandText);
+      return true;
+    }
+
     await runFileSlashCommand(parsed.argument, commandText);
     return true;
   }
@@ -3900,6 +4181,383 @@ export function AgentWorkspace({
       requestId,
       createdAt,
       imageCreatedAt,
+      model: pinnedModel,
+      safeMode: pinnedSafeMode,
+    });
+  }
+
+  function updateVideoSlashPart(
+    sessionId: string,
+    assistantTurnId: string,
+    patch: Partial<Extract<AgentChatPart, { type: "video" }>>,
+  ) {
+    setVideoTurnsBySession((current) => {
+      const turns = current[sessionId] ?? [];
+      return {
+        ...current,
+        [sessionId]: turns.map((turn) => {
+          if (turn.id !== assistantTurnId) return turn;
+          const parts = turn.parts.map((part) =>
+            part.type === "video" ? { ...part, ...patch } : part,
+          );
+          const running = parts.some((part) => part.type === "video" && part.status === "running");
+          return { ...turn, parts, status: running ? "running" : "complete" };
+        }),
+      };
+    });
+  }
+
+  function videoSlashBaseTurnId(assistantTurnId: string) {
+    return assistantTurnId.endsWith(":assistant")
+      ? assistantTurnId.slice(0, -":assistant".length)
+      : assistantTurnId;
+  }
+
+  async function finishVideoSlashGeneration(input: {
+    sessionId: string;
+    turnId: string;
+    prompt: string;
+    requestId: string;
+    createdAt: string;
+    videoCreatedAt: string;
+    model?: string;
+    safeMode?: boolean;
+    jobId?: string;
+  }) {
+    const { sessionId, turnId, prompt, requestId, createdAt, videoCreatedAt } = input;
+    const assistantTurnId = `${turnId}:assistant`;
+    const videoOptions: GenerateChatVideoOptions = { safeMode: input.safeMode };
+    try {
+      const result = input.jobId
+        ? await pollExistingVideoSlashJob(input)
+        : await generateChatVideo(
+            prompt,
+            {
+              startGenerate: async (text, model, nextRequestId, options) => {
+                const job = await videoGenerate({
+                  prompt: text,
+                  model,
+                  requestId: nextRequestId,
+                  ...options,
+                });
+                updateVideoSlashPart(sessionId, assistantTurnId, { jobId: job.jobId });
+                upsertStoredVideoSlashTurn({
+                  id: turnId,
+                  sessionId,
+                  prompt,
+                  path: "",
+                  name: "",
+                  createdAt,
+                  videoCreatedAt,
+                  pending: true,
+                  requestId,
+                  model: input.model,
+                  safeMode: input.safeMode,
+                  jobId: job.jobId,
+                });
+                return job;
+              },
+              pollStatus: videoStatus,
+              onProgress: (progress) => {
+                updateVideoSlashPart(sessionId, assistantTurnId, {
+                  jobId: progress.jobId,
+                  averageExecutionMs: progress.averageExecutionMs,
+                  executionMs: progress.executionMs,
+                });
+                upsertStoredVideoSlashTurn({
+                  id: turnId,
+                  sessionId,
+                  prompt,
+                  path: "",
+                  name: "",
+                  createdAt,
+                  videoCreatedAt,
+                  pending: true,
+                  requestId,
+                  model: input.model,
+                  safeMode: input.safeMode,
+                  jobId: progress.jobId,
+                  averageExecutionMs: progress.averageExecutionMs,
+                  executionMs: progress.executionMs,
+                });
+              },
+            },
+            input.model,
+            requestId,
+            videoOptions,
+          );
+      if (result.status !== "ok") {
+        updateVideoSlashPart(sessionId, assistantTurnId, {
+          status: "error",
+          error: result.message,
+          jobId: result.jobId,
+        });
+        return;
+      }
+      const name = filenameFromWorkspacePath(result.path, "generated-video.mp4");
+      updateVideoSlashPart(sessionId, assistantTurnId, {
+        status: "complete",
+        path: result.path,
+        name,
+        model: result.model ?? input.model,
+      });
+      upsertStoredVideoSlashTurn({
+        id: turnId,
+        sessionId,
+        prompt,
+        path: result.path,
+        name,
+        createdAt,
+        videoCreatedAt,
+        requestId,
+        model: result.model ?? input.model,
+        safeMode: input.safeMode,
+        jobId: result.jobId,
+      });
+      hermesArtifactStore.recordArtifact(
+        {
+          sessionId,
+          kind: "file",
+          action: "created",
+          path: result.path,
+          displayName: name,
+          previewAvailable: false,
+        },
+        hermesModeFor(sessionId),
+      );
+      void loadFilesystemSnapshot();
+    } catch (err) {
+      updateVideoSlashPart(sessionId, assistantTurnId, {
+        status: "error",
+        error: messageFromError(err),
+      });
+    } finally {
+      setGeneratingVideo(false);
+      setImportingFiles(false);
+    }
+  }
+
+  async function pollExistingVideoSlashJob(input: {
+    sessionId: string;
+    turnId: string;
+    prompt: string;
+    requestId: string;
+    createdAt: string;
+    videoCreatedAt: string;
+    model?: string;
+    safeMode?: boolean;
+    jobId?: string;
+  }) {
+    if (!input.jobId) {
+      return { status: "error" as const, message: "Generation was interrupted." };
+    }
+    const status = await videoStatus(input.jobId);
+    if (status.status === "completed") {
+      return {
+        status: "ok" as const,
+        jobId: input.jobId,
+        path: status.path,
+        mimeType: status.mimeType,
+        sizeBytes: status.sizeBytes,
+        model: status.model,
+      };
+    }
+    if (status.status === "failed") {
+      return { status: "error" as const, message: status.reason, jobId: input.jobId };
+    }
+    updateVideoSlashPart(input.sessionId, `${input.turnId}:assistant`, {
+      jobId: input.jobId,
+      averageExecutionMs: status.averageExecutionMs,
+      executionMs: status.executionMs,
+    });
+    upsertStoredVideoSlashTurn({
+      id: input.turnId,
+      sessionId: input.sessionId,
+      prompt: input.prompt,
+      path: "",
+      name: "",
+      createdAt: input.createdAt,
+      videoCreatedAt: input.videoCreatedAt,
+      pending: true,
+      requestId: input.requestId,
+      model: input.model,
+      safeMode: input.safeMode,
+      jobId: input.jobId,
+      averageExecutionMs: status.averageExecutionMs,
+      executionMs: status.executionMs,
+    });
+    return {
+      status: "error" as const,
+      message: "Video generation is still running. Try again later.",
+      jobId: input.jobId,
+    };
+  }
+
+  async function resumePendingVideoSlashTurn(turn: PersistedVideoSlashTurn) {
+    if (!turn.jobId) return;
+    const assistantTurnId = `${turn.id}:assistant`;
+    try {
+      const status = await videoStatus(turn.jobId);
+      if (status.status === "completed") {
+        const name = filenameFromWorkspacePath(status.path, "generated-video.mp4");
+        updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+          status: "complete",
+          path: status.path,
+          name,
+          model: status.model,
+        });
+        upsertStoredVideoSlashTurn({
+          ...turn,
+          pending: false,
+          path: status.path,
+          name,
+          model: status.model,
+        });
+        return;
+      }
+      if (status.status === "failed") {
+        updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+          status: "error",
+          error: status.reason,
+        });
+        return;
+      }
+      updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+        status: "running",
+        jobId: turn.jobId,
+        averageExecutionMs: status.averageExecutionMs,
+        executionMs: status.executionMs,
+      });
+      upsertStoredVideoSlashTurn({
+        ...turn,
+        pending: true,
+        averageExecutionMs: status.averageExecutionMs,
+        executionMs: status.executionMs,
+      });
+    } catch (err) {
+      updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+        status: "error",
+        error: messageFromError(err),
+      });
+    }
+  }
+
+  async function retryVideoSlashTurn(
+    sessionId: string,
+    assistantTurnId: string,
+    part: Extract<AgentChatPart, { type: "video" }>,
+  ) {
+    if (part.status !== "error" || !part.requestId) return;
+    const now = new Date().toISOString();
+    setError(null);
+    setImportingFiles(true);
+    setGeneratingVideo(true);
+    updateVideoSlashPart(sessionId, assistantTurnId, {
+      status: "running",
+      error: undefined,
+    });
+    await finishVideoSlashGeneration({
+      sessionId,
+      turnId: videoSlashBaseTurnId(assistantTurnId),
+      prompt: part.prompt,
+      requestId: part.requestId,
+      createdAt: part.userCreatedAt ?? now,
+      videoCreatedAt: part.videoCreatedAt ?? now,
+      model: part.model,
+      safeMode: part.safeMode,
+      jobId: part.jobId,
+    });
+  }
+
+  async function runVideoSlashCommand(argument: string, commandText: string) {
+    const prompt = argument.trim();
+    if (!prompt) {
+      setError("Type a description after /video to generate a video.");
+      return;
+    }
+
+    const heroMode = newSessionModeRef.current;
+    if (heroMode) setHeroLeaving(true);
+    clearComposerCommandDraft(commandText);
+    setError(null);
+    setImportingFiles(true);
+    setGeneratingVideo(true);
+
+    let targetSessionId: string | undefined;
+    try {
+      targetSessionId = await submitHermesSession(prompt, undefined, {
+        skipPrompt: true,
+        displayContent: prompt,
+        titleContent: prompt,
+      });
+    } catch (err) {
+      if (heroMode) setHeroLeaving(false);
+      setGeneratingVideo(false);
+      setImportingFiles(false);
+      setError(messageFromError(err));
+      return;
+    }
+    if (!targetSessionId) {
+      if (heroMode) setHeroLeaving(false);
+      setGeneratingVideo(false);
+      setImportingFiles(false);
+      setError("Could not start a video session. Try again.");
+      return;
+    }
+    const sessionId = targetSessionId;
+
+    const turnStartedAt = Date.now();
+    const turnId = `video:${sessionId}:${turnStartedAt}`;
+    const createdAt = new Date(turnStartedAt).toISOString();
+    const videoCreatedAt = new Date(turnStartedAt + 1).toISOString();
+    const requestId = newVideoRequestId();
+    let pinnedModel: string | undefined;
+    let pinnedSafeMode: boolean | undefined;
+    try {
+      const settingsResponse = await providerModelSettings();
+      pinnedModel = settingsResponse.settings.videoModel || undefined;
+      pinnedSafeMode = settingsResponse.settings.videoSafeMode;
+    } catch {
+      // Non-fatal: generation proceeds with server-resolved settings.
+    }
+
+    setVideoTurnsBySession((current) => ({
+      ...current,
+      [sessionId]: [
+        ...(current[sessionId] ?? []),
+        ...runningVideoSlashTurns({
+          id: turnId,
+          prompt,
+          requestId,
+          createdAt,
+          videoCreatedAt,
+          model: pinnedModel,
+          safeMode: pinnedSafeMode,
+        }),
+      ],
+    }));
+
+    upsertStoredVideoSlashTurn({
+      id: turnId,
+      sessionId,
+      prompt,
+      path: "",
+      name: "",
+      createdAt,
+      videoCreatedAt,
+      pending: true,
+      requestId,
+      model: pinnedModel,
+      safeMode: pinnedSafeMode,
+    });
+
+    await finishVideoSlashGeneration({
+      sessionId,
+      turnId,
+      prompt,
+      requestId,
+      createdAt,
+      videoCreatedAt,
       model: pinnedModel,
       safeMode: pinnedSafeMode,
     });
@@ -6693,10 +7351,10 @@ export function AgentWorkspace({
   // send (last turn is the user's) — once an assistant turn exists it carries
   // its own thinking/streaming state, so we don't double up.
   const hermesTurns = selectedHermesSessionId
-    ? // Merge the `/image` overlay (client-synthesized assistant image turns)
-      // with the gateway-derived turns, ordered by createdAt. Array.sort is
-      // stable, and an image turn's createdAt is minted strictly after its user
-      // prompt, so the image always renders below the prompt that produced it.
+    ? // Merge client-synthesized slash overlays with gateway-derived turns,
+      // ordered by createdAt. Array.sort is stable, and media turn timestamps
+      // are minted strictly after their user prompts, so results render below
+      // the prompts that produced them.
       [
         ...mergeThinkingTurns(
           buildHermesSessionChatTurns(
@@ -6705,6 +7363,7 @@ export function AgentWorkspace({
           ),
         ),
         ...(imageTurnsBySession[selectedHermesSessionId] ?? []),
+        ...(videoTurnsBySession[selectedHermesSessionId] ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
   const taskTurns = selectedTask
@@ -6774,6 +7433,12 @@ export function AgentWorkspace({
       path: part.path,
       rootLabel: "Workspace",
     });
+  };
+  const downloadGeneratedVideo = (part: Extract<AgentChatPart, { type: "video" }>) => {
+    if (!part.path) return;
+    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
+      setError(messageFromError(err)),
+    );
   };
 
   // Feature 14: open an artifact from the drawer's timeline. The timeline's
@@ -7282,13 +7947,15 @@ export function AgentWorkspace({
             ref={composerEditorRef}
             skills={skills}
             placeholder={
-              generatingImage
-                ? "Generating image…"
-                : importingFiles
-                  ? "Attaching file…"
-                  : heroMode
-                    ? "Ask June anything, run / commands"
-                    : "Send a message"
+              generatingVideo
+                ? "Generating video…"
+                : generatingImage
+                  ? "Generating image…"
+                  : importingFiles
+                    ? "Attaching file…"
+                    : heroMode
+                      ? "Ask June anything, run / commands"
+                      : "Send a message"
             }
             onChange={(text, nextCategory) => {
               draftRef.current = text;
@@ -7643,6 +8310,10 @@ export function AgentWorkspace({
           onOpenImage={openGeneratedImage}
           onRetryImage={(assistantTurnId, part) =>
             void retryImageSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+          }
+          onDownloadVideo={downloadGeneratedVideo}
+          onRetryVideo={(assistantTurnId, part) =>
+            void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
           }
           onApproval={(part, choice) =>
             void respondToApproval(
@@ -9866,6 +10537,8 @@ function AgentChatTurnRow({
   onDownloadImage,
   onOpenImage,
   onRetryImage,
+  onDownloadVideo,
+  onRetryVideo,
   onThinkingOpenChange,
   onTopUp,
   topUpLabel,
@@ -9897,6 +10570,8 @@ function AgentChatTurnRow({
   onDownloadImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onOpenImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onRetryImage?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "image" }>) => void;
+  onDownloadVideo?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
+  onRetryVideo?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "video" }>) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
@@ -10195,6 +10870,13 @@ function AgentChatTurnRow({
               onOpen={onOpenImage}
               onDownload={onDownloadImage}
               onRetry={onRetryImage ? () => onRetryImage(turn.id, part) : undefined}
+            />
+          ) : part.type === "video" ? (
+            <AgentGeneratedVideo
+              key={`${turn.id}:video:${index}`}
+              part={part}
+              onDownload={onDownloadVideo}
+              onRetry={onRetryVideo ? () => onRetryVideo(turn.id, part) : undefined}
             />
           ) : null,
         )}
@@ -10677,6 +11359,82 @@ function AgentGeneratedImage({
       </figcaption>
     </figure>
   );
+}
+
+function AgentGeneratedVideo({
+  part,
+  onDownload,
+  onRetry,
+}: {
+  part: Extract<AgentChatPart, { type: "video" }>;
+  onDownload?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
+  onRetry?: () => void;
+}) {
+  if (part.status === "running") {
+    const progress = videoProgressLabel(part);
+    return (
+      <div className="agent-generated-video" data-status="running" role="status" aria-live="polite">
+        <div className="agent-generated-video-placeholder">
+          <span className="text-shimmer">Generating video, this can take a minute</span>
+          {progress ? <span className="agent-generated-video-progress">{progress}</span> : null}
+        </div>
+      </div>
+    );
+  }
+  if (part.status === "error") {
+    return (
+      <div className="agent-generated-video" data-status="error">
+        <p className="agent-generated-image-error">
+          {part.error?.trim() || "Could not generate the video."}
+        </p>
+        {onRetry && part.requestId ? (
+          <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
+            Try again
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+  const label = part.name?.trim() || "Generated video";
+  const src = part.path ? localVideoFileSrc(part.path) : undefined;
+  return (
+    <figure className="agent-generated-video" data-status="complete">
+      <div className="agent-generated-video-frame">
+        {src ? (
+          <video controls src={src} poster={part.posterDataUrl} preload="metadata" />
+        ) : (
+          <span className="agent-generated-image-loading text-shimmer">Loading video...</span>
+        )}
+      </div>
+      <figcaption className="agent-generated-image-bar">
+        <span className="agent-generated-image-name" title={label}>
+          {label}
+        </span>
+        {onDownload && part.path ? (
+          <button
+            type="button"
+            className="agent-generated-image-download"
+            onClick={() => onDownload(part)}
+            aria-label="Download video"
+            title="Download video"
+          >
+            <IconArrowInbox size={14} aria-hidden />
+            <span>Download</span>
+          </button>
+        ) : null}
+      </figcaption>
+    </figure>
+  );
+}
+
+function videoProgressLabel(part: Extract<AgentChatPart, { type: "video" }>) {
+  if (typeof part.executionMs !== "number" || part.executionMs <= 0) return undefined;
+  const elapsed = Math.max(1, Math.round(part.executionMs / 1000));
+  if (typeof part.averageExecutionMs !== "number" || part.averageExecutionMs <= 0) {
+    return `${elapsed}s elapsed`;
+  }
+  const total = Math.max(elapsed, Math.round(part.averageExecutionMs / 1000));
+  return `${elapsed}s of about ${total}s`;
 }
 
 function ClarifyPart({

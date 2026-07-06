@@ -172,7 +172,7 @@ export type DictationHelperEvent = {
   };
 };
 
-export type ProviderModelMode = "transcription" | "generation" | "image";
+export type ProviderModelMode = "transcription" | "generation" | "image" | "video";
 
 export type ProviderModelSettingsDto = {
   transcriptionProvider: string;
@@ -181,11 +181,13 @@ export type ProviderModelSettingsDto = {
   generationModel: string;
   remoteGenerationModel: string;
   imageModel: string;
+  videoModel: string;
   veniceApiKeyConfigured: boolean;
   localGeneration: LocalGenerationSettingsDto;
   /** Venice safe mode for image generation/editing (blurs adult content). Off
    * by default (privacy-first); the user opts in via Settings. */
   imageSafeMode: boolean;
+  videoSafeMode: boolean;
 };
 
 export type LocalGenerationSettingsDto = {
@@ -200,6 +202,28 @@ export type GeneratedImageDto = {
   model: string;
   provider: string;
 };
+
+export type VideoJobDto = {
+  jobId: string;
+};
+
+export type VideoStatusDto =
+  | {
+      status: "processing";
+      averageExecutionMs: number;
+      executionMs: number;
+    }
+  | {
+      status: "completed";
+      path: string;
+      mimeType: string;
+      sizeBytes: number;
+      model: string;
+    }
+  | {
+      status: "failed";
+      reason: string;
+    };
 
 export type ProviderModelSettingsResponse = {
   settings: ProviderModelSettingsDto;
@@ -1654,6 +1678,27 @@ export async function editImage(input: {
   });
 }
 
+export async function videoGenerate(input: {
+  prompt: string;
+  model?: string;
+  requestId?: string;
+  duration?: string;
+  resolution?: string;
+  aspectRatio?: string;
+  audio?: boolean;
+  safeMode?: boolean;
+}) {
+  return invoke<VideoJobDto>("video_generate", {
+    request: input,
+  });
+}
+
+export async function videoStatus(jobId: string) {
+  return invoke<VideoStatusDto>("video_status", {
+    request: { jobId },
+  });
+}
+
 /** Persists the local endpoint, model id, and optional API key. Strictly
  * validated backend-side (any http/https URL with a host is accepted) and it
  * never changes the active provider — enabling is a separate step. */
@@ -1716,6 +1761,10 @@ export async function dictationHelperCommand(command: Record<string, unknown>) {
 }
 
 export function localAudioFileSrc(path: string) {
+  return convertFileSrc(path);
+}
+
+export function localVideoFileSrc(path: string) {
   return convertFileSrc(path);
 }
 
