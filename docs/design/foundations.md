@@ -121,9 +121,10 @@ its narrow live-ticking exception.
 Pass-2 worklist seeds. These are documented, not yet resolved, and Andrew
 decides the target in-browser:
 
-- **Off-scale note-preview headings** at raw 15px (app.css around 2225 and
-  8339). An orphan between `--fs-lg` and `--fs-xl`; resolve to one of them in
-  pass 2.
+- **Note-preview headings** (resolved 2026-07-06): the raw 15px h1/h2 moved
+  to `--fs-lg`, matching agent markdown headings. Still open: the one
+  remaining 15px in app.css is the `+`/`-` tool-disclosure glyph (around
+  2225), a decorative mono glyph that needs a size decision, not a heading.
 - **Raw control heights**: scattered raw min/max-heights on controls that should
   move to the `--control-*` tokens.
 - **Toggle wrapper names** (resolved 2026-07-06): an audit found every real
