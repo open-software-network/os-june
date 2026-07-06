@@ -14,6 +14,7 @@ Run commands from this skill directory:
 ```bash
 python3 scripts/os_platform.py status
 python3 scripts/os_platform.py issues list open-software --q "wallet" --limit 10
+python3 scripts/os_platform.py issues list open-software --assignee me --status todo,in_progress
 python3 scripts/os_platform.py issues search open-software "wallet bug" --status todo
 python3 scripts/os_platform.py issues show open-software 123
 python3 scripts/os_platform.py issues take open-software 123 --yes
@@ -45,7 +46,7 @@ Use the user prompt first, then `os-platform.json`, then ask the user for missin
 
 If the user asks for issues and omits org, read `os-platform.json`; if it has `org`, use it. If no org is available, ask the user which org to use before running the script.
 
-When the user asks for issues to work on, prioritize todo issues assigned to the user or with no assignee before other todo issues. If the user identity is unclear, prefer unassigned todo issues and ask which user handle to use for assigned work.
+When the user asks for their own tasks or issues assigned to them, pass `--assignee me` (the script resolves `me`/`@me` to the authenticated API user via `GET /v1/users/me`, so no handle lookup is needed). When the user asks for issues to work on generally, prioritize todo issues assigned to the user or with no assignee before other todo issues. If the user identity is unclear, prefer unassigned todo issues.
 
 ## Specific Issue Triage
 
