@@ -93,6 +93,77 @@ fn keeps_short_phrase_gaps_in_one_system_turn() {
 }
 
 #[test]
+fn includes_pre_roll_before_detected_activity() {
+    let dir = tempdir().expect("tempdir");
+    let system = dir.path().join("system.wav");
+    write_pattern_wav(&system, &[(600, 0), (900, 9_000), (2_500, 0)]);
+
+    let turns = detect_turns(&[DetectionSource {
+        artifact_id: "system-artifact".to_string(),
+        source: "system".to_string(),
+        path: system,
+    }])
+    .expect("turn detection should run");
+
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].start_ms, 600);
+    assert_eq!(turns[0].extraction_start_ms, 450);
+}
+
+#[test]
+fn clamps_pre_roll_to_start_of_recording() {
+    let dir = tempdir().expect("tempdir");
+    let system = dir.path().join("system.wav");
+    write_pattern_wav(&system, &[(900, 9_000), (2_500, 0)]);
+
+    let turns = detect_turns(&[DetectionSource {
+        artifact_id: "system-artifact".to_string(),
+        source: "system".to_string(),
+        path: system,
+    }])
+    .expect("turn detection should run");
+
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].start_ms, 0);
+    assert_eq!(turns[0].extraction_start_ms, 0);
+}
+
+#[test]
+fn orders_turns_by_detected_activity_not_pre_roll() {
+    let dir = tempdir().expect("tempdir");
+    let mic = dir.path().join("microphone.wav");
+    let system = dir.path().join("system.wav");
+    write_pattern_wav(&system, &[(900, 9_000), (2_500, 0)]);
+    write_pattern_wav(&mic, &[(60, 0), (900, 8_000), (2_500, 0)]);
+
+    let turns = detect_turns(&[
+        DetectionSource {
+            artifact_id: "mic-artifact".to_string(),
+            source: "microphone".to_string(),
+            path: mic,
+        },
+        DetectionSource {
+            artifact_id: "system-artifact".to_string(),
+            source: "system".to_string(),
+            path: system,
+        },
+    ])
+    .expect("turn detection should run");
+
+    assert_eq!(
+        turns
+            .iter()
+            .map(|turn| turn.source.as_str())
+            .collect::<Vec<_>>(),
+        vec!["system", "microphone"]
+    );
+    assert_eq!(turns[0].start_ms, 0);
+    assert_eq!(turns[0].extraction_start_ms, 0);
+    assert_eq!(turns[1].start_ms, 60);
+    assert_eq!(turns[1].extraction_start_ms, 0);
+}
+
+#[test]
 fn coalesces_adjacent_same_source_turns_before_transcription() {
     let turns = coalesce_turns_for_transcription(vec![
         turn("microphone", 1_000, 4_000, 0),
@@ -176,6 +247,7 @@ fn turn(source: &str, start_ms: i64, end_ms: i64, turn_index: i64) -> AudioTurn 
         artifact_id: format!("{source}-artifact"),
         source: source.to_string(),
         source_path: PathBuf::from(format!("{source}.wav")),
+        extraction_start_ms: start_ms,
         start_ms,
         end_ms,
         turn_index,
