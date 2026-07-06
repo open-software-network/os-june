@@ -819,6 +819,47 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
   });
 
+  it("starts a fresh report dialog draft when reopening the same category", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("textbox", { name: "Message June" })).toBeInTheDocument();
+
+    // Open a Bug report and stage a draft: a description plus a dropped file.
+    await user.click(screen.getByRole("button", { name: "Add files, notes, or reports" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    await user.type(within(dialog).getByLabelText("Description"), "sensitive draft notes");
+    const dropZone = dialog.querySelector(".report-dialog-drop");
+    expect(dropZone).not.toBeNull();
+    fireEvent.drop(dropZone as HTMLElement, {
+      dataTransfer: {
+        files: [new File(["png"], "screenshot.png", { type: "image/png" })],
+      },
+    });
+    expect(await within(dialog).findByText("screenshot.png")).toBeInTheDocument();
+
+    // Abandon the draft without sending.
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Issue report" })).toBeNull());
+
+    // Reopening the SAME category is a new report intent: the abandoned
+    // draft (description + attachment) must not survive the close.
+    await user.click(screen.getByRole("button", { name: "Add files, notes, or reports" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
+
+    const reopened = await screen.findByRole("dialog", { name: "Issue report" });
+    expect(within(reopened).getByLabelText("Description")).toHaveValue("");
+    expect(within(reopened).queryByText("screenshot.png")).toBeNull();
+    expect(within(reopened).queryByRole("list", { name: "Attached files" })).toBeNull();
+  });
+
   it("wraps a submitted issue report for June and waits for explicit send", async () => {
     const user = userEvent.setup();
     seedLegacyNewSessionReportDraft();

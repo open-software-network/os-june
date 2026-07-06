@@ -6271,24 +6271,28 @@ export function AgentWorkspace({
 
   function openReportDialog(categoryToOpen: ReportCategory) {
     setAttachMenuOpen(false);
-    // An entry point naming a DIFFERENT category is a new report intent:
-    // start clean so a preserved draft's attachments (possibly sensitive)
-    // cannot ride into it. Reopening with the same category resumes the
-    // draft, and switching categories inside the popover keeps it too.
-    if (categoryToOpen !== reportDialogCategory) {
-      reportDialogGenerationRef.current += 1;
-      setReportDialogDescription("");
-      setReportDialogAttachments([]);
-    }
+    // Every entry-point open is a fresh report intent, so start clean —
+    // even when reopening the same category. An abandoned draft (closed
+    // without sending) must not survive close, because its stale
+    // attachments (screenshots, logs) could ride into a later report
+    // unnoticed. Bumping the generation also invalidates any in-flight
+    // attachment import from the abandoned draft (see
+    // reportDialogAppendForCurrentGeneration). Switching categories INSIDE
+    // the open dialog still keeps the in-progress form — that lives in the
+    // dialog's own category selector and is unaffected.
+    reportDialogGenerationRef.current += 1;
+    setReportDialogDescription("");
+    setReportDialogAttachments([]);
     setReportDialogCategory(categoryToOpen);
     setReportDialogOpen(true);
     setIssueReportNotice(null);
   }
 
   /** Drops appends from imports that were still in flight when the report
-   * was sent: without this a slow import repopulates the cleared attachment
-   * state and haunts the next report. A close without sending keeps the
-   * generation, so a mid-flight import still completes the preserved draft. */
+   * was sent or the dialog was reopened: without this a slow import
+   * repopulates the cleared attachment state and haunts the next report.
+   * Both send and the next open bump the generation, so a mid-flight import
+   * from an abandoned draft is discarded rather than resurfaced. */
   function reportDialogAppendForCurrentGeneration() {
     const generation = reportDialogGenerationRef.current;
     return (attachments: AgentAttachment[]) => {
