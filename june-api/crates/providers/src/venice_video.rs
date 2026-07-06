@@ -73,7 +73,7 @@ impl VeniceVideoProvider {
         let status = response.status();
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), "venice video: queue non-success response");
+            tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), body = %error_body_snippet(&body_text), "venice video: queue non-success response");
             return Err(venice_video_error(status, "video_generation_rejected"));
         }
         let parsed = response.json::<VeniceVideoQueueResponse>().await.map_err(|error| {
@@ -128,7 +128,7 @@ impl VideoProvider for VeniceVideoProvider {
         let status = response.status();
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, model = %request.model.0, body_bytes = body_text.len(), "venice video: quote non-success response");
+            tracing::error!(%status, %url, model = %request.model.0, body_bytes = body_text.len(), body = %error_body_snippet(&body_text), "venice video: quote non-success response");
             return Err(venice_video_error(status, "video_quote_rejected"));
         }
         let parsed = response.json::<VeniceVideoQuoteResponse>().await.map_err(|error| {
@@ -229,7 +229,7 @@ impl VideoProvider for VeniceVideoProvider {
                 });
             }
             let body_text = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, model, body_bytes = body_text.len(), "venice video: retrieve non-success response");
+            tracing::error!(%status, %url, model, body_bytes = body_text.len(), body = %error_body_snippet(&body_text), "venice video: retrieve non-success response");
             return Err(venice_video_error(status, "video_retrieve_rejected"));
         }
         let content_type = response
@@ -305,6 +305,16 @@ fn video_too_large() -> DomainError {
     DomainError::InvalidInput {
         reason: VIDEO_TOO_LARGE_REASON.to_string(),
     }
+}
+
+/// Bounds an upstream error body for logging. Venice's 4xx bodies are short
+/// JSON naming the rejected parameter (for example an unknown model), carry no
+/// user prompt, and telling the operator *why* Venice refused is the difference
+/// between a one-line log and a live-catalog investigation. Cap the snippet so a
+/// pathological body cannot flood the logs.
+fn error_body_snippet(body: &str) -> String {
+    const MAX_CHARS: usize = 1000;
+    body.chars().take(MAX_CHARS).collect()
 }
 
 fn content_type_is_json(content_type: &str) -> bool {
