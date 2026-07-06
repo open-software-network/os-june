@@ -72,6 +72,8 @@ const JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES: usize =
     base64_encoded_len(HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES)
         + JUNE_PROVIDER_PROXY_IMAGE_JSON_OVERHEAD_BYTES;
 const IMAGE_SAFE_MODE_CONSENT_EVENT: &str = "image-safe-mode-consent";
+/// Bounds only the event payload shown in the consent dialog; the explicit-
+/// content check runs on the full prompt.
 const IMAGE_SAFE_MODE_CONSENT_PROMPT_MAX_CHARS: usize = 120;
 
 const fn base64_encoded_len(byte_count: usize) -> usize {
