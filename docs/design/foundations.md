@@ -126,8 +126,11 @@ decides the target in-browser:
   pass 2.
 - **Raw control heights**: scattered raw min/max-heights on controls that should
   move to the `--control-*` tokens.
-- **Bespoke toggle classes** (`.mcp-server-toggle` and kin) that should be the
-  `Switch` component.
+- **Toggle wrapper names** (resolved 2026-07-06): an audit found every real
+  on/off switch already uses the `Switch` component; classes like
+  `.mcp-server-toggle` are layout wrappers or disclosure buttons, not bespoke
+  toggles. Optional: rename the two wrapper classes to `-toggle-wrap` so the
+  names stop implying otherwise (deferred behind in-flight settings work).
 - **Bespoke input classes** (`dialog-input`, `settings-secret-input`,
   `mcp-add-input`, ...) pending a shared field treatment.
 - **Hand-rolled menus and popovers** (sidebar identity menu, context menus,

@@ -199,7 +199,7 @@ body {
   justify-content: center;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: var(--fs-lg);
   line-height: 1;
   letter-spacing: 1px;
   color: var(--foreground);

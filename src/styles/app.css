@@ -690,7 +690,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  min-height: 28px;
+  min-height: var(--control-md);
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: calc(var(--r-sm) - 2px);
@@ -1114,7 +1114,7 @@ input:focus-visible,
 .agent-switch {
   position: relative;
   width: 38px;
-  height: 22px;
+  height: var(--control-xs);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
   background: var(--surface-subtle);
@@ -3514,7 +3514,7 @@ input:focus-visible,
   align-items: center;
   justify-content: center;
   width: 28px;
-  height: 28px;
+  height: var(--control-md);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--secondary);
@@ -6367,7 +6367,7 @@ input:focus-visible,
   grid-template-columns: 14px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-2);
-  height: 32px;
+  height: var(--control-lg);
   padding: 0 var(--sp-2) 0 var(--sp-3);
   border: 0;
   border-radius: var(--r-md);
@@ -6516,7 +6516,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  min-height: 36px;
+  min-height: var(--control-xl);
   padding: 0 9px;
   border: 0;
   border-radius: var(--r-sm);
@@ -6886,7 +6886,7 @@ input:focus-visible,
 .section-view-all {
   display: inline-flex;
   align-items: center;
-  height: 22px;
+  height: var(--control-xs);
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
@@ -7112,7 +7112,7 @@ input:focus-visible,
   place-items: center;
   justify-self: center;
   width: 22px;
-  height: 22px;
+  height: var(--control-xs);
   padding: 0;
   border: 0;
   border-radius: var(--r-xs);
@@ -7278,7 +7278,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-3);
   width: 100%;
-  min-height: 28px;
+  min-height: var(--control-md);
   padding: 0 var(--sp-3);
   border: 0;
   border-radius: var(--r-sm);
@@ -7963,7 +7963,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  height: 22px;
+  height: var(--control-xs);
   margin: 0 calc(-1 * var(--sp-1));
   padding: 0 var(--sp-2);
   border: 0;
@@ -8036,7 +8036,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  min-height: 28px;
+  min-height: var(--control-md);
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
@@ -8219,7 +8219,7 @@ input:focus-visible,
  * reads as a sub-filter rather than echoing the Notes/Transcription tabs
  * sitting just above it. */
 .transcript-source-filter {
-  height: 28px;
+  height: var(--control-md);
 }
 
 .transcript-source-filter button {
@@ -8458,7 +8458,7 @@ input:focus-visible,
   margin: var(--sp-7) 0 var(--sp-2);
   color: var(--foreground);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: var(--fw-medium);
   letter-spacing: 0;
   line-height: 1.3;
@@ -8726,7 +8726,7 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   min-width: 30px;
-  height: 28px;
+  height: var(--control-md);
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
@@ -9378,7 +9378,7 @@ input:focus-visible,
   align-items: center;
   justify-content: center;
   width: 58px;
-  height: 32px;
+  height: var(--control-lg);
   max-width: min(440px, calc(100% - var(--sp-6)));
   padding: 0 10px;
   border: 0;
@@ -10489,7 +10489,7 @@ input:focus-visible,
 }
 
 .settings-group-action {
-  height: 26px;
+  height: var(--control-sm);
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
 }
@@ -11391,7 +11391,7 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   width: 22px;
-  height: 22px;
+  height: var(--control-xs);
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -14257,7 +14257,7 @@ input:focus-visible,
   align-items: center;
   justify-content: center;
   gap: var(--sp-2);
-  height: 28px;
+  height: var(--control-md);
   padding: 0 var(--sp-4);
   border: 1px solid transparent;
   border-radius: var(--r-md);
@@ -14300,7 +14300,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   min-width: 220px;
-  height: 32px;
+  height: var(--control-lg);
   padding: 0 32px 0 var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -14386,7 +14386,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-3);
   width: 100%;
-  min-height: 28px;
+  min-height: var(--control-md);
   /* Popover inset (sp-1) + row padding (sp-1) = the trigger's sp-3, so a
    * row's content sits exactly over the trigger's when the popover opens
    * aligned on the selected option — no horizontal jump. */
@@ -14727,7 +14727,7 @@ input:focus-visible,
 .model-picker-tabs [role="tab"] {
   display: inline-flex;
   align-items: center;
-  min-height: 28px;
+  min-height: var(--control-md);
   padding: 0 var(--sp-3);
   border: 0;
   border-radius: calc(var(--r-sm) - 2px);
@@ -16551,7 +16551,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  min-height: 26px;
+  min-height: var(--control-sm);
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
@@ -17340,7 +17340,7 @@ input:focus-visible,
   right: 100%;
   translate: 0 -50%;
   width: 28px;
-  height: 28px;
+  height: var(--control-md);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--t-fast) var(--ease-out);
@@ -17896,7 +17896,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  min-height: 32px;
+  min-height: var(--control-lg);
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
@@ -18708,7 +18708,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  height: 22px;
+  height: var(--control-xs);
   margin: 0;
   padding: 0 var(--sp-2);
   border: 0;
@@ -18742,7 +18742,7 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   width: 22px;
-  height: 22px;
+  height: var(--control-xs);
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -19205,7 +19205,7 @@ input:focus-visible,
   place-items: center;
   justify-self: start;
   width: 36px;
-  height: 36px;
+  height: var(--control-xl);
   border: 0;
   background: transparent;
   color: var(--muted-foreground);
