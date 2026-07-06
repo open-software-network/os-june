@@ -593,15 +593,45 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
 /// and `DEFAULT_IMAGE_MODEL` in the Tauri providers module — every id here must
 /// be a current Venice image model (verified against the models list), or
 /// generation fails `image_generation_rejected`. Values are the Venice per-image
-/// cost with a ~2x margin (mirroring the flat web-tool pricing): SD3.5 ~$0.01 ->
-/// 20, Chroma ~$0.01 -> 20, Qwen Image ~$0.03 -> 60, FLUX 2 Pro ~$0.03 -> 60.
-/// `$1 = 1000 credits`.
+/// cost with a ~2x margin (mirroring the flat web-tool pricing). Models that
+/// price by resolution use their default 1K tier because June does not expose a
+/// higher-resolution image request control yet. `$1 = 1000 credits`.
 fn default_image_pricing() -> BTreeMap<String, u64> {
     BTreeMap::from([
         ("venice-sd35".to_string(), 20),
+        ("grok-imagine-image-quality".to_string(), 160),
+        ("krea-2-turbo".to_string(), 80),
         ("flux-2-pro".to_string(), 60),
+        ("flux-2-max".to_string(), 180),
+        ("gpt-image-2".to_string(), 540),
+        ("gpt-image-1-5".to_string(), 520),
+        ("hunyuan-image-v3".to_string(), 180),
+        ("ideogram-v4".to_string(), 120),
+        ("imagineart-1.5-pro".to_string(), 120),
+        ("krea-v2-large".to_string(), 140),
+        ("krea-v2-medium".to_string(), 80),
+        ("luma-uni-1".to_string(), 100),
+        ("luma-uni-1-max".to_string(), 240),
+        ("nano-banana-2".to_string(), 200),
+        ("nano-banana-pro".to_string(), 360),
+        ("nano-banana-2-lite".to_string(), 120),
+        ("recraft-v4".to_string(), 100),
+        ("recraft-v4-pro".to_string(), 580),
+        ("seedream-v4".to_string(), 100),
+        ("seedream-v5-lite".to_string(), 100),
+        ("qwen-image-2".to_string(), 100),
+        ("qwen-image-2-pro".to_string(), 200),
+        ("wan-2-7-text-to-image".to_string(), 75),
+        ("wan-2-7-pro-text-to-image".to_string(), 188),
+        ("grok-imagine-image".to_string(), 80),
+        ("lustify-sdxl".to_string(), 20),
+        ("lustify-v7".to_string(), 20),
+        ("lustify-v8".to_string(), 20),
         ("qwen-image".to_string(), 60),
+        ("wai-Illustrious".to_string(), 20),
+        ("z-image-turbo".to_string(), 20),
         ("chroma".to_string(), 20),
+        ("bria-bg-remover".to_string(), 60),
     ])
 }
 
@@ -1280,7 +1310,42 @@ mod tests {
     #[test]
     fn default_config_prices_the_curated_image_models() {
         let config = valid_config();
-        for model in ["venice-sd35", "flux-2-pro", "qwen-image", "chroma"] {
+        for model in [
+            "venice-sd35",
+            "grok-imagine-image-quality",
+            "krea-2-turbo",
+            "flux-2-pro",
+            "flux-2-max",
+            "gpt-image-2",
+            "gpt-image-1-5",
+            "hunyuan-image-v3",
+            "ideogram-v4",
+            "imagineart-1.5-pro",
+            "krea-v2-large",
+            "krea-v2-medium",
+            "luma-uni-1",
+            "luma-uni-1-max",
+            "nano-banana-2",
+            "nano-banana-pro",
+            "nano-banana-2-lite",
+            "recraft-v4",
+            "recraft-v4-pro",
+            "seedream-v4",
+            "seedream-v5-lite",
+            "qwen-image-2",
+            "qwen-image-2-pro",
+            "wan-2-7-text-to-image",
+            "wan-2-7-pro-text-to-image",
+            "grok-imagine-image",
+            "lustify-sdxl",
+            "lustify-v7",
+            "lustify-v8",
+            "qwen-image",
+            "wai-Illustrious",
+            "z-image-turbo",
+            "chroma",
+            "bria-bg-remover",
+        ] {
             assert!(
                 config.image_pricing.get(model).is_some_and(|c| *c > 0),
                 "missing image price for {model}"

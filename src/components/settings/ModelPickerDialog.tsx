@@ -29,7 +29,15 @@ export function ModelMeta({ model }: { model: VeniceModelDto }) {
     items.push(<span>{model.description}</span>);
   }
   if (privacyBadge) {
-    items.push(<ModelPrivacyChip badge={privacyBadge} />);
+    const imagePrivacyLabel =
+      model.modelType === "image"
+        ? privacyBadge.mode === "private"
+          ? "Private"
+          : privacyBadge.mode === "anonymous"
+            ? "Anonymized"
+            : undefined
+        : undefined;
+    items.push(<ModelPrivacyChip badge={privacyBadge} label={imagePrivacyLabel} />);
   }
   if (flags.uncensored) {
     items.push(

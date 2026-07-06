@@ -41,6 +41,15 @@ Phase C has landed. The current built-in fallback image generation price list is
 image. Image editing is metered separately through `image_edit_pricing`, with
 `firered-image-edit` priced at 80 credits per image edit.
 
+## Addendum - 2026-07-06
+
+The Settings image-model picker now mirrors Venice's current image catalog for
+models June can price, including privacy tags (`Private` or `Anonymized`) and an
+`Uncensored` tag when Venice marks the model that way. `image_pricing` remains
+the backend allowlist for generated image models; newly exposed models are priced
+with the same flat ~2x convention as the original list. Models that Venice prices
+by resolution use the default 1K tier until June exposes resolution controls.
+
 ## Context
 
 JUN-129 shipped `/image <prompt>` as a client-side slash command: it creates a
