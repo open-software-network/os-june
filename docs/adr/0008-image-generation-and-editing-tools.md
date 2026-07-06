@@ -53,9 +53,13 @@ by resolution use the default 1K tier until June exposes resolution controls.
 ## Addendum - 2026-07-06 (JUN-209: safe mode on by default + consent dialog)
 
 Supersedes the **safe_mode** bullet above: the toggle now defaults **on**.
-Image generation had not shipped to users (the UI is feature-flagged), so this
-is a plain serde-default flip with no migration marker; a settings file
-missing the field reads `true`.
+No released build has shipped the `image_safe_mode` field (it landed with
+JUN-171 days before this change), so settings files in the wild do not carry
+it and a plain serde-default flip reaches everyone; a settings file missing
+the field reads `true`. If a build with the old default does ship before
+this lands, a one-time coercion would be needed instead - any settings save
+serializes the whole struct, so such files would pin an explicit `false` the
+user never chose.
 
 With a filtering default, the user needs an explicit, informed way out.
 June adds a **safe-mode consent dialog**, gated by an on-device keyword
