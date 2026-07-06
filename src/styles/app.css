@@ -5758,7 +5758,7 @@ input:focus-visible,
   border: 0;
   border-radius: var(--r-lg);
   background: var(--brand);
-  color: oklch(100% 0 none);
+  color: var(--on-solid);
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -14909,7 +14909,7 @@ input:focus-visible,
 .primary-action.primary-destructive {
   border-color: transparent;
   background: var(--destructive);
-  color: oklch(100% 0 none);
+  color: var(--on-solid);
 }
 
 .primary-action.primary-destructive:hover {
@@ -17178,7 +17178,7 @@ input:focus-visible,
 .folder-note-checkbox:has(input:checked) .folder-note-select-box {
   border-color: var(--brand);
   background: var(--brand);
-  color: #fff;
+  color: var(--on-solid);
 }
 
 .folder-note-checkbox:focus-within .folder-note-select-box {
@@ -18192,7 +18192,7 @@ input:focus-visible,
   justify-content: center;
   gap: var(--sp-4);
   padding: var(--sp-7);
-  color: oklch(100% 0 0);
+  color: var(--on-solid);
   /* Derived entirely from the fixed --brand terracotta (not --warm-* which
    * flip lightness in dark mode) so the hero stays a rich, white-text-safe
    * terracotta in both themes: a soft highlight top-left, brand mid, deep
@@ -18231,7 +18231,7 @@ input:focus-visible,
   top: var(--sp-6);
   left: var(--sp-7);
   display: inline-flex;
-  color: oklch(100% 0 0);
+  color: var(--on-solid);
   opacity: 0.92;
 }
 
@@ -18242,7 +18242,7 @@ input:focus-visible,
   width: max-content;
   padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-sm);
-  background: color-mix(in oklch, oklch(100% 0 0) 20%, transparent);
+  background: color-mix(in oklch, var(--on-solid) 20%, transparent);
   font-size: var(--fs-sm);
   font-weight: 400;
 }
@@ -18259,7 +18259,7 @@ input:focus-visible,
   margin: 0;
   font-size: var(--fs-md);
   line-height: 1.5;
-  color: color-mix(in oklch, oklch(100% 0 0) 86%, transparent);
+  color: color-mix(in oklch, var(--on-solid) 86%, transparent);
 }
 
 .referral-panel {
@@ -18919,7 +18919,7 @@ input:focus-visible,
   /* Mark sits on the fixed terracotta gradient in both themes, so keep it
      white rather than inheriting --primary-foreground (which inverts in
      dark). */
-  color: #fff;
+  color: var(--on-solid);
   line-height: 0;
   margin-bottom: var(--sp-2);
 }
@@ -19270,7 +19270,7 @@ input:focus-visible,
     color-mix(in oklch, var(--brand) 92%, white 8%),
     color-mix(in oklch, var(--brand) 88%, black 12%)
   );
-  color: #fff;
+  color: var(--on-solid);
   font-weight: var(--fw-medium);
   text-shadow: 0 1px 1px color-mix(in oklch, black 18%, transparent);
   box-shadow:
@@ -19497,7 +19497,7 @@ input:focus-visible,
     color-mix(in oklch, var(--brand) 92%, white 8%),
     color-mix(in oklch, var(--brand) 88%, black 12%)
   );
-  color: #fff;
+  color: var(--on-solid);
   font: inherit;
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
@@ -19572,7 +19572,7 @@ input:focus-visible,
     color-mix(in oklch, var(--brand) 94%, white 6%),
     color-mix(in oklch, var(--brand) 86%, black 12%)
   );
-  color: #fff;
+  color: var(--on-solid);
   box-shadow:
     inset 0 1px 0 color-mix(in oklch, white 22%, transparent),
     0 1px 4px color-mix(in oklch, var(--brand) 18%, transparent);

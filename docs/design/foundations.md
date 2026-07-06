@@ -135,4 +135,9 @@ decides the target in-browser:
   `mcp-add-input`, ...) pending a shared field treatment.
 - **Hand-rolled menus and popovers** (sidebar identity menu, context menus,
   composer `@` / slash menus) pending a shared positioning helper.
-- **`#fff` literals** in the welcome and sign-in CSS that should be tokens.
+- **White-on-solid literals** (resolved 2026-07-06): text/icon whites on fixed
+  brand, gradient, and destructive solids now use `--on-solid`, a token that
+  stays white in both themes (`--primary-foreground` inverts in dark, so it
+  was never the right substitute). Still open: the sidebar recording
+  indicator's bespoke always-dark pill uses raw oklch values and needs a
+  dark-surface token family decision.

@@ -188,6 +188,10 @@
   --popover-foreground: oklch(27.24% 0.0015 84.59);
   --primary: oklch(34% 0.008 84.59);
   --primary-foreground: oklch(100% 0 none);
+  /* Text/icons on fixed brand, gradient, or destructive solids. Identical in
+   * both themes (no dark override) - unlike --primary-foreground, which
+   * inverts in dark mode. */
+  --on-solid: oklch(100% 0 none);
   --secondary: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --secondary-foreground: oklch(20.44% 0 none);
   --muted: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand-wash) 4%);
