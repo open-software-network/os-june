@@ -348,6 +348,7 @@ struct ProviderProxyState {
     token: String,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
+    video_generation_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -875,7 +876,12 @@ async fn start_hermes_bridge_inner(
     let june_context_mcp = sync_june_context_mcp(app, &command)?;
     let june_web_mcp = sync_june_web_mcp(app, &command)?;
     let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
-    let june_video_mcp = sync_june_video_mcp(app, &hermes_home, &command)?;
+    let video_generation_enabled = crate::feature_flags::VIDEO_GENERATION_ENABLED;
+    let june_video_mcp = if video_generation_enabled {
+        Some(sync_june_video_mcp(app, &hermes_home, &command)?)
+    } else {
+        None
+    };
     sync_hermes_config(
         app,
         &hermes_home,
@@ -884,7 +890,7 @@ async fn start_hermes_bridge_inner(
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
-        &june_video_mcp,
+        june_video_mcp.as_ref(),
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -907,7 +913,12 @@ async fn start_hermes_bridge_inner(
     } else {
         sandboxed
     };
-    sync_june_soul(&hermes_home, sandbox_available, agent_cli_access)?;
+    sync_june_soul(
+        &hermes_home,
+        sandbox_available,
+        agent_cli_access,
+        video_generation_enabled,
+    )?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -1042,7 +1053,13 @@ async fn ensure_provider_proxy(
         secret: load_or_create_image_source_capability_secret(&app_data_dir)?,
     };
     let videos_dir = hermes_home.join(JUNE_VIDEO_MCP_VIDEOS_DIR_NAME);
-    let started = start_june_provider_proxy(token.clone(), image_sources, videos_dir).await?;
+    let started = start_june_provider_proxy(
+        token.clone(),
+        image_sources,
+        videos_dir,
+        crate::feature_flags::VIDEO_GENERATION_ENABLED,
+    )
+    .await?;
     let mut guard = bridge
         .provider_proxy
         .lock()
@@ -6373,7 +6390,7 @@ fn sync_hermes_config(
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
-    june_video_mcp: &JuneVideoMcpConfig,
+    june_video_mcp: Option<&JuneVideoMcpConfig>,
 ) -> Result<(), AppError> {
     sync_hermes_config_with_external_dirs(
         hermes_home,
@@ -6394,7 +6411,7 @@ fn sync_hermes_config_with_external_dirs(
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
-    june_video_mcp: &JuneVideoMcpConfig,
+    june_video_mcp: Option<&JuneVideoMcpConfig>,
     external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
@@ -6409,7 +6426,7 @@ fn sync_hermes_config_with_external_dirs(
             context: Some(june_context_mcp),
             web: Some(june_web_mcp),
             image: Some(june_image_mcp),
-            video: Some(june_video_mcp),
+            video: june_video_mcp,
         },
     );
     let config_path = hermes_home.join("config.yaml");
@@ -6703,7 +6720,13 @@ fn sync_june_soul(
     hermes_home: &std::path::Path,
     sandbox_available: bool,
     agent_cli_access: bool,
+    video_generation_enabled: bool,
 ) -> Result<(), AppError> {
+    let video_section = if video_generation_enabled {
+        JUNE_SOUL_VIDEO_MD
+    } else {
+        ""
+    };
     let soul = if sandbox_available {
         let cli_section = if agent_cli_access {
             JUNE_SOUL_CLI_ALLOWED_MD
@@ -6711,10 +6734,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_VIDEO_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_VIDEO_MD}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -6873,6 +6896,7 @@ async fn start_june_provider_proxy(
     token: String,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
+    video_generation_enabled: bool,
 ) -> Result<RunningJuneProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
@@ -6892,6 +6916,7 @@ async fn start_june_provider_proxy(
             token,
             image_sources,
             videos_dir,
+            video_generation_enabled,
         }),
         shutdown_rx,
     ));
@@ -7050,6 +7075,10 @@ async fn handle_june_provider_connection(
             forward_image_tool(&mut stream, "/v1/image/edit", &body, &state.image_sources).await?;
         }
         ("POST", "/v1/video/generate") => {
+            if !state.video_generation_enabled {
+                write_not_found_response(&mut stream).await?;
+                return Ok(());
+            }
             let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             ensure_video_generation_model(&mut body);
@@ -7057,6 +7086,10 @@ async fn handle_june_provider_connection(
             forward_video_create(&mut stream, "/v1/video/generate", &body).await?;
         }
         ("POST", "/v1/video/animate") => {
+            if !state.video_generation_enabled {
+                write_not_found_response(&mut stream).await?;
+                return Ok(());
+            }
             let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             if let Err(message) = prepare_image_edit_request(&mut body, &state.image_sources) {
@@ -7076,18 +7109,26 @@ async fn handle_june_provider_connection(
             forward_video_create(&mut stream, "/v1/video/animate", &body).await?;
         }
         ("GET", path) if path.starts_with("/v1/video/status/") => {
+            if !state.video_generation_enabled {
+                write_not_found_response(&mut stream).await?;
+                return Ok(());
+            }
             forward_video_status(&mut stream, path, &state.videos_dir).await?;
         }
         _ => {
-            write_json_response(
-                &mut stream,
-                404,
-                serde_json::json!({ "error": { "message": "Not found" } }),
-            )
-            .await?;
+            write_not_found_response(&mut stream).await?;
         }
     }
     Ok(())
+}
+
+async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Result<()> {
+    write_json_response(
+        stream,
+        404,
+        serde_json::json!({ "error": { "message": "Not found" } }),
+    )
+    .await
 }
 
 struct HttpRequest {
@@ -8295,6 +8336,53 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    async fn provider_proxy_response(
+        path: &str,
+        method: &str,
+        body: &str,
+        video_generation_enabled: bool,
+    ) -> String {
+        let home = tempfile::tempdir().expect("tempdir");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind proxy listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let state = Arc::new(ProviderProxyState {
+            token: "proxy-token".to_string(),
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled,
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            handle_june_provider_connection(stream, state)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect proxy");
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer proxy-token\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .expect("read response");
+        server.await.expect("server task");
+        response
+    }
+
     fn oauth_test_connection() -> HermesBridgeConnection {
         HermesBridgeConnection {
             base_url: "http://127.0.0.1:8787".to_string(),
@@ -9209,6 +9297,33 @@ mcp_servers:
     }
 
     #[test]
+    fn render_hermes_config_omits_june_video_when_disabled() {
+        let context = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "proxy-tok",
+            "web",
+            &[],
+            BuiltinMcpConfigs {
+                context: Some(&context),
+                web: Some(&web),
+                image: Some(&image),
+                video: None,
+            },
+        );
+
+        assert!(config.contains("mcp_servers:\n  june_context:\n"));
+        assert!(config.contains("  june_web:\n"));
+        assert!(config.contains("  june_image:\n"));
+        assert!(!config.contains("june_video"));
+        assert!(!config.contains("june_video_mcp.py"));
+        assert!(!config.contains("JUNE_VIDEO_PROXY_TOKEN"));
+    }
+
+    #[test]
     fn render_hermes_config_emits_empty_mcp_servers_without_configs() {
         let config = render_hermes_config(
             "glm",
@@ -9522,7 +9637,7 @@ mcp_servers:
             &mcp,
             &web,
             &image,
-            &video,
+            Some(&video),
             &[],
         )
         .expect("sync config");
@@ -9553,7 +9668,7 @@ mcp_servers:
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path(), true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -9565,7 +9680,7 @@ mcp_servers:
     fn sandboxed_soul_describes_the_write_jail() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Seatbelt"));
@@ -9590,7 +9705,7 @@ mcp_servers:
     fn june_soul_describes_local_context_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_context"));
@@ -9606,7 +9721,7 @@ mcp_servers:
     fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Clarifying questions"));
@@ -9620,7 +9735,7 @@ mcp_servers:
     fn june_soul_describes_web_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_web"));
@@ -9632,7 +9747,7 @@ mcp_servers:
     fn sandboxed_soul_with_cli_access_describes_the_grant() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, true).expect("sync soul");
+        sync_june_soul(home.path(), true, true, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("the user enabled Agent CLI access"));
@@ -9648,12 +9763,54 @@ mcp_servers:
     fn unsandboxed_soul_makes_no_sandbox_claims() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
         assert!(!soul.contains("Seatbelt"));
         assert!(!soul.contains("sandbox"));
+    }
+
+    #[test]
+    fn june_soul_omits_video_tools_when_disabled() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are June"));
+        assert!(soul.contains("june_image"));
+        assert!(!soul.contains("june_video"));
+        assert!(!soul.contains("generate_video"));
+        assert!(!soul.contains("animate_image"));
+    }
+
+    #[test]
+    fn june_soul_includes_video_tools_when_enabled() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_video"));
+        assert!(soul.contains("generate_video"));
+        assert!(soul.contains("animate_image"));
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_returns_404_for_video_routes_when_disabled() {
+        for (method, path, body) in [
+            ("POST", "/v1/video/generate", r#"{"prompt":"make a clip"}"#),
+            ("POST", "/v1/video/animate", r#"{}"#),
+            ("GET", "/v1/video/status/job-123", ""),
+        ] {
+            let response = provider_proxy_response(path, method, body, false).await;
+            assert!(
+                response.starts_with("HTTP/1.1 404 Not Found"),
+                "{method} {path} returned {response}"
+            );
+            assert!(response.contains("Not found"));
+        }
     }
 
     #[test]

@@ -534,6 +534,14 @@ pub async fn edit_image(
 pub async fn video_generate(
     request: GenerateVideoRequest,
 ) -> Result<crate::june_api::VideoJobDto, AppError> {
+    video_generate_with_enabled(request, crate::feature_flags::VIDEO_GENERATION_ENABLED).await
+}
+
+async fn video_generate_with_enabled(
+    request: GenerateVideoRequest,
+    enabled: bool,
+) -> Result<crate::june_api::VideoJobDto, AppError> {
+    ensure_video_generation_enabled(enabled)?;
     let prompt = request.prompt.trim().to_string();
     if prompt.is_empty() {
         return Err(AppError::new("video_prompt_required", "Enter a prompt."));
@@ -578,6 +586,23 @@ pub async fn video_status(
     app: AppHandle,
     request: VideoStatusRequest,
 ) -> Result<crate::june_api::VideoStatusDto, AppError> {
+    video_status_with_enabled(app, request, crate::feature_flags::VIDEO_GENERATION_ENABLED).await
+}
+
+async fn video_status_with_enabled(
+    app: AppHandle,
+    request: VideoStatusRequest,
+    enabled: bool,
+) -> Result<crate::june_api::VideoStatusDto, AppError> {
+    let job_id = video_status_job_id_with_enabled(request, enabled)?;
+    crate::june_api::video_status(&app, job_id).await
+}
+
+fn video_status_job_id_with_enabled(
+    request: VideoStatusRequest,
+    enabled: bool,
+) -> Result<String, AppError> {
+    ensure_video_generation_enabled(enabled)?;
     let job_id = request.job_id.trim().to_string();
     if job_id.is_empty() {
         return Err(AppError::new(
@@ -585,7 +610,22 @@ pub async fn video_status(
             "Video job id is required.",
         ));
     }
-    crate::june_api::video_status(&app, job_id).await
+    Ok(job_id)
+}
+
+fn ensure_video_generation_enabled(enabled: bool) -> Result<(), AppError> {
+    if enabled {
+        Ok(())
+    } else {
+        Err(video_generation_disabled_error())
+    }
+}
+
+fn video_generation_disabled_error() -> AppError {
+    AppError::new(
+        "video_generation_disabled",
+        "Video generation is not available.",
+    )
 }
 
 #[tauri::command]
@@ -1243,6 +1283,47 @@ mod tests {
             serde_json::from_value::<ModelMode>(serde_json::json!("video")).unwrap(),
             ModelMode::Video
         );
+    }
+
+    #[test]
+    fn video_generation_guard_returns_disabled_error() {
+        let error = ensure_video_generation_enabled(false).unwrap_err();
+
+        assert_eq!(error.code, "video_generation_disabled");
+        assert_eq!(error.message, "Video generation is not available.");
+        assert!(ensure_video_generation_enabled(true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn video_generate_returns_disabled_error_by_default() {
+        let error = video_generate(GenerateVideoRequest {
+            prompt: "make a clip".to_string(),
+            model: None,
+            request_id: None,
+            duration: None,
+            resolution: None,
+            aspect_ratio: None,
+            audio: None,
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, "video_generation_disabled");
+        assert_eq!(error.message, "Video generation is not available.");
+    }
+
+    #[test]
+    fn video_status_returns_disabled_error_before_job_validation() {
+        let error = video_status_job_id_with_enabled(
+            VideoStatusRequest {
+                job_id: "job-123".to_string(),
+            },
+            false,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "video_generation_disabled");
+        assert_eq!(error.message, "Video generation is not available.");
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod commands;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+pub mod feature_flags;
 pub mod hermes_bridge;
 pub mod june_api;
 pub mod macos_menu_icons;
