@@ -88,6 +88,9 @@ const JUNE_WEB_MCP_TOKEN_ENV: &str = "JUNE_WEB_PROXY_TOKEN";
 const JUNE_IMAGE_MCP_SERVER_NAME: &str = "june_image";
 const JUNE_IMAGE_MCP_SCRIPT_NAME: &str = "june_image_mcp.py";
 const JUNE_IMAGE_MCP_SCRIPT: &str = include_str!("hermes/june_image_mcp.py");
+const JUNE_VIDEO_MCP_SERVER_NAME: &str = "june_video";
+const JUNE_VIDEO_MCP_SCRIPT_NAME: &str = "june_video_mcp.py";
+const JUNE_VIDEO_MCP_SCRIPT: &str = include_str!("hermes/june_video_mcp.py");
 /// Hermes's generated-image directory (under the Hermes home). The `june_image`
 /// MCP writes generated/edited images here under storage names minted by the
 /// Rust loopback proxy; edit-source validation and source-byte reads stay in
@@ -101,6 +104,9 @@ const JUNE_WORKSPACE_UPLOADS_DIR_NAME: &str = "uploads";
 /// Environment variable the `june_image` MCP reads its loopback proxy token
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_IMAGE_MCP_TOKEN_ENV: &str = "JUNE_IMAGE_PROXY_TOKEN";
+/// Environment variable the `june_video` MCP reads its loopback proxy token
+/// from. Kept out of argv so it does not appear in process listings.
+const JUNE_VIDEO_MCP_TOKEN_ENV: &str = "JUNE_VIDEO_PROXY_TOKEN";
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -153,6 +159,16 @@ const JUNE_SOUL_IMAGE_MD: &str = r#"
 Image tools: you have a `june_image` MCP toolset with `generate_image` and `edit_image`. Use `generate_image` when the user asks you to draw, create, make, or generate an image, picture, illustration, or logo; the result is shown to the user in the conversation and the tool returns a `filename`.
 Use this toolset instead of any generic image, media, or vision-analysis tool for image creation or edits, so June can display the returned image and keep the returned filename in context.
 When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact edit-safe filename returned by the prior image tool result as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced, even if you cannot see it. Only pass a `source_filename` from a prior `june_image` tool result.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The `generate_video` and
+/// `animate_image` tools are discovered through the `june_video` MCP server;
+/// this note teaches the model when to reach for them, how to thread prior
+/// image filenames into image-to-video, and to wait for the async result.
+const JUNE_SOUL_VIDEO_MD: &str = r#"
+Video tools: you have a `june_video` MCP toolset with `generate_video` and `animate_image`. Use `generate_video` when the user asks you to make, create, or generate a video, clip, or animation from a text description; the result is shown to the user in the conversation.
+Use `animate_image` when the user asks to animate a prior image into a video. Pass the exact prior image filename returned by `generate_image` or `edit_image` as `source_filename`, and describe the requested motion or change in `instruction`. Do not pass a bare disk path.
+Video generation usually takes ~1-3 minutes, so do not retry impatiently while a tool call is still running. June presents the finished video to the user; do not describe it as a Hermes result.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -856,6 +872,7 @@ async fn start_hermes_bridge_inner(
     let june_context_mcp = sync_june_context_mcp(app, &command)?;
     let june_web_mcp = sync_june_web_mcp(app, &command)?;
     let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
+    let june_video_mcp = sync_june_video_mcp(app, &hermes_home, &command)?;
     sync_hermes_config(
         app,
         &hermes_home,
@@ -864,6 +881,7 @@ async fn start_hermes_bridge_inner(
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
+        &june_video_mcp,
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -1062,6 +1080,13 @@ struct JuneImageMcpConfig {
     command: String,
     script_path: PathBuf,
     images_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneVideoMcpConfig {
+    command: String,
+    script_path: PathBuf,
+    videos_dir: PathBuf,
 }
 
 #[tauri::command]
@@ -6272,6 +6297,30 @@ fn sync_june_image_mcp(
     })
 }
 
+fn sync_june_video_mcp(
+    app: &AppHandle,
+    hermes_home: &std::path::Path,
+    hermes_command: &str,
+) -> Result<JuneVideoMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_VIDEO_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_VIDEO_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+    let videos_dir = hermes_home.join(JUNE_VIDEO_MCP_VIDEOS_DIR_NAME);
+    fs::create_dir_all(&videos_dir)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+
+    Ok(JuneVideoMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+        videos_dir,
+    })
+}
+
 fn remove_legacy_image_source_secret(hermes_home: &Path) -> Result<(), AppError> {
     let path = hermes_home.join(LEGACY_IMAGE_SOURCE_SECRET_FILE);
     match fs::remove_file(&path) {
@@ -6321,6 +6370,7 @@ fn sync_hermes_config(
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
+    june_video_mcp: &JuneVideoMcpConfig,
 ) -> Result<(), AppError> {
     sync_hermes_config_with_external_dirs(
         hermes_home,
@@ -6329,6 +6379,7 @@ fn sync_hermes_config(
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
+        june_video_mcp,
         &external_skill_dirs(app),
     )
 }
@@ -6340,6 +6391,7 @@ fn sync_hermes_config_with_external_dirs(
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
+    june_video_mcp: &JuneVideoMcpConfig,
     external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
@@ -6350,9 +6402,12 @@ fn sync_hermes_config_with_external_dirs(
         provider_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         external_skill_dirs,
-        Some(june_context_mcp),
-        Some(june_web_mcp),
-        Some(june_image_mcp),
+        BuiltinMcpConfigs {
+            context: Some(june_context_mcp),
+            web: Some(june_web_mcp),
+            image: Some(june_image_mcp),
+            video: Some(june_video_mcp),
+        },
     );
     let config_path = hermes_home.join("config.yaml");
     // MERGE over the existing config, never replace it: the jailed dashboard
@@ -6405,6 +6460,13 @@ fn deep_merge_yaml(base: serde_yaml::Value, overlay: serde_yaml::Value) -> serde
     }
 }
 
+struct BuiltinMcpConfigs<'a> {
+    context: Option<&'a JuneContextMcpConfig>,
+    web: Option<&'a JuneWebMcpConfig>,
+    image: Option<&'a JuneImageMcpConfig>,
+    video: Option<&'a JuneVideoMcpConfig>,
+}
+
 /// Renders the `config.yaml` June owns for every Hermes spawn. Pure so the
 /// rendered YAML (including the `skills.external_dirs` block) can be asserted in
 /// tests. Hermes deep-merges these keys over its own defaults, so June only
@@ -6415,9 +6477,7 @@ fn render_hermes_config(
     provider_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
-    june_context_mcp: Option<&JuneContextMcpConfig>,
-    june_web_mcp: Option<&JuneWebMcpConfig>,
-    june_image_mcp: Option<&JuneImageMcpConfig>,
+    mcp_configs: BuiltinMcpConfigs<'_>,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
         "  external_dirs: []\n".to_string()
@@ -6428,13 +6488,7 @@ fn render_hermes_config(
         }
         block
     };
-    let mcp_servers_block = render_mcp_servers_config(
-        june_context_mcp,
-        june_web_mcp,
-        june_image_mcp,
-        base_url,
-        provider_proxy_token,
-    );
+    let mcp_servers_block = render_mcp_servers_config(mcp_configs, base_url, provider_proxy_token);
     format!(
         r#"model:
   default: {model}
@@ -6457,24 +6511,25 @@ skills:
 }
 
 /// Renders the `mcp_servers:` block listing every built-in MCP server June
-/// registers. Both entries live under one key so Hermes deep-merges a single
-/// map; an empty map is emitted when neither is configured.
+/// registers. Built-in entries live under one key so Hermes deep-merges a
+/// single map; an empty map is emitted when none are configured.
 fn render_mcp_servers_config(
-    context: Option<&JuneContextMcpConfig>,
-    web: Option<&JuneWebMcpConfig>,
-    image: Option<&JuneImageMcpConfig>,
+    configs: BuiltinMcpConfigs<'_>,
     base_url: &str,
     proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
-    if let Some(config) = context {
+    if let Some(config) = configs.context {
         entries.push_str(&render_context_mcp_entry(config));
     }
-    if let Some(config) = web {
+    if let Some(config) = configs.web {
         entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
     }
-    if let Some(config) = image {
+    if let Some(config) = configs.image {
         entries.push_str(&render_image_mcp_entry(config, base_url, proxy_token));
+    }
+    if let Some(config) = configs.video {
+        entries.push_str(&render_video_mcp_entry(config, base_url, proxy_token));
     }
     if entries.is_empty() {
         return "mcp_servers: {}\n".to_string();
@@ -6562,6 +6617,38 @@ fn render_image_mcp_entry(
     )
 }
 
+/// The video MCP gets the loopback proxy base URL plus the generated-video
+/// directory as arguments, and the proxy token via the environment. The timeout
+/// stays above the MCP poll budget so Hermes waits for the async job loop.
+fn render_video_mcp_entry(
+    config: &JuneVideoMcpConfig,
+    base_url: &str,
+    proxy_token: &str,
+) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+      - {videos_dir}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: 900
+    connect_timeout: 10
+"#,
+        server_name = JUNE_VIDEO_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        videos_dir = yaml_string(&config.videos_dir.to_string_lossy()),
+        token_env = JUNE_VIDEO_MCP_TOKEN_ENV,
+        token = yaml_string(proxy_token),
+    )
+}
+
 /// External skill directories Hermes loads in addition to its built-in
 /// `$HERMES_HOME/skills`. User-global `~/.agents/skills` entries stay first so
 /// user/team skills can shadow app-bundled skills when names collide. The
@@ -6621,10 +6708,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_VIDEO_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_VIDEO_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -8846,9 +8933,12 @@ mcp_servers:
             "new-token",
             "web",
             &[],
-            Some(&test_june_context_mcp_config()),
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: Some(&test_june_context_mcp_config()),
+                web: None,
+                image: None,
+                video: None,
+            },
         );
         let merged = merge_hermes_config(&config_path, &rendered);
         let value: serde_yaml::Value = serde_yaml::from_str(&merged).expect("merged parses");
@@ -8902,9 +8992,12 @@ mcp_servers:
             "tok",
             "web, memory",
             &dirs,
-            None,
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+            },
         );
 
         assert!(config.contains("model:\n  default: \"glm\""));
@@ -8932,9 +9025,12 @@ mcp_servers:
             "tok",
             "web",
             &[],
-            None,
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+            },
         );
 
         assert!(config.contains("skills:\n  external_dirs: []\n"));
@@ -8956,23 +9052,35 @@ mcp_servers:
         }
     }
 
+    fn test_june_video_mcp_config() -> JuneVideoMcpConfig {
+        JuneVideoMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_video_mcp.py"),
+            videos_dir: PathBuf::from("/tmp/hermes-home/videos"),
+        }
+    }
+
     #[test]
     fn render_hermes_config_registers_june_context_mcp_server() {
         let context = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
         let image = test_june_image_mcp_config();
+        let video = test_june_video_mcp_config();
         let config = render_hermes_config(
             "glm",
             "http://127.0.0.1:9/v1",
             "proxy-tok",
             "web",
             &[],
-            Some(&context),
-            Some(&web),
-            Some(&image),
+            BuiltinMcpConfigs {
+                context: Some(&context),
+                web: Some(&web),
+                image: Some(&image),
+                video: Some(&video),
+            },
         );
 
-        // All three built-in servers live under one mcp_servers map.
+        // All four built-in servers live under one mcp_servers map.
         assert!(config.contains("mcp_servers:\n  june_context:\n"));
         assert!(config.contains("  june_web:\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
@@ -8992,6 +9100,13 @@ mcp_servers:
         assert!(!config.contains("workspace/uploads"));
         assert!(config.contains("      JUNE_IMAGE_PROXY_TOKEN: \"proxy-tok\"\n"));
         assert!(config.contains("    timeout: 660\n"));
+        // The video server mirrors image but uses the generated-video dir and
+        // a longer timeout that covers the async poll loop.
+        assert!(config.contains("  june_video:\n"));
+        assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_video_mcp.py\"\n"));
+        assert!(config.contains("      - \"/tmp/hermes-home/videos\"\n"));
+        assert!(config.contains("      JUNE_VIDEO_PROXY_TOKEN: \"proxy-tok\"\n"));
+        assert!(config.contains("    timeout: 900\n"));
     }
 
     #[test]
@@ -9002,9 +9117,12 @@ mcp_servers:
             "tok",
             "web",
             &[],
-            None,
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+            },
         );
 
         assert!(config.contains("mcp_servers: {}\n"));
@@ -9297,6 +9415,7 @@ mcp_servers:
         let mcp = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
         let image = test_june_image_mcp_config();
+        let video = test_june_video_mcp_config();
         sync_hermes_config_with_external_dirs(
             home.path(),
             4242,
@@ -9304,6 +9423,7 @@ mcp_servers:
             &mcp,
             &web,
             &image,
+            &video,
             &[],
         )
         .expect("sync config");
