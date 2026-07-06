@@ -5550,6 +5550,10 @@ input:focus-visible,
  * Measuring from the form's bottom keeps it above the toolbar in both the
  * docked and hero composers, and steady when a notice grows the form upward. */
 .agent-attach-menu {
+  /* The docked composer form is pointer-events: none (only the box opts back
+   * in), and this menu is the box's sibling — opt in here too or every row is
+   * click-dead outside the hero (same trap as .agent-composer-model-popover). */
+  pointer-events: auto;
   position: absolute;
   left: var(--sp-3);
   bottom: calc(var(--control-lg) + var(--sp-2));
