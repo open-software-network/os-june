@@ -1926,7 +1926,7 @@ input:focus-visible,
 .agent-md-table th {
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-  font-weight: 400;
+  font-weight: var(--fw-medium);
 }
 
 .agent-context-summary {
@@ -5495,7 +5495,7 @@ input:focus-visible,
 .agent-category-menu-detail-title {
   margin: 0;
   font-size: var(--fs-md);
-  font-weight: 400;
+  font-weight: var(--fw-medium);
   line-height: 1.25;
 }
 
@@ -11424,7 +11424,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 400;
+  font-weight: var(--fw-medium);
 }
 
 .installed-skills-empty-description {
@@ -12174,7 +12174,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 400;
+  font-weight: var(--fw-medium);
 }
 
 .skill-review-empty-description {
@@ -14072,6 +14072,7 @@ input:focus-visible,
   padding: 0;
   cursor: pointer;
   text-align: left;
+  font-weight: var(--fw-medium);
 }
 
 .mcp-catalog-name:hover {
@@ -15636,7 +15637,7 @@ input:focus-visible,
   gap: var(--sp-2);
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 400;
+  font-weight: var(--fw-medium);
   line-height: 1.45;
 }
 
@@ -16264,7 +16265,7 @@ input:focus-visible,
 
 .dictation-hint-item-name {
   font-size: var(--fs-md);
-  font-weight: 400;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -20893,7 +20894,7 @@ input:focus-visible,
 
 .team-taps-empty-title {
   margin: 0;
-  font-weight: 400;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
