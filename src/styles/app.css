@@ -5657,7 +5657,7 @@ input:focus-visible,
 
 .report-dialog-sent {
   margin: 0;
-  color: var(--foreground);
+  color: var(--muted-foreground);
   font-size: var(--fs-md);
   line-height: 1.5;
 }

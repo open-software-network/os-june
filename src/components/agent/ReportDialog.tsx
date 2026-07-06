@@ -12,6 +12,7 @@ import {
   ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
   REPORT_CATEGORIES,
   type ReportCategory,
+  reportCategoryDef,
 } from "./composer/reportCategory";
 import { FileTypeIcon } from "./FileTypeIcon";
 
@@ -182,7 +183,7 @@ export function ReportDialog({
               value={description}
               disabled={busy}
               rows={5}
-              placeholder="Describe what happened"
+              placeholder={reportCategoryDef(category)?.placeholder}
               onChange={(event) => {
                 setError(null);
                 onDescriptionChange(event.currentTarget.value);

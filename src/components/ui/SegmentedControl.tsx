@@ -42,14 +42,17 @@ export function SegmentedControl<T extends string>({
 
   useLayoutEffect(() => {
     function measure() {
-      const container = containerRef.current;
       const button = buttonsRef.current[selectedIndex];
-      if (!container || !button) return;
-      const containerRect = container.getBoundingClientRect();
-      const buttonRect = button.getBoundingClientRect();
+      if (!containerRef.current || !button) return;
+      // offsetLeft/offsetWidth, not getBoundingClientRect: rects include
+      // ancestor transforms, so measuring while a parent's entrance
+      // animation is mid-scale (e.g. the dialog card) bakes the shrunken
+      // geometry into the indicator and nothing ever re-measures. Offsets
+      // are layout-based and transform-immune; the container is the
+      // positioned offsetParent.
       setIndicator({
-        left: buttonRect.left - containerRect.left,
-        width: buttonRect.width,
+        left: button.offsetLeft,
+        width: button.offsetWidth,
       });
     }
     measure();

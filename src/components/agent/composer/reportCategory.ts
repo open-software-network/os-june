@@ -16,6 +16,8 @@ export type ReportCategoryDef = {
   label: string;
   /** Short helper copy for report-specific surfaces. */
   hint: string;
+  /** Description placeholder in the report dialog, tailored per category. */
+  placeholder: string;
   /** Extra terms report-category search can match beyond the label. */
   keywords: string[];
 };
@@ -25,18 +27,21 @@ export const REPORT_CATEGORIES: ReportCategoryDef[] = [
     key: "bug",
     label: "Bug report",
     hint: "Something isn't working right",
+    placeholder: "What happened, and what did you expect instead?",
     keywords: ["bug", "issue", "report", "broken", "problem", "error", "crash"],
   },
   {
     key: "feedback",
     label: "Feedback",
     hint: "Share a thought with the team",
+    placeholder: "What should the June team hear from you?",
     keywords: ["feedback", "thoughts", "comment", "suggestion"],
   },
   {
     key: "feature",
     label: "Feature request",
     hint: "Ask for something new",
+    placeholder: "What would you like June to do?",
     keywords: ["feature", "request", "idea", "wish", "want"],
   },
 ];
