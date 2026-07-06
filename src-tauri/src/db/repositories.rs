@@ -12,8 +12,6 @@ use sqlx_sqlite::SqlitePool;
 use uuid::Uuid;
 
 const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
-const TRANSCRIPT_COVERAGE_WARN_RATIO: f64 = 0.8;
-const TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS: i64 = 60_000;
 
 #[derive(Clone)]
 pub struct Repositories {
@@ -1911,8 +1909,10 @@ impl Repositories {
         if !found {
             return Ok(None);
         }
-        let warning =
-            transcript_coverage_warning(detected_speech_ms, transcribed_ms) || any_warning;
+        let warning = crate::domain::processing::transcript_coverage_warning(
+            detected_speech_ms,
+            transcribed_ms,
+        ) || any_warning;
         Ok(Some(TranscriptCoverageDto {
             detected_speech_ms,
             transcribed_ms,
@@ -2649,15 +2649,6 @@ pub struct SourceArtifactPath {
 
 pub fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-fn transcript_coverage_warning(detected_speech_ms: i64, transcribed_ms: i64) -> bool {
-    let detected_speech_ms = detected_speech_ms.max(0);
-    let transcribed_ms = transcribed_ms.max(0);
-    detected_speech_ms > 0
-        && (transcribed_ms as f64) < TRANSCRIPT_COVERAGE_WARN_RATIO * (detected_speech_ms as f64)
-        && detected_speech_ms.saturating_sub(transcribed_ms)
-            >= TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS
 }
 
 fn folder_from_row(row: sqlx_sqlite::SqliteRow) -> FolderDto {

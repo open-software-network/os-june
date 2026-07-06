@@ -911,7 +911,7 @@ fn compute_transcript_coverage(
     }
 }
 
-fn transcript_coverage_warning(detected_speech_ms: i64, transcribed_ms: i64) -> bool {
+pub(crate) fn transcript_coverage_warning(detected_speech_ms: i64, transcribed_ms: i64) -> bool {
     let detected_speech_ms = detected_speech_ms.max(0);
     let transcribed_ms = transcribed_ms.max(0);
     detected_speech_ms > 0
