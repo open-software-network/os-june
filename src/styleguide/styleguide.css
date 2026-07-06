@@ -34,10 +34,27 @@
 }
 
 .sg-topbar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
   font-family: var(--font-serif);
   font-size: var(--fs-xl);
   font-weight: 400;
   margin: 0;
+}
+
+.sg-topbar-title svg {
+  width: 16px;
+  height: auto;
+  color: var(--brand);
+}
+
+.sg-topbar-title-divider {
+  color: var(--border);
+}
+
+.sg-topbar-title-page {
+  color: var(--muted-foreground);
 }
 
 .sg-topbar-controls {

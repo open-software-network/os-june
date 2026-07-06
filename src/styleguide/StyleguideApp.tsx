@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { JuneMark } from "../components/account/AccountGate";
 import {
   applyBrandVar,
   type BrandId,
@@ -73,7 +74,14 @@ export function StyleguideApp() {
   return (
     <div className="sg-root">
       <header className="sg-topbar">
-        <h1 className="sg-topbar-title">June styleguide</h1>
+        <h1 className="sg-topbar-title">
+          <JuneMark />
+          <span>June</span>
+          <span className="sg-topbar-title-divider" aria-hidden>
+            |
+          </span>
+          <span className="sg-topbar-title-page">Style guide</span>
+        </h1>
         <div className="sg-topbar-controls">
           <fieldset className="sg-control-group">
             <legend className="sg-control-label">Theme</legend>
