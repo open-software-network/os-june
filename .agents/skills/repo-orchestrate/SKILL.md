@@ -61,9 +61,9 @@ output, and battery verdicts are the evidence.
 
 ## Gotchas
 
-- Worktrees go under `<repo>/.claude/worktrees/<branch>` — inside the
+- Worktrees go under `<repo>/.worktrees/<branch>` — inside the
   workspace so the Codex sandbox can write them (sibling `../` paths are
-  outside the sandbox), matching this repo's existing convention.
+  outside the sandbox), per repo-build-pr's worktree strategy.
 - The orchestrator must copy `.env` + `june-api/.env` from the main checkout
   into its worktree (repo-build-pr worktree strategy) — gitignored, so the
   sandbox can read them; keep secrets you can't lose out of delegated repos.
