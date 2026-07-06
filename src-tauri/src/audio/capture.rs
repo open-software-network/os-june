@@ -230,7 +230,11 @@ pub fn start_capture(
         None
     };
     let preview_for_callback = live_preview.as_ref().map(LivePreviewController::sink);
-    let started = Instant::now();
+    // Diagnostic anchor only, captured before stream construction so err_fn
+    // can attribute early errors. The recording clock (`started`, below) is
+    // anchored after stream.play(): it feeds elapsed() and the finish-time
+    // duration validation, which must not count stream setup time.
+    let capture_setup_started = Instant::now();
     let stream_error_for_callback = Arc::clone(&stream_error);
     let err_fn = move |error| {
         // Always leave a raw trace, then record the first structured issue.
@@ -246,7 +250,10 @@ pub fn start_capture(
             *issue = Some(MicrophoneStreamIssue {
                 code: "microphone_stream_error".to_string(),
                 message: format!("Microphone input stopped unexpectedly: {error}"),
-                elapsed_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+                elapsed_ms: capture_setup_started
+                    .elapsed()
+                    .as_millis()
+                    .min(i64::MAX as u128) as i64,
             });
         }
     };
@@ -345,6 +352,7 @@ pub fn start_capture(
     stream
         .play()
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
+    let started = Instant::now();
     let status = RecordingStatusDto {
         session_id: session_id.clone(),
         note_id: Some(note_id.clone()),
