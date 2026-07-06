@@ -624,6 +624,9 @@ fn classify_retrieve_error(error: &DomainError) -> RetrieveOutcome {
             "video_model_region_blocked" => RetrieveOutcome::ContentRejected {
                 reason: "model_region_blocked".to_string(),
             },
+            "video_too_large" => RetrieveOutcome::ContentRejected {
+                reason: "video_too_large".to_string(),
+            },
             "video_media_expired" => RetrieveOutcome::MediaExpired,
             _ => RetrieveOutcome::Fatal,
         },

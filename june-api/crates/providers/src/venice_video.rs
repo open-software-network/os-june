@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const DEFAULT_VIDEO_MIME: &str = "video/mp4";
+const VIDEO_TOO_LARGE_REASON: &str = "video_too_large";
 
 pub struct VeniceVideoProvider {
     http: reqwest::Client,
@@ -28,15 +29,22 @@ pub struct VeniceVideoProvider {
     /// Per-call budget for a single Venice video request. The async job budget
     /// (many polls) is bounded by the video hold TTL in june-config, not here.
     timeout: Duration,
+    max_response_bytes: u64,
 }
 
 impl VeniceVideoProvider {
-    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig, timeout: Duration) -> Self {
+    pub fn from_config(
+        http: reqwest::Client,
+        config: &UpstreamConfig,
+        timeout: Duration,
+        max_response_bytes: u64,
+    ) -> Self {
         Self {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
             timeout,
+            max_response_bytes,
         }
     }
 
@@ -243,17 +251,59 @@ impl VideoProvider for VeniceVideoProvider {
         } else {
             content_type
         };
-        let bytes = response.bytes().await.map_err(|error| {
-            tracing::error!(%error, %url, model, "venice video: reading retrieved bytes failed");
-            DomainError::UpstreamProvider
-        })?;
+        let bytes = read_video_body(response, self.max_response_bytes, &url, model).await?;
         if bytes.is_empty() {
             return Err(DomainError::UpstreamProvider);
         }
         Ok(VideoRetrieved::CompletedBytes {
-            bytes: bytes.to_vec(),
+            bytes,
             mime_type: mime,
         })
+    }
+}
+
+async fn read_video_body(
+    mut response: reqwest::Response,
+    max_response_bytes: u64,
+    url: &str,
+    model: &str,
+) -> Result<Vec<u8>, DomainError> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > max_response_bytes)
+    {
+        tracing::warn!(%url, model, content_length = response.content_length(), max_response_bytes, "venice video: retrieved body is too large");
+        return Err(video_too_large());
+    }
+    let capacity = response
+        .content_length()
+        .and_then(|len| usize::try_from(len).ok())
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut total = 0_u64;
+    loop {
+        let chunk = response.chunk().await.map_err(|error| {
+            tracing::error!(%error, %url, model, "venice video: reading retrieved bytes failed");
+            DomainError::UpstreamProvider
+        })?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        total = total
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(video_too_large)?;
+        if total > max_response_bytes {
+            tracing::warn!(%url, model, total, max_response_bytes, "venice video: retrieved body exceeded cap");
+            return Err(video_too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn video_too_large() -> DomainError {
+    DomainError::InvalidInput {
+        reason: VIDEO_TOO_LARGE_REASON.to_string(),
     }
 }
 
@@ -405,6 +455,19 @@ mod tests {
                 base_url: server.uri(),
             },
             std::time::Duration::from_secs(5),
+            100 * 1024 * 1024,
+        )
+    }
+
+    fn provider_with_cap(server: &MockServer, max_response_bytes: u64) -> VeniceVideoProvider {
+        VeniceVideoProvider::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+            std::time::Duration::from_secs(5),
+            max_response_bytes,
         )
     }
 
@@ -535,6 +598,54 @@ mod tests {
             retrieved,
             VideoRetrieved::CompletedUrl {
                 download_url: "https://cdn.venice.ai/vq_123.mp4".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieve_rejects_content_length_over_cap_without_downloading() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/video/retrieve"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "5")
+                    .set_body_raw(vec![0_u8, 1, 2, 3, 4], "video/mp4"),
+            )
+            .mount(&server)
+            .await;
+
+        let error = provider_with_cap(&server, 4)
+            .retrieve("wan-2.2-a14b-text-to-video", "vq_123")
+            .await
+            .expect_err("oversized content-length should be rejected");
+
+        assert_eq!(
+            error,
+            DomainError::InvalidInput {
+                reason: "video_too_large".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieve_rejects_stream_that_exceeds_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/video/retrieve"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(vec![0_u8, 1, 2], "video/mp4"))
+            .mount(&server)
+            .await;
+
+        let error = provider_with_cap(&server, 2)
+            .retrieve("wan-2.2-a14b-text-to-video", "vq_123")
+            .await
+            .expect_err("oversized stream should be rejected");
+
+        assert_eq!(
+            error,
+            DomainError::InvalidInput {
+                reason: "video_too_large".to_string(),
             }
         );
     }

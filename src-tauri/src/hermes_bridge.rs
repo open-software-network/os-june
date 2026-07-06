@@ -97,6 +97,9 @@ const JUNE_VIDEO_MCP_SCRIPT: &str = include_str!("hermes/june_video_mcp.py");
 /// Rust.
 const JUNE_IMAGE_MCP_IMAGES_DIR_NAME: &str = "images";
 const JUNE_VIDEO_MCP_VIDEOS_DIR_NAME: &str = "videos";
+// Keep equal to june-config DEFAULT_VIDEO_MAX_RESPONSE_BYTES. The desktop
+// cannot read june-config, and the VPS download_url path bypasses June API.
+const JUNE_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 const JUNE_VIDEO_DEFAULT_ANIMATE_MODEL: &str = "wan-2.6-image-to-video";
 const JUNE_VIDEO_DEFAULT_DURATION: &str = "5s";
 const JUNE_VIDEO_DEFAULT_RESOLUTION: &str = "720p";
@@ -7435,7 +7438,21 @@ async fn forward_video_status(
                     .to_ascii_lowercase()
                     .contains("video/mp4")
             {
-                let filename = write_proxy_video_bytes(videos_dir, &response.body)?;
+                let filename = match write_proxy_video_bytes(videos_dir, &response.body) {
+                    Ok(filename) => filename,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                        return write_json_response(
+                            stream,
+                            502,
+                            serde_json::json!({
+                                "success": false,
+                                "message": error.to_string(),
+                            }),
+                        )
+                        .await;
+                    }
+                    Err(error) => return Err(error),
+                };
                 return write_json_response(
                     stream,
                     response.status,
@@ -7512,7 +7529,21 @@ async fn write_video_status_json(
     };
     match download_proxy_video_bytes(&download_url).await {
         Ok(bytes) => {
-            let filename = write_proxy_video_bytes(videos_dir, &bytes)?;
+            let filename = match write_proxy_video_bytes(videos_dir, &bytes) {
+                Ok(filename) => filename,
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    return write_json_response(
+                        stream,
+                        502,
+                        serde_json::json!({
+                            "success": false,
+                            "message": error.to_string(),
+                        }),
+                    )
+                    .await;
+                }
+                Err(error) => return Err(error),
+            };
             let mime_type = data
                 .get("mimeType")
                 .and_then(serde_json::Value::as_str)
@@ -7564,18 +7595,60 @@ async fn download_proxy_video_bytes(url: &str) -> Result<Vec<u8>, String> {
     if !status.is_success() {
         return Err(format!("download returned status {}", status.as_u16()));
     }
-    response
-        .bytes()
-        .await
-        .map(|bytes| bytes.to_vec())
-        .map_err(|error| error.to_string())
+    read_proxy_video_response_bytes(response).await
 }
 
 fn write_proxy_video_bytes(videos_dir: &Path, bytes: &[u8]) -> io::Result<String> {
+    reject_oversized_proxy_video_bytes(bytes.len() as u64)?;
     fs::create_dir_all(videos_dir)?;
     let filename = generated_video_storage_filename();
     fs::write(videos_dir.join(&filename), bytes)?;
     Ok(filename)
+}
+
+fn reject_oversized_proxy_video_bytes(size_bytes: u64) -> io::Result<()> {
+    if size_bytes > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            video_too_large_message(),
+        ));
+    }
+    Ok(())
+}
+
+async fn read_proxy_video_response_bytes(
+    mut response: reqwest::Response,
+) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > JUNE_VIDEO_MAX_RESPONSE_BYTES)
+    {
+        return Err(video_too_large_message().to_string());
+    }
+    let capacity = response
+        .content_length()
+        .and_then(|len| usize::try_from(len).ok())
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut total = 0_u64;
+    loop {
+        let chunk = response.chunk().await.map_err(|error| error.to_string())?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        total = total
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| video_too_large_message().to_string())?;
+        if total > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+            return Err(video_too_large_message().to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn video_too_large_message() -> &'static str {
+    "video_too_large: the generated video is too large for June to retrieve."
 }
 
 fn generated_video_storage_filename() -> String {
@@ -8330,6 +8403,20 @@ mod tests {
         assert!(!is_safe_mcp_server_name("a b"));
         assert!(!is_safe_mcp_server_name("rm -rf / ; curl evil"));
         assert!(!is_safe_mcp_server_name("server;name"));
+    }
+
+    #[test]
+    fn write_proxy_video_bytes_rejects_oversized_body_without_partial_file() {
+        let videos_dir = std::env::temp_dir().join(format!(
+            "june-video-cap-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let error = reject_oversized_proxy_video_bytes(JUNE_VIDEO_MAX_RESPONSE_BYTES + 1)
+            .expect_err("oversized video should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("video_too_large"));
+        assert!(!videos_dir.exists());
     }
 
     #[test]

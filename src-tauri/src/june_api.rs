@@ -44,6 +44,9 @@ const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_JUNE_RESPONSE_MESSAGE: &str = "The processing service returned an invalid response.";
 const IMAGE_REQUEST_MAX_ATTEMPTS: usize = 3;
 const IMAGE_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(250);
+// Keep equal to june-config DEFAULT_VIDEO_MAX_RESPONSE_BYTES. The desktop
+// cannot read june-config, and the VPS download_url path bypasses June API.
+const JUNE_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 const NOTE_GENERATE_SYSTEM_PROMPT: &str =
     include_str!("../../june-api/crates/services/src/prompts/note_generate.md");
 const LOCAL_SAFETY_CONTEXT: &str = "\
@@ -599,7 +602,7 @@ async fn video_status_from_response(
         .unwrap_or("application/json")
         .to_string();
     if status.is_success() && content_type.to_ascii_lowercase().contains("video/mp4") {
-        let bytes = response.bytes().await.map_err(network_error)?.to_vec();
+        let bytes = read_video_response_bytes(response).await?;
         let (local_path, size_bytes) = write_video_bytes(app, &bytes).await?;
         let model = remembered_video_job_model(job_id_from_status_path(path));
         return Ok(VideoStatusDto::Completed {
@@ -656,10 +659,11 @@ async fn download_video_bytes(url: &str) -> Result<Vec<u8>, AppError> {
             format!("Video download returned status {}.", status.as_u16()),
         ));
     }
-    Ok(response.bytes().await.map_err(network_error)?.to_vec())
+    read_video_response_bytes(response).await
 }
 
 async fn write_video_bytes(app: &AppHandle, bytes: &[u8]) -> Result<(String, u64), AppError> {
+    reject_oversized_video_bytes(bytes.len() as u64)?;
     let videos_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("video_write_failed", error.to_string()))?
         .join("hermes")
@@ -670,6 +674,49 @@ async fn write_video_bytes(app: &AppHandle, bytes: &[u8]) -> Result<(String, u64
     fs::write(&path, bytes)
         .map_err(|error| AppError::new("video_write_failed", error.to_string()))?;
     Ok((path.to_string_lossy().into_owned(), bytes.len() as u64))
+}
+
+async fn read_video_response_bytes(mut response: reqwest::Response) -> Result<Vec<u8>, AppError> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > JUNE_VIDEO_MAX_RESPONSE_BYTES)
+    {
+        return Err(video_too_large_error());
+    }
+    let capacity = response
+        .content_length()
+        .and_then(|len| usize::try_from(len).ok())
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut total = 0_u64;
+    loop {
+        let chunk = response.chunk().await.map_err(network_error)?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        total = total
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(video_too_large_error)?;
+        if total > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+            return Err(video_too_large_error());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn reject_oversized_video_bytes(size_bytes: u64) -> Result<(), AppError> {
+    if size_bytes > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+        return Err(video_too_large_error());
+    }
+    Ok(())
+}
+
+fn video_too_large_error() -> AppError {
+    AppError::new(
+        "video_too_large",
+        "The generated video is too large for June to retrieve.",
+    )
 }
 
 fn generated_video_filename() -> String {
@@ -969,11 +1016,15 @@ pub async fn forward_video_request(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/json")
         .to_string();
-    let bytes = response.bytes().await.map_err(network_error)?;
+    let bytes = if content_type.to_ascii_lowercase().contains("video/mp4") {
+        read_video_response_bytes(response).await?
+    } else {
+        response.bytes().await.map_err(network_error)?.to_vec()
+    };
     Ok(WebProxyResponse {
         status,
         content_type,
-        body: bytes.to_vec(),
+        body: bytes,
     })
 }
 

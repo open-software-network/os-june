@@ -210,6 +210,7 @@ fn build_router(
             Duration::from_secs(image_client_timeout_secs(
                 config.server.request_timeout_secs,
             )),
+            config.video_max_response_bytes,
         ),
         pricing: config
             .video_pricing
@@ -300,11 +301,13 @@ fn build_video_provider(
     upstream_http: &reqwest::Client,
     venice: &june_config::UpstreamConfig,
     call_timeout: Duration,
+    max_response_bytes: u64,
 ) -> Arc<dyn june_domain::VideoProvider> {
     Arc::new(VeniceVideoProvider::from_config(
         upstream_http.clone(),
         venice,
         call_timeout,
+        max_response_bytes,
     ))
 }
 

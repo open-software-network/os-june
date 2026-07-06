@@ -83,6 +83,8 @@ pub const DEFAULT_VIDEO_HOLD_TTL_SECS: u64 =
 /// above this is rejected before authorize so a catalog change cannot authorize
 /// an unbounded hold (ADR 0012 Decision 1).
 pub const DEFAULT_VIDEO_MAX_CREDITS_PER_REQUEST: u64 = 20_000;
+/// Maximum raw video body June API will buffer from Venice retrieve.
+pub const DEFAULT_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 // The hold must fit the platform cap; the job must fit inside the hold.
 const _: () = assert!(DEFAULT_VIDEO_HOLD_TTL_SECS <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
 const _: () = assert!(
@@ -155,6 +157,11 @@ pub struct AppConfig {
     /// catalog change from authorizing an unbounded hold.
     #[serde(default = "default_video_max_credits_per_request")]
     pub video_max_credits_per_request: u64,
+    /// Maximum raw `video/mp4` bytes June API will retrieve from Venice before
+    /// rejecting the job. Keeps one oversized result from exhausting memory and
+    /// is enforced before charge settlement.
+    #[serde(default = "default_video_max_response_bytes")]
+    pub video_max_response_bytes: u64,
 }
 
 impl Debug for AppConfig {
@@ -181,6 +188,7 @@ impl Debug for AppConfig {
                 "video_max_credits_per_request",
                 &self.video_max_credits_per_request,
             )
+            .field("video_max_response_bytes", &self.video_max_response_bytes)
             .finish()
     }
 }
@@ -730,6 +738,10 @@ fn default_video_max_credits_per_request() -> u64 {
     DEFAULT_VIDEO_MAX_CREDITS_PER_REQUEST
 }
 
+fn default_video_max_response_bytes() -> u64 {
+    DEFAULT_VIDEO_MAX_RESPONSE_BYTES
+}
+
 fn default_video_hold_ttl_secs() -> u64 {
     DEFAULT_VIDEO_HOLD_TTL_SECS
 }
@@ -814,6 +826,7 @@ impl Default for AppConfig {
             video_animate_pricing: default_video_animate_pricing(),
             default_video_animate_model: default_video_animate_model(),
             video_max_credits_per_request: default_video_max_credits_per_request(),
+            video_max_response_bytes: default_video_max_response_bytes(),
         }
     }
 }
@@ -976,6 +989,12 @@ fn validate_video_pricing(config: &AppConfig) -> Result<(), ConfigError> {
     if config.video_max_credits_per_request == 0 {
         return Err(ConfigError::InvalidRequired {
             field: "video_max_credits_per_request",
+            reason: "must be > 0",
+        });
+    }
+    if config.video_max_response_bytes == 0 {
+        return Err(ConfigError::InvalidRequired {
+            field: "video_max_response_bytes",
             reason: "must be > 0",
         });
     }
@@ -1227,7 +1246,7 @@ mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
         DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS,
-        DEFAULT_VIDEO_JOB_MAX_SECS, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
         IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
         OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
         OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
@@ -1627,6 +1646,20 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_zero_video_response_cap() {
+        let mut config = valid_config();
+        config.video_max_response_bytes = 0;
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "video_max_response_bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn validate_rejects_unpriced_default_video_animate_model() {
         let mut config = valid_config();
         config.default_video_animate_model = "not-in-the-allowlist".to_string();
@@ -1650,6 +1683,10 @@ mod tests {
         assert!(config.os_accounts.authorize_hold_ttl_video_secs <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
         // The default ceiling is positive (a zero ceiling would reject every quote).
         assert_eq!(config.video_max_credits_per_request, 20_000);
+        assert_eq!(
+            config.video_max_response_bytes,
+            DEFAULT_VIDEO_MAX_RESPONSE_BYTES
+        );
     }
 
     #[test]

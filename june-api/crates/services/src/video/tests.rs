@@ -198,6 +198,7 @@ enum MockRetrieve {
     CompletedBytes(Vec<u8>),
     CompletedUrl(String),
     ContentViolation,
+    TooLarge,
     MediaExpired,
     Transient,
 }
@@ -268,6 +269,9 @@ fn retrieve_outcome(outcome: MockRetrieve) -> Result<VideoRetrieved, DomainError
         MockRetrieve::CompletedUrl(url) => Ok(VideoRetrieved::CompletedUrl { download_url: url }),
         MockRetrieve::ContentViolation => Err(DomainError::InvalidInput {
             reason: "video_content_violation".to_string(),
+        }),
+        MockRetrieve::TooLarge => Err(DomainError::InvalidInput {
+            reason: "video_too_large".to_string(),
         }),
         MockRetrieve::MediaExpired => Err(DomainError::InvalidInput {
             reason: "video_media_expired".to_string(),
@@ -633,6 +637,42 @@ async fn content_violation_on_status_fails_without_charging() {
         repoll,
         VideoStatusOutput::Failed {
             reason: "content_violation".to_string(),
+        }
+    );
+    assert_eq!(charge_calls(&os.events()).len(), 0);
+}
+
+#[tokio::test]
+async fn oversized_video_on_status_fails_without_charging() {
+    let os = Arc::new(RecordingOsAccounts::new(true));
+    let provider = Arc::new(
+        MockVideoProvider::completed(0.11, vec![1]).with_default_retrieve(MockRetrieve::TooLarge),
+    );
+    let service = service(os.clone(), provider);
+    let handle = service
+        .generate(generate_params("wan-2.2-a14b-text-to-video"))
+        .await
+        .expect("generate succeeds");
+
+    let status = service
+        .status(usr("usr_1"), handle.job_id.clone())
+        .await
+        .expect("oversized media resolves to a terminal failure");
+    assert_eq!(
+        status,
+        VideoStatusOutput::Failed {
+            reason: "video_too_large".to_string(),
+        }
+    );
+
+    let repoll = service
+        .status(usr("usr_1"), handle.job_id)
+        .await
+        .expect("re-poll");
+    assert_eq!(
+        repoll,
+        VideoStatusOutput::Failed {
+            reason: "video_too_large".to_string(),
         }
     );
     assert_eq!(charge_calls(&os.events()).len(), 0);

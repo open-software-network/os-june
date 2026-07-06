@@ -215,6 +215,11 @@ Trade-offs and risks:
   per-process ledger (Decision 3, #613) and the round-3 "never key charges off
   the client request id" rule. Reviewers will re-find these; they are adjudicated
   here, not reopened.
+- First-cut media retrieval is bounded buffering (100 MiB) in June API and the
+  desktop so oversized videos fail before charge or disk write. Follow-up:
+  switch raw mp4 delivery to incremental streaming to disk/HTTP (for example
+  axum `StreamBody` plus reqwest streaming) so even accepted videos are never
+  fully buffered in memory.
 
 Reference: Venice video API - `https://api.venice.ai/api/v1/swagger.yaml`
 (paths `/video/queue`, `/video/retrieve`, `/video/quote`, `/video/complete`).
