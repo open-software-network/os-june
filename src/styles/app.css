@@ -2834,7 +2834,6 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
 }
 
 .agent-session-files svg {
@@ -3290,7 +3289,6 @@ input:focus-visible,
   background: var(--primary);
   color: var(--primary-foreground);
   font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 /* Feature 11: the Agent activity drawer — a toggled observability panel that
@@ -3345,7 +3343,6 @@ input:focus-visible,
   background: var(--primary);
   color: var(--primary-foreground);
   font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .agent-activity-drawer-close {
@@ -3491,7 +3488,6 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  font-variant-numeric: tabular-nums;
 }
 
 .agent-activity-row-pending {
@@ -3630,7 +3626,6 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  font-variant-numeric: tabular-nums;
 }
 
 .agent-activity-subagent-summary {
@@ -3712,7 +3707,6 @@ input:focus-visible,
   background: var(--secondary);
   color: var(--secondary-foreground);
   font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .agent-artifacts-list {
@@ -4557,7 +4551,6 @@ input:focus-visible,
 .hermes-trace-row-time {
   margin-left: auto;
   color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
 }
 
 .hermes-trace-row-message {
@@ -7190,7 +7183,6 @@ input:focus-visible,
 .agent-session-time {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -7621,7 +7613,6 @@ input:focus-visible,
   box-shadow: var(--shadow-inset);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
   cursor: default;
   -webkit-app-region: no-drag;
   transition:
@@ -8359,7 +8350,6 @@ input:focus-visible,
 .transcript-turn-meta > time {
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
 }
 
 .transcript-turn-preview {
@@ -8622,7 +8612,6 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-xs, 11px);
   font-weight: var(--fw-medium);
-  font-variant-numeric: tabular-nums;
   line-height: 1;
   pointer-events: auto;
   cursor: default;
@@ -10308,7 +10297,6 @@ input:focus-visible,
   color: var(--foreground);
   font-size: var(--fs-xl);
   font-weight: var(--fw-medium);
-  font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
 
@@ -10810,7 +10798,6 @@ input:focus-visible,
 
 .installed-skills-chip-count {
   color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
 }
 
 .installed-skills-chip[aria-pressed="true"] .installed-skills-chip-count {
@@ -10897,7 +10884,6 @@ input:focus-visible,
 .installed-skill-version {
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .installed-skill-readonly {
@@ -19893,7 +19879,6 @@ input:focus-visible,
 
 .skills-hub-chip-count {
   color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
 }
 
 .skills-hub-chip[aria-pressed="true"] .skills-hub-chip-count {
@@ -20008,7 +19993,6 @@ input:focus-visible,
 .skills-hub-version {
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .skills-hub-installed-tag {
@@ -20129,7 +20113,6 @@ input:focus-visible,
 .skills-hub-install-label {
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .skills-hub-install-done {
