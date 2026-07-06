@@ -221,10 +221,12 @@ Trade-offs and risks:
   axum `StreamBody` plus reqwest streaming) so even accepted videos are never
   fully buffered in memory.
 - Desktop downloads of provider-supplied video URLs validate `https` and reject
-  hosts that are IP literals or resolve to non-public addresses before fetching.
-  Follow-up: close DNS-rebinding TOCTOU by resolving and connecting to the
-  validated IP through a pinned custom resolver instead of resolving once and
-  letting the HTTP client resolve again.
+  hosts that are IP literals or resolve to non-public addresses before fetching,
+  then pin the download client to those pre-validated addresses via
+  `resolve_to_addrs` with redirects disabled (`redirect::none`), so it never
+  re-resolves DNS at connect time or follows a redirect to an unvalidated host.
+  This closes the DNS-rebinding TOCTOU (resolve once, then re-resolve) that a
+  single-resolution path would leave open.
 
 Reference: Venice video API - `https://api.venice.ai/api/v1/swagger.yaml`
 (paths `/video/queue`, `/video/retrieve`, `/video/quote`, `/video/complete`).
