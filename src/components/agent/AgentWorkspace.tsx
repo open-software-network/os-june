@@ -823,6 +823,11 @@ type ImageSafeModeConsentRequest = {
   resolve: (choice: ImageSafeModeConsentChoice) => void;
 };
 
+type ImageSafeModeConsentEventPayload = {
+  source?: string;
+  prompt?: string;
+};
+
 export function agentWorkspaceErrorStateForMessage(
   message: string,
   sessionId: string | null,
@@ -1714,6 +1719,7 @@ export function AgentWorkspace({
   );
   const [imageSafeModeConsentRequest, setImageSafeModeConsentRequest] =
     useState<ImageSafeModeConsentRequest | null>(null);
+  const imageSafeModeConsentRequestRef = useRef<ImageSafeModeConsentRequest | null>(null);
   const composerSizeProceedSignatureRef = useRef<string | null>(null);
   const composerSizeProceedInputSignatureRef = useRef<string | null>(null);
   // Honest result of the last model switch (feature 10): scoped to the session
@@ -3530,7 +3536,7 @@ export function AgentWorkspace({
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
-    const installListener = async (eventName: string) => {
+    const installFileDropListener = async (eventName: string) => {
       const unlisten = await listen<TauriFileDropPayload>(eventName, (event) => {
         const paths = event.payload?.paths ?? [];
         if (paths.length) {
@@ -3543,8 +3549,22 @@ export function AgentWorkspace({
       }
       unlisteners.push(unlisten);
     };
-    void installListener("tauri://drag-drop");
-    void installListener("tauri://file-drop");
+    const installImageSafeModeConsentListener = async () => {
+      const unlisten = await listen<ImageSafeModeConsentEventPayload>(
+        "image-safe-mode-consent",
+        (event) => {
+          void handleAgentImageSafeModeConsentEvent(event.payload);
+        },
+      );
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      unlisteners.push(unlisten);
+    };
+    void installFileDropListener("tauri://drag-drop");
+    void installFileDropListener("tauri://file-drop");
+    void installImageSafeModeConsentListener();
     return () => {
       disposed = true;
       for (const unlisten of unlisteners) unlisten();
@@ -3820,15 +3840,47 @@ export function AgentWorkspace({
     variant: "slash" | "agent",
   ): Promise<ImageSafeModeConsentChoice> {
     return new Promise((resolve) => {
-      setImageSafeModeConsentRequest({ variant, resolve });
+      const request = { variant, resolve };
+      imageSafeModeConsentRequestRef.current = request;
+      setImageSafeModeConsentRequest(request);
     });
   }
 
   function resolveImageSafeModeConsent(choice: ImageSafeModeConsentChoice) {
-    const request = imageSafeModeConsentRequest;
+    const request = imageSafeModeConsentRequestRef.current;
     if (!request) return;
+    imageSafeModeConsentRequestRef.current = null;
     setImageSafeModeConsentRequest(null);
     request.resolve(choice);
+  }
+
+  async function handleAgentImageSafeModeConsentEvent(payload?: ImageSafeModeConsentEventPayload) {
+    if (payload?.source !== "agent") return;
+    if (imageSafeModeConsentRequestRef.current) return;
+
+    let settings: ProviderModelSettingsDto | undefined;
+    try {
+      settings = (await providerModelSettings()).settings;
+    } catch {
+      return;
+    }
+    if (!settings.imageSafeMode || settings.imageSafeModePromptDismissed) return;
+    if (imageSafeModeConsentRequestRef.current) return;
+
+    const choice = await requestImageSafeModeConsent("agent");
+    if (choice.action === "dismiss") return;
+    if (choice.action === "keep") {
+      if (choice.dontAskAgain) void setImageSafeModePromptDismissed(true);
+      return;
+    }
+
+    try {
+      await setImageSafeMode(false);
+    } catch (err) {
+      setError(messageFromError(err));
+      return;
+    }
+    if (choice.dontAskAgain) void setImageSafeModePromptDismissed(true);
   }
 
   // `/image <prompt>` renders the generated image inline in the chat as an

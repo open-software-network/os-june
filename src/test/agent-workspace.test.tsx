@@ -84,13 +84,11 @@ const mocks = vi.hoisted(() => ({
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   }>,
-  eventHandlers: new Map<string, (event: { payload?: { paths?: string[] } }) => void>(),
-  listen: vi.fn(
-    async (eventName: string, handler: (event: { payload?: { paths?: string[] } }) => void) => {
-      mocks.eventHandlers.set(eventName, handler);
-      return () => mocks.eventHandlers.delete(eventName);
-    },
-  ),
+  eventHandlers: new Map<string, (event: { payload?: unknown }) => unknown>(),
+  listen: vi.fn(async (eventName: string, handler: (event: { payload?: unknown }) => unknown) => {
+    mocks.eventHandlers.set(eventName, handler);
+    return () => mocks.eventHandlers.delete(eventName);
+  }),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -242,6 +240,14 @@ function mockImageGenerationSuccess() {
     rootLabel: "Workspace",
     size: 5,
     previewDataUrl: "data:image/png;base64,preview",
+  });
+}
+
+async function emitImageSafeModeConsent(prompt = "paint a nude portrait") {
+  const handler = mocks.eventHandlers.get("image-safe-mode-consent");
+  expect(handler).toBeDefined();
+  await act(async () => {
+    await handler?.({ payload: { source: "agent", prompt } });
   });
 }
 
@@ -7224,7 +7230,7 @@ describe("AgentWorkspace", () => {
     await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
     fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
 
-    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
     await user.keyboard("{Escape}");
 
     await waitFor(() =>
@@ -7233,6 +7239,99 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(mocks.generateImage).not.toHaveBeenCalled();
     expect(await screen.findByRole("textbox")).toHaveTextContent("/image a red bicycle");
+  });
+
+  it("shows safe-mode consent when the agent image event arrives", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    expect(
+      within(dialog).getByText(/June is generating an image that may include adult content/i),
+    ).toBeInTheDocument();
+  });
+
+  it("drops duplicate agent safe-mode consent events while the dialog is open", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent("first prompt");
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
+    mocks.providerModelSettings.mockClear();
+
+    await emitImageSafeModeConsent("second prompt");
+
+    expect(screen.getAllByRole("dialog", { name: "Safe mode is on" })).toHaveLength(1);
+    expect(mocks.providerModelSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps safe mode on for an agent image event and persists don't ask again", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
+    await user.click(within(dialog).getByRole("button", { name: "Keep safe mode on" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.setImageSafeModePromptDismissed).toHaveBeenCalledWith(true);
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("turns safe mode off for an agent image event and persists don't ask again", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
+    await user.click(within(dialog).getByRole("button", { name: "Turn off safe mode" }));
+
+    await waitFor(() => expect(mocks.setImageSafeMode).toHaveBeenCalledWith(false));
+    expect(mocks.setImageSafeModePromptDismissed).toHaveBeenCalledWith(true);
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("dismisses agent safe-mode consent without persisting a choice", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    expect(mocks.setImageSafeModePromptDismissed).not.toHaveBeenCalled();
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("drops stale agent safe-mode consent events when safe mode is already off", async () => {
+    mockImageSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+
+    expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument();
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    expect(mocks.setImageSafeModePromptDismissed).not.toHaveBeenCalled();
   });
 
   it("reuses the failed /image request id when the user retries the same turn", async () => {
