@@ -375,6 +375,46 @@
   transform: translateX(120px);
 }
 
+/* Canonical / legacy flags -------------------------------------------- */
+.sg-flag {
+  display: inline-block;
+  font-size: var(--fs-2xs);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-pill);
+  margin-bottom: var(--sp-3);
+}
+
+.sg-flag-ok {
+  background: var(--brand-tint);
+  color: var(--foreground);
+}
+
+.sg-flag-no {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+/* Mono caption naming a structural class next to a specimen */
+.sg-caption {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--muted-foreground);
+}
+
+/* Inline trigger chip for HoverTip specimens */
+.sg-tip-trigger {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  cursor: default;
+}
+
 /* Controls ladder */
 .sg-control-block {
   display: flex;

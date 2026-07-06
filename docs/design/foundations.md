@@ -5,9 +5,10 @@ builds on. Companion docs: [components.md](components.md) (the shared UI
 primitives) and [conventions.md](conventions.md) (naming and interaction rules).
 
 Live values render in the styleguide: run `pnpm dev`, then open
-`http://localhost:1421/styleguide.html` (sections: `color`, `type`, `spacing`,
-`radius`, `elevation`, `motion`, `controls`). Prefer reading a token's live
-swatch there over eyeballing a hex.
+`http://localhost:1421/styleguide.html` (foundations sections: `color`, `type`,
+`spacing`, `radius`, `elevation`, `motion`, `controls`; component and pattern
+sections are listed in [components.md](components.md)). Prefer reading a
+token's live swatch there over eyeballing a hex.
 
 ## Theming
 

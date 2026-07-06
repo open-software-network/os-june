@@ -3,11 +3,18 @@
 // shape stable so they slot in with a { id, label, group, component } row.
 
 import type { ComponentType } from "react";
+import { Buttons } from "./Buttons";
+import { ChatPattern } from "./ChatPattern";
 import { Color } from "./Color";
 import { Controls } from "./Controls";
 import { Elevation } from "./Elevation";
+import { FeedbackIndicators } from "./FeedbackIndicators";
+import { Inputs } from "./Inputs";
 import { Motion } from "./Motion";
+import { Overlays } from "./Overlays";
 import { Radius } from "./Radius";
+import { SelectionControls } from "./SelectionControls";
+import { SettingsPattern } from "./SettingsPattern";
 import { Spacing } from "./Spacing";
 import { Type } from "./Type";
 
@@ -31,11 +38,25 @@ export const SECTIONS: Section[] = [
   { id: "controls", label: "Controls", group: "Foundations", component: Controls },
 
   // Components ------------------------------------------------------------
-  // (register real component sections here, e.g.
-  //   { id: "buttons", label: "Buttons", group: "Components", component: Buttons })
+  { id: "buttons", label: "Buttons", group: "Components", component: Buttons },
+  {
+    id: "selection-controls",
+    label: "Selection controls",
+    group: "Components",
+    component: SelectionControls,
+  },
+  { id: "feedback", label: "Feedback", group: "Components", component: FeedbackIndicators },
+  { id: "inputs", label: "Inputs", group: "Components", component: Inputs },
+  { id: "overlays", label: "Overlays", group: "Components", component: Overlays },
 
   // Patterns --------------------------------------------------------------
-  // (register real pattern sections here)
+  {
+    id: "settings-pattern",
+    label: "Settings surface",
+    group: "Patterns",
+    component: SettingsPattern,
+  },
+  { id: "chat-pattern", label: "Chat", group: "Patterns", component: ChatPattern },
 ];
 
 // Group labels rendered in the nav, in order. Groups with no registered

@@ -56,8 +56,11 @@ See [foundations.md](foundations.md) for the token roles the theme drives.
 ## The styleguide page
 
 A dev-only living styleguide. To open it, run `pnpm dev` and visit
-`http://localhost:1421/styleguide.html?section=<id>` (sections include `color`,
-`type`, `spacing`, `radius`, `elevation`, `motion`, `controls`).
+`http://localhost:1421/styleguide.html?section=<id>`. Foundations sections:
+`color`, `type`, `spacing`, `radius`, `elevation`, `motion`, `controls`.
+Components: `buttons`, `selection-controls`, `feedback`, `inputs`, `overlays`.
+Patterns: `settings-pattern`, `chat-pattern`. `?theme=` and `?brand=` pick a
+theme and accent per URL.
 
 To add a section: create a new section file under `src/styleguide/sections/` and
 register it in the `SECTIONS` array in `src/styleguide/sections/index.ts`. The

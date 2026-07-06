@@ -5,7 +5,9 @@ Companion docs: [foundations.md](foundations.md) (tokens and type) and
 [conventions.md](conventions.md) (naming and interaction rules).
 
 Live examples render in the styleguide: run `pnpm dev`, then open
-`http://localhost:1421/styleguide.html`.
+`http://localhost:1421/styleguide.html` (sections `buttons`,
+`selection-controls`, `feedback`, `inputs`, `overlays`, `settings-pattern`,
+`chat-pattern`).
 
 ## Pattern to canonical answer
 
