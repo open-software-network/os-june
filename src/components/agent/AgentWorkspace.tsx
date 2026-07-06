@@ -1745,6 +1745,8 @@ export function AgentWorkspace({
   const [reportPopoverDescription, setReportPopoverDescription] = useState("");
   const [reportPopoverAttachments, setReportPopoverAttachments] = useState<AgentAttachment[]>([]);
   const reportPopoverRef = useRef<HTMLDivElement | null>(null);
+  // Bumped when a report is sent; see reportPopoverAppendForCurrentGeneration.
+  const reportPopoverGenerationRef = useRef(0);
   const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
     const restored = continuity?.sessionItems ?? [];
     if (!initialSession) return restored;
@@ -6297,12 +6299,25 @@ export function AgentWorkspace({
     setIssueReportNotice(null);
   }
 
+  /** Drops appends from imports that were still in flight when the report
+   * was sent: without this a slow import repopulates the cleared attachment
+   * state and haunts the next report. A close without sending keeps the
+   * generation, so a mid-flight import still completes the preserved draft. */
+  function reportPopoverAppendForCurrentGeneration() {
+    const generation = reportPopoverGenerationRef.current;
+    return (attachments: AgentAttachment[]) => {
+      if (generation === reportPopoverGenerationRef.current) {
+        addReportPopoverAttachments(attachments);
+      }
+    };
+  }
+
   function pickReportPopoverAttachments() {
-    return pickAttachments(addReportPopoverAttachments);
+    return pickAttachments(reportPopoverAppendForCurrentGeneration());
   }
 
   function importReportPopoverDroppedFiles(files: File[]) {
-    return importDroppedFiles(files, { onImported: addReportPopoverAttachments });
+    return importDroppedFiles(files, { onImported: reportPopoverAppendForCurrentGeneration() });
   }
 
   function removeReportPopoverAttachment(id: string) {
@@ -6310,6 +6325,7 @@ export function AgentWorkspace({
   }
 
   function handleReportPopoverSent() {
+    reportPopoverGenerationRef.current += 1;
     setReportPopoverOpen(false);
     setReportPopoverDescription("");
     setReportPopoverAttachments([]);

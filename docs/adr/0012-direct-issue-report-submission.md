@@ -12,17 +12,18 @@ prompt and ran it as a normal agent turn before the report was delivered to
 described a server-side "no-charge waiver" keyed off the report category, but
 no waiver was ever implemented in June API or OS Accounts: the investigation
 turn was metered and charged like any agent chat, at whatever generation model
-the user had selected (JUN-213). Users were paying to file bug reports, and
+the user had selected (JUN-213). Users were paying to file issue reports, and
 the price scaled with their model choice.
 
 Making the intended waiver real was designed first and rejected. The waiver
 signal has to originate in the client (only the composer knows a turn is a
 report), and the turn's model calls flow through the embedded Hermes runtime,
 whose `prompt.submit` contract carries no metadata — the flag would have to
-ride a synthetic model id or per-session proxy state, then be honored by June
-API only under a server-enforced model pin so a spoofed flag could not mint
-free tokens on an expensive model. That is three layers of new contract
-(frontend, Tauri proxy, June API) to keep an investigation turn nobody sees,
+ride a synthetic model id or per-session state in the shell's loopback
+provider endpoint (the Bridge), then be honored by June API only under a
+server-enforced model pin so a spoofed flag could not mint free tokens on an
+expensive model. That is three layers of new contract (frontend, the shell's
+loopback endpoint, June API) to keep an investigation turn nobody sees,
 and it strands every already-shipped app version, which sends no flag and
 would keep charging users.
 

@@ -681,7 +681,7 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("opens a bug report popover without submitting", async () => {
+  it("opens the issue report popover without submitting", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),

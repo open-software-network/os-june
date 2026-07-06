@@ -157,6 +157,28 @@ describe("ReportPopover", () => {
     expect(onDropFiles).toHaveBeenCalledWith([file]);
   });
 
+  it("blocks submit while a dropped file is still importing", async () => {
+    let resolveImport: () => void = () => {};
+    const onDropFiles = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveImport = resolve;
+        }),
+    );
+    render(<Harness initialDescription="Recorder bug" onDropFiles={onDropFiles} />);
+    const file = new File(["log"], "june.log", { type: "text/plain" });
+
+    fireEvent.drop(screen.getByRole("dialog", { name: "Issue report" }), {
+      dataTransfer: { files: [file] },
+    });
+
+    const submit = screen.getByRole("button", { name: "Send report" });
+    expect(submit).toBeDisabled();
+    resolveImport();
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+  });
+
   it("keeps the popover open with the typed input after a submit failure", async () => {
     const user = userEvent.setup();
     mocks.submitIssueReport.mockRejectedValueOnce(new Error("Network down"));

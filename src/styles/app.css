@@ -5569,7 +5569,9 @@ input:focus-visible,
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  width: min(420px, calc(100vw - 16px));
+  /* 420px is the popover's structural width, matching .agent-attach-menu's
+   * cap — a one-off outside the token scale, like the model popover's. */
+  width: min(420px, calc(100vw - var(--sp-6)));
   padding: var(--sp-3);
   border: 1px solid var(--popover-border);
   border-radius: var(--r-lg);
@@ -5633,6 +5635,8 @@ input:focus-visible,
 }
 
 .agent-report-popover-description {
+  /* One-offs outside the token scale: roughly five and ten text lines, the
+   * useful range for a report description before it should scroll. */
   min-height: 116px;
   max-height: 220px;
   resize: vertical;
@@ -5704,6 +5708,8 @@ input:focus-visible,
 
 .agent-report-popover-file {
   display: grid;
+  /* 18px = the 14px file icon plus optical breathing room (a one-off; icon
+   * sizes are set as component props, not tokens). */
   grid-template-columns: 18px minmax(0, 1fr) var(--control-sm);
   align-items: center;
   gap: var(--sp-2);

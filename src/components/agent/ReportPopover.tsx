@@ -53,10 +53,14 @@ export function ReportPopover({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Dropped-file imports resolve in the parent, and `importingFiles` only
+  // reflects them a render later — count in-flight drops here too so a fast
+  // "drop then send" cannot submit the report without the dropped file.
+  const [dropsPending, setDropsPending] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const trimmedDescription = description.trim();
   const canSubmit = Boolean(trimmedDescription || attachments.length);
-  const busy = submitting || importingFiles;
+  const busy = submitting || importingFiles || dropsPending > 0;
   const categoryOptions = useMemo(
     () =>
       REPORT_CATEGORIES.map((item) => ({
@@ -91,7 +95,8 @@ export function ReportPopover({
       return;
     }
     setError(null);
-    void onDropFiles(files);
+    setDropsPending((count) => count + 1);
+    void Promise.resolve(onDropFiles(files)).finally(() => setDropsPending((count) => count - 1));
   }
 
   async function handleSubmit() {
