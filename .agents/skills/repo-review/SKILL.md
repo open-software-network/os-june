@@ -172,6 +172,9 @@ adversarial, not verified:
 5. Hard cap: if the loop has not converged after ~5 rounds, stop and report
    the residual findings with dispositions instead of grinding — a loop
    that will not converge is itself a signal the change needs a human look.
+   The cap outranks the two-consecutive-clean rule: at the cap with only
+   one clean round, stop and report "converging but unconfirmed" rather
+   than continuing.
 6. Finish with one last Standards + Spec pass.
 7. Close the cycle in [CALIBRATION.md](CALIBRATION.md): one row per reviewer
    (findings / true / pattern notes). This is what keeps the battery
