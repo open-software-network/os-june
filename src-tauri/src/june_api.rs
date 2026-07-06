@@ -651,9 +651,18 @@ async fn video_status_from_response(
 }
 
 async fn download_video_bytes(url: &str) -> Result<Vec<u8>, AppError> {
-    crate::video_download_url::validate_video_download_url(url)
+    let (parsed, validated_addrs) = crate::video_download_url::validate_video_download_url(url)
         .map_err(|message| AppError::new("video_download_url_rejected", message))?;
-    let response = http_client().get(url).send().await.map_err(network_error)?;
+    let client =
+        crate::video_download_url::video_download_client_builder(&parsed, &validated_addrs)
+            .map_err(|message| AppError::new("video_download_url_rejected", message))?
+            .timeout(HTTP_TIMEOUT)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .user_agent("os-june-video-download/0.1")
+            .build()
+            .map_err(network_error)?;
+    let response = client.get(parsed).send().await.map_err(network_error)?;
     let status = response.status();
     if !status.is_success() {
         return Err(AppError::new(

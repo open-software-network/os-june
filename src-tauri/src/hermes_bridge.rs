@@ -7581,14 +7581,14 @@ async fn write_video_status_json(
 }
 
 async fn download_proxy_video_bytes(url: &str) -> Result<Vec<u8>, String> {
-    crate::video_download_url::validate_video_download_url(url)?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(600))
-        .build()
-        .map_err(|error| error.to_string())?;
+    let (parsed, validated_addrs) = crate::video_download_url::validate_video_download_url(url)?;
+    let client =
+        crate::video_download_url::video_download_client_builder(&parsed, &validated_addrs)?
+            .timeout(Duration::from_secs(600))
+            .build()
+            .map_err(|error| error.to_string())?;
     let response = client
-        .get(url)
+        .get(parsed)
         .send()
         .await
         .map_err(|error| error.to_string())?;
