@@ -54,6 +54,7 @@
   --font-serif: "Martina Plantijn", "Iowan Old Style", Georgia, serif;
   --font-mono: "Berkeley Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
+  --fs-2xs: 10px;
   --fs-xs: 11px;
   --fs-sm: 12px;
   --fs-md: 13px;

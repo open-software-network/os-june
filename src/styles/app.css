@@ -393,7 +393,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-xl);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   letter-spacing: 0;
 }
 
@@ -474,7 +474,7 @@ input:focus-visible,
 
 .agent-task-row-title {
   overflow: hidden;
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -609,7 +609,7 @@ input:focus-visible,
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-xl);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   letter-spacing: 0;
   outline: none;
   transition: background-color var(--t-fast) var(--ease-out);
@@ -751,7 +751,7 @@ input:focus-visible,
 
 .agent-gallery-banner strong {
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -778,7 +778,7 @@ input:focus-visible,
 .agent-gallery-section-header h3 {
   margin: 0;
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -855,7 +855,7 @@ input:focus-visible,
   margin: 0 0 var(--sp-3);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 700;
+  font-weight: var(--fw-medium);
   letter-spacing: 0.08em;
 }
 
@@ -913,7 +913,7 @@ input:focus-visible,
 .agent-capability-title span {
   overflow: hidden;
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -962,7 +962,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-skill-editor-heading p {
@@ -1016,7 +1016,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   letter-spacing: 0;
   text-transform: none;
 }
@@ -1181,7 +1181,7 @@ input:focus-visible,
   border-radius: var(--r-sm);
   background: var(--surface-subtle);
   color: var(--foreground);
-  font-weight: 700;
+  font-weight: var(--fw-medium);
 }
 
 .agent-messaging-detail-header h3 {
@@ -1237,7 +1237,7 @@ input:focus-visible,
   margin: 0 0 var(--sp-3);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 700;
+  font-weight: var(--fw-medium);
   letter-spacing: 0.08em;
 }
 
@@ -1258,13 +1258,13 @@ input:focus-visible,
   align-items: baseline;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-messaging-field strong {
   color: var(--success);
   font-size: var(--fs-xs);
-  font-weight: 700;
+  font-weight: var(--fw-medium);
 }
 
 .agent-messaging-field input {
@@ -1355,7 +1355,7 @@ input:focus-visible,
 
 .agent-approval-card .agent-tool-title > span:first-child {
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-approval-card p,
@@ -1613,7 +1613,7 @@ input:focus-visible,
 .agent-safety-panel h3 {
   margin: 0;
   font-size: var(--fs-md);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   letter-spacing: 0;
 }
 
@@ -1824,7 +1824,7 @@ input:focus-visible,
   margin: var(--sp-5) 0 var(--sp-2);
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   line-height: 1.35;
 }
 
@@ -1860,7 +1860,7 @@ input:focus-visible,
 
 .agent-markdown strong {
   color: var(--foreground);
-  font-weight: 700;
+  font-weight: var(--fw-medium);
 }
 
 /* Quiet code surfaces (ai-elements vibe): a soft fill, no boxy border. */
@@ -1926,7 +1926,7 @@ input:focus-visible,
 .agent-md-table th {
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .agent-context-summary {
@@ -2024,7 +2024,7 @@ input:focus-visible,
 
 .agent-steering-label {
   flex: 0 0 auto;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .agent-steering-text {
@@ -2085,7 +2085,7 @@ input:focus-visible,
   gap: var(--sp-2);
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-compact-savings {
@@ -2122,7 +2122,7 @@ input:focus-visible,
 }
 
 .agent-hermes-note span {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .agent-hermes-note > .agent-markdown {
@@ -2252,7 +2252,7 @@ input:focus-visible,
 /* Name inherits the row's muted color (the whole line darkens on hover). */
 .agent-tool-name {
   overflow: hidden;
-  font-weight: 500;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3093,7 +3093,7 @@ input:focus-visible,
   color: var(--muted-foreground);
   font: inherit;
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition: color var(--t-fast) var(--ease-out);
 }
@@ -3271,7 +3271,7 @@ input:focus-visible,
   color: var(--popover-foreground);
   box-shadow: var(--shadow-lg);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   cursor: pointer;
 }
 
@@ -3327,7 +3327,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   font-size: var(--fs-md);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-activity-drawer-title {
@@ -3437,7 +3437,7 @@ input:focus-visible,
 
 .agent-activity-row-title {
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3465,7 +3465,7 @@ input:focus-visible,
 }
 
 .agent-activity-row-phase {
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -3590,7 +3590,7 @@ input:focus-visible,
 
 .agent-activity-subagent-task {
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3606,7 +3606,7 @@ input:focus-visible,
 }
 
 .agent-activity-subagent-status {
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -3693,7 +3693,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--muted-foreground);
 }
 
@@ -3771,7 +3771,7 @@ input:focus-visible,
 
 .agent-artifacts-name {
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3790,7 +3790,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -3843,7 +3843,7 @@ input:focus-visible,
 }
 
 .agent-reasoning > summary span {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .agent-reasoning[open] > summary p {
@@ -3897,7 +3897,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.4;
 }
 
@@ -3917,7 +3917,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-tool-icon {
@@ -3985,7 +3985,7 @@ input:focus-visible,
   min-height: 18px;
   color: var(--warm-strong);
   font-size: var(--fs-xs);
-  font-weight: 700;
+  font-weight: var(--fw-medium);
 }
 
 .agent-activity-indicator[data-status="waitingForUser"] {
@@ -4154,7 +4154,7 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 68%, var(--card));
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   /* Entrance/exit fades come from framer-motion (AnimatePresence), matching
    * the recording-consent note. */
 }
@@ -4267,7 +4267,7 @@ input:focus-visible,
   color: var(--foreground);
   padding: var(--sp-1) var(--sp-2);
   font: inherit;
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   cursor: pointer;
 }
 
@@ -4332,7 +4332,7 @@ input:focus-visible,
 .agent-unsupported-notice-title {
   margin: 0;
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .agent-unsupported-notice-text {
@@ -4395,7 +4395,7 @@ input:focus-visible,
   background: var(--card);
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -4437,7 +4437,7 @@ input:focus-visible,
   gap: var(--sp-2);
   align-items: center;
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .hermes-trace-panel-controls {
@@ -4474,7 +4474,7 @@ input:focus-visible,
   background: var(--background);
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -4547,7 +4547,7 @@ input:focus-visible,
 .hermes-trace-row-type {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .hermes-trace-row-kind {
@@ -4807,7 +4807,7 @@ input:focus-visible,
   gap: var(--sp-2);
   margin: 0;
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .agent-composer-model-detail-name > span:first-child {
@@ -5254,7 +5254,7 @@ input:focus-visible,
   padding: 1px 6px;
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.4;
   white-space: nowrap;
   user-select: none;
@@ -5307,7 +5307,7 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 58%, transparent);
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.4;
   white-space: nowrap;
   user-select: none;
@@ -5502,7 +5502,7 @@ input:focus-visible,
 .agent-category-menu-detail-title {
   margin: 0;
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.25;
 }
 
@@ -6097,7 +6097,7 @@ input:focus-visible,
 
 .agent-sandbox-option-title {
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .agent-sandbox-option-desc {
@@ -6415,8 +6415,8 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
   font-family: var(--font-sans);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--fs-2xs);
+  font-weight: 400;
   letter-spacing: 0;
   white-space: nowrap;
   pointer-events: none;
@@ -6509,7 +6509,7 @@ input:focus-visible,
   padding: 5px 9px 7px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .command-palette-group-list {
@@ -6596,8 +6596,8 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 70%, transparent);
   color: var(--muted-foreground);
   font-family: var(--font-sans);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
 }
 
 @media (max-width: 560px) {
@@ -6646,7 +6646,7 @@ input:focus-visible,
 
 .sidebar-nav-item[data-active="true"] {
   background: var(--sidebar-accent);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .sidebar-nav-icon {
@@ -6673,8 +6673,8 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
   font-family: var(--font-sans);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--fs-2xs);
+  font-weight: 400;
   letter-spacing: 0;
   white-space: nowrap;
   pointer-events: none;
@@ -6726,7 +6726,7 @@ input:focus-visible,
 }
 
 .sidebar-identity .sidebar-nav-label {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .sidebar-identity-menu {
@@ -6804,7 +6804,7 @@ input:focus-visible,
   padding: 0 var(--sp-3);
   color: color-mix(in oklch, var(--muted-foreground) 82%, transparent);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .sidebar-settings-group {
@@ -6860,7 +6860,7 @@ input:focus-visible,
   min-height: var(--sidebar-section-title-h);
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .section-title-label {
@@ -6900,7 +6900,7 @@ input:focus-visible,
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   opacity: 0;
   transition:
@@ -7097,7 +7097,7 @@ input:focus-visible,
 }
 
 .note-row[data-selected="true"] .note-row-title {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .note-row-recovery-dot {
@@ -7252,7 +7252,7 @@ input:focus-visible,
 /* A session awaiting your input reads a touch heavier so it stands out in the
  * list. */
 .agent-sidebar-row[data-status="waitingForUser"] .note-row-title-text {
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .sidebar[data-collapsed="true"] .note-row-menu,
@@ -7601,8 +7601,8 @@ input:focus-visible,
   border-radius: var(--r-xs);
   background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--fs-2xs);
+  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -8012,7 +8012,7 @@ input:focus-visible,
   gap: var(--sp-1);
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .note-reference-copy {
@@ -8132,7 +8132,7 @@ input:focus-visible,
   background: transparent;
   color: inherit;
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition: color var(--t-fast) var(--ease-out);
 }
@@ -8248,7 +8248,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition:
     background-color var(--t-fast) var(--ease-out),
@@ -8274,7 +8274,7 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--muted) 68%, var(--card));
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1;
   pointer-events: none;
   user-select: none;
@@ -8352,7 +8352,7 @@ input:focus-visible,
 
 .transcript-turn-source {
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -8392,7 +8392,7 @@ input:focus-visible,
   color: var(--muted-foreground);
   font: inherit;
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition: color var(--t-fast) var(--ease-out);
 }
@@ -8469,7 +8469,7 @@ input:focus-visible,
   color: var(--foreground);
   font-family: var(--font-sans);
   font-size: 15px;
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   letter-spacing: 0;
   line-height: 1.3;
 }
@@ -8516,7 +8516,7 @@ input:focus-visible,
 }
 
 .note-preview strong {
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .note-preview:focus {
@@ -8546,7 +8546,7 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--muted) 68%, var(--card));
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1;
   pointer-events: none;
   user-select: none;
@@ -8621,7 +8621,7 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
   color: var(--muted-foreground);
   font-size: var(--fs-xs, 11px);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
   line-height: 1;
   pointer-events: auto;
@@ -8640,7 +8640,7 @@ input:focus-visible,
   color: var(--popover-foreground);
   box-shadow: var(--shadow-md);
   font-size: var(--fs-xs, 11px);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   white-space: nowrap;
   opacity: 0;
@@ -8744,7 +8744,7 @@ input:focus-visible,
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   cursor: pointer;
 }
 
@@ -8796,7 +8796,7 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: var(--card);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition:
     background-color var(--t-fast) var(--ease-out),
@@ -8919,7 +8919,7 @@ input:focus-visible,
 .record-dock .record-consent-note-surface .inline-notice-message {
   flex-wrap: nowrap;
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1;
   white-space: nowrap;
 }
@@ -8934,7 +8934,7 @@ input:focus-visible,
   border: 0;
   background: none;
   color: var(--primary);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1;
 }
 
@@ -9087,7 +9087,7 @@ input:focus-visible,
   min-width: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .record-options-row[data-locked] .record-options-label {
@@ -9307,7 +9307,7 @@ input:focus-visible,
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 /* Waveform ---------------------------------------------------------- */
@@ -9489,7 +9489,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--warm-strong);
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -9644,7 +9644,7 @@ input:focus-visible,
   background: transparent;
   color: inherit;
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1;
   cursor: pointer;
 }
@@ -9730,7 +9730,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -9964,7 +9964,7 @@ input:focus-visible,
   padding-left: var(--sp-3);
   color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -10084,7 +10084,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -10262,7 +10262,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -10307,7 +10307,7 @@ input:focus-visible,
 .billing-usage-value {
   color: var(--foreground);
   font-size: var(--fs-xl);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
@@ -10864,7 +10864,7 @@ input:focus-visible,
 
 .installed-skill-name {
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
 }
 
@@ -10876,7 +10876,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .installed-skill-source[data-source="bundled"] {
@@ -10906,7 +10906,7 @@ input:focus-visible,
   gap: 3px;
   color: var(--warm-strong);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .installed-skill-description {
@@ -10983,7 +10983,7 @@ input:focus-visible,
 
 .installed-skill-timing {
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.02em;
 }
 
@@ -11013,7 +11013,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -11108,7 +11108,7 @@ input:focus-visible,
 }
 
 .skill-bundle-name {
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -11220,7 +11220,7 @@ input:focus-visible,
 
 .skill-bundles-empty-title {
   margin: 0;
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .skill-bundles-empty-description {
@@ -11268,7 +11268,7 @@ input:focus-visible,
 }
 
 .skill-bundle-field-label {
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-sm);
 }
 
@@ -11438,7 +11438,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .installed-skills-empty-description {
@@ -11539,7 +11539,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -11651,7 +11651,7 @@ input:focus-visible,
   overflow: hidden;
   max-width: 100%;
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -11663,7 +11663,7 @@ input:focus-visible,
   padding: 1px var(--sp-2);
   border-radius: var(--r-pill);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .external-dir-status[data-tone="ok"] {
@@ -11713,7 +11713,7 @@ input:focus-visible,
   gap: 3px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .external-dir-note {
@@ -11764,7 +11764,7 @@ input:focus-visible,
 .external-dirs-empty-title {
   margin: 0;
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-md);
 }
 
@@ -11836,7 +11836,7 @@ input:focus-visible,
   margin: 0 0 var(--sp-1);
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-gate-copy {
@@ -11887,7 +11887,7 @@ input:focus-visible,
   gap: var(--sp-2);
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-lifecycle-body {
@@ -11913,7 +11913,7 @@ input:focus-visible,
 .skill-review-toolbar-label {
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-toolbar-actions {
@@ -11989,7 +11989,7 @@ input:focus-visible,
 .skill-review-row-gist {
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-op {
@@ -12000,7 +12000,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-op[data-op="create"] {
@@ -12022,7 +12022,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-source[data-source="background"] {
@@ -12038,7 +12038,7 @@ input:focus-visible,
 
 .skill-review-skill-name {
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-files {
@@ -12188,7 +12188,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-empty-description {
@@ -12239,7 +12239,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-setup-badge[data-tone="ready"] {
@@ -12260,7 +12260,7 @@ input:focus-visible,
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -12297,7 +12297,7 @@ input:focus-visible,
 
 .skill-setup-skill {
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
 }
 
@@ -12329,7 +12329,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .skill-setup-block-note,
@@ -12367,7 +12367,7 @@ input:focus-visible,
 
 .skill-setup-row-name {
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
 }
@@ -12476,7 +12476,7 @@ input:focus-visible,
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -12561,7 +12561,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-detail-source[data-source="bundled"] {
@@ -12590,7 +12590,7 @@ input:focus-visible,
   gap: 3px;
   color: var(--warm-strong);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-detail-mode-note {
@@ -12638,7 +12638,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .skill-detail-meta-grid {
@@ -12704,7 +12704,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .skill-detail-file-group[data-danger="true"] .skill-detail-file-group-heading {
@@ -12762,7 +12762,7 @@ input:focus-visible,
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .skill-detail-doc-frontmatter,
@@ -12878,7 +12878,7 @@ input:focus-visible,
   background: var(--foreground);
   color: var(--background);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -12904,7 +12904,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-detail-confirm-warning {
@@ -13060,7 +13060,7 @@ input:focus-visible,
 
 .mcp-server-name {
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
 }
 
@@ -13073,7 +13073,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-server-transport[data-risk="local-subprocess"] {
@@ -13092,7 +13092,7 @@ input:focus-visible,
   gap: 3px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-server-risk[data-risk="local-subprocess"] {
@@ -13144,7 +13144,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-server-security-label[data-tone="caution"] {
@@ -13232,7 +13232,7 @@ input:focus-visible,
 
 .mcp-security-policy-option-label {
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-sm);
 }
 
@@ -13244,7 +13244,7 @@ input:focus-visible,
   background: color-mix(in oklch, var(--ring-focus) 18%, transparent);
   color: var(--foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-security-policy-option-description {
@@ -13300,7 +13300,7 @@ input:focus-visible,
   gap: 3px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-server-status[data-tone="ok"] {
@@ -13402,7 +13402,7 @@ input:focus-visible,
   gap: 3px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-server-oauth-status[data-tone="ok"] {
@@ -13520,7 +13520,7 @@ input:focus-visible,
 
 .mcp-server-timing {
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.02em;
 }
 
@@ -13574,7 +13574,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -13608,7 +13608,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-servers-empty-description {
@@ -13668,7 +13668,7 @@ input:focus-visible,
 .mcp-add-label {
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-add-input {
@@ -13735,7 +13735,7 @@ input:focus-visible,
 .mcp-add-transport-label {
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-add-transport-hint {
@@ -14101,7 +14101,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .mcp-catalog-status[data-tone="ok"] {
@@ -14129,7 +14129,7 @@ input:focus-visible,
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .mcp-catalog-requirements-list {
@@ -14259,7 +14259,7 @@ input:focus-visible,
   color: var(--foreground);
   font-family: var(--font-sans);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1;
   letter-spacing: 0.01em;
 }
@@ -14278,7 +14278,7 @@ input:focus-visible,
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   /* Anchors styled as buttons keep the UA underline otherwise. */
   text-decoration: none;
   cursor: pointer;
@@ -14522,7 +14522,7 @@ input:focus-visible,
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -14858,7 +14858,7 @@ input:focus-visible,
   grid-area: name;
   overflow: hidden;
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -14912,8 +14912,8 @@ input:focus-visible,
   background: color-mix(in oklch, var(--primary-foreground) 18%, transparent);
   color: color-mix(in oklch, var(--primary-foreground) 80%, transparent);
   font-family: var(--font-sans);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--fs-2xs);
+  font-weight: 400;
   letter-spacing: 0;
   white-space: nowrap;
   pointer-events: none;
@@ -15089,7 +15089,7 @@ input:focus-visible,
 
 .detail-breadcrumb-current {
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .detail-breadcrumb-separator {
@@ -15116,7 +15116,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   outline: none;
 }
 
@@ -15407,7 +15407,7 @@ input:focus-visible,
 .routines-item-name {
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -15421,7 +15421,7 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .routines-item-badge-error {
@@ -15650,7 +15650,7 @@ input:focus-visible,
   gap: var(--sp-2);
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.45;
 }
 
@@ -15775,7 +15775,7 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -15838,7 +15838,7 @@ input:focus-visible,
   color: var(--muted-foreground);
   font: inherit;
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition:
     color var(--t-fast) var(--ease-out),
@@ -16067,7 +16067,7 @@ input:focus-visible,
   min-width: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -16081,7 +16081,7 @@ input:focus-visible,
   background: var(--warm-soft);
   color: var(--warm-strong);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.45;
 }
 
@@ -16278,7 +16278,7 @@ input:focus-visible,
 
 .dictation-hint-item-name {
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--foreground);
 }
 
@@ -16621,7 +16621,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .folders-hermes-header p {
@@ -16693,7 +16693,7 @@ input:focus-visible,
 .folders-meeting-title {
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .folders-meeting-preview,
@@ -16742,7 +16742,7 @@ input:focus-visible,
 .folders-virtual-folder-card .folder-card-name {
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .folders-virtual-folder-card .folder-card-meta,
@@ -16877,7 +16877,7 @@ input:focus-visible,
 .folder-card-title {
   margin: 0;
   font-size: var(--fs-lg);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -17218,7 +17218,7 @@ input:focus-visible,
 
 .folder-note-title {
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -17302,7 +17302,7 @@ input:focus-visible,
   gap: var(--sp-2);
   color: var(--warm-strong);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   white-space: nowrap;
   transition: opacity var(--t-fast) var(--ease-out);
 }
@@ -17384,7 +17384,7 @@ input:focus-visible,
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .dictation-history-list {
@@ -17643,7 +17643,7 @@ input:focus-visible,
  * — smaller and lighter than the default dialog title. */
 .transcript-dialog .dialog-title {
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--muted-foreground);
 }
 
@@ -18035,7 +18035,7 @@ input:focus-visible,
 
 .add-notes-title {
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -18119,7 +18119,7 @@ input:focus-visible,
 .dialog-title {
   margin: 0;
   font-size: var(--fs-xl);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
   min-width: 0;
   overflow: hidden;
@@ -18257,13 +18257,13 @@ input:focus-visible,
   border-radius: var(--r-sm);
   background: color-mix(in oklch, oklch(100% 0 0) 20%, transparent);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .referral-hero-title {
   margin: 0;
   font-size: var(--fs-2xl);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   line-height: 1.2;
   letter-spacing: -0.01em;
 }
@@ -18286,7 +18286,7 @@ input:focus-visible,
 .referral-panel-title {
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 /* Borderless filled field with the Copy button inset on the right. */
@@ -18334,7 +18334,7 @@ input:focus-visible,
   background: var(--primary);
   color: var(--primary-foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
   cursor: pointer;
   transition: opacity var(--t-fast) var(--ease-out);
@@ -18364,7 +18364,7 @@ input:focus-visible,
 .referral-stat-value {
   color: var(--foreground);
   font-size: var(--fs-2xl);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .referral-stat-label {
@@ -18395,7 +18395,7 @@ input:focus-visible,
 .referral-error-title {
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .referral-error-card p {
@@ -18431,7 +18431,7 @@ input:focus-visible,
 
 .dialog-field-label {
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--foreground);
 }
 
@@ -19046,7 +19046,7 @@ input:focus-visible,
   background: transparent;
   color: var(--foreground);
   font: inherit;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
   transition:
     background-color var(--t-fast) var(--ease-out),
@@ -19284,7 +19284,7 @@ input:focus-visible,
     color-mix(in oklch, var(--brand) 88%, black 12%)
   );
   color: #fff;
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   text-shadow: 0 1px 1px color-mix(in oklch, black 18%, transparent);
   box-shadow:
     inset 0 1px 0 color-mix(in oklch, white 22%, transparent),
@@ -19355,7 +19355,7 @@ input:focus-visible,
 .onboarding-point-label {
   display: block;
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -19387,7 +19387,7 @@ input:focus-visible,
   background: transparent;
   color: var(--foreground);
   font: inherit;
-  font-weight: 500;
+  font-weight: 400;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -19487,7 +19487,7 @@ input:focus-visible,
 .onboarding-perm-copy h2 {
   margin: 0;
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -19513,7 +19513,7 @@ input:focus-visible,
   color: #fff;
   font: inherit;
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   text-shadow: 0 1px 1px color-mix(in oklch, black 18%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in oklch, white 22%, transparent);
   cursor: pointer;
@@ -19610,7 +19610,7 @@ input:focus-visible,
 
 .onboarding-practice-sender {
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--muted-foreground);
 }
 
@@ -19942,7 +19942,7 @@ input:focus-visible,
   border: 0;
   background: transparent;
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
   text-align: left;
   cursor: pointer;
@@ -19960,7 +19960,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skills-hub-source[data-source="official"] {
@@ -19987,7 +19987,7 @@ input:focus-visible,
   padding: 1px var(--sp-2);
   border-radius: 999px;
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skills-hub-trust[data-tone="trusted"] {
@@ -20017,7 +20017,7 @@ input:focus-visible,
   gap: 3px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skills-hub-description {
@@ -20079,7 +20079,7 @@ input:focus-visible,
   background: var(--primary);
   color: var(--primary-foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -20203,7 +20203,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -20233,7 +20233,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skills-hub-empty-description {
@@ -20322,7 +20322,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .skills-hub-drawer-close {
@@ -20384,7 +20384,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -20643,7 +20643,7 @@ input:focus-visible,
 
 .team-taps-row-repo,
 .team-taps-skill-name {
-  font-weight: 500;
+  font-weight: 400;
   color: var(--foreground);
 }
 
@@ -20724,7 +20724,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  font-weight: 500;
+  font-weight: 400;
   color: var(--foreground);
 }
 
@@ -20753,7 +20753,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .team-taps-lifecycle-body {
@@ -20910,7 +20910,7 @@ input:focus-visible,
 
 .team-taps-empty-title {
   margin: 0;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--foreground);
 }
 
@@ -20982,7 +20982,7 @@ input:focus-visible,
   border-radius: var(--r-pill, 999px);
   border: 1px solid var(--border-subtle);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-verdict-pill[data-tone="trusted"] {
@@ -21020,7 +21020,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .skill-review-findings,
@@ -21055,7 +21055,7 @@ input:focus-visible,
 .skill-review-finding-category {
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-finding-detail {
@@ -21074,7 +21074,7 @@ input:focus-visible,
 .skill-review-bundle-label {
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .skill-review-bundle-detail {
@@ -21306,7 +21306,7 @@ input:focus-visible,
 
 .toolset-name {
   color: var(--foreground);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
 }
 
@@ -21318,7 +21318,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .toolset-status[data-tone="positive"] {
@@ -21390,7 +21390,7 @@ input:focus-visible,
   gap: var(--sp-2);
   color: var(--warm-strong);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .toolset-requirements-list {
@@ -21439,7 +21439,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -21470,7 +21470,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -21502,7 +21502,7 @@ input:focus-visible,
 
 .toolsets-skill-name {
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--fs-sm);
 }
 
@@ -21541,7 +21541,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .toolsets-empty-description {
@@ -21647,7 +21647,7 @@ input:focus-visible,
   background: var(--muted);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .profile-builder-stepper-item[data-active] .profile-builder-stepper-index,
@@ -21664,7 +21664,7 @@ input:focus-visible,
 .profile-builder-step-title {
   margin: 0;
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -21686,7 +21686,7 @@ input:focus-visible,
 
 .profile-builder-field-label {
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -21740,7 +21740,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-1);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .profile-builder-radio-detail,
@@ -21792,7 +21792,7 @@ input:focus-visible,
   border-radius: 999px;
   background: var(--surface-subtle);
   font-size: var(--fs-xs);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .profile-builder-model-tag[data-tone="destructive"] {
@@ -21850,7 +21850,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .profile-builder-risk[data-tone="warning"] {
@@ -21946,7 +21946,7 @@ input:focus-visible,
 .profile-builder-empty-title {
   margin: 0;
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -21982,7 +21982,7 @@ input:focus-visible,
   padding: var(--sp-1) var(--sp-3);
   border-radius: var(--r-pill);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .integrations-health-status[data-tone="ready"] {
@@ -22023,7 +22023,7 @@ input:focus-visible,
 
 .integrations-health-count-value {
   font-size: var(--fs-md);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
@@ -22147,7 +22147,7 @@ input:focus-visible,
 .integrations-health-empty-title {
   margin: 0;
   font-size: var(--fs-md);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
   color: var(--foreground);
 }
 
