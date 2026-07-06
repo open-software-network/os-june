@@ -7581,6 +7581,7 @@ async fn write_video_status_json(
 }
 
 async fn download_proxy_video_bytes(url: &str) -> Result<Vec<u8>, String> {
+    crate::video_download_url::validate_video_download_url(url)?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(600))
@@ -8417,6 +8418,30 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("video_too_large"));
         assert!(!videos_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn download_proxy_video_bytes_rejects_local_url_without_file() {
+        let videos_dir = tempfile::tempdir().expect("tempdir");
+
+        let scheme_error = download_proxy_video_bytes("http://example.com/video.mp4")
+            .await
+            .expect_err("http video URL should be rejected");
+        assert!(scheme_error.contains("https"));
+
+        let local_error = download_proxy_video_bytes("https://127.0.0.1:9/video.mp4")
+            .await
+            .expect_err("local https video URL should be rejected");
+        assert!(local_error.contains("non-public"));
+        assert!(
+            videos_dir
+                .path()
+                .read_dir()
+                .expect("videos dir should be readable")
+                .next()
+                .is_none(),
+            "rejected video download should not write a file"
+        );
     }
 
     #[test]

@@ -651,6 +651,8 @@ async fn video_status_from_response(
 }
 
 async fn download_video_bytes(url: &str) -> Result<Vec<u8>, AppError> {
+    crate::video_download_url::validate_video_download_url(url)
+        .map_err(|message| AppError::new("video_download_url_rejected", message))?;
     let response = http_client().get(url).send().await.map_err(network_error)?;
     let status = response.status();
     if !status.is_success() {
@@ -2105,6 +2107,21 @@ mod tests {
         assert_eq!(error.code, "june_api_response_invalid");
         assert_eq!(error.message, INVALID_JUNE_RESPONSE_MESSAGE);
         assert!(!error.message.contains("expected value"));
+    }
+
+    #[tokio::test]
+    async fn download_video_bytes_rejects_local_url_before_fetch() {
+        let scheme_error = download_video_bytes("http://example.com/video.mp4")
+            .await
+            .expect_err("http video URL should be rejected");
+        assert_eq!(scheme_error.code, "video_download_url_rejected");
+        assert!(scheme_error.message.contains("https"));
+
+        let local_error = download_video_bytes("https://127.0.0.1:9/video.mp4")
+            .await
+            .expect_err("local https video URL should be rejected");
+        assert_eq!(local_error.code, "video_download_url_rejected");
+        assert!(local_error.message.contains("non-public"));
     }
 
     #[test]

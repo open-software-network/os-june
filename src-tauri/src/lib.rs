@@ -15,6 +15,7 @@ pub mod os_accounts;
 pub mod providers;
 pub mod theme_icon;
 pub mod updates;
+pub mod video_download_url;
 
 use serde::Deserialize;
 use std::sync::Mutex;

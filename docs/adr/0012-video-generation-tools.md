@@ -220,6 +220,11 @@ Trade-offs and risks:
   switch raw mp4 delivery to incremental streaming to disk/HTTP (for example
   axum `StreamBody` plus reqwest streaming) so even accepted videos are never
   fully buffered in memory.
+- Desktop downloads of provider-supplied video URLs validate `https` and reject
+  hosts that are IP literals or resolve to non-public addresses before fetching.
+  Follow-up: close DNS-rebinding TOCTOU by resolving and connecting to the
+  validated IP through a pinned custom resolver instead of resolving once and
+  letting the HTTP client resolve again.
 
 Reference: Venice video API - `https://api.venice.ai/api/v1/swagger.yaml`
 (paths `/video/queue`, `/video/retrieve`, `/video/quote`, `/video/complete`).
