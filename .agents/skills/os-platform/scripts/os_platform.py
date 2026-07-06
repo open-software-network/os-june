@@ -24,6 +24,7 @@ CONFIG_FILE_NAME = "os-platform.json"
 API_KEY_ENV = "OS_PLATFORM_API_KEY"
 BASE_URL_ENV = "OS_PLATFORM_API_BASE_URL"
 WORD_RE = re.compile(r"[a-z0-9]+")
+ME_TOKENS = {"me", "@me"}
 
 COMPACT_KEYS = {
     "id",
@@ -562,8 +563,8 @@ def add_issue_filters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--status", help="CSV statuses: todo,in_progress,in_review,completed,cancelled.")
     parser.add_argument("--type", help="CSV issue types: feature,bug,improvement,design,docs,refactor,other.")
     parser.add_argument("--priority", help="CSV priorities: none,low,med,high,urgent.")
-    parser.add_argument("--assignee", help="CSV user refs or none.")
-    parser.add_argument("--creator", help="CSV user refs.")
+    parser.add_argument("--assignee", help="CSV user refs, me/@me for yourself, or none.")
+    parser.add_argument("--creator", help="CSV user refs, or me/@me for yourself.")
     parser.add_argument("--labels", help="CSV label slugs.")
     parser.add_argument("--q", help="Search issue title or external id.")
     parser.add_argument("--sort", help="created, created_asc, priority, reward, or status_grouped.")
@@ -678,6 +679,40 @@ def assign_issue_to_current_user(
         body=body,
     )
     return unwrap_envelope(payload)
+
+
+def csv_has_me_token(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return any(part.strip().lower() in ME_TOKENS for part in value.split(","))
+
+
+def resolve_me_tokens(value: str, public_id: str) -> str:
+    parts = [part.strip() for part in value.split(",")]
+    resolved = [public_id if part.lower() in ME_TOKENS else part for part in parts if part]
+    return ",".join(resolved)
+
+
+def resolve_self_refs(
+    args: argparse.Namespace,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    request: Any = request_json,
+) -> None:
+    """Replace a ``me``/``@me`` sentinel in --assignee/--creator with the caller's public id."""
+    fields = [name for name in ("assignee", "creator") if csv_has_me_token(getattr(args, name, None))]
+    if not fields:
+        return
+    public_id = current_user_public_id(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        request=request,
+    )
+    for name in fields:
+        setattr(args, name, resolve_me_tokens(getattr(args, name), public_id))
 
 
 def command_to_request(args: argparse.Namespace) -> tuple[str, str, dict[str, Any]]:
@@ -855,6 +890,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     api_key = require_api_key(getattr(args, "api_key", None))
     base_url = normalize_base_url(args.base_url)
     try:
+        if args.resource == "issues" and getattr(args, "action", None) in {"list", "search"}:
+            resolve_self_refs(args, base_url=base_url, api_key=api_key, timeout=args.timeout)
+
         if args.resource == "issues" and args.action == "take":
             data = take_issue(
                 args.org,

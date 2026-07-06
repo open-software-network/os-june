@@ -53,16 +53,19 @@ Use `real_paths` and `fixture_paths` from that response to decide whether a resu
 - `--status`
 - `--type`
 - `--priority`
-- `--assignee`
-- `--creator`
+- `--assignee` (accepts `me`/`@me`, resolved to the authenticated user's public id via `GET /v1/users/me`; `none` means unassigned)
+- `--creator` (also accepts `me`/`@me`)
 - `--project`
 - `--labels`
 - `--q`
+
+The `me`/`@me` sentinel is resolved locally before the request: the script calls `GET /v1/users/me` once when the token is present and substitutes the returned `public_id`. Any token in a CSV is resolved (e.g. `--assignee alice,me`).
 
 Examples:
 
 ```bash
 python3 scripts/os_platform.py issues list open-software --status todo,in_progress --priority high,urgent
+python3 scripts/os_platform.py issues list open-software --assignee me --status todo,in_progress
 python3 scripts/os_platform.py issues list open-software --project os-forge --q "wallet"
 python3 scripts/os_platform.py issues search open-software "wallet bug" --status todo --assignee none
 python3 scripts/os_platform.py issues take open-software 123 --yes
