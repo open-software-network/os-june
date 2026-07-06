@@ -5655,6 +5655,13 @@ input:focus-visible,
   line-height: 1.35;
 }
 
+.report-dialog-sent {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
 /* The footer reads attach-left, send-right (dialog-footer right-aligns). */
 .report-dialog-add-files {
   margin-right: auto;

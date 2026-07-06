@@ -55,6 +55,7 @@ export function ReportDialog({
   // reflects them a render later — count in-flight drops here too so a fast
   // "drop then send" cannot submit the report without the dropped file.
   const [dropsPending, setDropsPending] = useState(0);
+  const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const descriptionId = useId();
   const trimmedDescription = description.trim();
@@ -106,6 +107,7 @@ export function ReportDialog({
         attachmentPaths: attachments.map((attachment) => attachment.path),
       });
       setSubmitting(false);
+      setSent(true);
       onSent();
     } catch (err) {
       setSubmitting(false);
@@ -121,90 +123,101 @@ export function ReportDialog({
       className="report-dialog"
       initialFocusSelector=".dialog-textarea"
       footer={
-        <>
-          <button
-            type="button"
-            className="btn btn-ghost report-dialog-add-files"
-            disabled={busy}
-            onClick={() => {
-              setError(null);
-              void onAddFiles();
-            }}
-          >
-            <IconPaperclip1 size={16} aria-hidden />
-            {importingFiles ? "Adding files" : "Add files"}
+        sent ? (
+          <button type="button" className="primary-action primary-solid" onClick={onClose}>
+            Done
           </button>
-          <button
-            type="button"
-            className="primary-action primary-solid"
-            disabled={!canSubmit || busy}
-            aria-busy={submitting || undefined}
-            onClick={() => void handleSubmit()}
-          >
-            {submitting ? <DotSpinner className="report-dialog-submit-spinner" /> : null}
-            {submitting ? "Sending" : "Send report"}
-          </button>
-        </>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost report-dialog-add-files"
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                void onAddFiles();
+              }}
+            >
+              <IconPaperclip1 size={16} aria-hidden />
+              {importingFiles ? "Adding files" : "Add files"}
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              disabled={!canSubmit || busy}
+              aria-busy={submitting || undefined}
+              onClick={() => void handleSubmit()}
+            >
+              {submitting ? <DotSpinner className="report-dialog-submit-spinner" /> : null}
+              {submitting ? "Sending" : "Send report"}
+            </button>
+          </>
+        )
       }
     >
-      {/* The drop target: dropping anywhere on the form attaches the files. */}
-      <div
-        className="dialog-body report-dialog-drop"
-        data-drop-active={dropActive || undefined}
-        onDragOver={handleDragOver}
-        onDragEnter={() => setDropActive(true)}
-        onDragLeave={() => setDropActive(false)}
-        onDrop={handleDrop}
-      >
-        <SegmentedControl
-          value={category}
-          onValueChange={onCategoryChange}
-          options={categoryOptions}
-          className="report-dialog-category"
-          aria-label="Report category"
-        />
-        <DialogField label="Description" htmlFor={descriptionId}>
-          <textarea
-            id={descriptionId}
-            className="dialog-textarea"
-            value={description}
-            disabled={busy}
-            rows={5}
-            placeholder="Describe what happened"
-            onChange={(event) => {
-              setError(null);
-              onDescriptionChange(event.currentTarget.value);
-            }}
+      {sent ? (
+        <p className="report-dialog-sent" role="status">
+          Your report was sent to the June team. Thank you for helping improve June.
+        </p>
+      ) : (
+        <div
+          className="dialog-body report-dialog-drop"
+          data-drop-active={dropActive || undefined}
+          onDragOver={handleDragOver}
+          onDragEnter={() => setDropActive(true)}
+          onDragLeave={() => setDropActive(false)}
+          onDrop={handleDrop}
+        >
+          <SegmentedControl
+            value={category}
+            onValueChange={onCategoryChange}
+            options={categoryOptions}
+            className="report-dialog-category"
+            aria-label="Report category"
           />
-        </DialogField>
-        {attachments.length ? (
-          <ul className="report-dialog-file-list" aria-label="Attached files">
-            {attachments.map((attachment) => (
-              <li key={attachment.id} className="report-dialog-file">
-                {attachment.previewDataUrl ? (
-                  <img src={attachment.previewDataUrl} alt="" aria-hidden="true" />
-                ) : (
-                  <FileTypeIcon name={attachment.name} size={14} />
-                )}
-                <span className="report-dialog-file-name">{attachment.name}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${attachment.name}`}
-                  disabled={busy}
-                  onClick={() => onRemoveAttachment(attachment.id)}
-                >
-                  <IconCrossSmall size={12} aria-hidden />
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {error ? (
-          <p className="report-dialog-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-      </div>
+          <DialogField label="Description" htmlFor={descriptionId}>
+            <textarea
+              id={descriptionId}
+              className="dialog-textarea"
+              value={description}
+              disabled={busy}
+              rows={5}
+              placeholder="Describe what happened"
+              onChange={(event) => {
+                setError(null);
+                onDescriptionChange(event.currentTarget.value);
+              }}
+            />
+          </DialogField>
+          {attachments.length ? (
+            <ul className="report-dialog-file-list" aria-label="Attached files">
+              {attachments.map((attachment) => (
+                <li key={attachment.id} className="report-dialog-file">
+                  {attachment.previewDataUrl ? (
+                    <img src={attachment.previewDataUrl} alt="" aria-hidden="true" />
+                  ) : (
+                    <FileTypeIcon name={attachment.name} size={14} />
+                  )}
+                  <span className="report-dialog-file-name">{attachment.name}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${attachment.name}`}
+                    disabled={busy}
+                    onClick={() => onRemoveAttachment(attachment.id)}
+                  >
+                    <IconCrossSmall size={12} aria-hidden />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {error ? (
+            <p className="report-dialog-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      )}
     </Dialog>
   );
 }

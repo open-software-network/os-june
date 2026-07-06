@@ -20,12 +20,14 @@ function Harness({
   initialAttachments = [],
   onDropFiles = vi.fn(),
   onSent = vi.fn(),
+  onClose = vi.fn(),
 }: {
   initialCategory?: ReportCategory;
   initialDescription?: string;
   initialAttachments?: ReportDialogAttachment[];
   onDropFiles?: (files: File[]) => void;
   onSent?: () => void;
+  onClose?: () => void;
 }) {
   const [category, setCategory] = useState(initialCategory);
   const [description, setDescription] = useState(initialDescription);
@@ -44,7 +46,7 @@ function Harness({
       onRemoveAttachment={(id) =>
         setAttachments((current) => current.filter((attachment) => attachment.id !== id))
       }
-      onClose={vi.fn()}
+      onClose={onClose}
       onSent={onSent}
     />
   );
@@ -114,6 +116,19 @@ describe("ReportDialog", () => {
     expect(payload).not.toHaveProperty("sessionId");
     expect(payload).not.toHaveProperty("agentDiagnosis");
     expect(onSent).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the confirmation in the dialog after sending and closes via Done", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<Harness initialDescription="Recorder bug" onClose={onClose} />);
+
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    expect(await screen.findByText(/Your report was sent to the June team/)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Description" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("uses the shared fallback description for attachments-only reports", async () => {

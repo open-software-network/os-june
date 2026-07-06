@@ -6310,16 +6310,14 @@ export function AgentWorkspace({
     setReportDialogAttachments((current) => current.filter((item) => item.id !== id));
   }
 
+  // Clears the draft once a dialog report is delivered. The dialog stays
+  // open showing its own confirmation (no chat notice for dialog sends —
+  // the pill is legacy chip-flow only); closing it is the user's move.
   function handleReportDialogSent() {
     reportDialogGenerationRef.current += 1;
-    setReportDialogOpen(false);
     setReportDialogDescription("");
     setReportDialogAttachments([]);
     setError(null);
-    setIssueReportNotice({
-      message: ISSUE_REPORT_SENT_MESSAGE,
-      sessionId: selectedHermesSessionIdRef.current ?? null,
-    });
   }
 
   /** Applies any pending note reference to the composer once the editor is
