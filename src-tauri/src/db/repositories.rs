@@ -1887,24 +1887,26 @@ impl Repositories {
                 continue;
             };
             found = true;
-            detected_speech_ms = detected_speech_ms.saturating_add(
-                value
-                    .get("totalDetectedSpeechMs")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or_default()
-                    .max(0),
+            let session_detected = value
+                .get("totalDetectedSpeechMs")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default()
+                .max(0);
+            let session_transcribed = value
+                .get("totalTranscribedMs")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default()
+                .max(0);
+            detected_speech_ms = detected_speech_ms.saturating_add(session_detected);
+            transcribed_ms = transcribed_ms.saturating_add(session_transcribed);
+            // Recompute each session's warning from its stored totals with
+            // the CURRENT thresholds instead of trusting the serialized
+            // `warning` bit, so tuning the constants applies retroactively
+            // while per-session sensitivity is preserved.
+            any_warning |= crate::domain::processing::transcript_coverage_warning(
+                session_detected,
+                session_transcribed,
             );
-            transcribed_ms = transcribed_ms.saturating_add(
-                value
-                    .get("totalTranscribedMs")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or_default()
-                    .max(0),
-            );
-            any_warning |= value
-                .get("warning")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
         }
         if !found {
             return Ok(None);

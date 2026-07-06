@@ -898,8 +898,14 @@ fn microphone_stream_issue(
     if state == RecordingState::Paused {
         return None;
     }
-    let last_callback_at = last_callback_at.lock().ok().and_then(|instant| *instant)?;
-    if last_callback_at.elapsed() <= MICROPHONE_STALL_THRESHOLD {
+    let last_callback_at = last_callback_at.lock().ok().and_then(|instant| *instant);
+    let stalled = match last_callback_at {
+        Some(at) => at.elapsed() > MICROPHONE_STALL_THRESHOLD,
+        // No input callback ever fired: a stream that opened but never
+        // delivers data is stalled too, measured from recording start.
+        None => elapsed_ms > MICROPHONE_STALL_THRESHOLD.as_millis() as i64,
+    };
+    if !stalled {
         return None;
     }
     Some(MicrophoneStreamIssue {
@@ -1018,17 +1024,26 @@ mod tests {
         assert_eq!(stats.lock().expect("stats lock").samples, 0);
     }
 
-    fn issue_state(
+    fn issue_state_at(
+        elapsed_ms: i64,
         issue: Option<MicrophoneStreamIssue>,
         last_callback_at: Option<Instant>,
         state: RecordingState,
     ) -> Option<MicrophoneStreamIssue> {
         microphone_stream_issue(
-            12_345,
+            elapsed_ms,
             state,
             &Arc::new(Mutex::new(issue)),
             &Arc::new(Mutex::new(last_callback_at)),
         )
+    }
+
+    fn issue_state(
+        issue: Option<MicrophoneStreamIssue>,
+        last_callback_at: Option<Instant>,
+        state: RecordingState,
+    ) -> Option<MicrophoneStreamIssue> {
+        issue_state_at(12_345, issue, last_callback_at, state)
     }
 
     #[test]
@@ -1072,7 +1087,19 @@ mod tests {
         let recent_callback = Instant::now() - (MICROPHONE_STALL_THRESHOLD / 2);
         let stale_callback = Instant::now() - (MICROPHONE_STALL_THRESHOLD + Duration::from_secs(1));
 
-        assert_eq!(issue_state(None, None, RecordingState::Recording), None);
+        // Never-delivered first callback: healthy only within the startup
+        // window, stalled once the recording elapsed passes the threshold.
+        assert_eq!(
+            issue_state_at(1_000, None, None, RecordingState::Recording),
+            None
+        );
+        let never_started = issue_state_at(12_345, None, None, RecordingState::Recording)
+            .expect("zero-callback stream past the threshold should report a stall");
+        assert_eq!(never_started.code, "microphone_stream_stalled");
+        assert_eq!(
+            issue_state_at(12_345, None, None, RecordingState::Paused),
+            None
+        );
         assert_eq!(
             issue_state(None, Some(recent_callback), RecordingState::Recording),
             None
