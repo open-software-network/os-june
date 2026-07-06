@@ -28,8 +28,19 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 Coding rules that should fail review if violated (distinct from the `specs/`
 feature specs). Full index: [spec/index.md](../spec/index.md).
 
-- UI copy: [spec/sentence-case](../spec/sentence-case.md), [spec/no-typographic-dashes](../spec/no-typographic-dashes.md)
-- UI styling: [spec/icons-central-only](../spec/icons-central-only.md), [spec/design-tokens](../spec/design-tokens.md)
+- UI copy: [spec/sentence-case](../spec/sentence-case.md), [spec/no-typographic-dashes](../spec/no-typographic-dashes.md), [spec/no-all-caps](../spec/no-all-caps.md)
+- UI styling: [spec/icons-central-only](../spec/icons-central-only.md), [spec/design-tokens](../spec/design-tokens.md), [spec/no-tabular-numerals](../spec/no-tabular-numerals.md)
+- Typography: [spec/type-scale](../spec/type-scale.md), [spec/font-weights](../spec/font-weights.md), [spec/font-families](../spec/font-families.md)
+- Controls: [spec/control-sizes](../spec/control-sizes.md)
+
+## Design system
+
+The extracted design system: tokens, primitives, and the rules around them (see
+the `spec/` entries above for the enforceable versions).
+
+- [design/foundations.md](design/foundations.md) — theming model, token roles, and the type system (scale, heading mapping, two-weight system, family roles); ends with the pass-2 deviations worklist
+- [design/components.md](design/components.md) — pattern-to-canonical-answer map for the shared `src/components/ui/` primitives, the settings markup contract, and what is not yet systematized
+- [design/conventions.md](design/conventions.md) — flat-namespace naming, interaction and visual rules, theming pipeline, and how to open or extend the styleguide page
 
 ## Agent skill config (docs/agents/)
 
