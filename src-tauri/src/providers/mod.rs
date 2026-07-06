@@ -22,6 +22,13 @@ pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
 pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
+/// Currently curated text-to-video model ids (mirrors `VIDEO_MODELS` in
+/// `src/lib/video-models.ts` and the june-api `video_pricing` allowlist). A
+/// persisted `video_model` outside this set — for example the delisted Seedance
+/// default that older installs saved before it was pulled from Venice — is
+/// migrated to `DEFAULT_VIDEO_MODEL` on load so generation keeps working after
+/// an update. Keep in sync when the curated list changes.
+pub const KNOWN_VIDEO_MODELS: &[&str] = &[DEFAULT_VIDEO_MODEL];
 pub const DEFAULT_VIDEO_DURATION: &str = "5s";
 pub const DEFAULT_VIDEO_RESOLUTION: &str = "720p";
 /// Some models (for example wan-2.2-a14b) reject a queue request that omits
@@ -1003,10 +1010,24 @@ fn sanitize_settings(
         generation_model,
         remote_generation_model,
         image_model: non_empty_or(settings.image_model, &defaults.image_model),
-        video_model: non_empty_or(settings.video_model, &defaults.video_model),
+        video_model: sanitize_video_model(settings.video_model, &defaults.video_model),
         venice_api_key: normalize_api_key_option(settings.venice_api_key),
         local_generation,
         image_safe_mode: settings.image_safe_mode,
+    }
+}
+
+/// Migrates a persisted video model that is no longer curated (for example the
+/// delisted Seedance default older installs saved) to the current default, so an
+/// updated install never carries a stale id that June API rejects as
+/// `model_not_priced`. A recognized selection is kept; empty falls back to the
+/// default like the other model fields.
+fn sanitize_video_model(persisted: String, default: &str) -> String {
+    let candidate = non_empty_or(persisted, default);
+    if KNOWN_VIDEO_MODELS.contains(&candidate.as_str()) {
+        candidate
+    } else {
+        default.to_string()
     }
 }
 
@@ -1394,6 +1415,28 @@ mod tests {
             sanitized.venice_api_key.as_deref(),
             Some("not-a-venice-inference-key")
         );
+    }
+
+    #[test]
+    fn sanitize_settings_migrates_delisted_video_model_to_default() {
+        // Older installs persisted the Seedance default while the video UI was
+        // flag-hidden; after it was delisted the stale id must not survive load.
+        let settings = ProviderModelSettings {
+            video_model: "seedance-2-0-fast-text-to-video".to_string(),
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+        assert_eq!(sanitized.video_model, DEFAULT_VIDEO_MODEL);
+    }
+
+    #[test]
+    fn sanitize_settings_keeps_a_curated_video_model() {
+        let settings = ProviderModelSettings {
+            video_model: DEFAULT_VIDEO_MODEL.to_string(),
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+        assert_eq!(sanitized.video_model, DEFAULT_VIDEO_MODEL);
     }
 
     #[test]
