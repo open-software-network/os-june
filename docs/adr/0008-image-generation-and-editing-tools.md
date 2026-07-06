@@ -50,6 +50,38 @@ the backend allowlist for generated image models; newly exposed models are price
 with the same flat ~2x convention as the original list. Models that Venice prices
 by resolution use the default 1K tier until June exposes resolution controls.
 
+## Addendum - 2026-07-06 (JUN-209: safe mode on by default + consent dialog)
+
+Supersedes the **safe_mode** bullet above: the toggle now defaults **on**.
+Image generation had not shipped to users (the UI is feature-flagged), so this
+is a plain serde-default flip with no migration marker; a settings file
+missing the field reads `true`.
+
+With a filtering default, the user needs an explicit, informed way out.
+June adds a **safe-mode consent dialog**, gated by an on-device keyword
+heuristic (`image_safety::may_request_explicit_content`) so benign prompts
+never see it:
+
+- `/image` flow: shown *before* the billable request. "Keep safe mode on"
+  proceeds (pinned `safeMode: true`); "Turn off safe mode" persists the
+  toggle off and proceeds unfiltered - that persisted toggle is the
+  remembered preference.
+- Agent tool path: the loopback proxy cannot block a tool call on user input,
+  so it emits a best-effort `image-safe-mode-consent` Tauri event and the
+  generation proceeds blurred; the dialog then offers to turn safe mode off
+  for *future* images. The tool call is never delayed, altered, or failed by
+  consent.
+- "Don't ask again" persists `image_safe_mode_prompt_dismissed`. Explicitly
+  re-enabling safe mode resets it, so re-opting into safety re-arms the
+  dialog.
+
+Trade-offs accepted: the heuristic is a conservative wordlist (misses
+euphemisms, some false positives) - acceptable because it only gates the
+dialog; Venice `safe_mode` remains the enforcement, and a false negative just
+means a blurred image with no offer. The wire shape is unchanged
+(`Option<bool>`, absent = Venice default), so older app builds are
+unaffected.
+
 ## Context
 
 JUN-129 shipped `/image <prompt>` as a client-side slash command: it creates a

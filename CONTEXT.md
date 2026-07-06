@@ -260,6 +260,15 @@ a prior image (a generated one, by filename); never starts from a blank canvas.
 Distinct from **image generation**.
 _Avoid_: image-to-image jargon, regenerate (that's a fresh **image generation**).
 
+**Safe mode** (image):
+The per-device toggle that asks Venice to blur adult content on generated and
+edited images (`safe_mode`). On by default; the user turns it off in Settings
+or via the **safe-mode consent dialog** June shows before or during a
+potentially explicit generation. Enforcement is Venice's; June's on-device
+heuristic only decides when to *offer* the dialog, never what gets generated.
+See [ADR 0008](docs/adr/0008-image-generation-and-editing-tools.md).
+_Avoid_: NSFW filter/toggle (say **safe mode**), censorship.
+
 **Credit price** (per upstream model):
 The number of OS Accounts credits June charges per unit of consumed work
 (audio seconds for transcription, tokens for generation) for a given upstream
