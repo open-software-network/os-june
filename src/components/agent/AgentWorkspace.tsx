@@ -264,10 +264,12 @@ import { noteReferenceToken, type NoteReferenceInput } from "./composer/noteRefe
 import { CategoryIcon } from "./composer/CategoryIcon";
 import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
 import {
+  ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
   isReportCategory,
   REPORT_CATEGORIES,
   type ReportCategory,
 } from "./composer/reportCategory";
+import { ReportPopover } from "./ReportPopover";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
@@ -739,8 +741,8 @@ export type { AgentSessionsChangedDetail };
 
 export type AgentNewSessionDetail = {
   prompt?: string;
-  /** Seeds the composer with a category chip (and skips auto-submit) so the
-   * user lands ready to type a tagged report instead of an ordinary message. */
+  /** Opens the direct issue report popover with the category preselected. No
+   * model runs, so there is nothing to charge. */
   category?: ReportCategory;
   /** Seeds the composer with a note chip (and skips auto-submit) so the user
    * lands ready to ask about that note instead of starting an ordinary ask. */
@@ -1616,6 +1618,17 @@ export function resetAgentSessionContinuity() {
   }
 }
 
+export function seedAgentComposerDraftForTest(
+  key: string,
+  snapshot: {
+    text: string;
+    category: ReportCategory | null;
+    attachments?: AgentAttachment[];
+  },
+) {
+  rememberComposerDraft(key, snapshot.text, snapshot.category, snapshot.attachments ?? []);
+}
+
 /** The catalog id that represents the current global generation selection:
  * the synthetic "Local: <id>" option when local generation is the active
  * provider, otherwise the configured remote model id. Pure so it can back both
@@ -1654,9 +1667,9 @@ export function AgentWorkspace({
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
-  // The message's single category tag, mirrored from the composer's chip. Null
-  // when the message carries no tag. Drives the report wrapper and (server
-  // side) the no-charge waiver.
+  // The message's single category tag, mirrored from a restored legacy chip.
+  // New reports use the direct popover instead; the server creates the
+  // team-facing diagnosis there because no model runs on the client.
   const [category, setCategory] = useState<ReportCategory | null>(null);
   // Live mirror of `draft` for closures (the hero-chip interval) that must read
   // the current value without re-subscribing.
@@ -1723,10 +1736,15 @@ export function AgentWorkspace({
   const sandboxMenuRef = useRef<HTMLDivElement | null>(null);
   const sandboxFirstItemRef = useRef<HTMLButtonElement | null>(null);
   const sandboxMenuWasOpenRef = useRef(false);
-  // The "+" popover: attach files, or tag the message as a report.
+  // The "+" popover: attach files, reference a note, or open the report form.
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachTriggerRef = useRef<HTMLButtonElement | null>(null);
   const attachMenuRef = useRef<HTMLDivElement | null>(null);
+  const [reportPopoverOpen, setReportPopoverOpen] = useState(false);
+  const [reportPopoverCategory, setReportPopoverCategory] = useState<ReportCategory>("bug");
+  const [reportPopoverDescription, setReportPopoverDescription] = useState("");
+  const [reportPopoverAttachments, setReportPopoverAttachments] = useState<AgentAttachment[]>([]);
+  const reportPopoverRef = useRef<HTMLDivElement | null>(null);
   const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
     const restored = continuity?.sessionItems ?? [];
     if (!initialSession) return restored;
@@ -2026,9 +2044,6 @@ export function AgentWorkspace({
   const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
   const composerTiptapEditorRef = useRef<TiptapEditor | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
-  // A category to seed into the composer chip once the editor is ready, set by
-  // startNewTask for the sidebar/settings report entry points.
-  const pendingSeedCategoryRef = useRef<ReportCategory | null>(null);
   // A note reference to seed once the editor is ready, set by startNewTask for
   // note-level "Ask June" entry points.
   const pendingSeedNoteRefRef = useRef<{
@@ -2688,6 +2703,28 @@ export function AgentWorkspace({
   }, [attachMenuOpen]);
 
   useEffect(() => {
+    if (!reportPopoverOpen) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (reportPopoverRef.current?.contains(target)) return;
+      if (attachTriggerRef.current?.contains(target)) return;
+      setReportPopoverOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setReportPopoverOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [reportPopoverOpen]);
+
+  useEffect(() => {
     if (!composerModelOpen) return;
     function onPointer(event: MouseEvent) {
       const target = event.target as Node;
@@ -3284,7 +3321,7 @@ export function AgentWorkspace({
     const pending = pendingNewSessionRequest();
     if (pending) {
       void windowEventHandlersRef.current.startNewTask(pending, {
-        deferCategorySeed: true,
+        deferSeed: true,
       });
     }
 
@@ -4090,7 +4127,7 @@ export function AgentWorkspace({
             category: reportCategory,
             // An attachments-only send has no typed text, but the server
             // requires a description; the report must not bounce there.
-            description: prepared.typedMessage || "No description was typed; see the attachments.",
+            description: prepared.typedMessage || ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
             followUps: [],
             attachmentNames: attachments.map((attachment) => attachment.name),
             attachmentPaths: attachments.map((attachment) => attachment.path),
@@ -4247,9 +4284,25 @@ export function AgentWorkspace({
     void importPastedImageFiles(files);
   }
 
+  function agentAttachmentFromImportedFile(file: ImportedHermesFile): AgentAttachment {
+    return {
+      ...file,
+      id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
+      // Seed the structured attach status (feature 19). Images become
+      // `kind:"image"`, status `imported` — eligible for structured attach on
+      // the next submit. No bytes are kept here.
+      attach: attachmentStateFrom(file),
+    };
+  }
+
+  function addReportPopoverAttachments(nextAttachments: AgentAttachment[]) {
+    setReportPopoverAttachments((current) => [...current, ...nextAttachments]);
+  }
+
   async function importAttachments<T>(
     items: T[],
     importItem: (item: T) => Promise<ImportedHermesFile>,
+    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
   ) {
     if (!items.length) return true;
     setImportingFiles(true);
@@ -4261,17 +4314,12 @@ export function AgentWorkspace({
       for (const item of items) {
         imported.push(await importItem(item));
       }
-      setComposerAttachments((current) => [
-        ...current,
-        ...imported.map((file) => ({
-          ...file,
-          id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
-          // Seed the structured attach status (feature 19). Images become
-          // `kind:"image"`, status `imported` — eligible for structured attach on
-          // the next submit. No bytes are kept here.
-          attach: attachmentStateFrom(file),
-        })),
-      ]);
+      const nextAttachments = imported.map(agentAttachmentFromImportedFile);
+      if (options.onImported) {
+        options.onImported(nextAttachments);
+      } else {
+        setComposerAttachments((current) => [...current, ...nextAttachments]);
+      }
       setError(null);
       void loadFilesystemSnapshot();
       return true;
@@ -4284,24 +4332,34 @@ export function AgentWorkspace({
   }
 
   // Native paths come from the file picker and Tauri drag-drop events.
-  async function importDroppedFilePaths(paths: string[]) {
+  async function importDroppedFilePaths(
+    paths: string[],
+    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+  ) {
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
       .filter(Boolean)
       .slice(0, 8);
-    return importAttachments(uniquePaths, importHermesBridgeFile);
+    return importAttachments(uniquePaths, importHermesBridgeFile, options);
   }
 
   // DOM drops are how Finder files actually arrive: Tauri's drag-drop
   // interception is disabled (it has to be, so notes can use HTML5 drag into
   // folders) and WKWebView never exposes filesystem paths on dropped Files —
   // so read each blob and import its bytes.
-  async function importDroppedFiles(files: File[]) {
-    await importFileBytes(files, {
-      tooLargeMessage: "Dropped files must be 50 MB or smaller.",
-      readErrorMessage: (file) =>
-        // Reading fails for directories, which Finder happily lets you drop.
-        `Could not read "${file.name}". Folders can't be attached.`,
-    });
+  async function importDroppedFiles(
+    files: File[],
+    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+  ) {
+    await importFileBytes(
+      files,
+      {
+        tooLargeMessage: "Dropped files must be 50 MB or smaller.",
+        readErrorMessage: (file) =>
+          // Reading fails for directories, which Finder happily lets you drop.
+          `Could not read "${file.name}". Folders can't be attached.`,
+      },
+      options,
+    );
   }
 
   async function importPastedImageFiles(files: File[]) {
@@ -4311,16 +4369,24 @@ export function AgentWorkspace({
     });
   }
 
-  async function importFileBytes(files: File[], options: FileBytesImportOptions) {
-    await importAttachments(files.slice(0, 8), async (file) => {
-      if (file.size > 50 * 1024 * 1024) {
-        throw new Error(options.tooLargeMessage);
-      }
-      const bytes = await readFileBytes(file).catch(() => {
-        throw new Error(options.readErrorMessage(file));
-      });
-      return importHermesBridgeFileBytes(file.name, bytes);
-    });
+  async function importFileBytes(
+    files: File[],
+    options: FileBytesImportOptions,
+    importOptions: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+  ) {
+    await importAttachments(
+      files.slice(0, 8),
+      async (file) => {
+        if (file.size > 50 * 1024 * 1024) {
+          throw new Error(options.tooLargeMessage);
+        }
+        const bytes = await readFileBytes(file).catch(() => {
+          throw new Error(options.readErrorMessage(file));
+        });
+        return importHermesBridgeFileBytes(file.name, bytes);
+      },
+      importOptions,
+    );
   }
 
   function removeAttachment(id: string) {
@@ -4344,7 +4410,7 @@ export function AgentWorkspace({
 
   // The "+" picker routes through the same bridge import as drag-drop so the
   // agent always gets a real, readable path.
-  async function pickAttachments() {
+  async function pickAttachments(onImported?: (attachments: AgentAttachment[]) => void) {
     try {
       const selected = await openFileDialog({
         multiple: true,
@@ -4352,7 +4418,7 @@ export function AgentWorkspace({
       });
       if (!selected) return false;
       const paths = Array.isArray(selected) ? selected : [selected];
-      return await importDroppedFilePaths(paths);
+      return await importDroppedFilePaths(paths, { onImported });
     } catch (err) {
       setError(messageFromError(err));
       return false;
@@ -6097,15 +6163,14 @@ export function AgentWorkspace({
 
   async function startNewTask(
     request?: AgentNewSessionDetail,
-    options: { deferCategorySeed?: boolean } = {},
+    options: { deferSeed?: boolean } = {},
   ) {
     clearPendingNewSessionRequest();
     const seedCategory = request?.category ?? null;
     const seedNoteRef = seedCategory ? null : (request?.noteRef ?? null);
     const seedPrompt = request?.prompt?.trim() ?? "";
-    // A seeded report never auto-submits: the category chip lands in the
-    // composer for the user to type their report after, whatever prompt the
-    // request carried.
+    // A seeded report never auto-submits: the direct report popover opens for
+    // the user to describe the issue and submit it without a model turn.
     // A seeded note reference follows the same rule: the chip lands in the
     // composer and the user decides what to send.
     const initialPrompt = seedCategory || seedNoteRef ? "" : seedPrompt;
@@ -6132,11 +6197,9 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = undefined;
     composerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
     setSelectedHermesSessionId(undefined);
-    // Seed the composer: a category chip for a report, a note chip for a note
-    // entry point, the prompt otherwise. The editor may not be mounted yet on
-    // a cold open, so stash chips for ComposerEditor's onReady to pick up and
-    // also try to apply now.
-    pendingSeedCategoryRef.current = seedCategory;
+    // Seed the report popover, a note chip, or the prompt. The editor may not
+    // be mounted yet on a cold open, so stash note chips for ComposerEditor's
+    // onReady to pick up and also try to apply now.
     pendingSeedNoteRefRef.current = seedNoteRef
       ? {
           noteRef: seedNoteRef,
@@ -6146,10 +6209,10 @@ export function AgentWorkspace({
     if (seedCategory) {
       pendingSeedNoteRefRef.current = null;
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      seedComposerCategory({ defer: options.deferCategorySeed });
+      openReportPopover(seedCategory);
     } else if (seedNoteRef) {
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      seedComposerNoteRef({ defer: options.deferCategorySeed });
+      seedComposerNoteRef({ defer: options.deferSeed });
     } else if (initialPrompt) {
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       composerEditorRef.current?.setContent(initialPrompt);
@@ -6227,37 +6290,38 @@ export function AgentWorkspace({
     });
   }
 
-  /** Applies any pending seed category to the composer chip once the editor is
-   * available. Called from startNewTask (best-effort, the editor may not be
-   * mounted yet) and again from ComposerEditor's onReady. */
-  function seedComposerCategory(options: { defer?: boolean } = {}) {
-    if (!pendingSeedCategoryRef.current) return;
-    const editor = composerEditorRef.current;
-    // Not mounted yet (cold open) — leave it pending for onReady to apply.
-    if (!editor) return;
-    const applySeed = () => {
-      const seed = pendingSeedCategoryRef.current;
-      const currentEditor = composerEditorRef.current;
-      if (!seed || !currentEditor) return;
-      pendingSeedCategoryRef.current = null;
-      pendingSeedNoteRefRef.current = null;
-      draftRef.current = "";
-      categoryRef.current = seed;
-      setDraft("");
-      setCategory(seed);
-      rememberComposerDraft(NEW_SESSION_DRAFT_KEY, "", seed);
-      restoredComposerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
-      currentEditor.setContent("", seed);
-    };
-    if (options.defer) {
-      window.setTimeout(applySeed, 0);
-    } else {
-      applySeed();
-    }
+  function openReportPopover(categoryToOpen: ReportCategory) {
+    setAttachMenuOpen(false);
+    setReportPopoverCategory(categoryToOpen);
+    setReportPopoverOpen(true);
+    setIssueReportNotice(null);
+  }
+
+  function pickReportPopoverAttachments() {
+    return pickAttachments(addReportPopoverAttachments);
+  }
+
+  function importReportPopoverDroppedFiles(files: File[]) {
+    return importDroppedFiles(files, { onImported: addReportPopoverAttachments });
+  }
+
+  function removeReportPopoverAttachment(id: string) {
+    setReportPopoverAttachments((current) => current.filter((item) => item.id !== id));
+  }
+
+  function handleReportPopoverSent() {
+    setReportPopoverOpen(false);
+    setReportPopoverDescription("");
+    setReportPopoverAttachments([]);
+    setError(null);
+    setIssueReportNotice({
+      message: ISSUE_REPORT_SENT_MESSAGE,
+      sessionId: selectedHermesSessionIdRef.current ?? null,
+    });
   }
 
   /** Applies any pending note reference to the composer once the editor is
-   * available. Mirrors seedComposerCategory for cold-open note entry points. */
+   * available for cold-open note entry points. */
   function seedComposerNoteRef(options: { defer?: boolean } = {}) {
     if (!pendingSeedNoteRefRef.current) return;
     const editor = composerEditorRef.current;
@@ -7314,7 +7378,6 @@ export function AgentWorkspace({
             onReady={(editor) => {
               composerTiptapEditorRef.current = editor;
               restoreComposerDraft(composerDraftKeyRef.current);
-              seedComposerCategory({ defer: true });
               seedComposerNoteRef({ defer: true });
             }}
           />
@@ -7323,12 +7386,15 @@ export function AgentWorkspace({
               type="button"
               ref={attachTriggerRef}
               className="agent-composer-attach"
-              aria-label="Attach files or tag this message"
-              title="Attach or tag"
+              aria-label="Add files, notes, or reports"
+              title="Add"
               aria-haspopup="menu"
               aria-expanded={attachMenuOpen}
               data-open={attachMenuOpen || undefined}
-              onClick={() => setAttachMenuOpen((open) => !open)}
+              onClick={() => {
+                setReportPopoverOpen(false);
+                setAttachMenuOpen((open) => !open);
+              }}
             >
               <IconPlusMedium size={18} />
             </button>
@@ -7426,7 +7492,7 @@ export function AgentWorkspace({
             ref={attachMenuRef}
             className="agent-attach-menu"
             role="menu"
-            aria-label="Attach or tag this message"
+            aria-label="Add files, notes, or reports"
           >
             <button
               type="button"
@@ -7476,9 +7542,7 @@ export function AgentWorkspace({
                 type="button"
                 role="menuitem"
                 onClick={() => {
-                  setAttachMenuOpen(false);
-                  composerEditorRef.current?.insertCategory(reportCategory.key);
-                  composerEditorRef.current?.focus();
+                  openReportPopover(reportCategory.key);
                 }}
               >
                 <span className="agent-attach-menu-icon" data-category={reportCategory.key}>
@@ -7488,6 +7552,22 @@ export function AgentWorkspace({
               </button>
             ))}
           </div>
+        ) : null}
+        {reportPopoverOpen ? (
+          <ReportPopover
+            category={reportPopoverCategory}
+            description={reportPopoverDescription}
+            attachments={reportPopoverAttachments}
+            importingFiles={importingFiles}
+            popoverRef={reportPopoverRef}
+            onCategoryChange={setReportPopoverCategory}
+            onDescriptionChange={setReportPopoverDescription}
+            onAddFiles={pickReportPopoverAttachments}
+            onDropFiles={importReportPopoverDroppedFiles}
+            onRemoveAttachment={removeReportPopoverAttachment}
+            onClose={() => setReportPopoverOpen(false)}
+            onSent={handleReportPopoverSent}
+          />
         ) : null}
         {composerModelOpen ? (
           <ComposerModelPopover
@@ -7603,8 +7683,8 @@ export function AgentWorkspace({
         onReportIssue={() => {
           // The sanitized, secret-free trace bundle for this session is the
           // payload an issue report should attach (payload previews come from
-          // `sanitizePayload`; there is no real reporting surface yet — see the
-          // feature 15 notes). Logged in dev until that surface lands.
+          // `sanitizePayload`). This trace affordance is not wired into the
+          // report popover yet, so keep logging in dev.
           if (import.meta.env.DEV) {
             // biome-ignore lint/suspicious/noConsole: dev-only trace-bundle diagnostic
             console.debug(
