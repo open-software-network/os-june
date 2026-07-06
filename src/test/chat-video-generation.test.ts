@@ -28,14 +28,13 @@ describe("chat video generation", () => {
       deps,
       "seedance-2-0-fast-text-to-video",
       "video-req-1",
-      { safeMode: false },
     );
 
     expect(deps.startGenerate).toHaveBeenCalledWith(
       "a calm lake",
       "seedance-2-0-fast-text-to-video",
       "video-req-1",
-      { safeMode: false },
+      {},
     );
     expect(deps.onProgress).toHaveBeenCalledWith({
       jobId: "job-1",

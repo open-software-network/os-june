@@ -102,7 +102,7 @@ pub enum VideoStatusResponse {
 /// Text-to-video: authorize a hold, quote, queue the Venice job, and return a
 /// `jobId`. The client polls `GET /v1/video/status/:jobId`; the charge settles
 /// once on the completing poll (see `VideoService`). An unpriced model is
-/// rejected `model_not_priced`; a user Venice key skips June credit metering.
+/// rejected `model_not_priced`. Video is always June-metered in the first cut.
 pub(crate) async fn generate(
     State(state): State<ApiState>,
     headers: HeaderMap,

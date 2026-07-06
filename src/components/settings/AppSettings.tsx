@@ -215,7 +215,6 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   },
   // Off by default (privacy-first), matching the Rust providers default.
   imageSafeMode: false,
-  videoSafeMode: false,
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;

@@ -187,7 +187,6 @@ function buildProviderSettings() {
       apiKey: localState.apiKey,
     },
     imageSafeMode: false,
-    videoSafeMode: false,
   };
 }
 
@@ -254,7 +253,6 @@ describe("AppSettings", () => {
           apiKey: "",
         },
         imageSafeMode: false,
-        videoSafeMode: false,
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -399,7 +397,6 @@ describe("AppSettings", () => {
         apiKey: localState.apiKey,
       },
       imageSafeMode: false,
-      videoSafeMode: false,
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
       ...buildProviderSettings(),

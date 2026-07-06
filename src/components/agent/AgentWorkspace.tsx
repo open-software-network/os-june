@@ -257,11 +257,7 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage, newImageRequestId } from "../../lib/chat-image-generation";
-import {
-  generateChatVideo,
-  newVideoRequestId,
-  type GenerateChatVideoOptions,
-} from "../../lib/chat-video-generation";
+import { generateChatVideo, newVideoRequestId } from "../../lib/chat-video-generation";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import {
   ComposerEditor,
@@ -883,7 +879,6 @@ type PersistedVideoSlashTurn = {
   pending?: boolean;
   requestId?: string;
   model?: string;
-  safeMode?: boolean;
   jobId?: string;
   averageExecutionMs?: number;
   executionMs?: number;
@@ -1010,7 +1005,6 @@ function videoSlashAssistantTurn(
     | "pending"
     | "requestId"
     | "model"
-    | "safeMode"
     | "jobId"
     | "averageExecutionMs"
     | "executionMs"
@@ -1029,7 +1023,6 @@ function videoSlashAssistantTurn(
           prompt: turn.prompt,
           requestId: turn.requestId,
           model: turn.model,
-          safeMode: turn.safeMode,
           jobId: turn.jobId,
           userCreatedAt: turn.createdAt,
           videoCreatedAt: turn.videoCreatedAt,
@@ -1065,7 +1058,6 @@ function runningVideoSlashTurns(input: {
   createdAt: string;
   videoCreatedAt: string;
   model?: string;
-  safeMode?: boolean;
 }): AgentChatTurn[] {
   return [
     videoSlashUserTurn(input),
@@ -1081,7 +1073,6 @@ function runningVideoSlashTurns(input: {
           prompt: input.prompt,
           requestId: input.requestId,
           model: input.model,
-          safeMode: input.safeMode,
           userCreatedAt: input.createdAt,
           videoCreatedAt: input.videoCreatedAt,
         },
@@ -1320,7 +1311,6 @@ function persistedVideoSlashTurn(
           pending: true,
           requestId: candidate.requestId,
           model: typeof candidate.model === "string" ? candidate.model : undefined,
-          safeMode: typeof candidate.safeMode === "boolean" ? candidate.safeMode : undefined,
           jobId: typeof candidate.jobId === "string" ? candidate.jobId : undefined,
           averageExecutionMs:
             typeof candidate.averageExecutionMs === "number"
@@ -4221,12 +4211,10 @@ export function AgentWorkspace({
     createdAt: string;
     videoCreatedAt: string;
     model?: string;
-    safeMode?: boolean;
     jobId?: string;
   }) {
     const { sessionId, turnId, prompt, requestId, createdAt, videoCreatedAt } = input;
     const assistantTurnId = `${turnId}:assistant`;
-    const videoOptions: GenerateChatVideoOptions = { safeMode: input.safeMode };
     try {
       const result = input.jobId
         ? await pollExistingVideoSlashJob(input)
@@ -4252,7 +4240,6 @@ export function AgentWorkspace({
                   pending: true,
                   requestId,
                   model: input.model,
-                  safeMode: input.safeMode,
                   jobId: job.jobId,
                 });
                 return job;
@@ -4275,7 +4262,6 @@ export function AgentWorkspace({
                   pending: true,
                   requestId,
                   model: input.model,
-                  safeMode: input.safeMode,
                   jobId: progress.jobId,
                   averageExecutionMs: progress.averageExecutionMs,
                   executionMs: progress.executionMs,
@@ -4284,7 +4270,7 @@ export function AgentWorkspace({
             },
             input.model,
             requestId,
-            videoOptions,
+            {},
           );
       if (result.status !== "ok") {
         updateVideoSlashPart(sessionId, assistantTurnId, {
@@ -4311,7 +4297,6 @@ export function AgentWorkspace({
         videoCreatedAt,
         requestId,
         model: result.model ?? input.model,
-        safeMode: input.safeMode,
         jobId: result.jobId,
       });
       hermesArtifactStore.recordArtifact(
@@ -4345,7 +4330,6 @@ export function AgentWorkspace({
     createdAt: string;
     videoCreatedAt: string;
     model?: string;
-    safeMode?: boolean;
     jobId?: string;
   }) {
     if (!input.jobId) {
@@ -4381,7 +4365,6 @@ export function AgentWorkspace({
       pending: true,
       requestId: input.requestId,
       model: input.model,
-      safeMode: input.safeMode,
       jobId: input.jobId,
       averageExecutionMs: status.averageExecutionMs,
       executionMs: status.executionMs,
@@ -4464,7 +4447,6 @@ export function AgentWorkspace({
       createdAt: part.userCreatedAt ?? now,
       videoCreatedAt: part.videoCreatedAt ?? now,
       model: part.model,
-      safeMode: part.safeMode,
       jobId: part.jobId,
     });
   }
@@ -4512,11 +4494,9 @@ export function AgentWorkspace({
     const videoCreatedAt = new Date(turnStartedAt + 1).toISOString();
     const requestId = newVideoRequestId();
     let pinnedModel: string | undefined;
-    let pinnedSafeMode: boolean | undefined;
     try {
       const settingsResponse = await providerModelSettings();
       pinnedModel = settingsResponse.settings.videoModel || undefined;
-      pinnedSafeMode = settingsResponse.settings.videoSafeMode;
     } catch {
       // Non-fatal: generation proceeds with server-resolved settings.
     }
@@ -4532,7 +4512,6 @@ export function AgentWorkspace({
           createdAt,
           videoCreatedAt,
           model: pinnedModel,
-          safeMode: pinnedSafeMode,
         }),
       ],
     }));
@@ -4548,7 +4527,6 @@ export function AgentWorkspace({
       pending: true,
       requestId,
       model: pinnedModel,
-      safeMode: pinnedSafeMode,
     });
 
     await finishVideoSlashGeneration({
@@ -4559,7 +4537,6 @@ export function AgentWorkspace({
       createdAt,
       videoCreatedAt,
       model: pinnedModel,
-      safeMode: pinnedSafeMode,
     });
   }
 

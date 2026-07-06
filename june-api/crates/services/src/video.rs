@@ -26,7 +26,6 @@ use crate::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
     },
     error::ServiceError,
-    metering::{log_skipped_user_venice_key, uses_user_venice_key},
     util::sha256_hex,
 };
 use june_config::ModelProvider;
@@ -126,8 +125,6 @@ impl VideoService {
             .get(&params.model)
             .copied()
             .ok_or(ServiceError::ModelNotPriced)?;
-        let uses_user_key = price.provider == ModelProvider::Venice
-            && uses_user_venice_key(&params.provider_credentials);
         let shape = generate_shape(&params);
         let shape_hash = sha256_hex(shape.as_bytes());
         let job_key = params.request_id.as_ref().map(|request_id| {
@@ -144,7 +141,6 @@ impl VideoService {
             aspect_ratio: params.aspect_ratio.clone(),
             audio: params.audio,
             negative_prompt: params.negative_prompt.clone(),
-            provider_credentials: params.provider_credentials.clone(),
         };
         self.create_job(CreateJobInputs {
             action: ActionSlug::VideoGenerate,
@@ -153,7 +149,6 @@ impl VideoService {
             shape_hash,
             job_key,
             price,
-            uses_user_key,
             queue: QueueRequest::Generate(request),
         })
         .await
@@ -175,8 +170,6 @@ impl VideoService {
             .get(&model)
             .copied()
             .ok_or(ServiceError::ModelNotPriced)?;
-        let uses_user_key = price.provider == ModelProvider::Venice
-            && uses_user_venice_key(&params.provider_credentials);
         let shape = animate_shape(&params, &model);
         let shape_hash = sha256_hex(shape.as_bytes());
         let job_key = params.request_id.as_ref().map(|request_id| {
@@ -195,7 +188,6 @@ impl VideoService {
             aspect_ratio: params.aspect_ratio.clone(),
             audio: params.audio,
             negative_prompt: params.negative_prompt.clone(),
-            provider_credentials: params.provider_credentials.clone(),
         };
         self.create_job(CreateJobInputs {
             action: ActionSlug::VideoAnimate,
@@ -204,7 +196,6 @@ impl VideoService {
             shape_hash,
             job_key,
             price,
-            uses_user_key,
             queue: QueueRequest::Animate(request),
         })
         .await
@@ -237,17 +228,8 @@ impl VideoService {
 
     /// The paid work behind a create: quote -> ceiling -> authorize -> mint the
     /// settlement key -> queue. On a queue failure the hold simply expires (no
-    /// charge). BYOK skips the wallet entirely but still queues and registers a
-    /// job so the same-`request_id` dedupe holds.
+    /// charge). Video is always June-metered for this first cut.
     async fn run_create(&self, inputs: &CreateJobInputs) -> Result<VideoJob, ServiceError> {
-        if inputs.uses_user_key {
-            let queued = self
-                .queue(&inputs.queue)
-                .await
-                .map_err(translate_upstream_error)?;
-            log_skipped_user_venice_key(inputs.action, &inputs.user_id, &inputs.model);
-            return Ok(Self::build_job(inputs, queued, None));
-        }
         let estimate = self.quote_to_credits(inputs).await?;
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -393,10 +375,9 @@ impl VideoService {
         }
     }
 
-    /// The completing poll won the charge. For a metered job, spawn the charge
-    /// on a task that owns the ledger update so a route-timeout cancel between
-    /// Venice success and the charge cannot skip it. BYOK settles with a zero
-    /// receipt and no wallet call.
+    /// The completing poll won the charge. Spawn the charge on a task that owns
+    /// the ledger update so a route-timeout cancel between Venice success and
+    /// the charge cannot skip it.
     async fn settle_completed(
         &self,
         ticket: ChargeTicket,
@@ -689,7 +670,6 @@ struct CreateJobInputs {
     shape_hash: String,
     job_key: Option<String>,
     price: VideoModelPrice,
-    uses_user_key: bool,
     queue: QueueRequest,
 }
 
@@ -828,8 +808,8 @@ enum VideoJobState {
     /// Completed on Venice but the charge failed; a re-poll re-charges the SAME
     /// settlement key.
     ChargePending,
-    /// Charged (or, for BYOK, settled with no charge). A re-poll re-fetches the
-    /// bytes and re-serves without charging again.
+    /// Charged. A re-poll re-fetches the bytes and re-serves without charging
+    /// again.
     Delivered,
     Failed {
         reason: String,
@@ -1113,27 +1093,24 @@ impl VideoJobRegistry {
     }
 
     fn mark_failed(&self, job_id: &JobId, reason: &str) {
-        let notify = {
+        {
             let mut state = self.state();
             let Some(job) = state.jobs.get_mut(job_id) else {
                 return;
             };
             // A job already Charging/Delivered must not be flipped to Failed by a
             // stray retrieve error; only a non-terminal job fails.
-            let notify = match &job.state {
-                VideoJobState::Charging { notify, .. } => Some(notify.clone()),
-                VideoJobState::Delivered | VideoJobState::Failed { .. } => return,
+            match &job.state {
+                VideoJobState::Charging { .. }
+                | VideoJobState::Delivered
+                | VideoJobState::Failed { .. } => return,
                 VideoJobState::Queued
                 | VideoJobState::Processing { .. }
-                | VideoJobState::ChargePending => None,
-            };
+                | VideoJobState::ChargePending => {}
+            }
             job.state = VideoJobState::Failed {
                 reason: reason.to_string(),
             };
-            notify
-        };
-        if let Some(notify) = notify {
-            notify.notify_waiters();
         }
     }
 

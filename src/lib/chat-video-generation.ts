@@ -34,7 +34,6 @@ export type GenerateChatVideoOptions = {
   resolution?: string;
   aspectRatio?: string;
   audio?: boolean;
-  safeMode?: boolean;
 };
 
 export type GenerateChatVideoResult =

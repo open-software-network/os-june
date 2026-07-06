@@ -7010,7 +7010,8 @@ async fn handle_june_provider_connection(
         ("POST", "/v1/image/generate") => {
             // The image MCP sends no model, so the user's selected image model
             // is authoritative — inject it here (June API requires a model).
-            // safe_mode likewise comes from the on-device setting.
+            // safe_mode likewise comes from the on-device setting. Venice video
+            // has no safe-mode parameter, so this injection is image-only.
             let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             ensure_image_generation_model(&mut body);
@@ -7049,7 +7050,6 @@ async fn handle_june_provider_connection(
             let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             ensure_video_generation_model(&mut body);
-            ensure_video_safe_mode(&mut body);
             ensure_video_defaults(&mut body);
             forward_video_create(&mut stream, "/v1/video/generate", &body).await?;
         }
@@ -7069,7 +7069,6 @@ async fn handle_june_provider_connection(
                 return Ok(());
             }
             ensure_video_animation_model(&mut body);
-            ensure_video_safe_mode(&mut body);
             ensure_video_defaults(&mut body);
             forward_video_create(&mut stream, "/v1/video/animate", &body).await?;
         }
@@ -7381,7 +7380,7 @@ struct ProviderApiEnvelope {
 
 /// Forwards a video create request and normalizes June API's success envelope
 /// to the bare `{jobId}` shape the video MCP contract uses. Error envelopes are
-/// relayed unchanged so metering/auth failures retain their backend status and
+/// relayed unchanged so metering/auth failures retain their June API status and
 /// message.
 async fn forward_video_create(
     stream: &mut tokio::net::TcpStream,
@@ -8070,18 +8069,6 @@ fn ensure_video_animation_model(body: &mut serde_json::Value) {
         object.insert(
             "model".to_string(),
             serde_json::Value::String(JUNE_VIDEO_DEFAULT_ANIMATE_MODEL.to_string()),
-        );
-    }
-}
-
-fn ensure_video_safe_mode(body: &mut serde_json::Value) {
-    let Some(object) = body.as_object_mut() else {
-        return;
-    };
-    if !object.contains_key("safeMode") {
-        object.insert(
-            "safeMode".to_string(),
-            serde_json::Value::Bool(crate::providers::video_safe_mode()),
         );
     }
 }

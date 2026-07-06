@@ -187,7 +187,6 @@ export type ProviderModelSettingsDto = {
   /** Venice safe mode for image generation/editing (blurs adult content). Off
    * by default (privacy-first); the user opts in via Settings. */
   imageSafeMode: boolean;
-  videoSafeMode: boolean;
 };
 
 export type LocalGenerationSettingsDto = {
@@ -1686,7 +1685,6 @@ export async function videoGenerate(input: {
   resolution?: string;
   aspectRatio?: string;
   audio?: boolean;
-  safeMode?: boolean;
 }) {
   return invoke<VideoJobDto>("video_generate", {
     request: input,

@@ -9,12 +9,11 @@
 //! surfaces Venice's policy/consent/region/capacity statuses as reasoned
 //! `DomainError`s the service translates.
 
-use crate::venice::user_venice_key_auth_error;
 use async_trait::async_trait;
 use june_config::UpstreamConfig;
 use june_domain::{
-    DomainError, ProviderCredentials, VideoAnimationRequest, VideoGenerationRequest, VideoProvider,
-    VideoQueued, VideoQuoteRequest, VideoRetrieved,
+    DomainError, VideoAnimationRequest, VideoGenerationRequest, VideoProvider, VideoQueued,
+    VideoQuoteRequest, VideoRetrieved,
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -41,20 +40,15 @@ impl VeniceVideoProvider {
         }
     }
 
-    fn key<'a>(&'a self, credentials: &'a ProviderCredentials) -> &'a str {
-        venice_api_key(&self.api_key, credentials)
-    }
-
     async fn queue_body(
         &self,
         url: &str,
         body: &VeniceVideoQueueBody<'_>,
-        credentials: &ProviderCredentials,
     ) -> Result<VideoQueued, DomainError> {
         let send = self
             .http
             .post(url)
-            .bearer_auth(self.key(credentials))
+            .bearer_auth(&self.api_key)
             .json(body)
             .send();
         let response = match tokio::time::timeout(self.timeout, send).await {
@@ -72,11 +66,7 @@ impl VeniceVideoProvider {
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), "venice video: queue non-success response");
-            return Err(venice_video_error(
-                status,
-                credentials,
-                "video_generation_rejected",
-            ));
+            return Err(venice_video_error(status, "video_generation_rejected"));
         }
         let parsed = response.json::<VeniceVideoQueueResponse>().await.map_err(|error| {
             tracing::error!(%error, %url, model = %body.model, "venice video: queue JSON parse failed");
@@ -131,11 +121,7 @@ impl VideoProvider for VeniceVideoProvider {
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, model = %request.model.0, body_bytes = body_text.len(), "venice video: quote non-success response");
-            return Err(venice_video_error(
-                status,
-                &ProviderCredentials::default(),
-                "video_quote_rejected",
-            ));
+            return Err(venice_video_error(status, "video_quote_rejected"));
         }
         let parsed = response.json::<VeniceVideoQuoteResponse>().await.map_err(|error| {
             tracing::error!(%error, %url, model = %request.model.0, "venice video: quote JSON parse failed");
@@ -166,8 +152,7 @@ impl VideoProvider for VeniceVideoProvider {
             negative_prompt: request.negative_prompt.as_deref(),
             image_url: None,
         };
-        self.queue_body(&url, &body, &request.provider_credentials)
-            .await
+        self.queue_body(&url, &body).await
     }
 
     async fn queue_animation(
@@ -203,8 +188,7 @@ impl VideoProvider for VeniceVideoProvider {
             negative_prompt: request.negative_prompt.as_deref(),
             image_url: Some(&image_url),
         };
-        self.queue_body(&url, &body, &request.provider_credentials)
-            .await
+        self.queue_body(&url, &body).await
     }
 
     async fn retrieve(&self, model: &str, queue_id: &str) -> Result<VideoRetrieved, DomainError> {
@@ -238,11 +222,7 @@ impl VideoProvider for VeniceVideoProvider {
             }
             let body_text = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, model, body_bytes = body_text.len(), "venice video: retrieve non-success response");
-            return Err(venice_video_error(
-                status,
-                &ProviderCredentials::default(),
-                "video_retrieve_rejected",
-            ));
+            return Err(venice_video_error(status, "video_retrieve_rejected"));
         }
         let content_type = response
             .headers()
@@ -318,17 +298,9 @@ fn retrieved_from_json(
 /// Maps a Venice video error status to a reasoned `DomainError` the service
 /// translates. Policy/consent/region/too-large are deterministic 4xx surfaced
 /// as reasoned `InvalidInput`; a 503 (at-capacity) is retryable and surfaced as
-/// `MeteringProvider` (the only variant whose API mapping is a retryable 503 —
-/// June has no dedicated upstream-capacity status). A BYOK key rejection wins
-/// over the generic region reading for 401/403.
-fn venice_video_error(
-    status: StatusCode,
-    credentials: &ProviderCredentials,
-    rejected_reason: &str,
-) -> DomainError {
-    if let Some(error) = user_venice_key_auth_error(status, credentials) {
-        return error;
-    }
+/// `MeteringProvider` (the only variant whose API mapping is a retryable 503 -
+/// June has no dedicated upstream-capacity status).
+fn venice_video_error(status: StatusCode, rejected_reason: &str) -> DomainError {
     match status {
         StatusCode::BAD_REQUEST => DomainError::InvalidInput {
             reason: rejected_reason.to_string(),
@@ -348,15 +320,6 @@ fn venice_video_error(
         StatusCode::SERVICE_UNAVAILABLE => DomainError::MeteringProvider,
         _ => DomainError::UpstreamProvider,
     }
-}
-
-fn venice_api_key<'a>(configured: &'a str, credentials: &'a ProviderCredentials) -> &'a str {
-    credentials
-        .venice_api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(configured)
 }
 
 #[derive(Serialize)]
@@ -424,8 +387,8 @@ mod tests {
     use crate::http;
     use june_config::UpstreamConfig;
     use june_domain::{
-        DomainError, ModelId, ProviderCredentials, VideoGenerationRequest, VideoProvider,
-        VideoQuoteRequest, VideoRetrieved,
+        DomainError, ModelId, VideoGenerationRequest, VideoProvider, VideoQuoteRequest,
+        VideoRetrieved,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -454,7 +417,6 @@ mod tests {
             aspect_ratio: Some("16:9".to_string()),
             audio: Some(false),
             negative_prompt: None,
-            provider_credentials: ProviderCredentials::default(),
         }
     }
 
@@ -490,6 +452,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/video/queue"))
+            .and(header("authorization", "Bearer venice_key"))
             .and(body_string_contains("\"prompt\":\"a robot dancing\""))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "model": "wan-2.2-a14b-text-to-video",

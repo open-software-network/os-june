@@ -71,8 +71,6 @@ pub struct ProviderModelSettings {
     /// settings files predating this field still deserialize (to `false`).
     #[serde(default)]
     pub image_safe_mode: bool,
-    #[serde(default)]
-    pub video_safe_mode: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -100,7 +98,6 @@ pub struct ProviderModelSettingsDto {
     pub venice_api_key_configured: bool,
     pub local_generation: LocalGenerationSettings,
     pub image_safe_mode: bool,
-    pub video_safe_mode: bool,
 }
 
 impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
@@ -119,7 +116,6 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
                 .is_some_and(|value| !value.trim().is_empty()),
             local_generation: settings.local_generation.clone(),
             image_safe_mode: settings.image_safe_mode,
-            video_safe_mode: settings.video_safe_mode,
         }
     }
 }
@@ -297,12 +293,6 @@ pub fn image_safe_mode() -> bool {
     current_settings().image_safe_mode
 }
 
-/// Whether safe mode is on for video generation/animation. Mirrored from image
-/// safe mode so the first video layer has the same privacy-first default.
-pub fn video_safe_mode() -> bool {
-    current_settings().video_safe_mode
-}
-
 /// Context window (tokens) of the configured generation model, looked up in
 /// the backend's model catalog and cached per model id. The agent provider
 /// proxy advertises it on `/v1/models` so Hermes sizes its history to the
@@ -450,8 +440,6 @@ pub struct GenerateVideoRequest {
     pub aspect_ratio: Option<String>,
     #[serde(default)]
     pub audio: Option<bool>,
-    #[serde(default)]
-    pub safe_mode: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -573,7 +561,6 @@ pub async fn video_generate(
         .aspect_ratio
         .map(|aspect_ratio| aspect_ratio.trim().to_string())
         .filter(|aspect_ratio| !aspect_ratio.is_empty());
-    let safe_mode = request.safe_mode.unwrap_or_else(video_safe_mode);
     crate::june_api::video_generate(crate::june_api::VideoGenerateParams {
         prompt,
         model,
@@ -582,7 +569,6 @@ pub async fn video_generate(
         resolution,
         aspect_ratio,
         audio: request.audio,
-        safe_mode: Some(safe_mode),
     })
     .await
 }
@@ -885,7 +871,6 @@ fn default_settings() -> ProviderModelSettings {
         venice_api_key: None,
         local_generation: LocalGenerationSettings::default(),
         image_safe_mode: false,
-        video_safe_mode: false,
     }
 }
 
@@ -978,7 +963,6 @@ fn sanitize_settings(
         venice_api_key: normalize_api_key_option(settings.venice_api_key),
         local_generation,
         image_safe_mode: settings.image_safe_mode,
-        video_safe_mode: settings.video_safe_mode,
     }
 }
 

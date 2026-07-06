@@ -743,10 +743,48 @@ async fn charge_failure_repoll_recharges_the_same_settlement_key() {
     assert_eq!(charges[0].1, charges[1].1);
 }
 
-// --- BYOK --------------------------------------------------------------------
+#[tokio::test]
+async fn charging_job_ignores_late_failure_and_replays_completed_video() {
+    let os = Arc::new(BlockingChargeOsAccounts::default());
+    let provider = Arc::new(MockVideoProvider::completed(0.11, vec![6, 6, 6]));
+    let service = Arc::new(service(os.clone(), provider));
+    let handle = service
+        .generate(generate_params("wan-2.2-a14b-text-to-video"))
+        .await
+        .expect("generate succeeds");
+
+    let polling = tokio::spawn({
+        let service = service.clone();
+        let job_id = handle.job_id.clone();
+        async move { service.status(usr("usr_1"), job_id).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), os.wait_for_charge_started())
+        .await
+        .expect("charge should start");
+
+    service
+        .registry
+        .mark_failed(&handle.job_id, "content_violation");
+    os.release_charge();
+
+    let first = polling
+        .await
+        .expect("poll task")
+        .expect("settlement completes");
+    assert_completed_bytes(&first, &[6, 6, 6]);
+
+    let replay = service
+        .status(usr("usr_1"), handle.job_id)
+        .await
+        .expect("re-poll replays the completed job");
+    assert_completed_bytes(&replay, &[6, 6, 6]);
+    assert_eq!(charge_calls(&os.events()).len(), 1);
+}
+
+// --- user Venice key is ignored for video ------------------------------------
 
 #[tokio::test]
-async fn byok_skips_wallet_but_still_dedupes_and_serves() {
+async fn user_venice_key_generate_is_still_metered_and_deduped() {
     let os = Arc::new(RecordingOsAccounts::new(true));
     let provider = Arc::new(MockVideoProvider::completed(0.11, vec![7, 7]));
     let service = service(os.clone(), provider.clone());
@@ -759,22 +797,60 @@ async fn byok_skips_wallet_but_still_dedupes_and_serves() {
     let first = service
         .generate(params.clone())
         .await
-        .expect("BYOK generate succeeds");
-    let second = service
-        .generate(params)
-        .await
-        .expect("BYOK generate dedupes");
+        .expect("generate succeeds");
+    let second = service.generate(params).await.expect("generate dedupes");
     assert_eq!(first.job_id, second.job_id);
     assert_eq!(provider.queue_calls(), 1);
 
     let status = service
         .status(usr("usr_1"), first.job_id)
         .await
-        .expect("BYOK status completes");
+        .expect("status completes");
     assert_completed_bytes(&status, &[7, 7]);
 
-    // No authorize, no charge for a user-supplied Venice key.
-    assert!(os.events().is_empty());
+    let events = os.events();
+    assert_eq!(authorize_count(&events), 1);
+    let charges = charge_calls(&events);
+    assert_eq!(charges.len(), 1);
+    assert_eq!(charges[0].0, 220);
+}
+
+#[tokio::test]
+async fn user_venice_key_animate_is_still_metered() {
+    let os = Arc::new(RecordingOsAccounts::new(true));
+    let provider = Arc::new(MockVideoProvider::completed(0.35, vec![8, 8]));
+    let service = service(os.clone(), provider);
+    let handle = service
+        .animate(VideoAnimateParams {
+            user_id: usr("usr_1"),
+            request_id: Some("req_animate_user_key".to_string()),
+            image_base64: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+            prompt: "make it move".to_string(),
+            model: None,
+            duration: "5s".to_string(),
+            resolution: Some("720p".to_string()),
+            aspect_ratio: None,
+            audio: None,
+            negative_prompt: None,
+            provider_credentials: ProviderCredentials {
+                venice_api_key: Some("vc_user_key".to_string()),
+            },
+        })
+        .await
+        .expect("animate succeeds");
+
+    let status = service
+        .status(usr("usr_1"), handle.job_id)
+        .await
+        .expect("status completes");
+    assert_completed_bytes(&status, &[8, 8]);
+
+    let events = os.events();
+    assert_eq!(authorize_count(&events), 1);
+    let charges = charge_calls(&events);
+    assert_eq!(charges.len(), 1);
+    assert_eq!(charges[0].0, 700);
 }
 
 // --- cancellation-safe settlement --------------------------------------------

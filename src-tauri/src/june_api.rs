@@ -441,7 +441,6 @@ pub struct VideoGenerateParams {
     pub resolution: Option<String>,
     pub aspect_ratio: Option<String>,
     pub audio: Option<bool>,
-    pub safe_mode: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -458,8 +457,6 @@ struct VideoGenerateBody {
     aspect_ratio: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     audio: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    safe_mode: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -572,7 +569,6 @@ pub async fn video_generate(params: VideoGenerateParams) -> Result<VideoJobDto, 
             resolution: params.resolution,
             aspect_ratio: params.aspect_ratio,
             audio: params.audio,
-            safe_mode: params.safe_mode,
         },
         false,
     )

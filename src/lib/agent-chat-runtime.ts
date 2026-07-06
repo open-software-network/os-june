@@ -157,8 +157,6 @@ export type AgentChatVideoPart = {
   requestId?: string;
   /** Video model pinned at turn creation for replay-shape stability. */
   model?: string;
-  /** Safe-mode value pinned at turn creation for replay-shape stability. */
-  safeMode?: boolean;
   /** Original synthetic user-turn timestamp, kept so retry can finish the same turn. */
   userCreatedAt?: string;
   /** Original synthetic assistant-turn timestamp, kept so retry can finish the same turn. */
@@ -170,7 +168,7 @@ export type AgentChatVideoPart = {
   executionMs?: number;
   /** Local mp4 path; set once `status === "complete"`. */
   path?: string;
-  /** Optional poster preview, reserved for future backend support. */
+  /** Optional poster preview, reserved for future June API support. */
   posterDataUrl?: string;
   /** Display name of the local video file; set when complete. */
   name?: string;

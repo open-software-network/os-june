@@ -265,10 +265,11 @@ pub struct GeneratedImage {
 }
 
 /// What a text-to-video generation needs: a prompt, the model, Venice's
-/// duration/resolution/aspect-ratio/audio knobs, an optional negative prompt,
-/// and provider credentials. Deliberately carries no user id, so the provider
-/// sees only the inference inputs and the upstream key. Video is an async job:
-/// this queues the job and returns a Venice queue handle, not the bytes.
+/// duration/resolution/aspect-ratio/audio knobs, and an optional negative
+/// prompt. Deliberately carries no user id or caller key, so the provider sees
+/// only the inference inputs and June's configured upstream key. Video is an
+/// async job: this queues the job and returns a Venice queue handle, not the
+/// bytes.
 #[derive(Clone, Debug)]
 pub struct VideoGenerationRequest {
     pub prompt: String,
@@ -282,7 +283,6 @@ pub struct VideoGenerationRequest {
     pub aspect_ratio: Option<String>,
     pub audio: Option<bool>,
     pub negative_prompt: Option<String>,
-    pub provider_credentials: ProviderCredentials,
 }
 
 /// What an image-to-video (animate) job needs: the source image bytes (base64,
@@ -301,7 +301,6 @@ pub struct VideoAnimationRequest {
     pub aspect_ratio: Option<String>,
     pub audio: Option<bool>,
     pub negative_prompt: Option<String>,
-    pub provider_credentials: ProviderCredentials,
 }
 
 /// The free Venice price oracle input: everything that shapes a video quote.
