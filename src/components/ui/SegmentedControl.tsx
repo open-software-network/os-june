@@ -42,17 +42,21 @@ export function SegmentedControl<T extends string>({
 
   useLayoutEffect(() => {
     function measure() {
+      const container = containerRef.current;
       const button = buttonsRef.current[selectedIndex];
-      if (!containerRef.current || !button) return;
-      // offsetLeft/offsetWidth, not getBoundingClientRect: rects include
-      // ancestor transforms, so measuring while a parent's entrance
-      // animation is mid-scale (e.g. the dialog card) bakes the shrunken
-      // geometry into the indicator and nothing ever re-measures. Offsets
-      // are layout-based and transform-immune; the container is the
-      // positioned offsetParent.
+      if (!container || !button) return;
+      const containerRect = container.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      // Rects include ancestor transforms, so measuring while a parent's
+      // entrance animation is mid-scale (e.g. the dialog card) would bake
+      // the shrunken geometry in permanently. Dividing by the container's
+      // own scale cancels the transform while keeping fractional layout
+      // precision (integer offsetLeft/offsetWidth snap the indicator up to
+      // a pixel off the true flex box and the label reads as shifted).
+      const scale = container.offsetWidth > 0 ? containerRect.width / container.offsetWidth : 1;
       setIndicator({
-        left: button.offsetLeft,
-        width: button.offsetWidth,
+        left: (buttonRect.left - containerRect.left) / scale,
+        width: buttonRect.width / scale,
       });
     }
     measure();
