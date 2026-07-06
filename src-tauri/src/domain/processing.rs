@@ -838,8 +838,14 @@ fn compute_transcript_coverage(
             let detected_speech_ms = if detected_sentinel {
                 if transcribed_sentinel {
                     0
-                } else {
+                } else if failed_turns > 0 {
                     source_wav_duration_ms(source_path).unwrap_or_default()
+                } else {
+                    // A sentinel source with no persisted row and no visible
+                    // failure was suppressed as no-speech: the source was
+                    // silent (e.g. a muted microphone), not lost. Silence must
+                    // never count as missing speech.
+                    0
                 }
             } else {
                 source_detected_turns
@@ -2653,6 +2659,41 @@ mod tests {
         assert_eq!(coverage.total_transcribed_ms, 0);
         assert_eq!(coverage.total_failed_turns, 1);
         assert!(coverage.warning);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transcript_coverage_treats_suppressed_silent_sentinel_as_no_detected_speech() {
+        // A muted microphone in a dual-source meeting: sentinel turn, no
+        // persisted row, and the no-speech failure was suppressed (not
+        // visible). The silent source must not warn.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-coverage-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        write_loud_wav(&mic_path, 16_000, 16_000 * 90);
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                mic_path,
+                0,
+                0,
+                0,
+            )],
+            &[],
+            &[],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert_eq!(coverage.total_failed_turns, 0);
+        assert!(!coverage.warning);
         let _ = std::fs::remove_dir_all(dir);
     }
 
