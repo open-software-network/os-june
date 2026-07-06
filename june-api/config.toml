@@ -26,6 +26,14 @@ os_platform_label = "bug"
 # Reward asset for the zero-reward Issue (required when the target Org has
 # no default reward asset configured).
 os_platform_reward_asset = "POINTS"
+# Server-side diagnosis: reports arriving without a client diagnosis get one
+# generated on this model at June's own expense (never metered) before they
+# are filed. Unset the model to turn diagnosis off. The call is bounded by
+# the timeout, a 1024-token output cap, and a per-user hourly cap that skips
+# the diagnosis (never the delivery) when exhausted.
+diagnosis_model = "zai-org-glm-5-2"
+diagnosis_timeout_secs = 30
+diagnosis_max_per_user_per_hour = 6
 
 [os_accounts]
 # api_url has no default — must come from JUNE__OS_ACCOUNTS__API_URL
