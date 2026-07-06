@@ -22,7 +22,12 @@ modules or scoping. That has consequences:
 ## Interaction and visual rules
 
 - **Hover changes background only.** Never transition `border-color` on hover.
-  The themed hover fill is `var(--brand-tint)`.
+- **Default hover is neutral.** Rows, nav items, icon buttons, and other
+  generic surfaces hover with `var(--sidebar-accent)` (the app's quiet grey
+  wash). The brand-tinted hover `var(--brand-tint)` is a deliberate accent
+  touch, spent sparingly on surfaces that already carry the accent (today: the
+  chat scroll-to-latest pill and the agent hero chips). Never put it on a
+  generic list row, nav item, or menu just to feel themed.
 - **Shadows never carry rings.** `--shadow-sm/md/lg` are pure elevation; a call
   site composes a ring or border with `--shadow-inset` or a real 1px border.
   A ring-instead-of-border surface keeps a transparent 1px border for layout and

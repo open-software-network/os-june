@@ -91,7 +91,7 @@
 }
 
 .sg-seg-btn:hover {
-  background: var(--brand-tint);
+  background: var(--sidebar-accent);
 }
 
 .sg-seg-btn[aria-pressed="true"] {
@@ -161,11 +161,11 @@
 }
 
 .sg-nav-item:hover {
-  background: var(--brand-tint);
+  background: var(--sidebar-accent);
 }
 
 .sg-nav-item[aria-current="true"] {
-  background: var(--brand-tint-strong);
+  background: var(--sidebar-accent);
   font-weight: var(--fw-medium);
 }
 
