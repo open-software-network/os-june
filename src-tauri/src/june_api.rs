@@ -937,7 +937,10 @@ fn drop_leading_orphan_tool_messages(messages: &mut Vec<serde_json::Value>) {
     }
 }
 
-pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppError> {
+pub async fn suggest_agent_session_title(
+    prompt: &str,
+    response: Option<&str>,
+) -> Result<String, AppError> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
         return Err(AppError::new(
@@ -945,15 +948,16 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
             "Cannot title an empty agent request.",
         ));
     }
+    let user_content = agent_session_title_user_content(prompt, response);
     let response = proxy_agent_chat_completions(serde_json::json!({
         "messages": [
             {
                 "role": "system",
-                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title in sentence case: capitalize the first word and proper nouns only, never every word. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations."
+                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title in sentence case: capitalize the first word and proper nouns only, never every word. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations. When an assistant reply excerpt is provided, name the session by the work described there."
             },
             {
                 "role": "user",
-                "content": prompt
+                "content": user_content
             }
         ],
         "temperature": 0.1,
@@ -1391,6 +1395,15 @@ fn strip_source_label_prefix(value: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn agent_session_title_user_content(prompt: &str, response: Option<&str>) -> String {
+    let prompt = prompt.trim();
+    let Some(response) = response.map(str::trim).filter(|value| !value.is_empty()) else {
+        return prompt.to_string();
+    };
+    let response: String = response.chars().take(1200).collect();
+    format!("User request:\n{prompt}\n\nAssistant reply excerpt:\n{response}")
 }
 
 fn clean_agent_session_title(value: &str) -> Option<String> {
@@ -1854,6 +1867,44 @@ mod tests {
             Some("Create a quarterly planning briefing with follow")
         );
         assert_eq!(clean_agent_session_title("   "), None);
+    }
+
+    #[test]
+    fn agent_session_title_user_content_passes_through_prompt_only() {
+        assert_eq!(
+            agent_session_title_user_content("  Refactor this parser  ", None),
+            "Refactor this parser"
+        );
+    }
+
+    #[test]
+    fn agent_session_title_user_content_treats_whitespace_response_as_absent() {
+        assert_eq!(
+            agent_session_title_user_content("  Refactor this parser  ", Some(" \n\t ")),
+            "Refactor this parser"
+        );
+    }
+
+    #[test]
+    fn agent_session_title_user_content_formats_prompt_and_response() {
+        assert_eq!(
+            agent_session_title_user_content(
+                "  Refactor this parser  ",
+                Some("  I rewrote the tokenizer and added coverage.  "),
+            ),
+            "User request:\nRefactor this parser\n\nAssistant reply excerpt:\nI rewrote the tokenizer and added coverage."
+        );
+    }
+
+    #[test]
+    fn agent_session_title_user_content_truncates_response_on_char_boundary() {
+        let response = "é".repeat(1201);
+        let content = agent_session_title_user_content("Summarize the work", Some(&response));
+        let excerpt = content
+            .strip_prefix("User request:\nSummarize the work\n\nAssistant reply excerpt:\n")
+            .expect("formatted content should include assistant reply prefix");
+        assert_eq!(excerpt.chars().count(), 1200);
+        assert_eq!(excerpt, "é".repeat(1200));
     }
 
     #[test]

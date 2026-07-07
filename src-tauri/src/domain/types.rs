@@ -591,6 +591,8 @@ pub struct SaveAgentHermesSessionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SuggestAgentSessionTitleRequest {
     pub prompt: String,
+    #[serde(default)]
+    pub response: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
