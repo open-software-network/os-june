@@ -45,25 +45,37 @@
   --_spread: var(--shimmer-spread, calc(3ch + 40px));
   --_base: currentColor;
   --_highlight: var(--shimmer-color, oklch(from currentColor l c h / calc(alpha * 0.2)));
+}
 
-  background-image: var(
-    --shimmer-image,
-    linear-gradient(
-      calc(90deg + var(--shimmer-angle)),
-      var(--_base) calc(50% - var(--_spread)),
-      color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% - var(--_spread) * 0.5),
-      var(--_highlight) 50%,
-      color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% + var(--_spread) * 0.5),
-      var(--_base) calc(50% + var(--_spread))
-    )
-  );
-  background-repeat: no-repeat;
-  background-size: calc(200% + var(--_spread) * 2) 100%;
-  background-position: 0 0;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: var(--shimmer-text-fill, transparent);
-  animation: tw-shimmer var(--shimmer-duration, 2s) linear infinite;
+/* The paint clips a gradient to the text and hides the glyph fill
+ * (-webkit-text-fill-color: transparent) so the gradient IS the text. That
+ * gradient is built from relative color syntax (oklch(from currentColor ...))
+ * and color-mix() — Level 5 color features. An older system WKWebView that
+ * rejects the gradient would still honor the transparent fill and render the
+ * label invisible. Gating the whole paint on relative-color support means
+ * unsupported engines skip it entirely and keep the element's solid `color`
+ * (no shimmer, but legible) — the graceful fallback shadcn's docs prescribe. */
+@supports (color: oklch(from red l c h)) {
+  .shimmer {
+    background-image: var(
+      --shimmer-image,
+      linear-gradient(
+        calc(90deg + var(--shimmer-angle)),
+        var(--_base) calc(50% - var(--_spread)),
+        color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% - var(--_spread) * 0.5),
+        var(--_highlight) 50%,
+        color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% + var(--_spread) * 0.5),
+        var(--_base) calc(50% + var(--_spread))
+      )
+    );
+    background-repeat: no-repeat;
+    background-size: calc(200% + var(--_spread) * 2) 100%;
+    background-position: 0 0;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: var(--shimmer-text-fill, transparent);
+    animation: tw-shimmer var(--shimmer-duration, 2s) linear infinite;
+  }
 }
 
 /* Upstream's `@variant dark`. June's dark mode is `[data-theme="dark"]` (set by

@@ -539,6 +539,7 @@ body {
   }
 
   .agent-hud-mark,
+  .agent-hud-mark::before,
   .agent-hud-status {
     animation: none;
   }

@@ -17272,8 +17272,10 @@ input:focus-visible,
 
 /* Transcribing / generating / validating: sweep a highlight across the status
  * word so it reads as work-in-flight, the way the agent rows signal activity.
- * Pairs with the shared .shimmer utility in markup, which owns the sweep; the
- * status word only sets its base color and a slightly quicker cadence. */
+ * The paint is split: markup toggles the shared .shimmer class (which owns the
+ * sweep) while processing, and this [data-shimmer] hook carries the base color
+ * and a slightly quicker cadence. Both are required — don't drop the attribute
+ * assuming the class alone suffices, or the duration override is lost. */
 .folder-note-subtitle [data-shimmer="true"] {
   color: var(--muted-foreground);
   --shimmer-duration: 1500ms;
