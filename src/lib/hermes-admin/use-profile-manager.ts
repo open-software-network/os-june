@@ -47,6 +47,7 @@ export type ProfileManagerState = {
   status: ProfileManagerStatus;
   profiles: HermesProfileSummary[];
   activeName: string;
+  activeConfirmed: boolean;
   pendingAction: ProfileManagerPendingAction | null;
   error: string | null;
   activate(name: string): Promise<boolean>;
@@ -64,6 +65,7 @@ export class ProfileManagerController {
   private readonly engine: ProfileManagerEngine;
   private profiles: HermesProfileSummary[] = [];
   private activeName = "default";
+  private activeConfirmed = false;
   private status: ProfileManagerStatus = "loading";
   private pendingAction: ProfileManagerPendingAction | null = null;
   private error: string | null = null;
@@ -109,6 +111,7 @@ export class ProfileManagerController {
    * list from cache first so a manual refresh does not blank existing rows. */
   async load(): Promise<void> {
     const seq = ++this.loadSeq;
+    this.activeConfirmed = false;
     const cached = this.engine.cache.get<HermesProfileSummary[]>("profiles");
     if (cached) {
       this.profiles = orderProfiles(cached);
@@ -119,30 +122,41 @@ export class ProfileManagerController {
       this.recompute();
     }
 
-    try {
-      const [profiles, active] = await Promise.all([
-        this.engine.client.profiles.list(),
-        this.engine.client.profiles.active(),
-      ]);
-      if (this.disposed || seq !== this.loadSeq) return;
-      const ordered = orderProfiles(profiles);
+    const [profilesResult, activeResult] = await Promise.allSettled([
+      this.engine.client.profiles.list(),
+      this.engine.client.profiles.active(),
+    ]);
+    if (this.disposed || seq !== this.loadSeq) return;
+
+    if (profilesResult.status === "fulfilled") {
+      const ordered = orderProfiles(profilesResult.value);
       this.engine.cache.set("profiles", ordered);
       this.profiles = ordered;
-      this.activeName = active.active || "default";
+    }
+
+    if (activeResult.status === "fulfilled") {
+      this.activeName = activeResult.value.active || "default";
+      this.activeConfirmed = true;
+    } else {
+      this.activeConfirmed = false;
+    }
+
+    if (profilesResult.status === "fulfilled") {
       this.status = "ready";
-      this.error = null;
-      this.recompute();
-    } catch (error) {
-      if (this.disposed || seq !== this.loadSeq) return;
-      const adminError = HermesAdminError.from("GET /api/profiles", error);
+      this.error =
+        activeResult.status === "rejected"
+          ? HermesAdminError.from("GET /api/profiles/active", activeResult.reason).safeMessage
+          : null;
+    } else {
+      const adminError = HermesAdminError.from("GET /api/profiles", profilesResult.reason);
       this.error = adminError.safeMessage;
       this.status = this.profiles.length > 0 ? "ready" : "error";
-      this.recompute();
     }
+    this.recompute();
   }
 
   async activate(name: string): Promise<boolean> {
-    const guard = canActivateProfile(name, this.activeName);
+    const guard = canActivateProfile(name, this.activeName, this.activeConfirmed);
     if (!guard.ok) {
       this.error = guard.reason;
       this.recompute();
@@ -169,7 +183,7 @@ export class ProfileManagerController {
   }
 
   async remove(name: string): Promise<boolean> {
-    const guard = canRemoveProfile(name, this.activeName);
+    const guard = canRemoveProfile(name, this.activeName, this.activeConfirmed);
     if (!guard.ok) {
       this.error = guard.reason;
       this.recompute();
@@ -205,6 +219,7 @@ export class ProfileManagerController {
       status: this.status,
       profiles: this.profiles,
       activeName: this.activeName,
+      activeConfirmed: this.activeConfirmed,
       pendingAction: this.pendingAction,
       error: this.error,
       activate: this.activateAction,
@@ -267,6 +282,7 @@ const UNAVAILABLE_STATE: ProfileManagerState = Object.freeze({
   status: "unavailable",
   profiles: [],
   activeName: "default",
+  activeConfirmed: false,
   pendingAction: null,
   error: null,
   activate: () => Promise.resolve(false),

@@ -235,6 +235,8 @@ export type FakeHermesScenario = {
   /** Sticky active profile served by GET /api/profiles/active. Defaults to the
    * first profile with `active: true`, then the first profile, then `default`. */
   activeProfile?: string;
+  /** When set, GET /api/profiles/active fails with this status. */
+  profileActiveError?: { status: number; code?: string; error?: string };
   /** When set, POST /api/profiles fails with this status (rollback testing). */
   profileCreateError?: { status: number; code?: string; error?: string };
   /** When set, PUT /api/profiles/{name}/soul fails with this status. */
@@ -305,6 +307,11 @@ export class FakeHermesServer {
     code?: string;
     error?: string;
   };
+  private profileActiveError?: {
+    status: number;
+    code?: string;
+    error?: string;
+  };
   private readonly profileSoulError?: {
     status: number;
     code?: string;
@@ -342,6 +349,7 @@ export class FakeHermesServer {
       this.profiles.find((p) => p.active)?.name ??
       this.profiles[0]?.name ??
       "default";
+    this.profileActiveError = scenario.profileActiveError;
     this.profileCreateError = scenario.profileCreateError;
     this.profileSoulError = scenario.profileSoulError;
     this.profileActivateNotOk = scenario.profileActivateNotOk ?? false;
@@ -349,6 +357,10 @@ export class FakeHermesServer {
     this.config = clone(scenario.config ?? {});
     this.backgroundActions = scenario.backgroundActions ?? false;
     this.actionScripts = scenario.actionScripts ?? {};
+  }
+
+  setProfileActiveError(error?: { status: number; code?: string; error?: string }): void {
+    this.profileActiveError = error;
   }
 
   /** A `fetch`-compatible bound method to hand to the admin client. */
@@ -567,6 +579,12 @@ export class FakeHermesServer {
       return json(200, { sessions: this.profileSessions });
     }
     if (method === "GET" && path === "/api/profiles/active") {
+      if (this.profileActiveError) {
+        throw new HttpError(this.profileActiveError.status, {
+          code: this.profileActiveError.code ?? "error",
+          error: this.profileActiveError.error ?? "active profile read failed",
+        });
+      }
       return json(200, {
         active: this.activeProfile,
         current: this.activeProfile,

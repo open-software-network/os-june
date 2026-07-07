@@ -14,6 +14,9 @@ export type ProfileActionGuard =
       reason: string;
     };
 
+export const ACTIVE_PROFILE_UNCONFIRMED_REASON =
+  "Can't confirm which profile is active. Refresh and try again.";
+
 /** Orders profiles with `default` first, then all other profile names
  * alphabetically. The input is never mutated. */
 export function orderProfiles(profiles: readonly HermesProfileSummary[]): HermesProfileSummary[] {
@@ -24,8 +27,23 @@ export function orderProfiles(profiles: readonly HermesProfileSummary[]): Hermes
   });
 }
 
+/** Profile mutations need a fresh active-profile read before they can safely
+ * decide whether the requested profile is active. */
+export function canMutateProfiles(activeConfirmed: boolean): ProfileActionGuard {
+  if (!activeConfirmed) {
+    return { ok: false, reason: ACTIVE_PROFILE_UNCONFIRMED_REASON };
+  }
+  return { ok: true };
+}
+
 /** Activating the already-active profile is a no-op and should not hit Hermes. */
-export function canActivateProfile(name: string, activeName: string): ProfileActionGuard {
+export function canActivateProfile(
+  name: string,
+  activeName: string,
+  activeConfirmed: boolean,
+): ProfileActionGuard {
+  const mutationGuard = canMutateProfiles(activeConfirmed);
+  if (!mutationGuard.ok) return mutationGuard;
   if (name === activeName) {
     return { ok: false, reason: "This profile is already active." };
   }
@@ -34,7 +52,13 @@ export function canActivateProfile(name: string, activeName: string): ProfileAct
 
 /** Deleting the default profile or the active profile is blocked client-side so
  * the UI can explain the rule before Hermes refuses the request. */
-export function canRemoveProfile(name: string, activeName: string): ProfileActionGuard {
+export function canRemoveProfile(
+  name: string,
+  activeName: string,
+  activeConfirmed: boolean,
+): ProfileActionGuard {
+  const mutationGuard = canMutateProfiles(activeConfirmed);
+  if (!mutationGuard.ok) return mutationGuard;
   if (name === "default") {
     return { ok: false, reason: "The default profile can't be deleted." };
   }
