@@ -58,7 +58,6 @@ import {
   deleteNote,
   deleteNotes,
   dictationHelperCommand,
-  ensureHermesBridgeSession,
   finishRecording,
   getRecordingStatus,
   getNote,
@@ -93,7 +92,6 @@ import {
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
 import { messageFromError } from "../lib/errors";
-import { withTimeout } from "../lib/async-timeout";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
@@ -2101,25 +2099,16 @@ export function App() {
   // Escalates a note chat into the full agent view: an existing session opens
   // in place (it's a normal Hermes session, so history already knows it); a
   // chat that never started falls back to the seeded new-session flow.
-  async function handleOpenNoteChatInAgent(
-    noteRef: { id: string; title: string },
-    sessionId?: string,
-  ) {
+  function handleOpenNoteChatInAgent(noteRef: { id: string; title: string }, sessionId?: string) {
     if (!sessionId) {
       handleAskJuneAboutNote(noteRef);
       return;
     }
+    // The panel only enables "Open in agent view" once the session is
+    // registered in the bridge list (see useNoteChat.bridgeRegistered), so the
+    // handoff can switch straight in without racing registration.
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
-    // The note chat may have created this session while bridge registration
-    // was transiently failing, so guarantee it's in the bridge session list
-    // here — the agent view resolves the conversation by this id, and an
-    // unregistered id would open an empty chat. Best-effort + short timeout so
-    // a slow bridge can't hang the handoff.
-    await withTimeout(
-      ensureHermesBridgeSession({ sessionId, title: noteRef.title.trim() || "Note chat" }),
-      2500,
-    ).catch(() => undefined);
     setActiveAgentSession({ id: sessionId, title: noteRef.title.trim() || undefined });
     setActiveView("agent");
   }
@@ -3340,7 +3329,7 @@ export function App() {
             onClose={() => setNoteChatOpen(false)}
             onOpenInAgent={(sessionId) => {
               setNoteChatOpen(false);
-              void handleOpenNoteChatInAgent(
+              handleOpenNoteChatInAgent(
                 { id: selectedNote.id, title: selectedNote.title },
                 sessionId,
               );

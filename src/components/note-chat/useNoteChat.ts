@@ -145,6 +145,9 @@ export type NoteChat = {
   /** The stored Hermes session id backing this note's chat, once one exists.
    * This is the id the agent view's history knows the conversation by. */
   storedSessionId: string | undefined;
+  /** True once this session is confirmed registered in the bridge list, so
+   * "Open in agent view" can escalate it without landing on an empty session. */
+  bridgeRegistered: boolean;
   /** Sends a question about the note, with any imported attachments (images
    * ride the structured attach flow before the prompt; every file's workspace
    * path rides in the prompt block). Resolves true when the prompt was
@@ -174,6 +177,10 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const [working, setWorking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Reactive mirror of bridgeEnsuredRef for the UI: "Open in agent view" gates
+  // on this so it never hands the agent view a session the bridge list hasn't
+  // registered yet (register-before-expose).
+  const [bridgeRegistered, setBridgeRegistered] = useState(false);
 
   const storedSessionIdRef = useRef<string>();
   const runtimeSessionIdRef = useRef<string>();
@@ -189,8 +196,13 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   // Whether this session is registered in the bridge's list. ensureHermesBridge
   // is best-effort, so a transient first-message failure would otherwise never
   // retry — and "Open in agent view" could hand the agent view an id the list
-  // doesn't know. Retried on later submits until it sticks.
+  // doesn't know. Retried on later submits until it sticks; the reactive
+  // bridgeRegistered mirror gates the escalation button.
   const bridgeEnsuredRef = useRef(false);
+  const markBridgeRegistered = useCallback((value: boolean) => {
+    bridgeEnsuredRef.current = value;
+    setBridgeRegistered(value);
+  }, []);
   const liveEventsRef = useRef<JuneHermesEvent[]>([]);
   const pendingUserTurnsRef = useRef<AgentChatTurn[]>([]);
   liveEventsRef.current = liveEvents;
@@ -204,7 +216,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     pendingModelIdRef.current = undefined;
     appliedModelIdRef.current = undefined;
     submittingRef.current = false;
-    bridgeEnsuredRef.current = false;
+    markBridgeRegistered(false);
     setStoredSessionId(sessionId);
     setMessages([]);
     setLiveEvents([]);
@@ -354,26 +366,30 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             model: modelId,
           });
           appliedModelIdRef.current = modelId;
-          bridgeEnsuredRef.current = await ensureHermesBridgeSession({
-            sessionId,
-            title: noteTitle.trim() || "Note chat",
-            model: modelId,
-          })
-            .then(() => true)
-            .catch(() => bridgeEnsuredRef.current);
+          markBridgeRegistered(
+            await ensureHermesBridgeSession({
+              sessionId,
+              title: noteTitle.trim() || "Note chat",
+              model: modelId,
+            })
+              .then(() => true)
+              .catch(() => bridgeEnsuredRef.current),
+          );
         }
         // Register the session in the bridge list, retrying a swallowed earlier
-        // attempt so it always resolves — "Open in agent view" hands the agent
-        // view this id, and a missing registration would open an empty chat.
-        // Best-effort: the live session works regardless of the bridge list.
+        // attempt so it always resolves — "Open in agent view" gates on this so
+        // the handoff can't open an unregistered (empty) session. Best-effort:
+        // the live session itself works regardless of the bridge list.
         if (!bridgeEnsuredRef.current) {
-          bridgeEnsuredRef.current = await ensureHermesBridgeSession({
-            sessionId,
-            title: noteTitle.trim() || "Note chat",
-            ...(appliedModelIdRef.current ? { model: appliedModelIdRef.current } : {}),
-          })
-            .then(() => true)
-            .catch(() => false);
+          markBridgeRegistered(
+            await ensureHermesBridgeSession({
+              sessionId,
+              title: noteTitle.trim() || "Note chat",
+              ...(appliedModelIdRef.current ? { model: appliedModelIdRef.current } : {}),
+            })
+              .then(() => true)
+              .catch(() => false),
+          );
         }
         // Images go to the model as first-class inputs before the prompt,
         // like the workspace's feature-19 flow. A failed attach throws so the
@@ -447,5 +463,15 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     return [...built, ...pendingUserTurns].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }, [messages, liveEvents, pendingUserTurns]);
 
-  return { turns, working, loading, error, storedSessionId, submit, stop, setSessionModel };
+  return {
+    turns,
+    working,
+    loading,
+    error,
+    storedSessionId,
+    bridgeRegistered,
+    submit,
+    stop,
+    setSessionModel,
+  };
 }

@@ -5575,24 +5575,30 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-/* Richer rows: title over a one-line preview (so untitled notes are still
-   identifiable), with the date on a right rail. Third grid column holds it. */
+/* Uniform single-line rows: a leading label, a muted preview inline to its
+   right (only when it adds to a real title), and the date on a right rail.
+   Third grid column holds the date. */
 .agent-note-suggestion-menu button {
   grid-template-columns: 18px minmax(0, 1fr) auto;
 }
 
 .agent-note-suggestion-menu-copy {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--sp-px);
+  gap: var(--sp-2);
+}
+
+.agent-note-suggestion-menu-label {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-note-suggestion-menu-preview {
-  max-width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
