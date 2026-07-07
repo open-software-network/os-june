@@ -153,22 +153,11 @@ export function NoteChatPanel({
   onClose: () => void;
   onOpenInAgent: (sessionId: string | undefined) => void;
 }) {
-  const {
-    turns,
-    working,
-    loading,
-    error,
-    storedSessionId,
-    bridgeRegistered,
-    submit,
-    stop,
-    setSessionModel,
-  } = chat;
-  // Block escalation while a chat exists (or is being created) but isn't yet
-  // registered in the bridge list — opening it then would race session
-  // creation or resolve an id the agent view can't find. A fresh panel with no
-  // chat still escalates to a seeded new session.
-  const escalationPending = (working || Boolean(storedSessionId)) && !bridgeRegistered;
+  const { turns, working, loading, error, storedSessionId, submit, stop, setSessionModel } = chat;
+  // Block escalation only during the pure first-send race — the session is
+  // being created and there's no id to hand off yet. Once an id exists the
+  // agent view resolves the conversation by it, so opening is always safe.
+  const escalationPending = working && !storedSessionId;
   const [entered, setEntered] = useState(false);
   const [draftEmpty, setDraftEmpty] = useState(true);
   const [attachments, setAttachments] = useState<NoteChatAttachment[]>([]);
