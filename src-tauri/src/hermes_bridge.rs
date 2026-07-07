@@ -6572,7 +6572,10 @@ fn push_external_skill_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf, relative_base:
 }
 
 fn external_skill_dir_identity(dir: &Path, relative_base: Option<&Path>) -> PathBuf {
-    external_skill_dir_scan_path_from_base(dir, relative_base).unwrap_or_else(|| dir.to_path_buf())
+    let path = external_skill_dir_scan_path_from_base(dir, relative_base)
+        .unwrap_or_else(|| dir.to_path_buf());
+    path.canonicalize()
+        .unwrap_or_else(|_| normalize_path_lexically(path))
 }
 
 /// Renders the `config.yaml` June owns for every Hermes spawn. Pure so the
@@ -6784,10 +6787,15 @@ fn external_skill_dir_scan_path_from_base(
 fn normalize_path_lexically(path: PathBuf) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
-        if component == Component::CurDir {
-            continue;
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() && !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
         }
-        normalized.push(component.as_os_str());
     }
     if normalized.as_os_str().is_empty() {
         PathBuf::from(".")
@@ -9273,6 +9281,54 @@ mcp_servers:
         assert_eq!(
             effective_external_skill_dirs_from_config(&config, std::slice::from_ref(&default)),
             vec![default]
+        );
+    }
+
+    #[test]
+    fn effective_external_skill_dirs_dedupes_canonical_root_identities() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let hermes_home = root.path().join("hermes-home");
+        let direct = root.path().join("team-skills");
+        std::fs::create_dir_all(&hermes_home).expect("hermes home");
+        std::fs::create_dir_all(&direct).expect("direct dir");
+        let config = hermes_home.join("config.yaml");
+        let equivalent = hermes_home.join("..").join("team-skills");
+        std::fs::write(
+            &config,
+            format!(
+                "skills:\n  external_dirs:\n    - {}\n",
+                yaml_string(&equivalent.to_string_lossy())
+            ),
+        )
+        .expect("seed config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&config, std::slice::from_ref(&direct)),
+            vec![direct]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn effective_external_skill_dirs_dedupes_symlinked_root_identities() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let direct = root.path().join("team-skills");
+        let symlink = root.path().join("team-skills-link");
+        std::fs::create_dir_all(&direct).expect("direct dir");
+        std::os::unix::fs::symlink(&direct, &symlink).expect("symlink dir");
+        let config = root.path().join("config.yaml");
+        std::fs::write(
+            &config,
+            format!(
+                "skills:\n  external_dirs:\n    - {}\n",
+                yaml_string(&symlink.to_string_lossy())
+            ),
+        )
+        .expect("seed config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&config, std::slice::from_ref(&direct)),
+            vec![direct]
         );
     }
 
