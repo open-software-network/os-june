@@ -18626,6 +18626,22 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
+.image-safe-mode-consent-checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.image-safe-mode-consent-checkbox input {
+  width: var(--sp-4);
+  height: var(--sp-4);
+  margin: 0;
+  accent-color: var(--primary);
+}
+
 .update-popover {
   width: 100%;
   min-width: 0;

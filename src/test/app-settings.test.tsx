@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   setVeniceModel: vi.fn(),
   setVeniceApiKey: vi.fn(),
   clearVeniceApiKey: vi.fn(),
+  setImageSafeMode: vi.fn(),
+  setImageSafeModePromptDismissed: vi.fn(),
   saveLocalGenerationSettings: vi.fn(),
   setLocalGenerationEnabled: vi.fn(),
   probeLocalGenerationEndpoint: vi.fn(),
@@ -79,6 +81,8 @@ vi.mock("../lib/tauri", () => ({
   setVeniceModel: mocks.setVeniceModel,
   setVeniceApiKey: mocks.setVeniceApiKey,
   clearVeniceApiKey: mocks.clearVeniceApiKey,
+  setImageSafeMode: mocks.setImageSafeMode,
+  setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
   saveLocalGenerationSettings: mocks.saveLocalGenerationSettings,
   setLocalGenerationEnabled: mocks.setLocalGenerationEnabled,
   probeLocalGenerationEndpoint: mocks.probeLocalGenerationEndpoint,
@@ -185,6 +189,8 @@ function buildProviderSettings() {
       modelId: localState.modelId,
       apiKey: localState.apiKey,
     },
+    imageSafeMode: true,
+    imageSafeModePromptDismissed: false,
   };
 }
 
@@ -249,6 +255,8 @@ describe("AppSettings", () => {
           modelId: "",
           apiKey: "",
         },
+        imageSafeMode: true,
+        imageSafeModePromptDismissed: false,
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -391,6 +399,12 @@ describe("AppSettings", () => {
         modelId: localState.modelId,
         apiKey: localState.apiKey,
       },
+      imageSafeMode: true,
+      imageSafeModePromptDismissed: false,
+    }));
+    mocks.setImageSafeMode.mockImplementation(async (enabled: boolean) => ({
+      ...buildProviderSettings(),
+      imageSafeMode: enabled,
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
       ...buildProviderSettings(),
@@ -2593,7 +2607,7 @@ describe("AppSettings", () => {
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-1");
   });
 
-  it("shows the image generation section and saves the default image model", async () => {
+  it("shows the image model in AI models and saves the default image model", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -2610,9 +2624,16 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
 
-    // The section renders and the saved default is shown.
-    expect(screen.getByRole("heading", { name: "Image generation" })).toBeInTheDocument();
-    expect(screen.getByText("Venice SD3.5")).toBeInTheDocument();
+    const modelsSection = screen.getByRole("heading", { name: "AI models" }).closest("section");
+    expect(modelsSection).not.toBeNull();
+    expect(screen.queryByRole("heading", { name: "Image generation" })).not.toBeInTheDocument();
+    expect(
+      within(modelsSection as HTMLElement).getByRole("button", { name: "Change image model" }),
+    ).toBeInTheDocument();
+    expect(within(modelsSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Blur adult content in images" }),
+    ).not.toBeInTheDocument();
 
     // The picker opens with the curated image options (no backend fetch).
     await user.click(screen.getByRole("button", { name: "Change image model" }));
@@ -2642,6 +2663,41 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(screen.queryByRole("option", { name: /FLUX 2 Pro/ })).not.toBeInTheDocument(),
     );
+  });
+
+  it("keeps image Safe mode behind More options and toggles it once expanded", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    expect(screen.getByRole("button", { name: "Change image model" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Blur adult content in images" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /More options/ }));
+
+    const safeModeSwitch = await screen.findByRole("switch", {
+      name: "Blur adult content in images",
+    });
+    expect(safeModeSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(safeModeSwitch);
+
+    expect(mocks.setImageSafeMode).toHaveBeenCalledWith(false);
+    expect(await screen.findByText("Safe mode off: images are not filtered.")).toBeInTheDocument();
   });
 
   it("blocks selecting a text model that cannot use tools", async () => {

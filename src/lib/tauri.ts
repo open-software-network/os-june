@@ -183,9 +183,11 @@ export type ProviderModelSettingsDto = {
   imageModel: string;
   veniceApiKeyConfigured: boolean;
   localGeneration: LocalGenerationSettingsDto;
-  /** Venice safe mode for image generation/editing (blurs adult content). Off
-   * by default (privacy-first); the user opts in via Settings. */
+  /** Venice safe mode for image generation/editing (blurs adult content). On
+   * by default; the user opts out via Settings or the consent dialog. */
   imageSafeMode: boolean;
+  /** Whether the user chose "don't ask again" on the safe-mode consent dialog. */
+  imageSafeModePromptDismissed: boolean;
 };
 
 export type LocalGenerationSettingsDto = {
@@ -199,6 +201,10 @@ export type GeneratedImageDto = {
   mimeType: string;
   model: string;
   provider: string;
+};
+
+export type ImagePromptScreenResponse = {
+  mayBeExplicit: boolean;
 };
 
 export type ProviderModelSettingsResponse = {
@@ -1621,12 +1627,26 @@ export async function clearVeniceApiKey() {
   return invoke<ProviderModelSettingsDto>("clear_venice_api_key");
 }
 
-// Toggles Venice safe mode for image generation/editing. Off by default; when
+// Toggles Venice safe mode for image generation/editing. On by default; when
 // on, Venice blurs adult content.
 export async function setImageSafeMode(enabled: boolean) {
   return invoke<ProviderModelSettingsDto>("set_image_safe_mode", {
     request: { enabled },
   });
+}
+
+export async function setImageSafeModePromptDismissed(dismissed: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_image_safe_mode_prompt_dismissed", {
+    request: { dismissed },
+  });
+}
+
+/** Screens an image prompt for the safe-mode consent dialog. */
+export async function imagePromptMayBeExplicit(prompt: string): Promise<boolean> {
+  const response = await invoke<ImagePromptScreenResponse>("image_prompt_may_be_explicit", {
+    request: { prompt },
+  });
+  return response.mayBeExplicit;
 }
 
 // Generates an image from a prompt via the June API. `model` is optional; the
