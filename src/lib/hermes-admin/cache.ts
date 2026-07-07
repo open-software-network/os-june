@@ -293,8 +293,14 @@ export class AdminStateCache {
     if (removed) this.notifyNotifications();
   }
 
-  /** Raises a durable notification. */
+  /** Raises a durable notification. Collapses duplicates: a repeat of an
+   * existing note's exact message replaces the prior one (moved to newest and
+   * its auto-dismiss timer reset) instead of stacking an identical row. */
   private raise(input: Omit<AdminNotification, "id" | "at">): void {
+    const duplicate = this.notifications.findIndex(
+      (note) => note.message === input.message && Boolean(note.isError) === Boolean(input.isError),
+    );
+    if (duplicate >= 0) this.notifications.splice(duplicate, 1);
     this.notifications.push({
       ...input,
       id: `admin-note-${++this.notificationSeq}`,

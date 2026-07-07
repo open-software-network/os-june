@@ -979,19 +979,29 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* All the row info on one line: name, a quiet count badge, and the muted
+ * status, with the controls pinned right by the row grid. Center-aligned so the
+ * count pill sits level with the name rather than riding its baseline. */
 .agent-capability-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--sp-2);
   min-width: 0;
 }
 
-.agent-capability-title span {
+.agent-capability-title span:first-child {
+  min-width: 0;
   overflow: hidden;
   color: var(--foreground);
   font-weight: var(--fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The required-fields count badge beside the name — the same muted number-badge
+ * treatment as the group "Platforms 31" count (a bare .status-pill). */
+.agent-capability-count {
+  flex-shrink: 0;
 }
 
 .agent-capability-title em {
@@ -1067,10 +1077,11 @@ input:focus-visible,
   box-shadow: inset 0 0 0 1px var(--ring-focus);
 }
 
-/* A clean file tree: quiet section rows with a folder icon, indented children,
- * muted counts/sizes, and neutral row hovers — no rough borders or chrome. */
+/* Each root (Workspace, Memory) reads as its own titled settings sub-section:
+ * a quiet group header above a bordered card that wraps the file tree, matching
+ * the settings-group + settings-card language used across the AI pages. */
 .agent-files-root + .agent-files-root {
-  margin-top: var(--sp-5);
+  margin-top: var(--sp-6);
 }
 
 .agent-files-root > header {
@@ -1082,7 +1093,20 @@ input:focus-visible,
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
   gap: var(--sp-2) var(--sp-3);
-  padding: 0 0 var(--sp-2);
+  padding: 0 var(--sp-1) var(--sp-3);
+}
+
+/* The wrapping container for the root's file tree — a quiet bordered card so
+ * each sub-section is visually grouped, consistent with the settings cards. */
+.agent-files-body {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  padding: var(--sp-2);
+}
+
+.agent-files-body .agent-capability-empty {
+  margin: var(--sp-1) var(--sp-2);
 }
 
 /* The label + description column spans the first grid cell; the path chip sits
@@ -4866,7 +4890,7 @@ input:focus-visible,
 
 .agent-composer-model-title {
   margin: 0;
-  padding: 0 var(--sp-2) var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
@@ -5108,6 +5132,10 @@ input:focus-visible,
   gap: var(--sp-2);
   flex: 0 0 auto;
   height: var(--control-lg);
+  /* Inset the field from the popover edges so the focus ring has breathing
+   * room, and keep the icon+placeholder gutter aligned with the row names
+   * below (row logo starts at the row's own sp-2 padding + this inset). */
+  margin: 0 var(--sp-1);
   padding: 0 var(--sp-3);
   border-radius: var(--r-md);
   background: var(--card);
@@ -10374,7 +10402,7 @@ input:focus-visible,
  * sub-group label below the header. */
 .settings-page-header {
   padding-left: var(--sp-3);
-  margin-bottom: var(--sp-5);
+  margin-bottom: var(--sp-7);
 }
 
 .settings-page-title {
@@ -10387,7 +10415,7 @@ input:focus-visible,
 }
 
 .settings-page-blurb {
-  margin: var(--sp-2) 0 0;
+  margin: var(--sp-1) 0 0;
   max-width: 60ch;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
@@ -10424,6 +10452,19 @@ input:focus-visible,
   );
   padding: 0;
   overflow: hidden;
+}
+
+/* The messaging list card hugs its content: with only a handful of platforms
+ * the tall min-height reserved dead space below the rows. Drop the min-height
+ * and let the panel's list row size to its content; the list keeps its own
+ * max-height cap so a long roster still scrolls in place. */
+.settings-agent-card-hug {
+  min-height: 0;
+}
+
+.settings-agent-card-hug .agent-management-panel {
+  grid-template-rows: auto minmax(0, auto);
+  height: auto;
 }
 
 .settings-agent-card .settings-row-error {
@@ -11858,23 +11899,26 @@ input:focus-visible,
 /* The one shared admin change-notice surface (AdminNotifications). Every admin
  * section renders its change notices through these classes, so the look is
  * identical across surfaces. */
+/* The shared admin change-notice stack. Each notice is an .inline-notice so it
+ * matches the design system's message treatment; this wrapper only owns the
+ * stacking gap and the spacing before the content below. */
 .admin-notifications {
-  list-style: none;
   display: grid;
   gap: var(--sp-2);
   margin: 0 0 var(--sp-3);
   padding: 0;
 }
 
-.admin-notification {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+/* A quieter, tighter notice than the page-level banners — these are transient
+ * change confirmations, so they sit lower-key than a persistent warning. */
+.admin-notification.inline-notice {
   gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+}
+
+.admin-notification .inline-notice-body {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
 }
 
 .admin-notification[data-tone="destructive"] {
@@ -11882,26 +11926,8 @@ input:focus-visible,
   background: var(--destructive-soft);
 }
 
-.admin-notification-text {
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-}
-
-.admin-notification-dismiss {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: var(--control-xs);
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.admin-notification-dismiss:hover {
-  color: var(--foreground);
-  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+.admin-notification[data-tone="destructive"] .inline-notice-body {
+  color: var(--destructive);
 }
 
 /* Empty / error / loading states. */
@@ -12131,12 +12157,6 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-weight: 400;
   font-size: var(--fs-sm);
-}
-
-.external-dir-icon {
-  display: inline-grid;
-  place-items: center;
-  color: var(--muted-foreground);
 }
 
 .external-dir-path {
@@ -13007,7 +13027,9 @@ input:focus-visible,
  * Tokens only; sentence case; no dashes in copy. */
 .skill-detail {
   display: grid;
-  gap: var(--sp-5);
+  /* Generous separation between the detail blocks (Details, Manage, Supporting
+   * files, Setup) so each section reads as its own group with breathing room. */
+  gap: var(--sp-8);
 }
 
 .skill-detail-refresh:disabled {

@@ -1,5 +1,4 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
-import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
@@ -285,9 +284,6 @@ function DirRow({
         aria-expanded={open}
         onClick={onToggle}
       >
-        <span className="external-dir-icon" aria-hidden>
-          <IconBuildingBlocks size={16} />
-        </span>
         <span className="external-dir-copy">
           <span className="external-dir-name-row">
             <span className="external-dir-name">{name}</span>
@@ -306,7 +302,7 @@ function DirRow({
             {badge.label}
           </span>
         ) : null}
-        <IconChevronRightSmall size={12} aria-hidden className="external-dir-chevron" />
+        <IconChevronRightSmall size={14} aria-hidden className="external-dir-chevron" />
       </button>
 
       {open ? (

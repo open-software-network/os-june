@@ -8972,25 +8972,23 @@ export function MessagingPanel({
               ).length;
               const requiredTotal = envVars.filter((field) => field.required).length;
               const state = platform.state ?? "unknown";
+              const enabled = Boolean(platform.enabled);
               const configured =
                 platform.configured || (requiredTotal > 0 && requiredSet === requiredTotal);
-              // The switch already conveys enabled/disabled, so the meta line
-              // keeps only meaningful status (e.g. Connected) plus the required
-              // progress; the "Not configured" pill by the switch owns the
-              // unconfigured case.
-              const status = meaningfulCapabilityStatus(state);
-              const meta =
-                [status, requiredTotal ? `${requiredSet}/${requiredTotal} required set` : null]
-                  .filter(Boolean)
-                  .join(" · ") || undefined;
+              // The switch already conveys enabled/disabled and the count badge
+              // by the name owns the required-field progress, so the meta line
+              // keeps only meaningful status (e.g. Connected). The "Not
+              // configured" pill by the switch shows only for an enabled but
+              // unconfigured platform.
+              const meta = meaningfulCapabilityStatus(state);
               return (
                 <CapabilityRow
                   key={platform.id}
                   title={platform.name}
-                  description={platform.description}
                   meta={meta}
-                  enabled={Boolean(platform.enabled)}
-                  notConfigured={!configured}
+                  count={requiredTotal ? `${requiredSet}/${requiredTotal}` : undefined}
+                  enabled={enabled}
+                  notConfigured={enabled && !configured}
                   selected={false}
                   saving={saving === `messaging:${platform.id}`}
                   onSelect={() => onSelectPlatform(platform)}
@@ -9051,23 +9049,22 @@ export function FilesystemPanel({
             <section key={root.id} className="agent-files-root">
               <header>
                 <div>
-                  <h3 className="agent-files-root-title">
-                    <IconBubble3 size={14} />
-                    {root.label}
-                  </h3>
+                  <h3 className="agent-files-root-title">{root.label}</h3>
                   <p>{root.description}</p>
                 </div>
                 <code>{compactPath(root.path)}</code>
               </header>
-              {root.entries.length ? (
-                <div className="agent-files-tree">
-                  {root.entries.map((entry) => (
-                    <FilesystemEntryRow key={entry.path} entry={entry} level={0} />
-                  ))}
-                </div>
-              ) : (
-                <p className="agent-capability-empty">No visible entries</p>
-              )}
+              <div className="agent-files-body">
+                {root.entries.length ? (
+                  <div className="agent-files-tree">
+                    {root.entries.map((entry) => (
+                      <FilesystemEntryRow key={entry.path} entry={entry} level={0} />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="agent-capability-empty">No visible entries</p>
+                )}
+              </div>
             </section>
           ))}
         </div>
@@ -9367,6 +9364,7 @@ function CapabilityGroup({
 
 function CapabilityRow({
   children,
+  count,
   description,
   enabled,
   meta,
@@ -9378,6 +9376,9 @@ function CapabilityRow({
   onToggle,
 }: {
   children?: ReactNode;
+  /** A quiet count badge beside the name (e.g. "0/2" required fields set),
+   * using the same muted number-badge treatment as the group count. */
+  count?: string;
   description?: string;
   enabled: boolean;
   meta?: string;
@@ -9395,6 +9396,7 @@ function CapabilityRow({
       <button type="button" disabled={!onSelect} onClick={onSelect}>
         <div className="agent-capability-title">
           <span>{title}</span>
+          {count ? <span className="status-pill agent-capability-count">{count}</span> : null}
           {meta ? <em>{meta}</em> : null}
         </div>
         {description ? <p>{description}</p> : null}

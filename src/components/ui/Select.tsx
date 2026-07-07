@@ -1,8 +1,8 @@
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
-import { useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { useDismiss } from "../../lib/use-dismiss";
+import { createPortal } from "react-dom";
 
 export type SelectPopoverPlacement = "align-selected" | "below" | "above";
 
@@ -66,6 +66,28 @@ export function selectPopoverStyle(
   return { top: -(3 + selectedIndex * 28) };
 }
 
+/**
+ * The same placement math as {@link selectPopoverStyle} but resolved to fixed
+ * viewport coordinates, so the popover can render in a body portal (escaping any
+ * ancestor `overflow: hidden`) while staying pinned to its trigger. `below`
+ * anchors the popover top; `above` anchors its bottom to the viewport floor
+ * (`window.innerHeight - triggerTop`); `align-selected` slides the selected row
+ * over the trigger, matching the in-flow offset.
+ */
+function fixedVerticalStyle(
+  placement: SelectPopoverPlacement,
+  selectedIndex: number,
+  rect: DOMRect,
+): CSSProperties {
+  if (placement === "below") {
+    return { top: rect.bottom + 4 };
+  }
+  if (placement === "above") {
+    return { bottom: window.innerHeight - rect.top + 4 };
+  }
+  return { top: rect.top - (3 + selectedIndex * 28) };
+}
+
 export type SelectOption = {
   value: string;
   label: string;
@@ -102,11 +124,53 @@ export function Select({
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<SelectPopoverPlacement>("align-selected");
   const wrapRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLUListElement>(null);
+  // The popover is rendered in a portal so it escapes any ancestor card's
+  // `overflow: hidden` clipping; fixed coordinates are measured from the
+  // trigger on open (and on scroll/resize while open).
+  const [anchor, setAnchor] = useState<{ left: number; width: number; rect: DOMRect } | null>(null);
 
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selected = selectedIndex === -1 ? undefined : options[selectedIndex];
 
-  useDismiss(wrapRef, open, () => setOpen(false));
+  // Outside-press / Escape dismissal that accounts for the portaled popover:
+  // a press inside either the trigger wrap or the popover keeps it open.
+  useEffect(() => {
+    if (!open) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (wrapRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // Track the trigger rect while open so the fixed popover stays anchored
+  // through scrolls and resizes.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const el = wrapRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      setAnchor({ left: rect.left, width: rect.width, rect });
+    };
+    measure();
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    return () => {
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+    };
+  }, [open]);
 
   function toggle() {
     if (!open) {
@@ -120,6 +184,15 @@ export function Select({
     }
     setOpen((current) => !current);
   }
+
+  const fixedStyle: CSSProperties | undefined = anchor
+    ? {
+        position: "fixed",
+        left: anchor.left,
+        minWidth: Math.max(anchor.width, 260),
+        ...fixedVerticalStyle(placement, Math.max(selectedIndex, 0), anchor.rect),
+      }
+    : undefined;
 
   return (
     <div className={`select-control${className ? ` ${className}` : ""}`} ref={wrapRef}>
@@ -141,50 +214,62 @@ export function Select({
         ) : null}
         <IconChevronDownSmall size={14} />
       </button>
-      {open ? (
-        <ul
-          className="select-popover"
-          role="listbox"
-          data-placement={placement}
-          style={selectPopoverStyle(placement, Math.max(selectedIndex, 0))}
-        >
-          {options.map((option) => {
-            const isSelected = option.value === value;
-            return (
-              <li key={option.value} role="presentation">
-                <button
-                  type="button"
-                  role="option"
-                  className={option.color ? "has-swatch" : undefined}
-                  aria-selected={isSelected}
-                  data-selected={isSelected}
-                  onClick={() => {
-                    onChange(option.value);
-                    setOpen(false);
-                  }}
-                >
-                  {option.color ? (
-                    <span
-                      className="select-swatch"
-                      style={{ background: option.color }}
-                      aria-hidden
-                    />
-                  ) : null}
-                  <span className="select-label">
-                    {option.label}
-                    {typeof option.count === "number" ? (
-                      <span className="select-count">{option.count}</span>
-                    ) : null}
-                  </span>
-                  <span className="select-check" aria-hidden>
-                    {isSelected ? <IconCheckmark2Small size={14} /> : null}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
+      {open && anchor
+        ? createPortal(
+            <ul
+              ref={popoverRef}
+              className="select-popover select-popover-portal"
+              role="listbox"
+              data-placement={placement}
+              style={fixedStyle}
+            >
+              {renderOptions()}
+            </ul>,
+            document.body,
+          )
+        : null}
     </div>
   );
+
+  function renderOptions() {
+    return (
+      <>
+        {options.map((option) => {
+          const isSelected = option.value === value;
+          return (
+            <li key={option.value} role="presentation">
+              <button
+                type="button"
+                role="option"
+                className={option.color ? "has-swatch" : undefined}
+                aria-selected={isSelected}
+                data-selected={isSelected}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                {option.color ? (
+                  <span
+                    className="select-swatch"
+                    style={{ background: option.color }}
+                    aria-hidden
+                  />
+                ) : null}
+                <span className="select-label">
+                  {option.label}
+                  {typeof option.count === "number" ? (
+                    <span className="select-count">{option.count}</span>
+                  ) : null}
+                </span>
+                <span className="select-check" aria-hidden>
+                  {isSelected ? <IconCheckmark2Small size={14} /> : null}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </>
+    );
+  }
 }

@@ -463,7 +463,7 @@ function MessagingGroup({
         Connect messaging platforms so you can reach the agent where you already chat. Select a
         platform to configure it.
       </p>
-      <div className="settings-card settings-agent-card">
+      <div className="settings-card settings-agent-card settings-agent-card-hug">
         <MessagingPanel
           loading={loading}
           platforms={platforms}
