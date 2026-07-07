@@ -212,6 +212,11 @@ function LifecycleBanner({ state }: { state: ExternalDirsState }) {
   if (state.status === "unavailable") return null;
   const snapshot = state.lifecycle;
   const clean = snapshot.state === "clean";
+  // The clean state carries no action — showing an always-on "Applies next
+  // session" info banner just stacks a second notice above the shared-dir
+  // warning. Only surface the lifecycle notice when there's an actual
+  // restart-required / failed state to act on.
+  if (clean) return null;
   const tone =
     snapshot.state === "restart-failed"
       ? "destructive"

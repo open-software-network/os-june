@@ -26,6 +26,7 @@ import {
   type SkillSetupBadge as SkillSetupBadgeModel,
   type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
+import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
 import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { AdminNotifications } from "./AdminNotifications";
@@ -549,15 +550,16 @@ function SkillsLoading() {
   );
 }
 
+/** The shared empty-state surface with this section's glyph, so it reads the
+ * same as the other settings pages instead of a bespoke box. */
 function EmptyState({ title, description }: { title: string; description: string }) {
   return (
-    <div className="installed-skills-empty" role="status">
-      <span className="installed-skills-empty-icon" aria-hidden>
-        <IconPlugin2 size={22} />
-      </span>
-      <p className="installed-skills-empty-title">{title}</p>
-      <p className="installed-skills-empty-description">{description}</p>
-    </div>
+    <EmptyStateSurface
+      className="empty-state-compact"
+      icon={<IconPlugin2 size={22} />}
+      title={title}
+      description={description}
+    />
   );
 }
 
