@@ -25,6 +25,7 @@ import { HermesAdminError } from "./errors";
 import {
   parseActionHandle,
   parseActionStatus,
+  parseActiveProfile,
   parseConfigResult,
   parseConfigWriteResult,
   parseEnvListing,
@@ -36,14 +37,17 @@ import {
   parseMcpServer,
   parseMcpServerList,
   parseMcpTestResult,
+  parseProfileActivateResult,
   parseProfileCreateResult,
   parseProfileList,
+  parseProfileRemoveResult,
   parseProfileSessionList,
   parseSkillContent,
   parseSkillList,
   parseSkillScan,
   parseToggleResult,
   parseToolsetList,
+  type HermesActiveProfile,
   type HermesActionState,
   type HermesActionStatus,
   type HermesConfigResult,
@@ -57,6 +61,7 @@ import {
   type HermesMcpServerInfo,
   type HermesMcpTestResult,
   type HermesProfileCreateResult,
+  type HermesProfileActivateResult,
   type HermesProfileSession,
   type HermesProfileSummary,
   type HermesSkillContent,
@@ -230,6 +235,16 @@ export type HermesAdminClient = {
      * dedupe the new profile's name/slug against existing ones and to offer a
      * clone source. NOT profile-scoped — it lists ALL profiles. */
     list(): Promise<HermesProfileSummary[]>;
+    /** Reads the sticky active profile. `GET /api/profiles/active`. NOT
+     * profile-scoped — the active pointer is global for the Hermes runtime. */
+    active(): Promise<HermesActiveProfile>;
+    /** Sets the sticky active profile. `POST /api/profiles/active` with
+     * `{ name }`. NOT profile-scoped, because the active pointer chooses the
+     * profile future sessions use. */
+    activate(name: string): Promise<void>;
+    /** Deletes a profile. `DELETE /api/profiles/{name}`. NOT profile-scoped;
+     * the server refuses `default` and missing profiles. */
+    remove(name: string): Promise<void>;
     /** Creates a profile. `POST /api/profiles` with `ProfileCreate`. NOT
      * profile-scoped (it creates a new profile; the active-profile query would
      * be meaningless). Applies next session — the new profile is available to
@@ -565,6 +580,17 @@ function makeMcp(send: AdminTransport): HermesAdminClient["mcp"] {
 }
 
 function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
+  const activateProfile = (name: string): Promise<HermesProfileActivateResult> =>
+    send(
+      {
+        method: "POST",
+        path: "/api/profiles/active",
+        body: { name },
+        scopeToProfile: false,
+      },
+      (raw) => parseProfileActivateResult(name, raw),
+    );
+
   return {
     list() {
       // Lists ALL profiles — not scoped to the active one.
@@ -572,6 +598,41 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
         { method: "GET", path: "/api/profiles", scopeToProfile: false },
         parseProfileList,
       );
+    },
+    active() {
+      return send(
+        { method: "GET", path: "/api/profiles/active", scopeToProfile: false },
+        parseActiveProfile,
+      );
+    },
+    async activate(name) {
+      const result = await activateProfile(name);
+      if (!result.ok) {
+        throw new HermesAdminError({
+          endpoint: "POST /api/profiles/active",
+          kind: "parse",
+          safeMessage: "Hermes could not activate that profile.",
+          retryable: false,
+        });
+      }
+    },
+    async remove(name) {
+      const result = await send(
+        {
+          method: "DELETE",
+          path: `/api/profiles/${encodeURIComponent(name)}`,
+          scopeToProfile: false,
+        },
+        parseProfileRemoveResult,
+      );
+      if (!result.ok) {
+        throw new HermesAdminError({
+          endpoint: `DELETE /api/profiles/${name}`,
+          kind: "parse",
+          safeMessage: "Hermes could not delete that profile.",
+          retryable: false,
+        });
+      }
     },
     async create(payload) {
       // Create is global (it makes a new profile); the active-profile query is
@@ -614,15 +675,7 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
     async startTestSession(name) {
       // Make the new profile active, then open a terminal session under it. Both
       // are global profile operations, so neither is profile-query-scoped.
-      const activated = await send(
-        {
-          method: "POST",
-          path: "/api/profiles/active",
-          body: { name },
-          scopeToProfile: false,
-        },
-        (raw) => ({ ok: okFrom(raw) }),
-      );
+      const activated = await activateProfile(name);
       // Stop if the switch failed (a body-level { ok: false } on a 2xx):
       // opening a terminal would run under the wrong profile and falsely report
       // success. Surface the failure through the same outcome, matching create.

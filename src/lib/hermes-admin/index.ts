@@ -81,6 +81,8 @@ export * from "./skill-review-view";
 export * from "./use-skill-review";
 export * from "./profile-builder-view";
 export * from "./use-profile-builder";
+export * from "./profile-manager-view";
+export * from "./use-profile-manager";
 export * from "./setup-snapshot";
 export * from "./setup-import";
 export * from "./use-setup-snapshot";
