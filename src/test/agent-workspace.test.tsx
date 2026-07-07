@@ -21,6 +21,7 @@ import {
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
+import { setActiveHermesProfileName } from "../lib/active-hermes-profile";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
@@ -34,6 +35,7 @@ const HERO_GREETING = new RegExp(
 );
 
 const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
   editImage: vi.fn(),
@@ -93,7 +95,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/tauri", () => ({
   // The pending skill-writes tray loads through the Rust bridge via this named
   // `invoke`. A quiet stub keeps these workspace tests off that path.
-  invoke: vi.fn(async () => []),
+  invoke: mocks.invoke,
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
   editImage: mocks.editImage,
@@ -251,6 +253,8 @@ describe("AgentWorkspace", () => {
     for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       pendingActionStore.resolveSession(id);
     }
+    setActiveHermesProfileName("default");
+    mocks.invoke.mockResolvedValue({ active: "default", current: "default" });
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
@@ -5313,6 +5317,46 @@ describe("AgentWorkspace", () => {
       session_id: "runtime-session-1",
       text: "write a project update",
     });
+  });
+
+  it("threads the active Hermes profile into fresh session creation", async () => {
+    const connection = {
+      baseUrl: "http://127.0.0.1:61234",
+      wsUrl: "ws://127.0.0.1:61234",
+      token: "token",
+      port: 61234,
+      command: "hermes",
+      hermesHome: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes",
+      providerProxyPort: 61235,
+      pid: 42,
+      sandboxed: true,
+      fullMode: false,
+    };
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection,
+      connections: [connection],
+    });
+    mocks.invoke.mockResolvedValue({ active: "research", current: "default" });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    window.dispatchEvent(
+      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+        detail: { prompt: "draft a research brief" },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+        title: "Summarize Current Page",
+        cols: 96,
+        model: "zai-org-glm-5-2",
+        profile: "research",
+      }),
+    );
   });
 
   it("keeps an optimistic Hermes session visible while the persisted list lags", async () => {

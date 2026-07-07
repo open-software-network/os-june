@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { setActiveHermesProfileName } from "../active-hermes-profile";
 import { hermesBridgeStatus, type HermesBridgeStatus } from "../tauri";
 import { AdminStateCache } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
@@ -168,6 +169,7 @@ export class ProfileManagerController {
     this.recompute();
     try {
       await this.engine.client.profiles.activate(name);
+      setActiveHermesProfileName(name);
       if (this.disposed) return true;
       this.pendingAction = null;
       await this.load();

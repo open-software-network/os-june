@@ -94,6 +94,7 @@ describe("hermes compatibility matrix — required keys", () => {
       "imageEditing",
       "automationBlueprints",
       "messagingIntegrations",
+      "profile-switching",
     ]) {
       expect(featureKeys, `features.${required}`).toContain(required);
     }
@@ -183,6 +184,11 @@ describe("isHermesFeatureSupported — honest support gate", () => {
     // supported.
     expect(getFeatureStatus("command.dispatch")).toBe("supported");
     expect(isHermesFeatureSupported("command.dispatch")).toBe(true);
+  });
+
+  it("reports JUN-210 profile switching as supported once shipped", () => {
+    expect(getFeatureStatus("profile-switching")).toBe("supported");
+    expect(isHermesFeatureSupported("profile-switching")).toBe(true);
   });
 
   it("reports feature 08's session.compress as supported once shipped", () => {

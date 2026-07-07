@@ -140,6 +140,10 @@ import {
   titleFromPrompt,
 } from "../../lib/hermes-adapter";
 import {
+  getActiveHermesProfileName,
+  refreshActiveHermesProfile,
+} from "../../lib/active-hermes-profile";
+import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_GALLERY_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -1993,6 +1997,7 @@ export function AgentWorkspace({
   // runtime processes run side by side, each with its own socket. Sessions
   // route to the gateway matching their recorded mode.
   const gatewaysRef = useRef<Map<boolean, HermesGatewayClient>>(new Map());
+  const activeProfileRefreshReadyRef = useRef(false);
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
   // closure (see recoverFromGatewayClose).
@@ -3439,6 +3444,11 @@ export function AgentWorkspace({
         const status = await hermesBridgeStatus();
         if (cancelled) return;
         setBridge(status);
+        if (status.running) {
+          void refreshActiveHermesProfile({ status }).then(() => {
+            activeProfileRefreshReadyRef.current = true;
+          });
+        }
       } catch (err) {
         if (!cancelled) setError(describeAgentError(err), reportableAgentErrorOptions(err));
       }
@@ -5059,11 +5069,18 @@ export function AgentWorkspace({
       ]);
       const nextCreated = targetSessionId
         ? undefined
-        : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
-            title: nextSessionTitle ?? fallbackSessionTitle,
-            cols: 96,
-            ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-          });
+        : await nextGateway.request<HermesRuntimeSessionResponse>(
+            "session.create",
+            (() => {
+              const activeProfile = getActiveHermesProfileName();
+              return {
+                title: nextSessionTitle ?? fallbackSessionTitle,
+                cols: 96,
+                ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+                ...(activeProfile !== "default" ? { profile: activeProfile } : {}),
+              };
+            })(),
+          );
       const nextStoredSessionId =
         targetSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
       if (!nextStoredSessionId) {
@@ -5319,6 +5336,12 @@ export function AgentWorkspace({
     if (!connection) {
       const next = await startBridge(fullMode);
       connection = hermesConnectionForMode(next, fullMode);
+    } else if (!activeProfileRefreshReadyRef.current) {
+      await refreshActiveHermesProfile({
+        status: bridge,
+        mode: fullMode ? "unrestricted" : "sandboxed",
+      });
+      activeProfileRefreshReadyRef.current = true;
     }
     const wsUrl = connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
@@ -5475,6 +5498,8 @@ export function AgentWorkspace({
     try {
       const status = await startHermesBridge(undefined, fullMode);
       setBridge(status);
+      await refreshActiveHermesProfile({ status, mode: fullMode ? "unrestricted" : "sandboxed" });
+      activeProfileRefreshReadyRef.current = true;
       return status;
     } catch (err) {
       const message = messageFromError(err);

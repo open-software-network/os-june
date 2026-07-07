@@ -86,7 +86,7 @@ const methods: HermesCompatibilitySection = {
   "session.create": {
     status: "supported",
     rationale:
-      "AgentWorkspace creates every Hermes session via session.create; covered by the gateway tests.",
+      "AgentWorkspace and note chat create every new Hermes session via session.create, threading the profile parameter for that session when the active profile is not default; covered by the gateway tests.",
     since: PIN,
   },
   "prompt.submit": {
@@ -274,6 +274,12 @@ const features: HermesCompatibilitySection = {
       "June lists and toggles messaging platforms in settings, but the new upstream platforms (Photon iMessage, WhatsApp Cloud, Raft) have no setup UI yet.",
     since: PIN,
   },
+  "profile-switching": {
+    status: "supported",
+    rationale:
+      "The Profiles settings surface activates the sticky Hermes profile and fresh AgentWorkspace plus note chat sessions thread that active profile into session.create.",
+    since: PIN,
+  },
 };
 
 /**
@@ -304,4 +310,5 @@ export const OWNERSHIP: Readonly<Record<string, readonly string[]>> = Object.fre
   "12": ["events.subagent", "features.backgroundSubagentWatch"],
   "13": ["methods.subagent.interrupt"],
   "19": ["methods.image.attach_bytes", "features.imageEditing"],
+  "JUN-210": ["methods.session.create", "features.profile-switching"],
 });
