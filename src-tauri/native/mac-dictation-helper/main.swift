@@ -1429,10 +1429,11 @@ final class DictationController {
     private var preferredMicrophoneName: String?
     private var isListening = false
     private var isFinalizing = false
+    private var startPending = false
     private var maxObservedAudioLevel: Float = 0
 
     var listening: Bool {
-        isListening || isFinalizing
+        isListening || isFinalizing || startPending
     }
 
     func emitDiagnostics() {
@@ -1467,11 +1468,15 @@ final class DictationController {
     private var dictationStartGeneration = 0
 
     func start() {
+        if startPending {
+            return
+        }
         guard !listening else {
             emit("error", ["code": "already_listening", "message": "Dictation is already listening."])
             return
         }
 
+        startPending = true
         dictationStartGeneration += 1
         let generation = dictationStartGeneration
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
@@ -1482,6 +1487,7 @@ final class DictationController {
                 guard let self, self.dictationStartGeneration == generation else {
                     return
                 }
+                self.startPending = false
                 guard microphoneAllowed else {
                     emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
                     emit("permission_status", permissionPayload())
@@ -1499,6 +1505,16 @@ final class DictationController {
         }
 
         stopActiveRecording()
+    }
+
+    func toggle(shortcut: String) {
+        if isListening {
+            emit("hotkey_trigger", ["action": "stop", "shortcut": shortcut])
+            stop()
+        } else if !isFinalizing && !startPending {
+            emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
+            start()
+        }
     }
 
     func startMicTest(durationSeconds: Double) {
@@ -1543,6 +1559,7 @@ final class DictationController {
         // Cancel any start still waiting on the permission prompt — the
         // graze is over, so a later grant must not open the microphone.
         dictationStartGeneration += 1
+        startPending = false
         // The HUD shows on listening_started, so a discard that interrupts a
         // live recording (a grazed push-to-talk key, a signed-out session)
         // must announce itself or the HUD stays stuck on "Listening".
@@ -1884,6 +1901,7 @@ final class DictationController {
     private func resetRecordingState(keepRecordingFile: Bool = false) {
         isListening = false
         isFinalizing = false
+        startPending = false
         maxObservedAudioLevel = 0
         recordingStartedAt = 0
         micTestStopWorkItem?.cancel()
@@ -2076,13 +2094,7 @@ func handleCommandLine(_ line: String) {
     case "toggle_listening":
         let shortcut = command?["shortcut"] as? String ?? "hotkey"
         runOnMain {
-            if dictation.listening {
-                emit("hotkey_trigger", ["action": "stop", "shortcut": shortcut])
-                dictation.stop()
-            } else {
-                emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
-                dictation.start()
-            }
+            dictation.toggle(shortcut: shortcut)
         }
     case "paste_text":
         let text = command?["text"] as? String ?? ""
