@@ -867,7 +867,9 @@ mod tests {
             stats.samples, 3,
             "every input frame is written while ducked"
         );
-        assert_eq!(stats.bytes_written, 6);
+        // The writer is 16-bit PCM (bits_per_sample: 16), so 2 bytes/sample.
+        const BYTES_PER_SAMPLE: i64 = 2;
+        assert_eq!(stats.bytes_written, 3 * BYTES_PER_SAMPLE);
         assert_eq!(stats.peak, 0.0, "ducked samples are pure silence");
     }
 

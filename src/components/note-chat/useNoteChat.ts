@@ -182,6 +182,15 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   // right before the next prompt (existing chat) — never mid-turn.
   const pendingModelIdRef = useRef<string>();
   const appliedModelIdRef = useRef<string>();
+  // Synchronous in-flight guard: React batches setWorking(true), so a rapid
+  // double send (double-click, or Enter racing the send button) could both
+  // pass the state-based check and each create a session / append a turn.
+  const submittingRef = useRef(false);
+  // Whether this session is registered in the bridge's list. ensureHermesBridge
+  // is best-effort, so a transient first-message failure would otherwise never
+  // retry — and "Open in agent view" could hand the agent view an id the list
+  // doesn't know. Retried on later submits until it sticks.
+  const bridgeEnsuredRef = useRef(false);
   const liveEventsRef = useRef<JuneHermesEvent[]>([]);
   const pendingUserTurnsRef = useRef<AgentChatTurn[]>([]);
   liveEventsRef.current = liveEvents;
@@ -194,6 +203,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     runtimeSessionIdRef.current = undefined;
     pendingModelIdRef.current = undefined;
     appliedModelIdRef.current = undefined;
+    submittingRef.current = false;
+    bridgeEnsuredRef.current = false;
     setStoredSessionId(sessionId);
     setMessages([]);
     setLiveEvents([]);
@@ -251,16 +262,25 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   useEffect(() => {
     return subscribeToGatewayEvents((event) => {
       const sessionId = "sessionId" in event ? event.sessionId : undefined;
-      if (!sessionId) return;
-      if (sessionId !== runtimeSessionIdRef.current && sessionId !== storedSessionIdRef.current) {
-        return;
+      const matchesSession =
+        sessionId === runtimeSessionIdRef.current || sessionId === storedSessionIdRef.current;
+      const terminal = isTerminalHermesEvent(event);
+      // A tagged event for a different session isn't ours. A terminal frame
+      // can arrive WITHOUT a session id (error / lifecycle), though — and this
+      // gateway only ever serves the one active note chat, so an untagged
+      // terminal event can only mean our in-flight turn ended: clear `working`
+      // so the toolbar dot can't stick busy. Untagged non-terminal events stay
+      // dropped (they can't be attributed to our transcript).
+      if (sessionId && !matchesSession) return;
+      if (!sessionId && !terminal) return;
+      if (matchesSession) {
+        setLiveEvents((current) => [...current, event].slice(-LIVE_EVENT_CAP));
       }
-      setLiveEvents((current) => [...current, event].slice(-LIVE_EVENT_CAP));
-      if (isTerminalHermesEvent(event)) {
+      if (terminal) {
         setWorking(false);
         if (event.kind === "error") {
           setError(event.message);
-        } else {
+        } else if (matchesSession) {
           void refreshTranscript();
         }
       }
@@ -271,6 +291,10 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     async (rawText: string, attachments: NoteChatAttachment[] = []): Promise<boolean> => {
       const question = rawText.trim();
       if ((!question && !attachments.length) || !noteId) return false;
+      // Reject a second send that races the first before setWorking(true)
+      // commits — otherwise both could create a session and submit the prompt.
+      if (submittingRef.current) return false;
+      submittingRef.current = true;
       setError(null);
       const isFirstMessage = !storedSessionIdRef.current;
       const base = isFirstMessage
@@ -307,13 +331,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           storedSessionIdRef.current = sessionId;
           setStoredSessionId(sessionId);
           rememberNoteChatSession(noteId, sessionId);
-          // Best effort, like the workspace's non-optimistic path: the session
-          // exists in Hermes either way; this only names it in the bridge list.
-          await ensureHermesBridgeSession({
-            sessionId,
-            title: noteTitle.trim() || "Note chat",
-            ...(modelId ? { model: modelId } : {}),
-          }).catch(() => undefined);
+          // Registration in the bridge list happens at the single ensure point
+          // below (which retries a swallowed attempt on later sends).
         }
         if (!runtimeSessionId) {
           const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
@@ -335,11 +354,26 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             model: modelId,
           });
           appliedModelIdRef.current = modelId;
-          await ensureHermesBridgeSession({
+          bridgeEnsuredRef.current = await ensureHermesBridgeSession({
             sessionId,
             title: noteTitle.trim() || "Note chat",
             model: modelId,
-          }).catch(() => undefined);
+          })
+            .then(() => true)
+            .catch(() => bridgeEnsuredRef.current);
+        }
+        // Register the session in the bridge list, retrying a swallowed earlier
+        // attempt so it always resolves — "Open in agent view" hands the agent
+        // view this id, and a missing registration would open an empty chat.
+        // Best-effort: the live session works regardless of the bridge list.
+        if (!bridgeEnsuredRef.current) {
+          bridgeEnsuredRef.current = await ensureHermesBridgeSession({
+            sessionId,
+            title: noteTitle.trim() || "Note chat",
+            ...(appliedModelIdRef.current ? { model: appliedModelIdRef.current } : {}),
+          })
+            .then(() => true)
+            .catch(() => false);
         }
         // Images go to the model as first-class inputs before the prompt,
         // like the workspace's feature-19 flow. A failed attach throws so the
@@ -376,6 +410,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             : messageFromError(err),
         );
         return false;
+      } finally {
+        submittingRef.current = false;
       }
     },
     [noteId, noteTitle],
