@@ -1,0 +1,61 @@
+<!doctype html>
+<!--
+  Dev-only preview for the agent-sessions sidebar rename (JUN-205). Renders the
+  real AgentSessionsList in a plain browser by faking the Tauri IPC bridge and
+  logging ensure_hermes_bridge_session calls, so the inline rename flow can be
+  driven and recorded without the native build. Nothing here ships (vite builds
+  only the configured entries). Usage: pnpm dev, open /sessions-rename-preview.html.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>June session rename preview</title>
+    <script>
+      (function () {
+        const callbacks = new Map();
+        let nextId = 1;
+        const listeners = new Map();
+        window.__TAURI_INTERNALS__ = {
+          transformCallback(cb) {
+            const id = nextId++;
+            callbacks.set(id, cb);
+            return id;
+          },
+          unregisterCallback(id) {
+            callbacks.delete(id);
+          },
+          convertFileSrc(p) {
+            return p;
+          },
+          async invoke(cmd, args = {}) {
+            switch (cmd) {
+              case "plugin:event|listen": {
+                listeners.set(args.event, args.handler);
+                return args.handler;
+              }
+              case "plugin:event|unlisten":
+                return null;
+              case "ensure_hermes_bridge_session":
+                console.log(
+                  "[preview] ensure_hermes_bridge_session:",
+                  JSON.stringify(args.request),
+                );
+                return { object: "hermes.session.ensure", id: args.request.sessionId };
+              default:
+                console.log("[preview] unstubbed invoke:", cmd, args);
+                return null;
+            }
+          },
+        };
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+          unregisterListener() {},
+        };
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/sessions-rename-preview.tsx"></script>
+  </body>
+</html>
