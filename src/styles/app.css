@@ -20040,6 +20040,53 @@ input:focus-visible,
   margin-inline: auto;
 }
 
+.onboarding-card-privacy {
+  width: min(100%, 560px);
+}
+
+.onboarding-privacy-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-5);
+  width: min(100%, 480px);
+  margin: var(--sp-2) auto var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+  text-align: left;
+}
+
+.onboarding-privacy-copy {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.onboarding-privacy-copy h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.onboarding-privacy-copy p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.onboarding-privacy-copy a {
+  width: max-content;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--foreground) 28%, transparent);
+  text-underline-offset: 3px;
+}
+
 .funding-hint {
   margin: 0;
   font-size: var(--fs-sm);
@@ -20079,7 +20126,7 @@ input:focus-visible,
   );
 }
 
-/* Wordless progress: five dots, the current one stretched into a short
+/* Wordless progress: one dot per step, the current one stretched into a short
  * terracotta pill. */
 .onboarding-topbar {
   display: grid;

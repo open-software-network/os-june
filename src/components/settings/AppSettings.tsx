@@ -114,6 +114,7 @@ import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
+import { PrivacySettingsSection } from "./PrivacySettingsSection";
 
 const THEME_OPTIONS: readonly {
   value: ThemePreference;
@@ -228,6 +229,7 @@ export type SettingsTab =
   | "general"
   | "billing"
   | "shortcuts"
+  | "privacy"
   | "dictation"
   | "audio"
   | "models"
@@ -252,6 +254,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "billing", label: "Billing" },
   { id: "shortcuts", label: "Shortcuts" },
+  { id: "privacy", label: "Privacy" },
   { id: "dictation", label: "Dictation" },
   { id: "audio", label: "Audio" },
   { id: "models", label: "Models" },
@@ -1485,6 +1488,8 @@ export function AppSettings({
             </div>
           </section>
         ) : null}
+
+        {activeTab === "privacy" ? <PrivacySettingsSection /> : null}
 
         {activeTab === "dictation" ? (
           <>

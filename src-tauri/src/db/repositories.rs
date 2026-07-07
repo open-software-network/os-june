@@ -23,6 +23,49 @@ impl Repositories {
         Self { pool }
     }
 
+    pub async fn increment_p3a_counter(
+        &self,
+        question_id: &str,
+        epoch: &str,
+        amount: u64,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO p3a_counters (question_id, epoch, raw_value, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(question_id, epoch) DO UPDATE SET
+               raw_value = raw_value + excluded.raw_value,
+               updated_at = excluded.updated_at",
+        )
+        .bind(question_id)
+        .bind(epoch)
+        .bind(i64::try_from(amount).unwrap_or(i64::MAX))
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_p3a_counters(&self) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM p3a_counters")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn p3a_counter_value(
+        &self,
+        question_id: &str,
+        epoch: &str,
+    ) -> Result<Option<i64>, sqlx::error::Error> {
+        let row = query("SELECT raw_value FROM p3a_counters WHERE question_id = ? AND epoch = ?")
+            .bind(question_id)
+            .bind(epoch)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|row| row.get("raw_value")))
+    }
+
     pub async fn list_folders(&self) -> Result<Vec<FolderDto>, sqlx::error::Error> {
         let rows = query(
             "SELECT id, name, description, created_at, updated_at FROM folders WHERE deleted_at IS NULL ORDER BY lower(name) ASC",

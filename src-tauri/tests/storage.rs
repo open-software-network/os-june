@@ -31,6 +31,41 @@ async fn migrations_create_empty_store() {
 }
 
 #[tokio::test]
+async fn p3a_counters_increment_and_clear() {
+    let repos = test_repositories().await;
+
+    repos
+        .increment_p3a_counter("dictation.sessions", "2026-W28", 1)
+        .await
+        .expect("counter should increment");
+    repos
+        .increment_p3a_counter("dictation.sessions", "2026-W28", 2)
+        .await
+        .expect("counter should increment again");
+
+    assert_eq!(
+        repos
+            .p3a_counter_value("dictation.sessions", "2026-W28")
+            .await
+            .expect("counter should load"),
+        Some(3),
+    );
+
+    repos
+        .clear_p3a_counters()
+        .await
+        .expect("counters should clear");
+
+    assert_eq!(
+        repos
+            .p3a_counter_value("dictation.sessions", "2026-W28")
+            .await
+            .expect("counter should load after clear"),
+        None,
+    );
+}
+
+#[tokio::test]
 async fn migrations_tolerate_concurrent_startup() {
     let dir = tempdir().expect("tempdir");
     let database_path = dir.path().join("notes.sqlite3");

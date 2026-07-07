@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   dictationHelperCommand: vi.fn(),
   localAudioFileSrc: vi.fn(),
   providerModelSettings: vi.fn(),
+  p3aSettings: vi.fn(),
+  setP3aEnabled: vi.fn(),
   listVeniceModels: vi.fn(),
   setVeniceModel: vi.fn(),
   setVeniceApiKey: vi.fn(),
@@ -77,6 +79,8 @@ vi.mock("../lib/tauri", () => ({
   dictationHelperCommand: mocks.dictationHelperCommand,
   localAudioFileSrc: mocks.localAudioFileSrc,
   providerModelSettings: mocks.providerModelSettings,
+  p3aSettings: mocks.p3aSettings,
+  setP3aEnabled: mocks.setP3aEnabled,
   listVeniceModels: mocks.listVeniceModels,
   setVeniceModel: mocks.setVeniceModel,
   setVeniceApiKey: mocks.setVeniceApiKey,
@@ -259,6 +263,18 @@ describe("AppSettings", () => {
         imageSafeModePromptDismissed: false,
       },
     });
+    mocks.p3aSettings.mockResolvedValue({
+      settings: { enabled: false, consentVersion: 1, consentedAtWeek: null },
+    });
+    mocks.setP3aEnabled.mockImplementation((enabled: boolean) =>
+      Promise.resolve({
+        settings: {
+          enabled,
+          consentVersion: 1,
+          consentedAtWeek: enabled ? "2026-W28" : null,
+        },
+      }),
+    );
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
@@ -537,6 +553,36 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("max");
+  });
+
+  it("shows and saves anonymous usage statistics in Privacy settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="privacy"
+        onTabChange={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Privacy" });
+    const toggle = screen.getByRole("switch", { name: "Share anonymous usage statistics" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await user.click(toggle);
+
+    await waitFor(() => expect(mocks.setP3aEnabled).toHaveBeenCalledWith(true));
+    expect(
+      await screen.findByText("Anonymous usage statistics are on for this device."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2026-W28")).toBeInTheDocument();
   });
 
   it("shows usage remaining as a percentage instead of dollars", async () => {
