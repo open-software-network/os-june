@@ -6953,6 +6953,16 @@ export function AgentWorkspace({
       );
       void ensureHermesBridgeSession({ sessionId, title })
         .then(() => {
+          // A manual rename can land while this auto-title PATCH is in
+          // flight and finish first; the stored title must end at the
+          // user's name, so re-assert it instead of settling the auto title.
+          if (sessionTitleSourceRef.current[sessionId] === "manual") {
+            const manualTitle = sessionTitleOverridesRef.current[sessionId];
+            if (manualTitle && manualTitle !== title) {
+              void ensureHermesBridgeSession({ sessionId, title: manualTitle }).catch(() => {});
+            }
+            return;
+          }
           if (settleExchangeAfterPersist) rememberSessionExchangeTitled(sessionId);
         })
         .catch(() => {});

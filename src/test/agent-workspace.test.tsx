@@ -3206,6 +3206,80 @@ describe("AgentWorkspace", () => {
     expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
   });
 
+  it("re-asserts a manual rename that lands while the auto-title persist is in flight", async () => {
+    const rawTitle = "I need you to inspect the flaky tests";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-race",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({
+      title: "Flaky Timer Fix",
+    });
+    let releaseAutoPatch: (() => void) | undefined;
+    mocks.ensureHermesBridgeSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseAutoPatch = () => resolve({});
+        }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+        sessionId: "session-race",
+        title: "Flaky Timer Fix",
+      }),
+    );
+
+    // Manual rename while the auto-title PATCH is still pending.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSION_RENAMED_EVENT, {
+          detail: { sessionId: "session-race", title: "My real session name" },
+        }),
+      );
+    });
+    expect(await screen.findByText("My real session name")).toBeInTheDocument();
+
+    await act(async () => {
+      releaseAutoPatch?.();
+      await Promise.resolve();
+    });
+
+    // The resolving auto PATCH must re-assert the manual title (so Hermes does
+    // not keep the auto title) and must not settle an exchange marker over the
+    // manual record.
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenLastCalledWith({
+        sessionId: "session-race",
+        title: "My real session name",
+      }),
+    );
+    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBe(
+      JSON.stringify({ "session-race": "manual" }),
+    );
+  });
+
   it("upgrades a prompt-only loaded-message title once when the assistant reply appears", async () => {
     const rawTitle = "I want you to summarize latest failures";
     const userMessage = {
