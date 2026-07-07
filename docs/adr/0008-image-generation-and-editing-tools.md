@@ -82,13 +82,23 @@ never see it:
   re-enabling safe mode resets it, so re-opting into safety re-arms the
   dialog.
 
-The prompt check uses **no intelligence, by design**: no LLM, no classifier
-model, no Venice or June API call, no metering. It is a deterministic
-on-device wordlist + phrase match (`image_safety::may_request_explicit_content`),
-so the prompt never leaves the device for screening and the check costs
-nothing. A model-based classifier was considered and rejected: it would add
-a billable call per generation and an extra network round trip carrying the
-user's prompt, against June's privacy-by-architecture stance.
+The dialog gate costs **no extra inference and no extra charge**, but the
+two surfaces get there differently:
+
+- `/image` fast path: deterministic on-device wordlist + phrase match only
+  (`image_safety::may_request_explicit_content`) - no LLM, no classifier, no
+  Venice or June API call, no metering. A model-based check was considered
+  and rejected here: it would add a billable call per generation, and it
+  would upload the prompt for screening BEFORE the user consents - today a
+  cancelled dialog means nothing ever left the device.
+- Agent tool path: the model is already in the loop (it is the one calling
+  the tool), so it self-classifies for free via a required
+  `may_be_explicit` boolean on `generate_image`/`edit_image`. The proxy ORs
+  that self-report with the same wordlist to decide the consent event, and
+  strips the field before forwarding upstream. Self-report is filled by the
+  very model the user is steering, so it can under-report - the failure mode
+  is bounded exactly like a wordlist miss: no dialog, and Venice `safe_mode`
+  still enforces the blur.
 
 Trade-offs accepted: the heuristic is a conservative wordlist (misses
 euphemisms, some false positives) - acceptable because it only gates the
