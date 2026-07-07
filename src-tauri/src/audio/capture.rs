@@ -30,6 +30,9 @@ use uuid::Uuid;
 pub const DEFAULT_SILENCE_THRESHOLD: f32 = 0.012;
 // Healthy devices open quickly; this bounds CPAL/CoreAudio hangs during device handoff.
 pub const CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a first-run start waits on the macOS microphone prompt; the
+/// agent recorder lease budgets against it.
+pub const MICROPHONE_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Start handshake between the capture builder and its timeout watchdog.
 /// The builder commits `Published` in the same critical section that
@@ -250,7 +253,7 @@ pub fn request_microphone_permission_blocking() -> (String, Option<String>) {
     };
     // The prompt has no OS-side timeout; a user who walks away must not hang
     // the start command forever.
-    match receiver.recv_timeout(std::time::Duration::from_secs(120)) {
+    match receiver.recv_timeout(MICROPHONE_PROMPT_TIMEOUT) {
         Ok(_) => microphone_permission_state(),
         Err(_) => (
             "not_determined".to_string(),

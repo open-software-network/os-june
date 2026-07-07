@@ -23,10 +23,11 @@ from typing import Any
 
 PROTOCOL_VERSION = "2025-03-26"
 SERVER_INFO = {"name": "june-recorder", "version": "0.1.0"}
-# Must outlive the proxy's 240s request lease (readiness probe + first-run
-# microphone permission prompt + capture start), or the tool gives up while
-# June is still legitimately waiting on the user.
-REQUEST_TIMEOUT_SECONDS = 300
+# Must outlive the proxy's 420s request lease (two readiness passes with the
+# system-audio permission probe, the first-run microphone prompt, and capture
+# start), or the tool gives up while June is still legitimately waiting on
+# the user. The Hermes-side tool timeout (620s) sits above this in turn.
+REQUEST_TIMEOUT_SECONDS = 480
 REQUEST_MAX_ATTEMPTS = 2
 REQUEST_RETRY_DELAY_SECONDS = 0.25
 TOKEN_ENV_VAR = "JUNE_RECORDER_PROXY_TOKEN"

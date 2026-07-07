@@ -108,12 +108,15 @@ const JUNE_RECORDER_MCP_SCRIPT: &str = include_str!("hermes/june_recorder_mcp.py
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_RECORDER_MCP_TOKEN_ENV: &str = "JUNE_RECORDER_PROXY_TOKEN";
 const AGENT_RECORDER_REQUEST_EVENT: &str = "june://agent-recorder-request";
-// The frontend start path can legitimately take minutes: the readiness probe
-// waits on the system-audio helper (tens of seconds), a fresh install blocks
-// up to 120s on the macOS microphone prompt, and capture start itself is
-// bounded at 10s. The lease must outlive the worst honest case, or the tool
-// reports failure for a recording that then visibly starts.
-const AGENT_RECORDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(240);
+// The frontend start path can legitimately take minutes: readiness runs
+// twice (React probes before startRecording, then the command re-probes) and
+// each pass can wait the full system-audio permission probe, a fresh install
+// then blocks on the macOS microphone prompt, and capture start has its own
+// watchdog. The lease must outlive that worst honest case, or the tool
+// reports failure for a recording that then visibly starts —
+// `agent_recorder_lease_outlives_the_worst_honest_start_path` pins the
+// budget against the real constants.
+const AGENT_RECORDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(420);
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -336,6 +339,9 @@ pub struct HermesBridge {
     /// Started lazily on the first spawn, lives until app shutdown.
     provider_proxy: Mutex<Option<SharedProviderProxy>>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
+    /// Recently delivered recorder request ids (see
+    /// `recorder_request_recently_completed`).
+    recorder_completed: Mutex<std::collections::VecDeque<String>>,
 }
 
 struct HermesProcess {
@@ -854,22 +860,30 @@ pub fn resolve_agent_recorder_request(
     bridge: State<'_, HermesBridge>,
     request: ResolveAgentRecorderRequest,
 ) -> Result<(), AppError> {
-    let sender = bridge
-        .recorder_requests
-        .lock()
-        .map_err(|_| {
+    let request_id = request.request_id.clone();
+    let sender = {
+        let mut pending = bridge.recorder_requests.lock().map_err(|_| {
             AppError::new(
                 "agent_recorder_unavailable",
                 "Recorder request lock failed.",
             )
-        })?
-        .remove(&request.request_id)
-        .ok_or_else(|| {
-            AppError::new(
-                "agent_recorder_request_not_found",
-                "Recorder request was not found or has already timed out.",
-            )
         })?;
+        let Some(sender) = pending.remove(&request_id) else {
+            // Distinguish "you already delivered this" (a retried resolve
+            // whose first attempt landed despite a transport error) from
+            // "the lease expired": rolling back a delivered success stops a
+            // healthy recording.
+            return if recorder_request_recently_completed(&bridge.recorder_completed, &request_id) {
+                Ok(())
+            } else {
+                Err(AppError::new(
+                    "agent_recorder_request_not_found",
+                    "Recorder request was not found or has already timed out.",
+                ))
+            };
+        };
+        sender
+    };
     // A dead receiver means the lease just expired: the proxy has already
     // answered failure, so the frontend must see not_found and roll back.
     sender.send(request).map_err(|_| {
@@ -878,7 +892,35 @@ pub fn resolve_agent_recorder_request(
             "Recorder request was not found or has already timed out.",
         )
     })?;
+    record_completed_recorder_request(&bridge.recorder_completed, &request_id);
     Ok(())
+}
+
+/// Recently delivered recorder request ids, so an ambiguous resolve retry is
+/// answered idempotently instead of being mistaken for a lease expiry. Small
+/// FIFO cap: entries only need to survive one retry round-trip.
+const RECORDER_COMPLETED_CAP: usize = 32;
+
+fn record_completed_recorder_request(
+    completed: &Mutex<std::collections::VecDeque<String>>,
+    request_id: &str,
+) {
+    if let Ok(mut completed) = completed.lock() {
+        completed.push_back(request_id.to_string());
+        while completed.len() > RECORDER_COMPLETED_CAP {
+            completed.pop_front();
+        }
+    }
+}
+
+fn recorder_request_recently_completed(
+    completed: &Mutex<std::collections::VecDeque<String>>,
+    request_id: &str,
+) -> bool {
+    completed
+        .lock()
+        .map(|completed| completed.iter().any(|id| id == request_id))
+        .unwrap_or(false)
 }
 
 async fn start_hermes_bridge_inner(
@@ -8765,6 +8807,23 @@ mod tests {
 
         assert!(provider_proxy_authorized(&request, "proxy-secret"));
         assert!(!provider_proxy_authorized(&request, "other-secret"));
+    }
+
+    #[test]
+    fn agent_recorder_lease_outlives_the_worst_honest_start_path() {
+        // Readiness runs twice on the agent start path (React probes before
+        // startRecording, the command re-probes), each pass can wait the full
+        // system-audio permission probe, then the first-run microphone prompt
+        // and the capture watchdog run in sequence.
+        let worst_case = crate::audio::system_macos::SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT * 2
+            + crate::audio::capture::MICROPHONE_PROMPT_TIMEOUT
+            + crate::audio::capture::CAPTURE_START_TIMEOUT;
+        assert!(
+            AGENT_RECORDER_REQUEST_TIMEOUT > worst_case + Duration::from_secs(30),
+            "lease {}s must exceed worst honest start path {}s plus slack",
+            AGENT_RECORDER_REQUEST_TIMEOUT.as_secs(),
+            worst_case.as_secs()
+        );
     }
 
     #[test]

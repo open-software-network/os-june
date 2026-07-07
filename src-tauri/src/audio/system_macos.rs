@@ -184,6 +184,10 @@ impl SystemAudioCapture {
     }
 }
 
+/// Upper bound on the helper's CoreAudio capture probe (readiness checks
+/// wait on this); the agent recorder lease budgets against it.
+pub const SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT: Duration = Duration::from_secs(75);
+
 fn apply_helper_status(stats: &mut SystemAudioStats, status: &HelperStatus) {
     if let Some(level) = status.level {
         stats.max_level = stats.max_level.max(status.max_level.unwrap_or(level));
@@ -305,7 +309,7 @@ pub fn helper_permission_check() -> Result<(), AppError> {
     let status = wait_for_status(
         &status_path,
         Some(&log_path),
-        Duration::from_secs(75),
+        SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT,
         &["ready", "level", "error"],
         "System audio helper could not start a usable CoreAudio capture. Grant System Audio Recording permission if macOS prompts for it, then try again. The terminal helper log shows the last completed CoreAudio step.",
     );
