@@ -12,8 +12,9 @@ generation/edit is billed to the signed-in user automatically.
 Generated and edited images are written to a dedicated images directory (passed
 as the second argument) under proxy-selected storage filenames. The Rust
 loopback proxy mints opaque edit-safe source references and validates them
-before reading source bytes for edits; this MCP only forwards those references
-back to the proxy.
+before reading source bytes for edits; plain filenames of images already in
+the images directory (user attachments) are also accepted. This MCP only
+forwards those references back to the proxy.
 
 It depends only on the Python standard library so it can run inside the Hermes
 runtime venv without extra packaging.
@@ -80,14 +81,17 @@ TOOLS: list[dict[str, Any]] = [
             "Edit an existing image (image-to-image) and show the result in the "
             "conversation. Use this whenever the user asks to change, modify, "
             "adjust, refine, or reframe an image you generated, edited, or "
-            "received from this tool earlier, including reframing like wider, "
+            "received from this tool earlier, or an image the user attached or "
+            "pasted into the conversation, including reframing like wider, "
             "zoom out, bigger perspective, or closer, plus recoloring, "
             "restyling, and adding or removing elements. This transforms the "
             "image file directly: you do NOT need to see, analyze, or describe "
             "the image to edit it. "
-            "`source_filename` MUST be a filename from a previous image tool "
-            "result from this June image workspace. Bare file names and paths "
-            "copied from disk are rejected. Returns the edited image inline plus "
+            "`source_filename` MUST be one of two values: a filename from a "
+            "previous image tool result, or the plain filename of an image the "
+            "user attached to the conversation exactly as shown in its context "
+            "(for example upload_20260707_113453_1.png). Full paths and "
+            "invented names are rejected. Returns the edited image inline plus "
             "a new edit-safe `filename` you can edit again."
         ),
         "inputSchema": {
@@ -96,8 +100,9 @@ TOOLS: list[dict[str, Any]] = [
                 "source_filename": {
                     "type": "string",
                     "description": (
-                        "The edit-safe filename of the image to edit, exactly "
-                        "as returned by a prior June image tool call."
+                        "The edit-safe filename returned by a prior June image "
+                        "tool call, or the plain filename of an image the user "
+                        "attached to the conversation. Never a full path."
                     ),
                 },
                 "instruction": {
