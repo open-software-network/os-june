@@ -1997,7 +1997,6 @@ export function AgentWorkspace({
   // runtime processes run side by side, each with its own socket. Sessions
   // route to the gateway matching their recorded mode.
   const gatewaysRef = useRef<Map<boolean, HermesGatewayClient>>(new Map());
-  const activeProfileRefreshReadyRef = useRef(false);
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
   // closure (see recoverFromGatewayClose).
@@ -3445,9 +3444,7 @@ export function AgentWorkspace({
         if (cancelled) return;
         setBridge(status);
         if (status.running) {
-          void refreshActiveHermesProfile({ status }).then(() => {
-            activeProfileRefreshReadyRef.current = true;
-          });
+          void refreshActiveHermesProfile({ status });
         }
       } catch (err) {
         if (!cancelled) setError(describeAgentError(err), reportableAgentErrorOptions(err));
@@ -5066,6 +5063,17 @@ export function AgentWorkspace({
           targetSessionId ? sessionUnrestricted(targetSessionId) : fullModeDraftRef.current,
         ),
         titlePromise ?? Promise.resolve(undefined),
+        // Re-read the sticky active profile for every brand-new session so an
+        // out-of-band switch (Hermes CLI, upstream dashboard) is honored
+        // without a workspace remount. Runs in parallel with gateway setup
+        // (no added wall-clock) and never throws; the store keeps the
+        // last-known value on failure. Both runtimes share one Hermes home,
+        // so the value is mode-independent.
+        targetSessionId
+          ? Promise.resolve()
+          : refreshActiveHermesProfile({
+              mode: fullModeDraftRef.current ? "unrestricted" : "sandboxed",
+            }),
       ]);
       const nextCreated = targetSessionId
         ? undefined
@@ -5336,12 +5344,6 @@ export function AgentWorkspace({
     if (!connection) {
       const next = await startBridge(fullMode);
       connection = hermesConnectionForMode(next, fullMode);
-    } else if (!activeProfileRefreshReadyRef.current) {
-      await refreshActiveHermesProfile({
-        status: bridge,
-        mode: fullMode ? "unrestricted" : "sandboxed",
-      });
-      activeProfileRefreshReadyRef.current = true;
     }
     const wsUrl = connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
@@ -5499,7 +5501,6 @@ export function AgentWorkspace({
       const status = await startHermesBridge(undefined, fullMode);
       setBridge(status);
       await refreshActiveHermesProfile({ status, mode: fullMode ? "unrestricted" : "sandboxed" });
-      activeProfileRefreshReadyRef.current = true;
       return status;
     } catch (err) {
       const message = messageFromError(err);
