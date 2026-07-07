@@ -1402,6 +1402,10 @@ fn agent_session_title_user_content(prompt: &str, response: Option<&str>) -> Str
     let Some(response) = response.map(str::trim).filter(|value| !value.is_empty()) else {
         return prompt.to_string();
     };
+    // 1200 chars keeps the excerpt a few hundred tokens: enough signal to name
+    // the work, small enough that the reply never drowns out the request or
+    // crowds the shared max_tokens budget. The frontend caps to the same
+    // length before invoking; this cap is the trust-boundary backstop.
     let response: String = response.chars().take(1200).collect();
     format!("User request:\n{prompt}\n\nAssistant reply excerpt:\n{response}")
 }
