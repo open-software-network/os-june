@@ -3156,6 +3156,54 @@ describe("AgentWorkspace", () => {
         title: "Flaky Timer Fix",
       }),
     );
+    await waitFor(() =>
+      expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBe(
+        JSON.stringify({ "session-exchange": "exchange" }),
+      ),
+    );
+  });
+
+  it("skips the durable exchange marker when title persistence fails", async () => {
+    const rawTitle = "I need you to inspect the flaky tests";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-exchange-unsaved",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({
+      title: "Flaky Timer Fix",
+    });
+    mocks.ensureHermesBridgeSession.mockRejectedValue(new Error("bridge offline"));
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+        sessionId: "session-exchange-unsaved",
+        title: "Flaky Timer Fix",
+      }),
+    );
+    // A failed PATCH must not settle the title durably: the next launch has to
+    // be able to retry, or a stale stored title would be frozen forever.
+    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
   });
 
   it("upgrades a prompt-only loaded-message title once when the assistant reply appears", async () => {

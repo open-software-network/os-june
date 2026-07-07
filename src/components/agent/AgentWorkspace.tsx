@@ -6941,15 +6941,21 @@ export function AgentWorkspace({
         ...sessionTitleSourceRef.current,
         [sessionId]: nextSource,
       };
-      if (suggestion.fromModel && nextSource === "exchange") {
-        rememberSessionExchangeTitled(sessionId);
-      } else if (suggestion.fromModel && nextSource === "prompt") {
+      if (suggestion.fromModel && nextSource === "prompt") {
         shouldRecheckLatestMessages = true;
       }
+      // The durable exchange marker only lands once the title is known to be
+      // stored: marking first and failing the PATCH would freeze a stale
+      // stored title as settled on the next launch.
+      const settleExchangeAfterPersist = suggestion.fromModel && nextSource === "exchange";
       setHermesSessionItems((current) =>
         current.map((item) => (item.id === sessionId ? { ...item, title } : item)),
       );
-      void ensureHermesBridgeSession({ sessionId, title }).catch(() => {});
+      void ensureHermesBridgeSession({ sessionId, title })
+        .then(() => {
+          if (settleExchangeAfterPersist) rememberSessionExchangeTitled(sessionId);
+        })
+        .catch(() => {});
     } finally {
       titleSuggestionInFlightSessionIdsRef.current.delete(sessionId);
     }
