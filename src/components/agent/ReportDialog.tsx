@@ -1,6 +1,6 @@
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconPaperclip1 } from "central-icons/IconPaperclip1";
-import { type ClipboardEvent, type DragEvent, useId, useMemo, useState } from "react";
+import { type ClipboardEvent, type DragEvent, useId, useMemo, useRef, useState } from "react";
 
 import { clipboardImageFiles } from "../../lib/clipboard-files";
 import { messageFromError } from "../../lib/errors";
@@ -52,6 +52,9 @@ export function ReportDialog({
   onSent,
 }: ReportDialogProps) {
   const [dropActive, setDropActive] = useState(false);
+  // Enter/leave fire for every child edge crossed; only depth zero means the
+  // pointer truly left the drop zone (otherwise the overlay flickers).
+  const dragDepthRef = useRef(0);
   const [submitting, setSubmitting] = useState(false);
   // Dropped-file imports resolve in the parent, and `importingFiles` only
   // reflects them a render later — count in-flight drops here too so a fast
@@ -81,7 +84,16 @@ export function ReportDialog({
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragEnter() {
+    dragDepthRef.current += 1;
     setDropActive(true);
+  }
+
+  function handleDragLeave() {
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDropActive(false);
   }
 
   function queueFileImport(files: File[]) {
@@ -92,6 +104,7 @@ export function ReportDialog({
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    dragDepthRef.current = 0;
     setDropActive(false);
     const files = Array.from(event.dataTransfer.files);
     if (!files.length) {
@@ -181,8 +194,8 @@ export function ReportDialog({
           className="dialog-body report-dialog-drop"
           data-drop-active={dropActive || undefined}
           onDragOver={handleDragOver}
-          onDragEnter={() => setDropActive(true)}
-          onDragLeave={() => setDropActive(false)}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           onPaste={handlePaste}
         >

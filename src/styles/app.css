@@ -5581,10 +5581,27 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.report-dialog-drop[data-drop-active="true"] {
-  border-radius: var(--r-md);
-  outline: 2px solid var(--ring-focus);
-  outline-offset: var(--sp-1);
+.report-dialog-drop {
+  position: relative;
+}
+
+/* Drag-over reads as a real drop zone: a dashed panel washes over the form
+ * with a centered instruction (pointer-events: none keeps the drop landing
+ * on the wrapper). */
+.report-dialog-drop[data-drop-active="true"]::after {
+  content: "Drop files to attach";
+  position: absolute;
+  inset: calc(-1 * var(--sp-2));
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  border: 2px dashed color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--card) 92%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  pointer-events: none;
 }
 
 .report-dialog-file-list {
