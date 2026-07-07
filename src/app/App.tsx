@@ -12,11 +12,13 @@ import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
+  AGENT_SESSION_RENAMED_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
   markAgentNewSessionPending,
   recordManualAgentSessionTitle,
   type AgentNewSessionDetail,
+  type AgentSessionRenamedDetail,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
@@ -1940,6 +1942,11 @@ export function App() {
         setError("Could not save the session name. It may revert after a restart.");
       });
       recordManualAgentSessionTitle(sessionId, next);
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionRenamedDetail>(AGENT_SESSION_RENAMED_EVENT, {
+          detail: { sessionId, title: next },
+        }),
+      );
     },
     [agentSessions, publishAgentMenuBarState],
   );

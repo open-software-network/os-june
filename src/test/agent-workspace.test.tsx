@@ -5,6 +5,7 @@ import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
+  AGENT_SESSION_RENAMED_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
   HERO_GREETINGS,
@@ -282,6 +283,7 @@ function mockGlmCapabilities(capabilities: string[]) {
 describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.suggestAgentSessionTitle.mockReset();
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayInstances.length = 0;
     // Auto-cleanup unmounts the workspace after each test, which snapshots
@@ -3295,6 +3297,144 @@ describe("AgentWorkspace", () => {
       "I found the failing path and isolated the missing persistence call.",
     );
     expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
+  }, 10_000);
+
+  it("keeps a sidebar rename from being overwritten by a prompt-title exchange upgrade", async () => {
+    const rawTitle = "I want you to summarize latest failures";
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "summarize latest failures",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "I found the failing path and isolated the missing persistence call.",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-sidebar-prompt",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([userMessage])
+      .mockResolvedValue([userMessage, assistantMessage]);
+    mocks.suggestAgentSessionTitle.mockResolvedValueOnce({ title: "Failure Summary" });
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-sidebar-prompt",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:00Z",
+      },
+      "sandboxed",
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Failure Summary")).toBeInTheDocument();
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
+    mocks.ensureHermesBridgeSession.mockClear();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSION_RENAMED_EVENT, {
+          detail: {
+            sessionId: "session-sidebar-prompt",
+            title: "Manual sidebar name",
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Manual sidebar name")).toBeInTheDocument();
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-sidebar-prompt"),
+    );
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalled();
+    expect(screen.getByText("Manual sidebar name")).toBeInTheDocument();
+  }, 10_000);
+
+  it("keeps a sidebar rename from being overwritten by a fresh suggestion", async () => {
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "review the import retry path",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "The retry path skipped the persisted session title update.",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-sidebar-fresh",
+        title: "Untitled session",
+        preview: "review the import retry path",
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([userMessage, assistantMessage]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({ title: "Import Retry Review" });
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-sidebar-fresh",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:00Z",
+      },
+      "sandboxed",
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Untitled session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSION_RENAMED_EVENT, {
+          detail: {
+            sessionId: "session-sidebar-fresh",
+            title: "Manual import notes",
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Manual import notes")).toBeInTheDocument();
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-sidebar-fresh"),
+    );
+    expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: "session-sidebar-fresh",
+      title: "Import Retry Review",
+    });
+    expect(screen.getByText("Manual import notes")).toBeInTheDocument();
   }, 10_000);
 
   it("persists manual header renames and blocks later title suggestions", async () => {

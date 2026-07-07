@@ -736,6 +736,14 @@ function shuffleAgentShortcuts(): AgentShortcut[] {
   return pool;
 }
 
+export const AGENT_SESSION_RENAMED_EVENT = "june:agent:session-renamed";
+
+/** stored session id (not the runtime session id). */
+export type AgentSessionRenamedDetail = {
+  sessionId: string;
+  title: string;
+};
+
 export {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -3329,11 +3337,13 @@ export function AgentWorkspace({
   // bridge is still { running: false }, so a post-submit loadHermesSessions
   // silently no-ops and the sidebar never refreshes after event-driven runs.
   const windowEventHandlersRef = useRef({
+    applyManualHermesSessionTitleLocally,
     startNewTask,
     removeHermesSessionLocally,
   });
   useEffect(() => {
     windowEventHandlersRef.current = {
+      applyManualHermesSessionTitleLocally,
       startNewTask,
       removeHermesSessionLocally,
     };
@@ -3359,6 +3369,15 @@ export function AgentWorkspace({
       windowEventHandlersRef.current.removeHermesSessionLocally(detail.sessionId);
     }
 
+    function handleRenameSession(event: Event) {
+      const detail = (event as CustomEvent<AgentSessionRenamedDetail>).detail;
+      if (!detail?.sessionId) return;
+      windowEventHandlersRef.current.applyManualHermesSessionTitleLocally(
+        detail.sessionId,
+        detail.title,
+      );
+    }
+
     const pending = pendingNewSessionRequest();
     if (pending) {
       void windowEventHandlersRef.current.startNewTask(pending, {
@@ -3368,9 +3387,11 @@ export function AgentWorkspace({
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
     window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
+    window.addEventListener(AGENT_SESSION_RENAMED_EVENT, handleRenameSession);
     return () => {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
       window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
+      window.removeEventListener(AGENT_SESSION_RENAMED_EVENT, handleRenameSession);
     };
   }, []);
 
@@ -6744,13 +6765,9 @@ export function AgentWorkspace({
   // Manual rename. Records an override (same channel the auto-suggested titles
   // use) and marks the session so the suggester won't clobber the user's name.
   // The sessions-changed effect propagates it to the sidebar.
-  function renameHermesSession(sessionId: string, title: string) {
+  function applyManualHermesSessionTitleLocally(sessionId: string, title: string) {
     const next = title.trim();
-    const currentTitle =
-      sessionTitleOverridesRef.current[sessionId] ??
-      hermesSessionItems.find((item) => item.id === sessionId)?.title ??
-      "";
-    if (!next || next === currentTitle.trim()) return;
+    if (!next) return null;
     titleSuggestionSessionIdsRef.current.add(sessionId);
     sessionTitleOverridesRef.current = {
       ...sessionTitleOverridesRef.current,
@@ -6760,10 +6777,23 @@ export function AgentWorkspace({
       ...sessionTitleSourceRef.current,
       [sessionId]: "manual",
     };
-    setHermesSessionItems((current) =>
-      current.map((item) => (item.id === sessionId ? { ...item, title: next } : item)),
-    );
-    void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {
+    const applyTitle = (sessions: HermesSessionInfo[]) =>
+      sessions.map((item) => (item.id === sessionId ? { ...item, title: next } : item));
+    hermesSessionItemsRef.current = applyTitle(hermesSessionItemsRef.current);
+    setHermesSessionItems((current) => applyTitle(current));
+    return next;
+  }
+
+  function renameHermesSession(sessionId: string, title: string) {
+    const next = title.trim();
+    const currentTitle =
+      sessionTitleOverridesRef.current[sessionId] ??
+      hermesSessionItems.find((item) => item.id === sessionId)?.title ??
+      "";
+    if (!next || next === currentTitle.trim()) return;
+    const appliedTitle = applyManualHermesSessionTitleLocally(sessionId, next);
+    if (!appliedTitle) return;
+    void ensureHermesBridgeSession({ sessionId, title: appliedTitle }).catch(() => {
       setError("Could not save the session name. It may revert after a restart.", { sessionId });
     });
   }
@@ -6835,8 +6865,7 @@ export function AgentWorkspace({
         ? messages
             .slice(firstUserMessageIndex + 1)
             .find(
-              (message) =>
-                message.role === "assistant" && visibleHermesMessageText(message).trim(),
+              (message) => message.role === "assistant" && visibleHermesMessageText(message).trim(),
             )
         : undefined;
     const reply = truncateAgentTitleResponseExcerpt(
