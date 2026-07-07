@@ -10294,7 +10294,7 @@ function AgentChatTurnRow({
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">
-            <span className="text-shimmer">Thinking…</span>
+            <span className="text-shimmer shimmer">Thinking…</span>
           </p>
         ) : (
           // No actions on an empty/in-flight turn. There is nothing useful to
@@ -10703,7 +10703,7 @@ function AgentGeneratedImage({
     return (
       <div className="agent-generated-image" data-status="running" role="status" aria-live="polite">
         <div className="agent-generated-image-placeholder">
-          <span className="text-shimmer">Generating image…</span>
+          <span className="text-shimmer shimmer">Generating image…</span>
         </div>
       </div>
     );
@@ -10730,7 +10730,7 @@ function AgentGeneratedImage({
   const image = imageSrc ? (
     <img src={imageSrc} alt={part.prompt} draggable={false} />
   ) : part.path ? (
-    <span className="agent-generated-image-loading text-shimmer">Loading image...</span>
+    <span className="agent-generated-image-loading text-shimmer shimmer">Loading image...</span>
   ) : null;
   return (
     <figure className="agent-generated-image" data-status="complete">
@@ -11468,7 +11468,7 @@ function AgentThinkingGroup({
       onToggle={(event) => onOpenChange(event.currentTarget.open)}
     >
       <summary>
-        <span className={running ? "text-shimmer" : undefined}>
+        <span className={running ? "text-shimmer shimmer" : undefined}>
           {running ? "Thinking" : "Thought"}
         </span>
         <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
@@ -12904,14 +12904,14 @@ function ActivityIndicator({
   );
 }
 
-// Bottom-of-timeline "responding" affordance: a shimmering label, reusing the
-// same text-shimmer the recorder uses while transcribing. Lives in the timeline
-// (not the header) so it reads like the agent is actively composing the next
-// turn.
+// Bottom-of-timeline "responding" affordance: a shimmering label, painted by
+// the same shared .shimmer utility the recorder uses while transcribing. Lives
+// in the timeline (not the header) so it reads like the agent is actively
+// composing the next turn.
 function AgentThinking() {
   return (
     <div className="agent-thinking" role="status" aria-live="polite">
-      <span className="text-shimmer agent-thinking-label">Thinking…</span>
+      <span className="text-shimmer shimmer agent-thinking-label">Thinking…</span>
     </div>
   );
 }

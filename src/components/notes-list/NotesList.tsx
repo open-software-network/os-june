@@ -513,7 +513,12 @@ function MeetingRowContent({
         <span className="folder-note-title">{title}</span>
         <span className="folder-note-subtitle">
           {liveRecording ? <span className="note-recording-dot" aria-hidden /> : null}
-          <span data-shimmer={processing ? "true" : undefined}>{preview}</span>
+          <span
+            data-shimmer={processing ? "true" : undefined}
+            className={processing ? "shimmer" : undefined}
+          >
+            {preview}
+          </span>
         </span>
       </span>
     </>

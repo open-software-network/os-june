@@ -3429,7 +3429,7 @@ function UpdateRelaunchCard({
         </span>
         <span className="update-relaunch-copy">
           <span
-            className={relaunching ? "update-relaunch-title text-shimmer" : "update-relaunch-title"}
+            className={relaunching ? "update-relaunch-title shimmer" : "update-relaunch-title"}
           >
             {relaunching ? "Relaunching..." : "Relaunch to update"}
           </span>

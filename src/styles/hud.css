@@ -339,21 +339,26 @@ body {
   -webkit-mask: var(--mark) center / 10px 12px no-repeat;
 }
 
+/* The band mirrors the shadcn shimmer geometry in shimmer.css: single peak at
+ * 50%, soft 50%-mix shoulders, symmetric edges, no plateau, with the 20deg
+ * tilt carried by the gradient angle. Base = transparent so the mark's own
+ * color shows through, highlight = --mark-shine. Keep in sync with
+ * .agent-hud-mark::before in agent-hud.css and .mhud-mark::before in
+ * meeting-hud.css. */
 .hud-meeting-mark::before {
   position: absolute;
   inset: -2px auto -2px -110%;
   width: 115%;
   content: "";
   background: linear-gradient(
-    100deg,
-    transparent 0%,
-    color-mix(in oklch, var(--mark-shine) 32%, transparent) 24%,
-    var(--mark-shine) 46%,
-    var(--mark-shine) 56%,
-    color-mix(in oklch, var(--mark-shine) 32%, transparent) 78%,
-    transparent 100%
+    calc(90deg + 20deg),
+    transparent 23%,
+    color-mix(in oklch, var(--mark-shine) 50%, transparent) 36.5%,
+    var(--mark-shine) 50%,
+    color-mix(in oklch, var(--mark-shine) 50%, transparent) 63.5%,
+    transparent 77%
   );
-  transform: translate3d(0, 0, 0) skewX(-16deg);
+  transform: translate3d(0, 0, 0);
   will-change: transform;
   animation: hud-mark-shimmer 1320ms linear infinite;
 }
@@ -699,10 +704,11 @@ body {
 }
 
 /* A transform-only highlight pass across the masked mark — the agent
- * HUD's shimmer, same cadence. */
+ * HUD's shimmer, same cadence. The band's tilt lives in the gradient angle,
+ * not a skew, so the keyframe is a pure translate. */
 @keyframes hud-mark-shimmer {
   to {
-    transform: translate3d(230%, 0, 0) skewX(-16deg);
+    transform: translate3d(230%, 0, 0);
   }
 }
 

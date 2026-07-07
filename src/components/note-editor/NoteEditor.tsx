@@ -373,7 +373,7 @@ export function NoteEditor({
             {showLivePreviewWaiting ? (
               <div className="transcript-processing" role="status" aria-live="polite">
                 <DotSpinner className="transcript-processing-spinner" />
-                <span className="transcript-processing-label">
+                <span className="transcript-processing-label shimmer">
                   Listening for transcript preview...
                 </span>
               </div>
@@ -785,7 +785,7 @@ function ProcessingProgressIndicator({
         <AnimatePresence initial={false} mode="popLayout">
           <motion.span
             key={status}
-            className="note-processing-roll-item"
+            className="note-processing-roll-item shimmer"
             initial={reduceMotion ? { opacity: 0 } : { y: "65%", opacity: 0, filter: "blur(5px)" }}
             animate={reduceMotion ? { opacity: 1 } : { y: "0%", opacity: 1, filter: "blur(0px)" }}
             exit={reduceMotion ? { opacity: 0 } : { y: "-65%", opacity: 0, filter: "blur(5px)" }}
