@@ -10,8 +10,8 @@
  * frostless CSS surface.
  *
  * The native window is transparent and slightly larger than the pill so the
- * CSS shadow can paint into its gutter. This matches the agent HUD: no native
- * vibrancy, no NSVisualEffectView rim, no inset-looking frost edge.
+ * compact HUD shadow can paint into its gutter. This matches the agent HUD:
+ * no native vibrancy, no NSVisualEffectView rim, no inset-looking frost edge.
  */
 
 :root {
@@ -83,7 +83,7 @@ body {
   padding: 4px;
   border-radius: var(--r-lg);
   background: var(--hud-bg);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-hud);
   color: var(--foreground);
   pointer-events: auto;
   /* Paced for the exit dissolve — must track EXIT_TRANSITION_MS in hud.ts
@@ -248,7 +248,7 @@ body {
   overflow: hidden;
   border-radius: var(--r-md);
   background: var(--hud-bg);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-hud);
   pointer-events: none;
   transition:
     grid-template-rows var(--t-med) var(--ease-out),

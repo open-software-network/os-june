@@ -276,6 +276,9 @@
 
   /* Shadows ---------------------------------------------------------- */
   --shadow-sm: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 2px 4px oklch(24% 0.002 84.59 / 3%);
+  /* Compact overlay depth: fits inside the dictation HUD's transparent
+   * native gutter, unlike --shadow-md's long card shadow. */
+  --shadow-hud: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 4px 12px oklch(24% 0.002 84.59 / 8%);
   /* md leans ambient: faint contact, weight in the wide blurs, so lifted
    * surfaces glow softly instead of drawing a hard line under the edge. */
   --shadow-md:
@@ -382,6 +385,7 @@
   --selection-foreground: var(--foreground);
 
   --shadow-sm: 0 1px 2px oklch(0% 0 none / 24%), 0 2px 4px oklch(0% 0 none / 12%);
+  --shadow-hud: 0 1px 2px oklch(0% 0 none / 18%), 0 4px 12px oklch(0% 0 none / 28%);
   /* Same ambient bias as light md: soft contact, weight in the wide blurs. */
   --shadow-md:
     0 1px 2px oklch(0% 0 none / 12%), 0 4px 10px oklch(0% 0 none / 10%),
