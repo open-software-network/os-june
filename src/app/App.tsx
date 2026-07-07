@@ -3428,9 +3428,7 @@ function UpdateRelaunchCard({
           <JuneMark />
         </span>
         <span className="update-relaunch-copy">
-          <span
-            className={relaunching ? "update-relaunch-title shimmer" : "update-relaunch-title"}
-          >
+          <span className={relaunching ? "update-relaunch-title shimmer" : "update-relaunch-title"}>
             {relaunching ? "Relaunching..." : "Relaunch to update"}
           </span>
           <span className={status ? "update-relaunch-status" : undefined}>{meta}</span>
