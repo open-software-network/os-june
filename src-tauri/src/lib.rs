@@ -222,6 +222,7 @@ pub fn run() {
             commands::resume_recording,
             commands::get_recording_status,
             set_recording_presence_bounds,
+            commands::prepare_recording_trim,
             commands::finish_recording,
             commands::retry_processing,
             commands::recover_recording,
@@ -293,6 +294,7 @@ pub fn run() {
             hermes_bridge::start_on_app_start(app);
             meeting_hud::setup(app);
             os_accounts::setup_deep_link(app);
+            setup_recordings_asset_scope(app);
             #[cfg(target_os = "macos")]
             setup_main_window_lifecycle(app);
             Ok(())
@@ -347,6 +349,34 @@ mod tests {
         assert!(should_emit_close_tab_event(Some(true)));
         assert!(!should_emit_close_tab_event(Some(false)));
         assert!(!should_emit_close_tab_event(None));
+    }
+}
+
+/// Let the trim modal's `<audio>` playback read finalized recording WAVs through
+/// the Tauri asset protocol. Allowing the whole recordings directory at runtime
+/// covers both the dev (`-dev`) and prod data dirs without a brittle static glob
+/// in `tauri.conf.json`, and mirrors how `AppPaths::contained_recording_file`
+/// already treats everything under `recordings/` as ours.
+fn setup_recordings_asset_scope(app: &tauri::App) {
+    let Ok(data_dir) = crate::app_paths::app_data_dir(app.handle()) else {
+        return;
+    };
+    let Ok(paths) = crate::app_paths::AppPaths::from_data_dir(data_dir) else {
+        return;
+    };
+    // Canonicalize so the scope matches the paths Tauri resolves when serving:
+    // it canonicalizes an asset path before the scope check (as
+    // `contained_recording_file` does), so a symlinked data dir would otherwise
+    // block playback. Fall back to the raw path if canonicalization fails.
+    let recordings_dir = paths
+        .recordings_dir
+        .canonicalize()
+        .unwrap_or(paths.recordings_dir);
+    if let Err(error) = app
+        .asset_protocol_scope()
+        .allow_directory(&recordings_dir, true)
+    {
+        eprintln!("failed to allow recordings dir for asset protocol: {error}");
     }
 }
 

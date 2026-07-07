@@ -3,10 +3,11 @@ use crate::{
     audio::{
         capture::{
             capture_status_for_recovery, finish_active_capture, finish_capture, is_capture_active,
-            microphone_permission_state, pause_capture, resume_capture, start_capture,
-            CaptureRecoverySnapshot,
+            microphone_permission_state, pause_capture, resume_capture, stage_finish_capture,
+            start_capture, take_pending_recording, CaptureRecoverySnapshot,
         },
         recovery::scan_recoverable_recordings,
+        trim::{trim_source_wav, waveform_preview},
         validation::{
             checksum_file, source_audio_passes_validation, validate_audio_artifact,
             validation_config_for_source, AudioValidationConfig,
@@ -26,16 +27,17 @@ use crate::{
             CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
             DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
-            ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
-            NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto,
-            RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
-            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
-            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
-            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            ExplainAgentApprovalResponse, FinishRecordingRequest, FinishRecordingResponse,
+            GetAgentTaskRequest, GetNoteRequest, ListNotesRequest, ListNotesResponse,
+            MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest, ProcessingStatus,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RecordingTrimPreviewDto, RemoveNoteFromFolderRequest,
+            RemoveSessionFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
+            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
+            SendAgentMessageRequest, SessionFolderDto, SessionRequest, SourceReadinessDto,
+            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse, TrimSourceDto,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
@@ -1017,15 +1019,89 @@ async fn persist_recording_recovery_snapshot(
     Ok(())
 }
 
+/// Stop capture and finalize the WAVs, then return a downsampled waveform so the
+/// frontend can open the trim modal. The finished recording is held in the
+/// pending store until `finish_recording` consumes it. Transcription does not
+/// start here — that waits for the user's trim decision.
+#[tauri::command]
+pub async fn prepare_recording_trim(
+    _app: AppHandle,
+    request: SessionRequest,
+) -> Result<RecordingTrimPreviewDto, AppError> {
+    // ~240 buckets gives a dense-enough envelope for clips of any length while
+    // staying tiny to serialize; the frontend scales it to the modal width.
+    const PREVIEW_BUCKETS: usize = 240;
+    let finished = stage_finish_capture(&request.session_id)?;
+    let preview = waveform_preview(&finished.sources, PREVIEW_BUCKETS)?;
+    let sources = finished
+        .sources
+        .iter()
+        .map(|source| TrimSourceDto {
+            source: source.source,
+            path: source.final_path.to_string_lossy().into_owned(),
+        })
+        .collect();
+    Ok(RecordingTrimPreviewDto {
+        session_id: finished.session_id.clone(),
+        duration_ms: preview.duration_ms,
+        peaks: preview.peaks,
+        source_mode: finished.source_mode,
+        sources,
+    })
+}
+
 #[tauri::command]
 pub async fn finish_recording(
     app: AppHandle,
-    request: SessionRequest,
+    request: FinishRecordingRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
-    let finished = finish_capture(&request.session_id)?;
+    // Prefer a recording staged by `prepare_recording_trim`; fall back to
+    // stopping capture directly so a plain stop (no trim modal) still works.
+    let mut finished = match take_pending_recording(&request.session_id) {
+        Some(finished) => finished,
+        None => finish_capture(&request.session_id)?,
+    };
+    if let Some(trim) = request.trim {
+        apply_trim(&mut finished, trim);
+    }
     finish_recording_session(&repos, finished, finalization_started).await
+}
+
+/// Rewrite every source WAV to the selected `[start_ms, end_ms]` window and
+/// update the recording's elapsed timings so validation compares against the
+/// trimmed duration. A no-op (or inverted) range leaves the audio untouched.
+///
+/// Best-effort by design: `finish_recording` has already consumed the staged
+/// recording by the time this runs, so a propagated error would strand the
+/// captured audio. If a source fails to trim, keep it untrimmed and still
+/// finalize it — `trim_source_wav` writes via a temp file + rename, so a failure
+/// leaves the original intact.
+fn apply_trim(
+    finished: &mut crate::audio::capture::FinishedRecording,
+    trim: crate::domain::types::TrimRange,
+) {
+    let start_ms = trim.start_ms.max(0);
+    let end_ms = trim.end_ms.max(start_ms);
+    let trims_start = start_ms > 0;
+    let trims_end = end_ms < finished.elapsed_ms;
+    if !trims_start && !trims_end {
+        return;
+    }
+    let mut max_duration = 0;
+    for source in &mut finished.sources {
+        match trim_source_wav(&source.final_path, start_ms, end_ms) {
+            Ok(duration) => source.elapsed_ms = duration,
+            Err(error) => eprintln!(
+                "trim failed for {:?}, keeping the full source: {}",
+                source.source, error.message
+            ),
+        }
+        max_duration = max_duration.max(source.elapsed_ms);
+    }
+    finished.elapsed_ms = max_duration;
+    finished.recording.elapsed_ms = max_duration;
 }
 
 async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {

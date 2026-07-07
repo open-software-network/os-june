@@ -165,6 +165,14 @@ vi.mock("../lib/tauri", () => ({
   pauseRecording: mocks.pauseRecording,
   resumeRecording: mocks.resumeRecording,
   getRecordingStatus: mocks.getRecordingStatus,
+  // Resolve a preview so a stopped recording's trim modal leaves the loading
+  // spinner (otherwise its confirm/finish actions stay disabled).
+  prepareRecordingTrim: vi.fn().mockResolvedValue({
+    sessionId: "rec-1",
+    durationMs: 1000,
+    peaks: [0.2, 0.8, 0.4],
+    sourceMode: "microphoneOnly",
+  }),
   finishRecording: mocks.finishRecording,
   retryProcessing: mocks.retryProcessing,
   recoverRecording: mocks.recoverRecording,

@@ -15,7 +15,7 @@ use crate::{
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     fs::File,
     io::BufWriter,
     path::PathBuf,
@@ -36,6 +36,14 @@ const MICROPHONE_STREAM_WARNING_MESSAGE: &str =
 static ACTIVE_RECORDING: LazyLock<Mutex<Option<ActiveRecording>>> =
     LazyLock::new(|| Mutex::new(None));
 
+// Recordings whose capture has been finalized (WAVs written to disk) but whose
+// transcription has been deferred while the user reviews/trims them in the stop
+// modal. Keyed by session id; consumed by `finish_recording` once the user
+// confirms. Capture is single-instance, so this holds at most one entry in
+// practice, but a map keeps `take` cheap and unambiguous.
+static PENDING_RECORDINGS: LazyLock<Mutex<HashMap<String, FinishedRecording>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 pub struct StartedRecording {
     pub session_id: String,
     pub note_id: String,
@@ -47,6 +55,7 @@ pub struct StartedRecording {
     pub status: RecordingStatusDto,
 }
 
+#[derive(Clone)]
 pub struct FinishedRecording {
     pub session_id: String,
     pub note_id: String,
@@ -63,6 +72,7 @@ pub struct StartedSource {
     pub final_path: PathBuf,
 }
 
+#[derive(Clone)]
 pub struct FinishedSource {
     pub source: RecordingSource,
     pub final_path: PathBuf,
@@ -524,6 +534,41 @@ pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
         ));
     }
     finalize_recording(recording)
+}
+
+/// Stop and finalize capture like [`finish_capture`], but stash the result so
+/// the user can review and optionally trim it before transcription begins. The
+/// returned recording is cloned into the pending store; [`finish_recording`]
+/// later consumes it via [`take_pending_recording`].
+pub fn stage_finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
+    let finished = finish_capture(session_id)?;
+    // Recover from a poisoned lock rather than dropping `finished`. finish_capture
+    // has already consumed ACTIVE_RECORDING, so this staged clone is the only
+    // remaining handle to the finalized recording. Skipping the insert (or
+    // propagating an error, which drops `finished`) would strand the captured
+    // audio: `finish_recording`'s fallback would re-run finish_capture against an
+    // already-consumed session and fail.
+    pending_recordings().insert(finished.session_id.clone(), finished.clone());
+    Ok(finished)
+}
+
+/// Remove a staged recording awaiting trim review, if one exists for the session.
+pub fn take_pending_recording(session_id: &str) -> Option<FinishedRecording> {
+    pending_recordings().remove(session_id)
+}
+
+/// Lock the pending-recordings store, recovering from a poisoned lock. The store
+/// only maps session ids to finalized recordings, so a panic elsewhere cannot
+/// leave it in a state that makes recovery unsafe. Recovering keeps a staged
+/// recording reachable even after such a panic, so captured audio is never lost.
+/// The recovery is logged rather than silent: a poisoned lock means a thread
+/// panicked while holding it, which is worth surfacing even though it is not
+/// fatal here.
+fn pending_recordings() -> std::sync::MutexGuard<'static, HashMap<String, FinishedRecording>> {
+    PENDING_RECORDINGS.lock().unwrap_or_else(|poisoned| {
+        eprintln!("pending-recordings lock was poisoned; recovering to avoid losing staged audio");
+        poisoned.into_inner()
+    })
 }
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {
