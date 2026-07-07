@@ -266,6 +266,7 @@ import { generateChatImage, newImageRequestId } from "../../lib/chat-image-gener
 import { generateChatVideo, newVideoRequestId } from "../../lib/chat-video-generation";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { ImageSafeModeConsentDialog } from "./ImageSafeModeConsentDialog";
+import { VideoSafeModeConsentDialog } from "./VideoSafeModeConsentDialog";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -4668,7 +4669,10 @@ export function AgentWorkspace({
       // Non-fatal: generation proceeds with server-resolved settings.
     }
 
-    if (settings?.imageSafeMode && !settings.imageSafeModePromptDismissed) {
+    // Unlike /image, the screen runs even after "don't ask again": for video
+    // the dialog is the enforcement point (there is no blur to fall back to),
+    // so an explicit prompt with safe mode on must never generate silently.
+    if (settings?.imageSafeMode) {
       let mayBeExplicit = false;
       try {
         mayBeExplicit = await imagePromptMayBeExplicit(prompt);
@@ -4676,14 +4680,23 @@ export function AgentWorkspace({
         mayBeExplicit = false;
       }
       if (mayBeExplicit) {
+        if (settings.imageSafeModePromptDismissed) {
+          // The user opted out of the dialog, not out of safe mode: skip the
+          // generation with a notice instead of asking again.
+          setImportingFiles(false);
+          setError(
+            "Safe mode is on, so this video was skipped. Turn safe mode off in Settings to generate it.",
+          );
+          return;
+        }
         const choice = await requestImageSafeModeConsent("video-slash");
         if (choice.action === "dismiss") {
           setImportingFiles(false);
           return;
         }
         if (choice.action === "keep") {
-          // No blurred fallback exists for video: keeping safe mode on skips
-          // the generation (the dialog says so).
+          // "Skip this video": no blurred fallback exists for video, so safe
+          // mode on means the generation is skipped (the dialog says so).
           if (choice.dontAskAgain) void setImageSafeModePromptDismissed(true);
           setImportingFiles(false);
           return;
@@ -9066,16 +9079,28 @@ export function AgentWorkspace({
         </>
       )}
       {imageSafeModeConsentRequest ? (
-        <ImageSafeModeConsentDialog
-          variant={imageSafeModeConsentRequest.variant}
-          onKeepSafeMode={(dontAskAgain) =>
-            resolveImageSafeModeConsent({ action: "keep", dontAskAgain })
-          }
-          onTurnOffSafeMode={(dontAskAgain) =>
-            resolveImageSafeModeConsent({ action: "turnOff", dontAskAgain })
-          }
-          onDismiss={() => resolveImageSafeModeConsent({ action: "dismiss" })}
-        />
+        imageSafeModeConsentRequest.variant === "video-slash" ? (
+          <VideoSafeModeConsentDialog
+            onSkipVideo={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "keep", dontAskAgain })
+            }
+            onTurnOffSafeMode={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "turnOff", dontAskAgain })
+            }
+            onDismiss={() => resolveImageSafeModeConsent({ action: "dismiss" })}
+          />
+        ) : (
+          <ImageSafeModeConsentDialog
+            variant={imageSafeModeConsentRequest.variant}
+            onKeepSafeMode={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "keep", dontAskAgain })
+            }
+            onTurnOffSafeMode={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "turnOff", dontAskAgain })
+            }
+            onDismiss={() => resolveImageSafeModeConsent({ action: "dismiss" })}
+          />
+        )
       ) : null}
     </section>
   );

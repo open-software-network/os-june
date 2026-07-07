@@ -280,13 +280,25 @@ compatibility for nothing), while the Settings copy explains it covers both.
 spec; enforcement exists only as their 422 content-policy rejection. Blurring
 is therefore not an offerable fallback for video. The `/video` flow reuses the
 JUN-209 screen (`image_prompt_may_be_explicit`: on-device wordlist, then the
-metered model check) and the same consent dialog, but with video semantics:
-**keeping safe mode on skips the generation** (the dialog says so), turning it
-off proceeds — and flips the one shared switch, images included. Dismiss
+metered model check) but shows a **dedicated video consent dialog**
+(`VideoSafeModeConsentDialog`), not the image one — the image dialog's "keep
+safe mode on and generate anyway" middle ground does not exist for video, so
+its primary action is **"Skip this video"** and the alternative is turning the
+one shared switch off (images stop blurring too; the dialog says so). Dismiss
 cancels and leaves the composer draft untouched. The screen runs before the
 session is created, mirroring /image, so a skipped generation leaves no
 session behind. Safe mode is never pinned into the video request (there is no
-field to pin); it only gates the dialog.
+field to pin); it only gates the flow.
+
+**"Don't ask again" opts out of the dialog, not of safe mode.** Unlike /image
+(where the blur still protects a dismissed-dialog generation), the video gate
+is itself the enforcement point, so the screen runs even after the consent
+prompt was dismissed for good: an explicit prompt with safe mode on is then
+skipped with an inline notice instead of a question, never generated silently.
+The cost is that a safe-mode-on /video prompt may pay the small metered
+classifier check even when the dialog will never show — accepted, since the
+free wordlist short-circuits the common explicit cases and the alternative is
+an unenforced switch.
 
 **Accepted residual.** The agent path (`june_video` MCP `generate_video`) does
 not yet emit the safe-mode consent event the image MCP path emits. The image

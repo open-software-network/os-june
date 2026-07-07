@@ -7297,11 +7297,13 @@ describe("AgentWorkspace", () => {
     fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
 
     const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
-    // The video variant explains that keeping safe mode on skips generation
-    // (Venice cannot blur video, so there is no blurred fallback to offer).
-    expect(within(dialog).getByText(/Videos cannot be blurred/)).toBeInTheDocument();
+    // The dedicated video dialog explains the skip semantics (Venice cannot
+    // blur video, so there is no blurred fallback to offer) and leads with
+    // "Skip this video" instead of the image dialog's "Keep safe mode on".
+    expect(within(dialog).getByText(/Safe mode can't blur videos/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Skip this video" })).toHaveFocus();
     await user.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
-    await user.click(within(dialog).getByRole("button", { name: "Keep safe mode on" }));
+    await user.click(within(dialog).getByRole("button", { name: "Skip this video" }));
 
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument(),
@@ -7312,6 +7314,31 @@ describe("AgentWorkspace", () => {
     expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
     // The draft survives the skip so the user can rephrase or change settings.
     expect(await screen.findByRole("textbox")).toHaveTextContent("/video a nude scene");
+  });
+
+  it("skips an explicit /video prompt with a notice when the consent dialog was dismissed for good", async () => {
+    // "Don't ask again" opts out of the dialog, not out of safe mode: the
+    // enforcement point for video is the gate itself, so an explicit prompt
+    // still skips - with an inline notice instead of a question.
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: true, imageSafeModePromptDismissed: true });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.gatewayRequest.mockClear();
+
+    await user.type(await screen.findByRole("textbox"), "/video a nude scene");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    expect(
+      await screen.findByText(
+        "Safe mode is on, so this video was skipped. Turn safe mode off in Settings to generate it.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument();
+    expect(mocks.videoGenerate).not.toHaveBeenCalled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
   });
 
   it("turns safe mode off for an explicit /video prompt and generates", async () => {
