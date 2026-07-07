@@ -17,6 +17,14 @@ export type NoteSuggestionListProps = {
   command: (item: NoteListItemDto) => void;
 };
 
+/** Compact date for the palette's right rail — month + day is enough to place
+ * a note without crowding the row. */
+function formatSuggestionDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
 export type NoteSuggestionListHandle = {
   onKeyDown: (event: KeyboardEvent) => boolean;
 };
@@ -128,6 +136,9 @@ export const NoteSuggestionList = forwardRef<NoteSuggestionListHandle, NoteSugge
                 key={item.id}
                 type="button"
                 role="option"
+                // Name the option by its title; the preview + date are visual
+                // context, not part of the concise accessible name.
+                aria-label={displayNoteTitle(item.title)}
                 aria-selected={index === selected}
                 data-active={activeSource && index === selected ? true : undefined}
                 onMouseDown={(event) => {
@@ -146,11 +157,19 @@ export const NoteSuggestionList = forwardRef<NoteSuggestionListHandle, NoteSugge
                 <span className="agent-category-menu-icon agent-note-suggestion-menu-icon">
                   <IconNoteText size={16} aria-hidden />
                 </span>
-                <span className="agent-category-menu-copy">
+                <span className="agent-category-menu-copy agent-note-suggestion-menu-copy">
                   <span className="agent-category-menu-label agent-note-suggestion-menu-label">
                     {displayNoteTitle(item.title)}
                   </span>
+                  {item.preview.trim() ? (
+                    <span className="agent-note-suggestion-menu-preview">{item.preview}</span>
+                  ) : null}
                 </span>
+                {formatSuggestionDate(item.updatedAt) ? (
+                  <span className="agent-note-suggestion-menu-date">
+                    {formatSuggestionDate(item.updatedAt)}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>

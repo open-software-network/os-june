@@ -5320,6 +5320,33 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* Subtle remove affordance on the end of the chip — quiet by default, firms
+   up on hover so it reads as dismissable without shouting. */
+.agent-note-reference-chip-remove {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  margin-left: var(--sp-px);
+  margin-right: calc(-1 * var(--sp-1));
+  padding: var(--sp-px);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0.6;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-note-reference-chip-remove:hover {
+  opacity: 1;
+  background: color-mix(in oklch, var(--foreground) 12%, transparent);
+  color: var(--foreground);
+}
+
 .agent-note-reference-chip.ProseMirror-selectednode {
   outline: 2px solid color-mix(in oklch, var(--foreground) 24%, transparent);
   outline-offset: var(--sp-px);
@@ -5546,6 +5573,35 @@ input:focus-visible,
 
 .agent-note-suggestion-menu-icon {
   color: var(--muted-foreground);
+}
+
+/* Richer rows: title over a one-line preview (so untitled notes are still
+   identifiable), with the date on a right rail. Third grid column holds it. */
+.agent-note-suggestion-menu button {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+}
+
+.agent-note-suggestion-menu-copy {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-px);
+}
+
+.agent-note-suggestion-menu-preview {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-note-suggestion-menu-date {
+  align-self: center;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 
 /* Opens upward, just above the toolbar where the "+" trigger sits (the box
