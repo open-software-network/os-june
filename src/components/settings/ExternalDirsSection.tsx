@@ -432,7 +432,7 @@ function AddDirectoryDialog({
           <input
             id="external-dir-path"
             type="text"
-            className="external-dirs-path-input"
+            className="dialog-input external-dirs-path-input"
             value={draft}
             placeholder="~/shared-skills"
             autoComplete="off"

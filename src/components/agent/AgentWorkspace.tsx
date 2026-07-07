@@ -8926,19 +8926,23 @@ export function MessagingPanel({
               const state = platform.state ?? "unknown";
               const configured =
                 platform.configured || (requiredTotal > 0 && requiredSet === requiredTotal);
+              // The switch already conveys enabled/disabled, so the meta line
+              // keeps only meaningful status (e.g. Connected) plus the required
+              // progress; the "Not configured" pill by the switch owns the
+              // unconfigured case.
+              const status = meaningfulCapabilityStatus(state);
+              const meta =
+                [status, requiredTotal ? `${requiredSet}/${requiredTotal} required set` : null]
+                  .filter(Boolean)
+                  .join(" · ") || undefined;
               return (
                 <CapabilityRow
                   key={platform.id}
                   title={platform.name}
                   description={platform.description}
-                  meta={`${stateLabel(state)}${
-                    requiredTotal
-                      ? ` · ${requiredSet}/${requiredTotal} required set`
-                      : configured
-                        ? " · configured"
-                        : ""
-                  }`}
+                  meta={meta}
                   enabled={Boolean(platform.enabled)}
+                  notConfigured={!configured}
                   selected={false}
                   saving={saving === `messaging:${platform.id}`}
                   onSelect={() => onSelectPlatform(platform)}
@@ -9318,6 +9322,7 @@ function CapabilityRow({
   description,
   enabled,
   meta,
+  notConfigured = false,
   saving,
   selected = false,
   title,
@@ -9328,6 +9333,9 @@ function CapabilityRow({
   description?: string;
   enabled: boolean;
   meta?: string;
+  /** When true a quiet "Not configured" status pill sits to the left of the
+   * switch, flagging that the platform still needs its credentials. */
+  notConfigured?: boolean;
   saving: boolean;
   selected?: boolean;
   title: string;
@@ -9345,6 +9353,9 @@ function CapabilityRow({
         {children}
       </button>
       <div className="agent-capability-actions">
+        {notConfigured ? (
+          <span className="status-pill agent-capability-status">Not configured</span>
+        ) : null}
         <button
           type="button"
           className="agent-switch"
@@ -12495,6 +12506,19 @@ function toolNames(toolset: HermesToolsetInfo) {
 
 export function stateLabel(value: string) {
   return value.replaceAll("_", " ");
+}
+
+/** A meaningful capability status word for the list meta line, or undefined.
+ * The row's switch already conveys enabled/disabled, so those (and the neutral
+ * "unknown"/"configured" placeholders) are dropped to avoid a redundant word;
+ * only states that carry real information (e.g. connected, needs setup, error)
+ * survive, sentence-cased. */
+export function meaningfulCapabilityStatus(state: string): string | undefined {
+  const normalized = state.trim().toLowerCase();
+  const redundant = new Set(["enabled", "disabled", "unknown", "configured", ""]);
+  if (redundant.has(normalized)) return undefined;
+  const label = stateLabel(normalized);
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 export function envFieldSet(field: HermesMessagingEnvVarInfo) {

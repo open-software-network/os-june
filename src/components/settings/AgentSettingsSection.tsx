@@ -235,59 +235,77 @@ export function AgentSettingsSection({
   // a pinned BreadcrumbBar ("Messaging" > platform name) over a dedicated scroll
   // region, the outer settings scroller disabled by the host. Reuses the shared
   // skill-detail shell classes rather than forking a parallel CSS system. Its
-  // Save / enable actions live in the breadcrumb bar (right side), exactly like
+  // Save + enable switch live in the breadcrumb bar (right side), exactly like
   // the skills detail put Save + the switch there — no separate footer.
-  if (selectedPlatform) {
+  //
+  // When the host mounts this fresh at the top level with a platform id but the
+  // roster hasn't loaded yet, render the pinned shell with a clean skeleton
+  // instead of falling through to the full list + tabs — that fall-through would
+  // flash the list for a frame before the platform resolves.
+  const detailOpen = selectedPlatformId != null;
+  if (detailOpen) {
     const back = () => {
       onBackFromPlatform?.();
       setEnvEdits({});
     };
+    const platformName = selectedPlatform?.name ?? "Platform";
     const hasEdits = Object.values(messagingTrimEdits(envEdits)).length > 0;
-    const isSavingEnv = saving === `env:${selectedPlatform.id}`;
-    const isToggling = saving === `messaging:${selectedPlatform.id}`;
+    const isSavingEnv = saving === `env:${selectedPlatformId}`;
+    const isToggling = saving === `messaging:${selectedPlatformId}`;
+    const pending = !selectedPlatform;
     return (
       <div className="skill-detail-shell">
         <BreadcrumbBar
           backLabel="Back to messaging platforms"
           onBack={back}
-          items={[{ label: "Messaging", onClick: back }, { label: selectedPlatform.name }]}
+          items={[{ label: "Messaging", onClick: back }, { label: selectedPlatform?.name ?? "" }]}
           actions={
-            <>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={isToggling}
-                onClick={() =>
-                  void setMessagingPlatformEnabled(selectedPlatform, !selectedPlatform.enabled)
-                }
-              >
-                {selectedPlatform.enabled ? "Enabled" : "Enable"}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={!hasEdits || isSavingEnv}
-                onClick={() => void saveMessagingPlatformEnv(selectedPlatform)}
-              >
-                {isSavingEnv ? "Saving..." : "Save changes"}
-              </button>
-            </>
+            selectedPlatform ? (
+              <>
+                <Switch
+                  checked={Boolean(selectedPlatform.enabled)}
+                  disabled={isToggling}
+                  onCheckedChange={(next) =>
+                    void setMessagingPlatformEnabled(selectedPlatform, next)
+                  }
+                  aria-label={`${selectedPlatform.enabled ? "Disable" : "Enable"} ${platformName}`}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!hasEdits || isSavingEnv}
+                  onClick={() => void saveMessagingPlatformEnv(selectedPlatform)}
+                >
+                  {isSavingEnv ? "Saving..." : "Save changes"}
+                </button>
+              </>
+            ) : null
           }
         />
         <div className="skill-detail-scroll" data-has-detail-bar="true">
           <section
             className="settings-page settings-group agent-messaging-detail-page"
-            aria-label={selectedPlatform.name}
+            aria-label={platformName}
           >
-            <MessagingPlatformDetail
-              envEdits={envEdits}
-              platform={selectedPlatform}
-              saving={saving}
-              hideFooter
-              onEditEnv={(key, value) => setEnvEdits((current) => ({ ...current, [key]: value }))}
-              onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
-              onToggle={(platform, enabled) => void setMessagingPlatformEnabled(platform, enabled)}
-            />
+            {pending ? (
+              <div className="agent-messaging-detail-skeleton" aria-hidden>
+                <span className="agent-messaging-detail-skeleton-title" />
+                <span className="agent-messaging-detail-skeleton-line" />
+                <span className="agent-messaging-detail-skeleton-line" />
+              </div>
+            ) : (
+              <MessagingPlatformDetail
+                envEdits={envEdits}
+                platform={selectedPlatform}
+                saving={saving}
+                hideFooter
+                onEditEnv={(key, value) => setEnvEdits((current) => ({ ...current, [key]: value }))}
+                onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
+                onToggle={(platform, enabled) =>
+                  void setMessagingPlatformEnabled(platform, enabled)
+                }
+              />
+            )}
           </section>
         </div>
       </div>

@@ -917,9 +917,8 @@ input:focus-visible,
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
   align-items: center;
-  min-height: 68px;
   margin: 0 calc(var(--sp-3) * -1);
-  padding: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
   border-bottom: 1px solid var(--border-subtle);
   transition: background-color var(--t-fast) var(--ease-out);
@@ -972,6 +971,12 @@ input:focus-visible,
 .agent-capability-chevron {
   flex-shrink: 0;
   color: var(--muted-foreground);
+}
+
+/* The "Not configured" status pill sits just left of the switch in the row's
+ * trailing actions; keep it on one line so it never wraps against the toggle. */
+.agent-capability-status {
+  white-space: nowrap;
 }
 
 .agent-capability-title {
@@ -1069,11 +1074,21 @@ input:focus-visible,
 }
 
 .agent-files-root > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  padding: 0 var(--sp-2) var(--sp-2);
+  /* A clean, quiet section header (settings language): the label sits inline
+   * with a muted mono path to its right on one baseline, the description flows
+   * full-width beneath. No box, no stray borders — just the group label and
+   * its context. The header's own div wraps title + description. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-3);
+  padding: 0 0 var(--sp-2);
+}
+
+/* The label + description column spans the first grid cell; the path chip sits
+ * in the trailing cell, aligned to the heading's baseline. */
+.agent-files-root > header > div {
+  min-width: 0;
 }
 
 .agent-files-root h3 {
@@ -1105,9 +1120,6 @@ input:focus-visible,
 .agent-files-root code {
   max-width: 44%;
   overflow: hidden;
-  border-radius: var(--r-xs);
-  padding: 2px var(--sp-2);
-  background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -1142,6 +1154,13 @@ input:focus-visible,
  * on row hover or when it takes keyboard focus, echoing the drill-in affordances
  * on the other settings rows. Clicking it opens the entry's path in Finder. */
 .agent-files-entry-reveal {
+  /* Keep the full icon-button hit area (--control-md square) so the neutral
+   * hover fill has breathing room around the glyph rather than hugging it.
+   * A small negative inline margin lets that square sit flush at the row's
+   * trailing edge without widening the trailing column. */
+  width: var(--control-md);
+  height: var(--control-md);
+  margin-right: calc(var(--sp-1) * -1);
   color: var(--muted-foreground);
   opacity: 0;
   transition:
@@ -1224,6 +1243,10 @@ input:focus-visible,
 
 .agent-messaging-list {
   min-height: 0;
+  /* Cap the platform list so a long roster scrolls within the card beneath the
+   * pinned search toolbar rather than growing the whole settings page. A
+   * max-height on a scroll container is allowed by spec/control-sizes. */
+  max-height: 440px;
   overflow: auto;
   padding: var(--sp-5);
 }
@@ -1240,7 +1263,7 @@ input:focus-visible,
 
 .agent-platform-topbar-title {
   overflow: hidden;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1278,6 +1301,34 @@ input:focus-visible,
   padding: var(--sp-6);
 }
 
+/* Clean first-load skeleton for the pinned platform drill-in: a few quiet
+ * placeholder bars so the shell (breadcrumb + scroll region) mounts without
+ * flashing the platform list before the roster resolves. */
+.agent-messaging-detail-skeleton {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.agent-messaging-detail-skeleton span {
+  display: block;
+  height: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.agent-messaging-detail-skeleton-title {
+  height: var(--sp-5);
+  width: 40%;
+}
+
+.agent-messaging-detail-skeleton-line {
+  width: 70%;
+}
+
+.agent-messaging-detail-skeleton-line:last-child {
+  width: 55%;
+}
+
 .agent-messaging-detail-header {
   display: grid;
   gap: var(--sp-1);
@@ -1288,7 +1339,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .agent-messaging-detail-header p {
@@ -1388,16 +1439,17 @@ input:focus-visible,
   font-weight: var(--fw-medium);
 }
 
-/* Standard settings text input (matches the Venice key row / MCP dialog
- * fields): plain border + card background, no bespoke or dark chrome. */
+/* The canonical text-field recipe (dialog-input): border on the card surface,
+ * --r-md corners, hover lifts to --ring, focus to --ring-focus with the 3px
+ * outer ring — matching every other AI-page field. */
 .agent-messaging-field input {
   width: 100%;
   min-width: 0;
-  height: var(--control-lg);
-  padding: 0 var(--sp-3);
+  min-height: var(--control-lg);
+  padding: var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  background: var(--background);
+  background: var(--card);
   color: var(--foreground);
   font: inherit;
   font-size: var(--fs-md);
@@ -1407,9 +1459,14 @@ input:focus-visible,
     box-shadow var(--t-fast) var(--ease-out);
 }
 
-.agent-messaging-field input:focus {
+.agent-messaging-field input:hover {
   border-color: var(--ring);
-  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+.agent-messaging-field input:focus,
+.agent-messaging-field input:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .agent-messaging-field small {
@@ -10336,14 +10393,17 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
+/* The canonical text-field recipe (dialog-input): shared border on the card
+ * surface, --r-md corners, hover to --ring, focus to --ring-focus with the 3px
+ * outer ring. Matches every other AI-page field. */
 .settings-field input {
   width: 100%;
   min-width: 0;
-  height: var(--control-lg);
-  padding: 0 var(--sp-3);
+  min-height: var(--control-lg);
+  padding: var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  background: var(--background);
+  background: var(--card);
   color: var(--foreground);
   font: inherit;
   font-size: var(--fs-md);
@@ -10353,9 +10413,14 @@ input:focus-visible,
     box-shadow var(--t-fast) var(--ease-out);
 }
 
-.settings-field input:focus {
+.settings-field input:hover {
   border-color: var(--ring);
-  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+.settings-field input:focus,
+.settings-field input:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .settings-local-model-warning {
@@ -10660,6 +10725,10 @@ input:focus-visible,
 
 .settings-secret-control {
   width: min(440px, 46vw);
+  /* Bottom-align the Save / Remove buttons with the input: the field carries an
+   * "API key" label above its input, so aligning to the end lines the buttons
+   * up with the input's baseline row rather than floating at the label's top. */
+  align-items: flex-end;
   justify-content: flex-end;
 }
 
@@ -11089,7 +11158,9 @@ input:focus-visible,
 }
 
 .installed-skills-body {
-  padding: var(--sp-1) var(--sp-3) var(--sp-3);
+  /* Extra bottom padding so the last skill row clears the card's bottom scroll
+   * veil (.main-panel::after, 96px) instead of dissolving under it at rest. */
+  padding: var(--sp-1) var(--sp-3) var(--sp-10);
 }
 
 .installed-skills-list {
@@ -11802,29 +11873,11 @@ input:focus-visible,
   gap: var(--sp-2);
 }
 
-/* The canonical settings text input (matches the Venice key / MCP dialog /
- * messaging fields): the shared border + card background and outer focus ring,
- * --control-lg tall with --r-md corners, so every text input on the AI pages
- * reads as one active field, never a gray or transparent "disabled" box. */
+/* Visual chrome comes from the shared `dialog-input` recipe; this only owns the
+ * flex sizing so the field shares its row with the "Choose folder" button. */
 .external-dirs-path-input {
   flex: 1 1 auto;
   min-width: 0;
-  height: var(--control-lg);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  outline: none;
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
-}
-
-.external-dirs-path-input:focus {
-  border-color: var(--ring);
-  box-shadow: 0 0 0 4px var(--focus-ring);
 }
 
 .external-dirs-choose {
@@ -11914,7 +11967,7 @@ input:focus-visible,
 .external-dir-name {
   overflow: hidden;
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -12927,7 +12980,7 @@ input:focus-visible,
   padding-left: var(--sp-3);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   letter-spacing: 0;
 }
 
@@ -12977,7 +13030,7 @@ input:focus-visible,
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .skill-detail-info-description {
@@ -13088,7 +13141,7 @@ input:focus-visible,
   min-width: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .skill-detail-doc-readonly {
@@ -14005,28 +14058,37 @@ input:focus-visible,
   font-weight: 400;
 }
 
+/* The canonical text-field recipe (dialog-input): a real 1px border on the
+ * card surface, --r-md corners, hover lifts the border to --ring, focus lifts
+ * to --ring-focus with the 3px outer focus ring. One look for every AI-page
+ * field. Also applied to the HTTP auth <select>. */
 .mcp-add-input {
   width: 100%;
   min-height: var(--control-lg);
   padding: 0 var(--sp-3);
-  border: 0;
-  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   background: var(--card);
   color: var(--foreground);
   font-size: var(--fs-md);
   outline: none;
-  box-shadow: 0 0 0 1px var(--border-subtle);
-  transition: box-shadow var(--t-fast) var(--ease-out);
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
 }
 
-.mcp-add-input:focus {
-  box-shadow:
-    0 0 0 1px var(--ring-focus),
-    0 0 0 4px var(--focus-ring);
+.mcp-add-input:hover {
+  border-color: var(--ring);
+}
+
+.mcp-add-input:focus,
+.mcp-add-input:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .mcp-add-input[aria-invalid="true"] {
-  box-shadow: 0 0 0 1px var(--destructive);
+  border-color: var(--destructive);
 }
 
 .mcp-add-error {
@@ -14164,7 +14226,7 @@ input:focus-visible,
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .mcp-server-detail-grid {
@@ -14474,7 +14536,7 @@ input:focus-visible,
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-sm);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -14911,14 +14973,18 @@ input:focus-visible,
  * selected option lines up with the trigger's position. The vertical
  * offset is set inline via `style.top` based on the selected index.
  *
- * Anchored to BOTH `left: 0` and `right: 0` so the popover width matches
- * the trigger exactly. Wider items would otherwise spill past the right
- * edge and reveal the trigger underneath on the left. */
+ * Anchored to `left: 0` and sized to its widest option: it is at least as
+ * wide as the trigger (min-width: 100%) with a comfortable floor (260px) so a
+ * long label like "All categories" never wraps or ellipsizes, and it grows
+ * rightward (width: max-content) up to a max so it can outrun a narrow trigger.
+ * The left anchor keeps the aligned-selected overlay lined up with the trigger. */
 .select-popover {
   position: absolute;
   left: 0;
-  right: 0;
   z-index: 60;
+  min-width: max(100%, 260px);
+  width: max-content;
+  max-width: min(360px, 90vw);
   margin: 0;
   /* sp-1 horizontal + sp-1 vertical padding gives the same inset feel as
    * the context menu, so item hover wash has a rounded border-radius

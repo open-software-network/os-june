@@ -2487,6 +2487,7 @@ function VeniceApiKeyRow({
           <span>API key</span>
           <input
             type="password"
+            className="dialog-input"
             value={value}
             autoComplete="off"
             spellCheck={false}

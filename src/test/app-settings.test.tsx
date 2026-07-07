@@ -3095,13 +3095,14 @@ describe("AppSettings", () => {
     await user.click(platformButton);
 
     // The detail pins at the top: a breadcrumb back affordance appears, the
-    // host is told a detail scroller is active, and the Save / enable actions
-    // live in the bar (not a separate footer).
+    // host is told a detail scroller is active, and the Save + enable actions
+    // live in the bar (not a separate footer). The enable action is the shared
+    // Switch component (role="switch"), not a bespoke Enable button.
     expect(
       await screen.findByRole("button", { name: "Back to messaging platforms" }),
     ).toBeInTheDocument();
     await waitFor(() => expect(onDetailPinnedChange).toHaveBeenLastCalledWith(true));
-    expect(screen.getByRole("button", { name: "Enable" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /Slack/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save changes" })).toBeInTheDocument();
 
     // Returning to the list unpins the detail.
