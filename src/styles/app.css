@@ -5550,10 +5550,126 @@ input:focus-visible,
  * Measuring from the form's bottom keeps it above the toolbar in both the
  * docked and hero composers, and steady when a notice grows the form upward. */
 .agent-attach-menu {
+  /* The docked composer form is pointer-events: none (only the box opts back
+   * in), and this menu is the box's sibling — opt in here too or every row is
+   * click-dead outside the hero (same trap as .agent-composer-model-popover). */
+  pointer-events: auto;
   position: absolute;
   left: var(--sp-3);
   bottom: calc(var(--control-lg) + var(--sp-2));
   z-index: 40;
+}
+
+/* Issue report dialog extras. Chrome, textarea, field labels, and the
+ * footer come from the shared dialog-* classes; these cover the category
+ * segmented control, attachment rows, and the drag-drop state. */
+.report-dialog-category.segmented {
+  display: flex;
+  width: 100%;
+}
+
+.report-dialog-category.segmented button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 var(--sp-2);
+}
+
+.report-dialog-category-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-dialog-drop[data-drop-active="true"] {
+  border-radius: var(--r-md);
+  outline: 2px solid var(--ring-focus);
+  outline-offset: var(--sp-1);
+}
+
+.report-dialog-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.report-dialog-file {
+  display: grid;
+  /* 18px = the 14px file icon plus optical breathing room (a one-off; icon
+   * sizes are set as component props, not tokens). */
+  grid-template-columns: 18px minmax(0, 1fr) var(--control-sm);
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.report-dialog-file img {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-xs);
+  object-fit: cover;
+}
+
+.report-dialog-file-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-dialog-file button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.report-dialog-file button:hover {
+  background: color-mix(in oklch, var(--muted) 58%, transparent);
+}
+
+.report-dialog-file button:disabled,
+.report-dialog-add-files:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.report-dialog-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+}
+
+.report-dialog-sent {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+/* The footer reads attach-left, send-right (dialog-footer right-aligns). */
+.report-dialog-add-files {
+  margin-right: auto;
+  color: var(--muted-foreground);
+}
+
+.report-dialog-submit-spinner {
+  color: currentColor;
 }
 
 /* Mic is the resting affordance — a light ghost button (matches our other ghost

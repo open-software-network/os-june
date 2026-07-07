@@ -150,7 +150,7 @@ pub(crate) async fn submit(
     request.validate()?;
     state
         .issue_reports()
-        .deliver(IssueReport {
+        .submit(IssueReport {
             user_id,
             category: clean_optional_text(request.category),
             description: request.description,

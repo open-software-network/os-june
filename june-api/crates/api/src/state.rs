@@ -1,7 +1,7 @@
-use june_domain::{IssueReportSink, TokenVerifier};
+use june_domain::TokenVerifier;
 use june_services::{
-    AgentChatService, DictateService, ImageService, NoteGenerateService, NoteTranscribeService,
-    PricingTable, WebAugmentService,
+    AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
+    NoteTranscribeService, PricingTable, WebAugmentService,
 };
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ struct ApiStateInner {
     // held as a service like the other billed surfaces rather than the bare
     // provider.
     image: Arc<ImageService>,
-    issue_reports: Arc<dyn IssueReportSink>,
+    issue_reports: Arc<IssueReportService>,
     limits: ApiLimits,
     attestation: AttestationInfo,
 }
@@ -55,7 +55,7 @@ pub struct ApiStateParams {
     pub dictate: Arc<DictateService>,
     pub web: Arc<WebAugmentService>,
     pub image: Arc<ImageService>,
-    pub issue_reports: Arc<dyn IssueReportSink>,
+    pub issue_reports: Arc<IssueReportService>,
     pub limits: ApiLimits,
     pub attestation: AttestationInfo,
 }
@@ -111,8 +111,8 @@ impl ApiState {
         &self.inner.image
     }
 
-    pub(crate) fn issue_reports(&self) -> &dyn IssueReportSink {
-        self.inner.issue_reports.as_ref()
+    pub(crate) fn issue_reports(&self) -> &IssueReportService {
+        &self.inner.issue_reports
     }
 
     pub(crate) fn limits(&self) -> ApiLimits {
