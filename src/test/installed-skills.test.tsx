@@ -523,15 +523,18 @@ describe("InstalledSkillsView — component", () => {
   });
 
   it("always shows the standing next-session lifecycle banner, even on a clean page", () => {
-    const { rerender } = render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
+    const { container, rerender } = render(
+      <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />,
+    );
     // Clean page: the standing next-session banner is shown up front, so the
     // timing is clear before any toggle (not the raw clean snapshot copy).
-    expect(screen.getByText("Applies next session")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Your changes take effect in new sessions. Current sessions are unaffected.",
+        "Applies next session. Your changes take effect in new sessions. Current sessions are unaffected.",
       ),
     ).toBeInTheDocument();
+    expect(container.querySelector(".installed-skills-lifecycle.inline-notice")).not.toBeNull();
+    expect(container.querySelector(".installed-skills-lifecycle-eyebrow")).toBeNull();
 
     // A non-clean lifecycle (a pending restart) overrides with its own copy.
     rerender(
@@ -547,7 +550,9 @@ describe("InstalledSkillsView — component", () => {
         })}
       />,
     );
-    expect(screen.getByText("Restart required")).toBeInTheDocument();
+    expect(
+      screen.getByText("Restart required. Restart the Hermes gateway to apply these changes."),
+    ).toBeInTheDocument();
   });
 
   it("renders dismissible durable notifications", () => {

@@ -27,6 +27,7 @@ import {
   type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
 import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
 import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { AdminNotifications } from "./AdminNotifications";
@@ -363,14 +364,14 @@ function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
   const detail = clean
     ? "Your changes take effect in new sessions. Current sessions are unaffected."
     : snapshot.detail;
+  const body = detail ? `${label}. ${detail}` : label;
   return (
-    <div className="installed-skills-lifecycle" data-tone={tone} role="status">
-      <span className="installed-skills-lifecycle-eyebrow">
-        <IconCircleInfo size={15} ariaHidden />
-        {label}
-      </span>
-      <span className="installed-skills-lifecycle-body">{detail}</span>
-    </div>
+    <InlineNotice
+      className="installed-skills-lifecycle"
+      tone={tone}
+      icon={<IconCircleInfo size={15} ariaHidden />}
+      body={body}
+    />
   );
 }
 

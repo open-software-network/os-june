@@ -11618,44 +11618,9 @@ input:focus-visible,
   letter-spacing: 0.02em;
 }
 
-/* Lifecycle banner + durable notifications. Three tones from existing tokens. */
-.installed-skills-lifecycle {
-  display: grid;
-  gap: var(--sp-px);
-  padding: var(--sp-3) var(--sp-4);
-  margin-bottom: var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-}
-
-.installed-skills-lifecycle[data-tone="warning"] {
-  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
-  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
-}
-
-.installed-skills-lifecycle[data-tone="destructive"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-  background: var(--destructive-soft);
-}
-
-.installed-skills-lifecycle-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  color: var(--foreground);
-  font-weight: 400;
-  font-size: var(--fs-sm);
-}
-
-.installed-skills-lifecycle[data-tone="warning"] .installed-skills-lifecycle-eyebrow {
-  color: var(--warm-strong);
-}
-
-.installed-skills-lifecycle-body {
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.45;
+.installed-skills-lifecycle + .admin-notifications,
+.installed-skills-lifecycle + .installed-skills-card {
+  margin-top: var(--sp-3);
 }
 
 /* Skill bundles manager (admin surfaces spec 11). Reuses the settings-card
