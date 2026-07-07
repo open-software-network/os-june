@@ -5027,10 +5027,11 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-/* Trailing privacy marker: the mode's mascot in a small brand-tinted squircle,
+/* Trailing privacy marker: the private ghost in a small brand-tinted squircle,
  * same clay tint recipe as .agent-safety-badge so it reads as the same family.
- * Pinned to the row's trailing edge; when a row is also selected the checkmark
- * follows it (its own margin auto is dropped so the two sit together). */
+ * Always pinned to the row's trailing edge — it sits last in the DOM, so a
+ * selected row's checkmark appears to its left (the check claims the auto gap)
+ * and the ghost's position never shifts whether or not the row is selected. */
 .model-row-privacy {
   display: inline-grid;
   place-items: center;
@@ -5047,7 +5048,9 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
-.model-row-privacy ~ .agent-composer-model-row-check {
+/* When a checkmark precedes the ghost, the check already claimed the auto gap,
+ * so the ghost just trails it by the row gap and stays flush to the edge. */
+.agent-composer-model-row-check ~ .model-row-privacy {
   margin-left: 0;
 }
 
@@ -15498,11 +15501,14 @@ input:focus-visible,
 
 /* Hover callout card (HoverTip) — the Venice-style explainer behind privacy
  * pills. Body-portaled at a fixed position, so it must sit above dialogs
- * (backdrop is z-index 112). data-side="top" anchors the card's bottom edge
- * to the coordinate instead of its top. */
+ * (backdrop is z-index 112) and above the model picker popover (130), which
+ * hosts a privacy-ghost tip inside its own rows. As the topmost transient
+ * layer the tip clears every overlay it can be triggered from over.
+ * data-side="top" anchors the card's bottom edge to the coordinate instead of
+ * its top. */
 .hover-tip {
   position: fixed;
-  z-index: 120;
+  z-index: 140;
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);

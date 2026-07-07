@@ -280,7 +280,6 @@ export function ComposerModelPopover({
               onClick={() => onSelect(option.id)}
             >
               <span className="agent-composer-model-row-name">{option.name}</span>
-              <ModelRowPrivacyBadge model={option} />
               {option.id === model.id ? (
                 <IconCheckmark1Small
                   size={14}
@@ -288,6 +287,7 @@ export function ComposerModelPopover({
                   className="agent-composer-model-row-check"
                 />
               ) : null}
+              <ModelRowPrivacyBadge model={option} />
             </button>
           ))
         ) : (
@@ -513,10 +513,10 @@ function ComposerModelOption({
       onClick={() => onSelect(model.id)}
     >
       <span className="agent-composer-model-row-name">{model.name}</span>
-      <ModelRowPrivacyBadge model={model} />
       {selected ? (
         <IconCheckmark1Small size={14} aria-hidden className="agent-composer-model-row-check" />
       ) : null}
+      <ModelRowPrivacyBadge model={model} />
     </button>
   );
 }

@@ -88,18 +88,23 @@ export function ModelPrivacyChip({
 }
 
 /**
- * Icon-only privacy marker for the model-picker rows — the mode's mascot (ghost
- * for private, lock for E2EE, anonymized figure otherwise) in a small
- * brand-tinted squircle pinned to the row's trailing edge. Renders nothing for
- * a model with no privacy stance. The full label lives in the row's hover card,
- * so here the squircle only carries a native `title` for a quick pointer hint.
+ * The ghost marker for a model-picker row: our private mascot in a small
+ * brand-tinted (clay) squircle pinned to the row's trailing edge, shown only for
+ * a private (zero-retention) model. Anonymous and E2EE models get nothing here —
+ * the row's hover card still carries their full privacy detail. Hovering the
+ * ghost pops the shared {@link HoverTip} explaining private mode.
  */
 export function ModelRowPrivacyBadge({ model }: { model: VeniceModelDto }) {
   const badge = modelPrivacyBadge(model);
-  if (!badge) return null;
+  if (badge?.mode !== "private") return null;
   return (
-    <span className="model-row-privacy" data-mode={badge.mode} title={badge.label}>
-      {privacyModeIcon(badge.mode, 13)}
-    </span>
+    <HoverTip
+      tip={badge.description}
+      className="model-row-privacy"
+      data-mode={badge.mode}
+      aria-label={`${badge.label}: ${badge.description}`}
+    >
+      {privacyModeIcon("private", 13)}
+    </HoverTip>
   );
 }

@@ -321,7 +321,6 @@ export function ModelPickerPopover({
                   onClick={() => onSelect(option.id)}
                 >
                   <ModelPickerOptionText model={option} />
-                  <ModelRowPrivacyBadge model={option} />
                   {option.id === model.id ? (
                     <IconCheckmark2Small
                       size={14}
@@ -329,6 +328,7 @@ export function ModelPickerPopover({
                       className="agent-composer-model-row-check"
                     />
                   ) : null}
+                  <ModelRowPrivacyBadge model={option} />
                 </button>
               ))
             ) : (
@@ -478,10 +478,10 @@ function ModelPickerOption({
       onClick={() => onSelect(model.id)}
     >
       <ModelPickerOptionText model={model} />
-      <ModelRowPrivacyBadge model={model} />
       {selected ? (
         <IconCheckmark2Small size={14} aria-hidden className="agent-composer-model-row-check" />
       ) : null}
+      <ModelRowPrivacyBadge model={model} />
     </button>
   );
 }
