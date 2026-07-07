@@ -2036,6 +2036,11 @@ fn helper_unavailable_event(reason: &str, message: &str) -> serde_json::Value {
 /// respawn re-applies settings and re-arms the hotkey, and its own reader thread
 /// takes over supervision, so this thread simply returns.
 fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
+    // A helper that dies mid-listening emits no terminal event, so restore
+    // any ducked meeting mic here — the crash path must not swallow the rest
+    // of the meeting's mic track.
+    crate::audio::capture::set_mic_ducked(false);
+
     let Some(state) = app.try_state::<HelperState>() else {
         return;
     };
@@ -3099,11 +3104,49 @@ fn app_error_event(error: AppError) -> serde_json::Value {
 fn emit_dictation_event_value(app: &AppHandle, mut event: serde_json::Value) {
     annotate_silent_error(&mut event);
     let event_type = event.get("type").and_then(serde_json::Value::as_str);
+    sync_capture_mic_duck(event_type);
     append_dictation_event_log(app, event_type, &event);
     let line = event.to_string();
     update_latest_event(app, event_type, Some(line.clone()));
     update_hud_window(app, event_type, Some(&event));
     let _ = app.emit("dictation-event", line);
+}
+
+/// Keeps a live meeting recording's microphone out of the dictation's way:
+/// while the helper listens, the user's voice belongs to the dictation, not
+/// the note, so the capture's mic channel is ducked (silence-filled, keeping
+/// the mic and system tracks aligned — see capture::set_mic_ducked) and
+/// restored the moment listening ends, HOWEVER it ends. Every helper event
+/// funnels through emit_dictation_event_value, so this is the single seam.
+fn sync_capture_mic_duck(event_type: Option<&str>) {
+    if let Some(ducked) = mic_duck_action_for_event(event_type) {
+        crate::audio::capture::set_mic_ducked(ducked);
+    }
+}
+
+/// The duck decision for a helper event: `Some(true)` starts a duck (listening
+/// began), `Some(false)` lifts it (listening ended, however it ended),
+/// `None` leaves the current state untouched. The un-duck set is deliberately
+/// broad — every terminal, finalizing, or post-listening event lifts the duck
+/// — because a leaked duck would silently swallow the rest of the meeting's
+/// mic track, and re-lifting an already-lifted duck is a harmless no-op.
+/// Intermediate events like `audio_level` return `None` so the duck holds for
+/// the whole listening window. System audio is never touched.
+fn mic_duck_action_for_event(event_type: Option<&str>) -> Option<bool> {
+    match event_type {
+        Some("listening_started") => Some(true),
+        Some(
+            "recording_ready"
+            | "recording_discarded"
+            | "finalizing_transcript"
+            | "final_transcript"
+            | "paste_completed"
+            | "error"
+            | "helper_unavailable"
+            | "shutdown_ack",
+        ) => Some(false),
+        _ => None,
+    }
 }
 
 fn append_dictation_event_log(
@@ -3647,6 +3690,46 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mic_duck_starts_on_listening_and_holds_through_levels() {
+        assert_eq!(
+            mic_duck_action_for_event(Some("listening_started")),
+            Some(true)
+        );
+        // Mid-listening chatter must not lift the duck, or the tail of a long
+        // dictation would leak back into the note.
+        assert_eq!(mic_duck_action_for_event(Some("audio_level")), None);
+        assert_eq!(mic_duck_action_for_event(Some("paste_target")), None);
+    }
+
+    #[test]
+    fn mic_duck_lifts_on_every_way_listening_can_end() {
+        // Success, discard, and each failure/terminal path all restore the mic
+        // — a leaked duck would silently swallow the rest of the meeting.
+        for event in [
+            "recording_ready",
+            "recording_discarded",
+            "finalizing_transcript",
+            "final_transcript",
+            "paste_completed",
+            "error",
+            "helper_unavailable",
+            "shutdown_ack",
+        ] {
+            assert_eq!(
+                mic_duck_action_for_event(Some(event)),
+                Some(false),
+                "{event} should lift the mic duck"
+            );
+        }
+    }
+
+    #[test]
+    fn mic_duck_ignores_unrelated_events() {
+        assert_eq!(mic_duck_action_for_event(Some("permission_status")), None);
+        assert_eq!(mic_duck_action_for_event(None), None);
+    }
 
     fn test_policy() -> RespawnPolicy {
         RespawnPolicy {
