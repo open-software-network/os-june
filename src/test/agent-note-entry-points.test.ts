@@ -11,8 +11,7 @@ import {
 } from "../components/agent/AgentWorkspace";
 import { ComposerEditor } from "../components/agent/composer/ComposerEditor";
 import { noteReferenceToken } from "../components/agent/composer/noteReference";
-import { NoteEditor } from "../components/note-editor/NoteEditor";
-import type { NoteDto } from "../lib/tauri";
+import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 
 const mocks = vi.hoisted(() => ({
   listNotes: vi.fn(),
@@ -28,50 +27,6 @@ vi.mock("../lib/tauri", async (importOriginal) => {
 });
 
 const now = "2026-07-03T10:00:00Z";
-
-function note(overrides: Partial<NoteDto> = {}): NoteDto {
-  return {
-    id: "note-1",
-    title: "Launch plan",
-    preview: "Preview",
-    processingStatus: "ready",
-    folderIds: [],
-    createdAt: now,
-    updatedAt: now,
-    generatedContent: "Notes",
-    activeTab: "notes",
-    ...overrides,
-  };
-}
-
-function noteEditorProps(overrides: Partial<Parameters<typeof NoteEditor>[0]> = {}) {
-  return {
-    note: note(),
-    folders: [],
-    sourceMode: "microphonePlusSystem" as const,
-    onTitleChange: vi.fn(),
-    onContentChange: vi.fn(),
-    onSourceModeChange: vi.fn(),
-    onEnableSystemAudio: vi.fn(),
-    onEnableMicrophone: vi.fn(),
-    microphoneBlocked: false,
-    onStartRecording: vi.fn(),
-    onPauseRecording: vi.fn(),
-    onResumeRecording: vi.fn(),
-    onFinishRecording: vi.fn(),
-    onAskJune: vi.fn(),
-    onRetry: vi.fn(),
-    onTopUp: vi.fn(),
-    onRecoverRecording: vi.fn(),
-    onDiscardRecording: vi.fn(),
-    onAssignFolder: vi.fn(),
-    onRemoveFolder: vi.fn(),
-    onCreateAndAssignFolder: vi.fn(),
-    onNavigateToFolder: vi.fn(),
-    onTabChange: vi.fn(),
-    ...overrides,
-  };
-}
 
 function installClipboard(writeText = vi.fn().mockResolvedValue(undefined)) {
   Object.defineProperty(navigator, "clipboard", {
@@ -164,21 +119,45 @@ describe("agent note entry point pending request", () => {
   });
 });
 
-describe("note editor note entry points", () => {
-  it("calls the Ask June handler from the note header", async () => {
+describe("note header actions", () => {
+  it("calls the Ask June handler from the note toolbar", async () => {
     const user = userEvent.setup();
     const onAskJune = vi.fn();
-    render(createElement(NoteEditor, noteEditorProps({ onAskJune })));
+    render(
+      createElement(NoteHeaderActions, {
+        noteId: "note-1",
+        noteTitle: "Launch plan",
+        onAskJune,
+      }),
+    );
 
     await user.click(screen.getByRole("button", { name: "Ask June" }));
 
     expect(onAskJune).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a working dot while the note's chat is generating", () => {
+    const { container } = render(
+      createElement(NoteHeaderActions, {
+        noteId: "note-1",
+        noteTitle: "Launch plan",
+        askJuneWorking: true,
+      }),
+    );
+
+    // The button name stays clean ("Ask June"); the working state rides on a
+    // data attribute + a decorative dot, not the accessible name.
+    expect(screen.getByRole("button", { name: "Ask June" })).toHaveAttribute(
+      "data-working",
+      "true",
+    );
+    expect(container.querySelector(".note-header-ask-dot")).not.toBeNull();
+  });
+
   it("copies the exact note reference token", async () => {
     const user = userEvent.setup();
     const writeText = installClipboard();
-    render(createElement(NoteEditor, noteEditorProps()));
+    render(createElement(NoteHeaderActions, { noteId: "note-1", noteTitle: "Launch plan" }));
 
     const copyButton = screen.getByRole("button", { name: "Copy note reference" });
     await user.click(copyButton);

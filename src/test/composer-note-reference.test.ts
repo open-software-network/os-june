@@ -29,11 +29,11 @@ function makeEditor() {
   });
 }
 
-function note(id: string, title: string): NoteListItemDto {
+function note(id: string, title: string, preview = ""): NoteListItemDto {
   return {
     id,
     title,
-    preview: "",
+    preview,
     processingStatus: "ready",
     folderIds: [],
     createdAt: "2026-07-03T00:00:00Z",
@@ -227,6 +227,27 @@ describe("note suggestion filtering", () => {
     expect(filterNoteSuggestions(notes, "", 2).map((item) => item.id)).toEqual([
       "note-1",
       "note-2",
+    ]);
+  });
+
+  it("matches the preview so untitled notes are still findable", () => {
+    const withPreview = [
+      note("note-1", "New note", "quarterly budget review"),
+      note("note-2", "New note", "team offsite planning"),
+    ];
+    expect(filterNoteSuggestions(withPreview, "budget", 8).map((item) => item.id)).toEqual([
+      "note-1",
+    ]);
+  });
+
+  it("ranks title matches above preview-only matches", () => {
+    const mixed = [
+      note("preview-only", "New note", "launch checklist"),
+      note("title-hit", "Launch plan", ""),
+    ];
+    expect(filterNoteSuggestions(mixed, "launch", 8).map((item) => item.id)).toEqual([
+      "title-hit",
+      "preview-only",
     ]);
   });
 });

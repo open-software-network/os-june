@@ -84,6 +84,11 @@ struct ActiveRecording {
     accumulated_active: Duration,
     paused: bool,
     paused_flag: Arc<AtomicBool>,
+    /// While set, the mic callback writes silence instead of samples (see
+    /// write_input_data) so the user's voice stays out of the note while the
+    /// dictation helper owns it. Independent of pause: the recording keeps
+    /// running and both tracks keep growing.
+    mic_duck_flag: Arc<AtomicBool>,
     writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
     stats: Arc<Mutex<CaptureStats>>,
     last_recovery_snapshot_elapsed_ms: i64,
@@ -188,9 +193,11 @@ pub fn start_capture(
     let writer = Arc::new(Mutex::new(Some(writer)));
     let stats = Arc::new(Mutex::new(CaptureStats::default()));
     let paused_flag = Arc::new(AtomicBool::new(false));
+    let mic_duck_flag = Arc::new(AtomicBool::new(false));
     let writer_for_callback = Arc::clone(&writer);
     let stats_for_callback = Arc::clone(&stats);
     let paused_for_callback = Arc::clone(&paused_flag);
+    let mic_duck_for_callback = Arc::clone(&mic_duck_flag);
     let live_preview_available =
         crate::june_api::configured() && crate::os_accounts::cached_signed_in();
     let live_preview = if live_preview_available {
@@ -218,6 +225,7 @@ pub fn start_capture(
                     &writer_for_callback,
                     &stats_for_callback,
                     &paused_for_callback,
+                    &mic_duck_for_callback,
                     preview_for_callback.as_ref(),
                 )
             },
@@ -232,6 +240,7 @@ pub fn start_capture(
                     &writer_for_callback,
                     &stats_for_callback,
                     &paused_for_callback,
+                    &mic_duck_for_callback,
                     preview_for_callback.as_ref(),
                 )
             },
@@ -247,6 +256,7 @@ pub fn start_capture(
                     &writer_for_callback,
                     &stats_for_callback,
                     &paused_for_callback,
+                    &mic_duck_for_callback,
                     preview_for_callback.as_ref(),
                 )
             },
@@ -338,6 +348,7 @@ pub fn start_capture(
         accumulated_active: Duration::ZERO,
         paused: false,
         paused_flag,
+        mic_duck_flag,
         writer,
         stats,
         last_recovery_snapshot_elapsed_ms: 0,
@@ -357,6 +368,22 @@ pub fn start_capture(
         device_label,
         status,
     })
+}
+
+/// Ducks or restores the active recording's microphone channel. While ducked
+/// the mic callback writes silence in place of samples, so the user's voice
+/// never lands in the note but the mic track keeps growing in lockstep with
+/// system audio. Dictation owns this: the helper's listening window ducks the
+/// mic so dictating into June mid-meeting doesn't contaminate the meeting
+/// note. Best-effort and idempotent — no active recording is a no-op, and the
+/// flag dies with the session, so a stop mid-dictation can't leak a duck.
+pub fn set_mic_ducked(ducked: bool) {
+    let Ok(mut active) = lock_active() else {
+        return;
+    };
+    if let Some(recording) = active.as_mut() {
+        recording.mic_duck_flag.store(ducked, Ordering::Release);
+    }
 }
 
 pub fn pause_capture(session_id: &str) -> Result<CaptureRecoverySnapshot, AppError> {
@@ -532,6 +559,7 @@ fn write_input_data<I>(
     writer: &Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
     stats: &Arc<Mutex<CaptureStats>>,
     paused: &Arc<AtomicBool>,
+    mic_ducked: &Arc<AtomicBool>,
     preview: Option<&LivePreviewSink>,
 ) where
     I: Iterator<Item = f32>,
@@ -539,6 +567,12 @@ fn write_input_data<I>(
     if paused.load(Ordering::Acquire) {
         return;
     }
+    // Ducked writes SILENCE, never drops frames: pause stops both tracks
+    // together, but a duck runs while system audio keeps rolling, and a
+    // shorter mic track would desync the two sources (turn attribution and
+    // transcript merging align them by time). Zeroed samples keep the WAV
+    // growing in lockstep and flatline the level meter honestly.
+    let ducked = mic_ducked.load(Ordering::Acquire);
     let Ok(mut writer_guard) = writer.lock() else {
         return;
     };
@@ -554,7 +588,7 @@ fn write_input_data<I>(
         let mut saw_sample = false;
         for sample in data {
             saw_sample = true;
-            let clamped = sample.clamp(-1.0, 1.0);
+            let clamped = if ducked { 0.0 } else { sample.clamp(-1.0, 1.0) };
             let pcm_sample = (clamped * i16::MAX as f32) as i16;
             let normalized = clamped.abs();
             callback_peak = callback_peak.max(normalized);
@@ -788,4 +822,98 @@ fn source_statuses(
         });
     }
     sources
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_writer(dir: &tempfile::TempDir) -> Arc<Mutex<Option<WavWriter<BufWriter<File>>>>> {
+        let writer = WavWriter::create(
+            dir.path().join("mic.wav"),
+            WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .expect("create wav writer");
+        Arc::new(Mutex::new(Some(writer)))
+    }
+
+    /// A ducked mic writes SILENCE, never drops frames: the sample count must
+    /// match the input exactly (the mic track has to stay time-aligned with a
+    /// concurrently-rolling system track) while every written sample is zero.
+    #[test]
+    fn ducked_mic_writes_aligned_silence_not_dropped_frames() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = test_writer(&dir);
+        let stats = Arc::new(Mutex::new(CaptureStats::default()));
+        let paused = Arc::new(AtomicBool::new(false));
+        let ducked = Arc::new(AtomicBool::new(true));
+
+        write_input_data(
+            [0.5_f32, -0.25, 0.9].into_iter(),
+            &writer,
+            &stats,
+            &paused,
+            &ducked,
+            None,
+        );
+
+        let stats = stats.lock().expect("stats lock");
+        assert_eq!(
+            stats.samples, 3,
+            "every input frame is written while ducked"
+        );
+        // The writer is 16-bit PCM (bits_per_sample: 16), so 2 bytes/sample.
+        const BYTES_PER_SAMPLE: i64 = 2;
+        assert_eq!(stats.bytes_written, 3 * BYTES_PER_SAMPLE);
+        assert_eq!(stats.peak, 0.0, "ducked samples are pure silence");
+    }
+
+    #[test]
+    fn unducked_mic_records_real_samples() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = test_writer(&dir);
+        let stats = Arc::new(Mutex::new(CaptureStats::default()));
+        let paused = Arc::new(AtomicBool::new(false));
+        let ducked = Arc::new(AtomicBool::new(false));
+
+        write_input_data(
+            [0.5_f32, -0.25].into_iter(),
+            &writer,
+            &stats,
+            &paused,
+            &ducked,
+            None,
+        );
+
+        let stats = stats.lock().expect("stats lock");
+        assert_eq!(stats.samples, 2);
+        assert!(stats.peak > 0.4, "real samples keep their level");
+    }
+
+    /// Pause drops frames outright (both tracks stop together) — the duck
+    /// must not change that precedence.
+    #[test]
+    fn paused_mic_still_drops_frames_even_when_ducked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = test_writer(&dir);
+        let stats = Arc::new(Mutex::new(CaptureStats::default()));
+        let paused = Arc::new(AtomicBool::new(true));
+        let ducked = Arc::new(AtomicBool::new(true));
+
+        write_input_data(
+            [0.5_f32].into_iter(),
+            &writer,
+            &stats,
+            &paused,
+            &ducked,
+            None,
+        );
+
+        assert_eq!(stats.lock().expect("stats lock").samples, 0);
+    }
 }

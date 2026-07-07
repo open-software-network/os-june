@@ -1,4 +1,3 @@
-import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconProjects } from "central-icons/IconProjects";
@@ -28,7 +27,6 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
-import { noteReferenceToken } from "../agent/composer/noteReference";
 import { isMacLikePlatform } from "../../lib/platform";
 import {
   isInvalidJuneResponseMessage,
@@ -56,7 +54,6 @@ type NoteEditorProps = {
   onPauseRecording: (sessionId: string) => void;
   onResumeRecording: (sessionId: string) => void;
   onFinishRecording: (sessionId: string) => void;
-  onAskJune?: () => void;
   onRetry: () => void | Promise<void>;
   onTopUp: () => void;
   topUpLabel?: string;
@@ -136,7 +133,6 @@ export function NoteEditor({
   onPauseRecording,
   onResumeRecording,
   onFinishRecording,
-  onAskJune,
   onRetry,
   onTopUp,
   topUpLabel,
@@ -298,6 +294,15 @@ export function NoteEditor({
   return (
     <article className="note-editor">
       <header className="editor-header">
+        <input
+          className="note-title"
+          aria-label="Note title"
+          placeholder="New note"
+          value={note.title}
+          onChange={(event) => onTitleChange(event.currentTarget.value)}
+        />
+        {/* Metadata reads as the title's caption: sits below it, above the
+            Notes/Transcription toggle. Navigation lives in the toolbar above. */}
         <div className="note-overline">
           <div className="note-overline-meta">
             <span className="note-overline-date">{updatedAtLabel}</span>
@@ -311,21 +316,7 @@ export function NoteEditor({
               onNavigateToFolder={onNavigateToFolder}
             />
           </div>
-          <div className="note-header-actions">
-            <button type="button" className="note-header-ask" onClick={() => onAskJune?.()}>
-              <IconBubble3 size={14} aria-hidden />
-              Ask June
-            </button>
-            <CopyNoteReferenceButton noteId={note.id} title={note.title} />
-          </div>
         </div>
-        <input
-          className="note-title"
-          aria-label="Note title"
-          placeholder="New note"
-          value={note.title}
-          onChange={(event) => onTitleChange(event.currentTarget.value)}
-        />
         <SegmentedControl
           aria-label="Note views"
           value={activeTab}
@@ -1029,39 +1020,6 @@ function sourceTurnFailureMessage(message?: string) {
     return "Audio for this part could not be transcribed.";
   }
   return userFacingFailureMessage(message) ?? "";
-}
-
-function CopyNoteReferenceButton({ noteId, title }: { noteId: string; title: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(noteReferenceToken({ id: noteId, title }));
-      setCopied(true);
-    } catch {
-      // Clipboard API can fail in restricted contexts; stay silent
-      // rather than nag, since the user can retry.
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      className="note-reference-copy"
-      onClick={() => void handleCopy()}
-      data-copied={copied || undefined}
-      aria-label="Copy note reference"
-      title={copied ? "Copied" : "Copy note reference"}
-    >
-      {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
-    </button>
-  );
 }
 
 function CopyTranscriptButton({ text }: { text: string }) {

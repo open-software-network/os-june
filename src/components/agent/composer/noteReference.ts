@@ -50,7 +50,17 @@ export function filterNoteSuggestions(
   if (cappedLimit === 0) return [];
   const needle = query.trim().toLowerCase();
   if (!needle) return notes.slice(0, cappedLimit);
-  return notes.filter((note) => note.title.toLowerCase().includes(needle)).slice(0, cappedLimit);
+  // Match title OR preview, not title alone: most notes are untitled ("New
+  // note") with nothing to match, so a title-only search reads as broken.
+  // Title hits rank above preview-only hits; recency order holds within each
+  // tier (the input list is already most-recent-first).
+  const titleMatches: NoteListItemDto[] = [];
+  const previewMatches: NoteListItemDto[] = [];
+  for (const note of notes) {
+    if (note.title.toLowerCase().includes(needle)) titleMatches.push(note);
+    else if (note.preview.toLowerCase().includes(needle)) previewMatches.push(note);
+  }
+  return [...titleMatches, ...previewMatches].slice(0, cappedLimit);
 }
 
 /** A tiptap command that inserts a note reference atom at `range` when the

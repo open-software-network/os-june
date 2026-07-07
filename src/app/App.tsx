@@ -27,6 +27,9 @@ import { RoutinesView } from "../components/routines/RoutinesView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
+import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
+import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
+import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
 import type { UpdateCardDemoApi } from "../lib/update-card-demo";
@@ -55,6 +58,7 @@ import {
   deleteNote,
   deleteNotes,
   dictationHelperCommand,
+  ensureHermesBridgeSession,
   finishRecording,
   getRecordingStatus,
   getNote,
@@ -615,6 +619,33 @@ export function App() {
   }, []);
   const selectedNote = state.selectedNote;
   const selectedNoteId = selectedNote?.id;
+  // The contextual Ask June panel next to the open note. Scoped to one note:
+  // it only renders while a note is the active view, and closes whenever the
+  // open note changes (below) so it never flies out onto a different or
+  // brand-new note the user didn't open it on.
+  const [noteChatOpen, setNoteChatOpen] = useState(false);
+  const [confirmDeleteNote, setConfirmDeleteNote] = useState(false);
+  useEffect(() => {
+    setNoteChatOpen(false);
+    setConfirmDeleteNote(false);
+  }, [selectedNoteId]);
+  // The note's Ask June chat is owned here, not inside the panel, so its
+  // session and working state survive the panel closing: a fired-off question
+  // keeps running in the background and the toolbar's Ask June button shows a
+  // working dot until the reply lands.
+  const noteChat = useNoteChat(
+    selectedNote ? { id: selectedNote.id, title: selectedNote.title } : null,
+  );
+  const noteToolbarActions = selectedNote ? (
+    <NoteHeaderActions
+      noteId={selectedNote.id}
+      noteTitle={selectedNote.title}
+      askJuneOpen={noteChatOpen}
+      askJuneWorking={noteChat.working}
+      onAskJune={() => setNoteChatOpen((open) => !open)}
+      onDelete={() => setConfirmDeleteNote(true)}
+    />
+  ) : null;
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
     : undefined;
@@ -634,7 +665,6 @@ export function App() {
   const recoverableNoteIds = useMemo(() => new Set(recoveriesByNote.keys()), [recoveriesByNote]);
   const selectedRecovery = selectedNote ? recoveriesByNote.get(selectedNote.id) : undefined;
   const noteDetailScrollerActive = activeView === "meetings" && !!selectedNote;
-  const noteHasBreadcrumb = !!(originFolder || originAllNotes);
   const detailScrollerActive = activeView === "folders" && !!state.selectedFolderId;
 
   // ---- Tabs ------------------------------------------------------------
@@ -2067,6 +2097,29 @@ export function App() {
     }, 0);
   }
 
+  // Escalates a note chat into the full agent view: an existing session opens
+  // in place (it's a normal Hermes session, so history already knows it); a
+  // chat that never started falls back to the seeded new-session flow.
+  function handleOpenNoteChatInAgent(noteRef: { id: string; title: string }, sessionId?: string) {
+    if (!sessionId) {
+      handleAskJuneAboutNote(noteRef);
+      return;
+    }
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    // The agent view resolves the conversation by this id, so switch straight
+    // in. Backfill the bridge session-list registration in the background (best
+    // effort) so the session also shows in the agent history sidebar even if
+    // the note chat's own registration hadn't landed yet — never blocks the
+    // handoff, so a slow or failed registration can't stall or dead-end it.
+    void ensureHermesBridgeSession({
+      sessionId,
+      title: noteRef.title.trim() || "Note chat",
+    }).catch(() => undefined);
+    setActiveAgentSession({ id: sessionId, title: noteRef.title.trim() || undefined });
+    setActiveView("agent");
+  }
+
   function handleAskJuneAboutNote(noteRef: { id: string; title: string }) {
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
@@ -3089,6 +3142,11 @@ export function App() {
                 />
               ) : selectedNote ? (
                 <div className="note-shell">
+                  {/* Every note gets the toolbar so its content starts at a
+                      consistent height (aligning with the Ask June panel) and
+                      the note actions live in one predictable spot. The left
+                      shows breadcrumb nav when there's a parent, else a quiet
+                      "Notes" root. */}
                   {originFolder ? (
                     <BreadcrumbBar
                       backLabel={`Back to ${originFolder.name}`}
@@ -3116,6 +3174,7 @@ export function App() {
                           label: selectedNote.title.trim() || "New note",
                         },
                       ]}
+                      actions={noteToolbarActions}
                     />
                   ) : originAllNotes ? (
                     <BreadcrumbBar
@@ -3136,12 +3195,21 @@ export function App() {
                           label: selectedNote.title.trim() || "New note",
                         },
                       ]}
+                      actions={noteToolbarActions}
                     />
-                  ) : null}
+                  ) : (
+                    <BreadcrumbBar
+                      items={[
+                        { label: "Notes", onClick: () => setActiveView("all-notes") },
+                        { label: selectedNote.title.trim() || "New note" },
+                      ]}
+                      actions={noteToolbarActions}
+                    />
+                  )}
                   <div
                     ref={noteDetailScrollRef}
                     className="note-detail-scroll"
-                    data-has-detail-bar={noteHasBreadcrumb ? "true" : undefined}
+                    data-has-detail-bar="true"
                   >
                     <NoteEditor
                       note={selectedNote}
@@ -3182,12 +3250,6 @@ export function App() {
                       onPauseRecording={(sessionId) => void handlePauseRecording(sessionId)}
                       onResumeRecording={(sessionId) => void handleResumeRecording(sessionId)}
                       onFinishRecording={(sessionId) => void handleFinishRecording(sessionId)}
-                      onAskJune={() =>
-                        handleAskJuneAboutNote({
-                          id: selectedNote.id,
-                          title: selectedNote.title,
-                        })
-                      }
                       onRetry={async () => {
                         if (!selectedNote) return;
                         try {
@@ -3266,6 +3328,33 @@ export function App() {
             ) : null}
           </AnimatePresence>
         </section>
+        {activeView === "meetings" && selectedNote && noteChatOpen ? (
+          <NoteChatPanel
+            note={{ id: selectedNote.id, title: selectedNote.title }}
+            chat={noteChat}
+            recordingActive={captureActive}
+            onClose={() => setNoteChatOpen(false)}
+            onOpenInAgent={(sessionId) => {
+              setNoteChatOpen(false);
+              handleOpenNoteChatInAgent(
+                { id: selectedNote.id, title: selectedNote.title },
+                sessionId,
+              );
+            }}
+          />
+        ) : null}
+        <ConfirmDialog
+          open={confirmDeleteNote && !!selectedNote}
+          onClose={() => setConfirmDeleteNote(false)}
+          onConfirm={async () => {
+            setConfirmDeleteNote(false);
+            if (selectedNote) await handleDeleteNote(selectedNote.id);
+          }}
+          title="Delete note?"
+          description="This permanently deletes the note and its transcript. This can't be undone."
+          confirmLabel="Delete note"
+          destructive
+        />
       </div>
       <Dialog
         open={recordingInactivityPrompt !== null}

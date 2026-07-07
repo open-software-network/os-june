@@ -5320,6 +5320,33 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* Subtle remove affordance on the end of the chip — quiet by default, firms
+   up on hover so it reads as dismissable without shouting. */
+.agent-note-reference-chip-remove {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  margin-left: var(--sp-px);
+  margin-right: calc(-1 * var(--sp-1));
+  padding: var(--sp-px);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0.6;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-note-reference-chip-remove:hover {
+  opacity: 1;
+  background: color-mix(in oklch, var(--foreground) 12%, transparent);
+  color: var(--foreground);
+}
+
 .agent-note-reference-chip.ProseMirror-selectednode {
   outline: 2px solid color-mix(in oklch, var(--foreground) 24%, transparent);
   outline-offset: var(--sp-px);
@@ -5546,6 +5573,43 @@ input:focus-visible,
 
 .agent-note-suggestion-menu-icon {
   color: var(--muted-foreground);
+}
+
+/* Uniform single-line rows: a leading label, a muted preview inline to its
+   right (only when it adds to a real title), and the date on a right rail.
+   Third grid column holds the date. */
+.agent-note-suggestion-menu button {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+}
+
+.agent-note-suggestion-menu-copy {
+  gap: var(--sp-2);
+}
+
+.agent-note-suggestion-menu-label {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-note-suggestion-menu-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  /* Same size as the title (inherits the menu-label --fs-md); only the color
+     is lighter so it reads as secondary without shrinking. */
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-note-suggestion-menu-date {
+  align-self: center;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 
 /* Opens upward, just above the toolbar where the "+" trigger sits (the box
@@ -8004,6 +8068,7 @@ input:focus-visible,
 }
 
 .note-header-ask {
+  position: relative;
   gap: var(--sp-1);
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
@@ -8016,10 +8081,75 @@ input:focus-visible,
 }
 
 .note-header-ask:hover,
+.note-header-ask[aria-expanded="true"],
+/* A background reply keeps the button lit so the fired-off question reads as
+   still in progress even when nothing else on screen says so. */
+.note-header-ask[data-working="true"] {
+  background: var(--brand-tint);
+  color: var(--warm-strong);
+}
+
+/* Working dot: a small pulsing brand mark tucked at the button's top-right
+   corner while this note's chat is generating a reply. */
+.note-header-ask-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+  animation: note-header-ask-dot-pulse 1.4s var(--ease-out) infinite;
+}
+
+@keyframes note-header-ask-dot-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-header-ask-dot {
+    animation: none;
+  }
+}
+
 .note-reference-copy:hover,
 .note-reference-copy[data-copied="true"] {
   background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
+}
+
+/* Note toolbar overflow menu — mirrors the agent session bar's menu (same
+   base .sidebar-identity-menu popover) so both detail-bar menus read alike. */
+.note-actions-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.note-actions-menu-trigger {
+  width: var(--control-sm);
+  height: var(--control-sm);
+}
+
+.note-actions-menu {
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  bottom: auto;
+  left: auto;
+  min-width: 168px;
+}
+
+.note-actions-menu .destructive {
+  color: var(--destructive);
+}
+
+.note-actions-menu .destructive:hover {
+  background: color-mix(in oklch, var(--destructive-soft) 55%, transparent);
+}
+
+.note-actions-menu .destructive > svg {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--muted-foreground));
 }
 
 .folder-popover {
@@ -8823,6 +8953,17 @@ input:focus-visible,
   min-height: 56px;
   padding: 0 var(--sp-4);
   pointer-events: none;
+  /* Tweens the right edge when the note chat panel opens/closes, so the
+   * recorder pill re-centers on the card in step with the card's own slide. */
+  transition: right var(--t-slow) var(--ease-spring);
+}
+
+/* While the note chat panel is out, the footer hands its right side to the
+ * panel (window inset + panel + card gap + content gutter — the same math as
+ * the agent composer's artifact-panel override) so the recorder pill centers
+ * on the note card, not the window. */
+.app-shell:has(.note-chat-panel) .editor-footer {
+  right: calc(2 * var(--sp-3) + var(--note-chat-w) + var(--sp-8));
 }
 
 /* No per-state / collapsed overrides or left transition needed: the single
@@ -22148,4 +22289,261 @@ input:focus-visible,
 
 .integrations-health-mode-note {
   color: var(--muted-foreground);
+}
+
+/* Note chat panel -----------------------------------------------------
+ * Ask June beside the open note: the same attach mechanics as the agent
+ * files panel — a sibling card fixed to the window's right edge, the main
+ * card sliding left via the :has() margin — but holding a conversation
+ * instead of a document (src/components/note-chat/). */
+.app-shell {
+  --note-chat-w: clamp(320px, 32vw, 440px);
+}
+
+.app-shell:has(.note-chat-panel) .main-panel {
+  margin-right: calc(var(--note-chat-w) + var(--sp-3));
+}
+
+.note-chat-panel {
+  position: fixed;
+  top: var(--card-top);
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: var(--note-chat-w);
+  /* Shared left rail for the header title and the scrolling conversation.
+   * Kept tight to the panel edge rather than chasing the composer's inner
+   * text (that read too spacy); the composer's typed text sitting a little
+   * further in is fine. Dial: --sp-5 (12) hugs tighter, --sp-7 (20) loosens. */
+  --note-chat-inset: var(--sp-6);
+  border-radius: var(--r-window);
+  background: var(--card);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+  overflow: hidden;
+  animation: note-chat-panel-in var(--t-slow) var(--ease-spring);
+}
+
+/* Entrance is strictly once-per-mount, mirroring the files panel: WebKit
+ * replays CSS animations when it recreates a renderer, which reads as the
+ * open panel flashing and sliding back in. React sets data-entered when the
+ * entrance completes. No will-change/transform promotion outside the
+ * entrance — WKWebView clips composited fixed elements to overflow-hidden
+ * ancestors. */
+.note-chat-panel[data-entered="true"] {
+  animation: none;
+}
+
+@keyframes note-chat-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(calc(100% + var(--sp-3)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-chat-panel {
+    animation: none;
+  }
+}
+
+/* No divider under the bar — same trick as the files panel: the body's top
+ * edge fade is what signals content passing underneath. */
+.note-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  /* Left padding is the shared text rail so the serif title lines up with the
+   * conversation and the composer's typed text. */
+  padding: var(--sp-4) var(--sp-4) var(--sp-2) var(--note-chat-inset);
+}
+
+/* The title reads in the serif like note titles and the files panel's
+ * document names — the panel belongs to the reading surface, not chrome. */
+.note-chat-bar-title {
+  flex: 1;
+  overflow: hidden;
+  margin: 0;
+  min-width: 0;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  /* The conversation sits on the shared text rail (--note-chat-inset) so its
+   * text lines up with both the serif title above and the composer's typed
+   * text below. */
+  padding: var(--sp-3) var(--note-chat-inset) var(--sp-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  --fade: 28px;
+}
+
+/* Same edge-fade recipe as the files panel body. */
+.note-chat-scroll[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+}
+
+.note-chat-scroll[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+}
+
+.note-chat-scroll:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
+}
+
+.note-chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* The thread speaks the agent view's language at panel scale: user turns as
+ * right-aligned muted bubbles, June in plain prose. */
+.note-chat-turn-user {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  color: var(--foreground);
+  /* System scale: same size as .agent-user-turn-body / .agent-markdown, so
+   * the panel reads like the agent view, only narrower. */
+  font-size: var(--fs-lg);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.note-chat-turn-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.note-chat-tool {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.note-chat-tool[data-running="true"],
+.note-chat-working {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  animation: note-chat-working-pulse 1.6s var(--ease-out) infinite;
+}
+
+@keyframes note-chat-working-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-chat-tool[data-running="true"],
+  .note-chat-working {
+    animation: none;
+  }
+}
+
+.note-chat-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding-top: var(--sp-2);
+}
+
+.note-chat-empty-lead {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+/* The presets are the main session view's chips (.agent-hero-chip); in the
+ * narrow panel they wrap instead of sitting in one centered row. */
+.note-chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.note-chat-error {
+  margin-top: var(--sp-3);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
+/* The footer hosts the agent composer's own box (.agent-composer-box and
+ * friends), so the chatbox here IS the chatbox everywhere — only the gutter
+ * around it is the panel's. Positioned so the model popover (an absolute
+ * sibling of the box, same as in the workspace) anchors to the footer. */
+.note-chat-composer {
+  position: relative;
+  /* A wider gutter than the card's --sp-3: the box's --r-xl corners need
+   * clearance from the panel's --r-window corners or the nested radii read
+   * as a miscalculation. */
+  padding: 0 var(--sp-5) var(--sp-5);
+}
+
+/* Left-edge drag, same anatomy as the files panel handle: a 12px hit strip
+ * centered on the card-to-panel gap, the grabber pill landing mid-gap. */
+.note-chat-resize-handle {
+  position: fixed;
+  top: var(--card-top);
+  bottom: var(--sp-3);
+  right: calc(var(--note-chat-w) + var(--sp-3) - 2px);
+  z-index: 71;
+  width: 12px;
+  cursor: col-resize;
+}
+
+.note-chat-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 5px;
+  width: 2px;
+  height: min(var(--resize-grabber-h), 50%);
+  border-radius: var(--r-pill);
+  background: transparent;
+  transform: translateY(-50%);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.note-chat-resize-handle:hover::before,
+.app-shell[data-note-chat-resizing="true"] .note-chat-resize-handle::before {
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
+}
+
+/* Width tracks the cursor raw while dragging — the slide-over transitions
+ * would lag the pointer. Mirrors the files panel's data-files-resizing rule. */
+.app-shell[data-note-chat-resizing="true"] .main-panel,
+.app-shell[data-note-chat-resizing="true"] .editor-footer,
+.app-shell[data-note-chat-resizing="true"] .note-chat-panel {
+  transition: none;
 }
