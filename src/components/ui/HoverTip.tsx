@@ -90,6 +90,10 @@ type HoverTipProps = HTMLAttributes<HTMLSpanElement> & {
   /** Hover-intent delay (ms) before the tip opens. Defaults to the shared
    * hover-intent debounce; pass a larger value for a more deliberate tooltip. */
   delay?: number;
+  /** When true, the tip is force-closed and cannot open — e.g. while the
+   * trigger's own picker popover is open, so the hover callout never fights the
+   * popover for the same anchor. */
+  suppressed?: boolean;
   children: ReactNode;
 };
 
@@ -109,6 +113,7 @@ export function HoverTip({
   width = DEFAULT_TIP_WIDTH,
   compact = false,
   delay = HOVER_INTENT_MS,
+  suppressed = false,
   children,
   ...spanProps
 }: HoverTipProps) {
@@ -163,6 +168,7 @@ export function HoverTip({
   }, [cancelClose]);
 
   function show() {
+    if (suppressed) return;
     cancelClose();
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -179,6 +185,7 @@ export function HoverTip({
   }
 
   function showAfterHoverIntent() {
+    if (suppressed) return;
     cancelHoverIntent();
     hoverTimerRef.current = window.setTimeout(show, delay);
   }
@@ -265,6 +272,15 @@ export function HoverTip({
     },
     [cancelHoverIntent, cancelClose],
   );
+
+  // Force-close the moment suppression turns on (the picker popover opened over
+  // this anchor). Cancel any pending hover-intent and tear a shown tip down at
+  // once rather than fading, so the callout never overlaps the popover.
+  useEffect(() => {
+    if (!suppressed) return;
+    cancelHoverIntent();
+    if (mounted) unmount();
+  }, [suppressed, mounted, cancelHoverIntent, unmount]);
 
   useEffect(() => {
     if (!mounted) return;

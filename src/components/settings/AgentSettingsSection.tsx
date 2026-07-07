@@ -1,5 +1,13 @@
-import { useEffect, useState } from "react";
-import { FilesystemPanel, MessagingPanel } from "../agent/AgentWorkspace";
+import { IconCircleInfo } from "central-icons/IconCircleInfo";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  FilesystemPanel,
+  MessagingPanel,
+  MessagingPlatformDetail,
+  messagingTrimEdits,
+} from "../agent/AgentWorkspace";
+import { BreadcrumbBar } from "../ui/BreadcrumbBar";
+import { HoverTip } from "../ui/HoverTip";
 import {
   hermesAgentCliAccess,
   hermesBridgeFilesystemSnapshot,
@@ -23,12 +31,32 @@ import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
 import { Switch } from "../ui/Switch";
+import { SettingsPageHeader } from "./AppSettings";
 
 type AgentSettingsPanel = "messaging" | "files";
 
-export function AgentSettingsSection() {
+export function AgentSettingsSection({
+  selectedPlatformId,
+  onSelectPlatform,
+  onBackFromPlatform,
+}: {
+  /** The messaging platform whose detail is open, lifted into AppSettings so the
+   * drill-in can pin at the very top of the settings surface (replacing the
+   * settings page), exactly like an opened skill. Undefined shows the list. */
+  selectedPlatformId?: string;
+  /** Drill into a platform. */
+  onSelectPlatform?: (platformId: string) => void;
+  /** Return to the platform list. */
+  onBackFromPlatform?: () => void;
+} = {}) {
+  // Messaging / Files present as the system underline tabs (same pattern as
+  // the routine detail tabs), with the active panel's content beneath.
   const [panel, setPanel] = useState<AgentSettingsPanel>("messaging");
+  const messagingTabRef = useRef<HTMLButtonElement | null>(null);
+  const filesTabRef = useRef<HTMLButtonElement | null>(null);
+  const [tabIndicator, setTabIndicator] = useState({ x: 0, width: 0 });
   const [query, setQuery] = useState("");
+  const [filesQuery, setFilesQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +64,6 @@ export function AgentSettingsSection() {
   const [filesystemSnapshot, setFilesystemSnapshot] = useState<HermesFilesystemSnapshot | null>(
     null,
   );
-  const [selectedPlatformId, setSelectedPlatformId] = useState<string>();
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
   const [agentHudEnabled, setAgentHudEnabledState] = useState(() => getAgentHudEnabled());
   // null until the stored value loads, so the switch never flashes a wrong
@@ -71,13 +98,22 @@ export function AgentSettingsSection() {
     }
   }
 
+  // Both panels load on mount so switching tabs is instant.
   useEffect(() => {
-    if (panel === "messaging" && !platforms) {
-      void loadMessagingPlatforms();
+    if (!platforms) void loadMessagingPlatforms();
+    if (!filesystemSnapshot) void loadFilesystemSnapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useLayoutEffect(() => {
+    function updateIndicator() {
+      const tab = panel === "messaging" ? messagingTabRef.current : filesTabRef.current;
+      if (!tab) return;
+      setTabIndicator({ x: tab.offsetLeft, width: tab.offsetWidth });
     }
-    if (panel === "files" && !filesystemSnapshot) {
-      void loadFilesystemSnapshot();
-    }
+    updateIndicator();
+    window.addEventListener("resize", updateIndicator);
+    return () => window.removeEventListener("resize", updateIndicator);
   }, [panel]);
 
   useEffect(() => {
@@ -116,12 +152,14 @@ export function AgentSettingsSection() {
         MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
       );
       setPlatforms(response.platforms);
-      setSelectedPlatformId((current) => {
-        if (current && response.platforms.some((item) => item.id === current)) {
-          return current;
-        }
-        return response.platforms[0]?.id;
-      });
+      // Selection is a drill-in, not a default: if the open platform no longer
+      // exists after a reload, fall back to the list.
+      if (
+        selectedPlatformId &&
+        !response.platforms.some((item) => item.id === selectedPlatformId)
+      ) {
+        onBackFromPlatform?.();
+      }
       setError(null);
     } catch (err) {
       setPlatforms((current) => current ?? []);
@@ -190,106 +228,295 @@ export function AgentSettingsSection() {
     }
   }
 
-  return (
-    <section className="settings-group" aria-labelledby="agent-heading">
-      <h2 id="agent-heading" className="settings-group-heading">
-        Agent
-      </h2>
-      <p className="settings-group-description">
-        Configure Hermes capabilities and external messaging channels.
-      </p>
-      <div className="settings-card">
-        <div className="settings-rows">
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <h3 className="settings-row-title">Sessions HUD</h3>
-              <p className="settings-row-description">
-                Show a small pill at the top right of your screen with live session status.
-              </p>
-            </div>
-            <div className="settings-row-control">
-              <Switch
-                checked={agentHudEnabled}
-                onCheckedChange={(enabled) => void handleAgentHudEnabledChange(enabled)}
-                aria-label="Show sessions HUD"
+  const selectedPlatform =
+    (selectedPlatformId && platforms?.find((item) => item.id === selectedPlatformId)) || null;
+
+  // The messaging platform drill-in fills the screen exactly like skill detail:
+  // a pinned BreadcrumbBar ("Messaging" > platform name) over a dedicated scroll
+  // region, the outer settings scroller disabled by the host. Reuses the shared
+  // skill-detail shell classes rather than forking a parallel CSS system. Its
+  // Save + enable switch live in the breadcrumb bar (right side), exactly like
+  // the skills detail put Save + the switch there — no separate footer.
+  //
+  // When the host mounts this fresh at the top level with a platform id but the
+  // roster hasn't loaded yet, render the pinned shell with a clean skeleton
+  // instead of falling through to the full list + tabs — that fall-through would
+  // flash the list for a frame before the platform resolves.
+  const detailOpen = selectedPlatformId != null;
+  if (detailOpen) {
+    const back = () => {
+      onBackFromPlatform?.();
+      setEnvEdits({});
+    };
+    const platformName = selectedPlatform?.name ?? "Platform";
+    const hasEdits = Object.values(messagingTrimEdits(envEdits)).length > 0;
+    const isSavingEnv = saving === `env:${selectedPlatformId}`;
+    const isToggling = saving === `messaging:${selectedPlatformId}`;
+    const pending = !selectedPlatform;
+    return (
+      <div className="skill-detail-shell">
+        <BreadcrumbBar
+          backLabel="Back to messaging platforms"
+          onBack={back}
+          items={[{ label: "Messaging", onClick: back }, { label: selectedPlatform?.name ?? "" }]}
+          actions={
+            selectedPlatform ? (
+              <>
+                <Switch
+                  checked={Boolean(selectedPlatform.enabled)}
+                  disabled={isToggling}
+                  onCheckedChange={(next) =>
+                    void setMessagingPlatformEnabled(selectedPlatform, next)
+                  }
+                  aria-label={`${selectedPlatform.enabled ? "Disable" : "Enable"} ${platformName}`}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!hasEdits || isSavingEnv}
+                  onClick={() => void saveMessagingPlatformEnv(selectedPlatform)}
+                >
+                  {isSavingEnv ? "Saving..." : "Save changes"}
+                </button>
+              </>
+            ) : null
+          }
+        />
+        <div className="skill-detail-scroll" data-has-detail-bar="true">
+          <section
+            className="settings-page settings-group agent-messaging-detail-page"
+            aria-label={platformName}
+          >
+            {pending ? (
+              <div className="agent-messaging-detail-skeleton" aria-hidden>
+                <span className="agent-messaging-detail-skeleton-title" />
+                <span className="agent-messaging-detail-skeleton-line" />
+                <span className="agent-messaging-detail-skeleton-line" />
+              </div>
+            ) : (
+              <MessagingPlatformDetail
+                envEdits={envEdits}
+                platform={selectedPlatform}
+                saving={saving}
+                hideFooter
+                onEditEnv={(key, value) => setEnvEdits((current) => ({ ...current, [key]: value }))}
+                onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
+                onToggle={(platform, enabled) =>
+                  void setMessagingPlatformEnabled(platform, enabled)
+                }
               />
-            </div>
-          </div>
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <h3 className="settings-row-title">Agent CLI access</h3>
-              <p className="settings-row-description">
-                Let June drive the coding CLIs you already use (Claude Code, Codex, Gemini,
-                opencode). Sandboxed sessions gain write access to those tools' own settings and
-                session folders. Some CLIs (Codex among them) will not even start without it; others
-                lose their login. Those folders configure software that also runs outside June's
-                sandbox, so leave this off unless you want June operating your CLIs. Applies to new
-                sessions.
-              </p>
-            </div>
-            <div className="settings-row-control">
-              <Switch
-                checked={cliAccessEnabled === true}
-                disabled={cliAccessEnabled === null || cliAccessSaving}
-                onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
-                aria-label="Allow agent CLI access"
-              />
-            </div>
-          </div>
+            )}
+          </section>
         </div>
       </div>
-      <div className="settings-card settings-agent-card">
-        <div className="settings-section-tabs" role="tablist" aria-label="Agent settings">
-          <button
-            type="button"
-            aria-selected={panel === "messaging"}
-            onClick={() => {
-              setPanel("messaging");
-              setQuery("");
-            }}
-          >
-            Messaging
-          </button>
-          <button
-            type="button"
-            aria-selected={panel === "files"}
-            onClick={() => {
-              setPanel("files");
-              setQuery("");
-            }}
-          >
-            Files
-          </button>
+    );
+  }
+
+  return (
+    <>
+      <section className="settings-group" aria-labelledby="agent-heading">
+        <SettingsPageHeader
+          id="agent-heading"
+          title="Agent"
+          blurb="Configure how the June agent runs on this Mac."
+        />
+        <div className="settings-card">
+          <div className="settings-rows">
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Sessions HUD</h3>
+                <p className="settings-row-description">
+                  Show a small pill at the top right of your screen with live session status.
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <Switch
+                  checked={agentHudEnabled}
+                  onCheckedChange={(enabled) => void handleAgentHudEnabledChange(enabled)}
+                  aria-label="Show sessions HUD"
+                />
+              </div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title settings-row-title-with-info">
+                  Agent CLI access
+                  <HoverTip
+                    className="settings-row-info-tip"
+                    tip={
+                      <>
+                        Sandboxed sessions gain write access to those CLIs' own settings and session
+                        folders. Some CLIs (Codex among them) will not even start without it; others
+                        lose their login. Those folders configure software that also runs outside
+                        June's sandbox, so leave this off unless you want June operating your CLIs.
+                        Applies to new sessions.
+                      </>
+                    }
+                    width={320}
+                  >
+                    <span
+                      className="settings-row-info-affordance"
+                      tabIndex={0}
+                      role="note"
+                      aria-label="Agent CLI access details"
+                    >
+                      <IconCircleInfo size={13} ariaHidden />
+                    </span>
+                  </HoverTip>
+                </h3>
+                <p className="settings-row-description">
+                  Let June drive the coding CLIs you already use, like Claude Code and Codex.
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <Switch
+                  checked={cliAccessEnabled === true}
+                  disabled={cliAccessEnabled === null || cliAccessSaving}
+                  onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
+                  aria-label="Allow agent CLI access"
+                />
+              </div>
+            </div>
+          </div>
         </div>
         {error ? <p className="settings-row-error">{error}</p> : null}
-        {panel === "messaging" ? (
-          <MessagingPanel
-            loading={loading}
-            platforms={platforms}
-            query={query}
-            saving={saving}
-            selectedPlatformId={selectedPlatformId}
-            envEdits={envEdits}
-            onQueryChange={setQuery}
-            onRefresh={() => void loadMessagingPlatforms()}
-            onSelectPlatform={(platform) => {
-              setSelectedPlatformId(platform.id);
-              setEnvEdits({});
-            }}
-            onEditEnv={(key, value) => setEnvEdits((current) => ({ ...current, [key]: value }))}
-            onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
-            onToggle={(platform, enabled) => void setMessagingPlatformEnabled(platform, enabled)}
-          />
-        ) : (
-          <FilesystemPanel
-            loading={loading}
-            query={query}
-            snapshot={filesystemSnapshot}
-            onQueryChange={setQuery}
-            onRefresh={() => void loadFilesystemSnapshot()}
-          />
-        )}
+      </section>
+      <MessagingGroup
+        loading={loading}
+        platforms={platforms}
+        query={query}
+        saving={saving}
+        selectedPlatformId={selectedPlatformId}
+        envEdits={envEdits}
+        onQueryChange={setQuery}
+        onRefresh={() => void loadMessagingPlatforms()}
+        onSelectPlatform={(platform) => {
+          onSelectPlatform?.(platform.id);
+          setEnvEdits({});
+        }}
+        onBack={() => {
+          onBackFromPlatform?.();
+          setEnvEdits({});
+        }}
+        onEditEnv={(key, value) => setEnvEdits((current) => ({ ...current, [key]: value }))}
+        onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
+        onToggle={(platform, enabled) => void setMessagingPlatformEnabled(platform, enabled)}
+      />
+      <FilesGroup
+        loading={loading}
+        query={filesQuery}
+        snapshot={filesystemSnapshot}
+        onQueryChange={setFilesQuery}
+        onRefresh={() => void loadFilesystemSnapshot()}
+      />
+    </>
+  );
+}
+
+/** The messaging channels group: a quiet platform list (name, status, toggle)
+ * with per-platform configuration behind a drill-in, matching how the rest of
+ * settings surfaces detail views. Section title lives outside the card like
+ * every other settings group. */
+function MessagingGroup({
+  loading,
+  platforms,
+  query,
+  saving,
+  selectedPlatformId,
+  envEdits,
+  onQueryChange,
+  onRefresh,
+  onSelectPlatform,
+  onBack,
+  onEditEnv,
+  onSaveEnv,
+  onToggle,
+}: {
+  loading: boolean;
+  platforms: HermesMessagingPlatformInfo[] | null;
+  query: string;
+  saving: string | null;
+  selectedPlatformId?: string;
+  envEdits: Record<string, string>;
+  onQueryChange: (query: string) => void;
+  onRefresh: () => void;
+  onSelectPlatform: (platform: HermesMessagingPlatformInfo) => void;
+  onBack: () => void;
+  onEditEnv: (key: string, value: string) => void;
+  onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
+  onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
+}) {
+  return (
+    <section
+      id="agent-panel-messaging"
+      className="settings-group"
+      role="tabpanel"
+      aria-labelledby="agent-tab-messaging"
+    >
+      <h2 className="settings-group-heading agent-messaging-heading">
+        Platforms
+        {platforms ? (
+          <span className="status-pill agent-messaging-heading-count">{platforms.length}</span>
+        ) : null}
+      </h2>
+      <p className="settings-group-description">
+        Connect messaging platforms so you can reach the agent where you already chat. Select a
+        platform to configure it.
+      </p>
+      <div className="settings-card settings-agent-card settings-agent-card-hug">
+        <MessagingPanel
+          loading={loading}
+          platforms={platforms}
+          query={query}
+          saving={saving}
+          selectedPlatformId={selectedPlatformId}
+          envEdits={envEdits}
+          onQueryChange={onQueryChange}
+          onRefresh={onRefresh}
+          onSelectPlatform={onSelectPlatform}
+          onBack={onBack}
+          onEditEnv={onEditEnv}
+          onSaveEnv={onSaveEnv}
+          onToggle={onToggle}
+        />
       </div>
+    </section>
+  );
+}
+
+/** The filesystem group: what agent sessions can see on disk. */
+function FilesGroup({
+  loading,
+  query,
+  snapshot,
+  onQueryChange,
+  onRefresh,
+}: {
+  loading: boolean;
+  query: string;
+  snapshot: HermesFilesystemSnapshot | null;
+  onQueryChange: (query: string) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <section
+      id="agent-panel-files"
+      className="settings-group"
+      role="tabpanel"
+      aria-labelledby="agent-tab-files"
+    >
+      <p className="settings-group-description">
+        The folders agent sessions can read and write on this Mac.
+      </p>
+      {/* No outer card: the search + refresh toolbar sits bare above, and each
+       * root (Workspace, Memory) provides its own wrapping card. */}
+      <FilesystemPanel
+        loading={loading}
+        query={query}
+        snapshot={snapshot}
+        onQueryChange={onQueryChange}
+        onRefresh={onRefresh}
+      />
     </section>
   );
 }

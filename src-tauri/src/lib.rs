@@ -214,6 +214,7 @@ pub fn run() {
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
+            commands::reveal_path,
             commands::june_open_verify_page,
             commands::june_open_community_page,
             commands::start_recording,
