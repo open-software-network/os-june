@@ -1587,6 +1587,15 @@ export function AppSettings({
                       onOpen={() => openModelPicker("image")}
                     />
                   ) : null}
+                  {VIDEO_GENERATION_ENABLED ? (
+                    <ModelRow
+                      title="Video"
+                      description="Used when you generate a video from chat."
+                      value={providerSettings.videoModel}
+                      options={videoOptions}
+                      onOpen={() => openModelPicker("video")}
+                    />
+                  ) : null}
                   <button
                     type="button"
                     className="settings-row settings-more-options-trigger"
@@ -1614,13 +1623,14 @@ export function AppSettings({
                         onSave={() => void saveVeniceApiKey()}
                         onRemove={() => void removeVeniceApiKey()}
                       />
-                      {IMAGE_GENERATION_ENABLED ? (
+                      {IMAGE_GENERATION_ENABLED || VIDEO_GENERATION_ENABLED ? (
                         <div className="settings-row">
                           <div className="settings-row-info">
                             <h3 className="settings-row-title">Safe mode</h3>
                             <p className="settings-row-description">
-                              Blur adult content in generated and edited images. On by default; your
-                              image work stays private either way.
+                              {VIDEO_GENERATION_ENABLED
+                                ? "Blur adult content in generated and edited images, and hold back video prompts that request it (videos cannot be blurred). On by default; your image and video work stays private either way."
+                                : "Blur adult content in generated and edited images. On by default; your image work stays private either way."}
                             </p>
                           </div>
                           <div className="settings-row-control">

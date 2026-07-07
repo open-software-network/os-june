@@ -1,4 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The command list is built at module load from the feature flags; pin them so
+// the expectations hold at either committed flag value (video ships dark).
+vi.mock("../lib/feature-flags", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/feature-flags")>()),
+  IMAGE_GENERATION_ENABLED: true,
+  VIDEO_GENERATION_ENABLED: true,
+}));
 
 import {
   matchBuiltinComposerSlashCommands,
@@ -26,14 +34,18 @@ describe("agent composer built-in slash commands", () => {
     expect(parseBuiltinComposerSlashCommand("/Users/alex/Desktop/report.pdf summarize")).toBeNull();
   });
 
-  it("offers image generation in built-in slash suggestions", () => {
+  it("offers image and video generation in built-in slash suggestions", () => {
     expect(matchBuiltinComposerSlashCommands("")).toEqual([
       expect.objectContaining({ name: "model" }),
       expect.objectContaining({ name: "file" }),
       expect.objectContaining({ name: "image" }),
+      expect.objectContaining({ name: "video" }),
     ]);
     expect(matchBuiltinComposerSlashCommands("image")).toEqual([
       expect.objectContaining({ name: "image" }),
+    ]);
+    expect(matchBuiltinComposerSlashCommands("video")).toEqual([
+      expect.objectContaining({ name: "video" }),
     ]);
   });
 

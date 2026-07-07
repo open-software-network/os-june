@@ -287,7 +287,7 @@ capability ref); the video-generation analog of **image editing**. Distinct from
 **video generation** (which starts from a text prompt only).
 _Avoid_: img2vid jargon, animate (unqualified — say **image-to-video**).
 
-**Safe mode** (image):
+**Safe mode**:
 The per-device toggle that asks Venice to blur adult content on generated and
 edited images (`safe_mode`). On by default; the user turns it off in Settings
 or via the **safe-mode consent dialog** June shows before or during a
@@ -297,9 +297,14 @@ agent path the gate is free (on-device wordlist plus the model's own
 `may_be_explicit` self-report in the tool call); on the /image path the
 wordlist short-circuits and otherwise a small metered model check classifies
 the prompt (language-agnostic, added after the English-only wordlist missed
-non-English prompts).
-See [ADR 0008](docs/adr/0008-image-generation-and-editing-tools.md).
-_Avoid_: NSFW filter/toggle (say **safe mode**), censorship.
+non-English prompts). It is ONE switch: **video generation** shares it rather
+than adding a second toggle, but Venice video has no `safe_mode` parameter, so
+for a potentially explicit /video prompt keeping safe mode on *skips* the
+generation (there is no blurred fallback), and turning it off proceeds.
+See [ADR 0008](docs/adr/0008-image-generation-and-editing-tools.md) and the
+[ADR 0013 addendum](docs/adr/0013-video-generation-tools.md).
+_Avoid_: NSFW filter/toggle (say **safe mode**), censorship, "video safe
+mode" (there is only one safe mode).
 
 **Credit price** (per upstream model):
 The number of OS Accounts credits June charges per unit of consumed work

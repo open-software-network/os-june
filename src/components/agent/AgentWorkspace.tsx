@@ -823,7 +823,7 @@ type ImageSafeModeConsentChoice =
   | { action: "dismiss" };
 
 type ImageSafeModeConsentRequest = {
-  variant: "slash" | "agent";
+  variant: "slash" | "agent" | "video-slash";
   resolve: (choice: ImageSafeModeConsentChoice) => void;
 };
 
@@ -4160,7 +4160,7 @@ export function AgentWorkspace({
   }
 
   function requestImageSafeModeConsent(
-    variant: "slash" | "agent",
+    variant: "slash" | "agent" | "video-slash",
   ): Promise<ImageSafeModeConsentChoice> {
     return new Promise((resolve) => {
       const request = { variant, resolve };
@@ -4649,11 +4649,60 @@ export function AgentWorkspace({
       return;
     }
 
+    // Busy-gate the consent + generation flow before any async IPC, mirroring
+    // /image: a second submission can't start while the prompt screen or
+    // consent dialog is pending, and dismiss leaves the draft untouched.
+    setImportingFiles(true);
+
+    // Pin the video model before the paid turn starts (same replay-ledger
+    // rationale as /image). Safe mode is read alongside but never pinned into
+    // the request: video requests carry no safeMode field (Venice cannot blur
+    // video), so the value only gates the consent dialog below.
+    let settings: ProviderModelSettingsDto | undefined;
+    let pinnedModel: string | undefined;
+    try {
+      const settingsResponse = await providerModelSettings();
+      settings = settingsResponse.settings;
+      pinnedModel = settings.videoModel || undefined;
+    } catch {
+      // Non-fatal: generation proceeds with server-resolved settings.
+    }
+
+    if (settings?.imageSafeMode && !settings.imageSafeModePromptDismissed) {
+      let mayBeExplicit = false;
+      try {
+        mayBeExplicit = await imagePromptMayBeExplicit(prompt);
+      } catch {
+        mayBeExplicit = false;
+      }
+      if (mayBeExplicit) {
+        const choice = await requestImageSafeModeConsent("video-slash");
+        if (choice.action === "dismiss") {
+          setImportingFiles(false);
+          return;
+        }
+        if (choice.action === "keep") {
+          // No blurred fallback exists for video: keeping safe mode on skips
+          // the generation (the dialog says so).
+          if (choice.dontAskAgain) void setImageSafeModePromptDismissed(true);
+          setImportingFiles(false);
+          return;
+        }
+        try {
+          await setImageSafeMode(false);
+        } catch (err) {
+          setImportingFiles(false);
+          setError(messageFromError(err));
+          return;
+        }
+        if (choice.dontAskAgain) void setImageSafeModePromptDismissed(true);
+      }
+    }
+
     const heroMode = newSessionModeRef.current;
     if (heroMode) setHeroLeaving(true);
     clearComposerCommandDraft(commandText);
     setError(null);
-    setImportingFiles(true);
     setGeneratingVideo(true);
 
     let targetSessionId: string | undefined;
@@ -4684,13 +4733,6 @@ export function AgentWorkspace({
     const createdAt = new Date(turnStartedAt).toISOString();
     const videoCreatedAt = new Date(turnStartedAt + 1).toISOString();
     const requestId = newVideoRequestId();
-    let pinnedModel: string | undefined;
-    try {
-      const settingsResponse = await providerModelSettings();
-      pinnedModel = settingsResponse.settings.videoModel || undefined;
-    } catch {
-      // Non-fatal: generation proceeds with server-resolved settings.
-    }
 
     setVideoTurnsBySession((current) => ({
       ...current,

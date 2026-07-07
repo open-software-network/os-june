@@ -262,3 +262,37 @@ pins to the pre-validated addresses via `resolve_to_addrs` with redirects
 disabled (`redirect::none`), so it never re-resolves DNS at connect time or
 follows a redirect to an unvalidated host. The original follow-up bullet is left
 in place per the append-only rule; this note supersedes its open status.
+
+## Addendum (2026-07-07): safe mode for video — one switch, consent-gated, skip-not-blur
+
+JUN-209 (ADR 0008 addendum) made image safe mode default-on with a consent
+dialog and folded the image model + safe mode into the Settings "AI models"
+card. Video now follows the same shape with one deliberate divergence.
+
+**One switch.** There is no separate video safe-mode toggle. The existing
+`imageSafeMode` setting is the single safe switch; the video model picker sits
+in the same "AI models" card as the image picker. The persisted field keeps its
+`imageSafeMode` name (renaming a stored settings field breaks forward/backward
+compatibility for nothing), while the Settings copy explains it covers both.
+
+**Consent-gated /video, skip-not-blur.** Venice's video queue API has no
+`safe_mode` (or any safety) parameter — verified against the Venice OpenAPI
+spec; enforcement exists only as their 422 content-policy rejection. Blurring
+is therefore not an offerable fallback for video. The `/video` flow reuses the
+JUN-209 screen (`image_prompt_may_be_explicit`: on-device wordlist, then the
+metered model check) and the same consent dialog, but with video semantics:
+**keeping safe mode on skips the generation** (the dialog says so), turning it
+off proceeds — and flips the one shared switch, images included. Dismiss
+cancels and leaves the composer draft untouched. The screen runs before the
+session is created, mirroring /image, so a skipped generation leaves no
+session behind. Safe mode is never pinned into the video request (there is no
+field to pin); it only gates the dialog.
+
+**Accepted residual.** The agent path (`june_video` MCP `generate_video`) does
+not yet emit the safe-mode consent event the image MCP path emits. The image
+event is non-blocking-by-design (generation is already running, the blurred
+output is the protection); for video there is no blur, so a non-blocking
+event would notify about an unblurred video already being generated — the
+honest version needs its own UX (block the queue call on consent, or screen
+in the MCP before queueing). Deferred as a follow-up rather than shipping a
+misleading mirror.

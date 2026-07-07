@@ -148,6 +148,13 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
 }));
 
+// Video generation ships dark (VIDEO_GENERATION_ENABLED is committed false);
+// force it on so the /video surfaces are testable regardless of the flag.
+vi.mock("../lib/feature-flags", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/feature-flags")>()),
+  VIDEO_GENERATION_ENABLED: true,
+}));
+
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   // Spread the real module so the pure scheduled-run helpers
   // (isScheduledRunPreamble/stripScheduledRunPreamble) are present for the
@@ -246,6 +253,36 @@ function mockImageGenerationSuccess() {
     rootLabel: "Workspace",
     size: 5,
     previewDataUrl: "data:image/png;base64,preview",
+  });
+}
+
+function mockVideoSettings({
+  imageSafeMode,
+  imageSafeModePromptDismissed,
+}: {
+  imageSafeMode: boolean;
+  imageSafeModePromptDismissed: boolean;
+}) {
+  mocks.providerModelSettings.mockResolvedValue({
+    settings: {
+      transcriptionProvider: "venice",
+      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+      generationModel: "zai-org-glm-5-2",
+      videoModel: "wan-2.2-a14b-text-to-video",
+      imageSafeMode,
+      imageSafeModePromptDismissed,
+    },
+  });
+}
+
+function mockVideoGenerationSuccess() {
+  mocks.videoGenerate.mockResolvedValueOnce({ jobId: "video-job-1" });
+  mocks.videoStatus.mockResolvedValue({
+    status: "completed",
+    path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/generated-video-1.mp4",
+    mimeType: "video/mp4",
+    sizeBytes: 5,
+    model: "wan-2.2-a14b-text-to-video",
   });
 }
 
@@ -7245,6 +7282,139 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(mocks.generateImage).not.toHaveBeenCalled();
     expect(await screen.findByRole("textbox")).toHaveTextContent("/image a red bicycle");
+  });
+
+  it("skips an explicit /video generation when the user keeps safe mode on", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.gatewayRequest.mockClear();
+
+    await user.type(await screen.findByRole("textbox"), "/video a nude scene");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    // The video variant explains that keeping safe mode on skips generation
+    // (Venice cannot blur video, so there is no blurred fallback to offer).
+    expect(within(dialog).getByText(/Videos cannot be blurred/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
+    await user.click(within(dialog).getByRole("button", { name: "Keep safe mode on" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.videoGenerate).not.toHaveBeenCalled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.setImageSafeModePromptDismissed).toHaveBeenCalledWith(true);
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    // The draft survives the skip so the user can rephrase or change settings.
+    expect(await screen.findByRole("textbox")).toHaveTextContent("/video a nude scene");
+  });
+
+  it("turns safe mode off for an explicit /video prompt and generates", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    mockVideoGenerationSuccess();
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/video a nude scene");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.click(within(dialog).getByRole("button", { name: "Turn off safe mode" }));
+
+    await screen.findByRole("button", { name: "Download video" });
+    expect(mocks.setImageSafeMode).toHaveBeenCalledWith(false);
+    expect(mocks.videoGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("generates /video without consent when the prompt screens clean", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(false);
+    mockVideoGenerationSuccess();
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.imagePromptMayBeExplicit.mockClear();
+
+    await user.type(await screen.findByRole("textbox"), "/video a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await screen.findByRole("button", { name: "Download video" });
+    expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument();
+    expect(mocks.imagePromptMayBeExplicit).toHaveBeenCalledWith("a red bicycle");
+    expect(mocks.videoGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the /video prompt screen entirely when safe mode is off", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    mockVideoGenerationSuccess();
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.imagePromptMayBeExplicit.mockClear();
+
+    await user.type(await screen.findByRole("textbox"), "/video a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await screen.findByRole("button", { name: "Download video" });
+    expect(mocks.imagePromptMayBeExplicit).not.toHaveBeenCalled();
+  });
+
+  it("carries /video fast-path context into the next message so a follow-up has it in context", async () => {
+    // The /video fast path never invokes the model (skipPrompt), so without
+    // the fold a follow-up reads as the first message of the conversation.
+    // The context rides the next prompt.submit under --- Attached Context ---
+    // (stripped from every user-bubble render) and is sent exactly once.
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    mockVideoGenerationSuccess();
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/video puppies playing");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("button", { name: "Download video" });
+
+    mocks.gatewayRequest.mockClear();
+    await user.type(await screen.findByRole("textbox"), "add another puppy");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+        true,
+      ),
+    );
+    const submitText = (
+      mocks.gatewayRequest.mock.calls.find(([method]) => method === "prompt.submit")?.[1] as {
+        text: string;
+      }
+    ).text;
+    expect(submitText).toContain("add another puppy");
+    expect(submitText).toContain("--- Attached Context ---");
+    expect(submitText).toContain('"puppies playing"');
+    expect(submitText).toContain("generated-video-1.mp4");
+    expect(submitText).toContain("generate_video");
+
+    // The fold is cleared once it rides a successful prompt: the stored turn
+    // drops contextPending, so the next follow-up submits plain text.
+    const stored = JSON.parse(
+      window.localStorage.getItem("june:agent:video-slash-turns") ?? "{}",
+    ) as Record<string, Array<{ contextPending?: boolean }>>;
+    const storedTurns = Object.values(stored).flat();
+    expect(storedTurns.length).toBeGreaterThan(0);
+    expect(storedTurns.every((turn) => turn.contextPending === false)).toBe(true);
   });
 
   it("shows safe-mode consent when the agent image event arrives", async () => {
