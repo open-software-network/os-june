@@ -2124,6 +2124,37 @@ mod tests {
     }
 
     #[test]
+    fn agent_proxy_preserves_tool_request_fields() {
+        let mut body = serde_json::json!({
+            "model": "hermes-selected-model",
+            "messages": [{ "role": "user", "content": "call the tool" }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "june_test_tool",
+                    "description": "Test tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "value": { "type": "string" }
+                        },
+                        "required": ["value"]
+                    }
+                }
+            }],
+            "tool_choice": "auto"
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert_eq!(body["tool_choice"], serde_json::json!("auto"));
+        assert_eq!(
+            body["tools"][0]["function"]["name"],
+            serde_json::json!("june_test_tool")
+        );
+    }
+
+    #[test]
     fn agent_proxy_caps_float_output_token_budgets_over_the_limit() {
         let mut body = serde_json::json!({
             "model": "hermes-selected-model",
@@ -2343,9 +2374,17 @@ mod live_local_tests {
             .unwrap_or_else(|| DEFAULT_LIVE_MODEL.to_string())
     }
 
+    fn live_api_key() -> String {
+        std::env::var("JUNE_QA_LOCAL_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default()
+    }
+
     /// True when the live endpoint answers `GET {base}/models`. Used to skip
     /// gracefully instead of failing when no server is running.
-    async fn live_server_reachable(base_url: &str) -> bool {
+    async fn live_server_reachable(base_url: &str, api_key: &str) -> bool {
         let Ok(client) = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(3))
@@ -2353,7 +2392,11 @@ mod live_local_tests {
         else {
             return false;
         };
-        match client.get(format!("{base_url}/models")).send().await {
+        let mut request = client.get(format!("{base_url}/models"));
+        if !api_key.trim().is_empty() {
+            request = request.bearer_auth(api_key.trim());
+        }
+        match request.send().await {
             Ok(response) => response.status().is_success(),
             Err(_) => false,
         }
@@ -2362,7 +2405,9 @@ mod live_local_tests {
     fn skip_message(base_url: &str) -> String {
         format!(
             "SKIPPED: no OpenAI-compatible server reachable at {base_url}. \
-             Start one (e.g. `ollama serve`) or set JUNE_QA_LOCAL_BASE_URL."
+             Start one or set JUNE_QA_LOCAL_BASE_URL. For a tool-calling \
+             GLM-4.5-Air run, use vLLM with --enable-auto-tool-choice \
+             --tool-call-parser glm45."
         )
     }
 
@@ -2378,7 +2423,11 @@ mod live_local_tests {
         }
     }
 
-    fn install_live_local_provider(base_url: &str, model_id: &str) -> LiveSettingsGuard {
+    fn install_live_local_provider(
+        base_url: &str,
+        model_id: &str,
+        api_key: &str,
+    ) -> LiveSettingsGuard {
         static LOCK: Mutex<()> = Mutex::new(());
         let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut settings = crate::providers::default_settings_for_tests();
@@ -2387,7 +2436,7 @@ mod live_local_tests {
         settings.local_generation = LocalGenerationSettings {
             base_url: base_url.to_string(),
             model_id: model_id.to_string(),
-            api_key: String::new(),
+            api_key: api_key.to_string(),
         };
         crate::providers::replace_current_settings_for_tests(settings);
         LiveSettingsGuard(guard)
@@ -2400,14 +2449,15 @@ mod live_local_tests {
     #[ignore = "requires a live local OpenAI-compatible server"]
     async fn live_local_probe_lists_pulled_models() {
         let base_url = live_base_url();
-        if !live_server_reachable(&base_url).await {
+        let api_key = live_api_key();
+        if !live_server_reachable(&base_url, &api_key).await {
             eprintln!("{}", skip_message(&base_url));
             return;
         }
 
         let probe = probe_local_generation_endpoint(ProbeLocalGenerationEndpointRequest {
             base_url: base_url.clone(),
-            api_key: String::new(),
+            api_key,
         })
         .await
         .expect("probe against the live endpoint should succeed");
@@ -2432,12 +2482,13 @@ mod live_local_tests {
     #[ignore = "requires a live local OpenAI-compatible server"]
     async fn live_local_note_generation_returns_clean_markdown() {
         let base_url = live_base_url();
-        if !live_server_reachable(&base_url).await {
+        let api_key = live_api_key();
+        if !live_server_reachable(&base_url, &api_key).await {
             eprintln!("{}", skip_message(&base_url));
             return;
         }
         let model = live_model();
-        let _guard = install_live_local_provider(&base_url, &model);
+        let _guard = install_live_local_provider(&base_url, &model, &api_key);
 
         let transcript = "\
 Microphone: Alright, let's kick off the weekly sync. First up is the release timeline.
@@ -2487,12 +2538,13 @@ Microphone: Great. Let's ship the feed fix this week, then review the onboarding
     #[ignore = "requires a live local OpenAI-compatible server"]
     async fn live_local_agent_proxy_completes_buffered_and_streaming() {
         let base_url = live_base_url();
-        if !live_server_reachable(&base_url).await {
+        let api_key = live_api_key();
+        if !live_server_reachable(&base_url, &api_key).await {
             eprintln!("{}", skip_message(&base_url));
             return;
         }
         let model = live_model();
-        let _guard = install_live_local_provider(&base_url, &model);
+        let _guard = install_live_local_provider(&base_url, &model, &api_key);
 
         // Buffered request, exactly what the session-title path sends.
         let response = proxy_agent_chat_completions(serde_json::json!({
@@ -2561,6 +2613,84 @@ Microphone: Great. Let's ship the feed fix this week, then review the onboarding
         assert!(
             has_parseable_delta,
             "SSE stream should contain at least one parseable chat.completion.chunk"
+        );
+    }
+
+    /// Drives a real local endpoint through June's agent proxy with OpenAI-style
+    /// tools. This is the live proof needed for local tool-calling models such as
+    /// GLM-4.5-Air served by vLLM with `--enable-auto-tool-choice
+    /// --tool-call-parser glm45`.
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible server with tool calling enabled"]
+    async fn live_local_agent_proxy_returns_tool_calls() {
+        let base_url = live_base_url();
+        let api_key = live_api_key();
+        if !live_server_reachable(&base_url, &api_key).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_model();
+        let _guard = install_live_local_provider(&base_url, &model, &api_key);
+
+        let response = proxy_agent_chat_completions(serde_json::json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Use the june_test_weather tool for New York City. Do not answer directly."
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "june_test_weather",
+                        "description": "Gets the current weather for one city.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "city": {
+                                    "type": "string",
+                                    "description": "The city to check."
+                                }
+                            },
+                            "required": ["city"],
+                            "additionalProperties": false
+                        }
+                    }
+                }
+            ],
+            "tool_choice": "auto",
+            "stream": false,
+            "max_tokens": 512,
+        }))
+        .await
+        .expect("live local tool-call proxy call should succeed");
+
+        assert_eq!(response.status, 200);
+        let body = response
+            .collect_body()
+            .await
+            .expect("proxy body should be readable");
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).expect("proxy body should be an OpenAI completion");
+        let tool_calls = value
+            .get("choices")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("tool_calls"))
+            .and_then(serde_json::Value::as_array)
+            .expect("completion should include tool_calls");
+
+        assert!(
+            tool_calls.iter().any(|tool_call| {
+                tool_call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("june_test_weather")
+            }),
+            "expected june_test_weather tool call in {value:#}"
         );
     }
 }
