@@ -420,6 +420,14 @@ pub struct DictationSettingsResponse {
 /// holdThreshold, which used to absorb these by delaying the start.
 const PUSH_TO_TALK_MIN_HOLD: Duration = Duration::from_millis(160);
 const TOGGLE_SHORTCUT_DEBOUNCE: Duration = Duration::from_millis(275);
+/// A toggle ack normally arrives within milliseconds; if the helper dies (or
+/// a permission prompt never calls back) no ack event ever comes, and an
+/// unexpiring in-flight flag would wedge the shortcut until app restart.
+const TOGGLE_ACK_EXPIRY: Duration = Duration::from_secs(8);
+/// Finalizing normally resolves in a few seconds (one dictation round-trip);
+/// a helper that dies mid-finalize emits no terminal event, so the
+/// suppression must expire rather than wedge the shortcut.
+const FINALIZING_SUPPRESSION_EXPIRY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Default)]
 struct ShortcutActivationController {
@@ -428,7 +436,7 @@ struct ShortcutActivationController {
     push_started_at: Option<Instant>,
     toggle_command_in_flight: bool,
     last_toggle_command_at: Option<Instant>,
-    helper_is_finalizing: bool,
+    helper_finalizing_since: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -501,8 +509,15 @@ impl ShortcutActivationController {
     }
 
     fn can_send_toggle_command(&self, now: Instant) -> bool {
-        !self.toggle_command_in_flight
-            && !self.helper_is_finalizing
+        let in_flight = self.toggle_command_in_flight
+            && self
+                .last_toggle_command_at
+                .map_or(true, |last| now.duration_since(last) < TOGGLE_ACK_EXPIRY);
+        let finalizing = self
+            .helper_finalizing_since
+            .is_some_and(|since| now.duration_since(since) < FINALIZING_SUPPRESSION_EXPIRY);
+        !in_flight
+            && !finalizing
             && self.last_toggle_command_at.map_or(true, |last| {
                 now.duration_since(last) >= TOGGLE_SHORTCUT_DEBOUNCE
             })
@@ -518,11 +533,11 @@ impl ShortcutActivationController {
     }
 
     fn mark_helper_finalizing(&mut self) {
-        self.helper_is_finalizing = true;
+        self.helper_finalizing_since = Some(Instant::now());
     }
 
     fn clear_helper_finalizing(&mut self) {
-        self.helper_is_finalizing = false;
+        self.helper_finalizing_since = None;
     }
 
     fn reset(&mut self) {
@@ -531,7 +546,7 @@ impl ShortcutActivationController {
         self.push_started_at = None;
         self.toggle_command_in_flight = false;
         self.last_toggle_command_at = None;
-        self.helper_is_finalizing = false;
+        self.helper_finalizing_since = None;
     }
 }
 
@@ -4406,6 +4421,45 @@ mod tests {
                 DictationShortcutKind::Toggle,
                 now + TOGGLE_SHORTCUT_DEBOUNCE
             ),
+            Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn unacknowledged_toggle_expires_instead_of_wedging_the_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+        // No ack ever arrives (helper died / permission prompt never called
+        // back). Within the expiry the toggle stays suppressed...
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE
+            ),
+            None
+        );
+        // ...and past the expiry the shortcut recovers on its own.
+        controller.last_toggle_command_at = Some(now - TOGGLE_ACK_EXPIRY);
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn stuck_finalizing_suppression_expires_instead_of_wedging_the_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        controller.helper_finalizing_since = Some(now - FINALIZING_SUPPRESSION_EXPIRY);
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
             Some(DictationCommand::ToggleListening)
         );
     }

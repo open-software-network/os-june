@@ -1499,6 +1499,16 @@ final class DictationController {
     }
 
     func stop() {
+        // A stop that lands while a start is still waiting on the permission
+        // prompt cancels that start (a grazed push-to-talk key, or the prompt
+        // never calling back); erroring not_listening here would wedge the
+        // pending flag until a helper restart.
+        if startPending && !isListening {
+            dictationStartGeneration += 1
+            startPending = false
+            emit("recording_discarded", ["reason": "start_cancelled"])
+            return
+        }
         guard isListening, recordingPurpose == .dictation else {
             emit("error", ["code": "not_listening", "message": "Dictation is not listening."])
             return
