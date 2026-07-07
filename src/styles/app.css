@@ -7183,6 +7183,10 @@ input:focus-visible,
 .agent-session-time {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+  /* Ticking value: the sidebar re-renders on a 60s clock so this relative time
+   * advances (5m to 10m to 1h). Tabular figures keep the width stable across
+   * ticks per the spec/no-tabular-numerals.md live-value exception. */
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
