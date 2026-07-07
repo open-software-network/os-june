@@ -83,6 +83,10 @@ export function ReportDialog({
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    // The dialog is portaled but its JSX lives inside the composer form, so
+    // React bubbles these events to the composer's own drop/paste importers
+    // behind the modal — stop them here or attachments leak into the chat.
+    event.stopPropagation();
     event.dataTransfer.dropEffect = "copy";
   }
 
@@ -104,6 +108,7 @@ export function ReportDialog({
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    event.stopPropagation();
     dragDepthRef.current = 0;
     setDropActive(false);
     const files = Array.from(event.dataTransfer.files);
@@ -118,6 +123,7 @@ export function ReportDialog({
   // files are interceptable (Finder file copies never reach clipboardData);
   // a plain text paste falls through to the textarea untouched.
   function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
+    event.stopPropagation();
     if (sent || busy) return;
     const files = clipboardImageFiles(event.clipboardData);
     if (!files.length) return;

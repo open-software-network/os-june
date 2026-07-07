@@ -5595,7 +5595,7 @@ input:focus-visible,
   z-index: 1;
   display: grid;
   place-items: center;
-  border: 2px dashed color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+  border: 1px dashed color-mix(in oklch, var(--muted-foreground) 45%, transparent);
   border-radius: var(--r-lg);
   background: color-mix(in oklch, var(--card) 92%, transparent);
   color: var(--muted-foreground);

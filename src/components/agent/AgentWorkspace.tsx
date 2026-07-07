@@ -4247,6 +4247,10 @@ export function AgentWorkspace({
   }
 
   function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
+    // The report dialog's JSX lives inside this form, so its events React-
+    // bubble here even though it renders in a portal; a report drop or paste
+    // must never land in the chat composer.
+    if (reportDialogOpen) return;
     event.preventDefault();
     setDropActive(false);
     const files = Array.from(event.dataTransfer.files);
@@ -4258,6 +4262,7 @@ export function AgentWorkspace({
   }
 
   function handleComposerPaste(event: ClipboardEvent<HTMLFormElement>) {
+    if (reportDialogOpen) return;
     const files = clipboardImageFiles(event.clipboardData);
     if (!files.length) return;
     event.preventDefault();

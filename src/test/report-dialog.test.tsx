@@ -189,6 +189,24 @@ describe("ReportDialog", () => {
     expect(onDropFiles).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps drop and paste events inside the dialog", () => {
+    const outerDrop = vi.fn();
+    const outerPaste = vi.fn();
+    render(
+      <div onDrop={outerDrop} onPaste={outerPaste}>
+        <Harness />
+      </div>,
+    );
+    const textarea = screen.getByRole("textbox", { name: "Description" });
+    const image = new File(["png"], "shot.png", { type: "image/png" });
+
+    fireEvent.drop(textarea, { dataTransfer: { files: [image] } });
+    fireEvent.paste(textarea, { clipboardData: { items: [], files: [image] } });
+
+    expect(outerDrop).not.toHaveBeenCalled();
+    expect(outerPaste).not.toHaveBeenCalled();
+  });
+
   it("blocks submit while a dropped file is still importing", async () => {
     let resolveImport: () => void = () => {};
     const onDropFiles = vi.fn(
