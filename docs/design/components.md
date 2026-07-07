@@ -27,6 +27,7 @@ Live examples render in the styleguide: run `pnpm dev`, then open
 | Empty state | `EmptyState` | inline "nothing here" markup |
 | Inline warning | `InlineNotice` | ad-hoc warning rows |
 | Loading | `Spinner` | raw dot markup |
+| Shimmering "working" text | `.shimmer` + a semantic class | hand-rolled `color: transparent` gradients |
 
 Primitives live in `src/components/ui/*.tsx`.
 
@@ -94,6 +95,32 @@ thumb: one ambient shadow per popover composite (see
 warnings use `InlineNotice` (`src/components/ui/InlineNotice.tsx`) with
 `data-tone="warning"` or `"destructive"`; full-width banners are a separate
 treatment.
+
+## Shimmer
+
+`.shimmer` (`src/styles/shimmer.css`, imported by `app.css`) is the canonical
+sweep for "this text is working" states: thinking labels, image-generation and
+transcription progress, first-load skeleton bars. It is a vendored plain-CSS
+port of the shadcn shimmer utility, kept API-compatible with upstream, so its
+knobs (`--shimmer-duration`, `--shimmer-spread`, `--shimmer-angle`,
+`--shimmer-color`) tune per call site.
+
+- **Pair it with a semantic class**, don't use it alone. `.shimmer` owns only
+  the sweep; the semantic class owns color, layout, and typography, e.g.
+  `<span className="text-shimmer shimmer">Thinking…</span>` or
+  `transcript-processing-label shimmer`.
+- **The base is `currentColor`**: the element must carry a real `color` (call
+  sites use `var(--muted-foreground)`). Never set `color: transparent`; the old
+  hand-rolled shimmers did, and that makes this recipe paint nothing.
+- **It degrades gracefully.** The paint is gated behind
+  `@supports (color: oklch(from red l c h))` and honors
+  `prefers-reduced-motion`, so unsupported engines and reduced-motion users keep
+  the solid, legible label. Dark mode brightens the highlight via
+  `[data-theme="dark"] .shimmer`.
+- **The HUD shimmers are separate.** `hud.css`, `agent-hud.css`, and
+  `meeting-hud.css` mirror the same geometry as their own bands rather than
+  importing `.shimmer`; keep them visually in step with `shimmer.css` if you
+  retune it.
 
 ## Settings surface contract
 
