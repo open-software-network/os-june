@@ -93,6 +93,7 @@ fn readable_validation(expected_duration_ms: i64, actual_duration_ms: i64) -> Au
         actual_duration_ms,
         duration_within_tolerance: false,
         non_silent_signal: true,
+        recorded_silence: false,
         peak_amplitude: 0.2,
         rms_amplitude: 0.1,
         warnings: vec!["audio duration mismatch".to_string()],
@@ -268,11 +269,10 @@ fn accepts_silent_audio_for_provider_decision() {
         .expect("validation should run");
 
     assert!(result.readable_audio);
-    assert!(result.non_silent_signal);
-    assert!(!result
-        .warnings
-        .iter()
-        .any(|warning| warning.contains("silent")));
+    // A structurally valid silent file is flagged, never failed: the
+    // provider decision (and the silent-track messaging) happens later.
+    assert!(!result.non_silent_signal);
+    assert!(result.recorded_silence);
     assert!(source_audio_passes_validation(
         RecordingSource::Microphone,
         &result

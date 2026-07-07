@@ -1106,6 +1106,7 @@ async fn finish_recording_session(
                     artifact.id.clone(),
                     source.source.as_db().to_string(),
                     source.final_path.clone(),
+                    validation.recorded_silence,
                 ));
             }
         }
@@ -1129,6 +1130,7 @@ async fn finish_recording_session(
             actual_duration_ms: Some(validation.actual_duration_ms),
             duration_within_tolerance: validation.duration_within_tolerance,
             non_silent_signal: validation.non_silent_signal,
+            recorded_silence: validation.recorded_silence,
             peak_amplitude: Some(validation.peak_amplitude),
             rms_amplitude: Some(validation.rms_amplitude),
             warnings: validation.warnings.clone(),
@@ -1148,6 +1150,7 @@ async fn finish_recording_session(
             actual_duration_ms: 0,
             duration_within_tolerance: false,
             non_silent_signal: false,
+            recorded_silence: false,
             peak_amplitude: 0.0,
             rms_amplitude: 0.0,
             warnings: vec!["No microphone validation was available.".to_string()],
@@ -1252,7 +1255,7 @@ async fn finish_recording_session(
         let result = if valid_sources.len() == 1
             && task_source_mode == RecordingSourceMode::MicrophoneOnly
         {
-            let (artifact_id, _source, path) = valid_sources
+            let (artifact_id, _source, path, _recorded_silence) = valid_sources
                 .into_iter()
                 .next()
                 .expect("valid source was checked before starting processing");
@@ -1447,7 +1450,7 @@ pub async fn retry_processing(
                 RecordingSourceMode::MicrophonePlusSystem,
                 sources
                     .into_iter()
-                    .map(|(id, source, path, _session_id)| (id, source, path))
+                    .map(|(id, source, path, _session_id)| (id, source, path, false))
                     .collect(),
                 title,
                 existing_generated_note,
@@ -1571,7 +1574,12 @@ pub async fn recover_recording(
                 )
                 .await?;
             if valid {
-                valid_sources.push((artifact.id, artifact.source, path));
+                valid_sources.push((
+                    artifact.id,
+                    artifact.source,
+                    path,
+                    validation.recorded_silence,
+                ));
             }
         }
         if valid_sources.is_empty() {

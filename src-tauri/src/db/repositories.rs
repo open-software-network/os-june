@@ -1,9 +1,9 @@
 use crate::domain::types::{
     AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
-    DictationHistoryItemDto, DictionaryEntryDto, FolderDto, ListDictationHistoryResponse,
-    ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus, RecordingSourceMode,
-    RecordingState, SessionFolderDto, TranscriptCoverageDto, TranscriptDto,
+    AudioValidationDto, DictationHistoryItemDto, DictionaryEntryDto, FolderDto,
+    ListDictationHistoryResponse, ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus,
+    RecordingSourceMode, RecordingState, SessionFolderDto, TranscriptCoverageDto, TranscriptDto,
 };
 use chrono::{Duration, SecondsFormat, Utc};
 use sqlx::query::query;
@@ -1807,6 +1807,7 @@ impl Repositories {
             language: row.get("language"),
             status: row.get("status"),
             last_error: row.get("last_error"),
+            recorded_silence: false,
         }))
     }
 
@@ -1815,8 +1816,10 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Vec<TranscriptDto>, sqlx::error::Error> {
         let rows = query(
-            "SELECT t.id, t.text, t.source_mode, t.source, t.start_ms, t.end_ms, t.turn_index, t.language, t.status, t.last_error
+            "SELECT t.id, t.text, t.source_mode, t.source, t.start_ms, t.end_ms, t.turn_index, t.language, t.status, t.last_error,
+                    aa.validation_summary
              FROM transcripts t
+             LEFT JOIN audio_artifacts aa ON aa.id = t.audio_artifact_id
              LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
              WHERE t.note_id = ?
                AND t.recording_session_id IS NOT NULL
@@ -1846,6 +1849,10 @@ impl Repositories {
                 language: row.get("language"),
                 status: row.get("status"),
                 last_error: row.get("last_error"),
+                recorded_silence: validation_summary_recorded_silence(
+                    row.get::<Option<String>, _>("validation_summary")
+                        .as_deref(),
+                ),
             })
             .collect())
     }
@@ -1953,6 +1960,7 @@ impl Repositories {
                 language: row.get("language"),
                 status: row.get("status"),
                 last_error: row.get("last_error"),
+                recorded_silence: false,
             })
             .collect())
     }
@@ -1976,6 +1984,7 @@ impl Repositories {
             language,
             status: "succeeded".to_string(),
             last_error: None,
+            recorded_silence: false,
         };
         let now = timestamp();
         query(
@@ -2022,6 +2031,7 @@ impl Repositories {
             language,
             status: "succeeded".to_string(),
             last_error: None,
+            recorded_silence: false,
         };
         let now = timestamp();
         query(
@@ -2114,6 +2124,7 @@ impl Repositories {
             language,
             status: "succeeded".to_string(),
             last_error: None,
+            recorded_silence: false,
         })
     }
 
@@ -2142,6 +2153,7 @@ impl Repositories {
             language: None,
             status: "failed".to_string(),
             last_error: Some(last_error.to_string()),
+            recorded_silence: false,
         };
         let now = timestamp();
         query(
@@ -2231,6 +2243,7 @@ impl Repositories {
             language: None,
             status: "failed".to_string(),
             last_error: Some(last_error.to_string()),
+            recorded_silence: false,
         })
     }
 
@@ -2757,4 +2770,11 @@ fn preview_for(title: &str, content: &str) -> String {
         content
     };
     source.chars().take(140).collect()
+}
+
+fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
+    summary
+        .and_then(|summary| serde_json::from_str::<AudioValidationDto>(summary).ok())
+        .map(|validation| validation.recorded_silence)
+        .unwrap_or(false)
 }

@@ -59,6 +59,7 @@ export type TranscriptDto = {
   language?: string;
   status: "pending" | "running" | "succeeded" | "failed";
   lastError?: string;
+  recordedSilence?: boolean;
 };
 
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
@@ -619,6 +620,7 @@ export type AudioValidationDto = {
   actualDurationMs: number;
   durationWithinTolerance: boolean;
   nonSilentSignal: boolean;
+  recordedSilence?: boolean;
   peakAmplitude: number;
   rmsAmplitude: number;
   warnings: string[];
@@ -633,6 +635,7 @@ export type SourceValidationDto = {
   actualDurationMs?: number;
   durationWithinTolerance: boolean;
   nonSilentSignal: boolean;
+  recordedSilence?: boolean;
   peakAmplitude?: number;
   rmsAmplitude?: number;
   warnings: string[];
