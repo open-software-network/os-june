@@ -130,12 +130,80 @@ struct CaptureStats {
 }
 
 pub fn microphone_permission_state() -> (String, Option<String>) {
+    microphone_permission_state_from_authorization(microphone_authorization_status())
+}
+
+fn microphone_permission_state_from_authorization(
+    status: MicrophoneAuthorizationStatus,
+) -> (String, Option<String>) {
+    match status {
+        MicrophoneAuthorizationStatus::Granted => ("granted".to_string(), None),
+        MicrophoneAuthorizationStatus::Denied => {
+            ("denied".to_string(), Some(microphone_permission_hint()))
+        }
+        MicrophoneAuthorizationStatus::Restricted => {
+            ("restricted".to_string(), Some(microphone_permission_hint()))
+        }
+        MicrophoneAuthorizationStatus::NotDetermined => (
+            "not_determined".to_string(),
+            Some(microphone_permission_hint()),
+        ),
+        MicrophoneAuthorizationStatus::Unknown => {
+            ("unknown".to_string(), Some(microphone_permission_hint()))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MicrophoneAuthorizationStatus {
+    Granted,
+    Denied,
+    Restricted,
+    NotDetermined,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_authorization_status() -> MicrophoneAuthorizationStatus {
+    macos_microphone_authorization_status().unwrap_or(MicrophoneAuthorizationStatus::Unknown)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_microphone_authorization_status() -> Option<MicrophoneAuthorizationStatus> {
+    use objc2::{msg_send, runtime::AnyClass};
+    use objc2_foundation::NSString;
+
+    let device_class = AnyClass::get(c"AVCaptureDevice")?;
+    // AVMediaTypeAudio's raw value is "soun"; this matches
+    // AVCaptureDevice.authorizationStatus(for: .audio) in the dictation helper.
+    let media_type = NSString::from_str("soun");
+    let raw_status: isize =
+        unsafe { msg_send![device_class, authorizationStatusForMediaType: &*media_type] };
+    Some(match raw_status {
+        0 => MicrophoneAuthorizationStatus::NotDetermined,
+        1 => MicrophoneAuthorizationStatus::Restricted,
+        2 => MicrophoneAuthorizationStatus::Denied,
+        3 => MicrophoneAuthorizationStatus::Granted,
+        _ => MicrophoneAuthorizationStatus::Unknown,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn microphone_authorization_status() -> MicrophoneAuthorizationStatus {
     let host = cpal::default_host();
     if host.default_input_device().is_some() {
-        ("granted".to_string(), None)
+        MicrophoneAuthorizationStatus::Granted
     } else {
-        ("denied".to_string(), Some(microphone_permission_hint()))
+        MicrophoneAuthorizationStatus::Denied
     }
+}
+
+pub fn microphone_device_available() -> bool {
+    cpal::default_host().default_input_device().is_some()
+}
+
+pub fn microphone_device_hint() -> String {
+    "No microphone input device is available.".to_string()
 }
 
 fn microphone_permission_hint() -> String {
@@ -970,6 +1038,48 @@ fn source_warnings(
 mod tests {
     use super::*;
 
+    #[test]
+    fn microphone_permission_mapping_reports_granted_only_for_authorized() {
+        let (state, hint) =
+            microphone_permission_state_from_authorization(MicrophoneAuthorizationStatus::Granted);
+
+        assert_eq!(state, "granted");
+        assert_eq!(hint, None);
+    }
+
+    #[test]
+    fn microphone_permission_mapping_reports_denied_or_restricted_as_not_granted() {
+        let (denied_state, denied_hint) =
+            microphone_permission_state_from_authorization(MicrophoneAuthorizationStatus::Denied);
+        let (restricted_state, restricted_hint) = microphone_permission_state_from_authorization(
+            MicrophoneAuthorizationStatus::Restricted,
+        );
+
+        assert_eq!(denied_state, "denied");
+        assert!(denied_hint.is_some());
+        assert_eq!(restricted_state, "restricted");
+        assert!(restricted_hint.is_some());
+    }
+
+    #[test]
+    fn microphone_permission_mapping_keeps_not_determined_not_ready() {
+        let (state, hint) = microphone_permission_state_from_authorization(
+            MicrophoneAuthorizationStatus::NotDetermined,
+        );
+
+        assert_eq!(state, "not_determined");
+        assert!(hint.is_some());
+    }
+
+    #[test]
+    fn microphone_permission_mapping_keeps_unknown_not_ready() {
+        let (state, hint) =
+            microphone_permission_state_from_authorization(MicrophoneAuthorizationStatus::Unknown);
+
+        assert_eq!(state, "unknown");
+        assert!(hint.is_some());
+    }
+
     fn test_writer(dir: &tempfile::TempDir) -> Arc<Mutex<Option<WavWriter<BufWriter<File>>>>> {
         let writer = WavWriter::create(
             dir.path().join("mic.wav"),
@@ -1188,5 +1298,16 @@ mod tests {
             issue_state(None, Some(stale_callback), RecordingState::Paused),
             None
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod avfoundation_link_tests {
+    // If AVFoundation stops being linked, AnyClass::get returns None and
+    // readiness silently degrades to "unknown" (never granted) — this probe
+    // turns that silent degradation into a test failure.
+    #[test]
+    fn avcapturedevice_class_resolves() {
+        assert!(super::macos_microphone_authorization_status().is_some());
     }
 }

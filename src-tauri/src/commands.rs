@@ -3,8 +3,8 @@ use crate::{
     audio::{
         capture::{
             capture_status_for_recovery, finish_active_capture, finish_capture, is_capture_active,
-            microphone_permission_state, pause_capture, resume_capture, start_capture,
-            CaptureRecoverySnapshot,
+            microphone_device_available, microphone_device_hint, microphone_permission_state,
+            pause_capture, resume_capture, start_capture, CaptureRecoverySnapshot,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -1281,18 +1281,25 @@ async fn finish_recording_session(
 
 fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
     let (microphone_state, microphone_hint) = microphone_permission_state();
-    let microphone_ready = microphone_state == "granted";
+    let microphone_permission_granted = microphone_state == "granted";
+    let microphone_device_available = microphone_device_available();
+    let microphone_ready = microphone_permission_granted && microphone_device_available;
+    let microphone_message = if microphone_permission_granted && !microphone_device_available {
+        Some(microphone_device_hint())
+    } else {
+        microphone_hint.clone()
+    };
     let mut sources = vec![SourceReadinessDto {
         source: RecordingSource::Microphone,
         required: true,
         ready: microphone_ready,
         permission_state: microphone_state.clone(),
-        device_available: microphone_ready,
+        device_available: microphone_device_available,
         capture_available: microphone_ready,
-        recovery_action: microphone_hint
-            .as_ref()
-            .map(|_| "openMicrophoneSettings".to_string()),
-        message: microphone_hint,
+        recovery_action: microphone_message.as_ref().and_then(|_| {
+            (!microphone_permission_granted).then(|| "openMicrophoneSettings".to_string())
+        }),
+        message: microphone_message,
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
         let mut system = crate::audio::system_macos::system_audio_readiness();
