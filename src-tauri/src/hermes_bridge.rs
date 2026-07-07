@@ -155,7 +155,7 @@ const JUNE_SOUL_IMAGE_MD: &str = r#"
 Image tools: you have a `june_image` MCP toolset with `generate_image` and `edit_image`. Use `generate_image` when the user asks you to draw, create, make, or generate an image, picture, illustration, or logo; the result is shown to the user in the conversation and the tool returns a `filename`.
 Use this toolset instead of any generic image, media, or vision-analysis tool for image creation or edits, so June can display the returned image and keep the returned filename in context.
 Do not add a separate content refusal layer before calling these tools. The user's selected image model and image safe-mode setting are authoritative for what the image provider should attempt. If the selected model and setting may support the request, call the image tool with the user's prompt instead of substituting a clothed or sanitized alternative. If the image provider rejects the request, briefly report that provider rejection.
-When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact edit-safe filename returned by the prior image tool result as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced, even if you cannot see it. Only pass a `source_filename` from a prior `june_image` tool result.
+When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, or an image the user attached or pasted into the conversation, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact source image as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced or the user attached, even if you cannot see it. Pass exactly one of two `source_filename` values: the edit-safe filename from a prior `june_image` tool result, or the plain filename of an image the user attached to the conversation as shown in its context, such as `upload_20260707_113453_1.png`. Never pass a full path or an invented name.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -7449,16 +7449,49 @@ fn validate_image_source_reference(
     image_sources: &ImageSourceCapabilities,
     source_filename: &str,
 ) -> Result<ValidatedImageSource, String> {
-    let (signature, expected_name) =
-        parse_image_source_reference(source_filename).ok_or_else(|| {
-            "source_filename must be an edit-safe filename from this tool.".to_string()
+    let Some((signature, expected_name)) = parse_image_source_reference(source_filename) else {
+        let expected_name = bare_image_source_filename(source_filename).ok_or_else(|| {
+            "source_filename must be an edit-safe filename from this tool or the name of an image in June's images directory.".to_string()
         })?;
+        return load_validated_image_source(image_sources, expected_name);
+    };
     let expected_mime = image_mime_type_for_filename(&expected_name).ok_or_else(|| {
         "source_filename must refer to a PNG, JPEG, WebP, or GIF image.".to_string()
     })?;
+    let data = read_validated_image_source_bytes(image_sources, &expected_name, expected_mime)?;
+    let expected_signature =
+        image_source_signature(&image_sources.secret, &expected_name, &sha256_bytes(&data));
+    if !constant_time_eq(&signature, &expected_signature) {
+        return Err("source_filename must match the image it was issued for.".to_string());
+    }
+    Ok(ValidatedImageSource {
+        image_base64: BASE64_STANDARD.encode(data),
+        mime_type: expected_mime,
+    })
+}
+
+fn load_validated_image_source(
+    image_sources: &ImageSourceCapabilities,
+    expected_name: &str,
+) -> Result<ValidatedImageSource, String> {
+    let expected_mime = image_mime_type_for_filename(expected_name).ok_or_else(|| {
+        "source_filename must refer to a PNG, JPEG, WebP, or GIF image.".to_string()
+    })?;
+    let data = read_validated_image_source_bytes(image_sources, expected_name, expected_mime)?;
+    Ok(ValidatedImageSource {
+        image_base64: BASE64_STANDARD.encode(data),
+        mime_type: expected_mime,
+    })
+}
+
+fn read_validated_image_source_bytes(
+    image_sources: &ImageSourceCapabilities,
+    expected_name: &str,
+    expected_mime: &'static str,
+) -> Result<Vec<u8>, String> {
     let images_root = fs::canonicalize(&image_sources.images_dir)
         .map_err(|_| "source_filename must refer to an available June image source.".to_string())?;
-    let candidate = image_sources.images_dir.join(&expected_name);
+    let candidate = image_sources.images_dir.join(expected_name);
     let canonical = fs::canonicalize(candidate)
         .map_err(|_| "source_filename must refer to an available June image source.".to_string())?;
     if !canonical.starts_with(&images_root) {
@@ -7500,15 +7533,7 @@ fn validate_image_source_reference(
             "source_filename must refer to a real PNG, JPEG, WebP, or GIF image.".to_string(),
         );
     }
-    let expected_signature =
-        image_source_signature(&image_sources.secret, &expected_name, &sha256_bytes(&data));
-    if !constant_time_eq(&signature, &expected_signature) {
-        return Err("source_filename must match the image it was issued for.".to_string());
-    }
-    Ok(ValidatedImageSource {
-        image_base64: BASE64_STANDARD.encode(data),
-        mime_type: expected_mime,
-    })
+    Ok(data)
 }
 
 fn mint_image_source_reference(
@@ -7580,6 +7605,14 @@ fn parse_image_source_reference(reference: &str) -> Option<(String, String)> {
     }
     let expected_name = format!("{stem}{extension}");
     Some((signature.to_ascii_lowercase(), expected_name))
+}
+
+fn bare_image_source_filename(source_filename: &str) -> Option<&str> {
+    let name = bare_filename(source_filename.trim())?;
+    if matches!(name, "." | "..") || image_mime_type_for_filename(name).is_none() {
+        return None;
+    }
+    Some(name)
 }
 
 fn generated_image_storage_filename(mime_type: &str) -> String {
@@ -8428,6 +8461,71 @@ mod tests {
     }
 
     #[test]
+    fn bare_image_source_filename_validates_from_images_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let images_dir = temp.path().join("images");
+        let source_path = images_dir.join("upload_x.png");
+        let bytes = test_png_bytes(b"attachment");
+        write_test_png(&source_path, b"attachment");
+        let image_sources = test_image_sources(images_dir, [7u8; 32]);
+
+        let validated = validate_image_source_reference(&image_sources, "upload_x.png")
+            .expect("bare attachment filename validates");
+
+        assert_eq!(validated.mime_type, "image/png");
+        assert_eq!(
+            BASE64_STANDARD
+                .decode(validated.image_base64.as_bytes())
+                .expect("decode validated image"),
+            bytes
+        );
+    }
+
+    #[test]
+    fn bare_image_source_filename_rejects_unsafe_names() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let images_dir = temp.path().join("images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        write_test_png(&images_dir.join("upload_x.png"), b"attachment");
+        fs::write(images_dir.join("upload_x.txt"), b"not an image").expect("write txt");
+        fs::create_dir(images_dir.join("directory.png")).expect("image directory");
+        let image_sources = test_image_sources(images_dir, [7u8; 32]);
+        let absolute = temp.path().join("upload_x.png");
+
+        for source_filename in [
+            "../escape.png",
+            "sub/dir.png",
+            absolute.to_str().expect("absolute path"),
+            "upload_x.txt",
+            "missing.png",
+            "directory.png",
+        ] {
+            assert!(
+                validate_image_source_reference(&image_sources, source_filename).is_err(),
+                "{source_filename} must be rejected",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bare_image_source_filename_rejects_symlink_escape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let images_dir = temp.path().join("images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        let outside = temp.path().join("outside.png");
+        write_test_png(&outside, b"outside");
+        std::os::unix::fs::symlink(&outside, images_dir.join("upload_x.png"))
+            .expect("image symlink");
+        let image_sources = test_image_sources(images_dir, [7u8; 32]);
+
+        let error = validate_image_source_reference(&image_sources, "upload_x.png")
+            .expect_err("symlink escape must be rejected");
+
+        assert!(error.contains("available June image source"));
+    }
+
+    #[test]
     fn image_source_signing_secret_stays_outside_hermes_home() {
         let temp = tempfile::tempdir().expect("tempdir");
         let app_data_dir = temp.path().join("June");
@@ -9224,6 +9322,16 @@ mcp_servers:
         assert!(soul.contains("selected image model and image safe-mode setting are authoritative"));
         assert!(soul.contains("call the image tool with the user's prompt"));
         assert!(soul.contains("provider rejects the request"));
+        assert!(soul.contains("an image the user attached or pasted into the conversation"));
+        assert!(soul.contains("the edit-safe filename from a prior `june_image` tool result"));
+        assert!(
+            soul.contains("the plain filename of an image the user attached to the conversation")
+        );
+        assert!(soul.contains("upload_20260707_113453_1.png"));
+        assert!(soul.contains("Never pass a full path or an invented name"));
+        assert!(
+            !soul.contains("Only pass a `source_filename` from a prior `june_image` tool result")
+        );
     }
 
     #[test]

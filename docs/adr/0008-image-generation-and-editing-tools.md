@@ -50,6 +50,7 @@ the backend allowlist for generated image models; newly exposed models are price
 with the same flat ~2x convention as the original list. Models that Venice prices
 by resolution use the default 1K tier until June exposes resolution controls.
 
+<<<<<<< HEAD
 ## Addendum - 2026-07-06 (JUN-209: safe mode on by default + consent dialog)
 
 Supersedes the **safe_mode** bullet above: the toggle now defaults **on**,
@@ -96,6 +97,24 @@ dialog; Venice `safe_mode` remains the enforcement, and a false negative just
 means a blurred image with no offer. The wire shape is unchanged
 (`Option<bool>`, absent = Venice default), so older app builds are
 unaffected.
+
+## Addendum - 2026-07-07 (edit sources for attached images)
+
+`edit_image` now accepts a second source kind: the plain filename of an image
+the user attached or pasted into the conversation. The Hermes runtime saves
+attachments as `upload_*.png` into the same images directory the `june_image`
+MCP uses, but the original edit contract required an HMAC-signed reference
+minted only for `june_image` tool results - so the agent could not edit
+attached images at all and fell back to vision-analyze + regenerate, which
+the SOUL forbids and which double-charges when it works.
+
+Security shape: bare filenames get NO new power. They are accepted only when
+they are a plain name (no path separators), carry a known image extension,
+and canonicalize inside the canonicalized images root (symlink escapes
+rejected), then go through the same size cap and content sniffing as signed
+references. Hermes can already read and write that directory directly, so
+this widens nothing; signed references keep their content-hash binding for
+files the tool itself issued.
 
 ## Context
 
