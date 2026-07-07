@@ -5,7 +5,6 @@ import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconFolderOpen } from "central-icons/IconFolderOpen";
 import { IconFolderShared } from "central-icons/IconFolderShared";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
-import { IconWarningSign } from "central-icons/IconWarningSign";
 import { useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -90,8 +89,8 @@ export function ExternalDirsView({
       <LifecycleBanner state={state} />
 
       <InlineNotice
-        tone="warning"
-        icon={<IconWarningSign size={15} ariaHidden />}
+        tone="info"
+        icon={<IconCircleInfo size={15} ariaHidden />}
         body={sharedDirWarning(state.mode ?? mode)}
       />
 
@@ -224,20 +223,17 @@ function LifecycleBanner({ state }: { state: ExternalDirsState }) {
           snapshot.state === "active-session-should-restart"
         ? "warning"
         : "info";
-  const label = clean ? "Applies next session" : snapshot.label;
-  const detail = clean
-    ? "Your changes take effect in new sessions. Current sessions are unaffected."
-    : snapshot.detail;
-  // Render through the shared InlineNotice so the lifecycle banner and the
-  // shared-directory warning below it read as one system.
+  // Render through the shared InlineNotice with the SAME shape as the advisory
+  // below it — a leading icon + one body line, no eyebrow — so the two notices
+  // on this page read as identical. The label is folded into the body sentence.
   const noticeTone = tone === "info" ? "info" : tone === "destructive" ? "destructive" : "warning";
+  const body = snapshot.detail ? `${snapshot.label}. ${snapshot.detail}` : snapshot.label;
   return (
     <InlineNotice
       className="external-dirs-lifecycle"
       tone={noticeTone}
       icon={<IconCircleInfo size={15} ariaHidden />}
-      eyebrow={label}
-      body={detail}
+      body={body}
     />
   );
 }
