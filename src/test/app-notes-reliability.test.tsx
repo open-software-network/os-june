@@ -571,7 +571,7 @@ describe("notes recording reliability", () => {
     expect(mocks.startRecording).not.toHaveBeenCalled();
   });
 
-  it("removes the fresh meeting note when recording start times out and releases the start latch", async () => {
+  it("removes the fresh note when recording start times out and releases the start latch", async () => {
     const fresh = note({
       id: "fresh-note",
       title: "New note",
@@ -656,7 +656,7 @@ describe("notes recording reliability", () => {
       expect(mocks.listNotes).toHaveBeenCalled();
     });
     expect(warn).toHaveBeenCalledWith(
-      "Failed to delete meeting note after recording start failed",
+      "Failed to delete note after recording start failed",
       expect.any(Error),
     );
     expect(screen.getByLabelText("Note title")).toHaveValue("First note");

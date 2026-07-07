@@ -22,6 +22,7 @@ import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
 import { Switch } from "../ui/Switch";
 import { userFacingFailureMessage } from "../note-editor/NoteFailureBanner";
+import { HERMES_SERVER_ERROR_MESSAGE, isHermesServerError } from "../../lib/errors";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { RoutineModePicker } from "./RoutineModePicker";
 import { formatRunTime, RoutineRunList } from "./RoutineRunList";
@@ -146,10 +147,17 @@ export function RoutineDetail({
     queueTimer.current = window.setTimeout(() => setQueued(false), 5000);
   }
 
-  const failure =
+  const storedFailure =
     routine.last_status === "error"
-      ? userFacingFailureMessage(routine.last_error || routine.last_delivery_error || undefined)
-      : null;
+      ? routine.last_error || routine.last_delivery_error || undefined
+      : undefined;
+  // A stored Hermes 5xx reads as raw wire text; classify it before the
+  // generic failure wrapper (JUN-196).
+  const failure = storedFailure
+    ? isHermesServerError(storedFailure)
+      ? HERMES_SERVER_ERROR_MESSAGE
+      : userFacingFailureMessage(storedFailure)
+    : null;
 
   return (
     <section className="routine-detail" aria-label={routine.name}>

@@ -108,7 +108,12 @@ const JUNE_RECORDER_MCP_SCRIPT: &str = include_str!("hermes/june_recorder_mcp.py
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_RECORDER_MCP_TOKEN_ENV: &str = "JUNE_RECORDER_PROXY_TOKEN";
 const AGENT_RECORDER_REQUEST_EVENT: &str = "june://agent-recorder-request";
-const AGENT_RECORDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+// The frontend start path can legitimately take minutes: the readiness probe
+// waits on the system-audio helper (tens of seconds), a fresh install blocks
+// up to 120s on the macOS microphone prompt, and capture start itself is
+// bounded at 10s. The lease must outlive the worst honest case, or the tool
+// reports failure for a recording that then visibly starts.
+const AGENT_RECORDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -342,12 +347,17 @@ struct HermesProcess {
 struct SharedProviderProxy {
     port: u16,
     token: String,
+    recorder_token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
 #[derive(Clone)]
 struct ProviderProxyState {
     token: String,
+    /// Recorder routes require this dedicated secret, handed only to the
+    /// `june_recorder` MCP: microphone control must not be reachable with the
+    /// general provider token every model call carries.
+    recorder_token: String,
     image_sources: ImageSourceCapabilities,
     app: Option<AppHandle>,
     /// Safe-mode values already injected, keyed by requestId, so an MCP retry
@@ -920,6 +930,7 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
+        &provider_proxy.recorder_token,
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
@@ -1070,10 +1081,12 @@ async fn ensure_provider_proxy(
             return Ok(SharedProviderProxyInfo {
                 port: proxy.port,
                 token: proxy.token.clone(),
+                recorder_token: proxy.recorder_token.clone(),
             });
         }
     }
     let token = random_token();
+    let recorder_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let image_sources = ImageSourceCapabilities {
@@ -1082,6 +1095,7 @@ async fn ensure_provider_proxy(
     };
     let started = start_june_provider_proxy(
         token.clone(),
+        recorder_token.clone(),
         image_sources,
         Some(app.clone()),
         Arc::clone(&bridge.recorder_requests),
@@ -1096,17 +1110,20 @@ async fn ensure_provider_proxy(
     *guard = Some(SharedProviderProxy {
         port: started.port,
         token: token.clone(),
+        recorder_token: recorder_token.clone(),
         shutdown: Some(started.shutdown),
     });
     Ok(SharedProviderProxyInfo {
         port: started.port,
         token,
+        recorder_token,
     })
 }
 
 struct SharedProviderProxyInfo {
     port: u16,
     token: String,
+    recorder_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -6427,11 +6444,13 @@ fn default_python_command() -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_hermes_config(
     app: &AppHandle,
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    recorder_proxy_token: &str,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
@@ -6441,6 +6460,7 @@ fn sync_hermes_config(
         hermes_home,
         provider_proxy_port,
         provider_proxy_token,
+        recorder_proxy_token,
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
@@ -6449,10 +6469,12 @@ fn sync_hermes_config(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_hermes_config_with_external_dirs(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    recorder_proxy_token: &str,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
@@ -6465,6 +6487,7 @@ fn sync_hermes_config_with_external_dirs(
         &model,
         &base_url,
         provider_proxy_token,
+        recorder_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         external_skill_dirs,
         Some(june_context_mcp),
@@ -6532,6 +6555,7 @@ fn render_hermes_config(
     model: &str,
     base_url: &str,
     provider_proxy_token: &str,
+    recorder_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
     june_context_mcp: Option<&JuneContextMcpConfig>,
@@ -6555,6 +6579,7 @@ fn render_hermes_config(
         june_recorder_mcp,
         base_url,
         provider_proxy_token,
+        recorder_proxy_token,
     );
     format!(
         r#"model:
@@ -6580,6 +6605,7 @@ skills:
 /// Renders the `mcp_servers:` block listing every built-in MCP server June
 /// registers. Both entries live under one key so Hermes deep-merges a single
 /// map; an empty map is emitted when neither is configured.
+#[allow(clippy::too_many_arguments)]
 fn render_mcp_servers_config(
     context: Option<&JuneContextMcpConfig>,
     web: Option<&JuneWebMcpConfig>,
@@ -6587,6 +6613,7 @@ fn render_mcp_servers_config(
     recorder: Option<&JuneRecorderMcpConfig>,
     base_url: &str,
     proxy_token: &str,
+    recorder_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
     if let Some(config) = context {
@@ -6599,7 +6626,11 @@ fn render_mcp_servers_config(
         entries.push_str(&render_image_mcp_entry(config, base_url, proxy_token));
     }
     if let Some(config) = recorder {
-        entries.push_str(&render_recorder_mcp_entry(config, base_url, proxy_token));
+        entries.push_str(&render_recorder_mcp_entry(
+            config,
+            base_url,
+            recorder_proxy_token,
+        ));
     }
     if entries.is_empty() {
         return "mcp_servers: {}\n".to_string();
@@ -6933,6 +6964,7 @@ fn yaml_string(value: &str) -> String {
 
 async fn start_june_provider_proxy(
     token: String,
+    recorder_token: String,
     image_sources: ImageSourceCapabilities,
     app: Option<AppHandle>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
@@ -6953,6 +6985,7 @@ async fn start_june_provider_proxy(
         listener,
         Arc::new(ProviderProxyState {
             token,
+            recorder_token,
             image_sources,
             app,
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
@@ -7014,7 +7047,15 @@ async fn handle_june_provider_connection(
             return Ok(());
         }
     };
-    if !provider_proxy_authorized(&request, &state.token) {
+    // Recorder mutations require the recorder-scoped secret; every other
+    // route keeps the general provider token. Distinct secrets, so neither
+    // authorizes the other's surface.
+    let required_token = if request.path.starts_with("/v1/recorder/") {
+        &state.recorder_token
+    } else {
+        &state.token
+    };
+    if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
             &mut stream,
             401,
@@ -9330,6 +9371,7 @@ mcp_servers:
             "new-model",
             "http://127.0.0.1:9/v1",
             "new-token",
+            "recorder-token",
             "web",
             &[],
             Some(&test_june_context_mcp_config()),
@@ -9387,6 +9429,7 @@ mcp_servers:
             "glm",
             "http://127.0.0.1:9/v1",
             "tok",
+            "recorder-tok",
             "web, memory",
             &dirs,
             None,
@@ -9418,6 +9461,7 @@ mcp_servers:
             "glm",
             "http://127.0.0.1:9/v1",
             "tok",
+            "recorder-tok",
             "web",
             &[],
             None,
@@ -9462,6 +9506,7 @@ mcp_servers:
             "glm",
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "recorder-proxy-tok",
             "web",
             &[],
             Some(&context),
@@ -9492,7 +9537,10 @@ mcp_servers:
         assert!(config.contains("      JUNE_IMAGE_PROXY_TOKEN: \"proxy-tok\"\n"));
         assert!(config.contains("    timeout: 660\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_recorder_mcp.py\"\n"));
-        assert!(config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"proxy-tok\"\n"));
+        // The recorder MCP must get the recorder-scoped secret, never the
+        // general provider token.
+        assert!(config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"recorder-proxy-tok\"\n"));
+        assert!(!config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"proxy-tok\"\n"));
     }
 
     #[test]
@@ -9501,6 +9549,7 @@ mcp_servers:
             "glm",
             "http://127.0.0.1:9/v1",
             "tok",
+            "recorder-tok",
             "web",
             &[],
             None,
@@ -9804,6 +9853,7 @@ mcp_servers:
             home.path(),
             4242,
             "proxy-token",
+            "recorder-proxy-token",
             &mcp,
             &web,
             &image,

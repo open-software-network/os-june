@@ -2417,7 +2417,7 @@ export function App() {
       try {
         await deleteNote(note.id);
       } catch (deleteErr) {
-        console.warn("Failed to delete meeting note after recording start failed", deleteErr);
+        console.warn("Failed to delete note after recording start failed", deleteErr);
       }
       const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
@@ -2466,7 +2466,7 @@ export function App() {
         try {
           await deleteNote(note.id);
         } catch (deleteErr) {
-          console.warn("Failed to delete meeting note after recording start failed", deleteErr);
+          console.warn("Failed to delete note after recording start failed", deleteErr);
         }
         const response = await listNotes();
         dispatch({ type: "notesLoaded", notes: response.items });
@@ -2484,7 +2484,7 @@ export function App() {
           try {
             await deleteNote(createdNoteId);
           } catch (deleteErr) {
-            console.warn("Failed to delete meeting note after recording start failed", deleteErr);
+            console.warn("Failed to delete note after recording start failed", deleteErr);
           }
         }
         throw err;
@@ -2546,8 +2546,23 @@ export function App() {
         errorCode?: string;
         errorMessage?: string;
       }) => {
-        void resolveAgentRecorderRequest({ requestId, ...result }).catch((err) => {
+        void resolveAgentRecorderRequest({ requestId, ...result }).catch(async (err) => {
           console.warn("Failed to resolve agent recorder request", err);
+          // The proxy already told the agent this request failed. Leaving a
+          // recording running that the agent believes never started diverges
+          // tool state from app state, so stop a successful late start. The
+          // note (and any audio it captured) is kept: it is real user data
+          // and the recorder was visibly running.
+          if (result.ok && payload.action === "start") {
+            const active = recordingStatusRef.current;
+            if (active && recordingNoteIdRef.current === result.noteId) {
+              try {
+                await handleFinishRecording(active.sessionId, { rethrow: true });
+              } catch (rollbackErr) {
+                console.warn("Failed to stop expired agent recording", rollbackErr);
+              }
+            }
+          }
         });
       };
 

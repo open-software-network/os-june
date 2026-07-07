@@ -270,7 +270,7 @@ fn accepts_silent_audio_for_provider_decision() {
 
     assert!(result.readable_audio);
     // A structurally valid silent file is flagged, never failed: the
-    // provider decision (and the silent-track messaging) happens later.
+    // provider decision (and the silent-source messaging) happens later.
     assert!(!result.non_silent_signal);
     assert!(result.recorded_silence);
     assert!(source_audio_passes_validation(
