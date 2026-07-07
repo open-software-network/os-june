@@ -3305,6 +3305,151 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
   }, 10_000);
 
+  it("keeps a prompt title when an exchange title suggestion fails and retries later", async () => {
+    const rawTitle = "I want you to summarize latest failures";
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "summarize latest failures",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "I found the failing path and isolated the missing persistence call.",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-upgrade-reject",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([userMessage])
+      .mockResolvedValue([userMessage, assistantMessage]);
+    mocks.suggestAgentSessionTitle
+      .mockResolvedValueOnce({ title: "Failure Summary" })
+      .mockRejectedValueOnce(new Error("title service unavailable"))
+      .mockResolvedValueOnce({ title: "Persistence Fix" });
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-upgrade-reject",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:00Z",
+      },
+      "sandboxed",
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Failure Summary")).toBeInTheDocument();
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Failure Summary")).toBeInTheDocument();
+    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
+
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-upgrade-reject",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:02Z",
+      },
+      "sandboxed",
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
+  }, 10_000);
+
+  it("keeps a failed fresh title fallback retry to a later natural refresh", async () => {
+    const rawTitle = "I want you to summarize latest failures";
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "summarize latest failures",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "I found the failing path and isolated the missing persistence call.",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    const secondSession = {
+      id: "session-other",
+      title: "Other session",
+      preview: "Other preview",
+      last_active: "2026-06-04T12:05:00Z",
+    };
+    let rejectPromptTitle: (reason?: unknown) => void = () => {};
+    const promptTitle = new Promise<{ title: string }>((_resolve, reject) => {
+      rejectPromptTitle = reject;
+    });
+    const targetSession = {
+      id: "session-fresh-reject",
+      title: rawTitle,
+      preview: rawTitle,
+      last_active: "2026-06-04T12:00:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([targetSession, secondSession]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([userMessage])
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([userMessage, assistantMessage]);
+    mocks.suggestAgentSessionTitle
+      .mockImplementationOnce(() => promptTitle)
+      .mockResolvedValueOnce({ title: "Persistence Fix" });
+
+    const { rerender } = render(<AgentWorkspace initialSession={targetSession} />);
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1));
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenLastCalledWith(
+      "summarize latest failures",
+      undefined,
+    );
+
+    rerender(<AgentWorkspace initialSession={secondSession} />);
+    expect(await screen.findByText("Other session")).toBeInTheDocument();
+    rerender(<AgentWorkspace initialSession={targetSession} />);
+
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThanOrEqual(3),
+    );
+
+    await act(async () => {
+      rejectPromptTitle(new Error("title service unavailable"));
+      await promptTitle.catch(() => undefined);
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText("summarize latest failures").length).toBeGreaterThan(0),
+    );
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
+    expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+      sessionId: "session-fresh-reject",
+      title: "summarize latest failures",
+    });
+  }, 10_000);
+
   it("upgrades a prompt-only title from the first non-empty assistant reply", async () => {
     const rawTitle = "I want you to summarize latest failures";
     const userMessage = {

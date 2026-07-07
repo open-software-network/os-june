@@ -5223,7 +5223,7 @@ export function AgentWorkspace({
     const titlePromise =
       targetSessionId || options?.issueReport
         ? undefined
-        : agentSessionTitleForPrompt(titleContent);
+        : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
     const fallbackSessionTitle = options?.issueReport
       ? "Issue report"
       : explicitSession?.title?.trim() ||
@@ -6925,9 +6925,14 @@ export function AgentWorkspace({
     titleSuggestionInFlightSessionIdsRef.current.add(sessionId);
     let shouldRecheckLatestMessages = false;
     try {
-      const title = await agentSessionTitleForPrompt(prompt, hasReply ? reply : undefined);
+      const suggestion = await agentSessionTitleForPrompt(prompt, hasReply ? reply : undefined);
       if (titleSuggestionSessionIdsRef.current.has(sessionId)) return;
-      const nextSource: AgentSessionTitleSource = hasReply ? "exchange" : "prompt";
+      if (!suggestion.fromModel && sessionTitleOverridesRef.current[sessionId]) {
+        return;
+      }
+      const title = suggestion.title;
+      const nextSource: AgentSessionTitleSource =
+        suggestion.fromModel && hasReply ? "exchange" : "prompt";
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
         [sessionId]: title,
@@ -6936,9 +6941,9 @@ export function AgentWorkspace({
         ...sessionTitleSourceRef.current,
         [sessionId]: nextSource,
       };
-      if (nextSource === "exchange") {
+      if (suggestion.fromModel && nextSource === "exchange") {
         rememberSessionExchangeTitled(sessionId);
-      } else {
+      } else if (suggestion.fromModel && nextSource === "prompt") {
         shouldRecheckLatestMessages = true;
       }
       setHermesSessionItems((current) =>
@@ -8739,9 +8744,12 @@ async function agentSessionTitleForPrompt(prompt: string, response?: string) {
       suggestAgentSessionTitle(prompt, response),
       AGENT_TITLE_TIMEOUT_MS,
     );
-    return suggestion.title.trim() || titleFromPrompt(prompt);
+    const title = suggestion.title.trim();
+    return title
+      ? { title, fromModel: true }
+      : { title: titleFromPrompt(prompt), fromModel: false };
   } catch {
-    return titleFromPrompt(prompt);
+    return { title: titleFromPrompt(prompt), fromModel: false };
   }
 }
 

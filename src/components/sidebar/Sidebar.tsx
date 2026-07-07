@@ -52,7 +52,9 @@ import {
   useState,
 } from "react";
 import {
+  AGENT_SESSION_RENAMED_EVENT,
   markAgentNewSessionPending,
+  type AgentSessionRenamedDetail,
   type AgentSessionsChangedDetail,
 } from "../agent/AgentWorkspace";
 import { CategoryIcon } from "../agent/composer/CategoryIcon";
@@ -863,9 +865,21 @@ export function Sidebar({
       setWaitingAgentSessionIds(nextWaiting);
     }
 
+    function handleSessionRenamed(event: Event) {
+      const detail = (event as CustomEvent<AgentSessionRenamedDetail>).detail;
+      if (!detail?.sessionId) return;
+      setAgentSessions((current) =>
+        current.map((session) =>
+          session.id === detail.sessionId ? { ...session, title: detail.title } : session,
+        ),
+      );
+    }
+
     window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, handleSessionsChanged);
+    window.addEventListener(AGENT_SESSION_RENAMED_EVENT, handleSessionRenamed);
     return () => {
       window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, handleSessionsChanged);
+      window.removeEventListener(AGENT_SESSION_RENAMED_EVENT, handleSessionRenamed);
     };
   }, []);
 

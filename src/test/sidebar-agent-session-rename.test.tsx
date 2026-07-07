@@ -1,7 +1,10 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AGENT_SESSIONS_CHANGED_EVENT } from "../components/agent/AgentWorkspace";
+import {
+  AGENT_SESSION_RENAMED_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+} from "../components/agent/AgentWorkspace";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import type { HermesSessionInfo, NoteListItemDto } from "../lib/tauri";
 
@@ -77,6 +80,26 @@ describe("Sidebar agent session rename", () => {
     await user.type(input, "Manual sidebar name{Enter}");
 
     expect(onRenameAgentSession).toHaveBeenCalledWith("session-recent", "Manual sidebar name");
+  });
+
+  it("updates a renamed agent session row from the rename event", async () => {
+    renderSidebar();
+
+    expect(await screen.findByText("Recent session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSION_RENAMED_EVENT, {
+          detail: {
+            sessionId: "session-recent",
+            title: "Manual sidebar name",
+          },
+        }),
+      );
+    });
+
+    expect(screen.getByText("Manual sidebar name")).toBeInTheDocument();
+    expect(screen.queryByText("Recent session")).not.toBeInTheDocument();
   });
 
   it("cancels a pinned agent session row rename on Escape", async () => {
