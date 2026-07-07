@@ -1,3 +1,4 @@
+use super::echo;
 use crate::domain::types::AppError;
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,45 @@ const SILENCE_RMS_FLOOR: f32 = 0.012;
 /// silence pre-filter must not drop below what detection can still find, so both
 /// derive from this one constant.
 pub const SYSTEM_DETECTION_MIN_RMS: f32 = 0.006;
+/// How much louder the system source must be than the microphone, both measured
+/// over the same overlapping span, to treat that span of the microphone turn as
+/// echo of system audio. Echo re-captured through the air is heavily attenuated,
+/// so a clearly louder system source means the microphone only heard the speaker,
+/// not the user. Kept conservative so genuine simultaneous mic speech (comparable
+/// energy over the overlap) is kept. Level evidence only: used per frame as the
+/// tie-breaker when correlation is ambiguous, and per overlap span when no echo
+/// lag could be established at all.
+const ECHO_DOMINANCE_RATIO: f32 = 3.0;
+/// Per-frame |NCC| against the lag-aligned system reference at or above which
+/// the frame is speaker bleed regardless of level: bleed is a scaled copy of
+/// the reference, so it correlates highly even when quiet.
+const ECHO_SIMILARITY_TRIM: f32 = 0.55;
+/// Per-frame |NCC| at or below which the frame is genuine microphone speech
+/// regardless of level: the user's own voice does not correlate with the
+/// system reference, even when the system source is much louder.
+const ECHO_SIMILARITY_KEEP: f32 = 0.25;
+/// Energy loss after cancelling the system reference out of a microphone
+/// frame at or above which the frame was speaker bleed (echo). Genuine
+/// microphone speech is roughly orthogonal to the reference and survives the
+/// cancellation nearly intact.
+const ECHO_ERLE_TRIM_DB: f32 = 10.0;
+/// Minimum length for the genuine remainder of a trimmed microphone turn.
+/// Deliberately far below the detector's `min_turn_ms`: a remainder already
+/// sits inside a detected turn AND the echo evidence judged it genuine, so
+/// holding it to the detector's floor (which guards against room-noise false
+/// positives) would silently delete short real replies ("yes", "next") that
+/// follow trimmed bleed. This floor only suppresses verdict-smoothing
+/// slivers at trim boundaries.
+const ECHO_TRIM_REMAINDER_MIN_MS: i64 = 300;
+/// GCC-PHAT peak-over-mean below which the estimated echo lag is not trusted
+/// and echo rejection falls back to level evidence only. Independent signals
+/// measure well under this; a real echo path measures well over it.
+const ECHO_LAG_MIN_CONFIDENCE: f32 = 8.0;
+/// Minimum probe length for a usable GCC-PHAT estimate.
+const ECHO_LAG_PROBE_MIN_MS: i64 = 400;
+/// Probe cap: longer spans sharpen the estimate with diminishing returns.
+const ECHO_LAG_PROBE_MAX_MS: i64 = 4_000;
+const ERLE_RMS_FLOOR: f32 = 1.0e-6;
 
 #[derive(Debug, Clone)]
 pub struct DetectionSource {
@@ -52,13 +92,97 @@ struct SourceDetectionConfig {
     noise_multiplier: f32,
 }
 
+/// A source's detected turns paired with the audio they came from: the WAV
+/// path (for content-similarity evidence) and the per-window RMS energy (for
+/// level evidence), so cross-source attribution (echo rejection) can compare
+/// the microphone and system sources over the same wall-clock interval.
+struct DetectedSource {
+    source: String,
+    path: PathBuf,
+    windows: Vec<f32>,
+    turns: Vec<AudioTurn>,
+}
+
+/// Cross-source echo evidence for one (microphone, system) pair: the trusted
+/// GCC-PHAT lag, plus residual energy windows from the adaptive canceller.
+/// The residuals are computed lazily on first use — only recordings that
+/// actually produce ambiguous similarity frames pay for the two cancellation
+/// passes over the saved sources.
+struct EchoEvidence {
+    lag_ms: i64,
+    mic_path: PathBuf,
+    system_path: PathBuf,
+    residual_windows: std::cell::OnceCell<Option<Vec<f32>>>,
+}
+
+impl EchoEvidence {
+    fn residual_windows(&self) -> Option<&[f32]> {
+        self.residual_windows
+            .get_or_init(|| {
+                echo::residual_rms_windows(&self.mic_path, &self.system_path, self.lag_ms)
+            })
+            .as_deref()
+    }
+}
+
+/// Session-level trace of echo rejection. Trimming silently rewrites the
+/// user's audio timeline, so what was trimmed, under which lag, must be
+/// diagnosable after the fact (the processing pipeline records this as a
+/// checkpoint alongside `silent_source_dropped`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EchoRejectionReport {
+    /// Trusted session echo lag per (microphone, system) source pair, in the
+    /// pair iteration order; `None` when no probe was trusted (no
+    /// corroborated echo path — nothing was trimmed for that pair).
+    pub pair_lags_ms: Vec<Option<i64>>,
+    /// Microphone turns that lost at least one span to trimming.
+    pub trimmed_turn_count: usize,
+    /// Total microphone audio removed as speaker bleed.
+    pub trimmed_ms: i64,
+    /// Microphone turns trimmed away entirely.
+    pub dropped_turn_count: usize,
+    /// Artifacts whose detector found turns before echo rejection ran. A
+    /// source in this list that ends up with zero turns had them rejected
+    /// deliberately — downstream full-file fallbacks must not resurrect it.
+    pub detected_turn_artifact_ids: Vec<String>,
+    /// Every microphone span trimmed as speaker bleed, on the microphone
+    /// timeline. Transcription coalescing must not merge kept turns across
+    /// these, or the contiguous segment extraction re-includes the trimmed
+    /// audio.
+    pub microphone_echo_spans: Vec<(i64, i64)>,
+    /// Artifacts that lost audio to trimming. Full-source transcription
+    /// fallbacks (missing-source resurrection, all-remainders-failed lane
+    /// retry) must never run for these: the raw file contains the trimmed
+    /// bleed verbatim.
+    pub trimmed_artifact_ids: Vec<String>,
+}
+
+impl EchoRejectionReport {
+    /// Whether echo rejection had a (microphone, system) pair to examine.
+    pub fn attempted(&self) -> bool {
+        !self.pair_lags_ms.is_empty()
+    }
+}
+
 pub fn detect_turns(sources: &[DetectionSource]) -> Result<Vec<AudioTurn>, AppError> {
-    let mut turns = Vec::new();
+    detect_turns_with_report(sources).map(|(turns, _)| turns)
+}
+
+pub fn detect_turns_with_report(
+    sources: &[DetectionSource],
+) -> Result<(Vec<AudioTurn>, EchoRejectionReport), AppError> {
+    let mut detected = Vec::with_capacity(sources.len());
     for source in sources {
         let config = config_for_source(&source.source);
-        let mut source_turns = detect_source_turns(source, config)?;
-        turns.append(&mut source_turns);
+        let (windows, source_turns) = detect_source_turns(source, config)?;
+        detected.push(DetectedSource {
+            source: source.source.clone(),
+            path: source.path.clone(),
+            windows,
+            turns: source_turns,
+        });
     }
+    let (mut turns, report) = reject_speaker_echo_turns(detected);
     turns.sort_by(|left, right| {
         left.start_ms
             .cmp(&right.start_ms)
@@ -68,7 +192,7 @@ pub fn detect_turns(sources: &[DetectionSource]) -> Result<Vec<AudioTurn>, AppEr
     for (index, turn) in turns.iter_mut().enumerate() {
         turn.turn_index = index as i64;
     }
-    Ok(turns)
+    Ok((turns, report))
 }
 
 /// Whether a WAV's loudest RMS window never crosses the silence floor — i.e.
@@ -96,7 +220,20 @@ pub fn source_max_rms(path: &Path) -> Option<f32> {
         .map(|windows| windows.iter().copied().fold(0.0_f32, f32::max))
 }
 
-pub fn coalesce_turns_for_transcription(mut turns: Vec<AudioTurn>) -> Vec<AudioTurn> {
+pub fn coalesce_turns_for_transcription(turns: Vec<AudioTurn>) -> Vec<AudioTurn> {
+    coalesce_turns_for_transcription_avoiding_echo(turns, &[])
+}
+
+/// Coalesce adjacent same-source turns for transcription without bridging
+/// trimmed speaker-bleed spans. Segment extraction is contiguous
+/// (`write_turn_wav` cuts `[extraction_start_ms, end_ms]`), so merging two
+/// kept microphone remainders across a trimmed span would put the bleed
+/// audio right back into the transcribed segment, silently undoing echo
+/// rejection for every interior bleed shorter than the coherence gap.
+pub fn coalesce_turns_for_transcription_avoiding_echo(
+    mut turns: Vec<AudioTurn>,
+    microphone_echo_spans: &[(i64, i64)],
+) -> Vec<AudioTurn> {
     turns.sort_by(|left, right| {
         left.start_ms
             .cmp(&right.start_ms)
@@ -109,9 +246,14 @@ pub fn coalesce_turns_for_transcription(mut turns: Vec<AudioTurn>) -> Vec<AudioT
             let gap_ms = turn.start_ms - last.end_ms;
             let merged_end_ms = last.end_ms.max(turn.end_ms);
             let merged_duration_ms = merged_end_ms - last.start_ms;
+            let bridges_trimmed_bleed = turn.source == "microphone"
+                && microphone_echo_spans.iter().any(|(span_start, span_end)| {
+                    *span_start < turn.start_ms && *span_end > last.end_ms
+                });
             if last.source == turn.source
                 && gap_ms <= TRANSCRIPTION_COHERENCE_GAP_MS
                 && merged_duration_ms <= MAX_TRANSCRIPTION_CHUNK_MS
+                && !bridges_trimmed_bleed
             {
                 last.end_ms = merged_end_ms;
                 continue;
@@ -340,10 +482,10 @@ fn resample_linear(samples: &[i16], input_rate: u32, output_rate: u32) -> Vec<i1
 fn detect_source_turns(
     source: &DetectionSource,
     config: SourceDetectionConfig,
-) -> Result<Vec<AudioTurn>, AppError> {
+) -> Result<(Vec<f32>, Vec<AudioTurn>), AppError> {
     let windows = read_rms_windows(&source.path)?;
     if windows.is_empty() {
-        return Ok(Vec::new());
+        return Ok((windows, Vec::new()));
     }
     let threshold = activity_threshold(&windows, config);
     let start_windows = windows_for_ms(config.start_active_ms);
@@ -394,7 +536,10 @@ fn detect_source_turns(
         config.pre_roll_ms < config.merge_gap_ms,
         "turn pre-roll must be smaller than the merge gap to avoid overlapping extracted audio"
     );
-    Ok(apply_extraction_pre_roll(turns, config.pre_roll_ms))
+    Ok((
+        windows,
+        apply_extraction_pre_roll(turns, config.pre_roll_ms),
+    ))
 }
 
 fn read_rms_windows(path: &Path) -> Result<Vec<f32>, AppError> {
@@ -485,6 +630,569 @@ fn apply_extraction_pre_roll(mut turns: Vec<AudioTurn>, pre_roll_ms: i64) -> Vec
         turn.extraction_start_ms = (turn.start_ms - pre_roll_ms).max(0);
     }
     turns
+}
+
+/// Each source is detected independently, so the microphone source's detector
+/// happily emits a turn whenever it crosses its threshold — including when the
+/// only thing it heard was a remote participant's voice played through the
+/// speakers and bled back into the mic. That misattributes system audio to the
+/// microphone. ("Speaker" throughout means the loudspeaker, not a person:
+/// attribution stays source-based and no speaker identity is ever inferred,
+/// per the Turn glossary rule.) Trim the speaker-bleed spans out of each
+/// microphone turn, keeping the genuine remainder; the bled-over speech stays
+/// attributed to the system source. A mic turn entirely covered by bleed is
+/// trimmed to nothing.
+///
+/// Bleed is identified by three tiers of evidence:
+/// 1. Content similarity (preferred): per-frame normalized cross-correlation
+///    against the system source, lag-aligned by a GCC-PHAT estimate of the
+///    session's echo path. Bleed is a delayed copy of the reference, so it
+///    correlates highly no matter how quiet; the user's own voice does not
+///    correlate no matter how loud the system source is.
+/// 2. Cancellation depth (ambiguous similarity only): an adaptive canceller
+///    learns the reverberant echo path and checks whether the microphone frame
+///    collapses after removing the system reference.
+/// 3. Level dominance (fallback, when the lag is trusted but the audio cannot
+///    be scored): the system turn is clearly louder over the overlap. With no
+///    trusted lag at all nothing is trimmed — no corroborated echo path.
+fn reject_speaker_echo_turns(
+    detected: Vec<DetectedSource>,
+) -> (Vec<AudioTurn>, EchoRejectionReport) {
+    let system_sources: Vec<&DetectedSource> = detected
+        .iter()
+        .filter(|candidate| candidate.source == "system")
+        .collect();
+    let mut turns = Vec::new();
+    let mut report = EchoRejectionReport::default();
+    report.detected_turn_artifact_ids.extend(
+        detected
+            .iter()
+            .filter(|source| !source.turns.is_empty())
+            .map(|source| source.turns[0].artifact_id.clone()),
+    );
+    for source in &detected {
+        if source.source == "microphone" && !system_sources.is_empty() && !source.turns.is_empty() {
+            let config = config_for_source(&source.source);
+            // One echo-path lag per (microphone, system) pair, reused across
+            // every turn: the delay is a property of the session's playback
+            // and capture chain, not of any single turn.
+            let evidence: Vec<Option<EchoEvidence>> = system_sources
+                .iter()
+                .map(|system| {
+                    let lag_ms = estimate_echo_lag_ms(source, system)?;
+                    Some(EchoEvidence {
+                        lag_ms,
+                        mic_path: source.path.clone(),
+                        system_path: system.path.clone(),
+                        residual_windows: std::cell::OnceCell::new(),
+                    })
+                })
+                .collect();
+            report
+                .pair_lags_ms
+                .extend(evidence.iter().map(|pair| pair.as_ref().map(|e| e.lag_ms)));
+            for turn in &source.turns {
+                let echo_spans: Vec<(i64, i64)> = system_sources
+                    .iter()
+                    .zip(&evidence)
+                    .flat_map(|(system, evidence)| {
+                        echo_evidence_spans(turn, source, system, evidence.as_ref())
+                    })
+                    .collect();
+                let kept = trim_echo_from_microphone_turn(
+                    turn,
+                    &echo_spans,
+                    ECHO_TRIM_REMAINDER_MIN_MS,
+                    config.pre_roll_ms,
+                );
+                let kept_ms: i64 = kept.iter().map(|kept| kept.end_ms - kept.start_ms).sum();
+                let trimmed_ms = (turn.end_ms - turn.start_ms) - kept_ms;
+                if trimmed_ms > 0 {
+                    report.trimmed_turn_count += 1;
+                    report.trimmed_ms += trimmed_ms;
+                    if !report.trimmed_artifact_ids.contains(&turn.artifact_id) {
+                        report.trimmed_artifact_ids.push(turn.artifact_id.clone());
+                    }
+                    if kept.is_empty() {
+                        report.dropped_turn_count += 1;
+                    }
+                    report.microphone_echo_spans.extend(
+                        echo_spans
+                            .iter()
+                            .map(|(span_start, span_end)| {
+                                (
+                                    (*span_start).max(turn.start_ms),
+                                    (*span_end).min(turn.end_ms),
+                                )
+                            })
+                            .filter(|(span_start, span_end)| span_end > span_start),
+                    );
+                }
+                turns.extend(kept);
+            }
+        } else {
+            turns.extend(source.turns.iter().cloned());
+        }
+    }
+    (turns, report)
+}
+
+/// Estimate the session echo-path lag (how far the system audio's arrival in
+/// the microphone trails the system source) by probing system turns with
+/// GCC-PHAT until one is trusted. Probing is self-selecting: spans where the
+/// microphone holds mostly bleed give a sharp, high-confidence peak, while
+/// double-talk or bleed-free spans give a diffuse one. All system turns are
+/// candidates — an echo path can appear at any point of the session — but
+/// probing stops at the first trusted peak, so ordinary sessions pay for one
+/// or two probes. Returns `None` when no probe is trustworthy.
+fn estimate_echo_lag_ms(mic: &DetectedSource, system: &DetectedSource) -> Option<i64> {
+    for system_turn in system.turns.iter() {
+        let probe_end = system_turn
+            .end_ms
+            .min(system_turn.start_ms + ECHO_LAG_PROBE_MAX_MS);
+        if probe_end - system_turn.start_ms < ECHO_LAG_PROBE_MIN_MS {
+            continue;
+        }
+        if let Some(lag_ms) = probe_window_lag_ms(mic, system, system_turn.start_ms, probe_end) {
+            return Some(lag_ms);
+        }
+    }
+    None
+}
+
+/// Spans of `mic_turn` that are speaker bleed of `system` audio. Trimming
+/// requires a corroborated echo path: without one (headphones are the common
+/// case), level dominance alone would delete a quiet user's genuine speech —
+/// the double-talk failure this gate exists to prevent. Corroboration is the
+/// session lag when one was trusted, or a per-overlap probe of a dominated
+/// overlap when none was (an echo path can appear mid-session). With a
+/// trusted lag, content similarity decides; level dominance covers only
+/// spans the content evidence cannot score.
+fn echo_evidence_spans(
+    mic_turn: &AudioTurn,
+    mic: &DetectedSource,
+    system: &DetectedSource,
+    evidence: Option<&EchoEvidence>,
+) -> Vec<(i64, i64)> {
+    let mut spans = Vec::new();
+    for system_turn in &system.turns {
+        let start = mic_turn.start_ms.max(system_turn.start_ms);
+        let level_end = mic_turn.end_ms.min(system_turn.end_ms);
+        let Some(evidence) = evidence else {
+            // No session-wide echo path was corroborated — but one can
+            // appear mid-session (headphones unplugged, output routed to
+            // speakers). A dominated overlap earns its own probe: genuine
+            // quiet speech probes to nothing and stays; late bleed probes
+            // to a trusted lag and is scored like any other overlap.
+            if level_end > start
+                && rms_span_is_echo(&mic.windows, &system.windows, start, level_end)
+            {
+                if let Some(late_lag_ms) = probe_span_lag_ms(mic, system, start, level_end) {
+                    let late_evidence = EchoEvidence {
+                        lag_ms: late_lag_ms,
+                        mic_path: mic.path.clone(),
+                        system_path: system.path.clone(),
+                        residual_windows: std::cell::OnceCell::new(),
+                    };
+                    let similarity_end = mic_turn.end_ms.min(system_turn.end_ms + late_lag_ms);
+                    if similarity_end > start {
+                        if let Some(similarity_spans) = similarity_echo_spans(
+                            mic,
+                            system,
+                            start,
+                            similarity_end,
+                            &late_evidence,
+                        ) {
+                            spans.extend(similarity_spans);
+                        }
+                    }
+                }
+            }
+            continue;
+        };
+        // Bleed of system content at time t reaches the microphone at
+        // t + lag, so the microphone's bleed trails the system turn by
+        // the echo lag; score that tail too or it stays misattributed.
+        let similarity_end = mic_turn.end_ms.min(system_turn.end_ms + evidence.lag_ms);
+        if similarity_end > start {
+            if let Some(similarity_spans) = scored_spans_with_stale_lag_recovery(
+                mic,
+                system,
+                start,
+                similarity_end,
+                level_end,
+                evidence,
+            ) {
+                spans.extend(similarity_spans);
+                continue;
+            }
+        }
+        // The overlap could not be scored (unreadable audio, nothing above
+        // the silence floor); the trusted lag corroborates an echo path, so
+        // level dominance may decide. It compares the two sources over the
+        // same wall-clock interval, so it stays on the unshifted overlap.
+        if level_end > start && rms_span_is_echo(&mic.windows, &system.windows, start, level_end) {
+            spans.push((start, level_end));
+        }
+    }
+    spans
+}
+
+/// Score one overlap with the session lag, recovering from a stale lag: if
+/// content similarity clears the whole overlap as genuine while the system
+/// source is dominantly louder, that pattern is equally consistent with real
+/// bleed decorrelated by a lag that no longer matches the echo path (output
+/// device switched mid-session, clock drift over a long recording). Re-probe
+/// the overlap itself; a trusted lag that differs re-scores it before the
+/// spans are believed.
+fn scored_spans_with_stale_lag_recovery(
+    mic: &DetectedSource,
+    system: &DetectedSource,
+    start_ms: i64,
+    similarity_end_ms: i64,
+    level_end_ms: i64,
+    evidence: &EchoEvidence,
+) -> Option<Vec<(i64, i64)>> {
+    let spans = similarity_echo_spans(mic, system, start_ms, similarity_end_ms, evidence)?;
+    let suspicious = spans.is_empty()
+        && level_end_ms > start_ms
+        && rms_span_is_echo(&mic.windows, &system.windows, start_ms, level_end_ms);
+    if !suspicious {
+        return Some(spans);
+    }
+    let Some(reprobed_lag_ms) = probe_span_lag_ms(mic, system, start_ms, level_end_ms) else {
+        // No trusted lag on this overlap either: genuine quiet double-talk
+        // also looks like this (that is the money case), so believe the
+        // content verdict and keep the speech.
+        return Some(spans);
+    };
+    if reprobed_lag_ms == evidence.lag_ms {
+        return Some(spans);
+    }
+    let reprobed_evidence = EchoEvidence {
+        lag_ms: reprobed_lag_ms,
+        mic_path: mic.path.clone(),
+        system_path: system.path.clone(),
+        residual_windows: std::cell::OnceCell::new(),
+    };
+    let similarity_end_ms = similarity_end_ms.max(level_end_ms + reprobed_lag_ms);
+    similarity_echo_spans(mic, system, start_ms, similarity_end_ms, &reprobed_evidence)
+        .or(Some(spans))
+}
+
+/// GCC-PHAT over one span. Bleed can begin partway through a span (an output
+/// device switched while the system source kept playing), so up to three
+/// windows are probed — the span's head, middle, and tail — and the first
+/// trusted peak wins.
+fn probe_span_lag_ms(
+    mic: &DetectedSource,
+    system: &DetectedSource,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<i64> {
+    let window_ms = (end_ms - start_ms).min(ECHO_LAG_PROBE_MAX_MS);
+    if window_ms < ECHO_LAG_PROBE_MIN_MS {
+        return None;
+    }
+    let last_offset = (end_ms - start_ms) - window_ms;
+    let mut probed = Vec::with_capacity(3);
+    for offset in [0, last_offset / 2, last_offset] {
+        if probed.contains(&offset) {
+            continue;
+        }
+        probed.push(offset);
+        let window_start = start_ms + offset;
+        if let Some(lag_ms) =
+            probe_window_lag_ms(mic, system, window_start, window_start + window_ms)
+        {
+            return Some(lag_ms);
+        }
+    }
+    None
+}
+
+/// One GCC-PHAT probe window; the single trust gate every lag estimate in
+/// this module passes through.
+fn probe_window_lag_ms(
+    mic: &DetectedSource,
+    system: &DetectedSource,
+    start_ms: i64,
+    end_ms: i64,
+) -> Option<i64> {
+    let reference = echo::read_span_mono_16k(&system.path, start_ms, end_ms)?;
+    let capture = echo::read_span_mono_16k(&mic.path, start_ms, end_ms + echo::ECHO_MAX_LAG_MS)?;
+    let max_delay = (echo::ECHO_MAX_LAG_MS * echo::SIMILARITY_SAMPLE_RATE as i64 / 1000) as usize;
+    let estimate = echo::gcc_phat_delay(&reference, &capture, max_delay)?;
+    (estimate.confidence >= ECHO_LAG_MIN_CONFIDENCE)
+        .then(|| (estimate.delay_samples as i64 * 1000) / echo::SIMILARITY_SAMPLE_RATE as i64)
+}
+
+/// Level evidence: over `[start_ms, end_ms)` the system source is so much
+/// louder than the microphone that the microphone plausibly only heard the
+/// speaker. Compare both sources over the same span: the question is whether,
+/// where they coincide, the microphone carries anything of its own.
+fn rms_span_is_echo(
+    mic_windows: &[f32],
+    system_windows: &[f32],
+    start_ms: i64,
+    end_ms: i64,
+) -> bool {
+    let mic_energy = mean_rms(mic_windows, start_ms, end_ms);
+    let system_energy = mean_rms(system_windows, start_ms, end_ms);
+    system_energy >= mic_energy * ECHO_DOMINANCE_RATIO
+}
+
+/// Longest stretch scored per read while collecting similarity frames. A
+/// continuous-bleed webinar can hold one mic turn open for hours; reading the
+/// whole overlap at once would buffer the native-rate audio of both sources
+/// in full (gigabytes for a long session), so score in bounded chunks.
+const SIMILARITY_READ_CHUNK_MS: i64 = 60_000;
+
+/// Content evidence for one overlap span: score lag-aligned 30 ms frames by
+/// normalized cross-correlation, smooth the per-frame verdicts, and return the
+/// bleed sub-spans. `None` (unreadable audio, nothing scorable) sends the
+/// caller to the level fallback.
+fn similarity_echo_spans(
+    mic: &DetectedSource,
+    system: &DetectedSource,
+    start_ms: i64,
+    end_ms: i64,
+    evidence: &EchoEvidence,
+) -> Option<Vec<(i64, i64)>> {
+    let mut frames = Vec::new();
+    let mut chunk_start_ms = start_ms;
+    while chunk_start_ms < end_ms {
+        let chunk_end_ms = end_ms.min(chunk_start_ms + SIMILARITY_READ_CHUNK_MS);
+        let capture = echo::read_span_mono_16k(&mic.path, chunk_start_ms, chunk_end_ms)?;
+        // The microphone hears the system audio `lag_ms` late, so the
+        // reference for mic content at t is the system source at t - lag.
+        let reference = echo::read_span_mono_16k(
+            &system.path,
+            chunk_start_ms - evidence.lag_ms,
+            chunk_end_ms - evidence.lag_ms,
+        )?;
+        let chunk_offset_samples =
+            ((chunk_start_ms - start_ms) * echo::SIMILARITY_SAMPLE_RATE as i64 / 1000) as usize;
+        frames.extend(
+            echo::windowed_ncc_frames(&capture, &reference)
+                .into_iter()
+                .map(|mut frame| {
+                    frame.start_sample += chunk_offset_samples;
+                    frame
+                }),
+        );
+        chunk_start_ms = chunk_end_ms;
+    }
+    if frames.is_empty() {
+        return None;
+    }
+    let verdicts = smooth_verdicts(&frame_verdicts(&frames, start_ms, evidence));
+    Some(echo_runs_to_spans(&frames, &verdicts, start_ms))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameVerdict {
+    Echo,
+    Genuine,
+}
+
+fn frame_verdicts(
+    frames: &[echo::SimilarityFrame],
+    span_start_ms: i64,
+    evidence: &EchoEvidence,
+) -> Vec<FrameVerdict> {
+    let mut verdicts = Vec::with_capacity(frames.len());
+    let mut previous = FrameVerdict::Genuine;
+    for frame in frames {
+        let verdict = match frame.ncc {
+            // A silent microphone frame has nothing to attribute either way;
+            // extend the neighboring verdict so it never splits a span.
+            None => previous,
+            Some(similarity) if similarity >= ECHO_SIMILARITY_TRIM => FrameVerdict::Echo,
+            Some(similarity) if similarity <= ECHO_SIMILARITY_KEEP => FrameVerdict::Genuine,
+            // Ambiguous correlation: cancellation depth is stronger evidence
+            // when available; otherwise let level evidence break the tie.
+            Some(_) => erle_frame_verdict(frame, span_start_ms, evidence)
+                .unwrap_or_else(|| level_frame_verdict(frame)),
+        };
+        verdicts.push(verdict);
+        previous = verdict;
+    }
+    verdicts
+}
+
+fn erle_frame_verdict(
+    frame: &echo::SimilarityFrame,
+    span_start_ms: i64,
+    evidence: &EchoEvidence,
+) -> Option<FrameVerdict> {
+    // First ambiguous frame of the recording pays for the cancellation
+    // passes; recordings that never get here skip them entirely.
+    let residual_windows = evidence.residual_windows()?;
+    let frame_start_ms =
+        span_start_ms + (frame.start_sample as i64 * 1000) / echo::SIMILARITY_SAMPLE_RATE as i64;
+    let window_index = (frame_start_ms.max(0) / WINDOW_MS) as usize;
+    let residual_rms = *residual_windows.get(window_index)?;
+    if frame.capture_rms <= ERLE_RMS_FLOOR {
+        return None;
+    }
+    if residual_rms <= ERLE_RMS_FLOOR {
+        return Some(FrameVerdict::Echo);
+    }
+    let erle_db = 20.0 * (frame.capture_rms / residual_rms).log10();
+    if erle_db >= ECHO_ERLE_TRIM_DB {
+        Some(FrameVerdict::Echo)
+    } else {
+        Some(FrameVerdict::Genuine)
+    }
+}
+
+fn level_frame_verdict(frame: &echo::SimilarityFrame) -> FrameVerdict {
+    if frame.reference_rms >= frame.capture_rms * ECHO_DOMINANCE_RATIO {
+        FrameVerdict::Echo
+    } else {
+        FrameVerdict::Genuine
+    }
+}
+
+/// Majority vote over a centered five-frame (75 ms) window so single-frame
+/// flicker does not fragment trim spans.
+fn smooth_verdicts(verdicts: &[FrameVerdict]) -> Vec<FrameVerdict> {
+    const HALF_WINDOW: usize = 2;
+    verdicts
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let from = index.saturating_sub(HALF_WINDOW);
+            let to = (index + HALF_WINDOW + 1).min(verdicts.len());
+            let echo_votes = verdicts[from..to]
+                .iter()
+                .filter(|verdict| **verdict == FrameVerdict::Echo)
+                .count();
+            if echo_votes * 2 > to - from {
+                FrameVerdict::Echo
+            } else {
+                FrameVerdict::Genuine
+            }
+        })
+        .collect()
+}
+
+/// Convert consecutive echo-verdict frames back to wall-clock spans relative
+/// to the scored span's start. Overlapping frames (the hop is half a frame)
+/// merge into contiguous spans.
+fn echo_runs_to_spans(
+    frames: &[echo::SimilarityFrame],
+    verdicts: &[FrameVerdict],
+    span_start_ms: i64,
+) -> Vec<(i64, i64)> {
+    let mut spans: Vec<(i64, i64)> = Vec::new();
+    for (frame, verdict) in frames.iter().zip(verdicts) {
+        if *verdict != FrameVerdict::Echo {
+            continue;
+        }
+        let frame_start = span_start_ms
+            + (frame.start_sample as i64 * 1000) / echo::SIMILARITY_SAMPLE_RATE as i64;
+        let frame_end = frame_start + echo::SIMILARITY_FRAME_MS;
+        match spans.last_mut() {
+            Some((_, last_end)) if frame_start <= *last_end => {
+                *last_end = (*last_end).max(frame_end)
+            }
+            _ => spans.push((frame_start, frame_end)),
+        }
+    }
+    spans
+}
+
+/// Cut the echo spans out of `mic_turn` and return the remaining genuine
+/// stretches that are still long enough to stand as their own turns. An empty
+/// span list returns the turn unchanged; spans covering the whole turn return
+/// nothing (pure echo, fully dropped).
+fn trim_echo_from_microphone_turn(
+    mic_turn: &AudioTurn,
+    echo_spans: &[(i64, i64)],
+    min_remainder_ms: i64,
+    pre_roll_ms: i64,
+) -> Vec<AudioTurn> {
+    if echo_spans.is_empty() {
+        return vec![mic_turn.clone()];
+    }
+    let mut spans = echo_spans.to_vec();
+    spans.sort_by_key(|(start, _)| *start);
+    let mut kept = Vec::new();
+    let mut cursor = mic_turn.start_ms;
+    let mut at_turn_head = true;
+    for (start, end) in spans {
+        if start > cursor {
+            push_microphone_remainder(
+                &mut kept,
+                mic_turn,
+                cursor,
+                start,
+                min_remainder_ms,
+                if at_turn_head { pre_roll_ms } else { 0 },
+            );
+        }
+        if end > cursor {
+            cursor = end;
+            at_turn_head = false;
+        }
+    }
+    if cursor < mic_turn.end_ms {
+        push_microphone_remainder(
+            &mut kept,
+            mic_turn,
+            cursor,
+            mic_turn.end_ms,
+            min_remainder_ms,
+            if at_turn_head { pre_roll_ms } else { 0 },
+        );
+    }
+    kept
+}
+
+/// Push `[start_ms, end_ms)` of `mic_turn` as a microphone turn when it is at
+/// least `min_remainder_ms` long. Remainders below the floor are smoothing
+/// slivers at trim boundaries, not speech the detector stood behind.
+/// `pre_roll_ms` must be zero for remainders that follow a trimmed span:
+/// pre-roll exists to recover soft turn onsets out of silence, but a trim
+/// boundary is preceded by the remote speaker's voice by construction, so
+/// rolling back would put bleed at the head of every extracted remainder.
+fn push_microphone_remainder(
+    turns: &mut Vec<AudioTurn>,
+    mic_turn: &AudioTurn,
+    start_ms: i64,
+    end_ms: i64,
+    min_remainder_ms: i64,
+    pre_roll_ms: i64,
+) {
+    if end_ms - start_ms < min_remainder_ms {
+        return;
+    }
+    turns.push(AudioTurn {
+        artifact_id: mic_turn.artifact_id.clone(),
+        source: mic_turn.source.clone(),
+        source_path: mic_turn.source_path.clone(),
+        extraction_start_ms: (start_ms - pre_roll_ms).max(0),
+        start_ms,
+        end_ms,
+        turn_index: 0,
+    });
+}
+
+/// Mean RMS of the windows spanning `[start_ms, end_ms)`. Returns 0 when the
+/// range is empty or falls outside the captured windows.
+fn mean_rms(windows: &[f32], start_ms: i64, end_ms: i64) -> f32 {
+    if windows.is_empty() || end_ms <= start_ms {
+        return 0.0;
+    }
+    let start = (start_ms.max(0) / WINDOW_MS) as usize;
+    let end = (windows_for_ms(end_ms.max(0)) as usize).min(windows.len());
+    if end <= start || start >= windows.len() {
+        return 0.0;
+    }
+    let slice = &windows[start..end];
+    slice.iter().copied().sum::<f32>() / slice.len() as f32
 }
 
 fn windows_for_ms(duration_ms: i64) -> i64 {
@@ -709,6 +1417,720 @@ mod tests {
         }
     }
 
+    #[test]
+    fn microphone_echo_of_system_audio_is_not_attributed_to_microphone() {
+        // Hands-free meeting: a remote participant speaks, captured loud and
+        // clean on the system source and bled quietly into the microphone.
+        // Without echo rejection the mic detector emits a "microphone" turn for
+        // that bleed, misattributing system audio to the user. A later,
+        // system-free mic turn (the user actually speaking) must still survive.
+        let dir = std::env::temp_dir().join(format!("os-june-echo-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let lag_samples = 1_280_usize; // 80 ms echo path
+        let speech = centered_splitmix_noise(7, 3 * rate / 2);
+        let own_speech = centered_splitmix_noise(99, 3 * rate / 2);
+
+        // System: 1.5s loud remote speech, then silence.
+        let mut system = vec![0.0_f32; 36 * rate / 10];
+        system[..3 * rate / 2].copy_from_slice(&speech);
+        write_samples(&system_path, &to_i16(&system));
+
+        // Mic: the quiet delayed bleed of that speech, 2.1s of silence, then
+        // 1.5s of the user genuinely speaking.
+        let mut mic = vec![0.0_f32; 51 * rate / 10];
+        for (index, sample) in speech.iter().enumerate() {
+            mic[index + lag_samples] += 0.1 * sample;
+        }
+        for (offset, sample) in own_speech.iter().enumerate() {
+            mic[(36 * rate / 10) + offset] += 0.5 * sample;
+        }
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        // The remote participant's speech is retained on the system source...
+        assert!(turns
+            .iter()
+            .any(|turn| turn.source == "system" && turn.start_ms < 1_000));
+        // ...the genuine, system-free microphone speech survives...
+        assert!(turns
+            .iter()
+            .any(|turn| turn.source == "microphone" && turn.start_ms > 2_500));
+        // ...and no microphone turn is attributed to the echoed system speech.
+        assert!(turns
+            .iter()
+            .filter(|turn| turn.source == "microphone")
+            .all(|turn| turn.start_ms > 2_500));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn similarity_gate_trims_correlated_bleed_and_keeps_quiet_double_talk() {
+        // A hands-free meeting where level evidence alone gets BOTH calls
+        // wrong: the remote participant's bleed lands only ~2x quieter than
+        // the system source (level says genuine), while the user's own quiet
+        // reply is >3x quieter (level says bleed). Content similarity decides
+        // correctly: bleed correlates with the lag-aligned system reference no
+        // matter its level, the user's voice does not.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-similarity-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let lag_samples = 1_280_usize; // 80 ms echo path
+        let speech = echo::test_signals::splitmix_noise(7, 4 * rate);
+        let reply = echo::test_signals::splitmix_noise(99, 4 * rate);
+
+        // System: 4s of remote speech, then 2s of silence so both detectors
+        // can close their turns.
+        let mut system = vec![0.0_f32; 6 * rate];
+        system[..4 * rate].copy_from_slice(&speech);
+
+        // Microphone: what the room heard, delayed by the echo path.
+        // - a faint bleed bed (5%) while the speaker plays
+        // - loud bleed [0.5s, 1.7s]: remote speech at ~55% of the system level
+        // - the user's quiet reply [2.5s, 3.9s]: independent content at ~30%
+        let mut mic = vec![0.0_f32; 6 * rate];
+        for (index, sample) in speech.iter().enumerate() {
+            mic[index + lag_samples] += 0.05 * sample;
+        }
+        for index in (rate / 2)..(17 * rate / 10) {
+            mic[index + lag_samples] += 0.5 * speech[index];
+        }
+        for (offset, sample) in reply[..(39 * rate / 10) - (5 * rate / 2)]
+            .iter()
+            .enumerate()
+        {
+            mic[(5 * rate / 2) + offset] += 0.3 * sample;
+        }
+
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        // The user's quiet reply survives as a microphone turn...
+        assert!(
+            turns.iter().any(|turn| turn.source == "microphone"
+                && turn.start_ms >= 2_300
+                && turn.start_ms <= 2_700
+                && turn.end_ms >= 3_700),
+            "expected the quiet double-talk reply to survive, got {turns:?}"
+        );
+        // ...every bleed span is trimmed, including the one only ~2x quieter
+        // than the system source...
+        assert!(
+            turns
+                .iter()
+                .filter(|turn| turn.source == "microphone")
+                .all(|turn| turn.start_ms >= 2_300),
+            "expected all bleed to be trimmed from the microphone, got {turns:?}"
+        );
+        // ...and the remote speech stays attributed to the system source.
+        assert!(turns
+            .iter()
+            .any(|turn| turn.source == "system" && turn.start_ms < 500));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn erle_tier_trims_reverberant_bleed_and_keeps_quiet_reply() {
+        // Reverberant speaker bleed spreads across several delays. A single
+        // lag-aligned NCC frame is therefore only ambiguous, and the total
+        // level is not 3x below the system source, so pre-ERLE level fallback
+        // would keep the bleed as a microphone turn. The bleed runs whenever
+        // the system plays (a room's echo path is stationary; an on/off bleed
+        // would force the canceller to track a time-varying path, which is
+        // not the scenario this tier targets), and the user's reply lands
+        // after the remote speech ends.
+        let dir = std::env::temp_dir().join(format!("os-june-erle-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let speech = centered_splitmix_noise(7, 4 * rate);
+        let reply = centered_splitmix_noise(99, 4 * rate);
+        let taps = [
+            (80 * rate / 1_000, 0.28_f32),
+            (110 * rate / 1_000, 0.27_f32),
+            (140 * rate / 1_000, 0.27_f32),
+            (170 * rate / 1_000, 0.27_f32),
+            (200 * rate / 1_000, 0.27_f32),
+        ];
+
+        // System: 4s of remote speech, then 4s of silence so turns close.
+        let mut system = vec![0.0_f32; 8 * rate];
+        system[..4 * rate].copy_from_slice(&speech);
+
+        // Mic: the room's stationary echo of everything the system played
+        // (bleed spans ~[0.08s, 4.2s]), then the user's quiet reply
+        // [4.5s, 5.9s] while the system is silent.
+        let mut mic = vec![0.0_f32; 8 * rate];
+        for (index, sample) in speech.iter().enumerate() {
+            for (delay, gain) in taps {
+                mic[index + delay] += gain * sample;
+            }
+        }
+        for (offset, sample) in reply[..(59 * rate / 10) - (45 * rate / 10)]
+            .iter()
+            .enumerate()
+        {
+            mic[(45 * rate / 10) + offset] += 0.3 * sample;
+        }
+
+        // Fixture self-check: at first-tap alignment the steady-state bleed
+        // must land in the ambiguous NCC band, or this test would exercise
+        // the similarity tier instead of the ERLE tier.
+        let aligned_bleed_start = rate + taps[0].0;
+        let aligned_bleed_end = 3 * rate + taps[0].0;
+        let bleed_frames = echo::windowed_ncc_frames(
+            &mic[aligned_bleed_start..aligned_bleed_end],
+            &system[rate..3 * rate],
+        );
+        let mut bleed_nccs: Vec<f32> = bleed_frames.iter().filter_map(|frame| frame.ncc).collect();
+        bleed_nccs.sort_by(f32::total_cmp);
+        let median_bleed_ncc = bleed_nccs[bleed_nccs.len() / 2];
+        assert!(
+            median_bleed_ncc > ECHO_SIMILARITY_KEEP && median_bleed_ncc < ECHO_SIMILARITY_TRIM,
+            "fixture must exercise the ambiguous NCC band, got median NCC {median_bleed_ncc:.3}"
+        );
+
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        // The evidence window ends at the system turn's end plus the echo
+        // lag, so up to (last tap - lag) ~ 120 ms of decaying reverb tail can
+        // remain at the kept remainder's head - a documented residue, not
+        // misattributed speech.
+        assert!(
+            turns
+                .iter()
+                .filter(|turn| turn.source == "microphone")
+                .all(|turn| turn.start_ms >= 4_050),
+            "expected reverberant bleed to be trimmed from the microphone, got {turns:?}"
+        );
+        assert!(
+            turns.iter().any(|turn| turn.source == "microphone"
+                && turn.start_ms >= 4_050
+                && turn.start_ms <= 4_600
+                && turn.end_ms >= 5_800),
+            "expected the quiet reply to survive as microphone speech, got {turns:?}"
+        );
+        assert!(
+            turns
+                .iter()
+                .any(|turn| turn.source == "system" && turn.start_ms < 500),
+            "expected the system turn to survive, got {turns:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bleed_tail_past_system_turn_end_is_still_trimmed() {
+        // Bleed of system content at time t reaches the microphone at t + lag,
+        // so the last `lag` of bleed falls after the system turn's end. With a
+        // large echo lag that tail is longer than the remainder floor and must
+        // still be scored and trimmed, not kept because it left the unshifted
+        // overlap window.
+        let dir = std::env::temp_dir().join(format!("os-june-tail-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let lag_samples = 2 * rate / 5; // 400 ms echo path
+        let speech = centered_splitmix_noise(7, 2 * rate);
+
+        // System: 2s of remote speech, then 3s of silence so both detectors
+        // close their turns instead of running to the end of the file.
+        let mut system = vec![0.0_f32; 5 * rate];
+        system[..2 * rate].copy_from_slice(&speech);
+
+        // Mic: only the delayed bleed, quiet enough that level evidence alone
+        // would trim the overlap but leave the 400 ms tail untouched.
+        let mut mic = vec![0.0_f32; 5 * rate];
+        for (index, sample) in speech.iter().enumerate() {
+            mic[index + lag_samples] += 0.3 * sample;
+        }
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        assert!(
+            turns.iter().all(|turn| turn.source != "microphone"),
+            "expected the bleed tail to be trimmed with the rest, got {turns:?}"
+        );
+        assert!(turns.iter().any(|turn| turn.source == "system"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn headphones_session_never_trims_quiet_genuine_speech() {
+        // On headphones there is no echo path: nothing the system plays
+        // reaches the microphone, so no lag probe can succeed. A quiet user
+        // interjecting while the remote participant talks sits more than 3x
+        // below the near-full-scale system source, so level dominance alone
+        // would delete their genuine words. Without a corroborated echo path
+        // nothing may be trimmed.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-headphones-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let speech = centered_splitmix_noise(7, 2 * rate);
+        let interjection = centered_splitmix_noise(99, rate);
+
+        // System: 2s of loud remote speech, then silence.
+        let mut system = vec![0.0_f32; 5 * rate];
+        system[..2 * rate].copy_from_slice(&speech);
+
+        // Mic: only the user's quiet interjection [0.5s, 1.5s], >3x below the
+        // system level, with zero bleed anywhere.
+        let mut mic = vec![0.0_f32; 5 * rate];
+        for (offset, sample) in interjection.iter().enumerate() {
+            mic[rate / 2 + offset] += 0.15 * sample;
+        }
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        assert!(
+            turns
+                .iter()
+                .any(|turn| turn.source == "microphone" && turn.start_ms < 1_000),
+            "expected the user's quiet interjection to survive, got {turns:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn echo_path_appearing_on_a_late_system_turn_is_still_trimmed() {
+        // The session starts on headphones: the first three system turns
+        // produce no bleed, so a probe cap on early turns would never latch a
+        // lag. The user then unplugs, and the fourth system turn bleeds into
+        // the microphone. The bleed must still be trimmed — otherwise the
+        // original misattribution returns for the rest of the recording —
+        // while the genuine quiet interjection from the headphones phase
+        // survives.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-late-echo-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let interjection = centered_splitmix_noise(99, 9 * rate / 10);
+        let late_speech = centered_splitmix_noise(31, 3 * rate);
+
+        // System: three short headphones-phase turns, then the speakers-phase
+        // turn at [12s, 15s]; gaps exceed the detector's end-silence window.
+        let mut system = vec![0.0_f32; 18 * rate];
+        for (turn_index, seed) in [(0_usize, 7_u64), (1, 11), (2, 13)] {
+            let speech = centered_splitmix_noise(seed, 3 * rate / 2);
+            let start = turn_index * 4 * rate;
+            system[start..start + speech.len()].copy_from_slice(&speech);
+        }
+        system[12 * rate..15 * rate].copy_from_slice(&late_speech);
+
+        // Mic: a quiet genuine interjection during the first turn (no bleed
+        // exists on headphones), then quiet bleed of the late turn at a
+        // 120 ms path; both are >3x below the system level.
+        let mut mic = vec![0.0_f32; 18 * rate];
+        for (offset, sample) in interjection.iter().enumerate() {
+            mic[rate / 2 + offset] += 0.15 * sample;
+        }
+        for (index, sample) in late_speech.iter().enumerate() {
+            mic[12 * rate + index + (12 * rate / 100)] += 0.25 * sample;
+        }
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        assert!(
+            turns
+                .iter()
+                .any(|turn| turn.source == "microphone" && turn.start_ms < 1_000),
+            "expected the headphones-phase interjection to survive, got {turns:?}"
+        );
+        assert!(
+            turns
+                .iter()
+                .filter(|turn| turn.source == "microphone")
+                .all(|turn| turn.end_ms <= 2_000),
+            "expected the late-turn bleed to be trimmed, got {turns:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn echo_path_appearing_inside_one_long_system_turn_is_still_trimmed() {
+        // Continuous system playback, and the output device switches to
+        // speakers partway through: the single system turn's head carries no
+        // bleed, so no session lag can be latched from turn heads at all. The
+        // dominated overlap must earn its own probe (scanning past the head)
+        // and be trimmed.
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-mid-turn-echo-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let speech = centered_splitmix_noise(7, 10 * rate);
+
+        // System: one 10s turn of continuous speech.
+        let mut system = vec![0.0_f32; 13 * rate];
+        system[..10 * rate].copy_from_slice(&speech);
+
+        // Mic: bleed of the second half only (the switch happens at 5s), at
+        // a 120 ms path, >3x below the system level.
+        let mut mic = vec![0.0_f32; 13 * rate];
+        for (index, sample) in speech[5 * rate..].iter().enumerate() {
+            mic[5 * rate + index + (12 * rate / 100)] += 0.25 * sample;
+        }
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        assert!(
+            turns.iter().all(|turn| turn.source != "microphone"),
+            "expected the mid-turn bleed to be trimmed, got {turns:?}"
+        );
+        assert!(turns.iter().any(|turn| turn.source == "system"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_session_lag_is_reprobed_per_overlap() {
+        // The output device switches mid-session: the echo path jumps from
+        // 80 ms to 350 ms. Whichever lag the session probe locks onto, the
+        // other segment's bleed decorrelates at that alignment and content
+        // similarity would confidently call it genuine — bringing back the
+        // original misattribution. The all-genuine-but-dominated pattern must
+        // trigger a per-overlap re-probe that recovers the right lag.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-stale-lag-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let speech_one = centered_splitmix_noise(7, 3 * rate);
+        let speech_two = centered_splitmix_noise(31, 3 * rate);
+
+        // System: 3s of speech, 2.5s of silence (closes both detectors'
+        // turns), then 3s of speech after the device switch, then silence.
+        let mut system = vec![0.0_f32; 11 * rate];
+        system[..3 * rate].copy_from_slice(&speech_one);
+        system[(55 * rate / 10)..(85 * rate / 10)].copy_from_slice(&speech_two);
+
+        // Mic: quiet bleed of segment one at an 80 ms path, of segment two at
+        // a 350 ms path; >3x below the system level throughout, no genuine
+        // speech at all.
+        let mut mic = vec![0.0_f32; 11 * rate];
+        for (index, sample) in speech_one.iter().enumerate() {
+            mic[index + (8 * rate / 100)] += 0.25 * sample;
+        }
+        for (index, sample) in speech_two.iter().enumerate() {
+            mic[(55 * rate / 10) + index + (35 * rate / 100)] += 0.25 * sample;
+        }
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        assert!(
+            turns.iter().all(|turn| turn.source != "microphone"),
+            "expected bleed from both echo paths to be trimmed, got {turns:?}"
+        );
+        assert!(turns.iter().filter(|turn| turn.source == "system").count() >= 2);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn echo_decision_trims_quiet_overlap_but_keeps_loud_or_isolated_mic() {
+        // 30ms windows: window index == ms / 30. 200 windows == 6s.
+        let mut mic_windows = vec![0.0_f32; 200];
+        let mut system_windows = vec![0.0_f32; 200];
+        for window in 0..50 {
+            mic_windows[window] = 0.05; // quiet echo
+            system_windows[window] = 0.5; // loud system speech
+        }
+        mic_windows[120..170].fill(0.5); // genuine mic speech, no system
+        let system_turns = vec![make_turn("system", 0, 1_500)];
+        let config = config_for_source("microphone");
+        let min_remainder_ms = ECHO_TRIM_REMAINDER_MIN_MS;
+        let pre_roll_ms = config.pre_roll_ms;
+
+        // A trusted lag exists but the audio is unscorable (empty paths), so
+        // evidence falls to level dominance over each overlap.
+        let evidence = make_unscorable_evidence(80);
+        let system = make_detected("system", system_windows.clone(), system_turns.clone());
+
+        // Quiet mic fully covered by louder system audio is all echo, trimmed away.
+        let echo = make_turn("microphone", 0, 1_500);
+        let mic = make_detected("microphone", mic_windows.clone(), vec![echo.clone()]);
+        let echo_spans = echo_evidence_spans(&echo, &mic, &system, Some(&evidence));
+        assert_eq!(echo_spans, vec![(0, 1_500)]);
+        assert!(
+            trim_echo_from_microphone_turn(&echo, &echo_spans, min_remainder_ms, pre_roll_ms)
+                .is_empty()
+        );
+
+        // A mic turn with no overlapping system audio is genuine speech, kept whole.
+        let genuine = make_turn("microphone", 3_600, 5_100);
+        let genuine_spans = echo_evidence_spans(&genuine, &mic, &system, Some(&evidence));
+        assert!(genuine_spans.is_empty());
+        assert_eq!(
+            trim_echo_from_microphone_turn(&genuine, &genuine_spans, min_remainder_ms, pre_roll_ms),
+            vec![genuine]
+        );
+
+        // Simultaneous speech with comparable mic energy is not echo, kept whole.
+        let mut loud_mic_windows = vec![0.0_f32; 200];
+        loud_mic_windows[0..50].fill(0.45);
+        let loud_mic = make_detected("microphone", loud_mic_windows, vec![echo.clone()]);
+        assert!(echo_evidence_spans(&echo, &loud_mic, &system, Some(&evidence)).is_empty());
+
+        // Without a trusted lag no echo path is corroborated: nothing is
+        // trimmed even when the system source dominates (headphones case).
+        assert!(echo_evidence_spans(&echo, &mic, &system, None).is_empty());
+    }
+
+    #[test]
+    fn echo_trim_preserves_user_reply_merged_into_one_microphone_turn() {
+        // A remote participant speaks, then the user replies shortly after. The
+        // echo of the remote speech and the user's reply land in ONE mic turn
+        // (the gap is shorter than the detector's silence/merge windows). The
+        // echo must be trimmed off while the user's reply survives, instead of
+        // dropping the whole turn.
+        let config = config_for_source("microphone");
+        let min_remainder_ms = ECHO_TRIM_REMAINDER_MIN_MS;
+        let pre_roll_ms = config.pre_roll_ms;
+        let mic_turn = make_turn("microphone", 0, 3_300);
+        let system_turns = vec![make_turn("system", 0, 2_000)];
+
+        // 30ms windows: 0..2000ms quiet echo, 2000..3300ms loud genuine reply.
+        let mut mic_windows = vec![0.0_f32; 110];
+        let mut system_windows = vec![0.0_f32; 110];
+        for window in 0..67 {
+            mic_windows[window] = 0.05; // echo of the remote participant
+            system_windows[window] = 0.5; // remote participant, loud and clean
+        }
+        mic_windows[67..110].fill(0.5); // the user's own reply, no system audio
+
+        let mic = make_detected("microphone", mic_windows, vec![mic_turn.clone()]);
+        let system = make_detected("system", system_windows, system_turns);
+        let evidence = make_unscorable_evidence(80);
+        let echo_spans = echo_evidence_spans(&mic_turn, &mic, &system, Some(&evidence));
+        let kept =
+            trim_echo_from_microphone_turn(&mic_turn, &echo_spans, min_remainder_ms, pre_roll_ms);
+
+        // The echoed front is removed; the user's reply remains a mic turn.
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].source, "microphone");
+        assert!(kept[0].start_ms >= 2_000);
+        assert_eq!(kept[0].end_ms, 3_300);
+    }
+
+    #[test]
+    fn echo_trim_keeps_short_genuine_reply_after_bleed() {
+        // A one-word reply ("yes", "next") right after trimmed bleed is well
+        // under the detector's 700 ms minimum turn length, but it sits inside
+        // an already-detected turn and the evidence judged it genuine. The
+        // remainder floor must keep it while still dropping smoothing slivers.
+        let mic_turn = make_turn("microphone", 0, 2_400);
+
+        // Bleed covers [0, 2_000); the 400 ms remainder is the reply.
+        let kept = trim_echo_from_microphone_turn(
+            &mic_turn,
+            &[(0, 2_000)],
+            ECHO_TRIM_REMAINDER_MIN_MS,
+            TURN_PRE_ROLL_MS,
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].start_ms, kept[0].end_ms), (2_000, 2_400));
+
+        // A 90 ms remainder is a smoothing sliver, not a reply: still dropped.
+        let sliver_turn = make_turn("microphone", 0, 2_090);
+        assert!(trim_echo_from_microphone_turn(
+            &sliver_turn,
+            &[(0, 2_000)],
+            ECHO_TRIM_REMAINDER_MIN_MS,
+            TURN_PRE_ROLL_MS,
+        )
+        .is_empty());
+    }
+
+    fn to_i16(samples: &[f32]) -> Vec<i16> {
+        samples
+            .iter()
+            .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16)
+            .collect()
+    }
+
+    fn centered_splitmix_noise(seed: u64, len: usize) -> Vec<f32> {
+        let mut samples = echo::test_signals::splitmix_noise(seed, len);
+        let mean = samples.iter().copied().sum::<f32>() / samples.len().max(1) as f32;
+        for sample in &mut samples {
+            *sample -= mean;
+        }
+        samples
+    }
+
+    fn make_detected(source: &str, windows: Vec<f32>, turns: Vec<AudioTurn>) -> DetectedSource {
+        DetectedSource {
+            source: source.to_string(),
+            path: PathBuf::new(),
+            windows,
+            turns,
+        }
+    }
+
+    /// Evidence with a trusted lag but unreadable audio (empty paths), so
+    /// content similarity is unscorable and callers exercise the level
+    /// fallback with a corroborated echo path.
+    fn make_unscorable_evidence(lag_ms: i64) -> EchoEvidence {
+        EchoEvidence {
+            lag_ms,
+            mic_path: PathBuf::new(),
+            system_path: PathBuf::new(),
+            residual_windows: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn make_turn(source: &str, start_ms: i64, end_ms: i64) -> AudioTurn {
+        AudioTurn {
+            artifact_id: "artifact".to_string(),
+            source: source.to_string(),
+            source_path: PathBuf::new(),
+            extraction_start_ms: start_ms.max(0),
+            start_ms,
+            end_ms,
+            turn_index: 0,
+        }
+    }
     fn write_samples(path: &Path, samples: &[i16]) {
         let spec = WavSpec {
             channels: 1,

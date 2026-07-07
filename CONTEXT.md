@@ -79,6 +79,16 @@ Detection is energy-based (RMS windows + noise floor), never diarization.
 _Avoid_: segment (that is a live-preview chunk), utterance, speaker (no
 speaker identity is inferred).
 
+**Speaker bleed (echo)**:
+System audio re-captured by the microphone after playing through the
+loudspeakers — "speaker" is the device, never a person; no speaker identity
+is inferred. Echo rejection trims bleed spans out of Microphone turns on
+signal evidence (lag-aligned similarity, cancellation depth, level
+dominance); the speech stays attributed to the System source, and no
+downstream step may reintroduce trimmed audio.
+_Avoid_: crosstalk, feedback (that is the amplification loop), AEC as the
+concept name (it names the canceller mechanism, one evidence tier).
+
 **Coalescing**:
 Merging adjacent same-source turns before transcription when the gap is short
 and no other source intervenes. Distinct from `merge_close_turns` (intra-turn
