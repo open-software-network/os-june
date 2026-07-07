@@ -339,7 +339,7 @@ export function ModelPickerPopover({
           >
             <span className="agent-composer-model-row-name">All models</span>
             <IconChevronRightSmall
-              size={12}
+              size={16}
               aria-hidden
               className="agent-composer-model-row-chevron"
             />

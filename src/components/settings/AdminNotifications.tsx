@@ -1,4 +1,6 @@
+import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { useEffect } from "react";
 import type { AdminNotification } from "../../lib/hermes-admin";
 import { InlineNotice } from "../ui/InlineNotice";
@@ -53,6 +55,13 @@ export function AdminNotifications({
           className="admin-notification"
           tone={note.isError ? "destructive" : "info"}
           role="status"
+          icon={
+            note.isError ? (
+              <IconExclamationCircle size={15} ariaHidden />
+            ) : (
+              <IconCircleInfo size={15} ariaHidden />
+            )
+          }
           body={note.message}
           actions={
             <button

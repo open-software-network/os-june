@@ -811,6 +811,13 @@ input:focus-visible,
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* The files toolbar sits bare (its panel has no card), so it drops the divider
+ * and horizontal padding a card would otherwise provide. */
+#agent-panel-files .agent-management-toolbar {
+  padding: 0 0 var(--sp-3);
+  border-bottom: 0;
+}
+
 /* Aligns with the shared .settings-search treatment: a borderless card-filled
  * field with a layered inset ring and the same two-step focus ring — no gray
  * background. */
@@ -913,6 +920,7 @@ input:focus-visible,
 }
 
 .agent-capability-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
@@ -922,6 +930,16 @@ input:focus-visible,
   border-radius: var(--r-sm);
   border-bottom: 1px solid var(--border-subtle);
   transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Stretched click target: the main button's overlay covers the whole row so a
+ * click anywhere drills in, while the switch/chevron (raised below) stay
+ * independently interactive. */
+.agent-capability-row[data-clickable="true"] > button:first-child::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
 }
 
 /* Neutral background-only hover on the list rows (settings surface). Never a
@@ -963,6 +981,8 @@ input:focus-visible,
  * drill-in) plus a chevron that echoes the whole-row click affordance, matching
  * the installed-skill rows. */
 .agent-capability-actions {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
@@ -1429,11 +1449,22 @@ input:focus-visible,
  * doesn't hug the field group above it. */
 .agent-messaging-fields h4,
 .agent-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
   margin: var(--sp-2) 0 var(--sp-3);
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
+}
+
+.agent-advanced-toggle-chevron {
+  transition: transform var(--t-fast) var(--ease-out);
+}
+
+.agent-advanced-toggle-chevron[data-open] {
+  transform: rotate(180deg);
 }
 
 .agent-advanced-toggle {
@@ -5139,7 +5170,7 @@ input:focus-visible,
    * icon+placeholder gutter aligned with the row names below (row content
    * starts at the row's own sp-2 padding). */
   margin: var(--sp-1) var(--sp-2) 0;
-  padding: 0 var(--sp-2);
+  padding: 0 calc(var(--sp-2) - 2px);
   border-radius: var(--r-md);
   background: var(--card);
   color: var(--muted-foreground);
@@ -10932,6 +10963,13 @@ input:focus-visible,
   min-width: 0;
 }
 
+/* Match the inline Save / Remove buttons (control-md) so the field and buttons
+ * are the same height in this row, rather than the taller default field. */
+.settings-secret-field .dialog-input {
+  min-height: var(--control-md);
+  height: var(--control-md);
+}
+
 .settings-row-venice-key {
   align-items: start;
 }
@@ -10954,9 +10992,9 @@ input:focus-visible,
 .settings-rows .settings-more-options-trigger,
 .settings-more-options-trigger {
   width: auto;
-  /* Teensy top inset so the rounded hover fill doesn't run flush into the
-   * row/border directly above it. */
-  margin: var(--sp-1) calc(var(--sp-3) * -1) 0;
+  /* Top inset so the rounded hover fill has clear separation from the row/border
+   * directly above it. */
+  margin: var(--sp-3) calc(var(--sp-3) * -1) 0;
   padding: var(--sp-3);
   border: 0;
   border-radius: var(--r-md);
@@ -11367,6 +11405,7 @@ input:focus-visible,
 }
 
 .installed-skill-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-3);
@@ -11403,6 +11442,22 @@ input:focus-visible,
 
 .installed-skill-main-button {
   cursor: pointer;
+}
+
+/* Stretched click target so a click anywhere in the row drills in; the actions
+ * column and the setup panel (raised below) stay independently interactive. */
+.installed-skill-main-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-md);
+}
+
+.installed-skill-actions,
+.installed-skill-setup-panel,
+.installed-skill-main-wrap .skill-lifecycle {
+  position: relative;
+  z-index: 1;
 }
 
 .installed-skill-main-button:focus-visible {
@@ -11912,16 +11967,12 @@ input:focus-visible,
   padding: 0;
 }
 
-/* A quieter, tighter notice than the page-level banners — these are transient
- * change confirmations, so they sit lower-key than a persistent warning. */
-.admin-notification.inline-notice {
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
-}
-
+/* Admin change notices are the SAME shared InlineNotice as every page-level
+ * message — identical padding, size, and body type — so a message reads the
+ * same everywhere across the AI pages. Only the trailing dismiss control and
+ * the destructive tone are specific to these. */
 .admin-notification .inline-notice-body {
   color: var(--foreground);
-  font-size: var(--fs-sm);
 }
 
 .admin-notification[data-tone="destructive"] {
@@ -12060,24 +12111,10 @@ input:focus-visible,
   min-width: 0;
 }
 
+/* Uses the system .btn .btn-secondary for all chrome (border, fill, height);
+ * this only pins it from stretching in the flex row. */
 .external-dirs-choose {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
   flex: 0 0 auto;
-  height: var(--control-lg);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  transition: background-color var(--t-fast) var(--ease-out);
-}
-
-.external-dirs-choose:hover:not(:disabled) {
-  background: var(--sidebar-accent);
 }
 
 .external-dirs-choose:disabled {
@@ -12186,7 +12223,7 @@ input:focus-visible,
 .external-dir-details {
   display: grid;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-3) var(--sp-4) calc(var(--sp-3) + 16px + var(--sp-3));
+  padding: var(--sp-1) var(--sp-3) var(--sp-3);
 }
 
 /* Status chips follow the established .agent-status-pill pattern: a neutral
@@ -15100,10 +15137,10 @@ input:focus-visible,
   position: relative;
   display: inline-flex;
   align-items: center;
-  /* Breathing room between the (flex:1) label and the trailing count badge so
-   * a count like "72" never butts against the label. The chevron is absolutely
-   * positioned, so this only spaces the label from the count. */
-  gap: var(--sp-3);
+  /* Same label-to-count spacing as the popover option rows (select-label) so
+   * the count badge sits at a consistent distance in both places. The chevron
+   * is absolutely positioned, so this only spaces the label from the count. */
+  gap: var(--sp-2);
   min-width: 220px;
   height: var(--control-lg);
   padding: 0 32px 0 var(--sp-3);

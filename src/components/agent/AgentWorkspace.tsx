@@ -9205,9 +9205,17 @@ export function MessagingPlatformDetail({
             <button
               type="button"
               className="agent-advanced-toggle"
+              aria-expanded={showAdvanced}
               onClick={() => setShowAdvanced((value) => !value)}
             >
-              Advanced ({advanced.length})
+              <span>Advanced</span>
+              <span className="status-pill">{advanced.length}</span>
+              <IconChevronDownSmall
+                size={14}
+                aria-hidden
+                className="agent-advanced-toggle-chevron"
+                data-open={showAdvanced || undefined}
+              />
             </button>
             {showAdvanced ? (
               <MessagingFieldGroup

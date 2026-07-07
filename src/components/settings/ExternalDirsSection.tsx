@@ -453,7 +453,7 @@ function AddDirectoryDialog({
           />
           <button
             type="button"
-            className="external-dirs-choose"
+            className="btn btn-secondary external-dirs-choose"
             disabled={busy}
             onClick={() => void handleChooseFolder()}
           >
