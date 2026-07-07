@@ -61,12 +61,13 @@ attached images at all and fell back to vision-analyze + regenerate, which
 the SOUL forbids and which double-charges when it works.
 
 Security shape: bare filenames get NO new power. They are accepted only when
-they are a plain name (no path separators), carry a known image extension,
-and canonicalize inside the canonicalized images root (symlink escapes
-rejected), then go through the same size cap and content sniffing as signed
-references. Hermes can already read and write that directory directly, so
-this widens nothing; signed references keep their content-hash binding for
-files the tool itself issued.
+they are a plain name (no path separators) with the attachment prefix
+(`upload_*`), carry a known image extension, and canonicalize inside the
+canonicalized images root (symlink escapes rejected), then go through the
+same size cap and content sniffing as signed references. Hermes can already
+read and write that directory directly, so this widens nothing; tool-output
+files (`generated-image-*`) still require a signed reference, keeping their
+content-hash binding.
 
 JUN-129 shipped `/image <prompt>` as a client-side slash command: it creates a
 session and renders the generated image in-thread (loader -> image -> view /

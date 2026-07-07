@@ -7580,9 +7580,16 @@ fn parse_image_source_reference(reference: &str) -> Option<(String, String)> {
     Some((signature.to_ascii_lowercase(), expected_name))
 }
 
+/// Hermes saves conversation attachments into the images dir under this
+/// prefix. Bare (unsigned) edit sources are limited to it so tool-produced
+/// files keep the signed reference's content-hash binding.
+const IMAGE_ATTACHMENT_FILENAME_PREFIX: &str = "upload_";
+
 fn bare_image_source_filename(source_filename: &str) -> Option<&str> {
     let name = bare_filename(source_filename.trim())?;
-    if matches!(name, "." | "..") || image_mime_type_for_filename(name).is_none() {
+    if !name.starts_with(IMAGE_ATTACHMENT_FILENAME_PREFIX)
+        || image_mime_type_for_filename(name).is_none()
+    {
         return None;
     }
     Some(name)
@@ -8355,17 +8362,21 @@ mod tests {
         fs::create_dir_all(&images_dir).expect("images dir");
         write_test_png(&images_dir.join("upload_x.png"), b"attachment");
         fs::write(images_dir.join("upload_x.txt"), b"not an image").expect("write txt");
-        fs::create_dir(images_dir.join("directory.png")).expect("image directory");
+        fs::create_dir(images_dir.join("upload_dir.png")).expect("image directory");
+        // A real tool-output file: bare names must NOT reach it - tool results
+        // keep the signed reference's content-hash binding.
+        write_test_png(&images_dir.join("generated-image-x.png"), b"tool output");
         let image_sources = test_image_sources(images_dir, [7u8; 32]);
         let absolute = temp.path().join("upload_x.png");
 
         for source_filename in [
-            "../escape.png",
-            "sub/dir.png",
+            "../upload_x.png",
+            "sub/upload_x.png",
             absolute.to_str().expect("absolute path"),
             "upload_x.txt",
-            "missing.png",
-            "directory.png",
+            "upload_missing.png",
+            "upload_dir.png",
+            "generated-image-x.png",
         ] {
             assert!(
                 validate_image_source_reference(&image_sources, source_filename).is_err(),
