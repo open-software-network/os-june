@@ -1,8 +1,8 @@
 use crate::{
     audio::turns::{
-        coalesce_turns_for_transcription, detect_turns_with_report,
+        coalesce_turns_for_transcription_avoiding_echo, detect_turns_with_report,
         normalize_wav_for_transcription, split_wav_for_transcription, write_turn_wav, AudioTurn,
-        DetectionSource,
+        DetectionSource, EchoRejectionReport,
     },
     db::repositories::Repositories,
     domain::types::{
@@ -425,16 +425,21 @@ pub async fn process_saved_source_audio(
             )
             .await?;
     }
-    let (turns, echo_rejection) = detect_turns_with_report(
-        &sources
-            .iter()
-            .map(|(artifact_id, source, audio_path)| DetectionSource {
-                artifact_id: artifact_id.clone(),
-                source: source.clone(),
-                path: audio_path.clone(),
-            })
-            .collect::<Vec<_>>(),
-    )?;
+    let detection_sources = sources
+        .iter()
+        .map(|(artifact_id, source, audio_path)| DetectionSource {
+            artifact_id: artifact_id.clone(),
+            source: source.clone(),
+            path: audio_path.clone(),
+        })
+        .collect::<Vec<_>>();
+    // Detection now carries real DSP (GCC-PHAT probes, adaptive
+    // cancellation passes over full recordings) — CPU-bound for minutes on
+    // long meetings, so it must not pin an async runtime worker.
+    let (turns, echo_rejection) =
+        tokio::task::spawn_blocking(move || detect_turns_with_report(&detection_sources))
+            .await
+            .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??;
     // Echo rejection silently rewrites the microphone timeline; leave a
     // trace (which lag, how much trimmed) so missing-speech reports can be
     // diagnosed, mirroring the silent_source_dropped checkpoint.
@@ -449,14 +454,20 @@ pub async fn process_saved_source_audio(
                         "trimmedTurnCount": echo_rejection.trimmed_turn_count,
                         "trimmedMs": echo_rejection.trimmed_ms,
                         "droppedTurnCount": echo_rejection.dropped_turn_count,
+                        "durationMs": elapsed_ms(detection_started),
                     })
                     .to_string(),
                 ),
             )
             .await?;
     }
-    let turns = add_full_source_turns_for_missing_sources(&sources, turns);
-    let turns = coalesce_turns_for_transcription(turns);
+    let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
+    let turns = coalesce_turns_for_transcription_avoiding_echo(
+        turns,
+        &echo_rejection.microphone_echo_spans,
+    );
+    // Coverage is measured against the post-trim turn list on purpose:
+    // speaker bleed removed by echo rejection is not lost speech.
     let coverage_turns = turns.clone();
     repos
         .add_checkpoint(
@@ -1792,12 +1803,25 @@ fn partition_silent_system_sources(
 fn add_full_source_turns_for_missing_sources(
     sources: &[(String, String, PathBuf)],
     mut turns: Vec<AudioTurn>,
+    echo_rejection: &EchoRejectionReport,
 ) -> Vec<AudioTurn> {
     for (artifact_id, source, audio_path) in sources {
         let has_source_turn = turns
             .iter()
             .any(|turn| turn.artifact_id == *artifact_id && turn.source == *source);
         if has_source_turn {
+            continue;
+        }
+        // A source with zero turns AFTER detection found some had them
+        // rejected as speaker bleed on purpose. Resurrecting it as a
+        // full-file turn would transcribe the entire raw recording —
+        // re-attributing the whole remote meeting to the microphone, the
+        // exact misattribution echo rejection removes.
+        if echo_rejection
+            .detected_turn_artifact_ids
+            .iter()
+            .any(|detected| detected == artifact_id)
+        {
             continue;
         }
         turns.push(AudioTurn {
@@ -2068,7 +2092,11 @@ mod tests {
             turn_index: 0,
         };
 
-        let covered = add_full_source_turns_for_missing_sources(&sources, vec![detected_mic_turn]);
+        let covered = add_full_source_turns_for_missing_sources(
+            &sources,
+            vec![detected_mic_turn],
+            &EchoRejectionReport::default(),
+        );
 
         assert_eq!(covered.len(), 2);
         assert!(covered.iter().any(|turn| {
@@ -2121,10 +2149,71 @@ mod tests {
             },
         ];
 
-        let covered = add_full_source_turns_for_missing_sources(&sources, turns);
+        let covered = add_full_source_turns_for_missing_sources(
+            &sources,
+            turns,
+            &EchoRejectionReport::default(),
+        );
 
         assert_eq!(covered.len(), 2);
         assert!(covered.iter().all(|turn| turn.end_ms > turn.start_ms));
+    }
+
+    #[test]
+    fn all_bleed_microphone_is_not_resurrected_as_a_full_file_turn() {
+        // The flagship echo-rejection scenario: the user on speakers mostly
+        // listens, every detected microphone turn was bleed, and echo
+        // rejection dropped them all. The full-file fallback exists for
+        // sources whose detector genuinely found nothing; resurrecting this
+        // microphone would transcribe the entire raw recording and
+        // re-attribute the whole remote meeting to the user.
+        let mic_path = PathBuf::from("microphone.wav");
+        let sources = vec![(
+            "mic-artifact".to_string(),
+            "microphone".to_string(),
+            mic_path,
+        )];
+        let report = EchoRejectionReport {
+            detected_turn_artifact_ids: vec!["mic-artifact".to_string()],
+            dropped_turn_count: 1,
+            ..EchoRejectionReport::default()
+        };
+
+        let covered = add_full_source_turns_for_missing_sources(&sources, Vec::new(), &report);
+
+        assert!(
+            covered.is_empty(),
+            "deliberately rejected source must not be resurrected, got {covered:?}"
+        );
+    }
+
+    #[test]
+    fn coalescing_does_not_bridge_trimmed_bleed_spans() {
+        // Kept remainders around a trimmed interior bleed span sit closer
+        // than the transcription coherence gap. Merging them would extract
+        // one contiguous segment that contains the trimmed audio again.
+        let turn = |start_ms: i64, end_ms: i64| AudioTurn {
+            artifact_id: "mic-artifact".to_string(),
+            source: "microphone".to_string(),
+            source_path: PathBuf::from("microphone.wav"),
+            extraction_start_ms: start_ms,
+            start_ms,
+            end_ms,
+            turn_index: 0,
+        };
+        let remainders = vec![turn(0, 1_000), turn(2_000, 3_000)];
+
+        // Without a bleed span in the gap the pair coalesces as before...
+        let merged = coalesce_turns_for_transcription_avoiding_echo(remainders.clone(), &[]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!((merged[0].start_ms, merged[0].end_ms), (0, 3_000));
+
+        // ...but a trimmed bleed span between them forbids the bridge.
+        let kept_apart =
+            coalesce_turns_for_transcription_avoiding_echo(remainders, &[(1_000, 2_000)]);
+        assert_eq!(kept_apart.len(), 2);
+        assert_eq!(kept_apart[0].end_ms, 1_000);
+        assert_eq!(kept_apart[1].start_ms, 2_000);
     }
 
     #[test]
@@ -2144,8 +2233,12 @@ mod tests {
             ),
         ];
 
-        let covered = add_full_source_turns_for_missing_sources(&sources, Vec::new());
-        let covered = coalesce_turns_for_transcription(covered);
+        let covered = add_full_source_turns_for_missing_sources(
+            &sources,
+            Vec::new(),
+            &EchoRejectionReport::default(),
+        );
+        let covered = coalesce_turns_for_transcription_avoiding_echo(covered, &[]);
 
         assert_eq!(covered.len(), 2);
         let microphone = covered

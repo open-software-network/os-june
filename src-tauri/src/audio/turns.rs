@@ -141,6 +141,15 @@ pub struct EchoRejectionReport {
     pub trimmed_ms: i64,
     /// Microphone turns trimmed away entirely.
     pub dropped_turn_count: usize,
+    /// Artifacts whose detector found turns before echo rejection ran. A
+    /// source in this list that ends up with zero turns had them rejected
+    /// deliberately — downstream full-file fallbacks must not resurrect it.
+    pub detected_turn_artifact_ids: Vec<String>,
+    /// Every microphone span trimmed as speaker bleed, on the microphone
+    /// timeline. Transcription coalescing must not merge kept turns across
+    /// these, or the contiguous segment extraction re-includes the trimmed
+    /// audio.
+    pub microphone_echo_spans: Vec<(i64, i64)>,
 }
 
 impl EchoRejectionReport {
@@ -206,7 +215,20 @@ pub fn source_max_rms(path: &Path) -> Option<f32> {
         .map(|windows| windows.iter().copied().fold(0.0_f32, f32::max))
 }
 
-pub fn coalesce_turns_for_transcription(mut turns: Vec<AudioTurn>) -> Vec<AudioTurn> {
+pub fn coalesce_turns_for_transcription(turns: Vec<AudioTurn>) -> Vec<AudioTurn> {
+    coalesce_turns_for_transcription_avoiding_echo(turns, &[])
+}
+
+/// Coalesce adjacent same-source turns for transcription without bridging
+/// trimmed speaker-bleed spans. Segment extraction is contiguous
+/// (`write_turn_wav` cuts `[extraction_start_ms, end_ms]`), so merging two
+/// kept microphone remainders across a trimmed span would put the bleed
+/// audio right back into the transcribed segment, silently undoing echo
+/// rejection for every interior bleed shorter than the coherence gap.
+pub fn coalesce_turns_for_transcription_avoiding_echo(
+    mut turns: Vec<AudioTurn>,
+    microphone_echo_spans: &[(i64, i64)],
+) -> Vec<AudioTurn> {
     turns.sort_by(|left, right| {
         left.start_ms
             .cmp(&right.start_ms)
@@ -219,9 +241,14 @@ pub fn coalesce_turns_for_transcription(mut turns: Vec<AudioTurn>) -> Vec<AudioT
             let gap_ms = turn.start_ms - last.end_ms;
             let merged_end_ms = last.end_ms.max(turn.end_ms);
             let merged_duration_ms = merged_end_ms - last.start_ms;
+            let bridges_trimmed_bleed = turn.source == "microphone"
+                && microphone_echo_spans.iter().any(|(span_start, span_end)| {
+                    *span_start < turn.start_ms && *span_end > last.end_ms
+                });
             if last.source == turn.source
                 && gap_ms <= TRANSCRIPTION_COHERENCE_GAP_MS
                 && merged_duration_ms <= MAX_TRANSCRIPTION_CHUNK_MS
+                && !bridges_trimmed_bleed
             {
                 last.end_ms = merged_end_ms;
                 continue;
@@ -632,6 +659,12 @@ fn reject_speaker_echo_turns(
         .collect();
     let mut turns = Vec::new();
     let mut report = EchoRejectionReport::default();
+    report.detected_turn_artifact_ids.extend(
+        detected
+            .iter()
+            .filter(|source| !source.turns.is_empty())
+            .map(|source| source.turns[0].artifact_id.clone()),
+    );
     for source in &detected {
         if source.source == "microphone" && !system_sources.is_empty() && !source.turns.is_empty() {
             let config = config_for_source(&source.source);
@@ -675,6 +708,17 @@ fn reject_speaker_echo_turns(
                     if kept.is_empty() {
                         report.dropped_turn_count += 1;
                     }
+                    report.microphone_echo_spans.extend(
+                        echo_spans
+                            .iter()
+                            .map(|(span_start, span_end)| {
+                                (
+                                    (*span_start).max(turn.start_ms),
+                                    (*span_end).min(turn.end_ms),
+                                )
+                            })
+                            .filter(|(span_start, span_end)| span_end > span_start),
+                    );
                 }
                 turns.extend(kept);
             }
@@ -1069,6 +1113,7 @@ fn trim_echo_from_microphone_turn(
     spans.sort_by_key(|(start, _)| *start);
     let mut kept = Vec::new();
     let mut cursor = mic_turn.start_ms;
+    let mut at_turn_head = true;
     for (start, end) in spans {
         if start > cursor {
             push_microphone_remainder(
@@ -1077,10 +1122,13 @@ fn trim_echo_from_microphone_turn(
                 cursor,
                 start,
                 min_remainder_ms,
-                pre_roll_ms,
+                if at_turn_head { pre_roll_ms } else { 0 },
             );
         }
-        cursor = cursor.max(end);
+        if end > cursor {
+            cursor = end;
+            at_turn_head = false;
+        }
     }
     if cursor < mic_turn.end_ms {
         push_microphone_remainder(
@@ -1089,7 +1137,7 @@ fn trim_echo_from_microphone_turn(
             cursor,
             mic_turn.end_ms,
             min_remainder_ms,
-            pre_roll_ms,
+            if at_turn_head { pre_roll_ms } else { 0 },
         );
     }
     kept
@@ -1098,6 +1146,10 @@ fn trim_echo_from_microphone_turn(
 /// Push `[start_ms, end_ms)` of `mic_turn` as a microphone turn when it is at
 /// least `min_remainder_ms` long. Remainders below the floor are smoothing
 /// slivers at trim boundaries, not speech the detector stood behind.
+/// `pre_roll_ms` must be zero for remainders that follow a trimmed span:
+/// pre-roll exists to recover soft turn onsets out of silence, but a trim
+/// boundary is preceded by the remote speaker's voice by construction, so
+/// rolling back would put bleed at the head of every extracted remainder.
 fn push_microphone_remainder(
     turns: &mut Vec<AudioTurn>,
     mic_turn: &AudioTurn,
