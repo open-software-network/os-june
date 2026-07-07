@@ -5597,8 +5597,10 @@ input:focus-visible,
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  /* Same size as the title (inherits the menu-label --fs-md); only the color
+     is lighter so it reads as secondary without shrinking. */
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
