@@ -9052,7 +9052,14 @@ export function FilesystemPanel({
                   <h3 className="agent-files-root-title">{root.label}</h3>
                   <p>{root.description}</p>
                 </div>
-                <code>{compactPath(root.path)}</code>
+                <button
+                  type="button"
+                  className="agent-files-root-path"
+                  title={`Reveal ${root.label} in Finder`}
+                  onClick={() => void revealPath(root.path)}
+                >
+                  <code>{compactPath(root.path)}</code>
+                </button>
               </header>
               <div className="agent-files-body">
                 {root.entries.length ? (

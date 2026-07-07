@@ -811,10 +811,11 @@ input:focus-visible,
   border-bottom: 1px solid var(--border-subtle);
 }
 
-/* The files toolbar sits bare (its panel has no card), so it drops the divider
- * and horizontal padding a card would otherwise provide. */
+/* The files toolbar sits bare (its panel has no card), so it drops the divider.
+ * A small inset keeps the search field's focus ring off the panel's clipping
+ * (overflow: hidden) edge rather than flush at 0. */
 #agent-panel-files .agent-management-toolbar {
-  padding: 0 0 var(--sp-3);
+  padding: var(--sp-1) var(--sp-1) var(--sp-3);
   border-bottom: 0;
 }
 
@@ -991,6 +992,9 @@ input:focus-visible,
 .agent-capability-chevron {
   flex-shrink: 0;
   color: var(--muted-foreground);
+  /* The chevron sits in the raised actions column but is decorative: let clicks
+   * pass through to the row's stretched drill-in target beneath it. */
+  pointer-events: none;
 }
 
 /* The "Not configured" status pill sits just left of the switch in the row's
@@ -1162,13 +1166,31 @@ input:focus-visible,
 }
 
 .agent-files-root code {
-  max-width: 44%;
   overflow: hidden;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The path is a quiet button that reveals the folder in Finder; right-aligned
+ * in the header, with a neutral hover so it reads as clickable. */
+.agent-files-root-path {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  max-width: 44%;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.agent-files-root-path:hover {
+  background: var(--secondary);
 }
 
 .agent-files-tree {
@@ -11551,6 +11573,7 @@ input:focus-visible,
   flex-shrink: 0;
   color: var(--muted-foreground);
   opacity: 0.5;
+  pointer-events: none;
   transition: opacity var(--t-fast) var(--ease-out);
 }
 
@@ -11973,6 +11996,15 @@ input:focus-visible,
  * the destructive tone are specific to these. */
 .admin-notification .inline-notice-body {
   color: var(--foreground);
+}
+
+/* The dismiss control must not drive the notice height: at the default
+ * icon-button size (control-md) it's taller than the text line, so an admin
+ * notice rendered taller than a page notice with no dismiss. Sized down so the
+ * notice height is text-driven and matches a page notice. */
+.admin-notification-dismiss {
+  width: var(--control-xs);
+  height: var(--control-xs);
 }
 
 .admin-notification[data-tone="destructive"] {
@@ -15198,9 +15230,11 @@ input:focus-visible,
   position: absolute;
   left: 0;
   z-index: 60;
-  min-width: max(100%, 260px);
+  /* At least the trigger width, growing to fit the widest option, but capped so
+   * a long category name doesn't sprawl the menu across the card. */
+  min-width: 100%;
   width: max-content;
-  max-width: min(360px, 90vw);
+  max-width: min(260px, 90vw);
   margin: 0;
   /* sp-1 horizontal + sp-1 vertical padding gives the same inset feel as
    * the context menu, so item hover wash has a rounded border-radius
