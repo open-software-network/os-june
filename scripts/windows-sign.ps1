@@ -121,7 +121,15 @@ function New-ArtifactSigningMetadata([object]$Config) {
     $metadata.CorrelationId = $correlationId
   }
 
-  $metadataPath = Join-Path $env:TEMP "artifact-signing-metadata-$([Guid]::NewGuid().ToString('N')).json"
+  $tempRoot = First-NonBlank @($env:RUNNER_TEMP, $env:TEMP)
+  if ([string]::IsNullOrWhiteSpace($tempRoot)) {
+    Fail "RUNNER_TEMP or TEMP is required to write Artifact Signing metadata."
+  }
+  if (!(Test-Path -LiteralPath $tempRoot -PathType Container)) {
+    New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+  }
+
+  $metadataPath = Join-Path $tempRoot "artifact-signing-metadata-$([Guid]::NewGuid().ToString('N')).json"
   $metadata | ConvertTo-Json -Depth 4 | Set-Content -Path $metadataPath -Encoding utf8
   return $metadataPath
 }
@@ -152,13 +160,20 @@ $signtool = Find-SignTool
 
 if ($null -ne $artifactConfig) {
   $dlibPath = Find-ArtifactSigningDlib $artifactConfig.DlibPath
-  $metadataPath = New-ArtifactSigningMetadata $artifactConfig
-  $timestampUrl = First-NonBlank @($env:WINDOWS_SIGNING_TIMESTAMP_URL, "http://timestamp.acs.microsoft.com")
+  $metadataPath = $null
+  try {
+    $metadataPath = New-ArtifactSigningMetadata $artifactConfig
+    $timestampUrl = First-NonBlank @($env:WINDOWS_SIGNING_TIMESTAMP_URL, "http://timestamp.acs.microsoft.com")
 
-  Write-Host "[windows-sign] Signing $target with Azure Artifact Signing profile $($artifactConfig.ProfileName)"
-  & $signtool sign /fd SHA256 /td SHA256 /tr $timestampUrl /dlib $dlibPath /dmdf $metadataPath /d "June" $target
-  if ($LASTEXITCODE -ne 0) {
-    Fail "signtool Artifact Signing failed with exit code $LASTEXITCODE."
+    Write-Host "[windows-sign] Signing $target with Azure Artifact Signing profile $($artifactConfig.ProfileName)"
+    & $signtool sign /fd SHA256 /td SHA256 /tr $timestampUrl /dlib $dlibPath /dmdf $metadataPath /d "June" $target
+    if ($LASTEXITCODE -ne 0) {
+      Fail "signtool Artifact Signing failed with exit code $LASTEXITCODE."
+    }
+  } finally {
+    if (![string]::IsNullOrWhiteSpace($metadataPath) -and (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+      Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
+    }
   }
 } else {
   if ([string]::IsNullOrWhiteSpace($certificatePathValue)) {

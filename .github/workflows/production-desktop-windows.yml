@@ -107,13 +107,22 @@ jobs:
           choco install nsis 7zip -y --no-progress
           "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+          $nugetVersion = "6.14.0"
+          $nugetExpectedSha256 = "92DBED160DDEE0F64B901E907439E021211B428E57C089ECC12FC38DCC4BD9A5"
+          $windowsSdkBuildToolsVersion = "10.0.28000.2270"
+          $artifactSigningClientVersion = "1.0.128"
+
           $nuget = Join-Path $env:RUNNER_TEMP "nuget.exe"
-          Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile $nuget
+          Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/v$nugetVersion/nuget.exe" -OutFile $nuget
+          $nugetActualSha256 = (Get-FileHash -LiteralPath $nuget -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($nugetActualSha256 -ne $nugetExpectedSha256) {
+            throw "nuget.exe checksum mismatch. Expected $nugetExpectedSha256, got $nugetActualSha256."
+          }
 
           $sdkRoot = Join-Path $env:RUNNER_TEMP "windows-sdk-build-tools"
-          & $nuget install Microsoft.Windows.SDK.BuildTools -x -OutputDirectory $sdkRoot
+          & $nuget install Microsoft.Windows.SDK.BuildTools -Version $windowsSdkBuildToolsVersion -x -OutputDirectory $sdkRoot
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install Microsoft.Windows.SDK.BuildTools."
+            throw "Failed to install Microsoft.Windows.SDK.BuildTools $windowsSdkBuildToolsVersion."
           }
           $signTool = Get-ChildItem -Path $sdkRoot -Filter "signtool.exe" -Recurse -File |
             Sort-Object `
@@ -126,9 +135,9 @@ jobs:
           "WINDOWS_SIGNTOOL_PATH=$($signTool.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           $artifactClientRoot = Join-Path $env:RUNNER_TEMP "artifact-signing-client"
-          & $nuget install Microsoft.ArtifactSigning.Client -x -OutputDirectory $artifactClientRoot
+          & $nuget install Microsoft.ArtifactSigning.Client -Version $artifactSigningClientVersion -x -OutputDirectory $artifactClientRoot
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install Microsoft.ArtifactSigning.Client."
+            throw "Failed to install Microsoft.ArtifactSigning.Client $artifactSigningClientVersion."
           }
           $dlib = Get-ChildItem -Path $artifactClientRoot -Filter "Azure.CodeSigning.Dlib.dll" -Recurse -File |
             Sort-Object `
@@ -197,12 +206,27 @@ jobs:
           } elseif ($artifactPresent.Count -eq $artifactNames.Count -and $pfxPresent.Count -eq 0) {
             "WINDOWS_SIGNING_MODE=artifact" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             "mode=artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } elseif ($pfxPresent.Count -eq 0 -and $artifactPresent.Count -eq 0) {
+            Write-Host "::error::No Windows Authenticode signing credentials are configured. Configure either WINDOWS_CERTIFICATE/WINDOWS_CERTIFICATE_PASSWORD or all Azure Artifact Signing secrets."
+            $missing = 1
           } else {
-            Write-Host "::error::Configure either WINDOWS_CERTIFICATE/WINDOWS_CERTIFICATE_PASSWORD or all Azure Artifact Signing secrets, but not a partial mix."
+            if ($pfxPresent.Count -eq $pfxNames.Count -and $artifactPresent.Count -eq $artifactNames.Count) {
+              Write-Host "::error::Both PFX signing and Azure Artifact Signing are fully configured. Configure exactly one Windows Authenticode signing mode."
+            } elseif ($pfxPresent.Count -gt 0 -and $pfxPresent.Count -lt $pfxNames.Count -and $artifactPresent.Count -eq 0) {
+              $missingPfx = @($pfxNames | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+              Write-Host "::error::PFX signing is partially configured. Missing: $($missingPfx -join ', ')."
+            } elseif ($artifactPresent.Count -gt 0 -and $artifactPresent.Count -lt $artifactNames.Count -and $pfxPresent.Count -eq 0) {
+              $missingArtifact = @($artifactNames | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+              Write-Host "::error::Azure Artifact Signing is partially configured. Missing: $($missingArtifact -join ', ')."
+            } else {
+              Write-Host "::error::Windows Authenticode signing configuration mixes PFX and Azure Artifact Signing values. Configure exactly one complete signing mode."
+            }
             foreach ($name in ($pfxNames + $artifactNames)) {
               $value = [Environment]::GetEnvironmentVariable($name)
               if ([string]::IsNullOrWhiteSpace($value)) {
                 Write-Host "::notice::$name is not set."
+              } else {
+                Write-Host "::notice::$name is set."
               }
             }
             $missing = 1
