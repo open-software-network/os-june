@@ -1171,7 +1171,8 @@ pub fn update_hermes_bridge_skill(
             "This skill is too large to edit in June.",
         ));
     }
-    let skills_root = resolve_june_hermes_home(&app)?.join("skills");
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    let skills_root = hermes_home.join("skills");
     let path = match resolve_hermes_skill_file_in_root(&skills_root, &request.name) {
         Ok(path) => path,
         Err(error) if error.code == "hermes_skill_not_found" => {
@@ -1181,7 +1182,10 @@ pub fn update_hermes_bridge_skill(
             let external_dirs = external_skill_dirs(&app);
             let externals: Vec<(PathBuf, bool)> = external_dirs
                 .iter()
-                .filter_map(|dir| external_skill_dir_scan_path(dir).map(|path| (path, true)))
+                .filter_map(|dir| {
+                    external_skill_dir_scan_path_from_base(dir, Some(&hermes_home))
+                        .map(|path| (path, true))
+                })
                 .collect();
             if resolve_skill_in_roots(&externals, &request.name).is_ok() {
                 return Err(AppError::new(
@@ -1750,7 +1754,7 @@ fn skill_search_roots_for_hermes_home(
         roots.push((managed, false));
     }
     for dir in external_skill_dirs {
-        if let Some(resolved) = external_skill_dir_scan_path(dir) {
+        if let Some(resolved) = external_skill_dir_scan_path_from_base(dir, Some(hermes_home)) {
             roots.push((resolved, true));
         }
     }
@@ -6475,11 +6479,13 @@ fn effective_external_skill_dirs_from_config(
     default_dirs: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    let config_dir = config_path.parent();
     for dir in default_dirs {
-        push_external_skill_dir(&mut dirs, dir.clone());
+        push_external_skill_dir(&mut dirs, dir.clone(), config_dir);
     }
     for dir in existing_external_skill_dirs(config_path) {
-        push_external_skill_dir(&mut dirs, dir);
+        let dir = external_skill_dir_from_config_path(config_path, dir);
+        push_external_skill_dir(&mut dirs, dir, config_dir);
     }
     dirs
 }
@@ -6532,10 +6538,41 @@ fn external_skill_dir_from_config_entry(raw: &str) -> Option<PathBuf> {
     }
 }
 
-fn push_external_skill_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
-    if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
-        dirs.push(dir);
+fn external_skill_dir_from_config_path(config_path: &Path, dir: PathBuf) -> PathBuf {
+    let Some(config_dir) = config_path.parent() else {
+        return dir;
+    };
+    if should_anchor_external_config_dir(&dir) {
+        normalize_path_lexically(config_dir.join(dir))
+    } else {
+        dir
     }
+}
+
+fn should_anchor_external_config_dir(dir: &Path) -> bool {
+    if dir.is_absolute() {
+        return false;
+    }
+    let raw = dir.to_string_lossy();
+    !(raw == "~" || raw.starts_with("~/") || raw.contains('$'))
+}
+
+fn push_external_skill_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf, relative_base: Option<&Path>) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    let identity = external_skill_dir_identity(&dir, relative_base);
+    if dirs
+        .iter()
+        .any(|existing| external_skill_dir_identity(existing, relative_base) == identity)
+    {
+        return;
+    }
+    dirs.push(dir);
+}
+
+fn external_skill_dir_identity(dir: &Path, relative_base: Option<&Path>) -> PathBuf {
+    external_skill_dir_scan_path_from_base(dir, relative_base).unwrap_or_else(|| dir.to_path_buf())
 }
 
 /// Renders the `config.yaml` June owns for every Hermes spawn. Pure so the
@@ -6731,10 +6768,31 @@ fn builtin_external_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
     dirs
 }
 
-fn external_skill_dir_scan_path(dir: &Path) -> Option<PathBuf> {
+fn external_skill_dir_scan_path_from_base(
+    dir: &Path,
+    relative_base: Option<&Path>,
+) -> Option<PathBuf> {
     match expand_external_dir_path(&dir.to_string_lossy()) {
+        ExpandedPath::Resolved(path) if path.is_relative() => relative_base
+            .map(|base| normalize_path_lexically(base.join(&path)))
+            .or(Some(path)),
         ExpandedPath::Resolved(path) => Some(path),
         ExpandedPath::UnresolvedVar(_) => None,
+    }
+}
+
+fn normalize_path_lexically(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        if component == Component::CurDir {
+            continue;
+        }
+        normalized.push(component.as_os_str());
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
     }
 }
 
@@ -9174,6 +9232,46 @@ mcp_servers:
         std::fs::write(&bad_config, ": not yaml : [").expect("seed bad config");
         assert_eq!(
             effective_external_skill_dirs_from_config(&bad_config, std::slice::from_ref(&default)),
+            vec![default]
+        );
+    }
+
+    #[test]
+    fn effective_external_skill_dirs_anchors_relative_config_entries_to_config_dir() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let relative_skill_dir = home.path().join("team-skills");
+        let custom_skill = relative_skill_dir.join("custom-skill");
+        std::fs::create_dir_all(&custom_skill).expect("custom skill dir");
+        std::fs::write(custom_skill.join("SKILL.md"), "# Custom\n").expect("custom skill");
+        let config = home.path().join("config.yaml");
+        std::fs::write(&config, "skills:\n  external_dirs:\n    - ./team-skills\n")
+            .expect("seed config");
+
+        let effective = effective_external_skill_dirs_from_config(&config, &[]);
+        assert_eq!(effective, vec![relative_skill_dir.clone()]);
+
+        let roots = skill_search_roots_for_hermes_home(home.path(), &effective);
+        let (root, path, read_only) =
+            resolve_skill_in_roots(&roots, "custom-skill").expect("resolve custom skill");
+        assert_eq!(root, relative_skill_dir);
+        assert!(path.ends_with(Path::new("custom-skill").join("SKILL.md")));
+        assert!(read_only);
+    }
+
+    #[test]
+    fn effective_external_skill_dirs_dedupes_equivalent_expanded_paths() {
+        let config_home = tempfile::tempdir().expect("tempdir");
+        let user_home = home_dir_candidates().into_iter().next().expect("home");
+        let default = user_home.join(".agents").join("skills");
+        let config = config_home.path().join("config.yaml");
+        std::fs::write(
+            &config,
+            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+        )
+        .expect("seed config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&config, std::slice::from_ref(&default)),
             vec![default]
         );
     }
