@@ -59,6 +59,7 @@ import {
 } from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
 import { McpToolsDialog } from "./McpToolsDialog";
+import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
@@ -1292,6 +1293,7 @@ function EditServerDialog({
   saving,
   saveError,
   canEdit,
+  presentation = "dialog",
   onClose,
   onSignIn,
   onTest,
@@ -1305,6 +1307,8 @@ function EditServerDialog({
   saving: boolean;
   saveError?: string;
   canEdit: boolean;
+  /** "dialog" opens the modal (default); "page" renders the drill-in detail. */
+  presentation?: "dialog" | "page";
   onClose: () => void;
   onSignIn?: () => void;
   onTest?: () => void;
@@ -1359,6 +1363,227 @@ function EditServerDialog({
     if (ok) onClose();
   }
 
+  const footerButtons = (
+    <>
+      <button
+        type="button"
+        className="primary-action"
+        onClick={() => {
+          if (!saving) onClose();
+        }}
+        disabled={saving}
+      >
+        {canEdit ? "Cancel" : "Close"}
+      </button>
+      {canEdit ? (
+        <button
+          type="button"
+          className="primary-action primary-solid"
+          onClick={() => void handleSubmit()}
+          disabled={saving}
+        >
+          {saving ? "Saving" : "Save changes"}
+        </button>
+      ) : null}
+    </>
+  );
+
+  const detailBody = server ? (
+    <div className="mcp-server-detail-form">
+      <section className="mcp-server-detail-section" aria-label="Server overview">
+        <h3 className="mcp-server-detail-heading">Overview</h3>
+        <dl className="mcp-server-detail-grid">
+          <DetailItem label="Transport">{transport?.label}</DetailItem>
+          <DetailItem label="Status">
+            <span className="mcp-server-status" data-tone={status?.tone}>
+              {status ? <StatusIcon tone={status.tone} /> : null}
+              {status?.label}
+            </span>
+          </DetailItem>
+          <DetailItem label="Auth">{auth?.label}</DetailItem>
+          <DetailItem label="Tools">{toolCountText(tools.length)}</DetailItem>
+          <DetailItem label="Connection">
+            {server.transport === "stdio"
+              ? formatCommand(server.command, argsForDisplay)
+              : (server.url ?? "No URL configured.")}
+          </DetailItem>
+          <DetailItem label="Arguments">{listText(argsForDisplay, "None")}</DetailItem>
+          <DetailItem label="Environment variables">
+            {secretKeysText(env, "No environment variables")}
+          </DetailItem>
+          <DetailItem label="Headers">{secretKeysText(headers, "No headers")}</DetailItem>
+        </dl>
+        {server.statusMessage ? (
+          <p className="mcp-server-detail-note">{server.statusMessage}</p>
+        ) : null}
+        <SecurityLabels labels={securityLabels} />
+        {risk?.tier === "high" ? (
+          <p className="mcp-server-risk-note" data-tier="high" role="note">
+            <IconExclamationCircle size={13} ariaHidden />
+            {risk.reasons[0]?.detail ?? "This server can take high-impact actions."}
+          </p>
+        ) : null}
+        {risk?.tier === "high" && testedOk ? (
+          <p className="mcp-server-allowlist-note" role="note">
+            <IconShield size={13} ariaHidden />
+            {ALLOWLIST_RECOMMENDATION}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="mcp-server-detail-section" aria-label="Diagnostics">
+        <div className="mcp-server-detail-head">
+          <h3 className="mcp-server-detail-heading">Diagnostics</h3>
+          <div className="mcp-server-detail-actions">
+            {onTest ? (
+              <button
+                type="button"
+                className="mcp-detail-action"
+                disabled={test?.pending}
+                onClick={onTest}
+              >
+                {test?.pending ? "Testing" : "Test connection"}
+              </button>
+            ) : null}
+            {onTools ? (
+              <button type="button" className="mcp-detail-action" onClick={onTools}>
+                <IconFilter2 size={14} ariaHidden />
+                Tools
+              </button>
+            ) : null}
+            {onDelete ? (
+              <button
+                type="button"
+                className="mcp-detail-action mcp-detail-action-danger"
+                onClick={onDelete}
+              >
+                <IconTrashCan size={14} ariaHidden />
+                Delete server
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <TestResult test={test} tools={tools} />
+
+        {oauth ? (
+          <OauthStatus server={server} login={oauthLogin} testedOk={testedOk} onSignIn={onSignIn} />
+        ) : null}
+      </section>
+
+      <section className="mcp-server-detail-section" aria-label="Connection fields">
+        <h3 className="mcp-server-detail-heading">Connection</h3>
+        <fieldset className="mcp-add-field">
+          <span className="mcp-add-label">Transport</span>
+          <TransportSegmented value={editTransport} onChange={() => {}} disabled />
+        </fieldset>
+
+        <p className="mcp-add-note">
+          <IconShield size={13} ariaHidden />
+          To change a secret or the transport, delete this server and add it again.
+        </p>
+
+        {canEdit && isStdio ? (
+          <>
+            <fieldset className="mcp-add-field">
+              <label className="mcp-add-label" htmlFor="mcp-edit-command">
+                Command
+              </label>
+              <input
+                id="mcp-edit-command"
+                type="text"
+                className="mcp-add-input"
+                value={command}
+                placeholder="mcp-server-filesystem"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={Boolean(errors.command)}
+                onChange={(event) => setCommand(event.currentTarget.value)}
+              />
+              {errors.command ? <p className="mcp-add-error">{errors.command}</p> : null}
+            </fieldset>
+
+            <ListEditor
+              legend="Arguments"
+              addLabel="Add argument"
+              values={args}
+              errorPrefix="args"
+              errors={errors}
+              onChange={setArgs}
+            />
+          </>
+        ) : null}
+
+        {canEdit && !isStdio ? (
+          <fieldset className="mcp-add-field">
+            <label className="mcp-add-label" htmlFor="mcp-edit-url">
+              URL
+            </label>
+            <input
+              id="mcp-edit-url"
+              type="url"
+              className="mcp-add-input"
+              value={url}
+              placeholder="https://example.com/mcp"
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={Boolean(errors.url)}
+              onChange={(event) => setUrl(event.currentTarget.value)}
+            />
+            {errors.url ? <p className="mcp-add-error">{errors.url}</p> : null}
+          </fieldset>
+        ) : null}
+
+        {!canEdit ? (
+          <p className="mcp-server-detail-note">
+            This server's connection target cannot be edited from June.
+          </p>
+        ) : null}
+
+        {saveError ? (
+          <p className="mcp-add-error" role="alert">
+            {saveError}
+          </p>
+        ) : null}
+      </section>
+    </div>
+  ) : null;
+
+  // The manage surface can present either as a modal (the add flow, and any
+  // caller that still opens a dialog) or, in "page" mode, as a full drill-in
+  // detail that pins its breadcrumb like the skills / messaging detail — same
+  // shell classes, Save/Cancel carried into the bar actions.
+  if (presentation === "page") {
+    return (
+      <div className="skill-detail-shell">
+        <BreadcrumbBar
+          backLabel="Back to MCP servers"
+          onBack={() => {
+            if (!saving) onClose();
+          }}
+          items={[
+            {
+              label: "MCP servers",
+              onClick: () => {
+                if (!saving) onClose();
+              },
+            },
+            { label: server?.name ?? "" },
+          ]}
+          actions={footerButtons}
+        />
+        <div className="skill-detail-scroll" data-has-detail-bar="true">
+          <section
+            className="settings-page settings-group mcp-server-detail-page"
+            aria-label={server?.name ?? "MCP server"}
+          >
+            {detailBody}
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Dialog
       open={Boolean(server)}
@@ -1369,196 +1594,9 @@ function EditServerDialog({
       description="Review diagnostics and edit the connection target. Changes apply after the Hermes gateway restarts."
       width={640}
       className="mcp-add-dialog"
-      footer={
-        <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={() => {
-              if (!saving) onClose();
-            }}
-            disabled={saving}
-          >
-            {canEdit ? "Cancel" : "Close"}
-          </button>
-          {canEdit ? (
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              onClick={() => void handleSubmit()}
-              disabled={saving}
-            >
-              {saving ? "Saving" : "Save changes"}
-            </button>
-          ) : null}
-        </>
-      }
+      footer={footerButtons}
     >
-      {server ? (
-        <div className="mcp-server-detail-form">
-          <section className="mcp-server-detail-section" aria-label="Server overview">
-            <h3 className="mcp-server-detail-heading">Overview</h3>
-            <dl className="mcp-server-detail-grid">
-              <DetailItem label="Transport">{transport?.label}</DetailItem>
-              <DetailItem label="Status">
-                <span className="mcp-server-status" data-tone={status?.tone}>
-                  {status ? <StatusIcon tone={status.tone} /> : null}
-                  {status?.label}
-                </span>
-              </DetailItem>
-              <DetailItem label="Auth">{auth?.label}</DetailItem>
-              <DetailItem label="Tools">{toolCountText(tools.length)}</DetailItem>
-              <DetailItem label="Connection">
-                {server.transport === "stdio"
-                  ? formatCommand(server.command, argsForDisplay)
-                  : (server.url ?? "No URL configured.")}
-              </DetailItem>
-              <DetailItem label="Arguments">{listText(argsForDisplay, "None")}</DetailItem>
-              <DetailItem label="Environment variables">
-                {secretKeysText(env, "No environment variables")}
-              </DetailItem>
-              <DetailItem label="Headers">{secretKeysText(headers, "No headers")}</DetailItem>
-            </dl>
-            {server.statusMessage ? (
-              <p className="mcp-server-detail-note">{server.statusMessage}</p>
-            ) : null}
-            <SecurityLabels labels={securityLabels} />
-            {risk?.tier === "high" ? (
-              <p className="mcp-server-risk-note" data-tier="high" role="note">
-                <IconExclamationCircle size={13} ariaHidden />
-                {risk.reasons[0]?.detail ?? "This server can take high-impact actions."}
-              </p>
-            ) : null}
-            {risk?.tier === "high" && testedOk ? (
-              <p className="mcp-server-allowlist-note" role="note">
-                <IconShield size={13} ariaHidden />
-                {ALLOWLIST_RECOMMENDATION}
-              </p>
-            ) : null}
-          </section>
-
-          <section className="mcp-server-detail-section" aria-label="Diagnostics">
-            <div className="mcp-server-detail-head">
-              <h3 className="mcp-server-detail-heading">Diagnostics</h3>
-              <div className="mcp-server-detail-actions">
-                {onTest ? (
-                  <button
-                    type="button"
-                    className="mcp-detail-action"
-                    disabled={test?.pending}
-                    onClick={onTest}
-                  >
-                    {test?.pending ? "Testing" : "Test connection"}
-                  </button>
-                ) : null}
-                {onTools ? (
-                  <button type="button" className="mcp-detail-action" onClick={onTools}>
-                    <IconFilter2 size={14} ariaHidden />
-                    Tools
-                  </button>
-                ) : null}
-                {onDelete ? (
-                  <button
-                    type="button"
-                    className="mcp-detail-action mcp-detail-action-danger"
-                    onClick={onDelete}
-                  >
-                    <IconTrashCan size={14} ariaHidden />
-                    Delete server
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            <TestResult test={test} tools={tools} />
-
-            {oauth ? (
-              <OauthStatus
-                server={server}
-                login={oauthLogin}
-                testedOk={testedOk}
-                onSignIn={onSignIn}
-              />
-            ) : null}
-          </section>
-
-          <section className="mcp-server-detail-section" aria-label="Connection fields">
-            <h3 className="mcp-server-detail-heading">Connection</h3>
-            <fieldset className="mcp-add-field">
-              <span className="mcp-add-label">Transport</span>
-              <TransportSegmented value={editTransport} onChange={() => {}} disabled />
-            </fieldset>
-
-            <p className="mcp-add-note">
-              <IconShield size={13} ariaHidden />
-              To change a secret or the transport, delete this server and add it again.
-            </p>
-
-            {canEdit && isStdio ? (
-              <>
-                <fieldset className="mcp-add-field">
-                  <label className="mcp-add-label" htmlFor="mcp-edit-command">
-                    Command
-                  </label>
-                  <input
-                    id="mcp-edit-command"
-                    type="text"
-                    className="mcp-add-input"
-                    value={command}
-                    placeholder="mcp-server-filesystem"
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-invalid={Boolean(errors.command)}
-                    onChange={(event) => setCommand(event.currentTarget.value)}
-                  />
-                  {errors.command ? <p className="mcp-add-error">{errors.command}</p> : null}
-                </fieldset>
-
-                <ListEditor
-                  legend="Arguments"
-                  addLabel="Add argument"
-                  values={args}
-                  errorPrefix="args"
-                  errors={errors}
-                  onChange={setArgs}
-                />
-              </>
-            ) : null}
-
-            {canEdit && !isStdio ? (
-              <fieldset className="mcp-add-field">
-                <label className="mcp-add-label" htmlFor="mcp-edit-url">
-                  URL
-                </label>
-                <input
-                  id="mcp-edit-url"
-                  type="url"
-                  className="mcp-add-input"
-                  value={url}
-                  placeholder="https://example.com/mcp"
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-invalid={Boolean(errors.url)}
-                  onChange={(event) => setUrl(event.currentTarget.value)}
-                />
-                {errors.url ? <p className="mcp-add-error">{errors.url}</p> : null}
-              </fieldset>
-            ) : null}
-
-            {!canEdit ? (
-              <p className="mcp-server-detail-note">
-                This server's connection target cannot be edited from June.
-              </p>
-            ) : null}
-
-            {saveError ? (
-              <p className="mcp-add-error" role="alert">
-                {saveError}
-              </p>
-            ) : null}
-          </section>
-        </div>
-      ) : null}
+      {detailBody}
     </Dialog>
   );
 }

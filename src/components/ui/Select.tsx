@@ -210,7 +210,7 @@ export function Select({
         ) : null}
         <span>{selected?.label ?? placeholder}</span>
         {typeof selected?.count === "number" ? (
-          <span className="select-count">{selected.count}</span>
+          <span className="status-pill select-count">{selected.count}</span>
         ) : null}
         <IconChevronDownSmall size={14} />
       </button>
@@ -259,7 +259,7 @@ export function Select({
                 <span className="select-label">
                   {option.label}
                   {typeof option.count === "number" ? (
-                    <span className="select-count">{option.count}</span>
+                    <span className="status-pill select-count">{option.count}</span>
                   ) : null}
                 </span>
                 <span className="select-check" aria-hidden>

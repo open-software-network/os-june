@@ -81,6 +81,7 @@ import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
+import { Switch } from "../ui/Switch";
 import {
   cancelAgentTask,
   dictationHelperCommand,
@@ -8980,12 +8981,11 @@ export function MessagingPanel({
               // keeps only meaningful status (e.g. Connected). The "Not
               // configured" pill by the switch shows only for an enabled but
               // unconfigured platform.
-              const meta = meaningfulCapabilityStatus(state);
               return (
                 <CapabilityRow
                   key={platform.id}
                   title={platform.name}
-                  meta={meta}
+                  description={platform.description}
                   count={requiredTotal ? `${requiredSet}/${requiredTotal}` : undefined}
                   enabled={enabled}
                   notConfigured={enabled && !configured}
@@ -9406,15 +9406,12 @@ function CapabilityRow({
         {notConfigured ? (
           <span className="status-pill agent-capability-status">Not configured</span>
         ) : null}
-        <button
-          type="button"
-          className="agent-switch"
-          aria-pressed={enabled}
+        <Switch
+          checked={enabled}
           disabled={saving}
-          onClick={() => onToggle(!enabled)}
-        >
-          <span />
-        </button>
+          onCheckedChange={onToggle}
+          aria-label={`${enabled ? "Disable" : "Enable"} ${title}`}
+        />
         {onSelect ? (
           <IconChevronRightSmall size={14} aria-hidden className="agent-capability-chevron" />
         ) : null}

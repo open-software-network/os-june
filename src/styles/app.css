@@ -5138,7 +5138,7 @@ input:focus-visible,
    * room (sp-2 margin clears the 4px ring off the edge), and keep the
    * icon+placeholder gutter aligned with the row names below (row content
    * starts at the row's own sp-2 padding). */
-  margin: 0 var(--sp-2);
+  margin: var(--sp-1) var(--sp-2) 0;
   padding: 0 var(--sp-2);
   border-radius: var(--r-md);
   background: var(--card);
@@ -11353,9 +11353,9 @@ input:focus-visible,
 }
 
 .installed-skills-body {
-  /* Extra bottom padding so the last skill row clears the card's bottom scroll
-   * veil (.main-panel::after, 96px) instead of dissolving under it at rest. */
-  padding: var(--sp-1) var(--sp-3) var(--sp-10);
+  /* A little bottom room so the last row doesn't sit flush against the card
+   * edge / under the scroll veil, without leaving a large dead gap. */
+  padding: var(--sp-1) var(--sp-3) var(--sp-4);
 }
 
 .installed-skills-list {
@@ -15231,9 +15231,9 @@ input:focus-visible,
  * room between them, so a long "All categories 72" reads cleanly. */
 .select-label {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--sp-3);
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-2);
   min-width: 0;
   white-space: nowrap;
 }
@@ -15244,14 +15244,10 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-/* A small muted number badge for a count that used to be an inline parenthetical
- * (e.g. the skills category filter). Reads as a quiet figure, not part of the
- * label. */
+/* The count reads as the same quiet number badge used on the Agent page
+ * (a bare .status-pill), sitting right next to the label. */
 .select-count {
   flex-shrink: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 400;
 }
 
 /* Leading color chip for color selects (Appearance accent). A slightly rounded

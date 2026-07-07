@@ -508,15 +508,15 @@ function FilesGroup({
       <p className="settings-group-description">
         The folders agent sessions can read and write on this Mac.
       </p>
-      <div className="settings-card settings-agent-card">
-        <FilesystemPanel
-          loading={loading}
-          query={query}
-          snapshot={snapshot}
-          onQueryChange={onQueryChange}
-          onRefresh={onRefresh}
-        />
-      </div>
+      {/* No outer card: the search + refresh toolbar sits bare above, and each
+       * root (Workspace, Memory) provides its own wrapping card. */}
+      <FilesystemPanel
+        loading={loading}
+        query={query}
+        snapshot={snapshot}
+        onQueryChange={onQueryChange}
+        onRefresh={onRefresh}
+      />
     </section>
   );
 }
