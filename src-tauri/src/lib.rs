@@ -285,6 +285,7 @@ pub fn run() {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
+            setup_video_asset_scope(app);
             updates::setup(app);
             dictation::setup(app);
             agent_hud::setup(app);
@@ -308,6 +309,26 @@ pub fn run() {
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}
         });
+}
+
+/// Registers the generated-video directory in the asset-protocol scope so the
+/// inline `<video>` player can load it. `app_data_dir` appends a `-dev` suffix
+/// in debug builds (dev/prod data isolation), but the static assetProtocol
+/// scope (`$APPDATA/hermes/videos`) resolves the config identifier *without*
+/// that suffix, so inline playback of a generated file is denied in dev even
+/// though download (an fs read, unscoped) works. Registering the resolved
+/// directory here matches the real write path in both dev and prod.
+fn setup_video_asset_scope(app: &mut tauri::App) {
+    let videos_dir = match crate::app_paths::app_data_dir(app.handle()) {
+        Ok(data_dir) => data_dir.join("hermes").join("videos"),
+        Err(error) => {
+            tracing::warn!(%error, "video asset scope: could not resolve app data dir");
+            return;
+        }
+    };
+    if let Err(error) = app.asset_protocol_scope().allow_directory(&videos_dir, false) {
+        tracing::warn!(%error, path = %videos_dir.display(), "video asset scope: allow_directory failed");
+    }
 }
 
 #[cfg(desktop)]
