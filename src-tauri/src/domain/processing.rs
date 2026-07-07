@@ -289,7 +289,7 @@ pub async fn process_saved_audio(
     let transcription_provider = crate::providers::configured_transcription_provider();
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
-    let transcript = match transcribe_prepared_audio(
+    let transcription = match transcribe_prepared_audio(
         default_turn_transcriber(),
         TranscribePreparedAudioRequest {
             provider: transcription_provider.clone(),
@@ -307,7 +307,7 @@ pub async fn process_saved_audio(
     )
     .await
     {
-        Ok(transcript) => transcript,
+        Ok(transcription) => transcription,
         Err(error) => {
             repos
                 .set_note_status(
@@ -319,10 +319,17 @@ pub async fn process_saved_audio(
             return Err(error);
         }
     };
+    persist_microphone_only_transcript_coverage(
+        repos,
+        session_id,
+        "microphone",
+        &transcription.chunk_outcomes,
+    )
+    .await;
     let _ = std::fs::remove_dir_all(&temp_dir);
     let transcript = maybe_post_process_note_transcript(
         &transcription_provider,
-        transcript,
+        transcription.transcript,
         dictionary_context.as_deref(),
     )
     .await;
@@ -858,6 +865,83 @@ struct TranscriptCoverageSource {
     failed_turns: i64,
 }
 
+fn compute_chunk_transcript_coverage(
+    source: &str,
+    chunk_outcomes: &[TranscriptionChunkOutcome],
+) -> TranscriptCoverageCheckpoint {
+    let detected_speech_ms = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent)
+        .map(|chunk| span_ms(chunk.start_ms, chunk.end_ms))
+        .sum();
+    let transcribed_ms = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent && chunk.provider_returned_text)
+        .map(|chunk| span_ms(chunk.start_ms, chunk.end_ms))
+        .sum();
+    let detected_turns = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent)
+        .count() as i64;
+    let transcribed_turns = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent && chunk.provider_returned_text)
+        .count() as i64;
+    let failed_turns = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent && !chunk.provider_returned_text)
+        .count() as i64;
+    let warning = transcript_coverage_warning(detected_speech_ms, transcribed_ms);
+    TranscriptCoverageCheckpoint {
+        sources: vec![TranscriptCoverageSource {
+            source: source.to_string(),
+            detected_speech_ms,
+            transcribed_ms,
+            detected_turns,
+            transcribed_turns,
+            failed_turns,
+        }],
+        total_detected_speech_ms: detected_speech_ms,
+        total_transcribed_ms: transcribed_ms,
+        total_detected_turns: detected_turns,
+        total_transcribed_turns: transcribed_turns,
+        total_failed_turns: failed_turns,
+        warning,
+    }
+}
+
+// Coverage is diagnostic only and must never fail note processing: a
+// checkpoint that cannot be serialized or persisted is logged and skipped.
+async fn persist_microphone_only_transcript_coverage(
+    repos: &Repositories,
+    session_id: &str,
+    source: &str,
+    chunk_outcomes: &[TranscriptionChunkOutcome],
+) {
+    let coverage = compute_chunk_transcript_coverage(source, chunk_outcomes);
+    match serde_json::to_string(&coverage) {
+        Ok(payload) => {
+            if let Err(error) = repos
+                .add_checkpoint(session_id, "transcript_coverage", Some(payload))
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    session_id = %session_id,
+                    "failed to persist transcript_coverage checkpoint"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                session_id = %session_id,
+                "failed to serialize transcript_coverage checkpoint"
+            );
+        }
+    }
+}
+
 fn compute_transcript_coverage(
     sources: &[(String, String, PathBuf)],
     detected_turns: &[AudioTurn],
@@ -1080,6 +1164,21 @@ struct TranscribePreparedAudioRequest {
     turn_index: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TranscriptionChunkOutcome {
+    start_ms: i64,
+    end_ms: i64,
+    locally_silent: bool,
+    provider_returned_text: bool,
+    provider_no_speech: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TranscribePreparedAudioResult {
+    transcript: TranscriptionProviderResult,
+    chunk_outcomes: Vec<TranscriptionChunkOutcome>,
+}
+
 /// Full-source normalized audio, prepared once per source. The per-turn job
 /// loop used to normalize the WHOLE source recording again for every turn —
 /// the output name carried the turn index, so nothing was ever reused — and
@@ -1109,7 +1208,7 @@ fn normalized_full_source(
 async fn transcribe_prepared_audio(
     transcriber: TurnTranscriber,
     request: TranscribePreparedAudioRequest,
-) -> Result<TranscriptionProviderResult, AppError> {
+) -> Result<TranscribePreparedAudioResult, AppError> {
     let request_language = crate::dictation::configured_transcription_language();
     let chunk_dir = request.temp_dir.join("chunks");
     let audio_paths = if request.audio_path.exists() {
@@ -1118,11 +1217,13 @@ async fn transcribe_prepared_audio(
         vec![request.audio_path.clone()]
     };
     if audio_paths.len() == 1 {
-        return transcribe_with_transient_retries(
+        let audio_path = audio_paths.into_iter().next().unwrap_or(request.audio_path);
+        let duration_ms = source_wav_duration_ms(&audio_path).unwrap_or_default();
+        let transcript = transcribe_with_transient_retries(
             &transcriber,
             TranscriptionRequest {
                 provider: request.provider,
-                audio_path: audio_paths.into_iter().next().unwrap_or(request.audio_path),
+                audio_path,
                 title: request.title,
                 context: request.base_context,
                 language: request_language,
@@ -1130,20 +1231,42 @@ async fn transcribe_prepared_audio(
                 preview: false,
             },
         )
-        .await;
+        .await?;
+        return Ok(TranscribePreparedAudioResult {
+            chunk_outcomes: vec![TranscriptionChunkOutcome {
+                start_ms: 0,
+                end_ms: duration_ms,
+                locally_silent: false,
+                provider_returned_text: !transcript.text.trim().is_empty(),
+                provider_no_speech: false,
+            }],
+            transcript,
+        });
     }
 
     let mut previous = Vec::new();
     let mut text_parts = Vec::new();
     let mut language = None;
     let mut provider_name = request.provider.clone();
+    let mut chunk_outcomes = Vec::new();
+    let mut chunk_start_ms = 0_i64;
     for (index, audio_path) in audio_paths.into_iter().enumerate() {
+        let duration_ms = source_wav_duration_ms(&audio_path).unwrap_or_default();
+        let chunk_end_ms = chunk_start_ms.saturating_add(duration_ms);
         // Skip clearly-silent chunks before any API call. Fixed-size splitting of
         // a long (or fully silent) source leaves quiet boundary chunks, and each
         // request authorizes a credit hold that a no-speech response never
         // settles — so sending every silent chunk of a silent source would strand
         // holds until TTL and can trip `authorization_denied` on later work.
         if crate::audio::turns::source_is_effectively_silent(&audio_path) {
+            chunk_outcomes.push(TranscriptionChunkOutcome {
+                start_ms: chunk_start_ms,
+                end_ms: chunk_end_ms,
+                locally_silent: true,
+                provider_returned_text: false,
+                provider_no_speech: false,
+            });
+            chunk_start_ms = chunk_end_ms;
             continue;
         }
         let context = merge_transcription_context(
@@ -1168,7 +1291,17 @@ async fn transcribe_prepared_audio(
             // Backstop for a chunk the local silence check judged audible but the
             // provider still reports as no-speech: skip it so earlier chunks' text
             // survives, rather than aborting and dropping the whole turn.
-            Err(error) if is_no_speech_error(&error) => continue,
+            Err(error) if is_no_speech_error(&error) => {
+                chunk_outcomes.push(TranscriptionChunkOutcome {
+                    start_ms: chunk_start_ms,
+                    end_ms: chunk_end_ms,
+                    locally_silent: false,
+                    provider_returned_text: false,
+                    provider_no_speech: true,
+                });
+                chunk_start_ms = chunk_end_ms;
+                continue;
+            }
             Err(error) => return Err(error),
         };
         if language.is_none() {
@@ -1176,6 +1309,14 @@ async fn transcribe_prepared_audio(
         }
         provider_name = transcript.provider.clone();
         let text = transcript.text.trim().to_string();
+        chunk_outcomes.push(TranscriptionChunkOutcome {
+            start_ms: chunk_start_ms,
+            end_ms: chunk_end_ms,
+            locally_silent: false,
+            provider_returned_text: !text.is_empty(),
+            provider_no_speech: false,
+        });
+        chunk_start_ms = chunk_end_ms;
         previous.push(SourceTranscriptInput {
             source: request.source.clone(),
             text: text.clone(),
@@ -1196,10 +1337,13 @@ async fn transcribe_prepared_audio(
         // generic error that would fail the whole note.
         return Err(AppError::new("no_speech", "no_speech"));
     }
-    Ok(TranscriptionProviderResult {
-        text: text_parts.join("\n"),
-        language,
-        provider: provider_name,
+    Ok(TranscribePreparedAudioResult {
+        transcript: TranscriptionProviderResult {
+            text: text_parts.join("\n"),
+            language,
+            provider: provider_name,
+        },
+        chunk_outcomes,
     })
 }
 
@@ -1472,7 +1616,7 @@ async fn transcribe_one_turn_job(
     } else {
         turn_operation_id(&job)
     };
-    let transcript = match transcribe_prepared_audio(
+    let transcription = match transcribe_prepared_audio(
         Arc::clone(&transcriber),
         TranscribePreparedAudioRequest {
             provider: provider.clone(),
@@ -1490,7 +1634,7 @@ async fn transcribe_one_turn_job(
     )
     .await
     {
-        Ok(transcript) => transcript,
+        Ok(transcription) => transcription,
         Err(error) => {
             let warning = user_facing_transcription_failure_message(&error.code, &error.message);
             let input = SourceTranscriptInput {
@@ -1512,7 +1656,8 @@ async fn transcribe_one_turn_job(
         }
     };
     let transcript =
-        maybe_post_process_note_transcript(&provider, transcript, context.as_deref()).await;
+        maybe_post_process_note_transcript(&provider, transcription.transcript, context.as_deref())
+            .await;
     let input = SourceTranscriptInput {
         source: job.source,
         text: transcript.text,
@@ -2956,6 +3101,115 @@ mod tests {
         assert!(transcript_coverage_warning(100_000, 40_000));
     }
 
+    #[tokio::test]
+    async fn microphone_only_coverage_persists_provider_no_speech_gap() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        persist_microphone_only_transcript_coverage(
+            &repos,
+            &session_id,
+            "microphone",
+            &[
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 120_000,
+                    locally_silent: false,
+                    provider_returned_text: false,
+                    provider_no_speech: true,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 120_000,
+                    end_ms: 150_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+            ],
+        )
+        .await;
+
+        let note = repos.get_note(&note.id).await.expect("note with coverage");
+        let coverage = note.transcript_coverage.expect("coverage dto");
+        assert_eq!(coverage.detected_speech_ms, 150_000);
+        assert_eq!(coverage.transcribed_ms, 60_000);
+        assert!(coverage.warning);
+
+        let details: String = sqlx::query_scalar::query_scalar(
+            "SELECT details FROM recording_checkpoints WHERE recording_session_id = ? AND kind = 'transcript_coverage'",
+        )
+        .bind(&session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("checkpoint details");
+        let checkpoint: serde_json::Value =
+            serde_json::from_str(&details).expect("checkpoint json");
+        assert_eq!(checkpoint["totalFailedTurns"], 1);
+        assert_eq!(checkpoint["sources"][0]["failedTurns"], 1);
+    }
+
+    #[test]
+    fn microphone_only_coverage_ignores_locally_silent_chunks() {
+        let coverage = compute_chunk_transcript_coverage(
+            "microphone",
+            &[
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 120_000,
+                    locally_silent: true,
+                    provider_returned_text: false,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 120_000,
+                    end_ms: 150_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+            ],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 60_000);
+        assert_eq!(coverage.total_transcribed_ms, 60_000);
+        assert_eq!(coverage.total_failed_turns, 0);
+        assert!(!coverage.warning);
+    }
+
     #[test]
     fn source_failure_summary_suppresses_silent_system_when_microphone_failed() {
         let summary = source_failure_summary(&[
@@ -3184,7 +3438,26 @@ mod tests {
         .await
         .expect("a trailing no-speech chunk must not fail the whole turn");
 
-        assert_eq!(result.text, "first chunk speech");
+        assert_eq!(result.transcript.text, "first chunk speech");
+        assert_eq!(
+            result.chunk_outcomes,
+            vec![
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 31_000,
+                    locally_silent: false,
+                    provider_returned_text: false,
+                    provider_no_speech: true,
+                },
+            ]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3287,7 +3560,33 @@ mod tests {
 
         // Only the two audible chunks reach the API; the silent middle is skipped.
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(result.text, "chunk text 0\nchunk text 1");
+        assert_eq!(result.transcript.text, "chunk text 0\nchunk text 1");
+        assert_eq!(
+            result.chunk_outcomes,
+            vec![
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 60_000,
+                    locally_silent: true,
+                    provider_returned_text: false,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 60_000,
+                    end_ms: 62_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+            ]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
