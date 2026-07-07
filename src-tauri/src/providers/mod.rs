@@ -72,6 +72,13 @@ pub struct ProviderModelSettings {
     /// explicitly re-enabled, so re-opting into safety re-arms the prompt.
     #[serde(default)]
     pub image_safe_mode_prompt_dismissed: bool,
+    /// True once the user explicitly chose a safe-mode value (Settings toggle
+    /// or the consent dialog, both of which land in `set_image_safe_mode`).
+    /// Without it, a stored `image_safe_mode` is ignored on load and safe
+    /// mode reads its default (on) - files written by pre-JUN-209 builds
+    /// carry an incidental `false` the user never picked.
+    #[serde(default)]
+    pub image_safe_mode_set_by_user: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -417,6 +424,7 @@ fn set_image_safe_mode_impl(
 ) -> Result<ProviderModelSettingsDto, AppError> {
     update_settings(state, |settings| {
         settings.image_safe_mode = request.enabled;
+        settings.image_safe_mode_set_by_user = true;
         if request.enabled {
             settings.image_safe_mode_prompt_dismissed = false;
         }
@@ -823,6 +831,7 @@ fn default_settings() -> ProviderModelSettings {
         local_generation: LocalGenerationSettings::default(),
         image_safe_mode: true,
         image_safe_mode_prompt_dismissed: false,
+        image_safe_mode_set_by_user: false,
     }
 }
 
@@ -900,6 +909,12 @@ fn sanitize_settings(
         configured
     };
 
+    let image_safe_mode = if settings.image_safe_mode_set_by_user {
+        settings.image_safe_mode
+    } else {
+        true
+    };
+
     ProviderModelSettings {
         transcription_provider: transcription_provider_for_model(&transcription_model).to_string(),
         generation_provider: if local_active {
@@ -913,8 +928,9 @@ fn sanitize_settings(
         image_model: non_empty_or(settings.image_model, &defaults.image_model),
         venice_api_key: normalize_api_key_option(settings.venice_api_key),
         local_generation,
-        image_safe_mode: settings.image_safe_mode,
+        image_safe_mode,
         image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
+        image_safe_mode_set_by_user: settings.image_safe_mode_set_by_user,
     }
 }
 
@@ -1209,20 +1225,56 @@ mod tests {
 
         assert!(settings.image_safe_mode);
         assert!(!settings.image_safe_mode_prompt_dismissed);
+        assert!(!settings.image_safe_mode_set_by_user);
     }
 
     #[test]
     fn provider_settings_deserialize_defaults_missing_image_safe_mode_fields() {
-        let settings: ProviderModelSettings = serde_json::from_value(serde_json::json!({
+        let settings = serde_json::from_value::<ProviderModelSettings>(serde_json::json!({
             "transcriptionProvider": "venice",
             "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
             "generationModel": "zai-org-glm-5-2",
             "imageModel": "venice-sd35"
         }))
         .unwrap();
+        let settings = sanitize_settings(settings, &default_settings());
 
         assert!(settings.image_safe_mode);
         assert!(!settings.image_safe_mode_prompt_dismissed);
+        assert!(!settings.image_safe_mode_set_by_user);
+    }
+
+    #[test]
+    fn provider_settings_coerces_legacy_image_safe_mode_false_without_user_marker() {
+        let settings = serde_json::from_value::<ProviderModelSettings>(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "zai-org-glm-5-2",
+            "imageModel": "venice-sd35",
+            "imageSafeMode": false
+        }))
+        .unwrap();
+        let settings = sanitize_settings(settings, &default_settings());
+
+        assert!(settings.image_safe_mode);
+        assert!(!settings.image_safe_mode_set_by_user);
+    }
+
+    #[test]
+    fn provider_settings_preserves_image_safe_mode_false_with_user_marker() {
+        let settings = serde_json::from_value::<ProviderModelSettings>(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "zai-org-glm-5-2",
+            "imageModel": "venice-sd35",
+            "imageSafeMode": false,
+            "imageSafeModeSetByUser": true
+        }))
+        .unwrap();
+        let settings = sanitize_settings(settings, &default_settings());
+
+        assert!(!settings.image_safe_mode);
+        assert!(settings.image_safe_mode_set_by_user);
     }
 
     #[test]
@@ -1434,11 +1486,34 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
         assert!(saved.image_safe_mode);
         assert!(!saved.image_safe_mode_prompt_dismissed);
+        assert!(saved.image_safe_mode_set_by_user);
     }
 
     #[test]
-    fn set_image_safe_mode_prompt_dismissed_persists_flag() {
+    fn set_image_safe_mode_false_persists_user_marker_and_reloads_false() {
         let state = test_state();
+
+        let updated =
+            set_image_safe_mode_impl(&state, SetImageSafeModeRequest { enabled: false }).unwrap();
+
+        assert!(!updated.image_safe_mode);
+        let saved: ProviderModelSettings =
+            serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
+        assert!(!saved.image_safe_mode);
+        assert!(saved.image_safe_mode_set_by_user);
+
+        let reloaded = sanitize_settings(saved, &default_settings());
+        assert!(!reloaded.image_safe_mode);
+        assert!(reloaded.image_safe_mode_set_by_user);
+    }
+
+    #[test]
+    fn set_image_safe_mode_prompt_dismissed_persists_flag_without_touching_user_marker() {
+        let state = test_state();
+        {
+            let mut settings = state.settings.lock().unwrap();
+            settings.image_safe_mode_set_by_user = true;
+        }
 
         let updated = set_image_safe_mode_prompt_dismissed_impl(
             &state,
@@ -1450,6 +1525,7 @@ mod tests {
         let saved: ProviderModelSettings =
             serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
         assert!(saved.image_safe_mode_prompt_dismissed);
+        assert!(saved.image_safe_mode_set_by_user);
     }
 
     #[test]

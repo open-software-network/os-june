@@ -52,14 +52,17 @@ by resolution use the default 1K tier until June exposes resolution controls.
 
 ## Addendum - 2026-07-06 (JUN-209: safe mode on by default + consent dialog)
 
-Supersedes the **safe_mode** bullet above: the toggle now defaults **on**.
-No released build has shipped the `image_safe_mode` field (it landed with
-JUN-171 days before this change), so settings files in the wild do not carry
-it and a plain serde-default flip reaches everyone; a settings file missing
-the field reads `true`. If a build with the old default does ship before
-this lands, a one-time coercion would be needed instead - any settings save
-serializes the whole struct, so such files would pin an explicit `false` the
-user never chose.
+Supersedes the **safe_mode** bullet above: the toggle now defaults **on**,
+and a stored value is only honored when the user actually chose it. Any
+settings save serializes the whole struct, so files written by pre-JUN-209
+builds pin an explicit `false` the user never picked (reproduced on dev
+machines days after JUN-171 landed). A serde-default flip alone would miss
+those files, so the load path coerces: unless the persisted
+`image_safe_mode_set_by_user` marker is true, `image_safe_mode` reads `true`
+regardless of the stored value. The marker is set only by
+`set_image_safe_mode` (the Settings toggle and the consent dialog); users
+who deliberately opted out before the marker existed get flipped back on
+once and can opt out again.
 
 With a filtering default, the user needs an explicit, informed way out.
 June adds a **safe-mode consent dialog**, gated by an on-device keyword
