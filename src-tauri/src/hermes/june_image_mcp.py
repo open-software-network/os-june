@@ -12,8 +12,9 @@ generation/edit is billed to the signed-in user automatically.
 Generated and edited images are written to a dedicated images directory (passed
 as the second argument) under proxy-selected storage filenames. The Rust
 loopback proxy mints opaque edit-safe source references and validates them
-before reading source bytes for edits; this MCP only forwards those references
-back to the proxy.
+before reading source bytes for edits; plain filenames of images already in
+the images directory (user attachments) are also accepted. This MCP only
+forwards those references back to the proxy.
 
 It depends only on the Python standard library so it can run inside the Hermes
 runtime venv without extra packaging.
@@ -70,8 +71,16 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "A detailed description of the image to generate.",
                 },
+                "may_be_explicit": {
+                    "type": "boolean",
+                    "description": (
+                        "True when the requested image could contain adult, sexual, or "
+                        "otherwise explicit content; false for clearly benign requests. "
+                        "Judge the request itself, not just its wording."
+                    ),
+                },
             },
-            "required": ["prompt"],
+            "required": ["prompt", "may_be_explicit"],
         },
     },
     {
@@ -80,14 +89,17 @@ TOOLS: list[dict[str, Any]] = [
             "Edit an existing image (image-to-image) and show the result in the "
             "conversation. Use this whenever the user asks to change, modify, "
             "adjust, refine, or reframe an image you generated, edited, or "
-            "received from this tool earlier, including reframing like wider, "
+            "received from this tool earlier, or an image the user attached or "
+            "pasted into the conversation, including reframing like wider, "
             "zoom out, bigger perspective, or closer, plus recoloring, "
             "restyling, and adding or removing elements. This transforms the "
             "image file directly: you do NOT need to see, analyze, or describe "
             "the image to edit it. "
-            "`source_filename` MUST be a filename from a previous image tool "
-            "result from this June image workspace. Bare file names and paths "
-            "copied from disk are rejected. Returns the edited image inline plus "
+            "`source_filename` MUST be one of two values: a filename from a "
+            "previous image tool result, or the plain filename of an image the "
+            "user attached to the conversation exactly as shown in its context "
+            "(for example upload_20260707_113453_1.png). Full paths and "
+            "invented names are rejected. Returns the edited image inline plus "
             "a new edit-safe `filename` you can edit again."
         ),
         "inputSchema": {
@@ -96,16 +108,25 @@ TOOLS: list[dict[str, Any]] = [
                 "source_filename": {
                     "type": "string",
                     "description": (
-                        "The edit-safe filename of the image to edit, exactly "
-                        "as returned by a prior June image tool call."
+                        "The edit-safe filename returned by a prior June image "
+                        "tool call, or the plain filename of an image the user "
+                        "attached to the conversation. Never a full path."
                     ),
                 },
                 "instruction": {
                     "type": "string",
                     "description": "What to change about the image.",
                 },
+                "may_be_explicit": {
+                    "type": "boolean",
+                    "description": (
+                        "True when the requested image could contain adult, sexual, or "
+                        "otherwise explicit content; false for clearly benign requests. "
+                        "Judge the request itself, not just its wording."
+                    ),
+                },
             },
-            "required": ["source_filename", "instruction"],
+            "required": ["source_filename", "instruction", "may_be_explicit"],
         },
     },
 ]
@@ -284,7 +305,11 @@ def generate_image(
         base_url,
         token,
         "/image/generate",
-        {"prompt": prompt, "requestId": request_id},
+        {
+            "prompt": prompt,
+            "requestId": request_id,
+            "may_be_explicit": arguments.get("may_be_explicit", False),
+        },
     )
     image_base64 = str(envelope.get("imageBase64") or "")
     mime_type = str(envelope.get("mimeType") or "image/png")
@@ -323,6 +348,7 @@ def edit_image(
             "sourceFilename": source_filename,
             "prompt": instruction,
             "requestId": request_id,
+            "may_be_explicit": arguments.get("may_be_explicit", False),
         },
     )
     image_base64 = str(envelope.get("imageBase64") or "")
@@ -512,6 +538,8 @@ def smoke_test_generate_writes_proxy_issued_storage_filename() -> None:
                 raise AssertionError(f"wrong path: {path}")
             if payload.get("prompt") != "a cat":
                 raise AssertionError("generate did not send the prompt")
+            if payload.get("may_be_explicit") is not True:
+                raise AssertionError("generate did not forward may_be_explicit")
             if "image" in payload or "sourceFilename" in payload:
                 raise AssertionError("generate sent source data")
             return {
@@ -524,7 +552,12 @@ def smoke_test_generate_writes_proxy_issued_storage_filename() -> None:
 
         try:
             globals()["call_proxy"] = fake_call_proxy
-            result = generate_image("http://127.0.0.1", images_dir, "token", {"prompt": "a cat"})
+            result = generate_image(
+                "http://127.0.0.1",
+                images_dir,
+                "token",
+                {"prompt": "a cat", "may_be_explicit": True},
+            )
         finally:
             globals()["call_proxy"] = original_call_proxy
 
@@ -559,6 +592,8 @@ def smoke_test_edit_forwards_opaque_source_ref_without_reading_source() -> None:
                 raise AssertionError(f"wrong path: {path}")
             if payload.get("sourceFilename") != source_ref:
                 raise AssertionError("edit did not forward the source reference")
+            if payload.get("may_be_explicit") is not False:
+                raise AssertionError("edit did not forward may_be_explicit")
             if "image" in payload or "mimeType" in payload:
                 raise AssertionError("edit sent source bytes instead of an opaque ref")
             return {
@@ -578,6 +613,7 @@ def smoke_test_edit_forwards_opaque_source_ref_without_reading_source() -> None:
                 {
                     "source_filename": source_ref,
                     "instruction": "make it warmer",
+                    "may_be_explicit": False,
                 },
             )
         finally:

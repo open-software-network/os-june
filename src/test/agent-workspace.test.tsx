@@ -51,12 +51,15 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
+  imagePromptMayBeExplicit: vi.fn(),
   importHermesBridgeFile: vi.fn(),
   importHermesBridgeFileBytes: vi.fn(),
   listVeniceModels: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  setImageSafeMode: vi.fn(),
+  setImageSafeModePromptDismissed: vi.fn(),
   setVeniceModel: vi.fn(),
   setLocalGenerationEnabled: vi.fn(),
   providerModelSettings: vi.fn(),
@@ -84,13 +87,11 @@ const mocks = vi.hoisted(() => ({
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   }>,
-  eventHandlers: new Map<string, (event: { payload?: { paths?: string[] } }) => void>(),
-  listen: vi.fn(
-    async (eventName: string, handler: (event: { payload?: { paths?: string[] } }) => void) => {
-      mocks.eventHandlers.set(eventName, handler);
-      return () => mocks.eventHandlers.delete(eventName);
-    },
-  ),
+  eventHandlers: new Map<string, (event: { payload?: unknown }) => unknown>(),
+  listen: vi.fn(async (eventName: string, handler: (event: { payload?: unknown }) => unknown) => {
+    mocks.eventHandlers.set(eventName, handler);
+    return () => mocks.eventHandlers.delete(eventName);
+  }),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -115,6 +116,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
+  imagePromptMayBeExplicit: mocks.imagePromptMayBeExplicit,
   importHermesBridgeFile: mocks.importHermesBridgeFile,
   importHermesBridgeFileBytes: mocks.importHermesBridgeFileBytes,
   listVeniceModels: mocks.listVeniceModels,
@@ -126,6 +128,8 @@ vi.mock("../lib/tauri", () => ({
   videoStatus: mocks.videoStatus,
   retryAgentTask: mocks.retryAgentTask,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
+  setImageSafeMode: mocks.setImageSafeMode,
+  setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
   setLocalGenerationEnabled: mocks.setLocalGenerationEnabled,
   setVeniceModel: mocks.setVeniceModel,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
@@ -208,6 +212,51 @@ function seedLegacyExistingSessionReportDraft() {
   });
 }
 
+function mockImageSettings({
+  imageSafeMode,
+  imageSafeModePromptDismissed,
+  imageModel = "venice-sd35",
+}: {
+  imageSafeMode: boolean;
+  imageSafeModePromptDismissed: boolean;
+  imageModel?: string;
+}) {
+  mocks.providerModelSettings.mockResolvedValue({
+    settings: {
+      transcriptionProvider: "venice",
+      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+      generationModel: "zai-org-glm-5-2",
+      imageModel,
+      imageSafeMode,
+      imageSafeModePromptDismissed,
+    },
+  });
+}
+
+function mockImageGenerationSuccess() {
+  mocks.generateImage.mockResolvedValueOnce({
+    imageBase64: "aGVsbG8=",
+    mimeType: "image/png",
+    model: "venice-sd35",
+    provider: "venice",
+  });
+  mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+    name: "generated-image.png",
+    path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+    rootLabel: "Workspace",
+    size: 5,
+    previewDataUrl: "data:image/png;base64,preview",
+  });
+}
+
+async function emitImageSafeModeConsent(prompt = "paint a nude portrait") {
+  const handler = mocks.eventHandlers.get("image-safe-mode-consent");
+  expect(handler).toBeDefined();
+  await act(async () => {
+    await handler?.({ payload: { source: "agent", prompt } });
+  });
+}
+
 function mockGlmCapabilities(capabilities: string[]) {
   mocks.listVeniceModels.mockResolvedValue({
     mode: "generation",
@@ -266,6 +315,21 @@ describe("AgentWorkspace", () => {
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
         generationModel: "zai-org-glm-5-2",
       },
+    });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(false);
+    mocks.setImageSafeMode.mockResolvedValue({
+      transcriptionProvider: "venice",
+      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+      generationModel: "zai-org-glm-5-2",
+      imageSafeMode: false,
+      imageSafeModePromptDismissed: false,
+    });
+    mocks.setImageSafeModePromptDismissed.mockResolvedValue({
+      transcriptionProvider: "venice",
+      transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+      generationModel: "zai-org-glm-5-2",
+      imageSafeMode: true,
+      imageSafeModePromptDismissed: true,
     });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
@@ -7057,6 +7121,225 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it.each([
+    {
+      name: "safe mode off",
+      settings: { imageSafeMode: false, imageSafeModePromptDismissed: false },
+      heuristic: true,
+    },
+    {
+      name: "prompt dismissed",
+      settings: { imageSafeMode: true, imageSafeModePromptDismissed: true },
+      heuristic: true,
+    },
+    {
+      name: "heuristic false",
+      settings: { imageSafeMode: true, imageSafeModePromptDismissed: false },
+      heuristic: false,
+    },
+    {
+      name: "settings read fails",
+      settings: null,
+      heuristic: true,
+    },
+  ])("skips the safe-mode consent dialog when %s", async ({ settings, heuristic }) => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    if (settings) {
+      mockImageSettings(settings);
+    }
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(heuristic);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    if (!settings) {
+      mocks.providerModelSettings.mockRejectedValueOnce(new Error("settings unavailable"));
+    }
+    mocks.imagePromptMayBeExplicit.mockClear();
+    mockImageGenerationSuccess();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument();
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    if (settings?.imageSafeMode && !settings.imageSafeModePromptDismissed) {
+      expect(mocks.imagePromptMayBeExplicit).toHaveBeenCalledWith("a red bicycle");
+    } else {
+      expect(mocks.imagePromptMayBeExplicit).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps safe mode on for an explicit /image prompt and persists don't ask again", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mockImageGenerationSuccess();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    expect(within(dialog).getByRole("button", { name: "Keep safe mode on" })).toHaveFocus();
+    await user.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
+    await user.click(within(dialog).getByRole("button", { name: "Keep safe mode on" }));
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.setImageSafeModePromptDismissed).toHaveBeenCalledWith(true);
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    expect(mocks.generateImage).toHaveBeenCalledWith(
+      "a red bicycle",
+      "venice-sd35",
+      expect.any(String),
+      true,
+    );
+  });
+
+  it("turns safe mode off for an explicit /image prompt and pins generation off", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mockImageGenerationSuccess();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.click(within(dialog).getByRole("button", { name: "Turn off safe mode" }));
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.setImageSafeMode).toHaveBeenCalledWith(false);
+    expect(mocks.generateImage).toHaveBeenCalledWith(
+      "a red bicycle",
+      "venice-sd35",
+      expect.any(String),
+      false,
+    );
+  });
+
+  it("dismisses safe-mode consent without creating an /image session or clearing the draft", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.gatewayRequest.mockClear();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(await screen.findByRole("textbox")).toHaveTextContent("/image a red bicycle");
+  });
+
+  it("shows safe-mode consent when the agent image event arrives", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    expect(
+      within(dialog).getByText(/June is generating an image that may include adult content/i),
+    ).toBeInTheDocument();
+  });
+
+  it("drops duplicate agent safe-mode consent events while the dialog is open", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent("first prompt");
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
+    mocks.providerModelSettings.mockClear();
+
+    await emitImageSafeModeConsent("second prompt");
+
+    expect(screen.getAllByRole("dialog", { name: "Safe mode is on" })).toHaveLength(1);
+    expect(mocks.providerModelSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps safe mode on for an agent image event and persists don't ask again", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
+    await user.click(within(dialog).getByRole("button", { name: "Keep safe mode on" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.setImageSafeModePromptDismissed).toHaveBeenCalledWith(true);
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("turns safe mode off for an agent image event and persists don't ask again", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
+    await user.click(within(dialog).getByRole("button", { name: "Turn off safe mode" }));
+
+    await waitFor(() => expect(mocks.setImageSafeMode).toHaveBeenCalledWith(false));
+    expect(mocks.setImageSafeModePromptDismissed).toHaveBeenCalledWith(true);
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("dismisses agent safe-mode consent without persisting a choice", async () => {
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    expect(mocks.setImageSafeModePromptDismissed).not.toHaveBeenCalled();
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("drops stale agent safe-mode consent events when safe mode is already off", async () => {
+    mockImageSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await emitImageSafeModeConsent();
+
+    expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument();
+    expect(mocks.setImageSafeMode).not.toHaveBeenCalled();
+    expect(mocks.setImageSafeModePromptDismissed).not.toHaveBeenCalled();
+  });
+
   it("reuses the failed /image request id when the user retries the same turn", async () => {
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
     const user = userEvent.setup();
@@ -7108,6 +7391,7 @@ describe("AgentWorkspace", () => {
         generationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
         imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
       },
     });
     mocks.generateImage.mockRejectedValueOnce(new Error("gateway timeout")).mockResolvedValueOnce({
@@ -7144,6 +7428,7 @@ describe("AgentWorkspace", () => {
         generationModel: "zai-org-glm-5-2",
         imageModel: "flux-2-pro",
         imageSafeMode: true,
+        imageSafeModePromptDismissed: false,
       },
     });
 
@@ -7230,6 +7515,7 @@ describe("AgentWorkspace", () => {
         generationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
         imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
       },
     });
     // The paid request never settles client-side - the app "exits" while the

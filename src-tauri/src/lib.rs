@@ -7,6 +7,7 @@ pub mod dictation;
 pub mod domain;
 pub mod feature_flags;
 pub mod hermes_bridge;
+pub mod image_safety;
 pub mod june_api;
 pub mod macos_menu_icons;
 pub mod meeting_detection;
@@ -257,6 +258,8 @@ pub fn run() {
             providers::set_venice_api_key,
             providers::clear_venice_api_key,
             providers::set_image_safe_mode,
+            providers::set_image_safe_mode_prompt_dismissed,
+            image_safety::image_prompt_may_be_explicit,
             providers::generate_image,
             providers::edit_image,
             providers::video_generate,

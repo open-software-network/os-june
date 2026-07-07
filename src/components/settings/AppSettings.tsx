@@ -213,8 +213,9 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
     modelId: "",
     apiKey: "",
   },
-  // Off by default (privacy-first), matching the Rust providers default.
-  imageSafeMode: false,
+  // On by default, matching the Rust providers default.
+  imageSafeMode: true,
+  imageSafeModePromptDismissed: false,
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -1577,6 +1578,15 @@ export function AppSettings({
                     options={generationOptions}
                     onOpen={() => openModelPicker("generation")}
                   />
+                  {IMAGE_GENERATION_ENABLED ? (
+                    <ModelRow
+                      title="Image"
+                      description="Used when you generate an image from chat."
+                      value={providerSettings.imageModel}
+                      options={imageOptions}
+                      onOpen={() => openModelPicker("image")}
+                    />
+                  ) : null}
                   <button
                     type="button"
                     className="settings-row settings-more-options-trigger"
@@ -1595,14 +1605,34 @@ export function AppSettings({
                     />
                   </button>
                   {showMoreModelOptions ? (
-                    <VeniceApiKeyRow
-                      id="models-more-options"
-                      configured={providerSettings.veniceApiKeyConfigured}
-                      value={veniceApiKeyDraft}
-                      onValueChange={setVeniceApiKeyDraft}
-                      onSave={() => void saveVeniceApiKey()}
-                      onRemove={() => void removeVeniceApiKey()}
-                    />
+                    <>
+                      <VeniceApiKeyRow
+                        id="models-more-options"
+                        configured={providerSettings.veniceApiKeyConfigured}
+                        value={veniceApiKeyDraft}
+                        onValueChange={setVeniceApiKeyDraft}
+                        onSave={() => void saveVeniceApiKey()}
+                        onRemove={() => void removeVeniceApiKey()}
+                      />
+                      {IMAGE_GENERATION_ENABLED ? (
+                        <div className="settings-row">
+                          <div className="settings-row-info">
+                            <h3 className="settings-row-title">Safe mode</h3>
+                            <p className="settings-row-description">
+                              Blur adult content in generated and edited images. On by default; your
+                              image work stays private either way.
+                            </p>
+                          </div>
+                          <div className="settings-row-control">
+                            <Switch
+                              checked={providerSettings.imageSafeMode}
+                              aria-label="Blur adult content in images"
+                              onCheckedChange={toggleImageSafeMode}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+                    </>
                   ) : null}
                 </div>
               </div>
@@ -1745,66 +1775,6 @@ export function AppSettings({
                         ) : null}
                       </div>
                     </div>
-                  </div>
-                </div>
-              </section>
-            ) : null}
-
-            {IMAGE_GENERATION_ENABLED ? (
-              <section className="settings-group" aria-labelledby="image-generation-heading">
-                <h2 id="image-generation-heading" className="settings-group-heading">
-                  Image generation
-                </h2>
-                <p className="settings-group-description">
-                  Choose the model June uses when you ask it to generate an image.
-                </p>
-                <div className="settings-card">
-                  <div className="settings-rows">
-                    <ModelRow
-                      title="Image"
-                      description="Used when you generate an image from chat."
-                      value={providerSettings.imageModel}
-                      options={imageOptions}
-                      onOpen={() => openModelPicker("image")}
-                    />
-                    <div className="settings-row">
-                      <div className="settings-row-info">
-                        <h3 className="settings-row-title">Safe mode</h3>
-                        <p className="settings-row-description">
-                          Blur adult content in generated and edited images. Off by default; your
-                          image work stays private either way.
-                        </p>
-                      </div>
-                      <div className="settings-row-control">
-                        <Switch
-                          checked={providerSettings.imageSafeMode}
-                          aria-label="Blur adult content in images"
-                          onCheckedChange={toggleImageSafeMode}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            ) : null}
-
-            {VIDEO_GENERATION_ENABLED ? (
-              <section className="settings-group" aria-labelledby="video-generation-heading">
-                <h2 id="video-generation-heading" className="settings-group-heading">
-                  Video generation
-                </h2>
-                <p className="settings-group-description">
-                  Choose the model June uses when you ask it to generate a video.
-                </p>
-                <div className="settings-card">
-                  <div className="settings-rows">
-                    <ModelRow
-                      title="Video"
-                      description="Used when you generate a video from chat."
-                      value={providerSettings.videoModel}
-                      options={videoOptions}
-                      onOpen={() => openModelPicker("video")}
-                    />
                   </div>
                 </div>
               </section>
