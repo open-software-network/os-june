@@ -1,7 +1,8 @@
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { useDismiss } from "../../lib/use-dismiss";
 
 export type SelectPopoverPlacement = "align-selected" | "below" | "above";
 
@@ -105,23 +106,7 @@ export function Select({
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selected = selectedIndex === -1 ? undefined : options[selectedIndex];
 
-  useEffect(() => {
-    if (!open) return;
-    function onPointer(event: MouseEvent) {
-      if (!wrapRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  useDismiss(wrapRef, open, () => setOpen(false));
 
   function toggle() {
     if (!open) {

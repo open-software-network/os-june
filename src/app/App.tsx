@@ -2078,10 +2078,9 @@ export function App() {
     }
   }
 
-  // "Report an issue": the fresh-chat handshake with a bug chip seeded into
-  // the composer instead of auto-submitting, so the user types their report
-  // after the tag. The submitted report (plus June's diagnosis) is filed to
-  // the June team.
+  // "Report an issue": navigate to Agent and open the direct report dialog.
+  // It submits through June API without a model turn, so there is nothing to
+  // charge; June API creates the team-facing diagnosis.
   function handleReportIssue(category: ReportCategory = "bug") {
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
@@ -3461,9 +3460,7 @@ function UpdateRelaunchCard({
           <JuneMark />
         </span>
         <span className="update-relaunch-copy">
-          <span
-            className={relaunching ? "update-relaunch-title text-shimmer" : "update-relaunch-title"}
-          >
+          <span className={relaunching ? "update-relaunch-title shimmer" : "update-relaunch-title"}>
             {relaunching ? "Relaunching..." : "Relaunch to update"}
           </span>
           <span className={status ? "update-relaunch-status" : undefined}>{meta}</span>

@@ -30,6 +30,7 @@ This is the repo's entry-point skill; it orchestrates and defers. Each fact live
 - `agent-e2e-qa` — live QA process: surface decision tree, video recording/compression, os-platform upload, PASS/FAIL/BLOCKED evidence format.
 - `browser-test-tauri-fe` — browser-surface technique: fake Tauri IPC bridge, Playwright/CDP driving, screenshot suites, PR-embeddable GIFs.
 - `os-platform` / `os-task-prep` — tracker reads, task diagnosis and enrichment (intake step 3).
+- `repo-retrospect` — post-cycle: mine the session, PR threads, and user feedback for lessons and fold them into the owning skill files.
 
 ## Intake
 
@@ -111,8 +112,8 @@ When the build prompt carries an implementer directive (e.g. `/repo-build-pr JUN
    ```
    (`run-claude.sh` when orchestrating from Codex.) The delegate edits and runs the gate but never commits, and its runners require a clean tracked tree — so verify the diff, then commit each chunk before dispatching the next. Atomic commits fall out of the loop naturally.
 3. Chunks run sequentially in one worktree. Genuinely independent tracks get separate worktrees (strategy below), one delegate stream per worktree.
-4. Verify every chunk yourself against the diff and real gate output; a delegate report is a claim, not evidence. Route defects back as a follow-up brief that references the original chunk.
-5. A cross-harness implementer mode is single-harness for all delegated work, whichever direction it runs: the pre-publish battery ALSO runs on the implementer harness — every axis via `repo-review/scripts/run-codex.sh -a <axis>` for `with codex`, `run-claude.sh -a <axis>` for `with claude` — with no review sub-agents on the orchestrating side. This deliberately accepts self-review by the implementer harness (see the carve-out in docs/agents/collaboration.md); the counterweights are the regression-gated fixture tests in every fix brief and the session model's own verification and finding triage, which never delegate.
+4. Verify every chunk yourself against the diff and real gate output; a delegate report is a claim, not evidence. Route defects back as a follow-up brief that references the original chunk. For multi-chunk builds, run the adversarial review axis on each chunk right after committing it rather than only in the end-of-build battery — a defect a chunk introduces (a moved line whose consumers changed, a guard a dispatch branch bypasses) is cheapest to catch before later chunks and review rounds build on it (PR #633: a chunk-A clock-anchor regression surfaced only in external review hours later).
+5. A cross-harness implementer mode is single-harness for all delegated work, whichever direction it runs: the pre-publish battery ALSO runs on the implementer harness — every axis via `repo-review/scripts/run-codex.sh -a <axis>` for `with codex`, `run-claude.sh -a <axis>` for `with claude` — with no review sub-agents on the orchestrating side. This deliberately accepts self-review by the implementer harness (see the carve-out in docs/agents/collaboration.md); the counterweights are the regression-gated fixture tests in every fix brief and the session model's own verification and finding triage, which never delegate. Exception: repo-review's convergence re-runs alternate the reviewing harness even in this mode (see its convergence loop) — the single-harness convention covers who implements and who runs the first battery, not who re-reviews the fixes.
 
 ## Worktree strategy
 

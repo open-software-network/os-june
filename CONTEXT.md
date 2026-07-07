@@ -150,6 +150,18 @@ _Avoid_: "the session id" (always say which).
 The ProseMirror chat input with slash commands and attachment chips.
 _Avoid_: textbox.
 
+**Issue report**:
+A bug / feedback / feature submission to the June team, collected by the
+report dialog (composer "+", sidebar, or settings) and sent straight to June
+API `/v1/issue-reports` — no agent turn runs and nothing is authorized or
+charged. The team-facing **diagnosis** is generated inside June API at
+delivery time on a server-configured model, at June's expense, and is never
+shown to the user (see
+[ADR-0012](docs/adr/0012-direct-issue-report-submission.md)).
+_Avoid_: bug report for the mechanism (bug is one of three report
+categories), June's reply for the diagnosis (the user never sees it),
+investigation turn (the removed chip flow; old clients only).
+
 **Slash command**:
 A `/name arg` handled client-side before submit — builtin `/model`, `/file`,
 and `/image`, plus skill slash commands. `/image <prompt>` starts June's

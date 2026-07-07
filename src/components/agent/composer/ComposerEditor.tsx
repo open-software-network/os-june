@@ -34,7 +34,7 @@ export type ComposerEditorHandle = {
     category?: ReportCategory | null,
     options?: { selectPlaceholder?: boolean; focus?: boolean },
   ) => void;
-  /** Inserts or swaps the message's single category tag at the caret. */
+  /** Inserts or swaps the legacy message category tag at the caret. */
   insertCategory: (category: ReportCategory) => void;
   /** Inserts a note reference chip at the caret. Multiple references can
    * coexist because they serialize into the prompt text. */

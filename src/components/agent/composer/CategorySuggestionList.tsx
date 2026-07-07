@@ -11,15 +11,12 @@ import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconFileText } from "central-icons/IconFileText";
 
-import { CategoryIcon } from "./CategoryIcon";
-import type { ReportCategoryDef } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import type { BuiltinComposerSlashCommandDef } from "../../../lib/agent-composer-slash-commands";
 
 const SKILL_DETAIL_HOVER_INTENT_MS = 150;
 
 export type ComposerSlashCommandItem =
-  | { kind: "category"; category: ReportCategoryDef }
   | { kind: "builtin"; command: BuiltinComposerSlashCommandDef }
   | { kind: "skill"; skill: HermesSkillInfo };
 
@@ -188,9 +185,6 @@ export const CategorySuggestionList = forwardRef<
     detail && detail.index === selected && detailItem && commandItemKey(detailItem) === detail.key
       ? detailItem
       : null;
-  const categories = items
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => item.kind === "category");
   const builtins = items
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => item.kind === "builtin");
@@ -216,7 +210,7 @@ export const CategorySuggestionList = forwardRef<
           ref={menuRef}
           className="agent-category-menu"
           role="listbox"
-          aria-label="Tag this message"
+          aria-label="Slash commands"
           onScroll={() => {
             updateFade();
             setDetail(null);
@@ -228,7 +222,6 @@ export const CategorySuggestionList = forwardRef<
               {builtins.map(({ item, index }) => renderCommandRow(item, index))}
             </div>
           ) : null}
-          {categories.map(({ item, index }) => renderCommandRow(item, index))}
           {skills.length ? (
             <div className="agent-category-menu-section" role="presentation">
               <div className="agent-category-menu-section-label">Skills</div>
@@ -289,13 +282,8 @@ export const CategorySuggestionList = forwardRef<
           showCommandDetail(index, event.currentTarget);
         }}
       >
-        <span
-          className="agent-category-menu-icon"
-          data-category={item.kind === "category" ? item.category.key : undefined}
-        >
-          {item.kind === "category" ? (
-            <CategoryIcon category={item.category.key} size={16} />
-          ) : item.kind === "builtin" ? (
+        <span className="agent-category-menu-icon">
+          {item.kind === "builtin" ? (
             commandItemIcon(item)
           ) : (
             <IconBuildingBlocks size={16} aria-hidden />
@@ -311,13 +299,11 @@ export const CategorySuggestionList = forwardRef<
 CategorySuggestionList.displayName = "CategorySuggestionList";
 
 function commandItemKey(item: ComposerSlashCommandItem) {
-  if (item.kind === "category") return `category:${item.category.key}`;
   if (item.kind === "builtin") return `builtin:${item.command.name}`;
   return `skill:${item.skill.name}`;
 }
 
 function commandItemLabel(item: ComposerSlashCommandItem) {
-  if (item.kind === "category") return item.category.label;
   if (item.kind === "builtin") return item.command.label;
   return item.skill.name;
 }
@@ -333,7 +319,6 @@ function commandHasDetail(item: ComposerSlashCommandItem) {
 function commandItemDetailTitle(item: ComposerSlashCommandItem) {
   if (item.kind === "builtin") return `/${item.command.name}`;
   if (item.kind === "skill") return item.skill.name;
-  return item.category.label;
 }
 
 function commandItemDetailMeta(item: ComposerSlashCommandItem) {

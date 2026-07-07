@@ -95,8 +95,13 @@ distinct from the `specs/` Spec Kit feature specs.)
 
 - [sentence-case](spec/sentence-case.md) — sentence case for all UI labels (never ALL CAPS / uppercase)
 - [no-typographic-dashes](spec/no-typographic-dashes.md) — no en/em dashes in user-facing copy (hyphen or "to")
+- [no-all-caps](spec/no-all-caps.md) — no ALL CAPS in UI, no `text-transform: uppercase`
 - [icons-central-only](spec/icons-central-only.md) — icons from `central-icons` / `central-icons-filled` only (never lucide)
 - [design-tokens](spec/design-tokens.md) — use the variables in `src/styles/tokens.css`
+- [type-scale](spec/type-scale.md) — font sizes only from `--fs-*`; headings follow the mapping table
+- [font-weights](spec/font-weights.md) — only 400 and `var(--fw-medium)`, never raw 500/600/700
+- [font-families](spec/font-families.md) — sans is the voice; serif for headings/display, mono for code
+- [control-sizes](spec/control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
 
 ## PR and description conventions
 
@@ -128,7 +133,7 @@ skill under `.agents/skills/<name>/` and create the `.claude/skills/<name>`
 symlink in the same change. Current project skills: `os-platform`,
 `os-accounts-integration`, `os-rust-backend`, `os-rust-backend-ci`,
 `os-task-prep`, `repo-build-pr`, `repo-review`, `repo-delegate`,
-`repo-orchestrate`, `browser-test-tauri-fe`, `agent-e2e-qa`, plus the Spec
+`repo-orchestrate`, `repo-retrospect`, `browser-test-tauri-fe`, `agent-e2e-qa`, plus the Spec
 Kit workflow skills (`speckit-*`). `make skills-update` /
 `skills-restore` / `skills-sync` (thin wrappers over `npx skills`) refresh,
 restore from the lockfile, or re-link them.

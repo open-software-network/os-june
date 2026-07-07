@@ -2641,6 +2641,11 @@ describe("AppSettings", () => {
     const defaultImageOption = await screen.findByRole("option", { name: /Venice SD3\.5/ });
     expect(defaultImageOption).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /FLUX 2 Pro/ })).toBeInTheDocument();
+    // Expanded image catalog (from main) rendered through the shared popover:
+    // the models are listed, but their metadata is revealed on hover, not inline.
+    expect(screen.getByText("GPT Image 2")).toBeInTheDocument();
+    expect(screen.getByText("Lustify v8")).toBeInTheDocument();
+    expect(screen.getByText("Z-Image Turbo")).toBeInTheDocument();
     expect(defaultImageOption).not.toHaveTextContent(
       "Venice's default Stable Diffusion 3.5 image model.",
     );
@@ -2650,10 +2655,15 @@ describe("AppSettings", () => {
     ).toBeInTheDocument();
     await user.unhover(defaultImageOption);
     expect(screen.queryByText("Model details unavailable")).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Search models"), "uncensored");
+    expect(screen.getByRole("option", { name: /Lustify v7/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Lustify v8/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /FLUX 2 Pro/ })).not.toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Search models"));
     // Image models are not fetched from the catalog.
     expect(mocks.listVeniceModels).not.toHaveBeenCalledWith("image");
 
-    await user.click(screen.getByRole("option", { name: /FLUX 2 Pro/ }));
+    await user.click(await screen.findByRole("option", { name: /FLUX 2 Pro/ }));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("image", "flux-2-pro");
     // The picker closes after a selection.
     await waitFor(() =>

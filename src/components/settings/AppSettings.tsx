@@ -335,7 +335,7 @@ type AppSettingsProps = {
   // Confirmed leave-rc reconcile: downloads and installs the current stable,
   // even if it is older than the running prerelease build (Q4-Q8).
   onReconcileToStable?: () => void;
-  // Opens a new agent session seeded with a report category chip.
+  // Opens Agent with the direct issue report dialog preselected.
   onReportIssue?: (category: ReportCategory) => void;
   // Opens a new agent session that runs a skill bundle's slash command.
   onStartBundleChat?: (prompt: string) => void;
@@ -2144,8 +2144,8 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Report an issue</h3>
                       <p className="settings-row-description">
-                        Something not working? Describe it to June, attach a screenshot if you have
-                        one, and June will send the report to the team along with its own diagnosis.
+                        Describe the problem, attach files if you have them, and send the report to
+                        the June team.
                       </p>
                     </div>
                     <div className="settings-row-control">

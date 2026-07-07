@@ -70,6 +70,7 @@ import {
 } from "../../lib/hermes-adapter";
 import { errorCode, messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
+import { useDismiss } from "../../lib/use-dismiss";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { useRecordingPresenceBounds } from "../../lib/recording-presence-bounds";
 import { isPrimaryShortcut, primaryShortcutLabel } from "../../lib/platform";
@@ -756,24 +757,7 @@ export function Sidebar({
     item.action();
   }
 
-  useEffect(() => {
-    if (!menu) return;
-
-    function close() {
-      setMenu(null);
-    }
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
-    }
-
-    window.addEventListener("click", close);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menu]);
+  useDismiss(null, menu !== null, () => setMenu(null), { pointerEvent: "click" });
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -1797,21 +1781,7 @@ function SidebarIdentity({
   const wrapRef = useRef<HTMLDivElement>(null);
   const name = accountDisplayName(account);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    function onPointer(event: MouseEvent) {
-      if (!wrapRef.current?.contains(event.target as Node)) onCloseMenu();
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onCloseMenu();
-    }
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [menuOpen, onCloseMenu]);
+  useDismiss(wrapRef, menuOpen, onCloseMenu);
 
   return (
     <div className="sidebar-identity-wrap" ref={wrapRef}>
