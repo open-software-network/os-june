@@ -28,6 +28,8 @@ use std::{
 use uuid::Uuid;
 
 pub const DEFAULT_SILENCE_THRESHOLD: f32 = 0.012;
+// Healthy devices open quickly; this bounds CPAL/CoreAudio hangs during device handoff.
+pub const CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(10);
 const RECOVERY_SNAPSHOT_INTERVAL_MS: i64 = 500;
 const MICROPHONE_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 const MICROPHONE_STREAM_WARNING_MESSAGE: &str =
@@ -265,14 +267,29 @@ pub fn start_capture(
     note_id: String,
     source_mode: RecordingSourceMode,
 ) -> Result<StartedRecording, AppError> {
-    let mut active = ACTIVE_RECORDING
-        .lock()
-        .map_err(|_| AppError::new("recording_lock_failed", "Recording state is unavailable."))?;
-    if active.is_some() {
-        return Err(AppError::new(
-            "recording_already_active",
-            "A previous recording is still active. June attempted to save it locally; please try again.",
-        ));
+    start_capture_with_cancel(
+        app,
+        paths,
+        note_id,
+        source_mode,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+pub fn start_capture_with_cancel(
+    app: tauri::AppHandle,
+    paths: &AppPaths,
+    note_id: String,
+    source_mode: RecordingSourceMode,
+    abandoned: Arc<AtomicBool>,
+) -> Result<StartedRecording, AppError> {
+    {
+        let active = ACTIVE_RECORDING.lock().map_err(|_| {
+            AppError::new("recording_lock_failed", "Recording state is unavailable.")
+        })?;
+        if active.is_some() {
+            return Err(recording_already_active_error());
+        }
     }
 
     let host = cpal::default_host();
@@ -459,9 +476,33 @@ pub fn start_capture(
         None
     };
     let live_preview_enabled = live_preview.is_some() || system_live_preview.is_some();
+    if abandoned.load(Ordering::Acquire) {
+        cleanup_abandoned_capture(
+            writer,
+            partial_path,
+            system_partial_path,
+            live_preview,
+            system_live_preview,
+            system_capture,
+            None,
+        );
+        return Err(capture_start_timeout_error());
+    }
     stream
         .play()
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
+    if abandoned.load(Ordering::Acquire) {
+        cleanup_abandoned_capture(
+            writer,
+            partial_path,
+            system_partial_path,
+            live_preview,
+            system_live_preview,
+            system_capture,
+            Some(stream),
+        );
+        return Err(capture_start_timeout_error());
+    }
     let started = Instant::now();
     let status = RecordingStatusDto {
         session_id: session_id.clone(),
@@ -489,6 +530,33 @@ pub fn start_capture(
         ),
         warnings: Vec::new(),
     };
+    let mut active = ACTIVE_RECORDING
+        .lock()
+        .map_err(|_| AppError::new("recording_lock_failed", "Recording state is unavailable."))?;
+    if abandoned.load(Ordering::Acquire) {
+        cleanup_abandoned_capture(
+            writer,
+            partial_path,
+            system_partial_path,
+            live_preview,
+            system_live_preview,
+            system_capture,
+            Some(stream),
+        );
+        return Err(capture_start_timeout_error());
+    }
+    if active.is_some() {
+        cleanup_abandoned_capture(
+            writer,
+            partial_path,
+            system_partial_path,
+            live_preview,
+            system_live_preview,
+            system_capture,
+            Some(stream),
+        );
+        return Err(recording_already_active_error());
+    }
 
     *active = Some(ActiveRecording {
         session_id: session_id.clone(),
@@ -526,6 +594,48 @@ pub fn start_capture(
         device_label,
         status,
     })
+}
+
+pub fn capture_start_timeout_error() -> AppError {
+    AppError::new(
+        "capture_start_timeout",
+        "Could not start the microphone. Try again, or check the selected input device.",
+    )
+}
+
+fn recording_already_active_error() -> AppError {
+    AppError::new(
+        "recording_already_active",
+        "A previous recording is still active. June attempted to save it locally; please try again.",
+    )
+}
+
+fn cleanup_abandoned_capture(
+    writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
+    partial_path: PathBuf,
+    system_partial_path: Option<PathBuf>,
+    live_preview: Option<LivePreviewController>,
+    system_live_preview: Option<SystemLivePreviewController>,
+    system_capture: Option<SystemAudioCapture>,
+    stream: Option<cpal::Stream>,
+) {
+    drop(stream);
+    if let Some(live_preview) = live_preview {
+        live_preview.cancel();
+    }
+    if let Some(system_live_preview) = system_live_preview {
+        system_live_preview.cancel();
+    }
+    if let Some(system_capture) = system_capture {
+        let _ = system_capture.stop();
+    }
+    if let Ok(mut writer_guard) = writer.lock() {
+        let _ = writer_guard.take();
+    }
+    let _ = std::fs::remove_file(partial_path);
+    if let Some(system_partial_path) = system_partial_path {
+        let _ = std::fs::remove_file(system_partial_path);
+    }
 }
 
 /// Ducks or restores the active recording's microphone channel. While ducked

@@ -571,6 +571,98 @@ describe("notes recording reliability", () => {
     expect(mocks.startRecording).not.toHaveBeenCalled();
   });
 
+  it("removes the fresh meeting note when recording start times out and releases the start latch", async () => {
+    const fresh = note({
+      id: "fresh-note",
+      title: "New note",
+      generatedContent: undefined,
+      processingStatus: "draft",
+    });
+    mocks.createNote
+      .mockResolvedValueOnce(fresh)
+      .mockResolvedValueOnce(note({ id: "second-fresh-note", title: "Second fresh note" }));
+    mocks.getNote.mockImplementation(async (noteId: string) => {
+      if (noteId === "fresh-note") return fresh;
+      if (noteId === "note-2") return second;
+      return first;
+    });
+    mocks.startRecording
+      .mockRejectedValueOnce({
+        code: "capture_start_timeout",
+        message: "Could not start the microphone. Try again, or check the selected input device.",
+      })
+      .mockResolvedValueOnce(recording({ noteId: "second-fresh-note" }));
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await waitFor(async () => {
+      if (mocks.deleteNote.mock.calls.length === 0) {
+        await act(async () => {
+          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+            payload: undefined,
+          });
+        });
+      }
+      expect(mocks.deleteNote).toHaveBeenCalledWith("fresh-note");
+    });
+    expect(mocks.startRecording).toHaveBeenCalledTimes(1);
+
+    await waitFor(async () => {
+      if (mocks.startRecording.mock.calls.length < 2) {
+        await act(async () => {
+          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+            payload: undefined,
+          });
+        });
+      }
+      expect(mocks.startRecording).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("restores the previous meeting selection when cleanup deletion fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fresh = note({
+      id: "fresh-note",
+      title: "New note",
+      generatedContent: undefined,
+      processingStatus: "draft",
+    });
+    mocks.createNote.mockResolvedValue(fresh);
+    mocks.deleteNote.mockRejectedValue(new Error("delete failed"));
+    mocks.getNote.mockImplementation(async (noteId: string) => {
+      if (noteId === "fresh-note") return fresh;
+      if (noteId === "note-2") return second;
+      return first;
+    });
+    mocks.startRecording.mockRejectedValue({
+      code: "capture_start_timeout",
+      message: "Could not start the microphone. Try again, or check the selected input device.",
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await waitFor(async () => {
+      if (mocks.listNotes.mock.calls.length === 0) {
+        await act(async () => {
+          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+            payload: undefined,
+          });
+        });
+      }
+      expect(mocks.listNotes).toHaveBeenCalled();
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to delete meeting note after recording start failed",
+      expect.any(Error),
+    );
+    expect(screen.getByLabelText("Note title")).toHaveValue("First note");
+    warn.mockRestore();
+  });
+
   it("clears the recorder presence and disables retry when a recovery is discarded", async () => {
     mocks.bootstrapApp.mockResolvedValue({
       folders: [],

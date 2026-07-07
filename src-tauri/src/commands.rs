@@ -2,9 +2,10 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            capture_status_for_recovery, finish_active_capture, finish_capture, is_capture_active,
-            microphone_device_available, microphone_device_hint, microphone_permission_state,
-            pause_capture, resume_capture, start_capture, CaptureRecoverySnapshot,
+            capture_start_timeout_error, capture_status_for_recovery, finish_active_capture,
+            finish_capture, is_capture_active, microphone_device_available, microphone_device_hint,
+            microphone_permission_state, pause_capture, resume_capture, start_capture_with_cancel,
+            CaptureRecoverySnapshot, StartedRecording, CAPTURE_START_TIMEOUT,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -47,7 +48,10 @@ use sqlx_sqlite::SqlitePool;
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex, OnceLock,
+};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -881,11 +885,10 @@ pub async fn start_recording(
     finish_active_capture_before_start(&repos).await?;
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
-    let started = tokio::task::spawn_blocking(move || {
-        start_capture(app, &capture_paths, capture_note_id, source_mode)
+    let started = start_capture_with_timeout(move |abandoned| {
+        start_capture_with_cancel(app, &capture_paths, capture_note_id, source_mode, abandoned)
     })
-    .await
-    .map_err(|error| AppError::new("recording_start_failed", error.to_string()))??;
+    .await?;
     repos
         .create_recording_session(
             &note.id,
@@ -920,6 +923,71 @@ pub async fn start_recording(
         sources: started.status.sources,
         warnings: Vec::new(),
     })
+}
+
+async fn start_capture_with_timeout<F>(start_capture: F) -> Result<StartedRecording, AppError>
+where
+    F: FnOnce(Arc<AtomicBool>) -> Result<StartedRecording, AppError> + Send + 'static,
+{
+    start_capture_with_timeout_and_cleanup(
+        start_capture,
+        |started| {
+            if let Err(error) = finish_capture(&started.session_id) {
+                eprintln!(
+                    "failed to tear down abandoned recording {} after start timeout: {}",
+                    started.session_id, error.message
+                );
+            }
+        },
+        CAPTURE_START_TIMEOUT,
+    )
+    .await
+}
+
+async fn start_capture_with_timeout_and_cleanup<F, C>(
+    start_capture: F,
+    cleanup_late_success: C,
+    timeout: Duration,
+) -> Result<StartedRecording, AppError>
+where
+    F: FnOnce(Arc<AtomicBool>) -> Result<StartedRecording, AppError> + Send + 'static,
+    C: FnOnce(&StartedRecording) + Send + 'static,
+{
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let worker_abandoned = Arc::clone(&abandoned);
+    let (sender, receiver) = mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name("capture-start".to_string())
+        .spawn(move || {
+            let result = start_capture(worker_abandoned);
+            match result {
+                Ok(started) => {
+                    if let Err(mpsc::SendError(Ok(started))) = sender.send(Ok(started)) {
+                        cleanup_late_success(&started);
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                }
+            }
+        })
+        .map_err(|error| AppError::new("recording_start_failed", error.to_string()))?;
+    drop(thread);
+
+    match tokio::task::spawn_blocking(move || receiver.recv_timeout(timeout))
+        .await
+        .map_err(|error| AppError::new("recording_start_failed", error.to_string()))?
+    {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            abandoned.store(true, Ordering::Release);
+            Err(capture_start_timeout_error())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(AppError::new(
+            "recording_start_failed",
+            "Recording start failed before reporting a result.",
+        )),
+    }
 }
 
 #[tauri::command]
@@ -2034,10 +2102,25 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_system_audio_permission_probe_result, recovery_validation_expected_duration_ms,
-        should_probe_system_audio_permission,
+        apply_system_audio_permission_probe_result, capture_start_timeout_error,
+        recovery_validation_expected_duration_ms, should_probe_system_audio_permission,
+        start_capture_with_timeout_and_cleanup,
     };
-    use crate::domain::types::{AppError, RecordingSource, SourceReadinessDto};
+    use crate::{
+        audio::capture::{is_capture_active, StartedRecording, StartedSource},
+        domain::types::{
+            AppError, AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState,
+            RecordingStatusDto, SourceReadinessDto,
+        },
+    };
+    use std::{
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
+        time::Duration,
+    };
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {
@@ -2093,6 +2176,85 @@ mod tests {
             readiness.message.as_deref(),
             Some("Failed to create audio format for system tap.")
         );
+    }
+
+    #[tokio::test]
+    async fn capture_start_timeout_returns_timeout_without_registering_active_capture() {
+        let builder_saw_abandoned = Arc::new(AtomicBool::new(false));
+        let registered = Arc::new(AtomicBool::new(false));
+        let cleanup_called = Arc::new(AtomicBool::new(false));
+        let builder_saw_abandoned_for_thread = Arc::clone(&builder_saw_abandoned);
+        let registered_for_thread = Arc::clone(&registered);
+        let cleanup_called_for_thread = Arc::clone(&cleanup_called);
+
+        let result = start_capture_with_timeout_and_cleanup(
+            move |abandoned| {
+                while !abandoned.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                builder_saw_abandoned_for_thread.store(true, Ordering::Release);
+                if !abandoned.load(Ordering::Acquire) {
+                    registered_for_thread.store(true, Ordering::Release);
+                    return Ok(fake_started_recording("late-session"));
+                }
+                Err(capture_start_timeout_error())
+            },
+            move |_| {
+                cleanup_called_for_thread.store(true, Ordering::Release);
+            },
+            Duration::from_millis(20),
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("start should time out"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "capture_start_timeout");
+        wait_until(|| builder_saw_abandoned.load(Ordering::Acquire));
+        assert!(!registered.load(Ordering::Acquire));
+        assert!(!cleanup_called.load(Ordering::Acquire));
+        assert!(!is_capture_active());
+    }
+
+    #[tokio::test]
+    async fn late_capture_start_success_is_cleaned_up_after_timeout() {
+        let active_session = Arc::new(Mutex::new(None::<String>));
+        let cleanup_called = Arc::new(AtomicBool::new(false));
+        let active_session_for_builder = Arc::clone(&active_session);
+        let active_session_for_cleanup = Arc::clone(&active_session);
+        let cleanup_called_for_thread = Arc::clone(&cleanup_called);
+
+        let result = start_capture_with_timeout_and_cleanup(
+            move |_abandoned| {
+                std::thread::sleep(Duration::from_millis(60));
+                let started = fake_started_recording("late-session");
+                *active_session_for_builder
+                    .lock()
+                    .expect("active session lock") = Some(started.session_id.clone());
+                Ok(started)
+            },
+            move |started| {
+                let mut active = active_session_for_cleanup
+                    .lock()
+                    .expect("active session lock");
+                if active.as_deref() == Some(started.session_id.as_str()) {
+                    *active = None;
+                }
+                cleanup_called_for_thread.store(true, Ordering::Release);
+            },
+            Duration::from_millis(20),
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("start should time out"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "capture_start_timeout");
+        wait_until(|| cleanup_called.load(Ordering::Acquire));
+        assert_eq!(*active_session.lock().expect("active session lock"), None);
+        assert!(!is_capture_active());
     }
 
     #[test]
@@ -2219,5 +2381,44 @@ mod tests {
         writer.flush().expect("flush");
         std::mem::forget(writer);
         (dir, path)
+    }
+
+    fn fake_started_recording(session_id: &str) -> StartedRecording {
+        StartedRecording {
+            session_id: session_id.to_string(),
+            note_id: "note-1".to_string(),
+            source_mode: RecordingSourceMode::MicrophoneOnly,
+            partial_path: PathBuf::from("microphone.partial.wav"),
+            final_path: PathBuf::from("microphone.wav"),
+            sources: vec![StartedSource {
+                source: RecordingSource::Microphone,
+                partial_path: PathBuf::from("microphone.partial.wav"),
+                final_path: PathBuf::from("microphone.wav"),
+            }],
+            device_label: Some("Test microphone".to_string()),
+            status: RecordingStatusDto {
+                session_id: session_id.to_string(),
+                note_id: Some("note-1".to_string()),
+                source_mode: RecordingSourceMode::MicrophoneOnly,
+                state: RecordingState::Recording,
+                elapsed_ms: 0,
+                level: AudioLevelDto::default(),
+                silence_warning: false,
+                bytes_written: 0,
+                live_preview_enabled: false,
+                sources: Vec::new(),
+                warnings: Vec::new(),
+            },
+        }
+    }
+
+    fn wait_until(condition: impl Fn() -> bool) {
+        for _ in 0..50 {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(condition());
     }
 }

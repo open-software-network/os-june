@@ -2403,7 +2403,11 @@ export function App() {
       });
       if (started) return;
 
-      await deleteNote(note.id);
+      try {
+        await deleteNote(note.id);
+      } catch (deleteErr) {
+        console.warn("Failed to delete meeting note after recording start failed", deleteErr);
+      }
       const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
       const restoreNoteId =
