@@ -10176,23 +10176,43 @@ input:focus-visible,
  * consumer class passed through via the InlineNotice `className` prop. */
 .inline-notice {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-5);
-  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+  /* Top-align so the leading icon lines up with the first line of the content,
+   * not the vertical middle of a multi-line body. */
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   background: var(--card);
   color: var(--foreground);
 }
 
+/* The tone icon is a fixed leading element (never inside the text flow), so a
+ * long body wraps as its own block beside it rather than orphaning the icon on
+ * its own line. Sized to the first text line so it centers against it. */
+.inline-notice-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: calc(var(--fs-md) * 1.5);
+  color: var(--muted-foreground);
+}
+
+.inline-notice[data-tone="warning"] .inline-notice-icon {
+  color: var(--warm-strong);
+}
+
+.inline-notice[data-tone="destructive"] .inline-notice-icon {
+  color: var(--destructive);
+}
+
 .inline-notice-message {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-2) var(--sp-3);
+  flex-direction: column;
+  gap: var(--sp-1);
   margin: 0;
   min-width: 0;
+  flex: 1;
   font-size: var(--fs-md);
 }
 
@@ -10200,7 +10220,8 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  font-weight: 400;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   white-space: nowrap;
 }
 
@@ -10214,6 +10235,8 @@ input:focus-visible,
 
 .inline-notice-body {
   color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
 }
 
 .inline-notice-actions {
