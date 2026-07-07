@@ -7,6 +7,15 @@ use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn write_pattern_wav(path: &Path, pattern: &[(u32, i16)]) {
+    write_pattern_wav_with_period(path, pattern, 1);
+}
+
+/// `period` sets the square wave's half-cycle in samples. Overlapping
+/// microphone and system fixtures must use DIFFERENT periods: echo rejection
+/// compares content across sources, and two identical waveforms overlapping
+/// in time are indistinguishable from speaker bleed — which is genuine mic
+/// speech in these fixtures, not bleed.
+fn write_pattern_wav_with_period(path: &Path, pattern: &[(u32, i16)], period: u32) {
     let spec = WavSpec {
         channels: 1,
         sample_rate: 1_000,
@@ -18,7 +27,7 @@ fn write_pattern_wav(path: &Path, pattern: &[(u32, i16)]) {
         for i in 0..*duration_ms {
             let sample = if *amplitude == 0 {
                 0
-            } else if i % 2 == 0 {
+            } else if (i / period) % 2 == 0 {
                 *amplitude
             } else {
                 -*amplitude
@@ -134,7 +143,10 @@ fn orders_turns_by_detected_activity_not_pre_roll() {
     let mic = dir.path().join("microphone.wav");
     let system = dir.path().join("system.wav");
     write_pattern_wav(&system, &[(900, 9_000), (2_500, 0)]);
-    write_pattern_wav(&mic, &[(60, 0), (900, 8_000), (2_500, 0)]);
+    // Different waveform period than the system fixture: this mic activity
+    // overlaps the system turn and must read as genuine speech, not as a
+    // correlated copy that echo rejection would rightly trim as bleed.
+    write_pattern_wav_with_period(&mic, &[(60, 0), (900, 8_000), (2_500, 0)], 3);
 
     let turns = detect_turns(&[
         DetectionSource {

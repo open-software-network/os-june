@@ -9,13 +9,33 @@ import {
 } from "react";
 import { IconNoteText } from "central-icons/IconNoteText";
 
-import { displayNoteTitle } from "./noteReference";
 import type { NoteListItemDto } from "../../../lib/tauri";
 
 export type NoteSuggestionListProps = {
   items: NoteListItemDto[];
   command: (item: NoteListItemDto) => void;
 };
+
+/** Compact date for the palette's right rail — month + day is enough to place
+ * a note without crowding the row. */
+function formatSuggestionDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
+/** One-line label for a row: lead with whatever identifies the note — its
+ * title, else its content preview, else the "New note" placeholder — and show
+ * the preview inline (to the right) only when it distinctly adds to a real
+ * title. Never duplicate the primary, so an empty note doesn't read its
+ * placeholder twice, and rows stay a single, uniform line. */
+function noteSuggestionLabels(item: NoteListItemDto): { primary: string; secondary: string } {
+  const title = item.title.trim();
+  const preview = item.preview.trim();
+  const primary = title || preview || "New note";
+  const secondary = title && preview && preview !== title ? preview : "";
+  return { primary, secondary };
+}
 
 export type NoteSuggestionListHandle = {
   onKeyDown: (event: KeyboardEvent) => boolean;
@@ -123,36 +143,47 @@ export const NoteSuggestionList = forwardRef<NoteSuggestionListHandle, NoteSugge
               updateFade();
             }}
           >
-            {items.map((item, index) => (
-              <button
-                key={item.id}
-                type="button"
-                role="option"
-                aria-selected={index === selected}
-                data-active={activeSource && index === selected ? true : undefined}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  choose(index);
-                }}
-                onMouseEnter={() => {
-                  setSelected(index);
-                  setActiveSource("pointer");
-                }}
-                onFocus={() => {
-                  setSelected(index);
-                  setActiveSource("keyboard");
-                }}
-              >
-                <span className="agent-category-menu-icon agent-note-suggestion-menu-icon">
-                  <IconNoteText size={16} aria-hidden />
-                </span>
-                <span className="agent-category-menu-copy">
-                  <span className="agent-category-menu-label agent-note-suggestion-menu-label">
-                    {displayNoteTitle(item.title)}
+            {items.map((item, index) => {
+              const { primary, secondary } = noteSuggestionLabels(item);
+              const date = formatSuggestionDate(item.updatedAt);
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="option"
+                  // Name the option by its leading label; the inline preview +
+                  // date are visual context, not part of the accessible name.
+                  aria-label={primary}
+                  aria-selected={index === selected}
+                  data-active={activeSource && index === selected ? true : undefined}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    choose(index);
+                  }}
+                  onMouseEnter={() => {
+                    setSelected(index);
+                    setActiveSource("pointer");
+                  }}
+                  onFocus={() => {
+                    setSelected(index);
+                    setActiveSource("keyboard");
+                  }}
+                >
+                  <span className="agent-category-menu-icon agent-note-suggestion-menu-icon">
+                    <IconNoteText size={16} aria-hidden />
                   </span>
-                </span>
-              </button>
-            ))}
+                  <span className="agent-category-menu-copy agent-note-suggestion-menu-copy">
+                    <span className="agent-category-menu-label agent-note-suggestion-menu-label">
+                      {primary}
+                    </span>
+                    {secondary ? (
+                      <span className="agent-note-suggestion-menu-preview">{secondary}</span>
+                    ) : null}
+                  </span>
+                  {date ? <span className="agent-note-suggestion-menu-date">{date}</span> : null}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

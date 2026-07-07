@@ -1,4 +1,3 @@
-import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconProjects } from "central-icons/IconProjects";
@@ -28,7 +27,6 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
-import { noteReferenceToken } from "../agent/composer/noteReference";
 import { isMacLikePlatform } from "../../lib/platform";
 import {
   isInvalidJuneResponseMessage,
@@ -56,7 +54,6 @@ type NoteEditorProps = {
   onPauseRecording: (sessionId: string) => void;
   onResumeRecording: (sessionId: string) => void;
   onFinishRecording: (sessionId: string) => void;
-  onAskJune?: () => void;
   onRetry: () => void | Promise<void>;
   onTopUp: () => void;
   topUpLabel?: string;
@@ -136,7 +133,6 @@ export function NoteEditor({
   onPauseRecording,
   onResumeRecording,
   onFinishRecording,
-  onAskJune,
   onRetry,
   onTopUp,
   topUpLabel,
@@ -283,6 +279,7 @@ export function NoteEditor({
   const shellState = recordingForNote?.state ?? "idle";
   const processingText = processingMessage(note.processingStatus);
   const transcriptText = transcriptToText(note, liveTranscriptTurns);
+  const transcriptCoverageNotice = transcriptCoverageNoticeText(note);
   const showTranscriptProcessing = processingStatus !== null;
   const showLivePreviewWaiting =
     recordingForNote?.livePreviewEnabled === true && liveTranscriptTurns.length === 0;
@@ -298,6 +295,15 @@ export function NoteEditor({
   return (
     <article className="note-editor">
       <header className="editor-header">
+        <input
+          className="note-title"
+          aria-label="Note title"
+          placeholder="New note"
+          value={note.title}
+          onChange={(event) => onTitleChange(event.currentTarget.value)}
+        />
+        {/* Metadata reads as the title's caption: sits below it, above the
+            Notes/Transcription toggle. Navigation lives in the toolbar above. */}
         <div className="note-overline">
           <div className="note-overline-meta">
             <span className="note-overline-date">{updatedAtLabel}</span>
@@ -311,21 +317,7 @@ export function NoteEditor({
               onNavigateToFolder={onNavigateToFolder}
             />
           </div>
-          <div className="note-header-actions">
-            <button type="button" className="note-header-ask" onClick={() => onAskJune?.()}>
-              <IconBubble3 size={14} aria-hidden />
-              Ask June
-            </button>
-            <CopyNoteReferenceButton noteId={note.id} title={note.title} />
-          </div>
         </div>
-        <input
-          className="note-title"
-          aria-label="Note title"
-          placeholder="New note"
-          value={note.title}
-          onChange={(event) => onTitleChange(event.currentTarget.value)}
-        />
         <SegmentedControl
           aria-label="Note views"
           value={activeTab}
@@ -382,6 +374,9 @@ export function NoteEditor({
                 className="transcript-processing-progress"
                 status={processingStatus}
               />
+            ) : null}
+            {transcriptCoverageNotice ? (
+              <p className="transcript-coverage-notice">{transcriptCoverageNotice}</p>
             ) : null}
             {visibleTurns.length ? (
               <div className="source-transcripts">
@@ -453,7 +448,23 @@ export function NoteEditor({
         ) : (
           <div className="record-dock">
             <AnimatePresence>
-              {recordingForNote && consentReminderVisible ? (
+              {recordingForNote?.warnings?.length ? (
+                <motion.div
+                  key="source-warning"
+                  className="record-consent-note"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.22, ease: "easeOut" }}
+                >
+                  <InlineNotice
+                    className="record-consent-note-surface"
+                    aria-label="Recording source warning"
+                    body={recordingForNote.warnings[0].message}
+                  />
+                </motion.div>
+              ) : null}
+              {recordingForNote && consentReminderVisible && !recordingForNote.warnings?.length ? (
                 <motion.div
                   key="consent"
                   className="record-consent-note"
@@ -874,6 +885,17 @@ function transcriptToText(note: NoteDto, liveTurns: RenderedTranscriptTurn[] = [
   return note.transcript?.text ?? "";
 }
 
+function transcriptCoverageNoticeText(note: NoteDto): string | null {
+  const coverage = note.transcriptCoverage;
+  if (!coverage?.warning) return null;
+  const detectedSpeechMs = Math.max(0, coverage.detectedSpeechMs);
+  const transcribedMs = Math.max(0, coverage.transcribedMs);
+  const missingMs = Math.max(0, detectedSpeechMs - transcribedMs);
+  const missingMinutes = Math.max(1, Math.floor(missingMs / 60_000));
+  const detectedMinutes = Math.max(1, Math.floor(detectedSpeechMs / 60_000));
+  return `Parts of this recording could not be transcribed. About ${missingMinutes} of ${detectedMinutes} minutes of detected speech are missing from this transcript.`;
+}
+
 function orderedVisibleSourceTranscripts(note: NoteDto): RenderedTranscriptTurn[] {
   return (note.sourceTranscripts ?? [])
     .filter((turn) => {
@@ -1029,39 +1051,6 @@ function sourceTurnFailureMessage(message?: string) {
     return "Audio for this part could not be transcribed.";
   }
   return userFacingFailureMessage(message) ?? "";
-}
-
-function CopyNoteReferenceButton({ noteId, title }: { noteId: string; title: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(noteReferenceToken({ id: noteId, title }));
-      setCopied(true);
-    } catch {
-      // Clipboard API can fail in restricted contexts; stay silent
-      // rather than nag, since the user can retry.
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      className="note-reference-copy"
-      onClick={() => void handleCopy()}
-      data-copied={copied || undefined}
-      aria-label="Copy note reference"
-      title={copied ? "Copied" : "Copy note reference"}
-    >
-      {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
-    </button>
-  );
 }
 
 function CopyTranscriptButton({ text }: { text: string }) {

@@ -333,6 +333,7 @@ export type NoteDto = NoteListItemDto & {
   generatedContent?: string;
   editedContent?: string;
   transcript?: TranscriptDto;
+  transcriptCoverage?: TranscriptCoverageDto;
   sourceTranscripts?: TranscriptDto[];
   recording?: RecordingSessionDto;
   audio?: AudioArtifactDto;
@@ -341,6 +342,12 @@ export type NoteDto = NoteListItemDto & {
   lastError?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
+};
+
+export type TranscriptCoverageDto = {
+  detectedSpeechMs: number;
+  transcribedMs: number;
+  warning: boolean;
 };
 
 export type RecoverableRecordingDto = {

@@ -79,6 +79,16 @@ Detection is energy-based (RMS windows + noise floor), never diarization.
 _Avoid_: segment (that is a live-preview chunk), utterance, speaker (no
 speaker identity is inferred).
 
+**Speaker bleed (echo)**:
+System audio re-captured by the microphone after playing through the
+loudspeakers — "speaker" is the device, never a person; no speaker identity
+is inferred. Echo rejection trims bleed spans out of Microphone turns on
+signal evidence (lag-aligned similarity, cancellation depth, level
+dominance); the speech stays attributed to the System source, and no
+downstream step may reintroduce trimmed audio.
+_Avoid_: crosstalk, feedback (that is the amplification loop), AEC as the
+concept name (it names the canceller mechanism, one evidence tier).
+
 **Coalescing**:
 Merging adjacent same-source turns before transcription when the gap is short
 and no other source intervenes. Distinct from `merge_close_turns` (intra-turn
@@ -95,6 +105,15 @@ Optional, ephemeral chunked transcription shown while recording. Revisable,
 never written to `transcripts`, never the note's source of truth (see
 [ADR-0002](docs/adr/0002-live-transcript-preview-strategy.md)).
 _Avoid_: realtime transcription, live captions, streaming.
+
+**Transcript coverage**:
+How much of a recording's detected speech ended up in persisted, successful
+note-transcription turns (`transcribed_ms` vs `detected_speech_ms`). Always
+measured against detected speech spans, never wall-clock recording duration —
+silence is not lost audio. Persisted per processing pass as a
+`transcript_coverage` checkpoint; surfaced on the note (non-blocking) when
+materially incomplete.
+_Avoid_: transcript completeness, duration coverage (wall-clock framing).
 
 **System audio helper**:
 The out-of-process macOS `.app` (`june-system-audio-recorder`) that captures

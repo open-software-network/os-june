@@ -18,6 +18,7 @@ fn note(overrides: impl FnOnce(&mut NoteDto)) -> NoteDto {
         generated_content: None,
         edited_content: None,
         transcript: None,
+        transcript_coverage: None,
         source_transcripts: Vec::new(),
         recording: None,
         audio: None,
