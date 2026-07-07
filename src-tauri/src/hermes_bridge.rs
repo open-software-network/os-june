@@ -4,7 +4,7 @@ use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     net::TcpListener,
@@ -333,6 +333,10 @@ struct ProviderProxyState {
     token: String,
     image_sources: ImageSourceCapabilities,
     app: Option<AppHandle>,
+    /// Safe-mode values already injected, keyed by requestId, so an MCP retry
+    /// of the same request replays the same shape even if the user flipped
+    /// the toggle in between (June API bills a changed shape as a new call).
+    image_safe_mode_pins: Arc<Mutex<VecDeque<(String, bool)>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -6804,6 +6808,7 @@ async fn start_june_provider_proxy(
             token,
             image_sources,
             app,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
         }),
         shutdown_rx,
     ));
@@ -6930,7 +6935,7 @@ async fn handle_june_provider_connection(
                 .unwrap_or_else(|_| serde_json::json!({}));
             let image_self_report = strip_image_explicit_self_report(&mut body);
             ensure_image_generation_model(&mut body);
-            ensure_image_safe_mode(&mut body);
+            ensure_image_safe_mode(&mut body, &state.image_safe_mode_pins);
             if should_offer_safe_mode_consent(
                 &body,
                 crate::providers::image_safe_mode_prompt_dismissed(),
@@ -6966,7 +6971,7 @@ async fn handle_june_provider_connection(
                 .await?;
                 return Ok(());
             }
-            ensure_image_safe_mode(&mut body);
+            ensure_image_safe_mode(&mut body, &state.image_safe_mode_pins);
             if should_offer_safe_mode_consent(
                 &body,
                 crate::providers::image_safe_mode_prompt_dismissed(),
@@ -7754,17 +7759,48 @@ fn ensure_image_generation_model(body: &mut serde_json::Value) {
 /// Injects the on-device image safe-mode setting when the request omits it, so
 /// MCP-driven generation/editing honors the user's Settings toggle (the MCP
 /// never sends `safeMode`). Uses the camelCase key June API expects.
-fn ensure_image_safe_mode(body: &mut serde_json::Value) {
+///
+/// The injected value is pinned per `requestId`: the MCP retries 429/503/504
+/// by re-posting the same `requestId`, and June API hashes `safe_mode` into
+/// the replay-ledger key - if the user flips the toggle between attempts (the
+/// consent dialog makes this race easy), an unpinned retry would change shape
+/// and settle as a second billable generation instead of a replay.
+fn ensure_image_safe_mode(body: &mut serde_json::Value, pins: &Mutex<VecDeque<(String, bool)>>) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
-    if !object.contains_key("safeMode") {
-        object.insert(
-            "safeMode".to_string(),
-            serde_json::Value::Bool(crate::providers::image_safe_mode()),
-        );
+    if object.contains_key("safeMode") {
+        return;
     }
+    let request_id = object
+        .get("requestId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let safe_mode = match (request_id, pins.lock()) {
+        (Some(id), Ok(mut pins)) => {
+            if let Some((_, pinned)) = pins.iter().find(|(pinned_id, _)| *pinned_id == id) {
+                *pinned
+            } else {
+                let current = crate::providers::image_safe_mode();
+                if pins.len() >= IMAGE_SAFE_MODE_PIN_CAP {
+                    pins.pop_front();
+                }
+                pins.push_back((id, current));
+                current
+            }
+        }
+        // No requestId to key on (or a poisoned lock): fall back to the live
+        // setting, matching the pre-pinning behavior.
+        _ => crate::providers::image_safe_mode(),
+    };
+    object.insert("safeMode".to_string(), serde_json::Value::Bool(safe_mode));
 }
+
+/// Retries arrive within seconds of the first attempt, so a small ring of
+/// recent request ids is enough to keep every plausible replay stable.
+const IMAGE_SAFE_MODE_PIN_CAP: usize = 64;
 
 /// Reads and removes the MCP-only explicit-content self-report before the
 /// request shape reaches June API. Accepts the snake_case schema field and a
@@ -8474,6 +8510,77 @@ mod tests {
             truncate_image_safe_mode_consent_prompt(&prompt, 120),
             "é".repeat(120)
         );
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_replays_pinned_value_over_live_setting() {
+        // Default settings have safe mode ON; the pin says this request first
+        // ran with it OFF, so a retry must replay OFF or June API's replay
+        // ledger sees a new shape and bills a second generation.
+        let pins = Mutex::new(VecDeque::from([("req-1".to_string(), false)]));
+        let mut body = serde_json::json!({ "requestId": "req-1", "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        assert_eq!(body.get("safeMode"), Some(&serde_json::Value::Bool(false)));
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_pins_first_injection_for_request_id() {
+        let pins = Mutex::new(VecDeque::new());
+        let mut body = serde_json::json!({ "requestId": "req-2", "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        let injected = body
+            .get("safeMode")
+            .and_then(serde_json::Value::as_bool)
+            .expect("safeMode injected");
+        assert_eq!(
+            pins.lock().unwrap().back(),
+            Some(&("req-2".to_string(), injected))
+        );
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_respects_explicit_value_without_pinning() {
+        let pins = Mutex::new(VecDeque::new());
+        let mut body =
+            serde_json::json!({ "requestId": "req-3", "prompt": "a cat", "safeMode": false });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        assert_eq!(body.get("safeMode"), Some(&serde_json::Value::Bool(false)));
+        assert!(pins.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_without_request_id_skips_pinning() {
+        let pins = Mutex::new(VecDeque::new());
+        let mut body = serde_json::json!({ "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        assert!(body
+            .get("safeMode")
+            .and_then(serde_json::Value::as_bool)
+            .is_some());
+        assert!(pins.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_pin_ring_evicts_oldest() {
+        let pins = Mutex::new(VecDeque::from_iter(
+            (0..IMAGE_SAFE_MODE_PIN_CAP).map(|index| (format!("req-{index}"), false)),
+        ));
+        let mut body = serde_json::json!({ "requestId": "req-new", "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        let pins = pins.lock().unwrap();
+        assert_eq!(pins.len(), IMAGE_SAFE_MODE_PIN_CAP);
+        assert!(pins.iter().all(|(id, _)| id != "req-0"));
+        assert_eq!(pins.back().map(|(id, _)| id.as_str()), Some("req-new"));
     }
 
     fn test_png_bytes(label: &[u8]) -> Vec<u8> {
