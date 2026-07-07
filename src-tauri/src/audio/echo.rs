@@ -138,7 +138,17 @@ impl FdafCanceller {
             .zip(x.iter().zip(error.iter()))
         {
             *psd = (AEC_PSD_SMOOTHING * *psd) + (AEC_PSD_INJECTION * x_bin.norm_sqr());
-            *weight += (x_bin.conj() * *error_bin) * (AEC_STEP_SIZE / (*psd + AEC_EPSILON));
+            // Bound the normalizer by the current block's own spectrum: the
+            // smoothed PSD starts at 1 and charges at only 2% per block, so
+            // normalizing by it alone makes the effective step size exceed
+            // the NLMS stability bound for the first seconds of reference
+            // audio and the filter diverges — exactly when bleed starts with
+            // the first system speech. The max keeps the step at most
+            // `AEC_STEP_SIZE` while leaving converged behavior unchanged
+            // (there the smoothed PSD and |X|^2 agree).
+            let normalization = psd.max(x_bin.norm_sqr());
+            *weight +=
+                (x_bin.conj() * *error_bin) * (AEC_STEP_SIZE / (normalization + AEC_EPSILON));
         }
 
         // Constrain the gradient to the causal half of the block. This keeps
@@ -348,6 +358,12 @@ pub fn residual_rms_windows(mic_path: &Path, system_path: &Path, lag_ms: i64) ->
     Some(collector.finish())
 }
 
+/// Blocks read per chunk while streaming a cancellation pass. Reading one
+/// block at a time reopens and reseeks both WAVs every 128 ms of audio
+/// (roughly 112k opens across a one-hour pair); chunking cuts the opens by
+/// this factor for about 1 MB of buffer.
+const AEC_READ_CHUNK_BLOCKS: i64 = 64;
+
 fn stream_cancellation_pass(
     canceller: &mut FdafCanceller,
     mic_path: &Path,
@@ -357,21 +373,34 @@ fn stream_cancellation_pass(
     mut collector: Option<&mut RmsWindowCollector>,
 ) -> Option<()> {
     let block_ms = (AEC_BLOCK_SIZE as i64 * 1000) / SIMILARITY_SAMPLE_RATE as i64;
-    let mut start_ms = 0_i64;
-    while start_ms < mic_duration_ms {
-        let end_ms = start_ms + block_ms;
-        let mut capture = read_span_mono_16k(mic_path, start_ms, end_ms)?;
-        let mut reference = read_span_mono_16k(system_path, start_ms - lag_ms, end_ms - lag_ms)?;
-        capture.resize(AEC_BLOCK_SIZE, 0.0);
-        reference.resize(AEC_BLOCK_SIZE, 0.0);
-        let residual = canceller.process(&reference, &capture);
-        if let Some(collector) = collector.as_deref_mut() {
-            let valid_samples = (((mic_duration_ms - start_ms).min(block_ms))
-                * SIMILARITY_SAMPLE_RATE as i64
-                / 1000) as usize;
-            collector.push(&residual[..valid_samples.min(residual.len())]);
+    let chunk_ms = block_ms * AEC_READ_CHUNK_BLOCKS;
+    let chunk_samples = AEC_BLOCK_SIZE * AEC_READ_CHUNK_BLOCKS as usize;
+    let mut chunk_start_ms = 0_i64;
+    while chunk_start_ms < mic_duration_ms {
+        let chunk_end_ms = chunk_start_ms + chunk_ms;
+        let mut capture = read_span_mono_16k(mic_path, chunk_start_ms, chunk_end_ms)?;
+        let mut reference =
+            read_span_mono_16k(system_path, chunk_start_ms - lag_ms, chunk_end_ms - lag_ms)?;
+        capture.resize(chunk_samples, 0.0);
+        reference.resize(chunk_samples, 0.0);
+        for block in 0..AEC_READ_CHUNK_BLOCKS {
+            let block_start_ms = chunk_start_ms + block * block_ms;
+            if block_start_ms >= mic_duration_ms {
+                break;
+            }
+            let offset = block as usize * AEC_BLOCK_SIZE;
+            let residual = canceller.process(
+                &reference[offset..offset + AEC_BLOCK_SIZE],
+                &capture[offset..offset + AEC_BLOCK_SIZE],
+            );
+            if let Some(collector) = collector.as_deref_mut() {
+                let valid_samples = (((mic_duration_ms - block_start_ms).min(block_ms))
+                    * SIMILARITY_SAMPLE_RATE as i64
+                    / 1000) as usize;
+                collector.push(&residual[..valid_samples.min(residual.len())]);
+            }
         }
-        start_ms += block_ms;
+        chunk_start_ms += chunk_ms;
     }
     Some(())
 }
@@ -623,6 +652,31 @@ mod tests {
             delta_db <= 1.0,
             "independent speech should survive cancellation, got {delta_db:.2} dB change"
         );
+    }
+
+    #[test]
+    fn fdaf_stays_stable_when_bleed_starts_with_the_reference() {
+        // In a real recording the bleed exists from the first system speech
+        // onward — there is no reference-only warm-up to charge the PSD
+        // estimate. The step normalization must hold from block one; an
+        // unbounded normalizer diverges here (residuals thousands of times
+        // the capture) and only recovers slowly.
+        let reference = splitmix_noise(7, 4 * SIMILARITY_SAMPLE_RATE as usize);
+        let capture = tapped_echo(&reference, &[(1_280, 0.5)]);
+
+        let mut canceller = FdafCanceller::new();
+        let capture_rms = rms(&capture);
+        for start in (0..capture.len()).step_by(AEC_BLOCK_SIZE) {
+            let residual = canceller.process(
+                &padded_frame(&reference, start),
+                &padded_frame(&capture, start),
+            );
+            let residual_rms = rms(&residual);
+            assert!(
+                residual_rms <= capture_rms * 2.0,
+                "canceller must never amplify: block at {start} gave residual RMS {residual_rms:.3} vs capture {capture_rms:.3}"
+            );
+        }
     }
 
     #[test]
