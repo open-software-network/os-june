@@ -150,6 +150,11 @@ pub struct EchoRejectionReport {
     /// these, or the contiguous segment extraction re-includes the trimmed
     /// audio.
     pub microphone_echo_spans: Vec<(i64, i64)>,
+    /// Artifacts that lost audio to trimming. Full-source transcription
+    /// fallbacks (missing-source resurrection, all-remainders-failed lane
+    /// retry) must never run for these: the raw file contains the trimmed
+    /// bleed verbatim.
+    pub trimmed_artifact_ids: Vec<String>,
 }
 
 impl EchoRejectionReport {
@@ -705,6 +710,9 @@ fn reject_speaker_echo_turns(
                 if trimmed_ms > 0 {
                     report.trimmed_turn_count += 1;
                     report.trimmed_ms += trimmed_ms;
+                    if !report.trimmed_artifact_ids.contains(&turn.artifact_id) {
+                        report.trimmed_artifact_ids.push(turn.artifact_id.clone());
+                    }
                     if kept.is_empty() {
                         report.dropped_turn_count += 1;
                     }

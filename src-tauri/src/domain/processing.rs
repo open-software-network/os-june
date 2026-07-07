@@ -566,6 +566,9 @@ pub async fn process_saved_source_audio(
             )),
         )?;
         transcription_jobs.push(TurnTranscriptionJob {
+            echo_trimmed: echo_rejection
+                .trimmed_artifact_ids
+                .contains(&turn.artifact_id),
             artifact_id: turn.artifact_id,
             source: turn.source,
             audio_path,
@@ -1045,6 +1048,9 @@ struct TurnTranscriptionJob {
     source_path: PathBuf,
     covers_full_source: bool,
     source_fallback: bool,
+    /// The source lost audio to echo trimming; full-source fallbacks must
+    /// not run for it (the raw file contains the trimmed bleed verbatim).
+    echo_trimmed: bool,
     start_ms: i64,
     end_ms: i64,
     turn_index: i64,
@@ -1623,7 +1629,14 @@ fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscr
     if jobs.iter().all(|job| job.covers_full_source) {
         return None;
     }
+    // Echo rejection deliberately removed audio from this lane; the raw
+    // full-source file contains the trimmed bleed verbatim, so a lane-level
+    // retry through it would re-attribute remote speech to the microphone.
+    if jobs.iter().any(|job| job.echo_trimmed) {
+        return None;
+    }
     Some(TurnTranscriptionJob {
+        echo_trimmed: false,
         artifact_id: first.artifact_id.clone(),
         source: first.source.clone(),
         audio_path: first.source_path.clone(),
@@ -3383,10 +3396,28 @@ mod tests {
             source_path: PathBuf::from(path),
             covers_full_source: true,
             source_fallback: false,
+            echo_trimmed: false,
             start_ms: turn_index * 1_000,
             end_ms: turn_index * 1_000 + 500,
             turn_index,
         }
+    }
+
+    #[test]
+    fn echo_trimmed_lane_never_falls_back_to_the_full_source() {
+        // If every kept remainder of an echo-trimmed microphone lane fails to
+        // transcribe, retrying with the raw full-source file would transcribe
+        // the trimmed bleed verbatim — the misattribution the trim removed.
+        let mut jobs = vec![segmented_test_job(
+            "remainder.wav",
+            "microphone.wav",
+            "microphone",
+            0,
+        )];
+        assert!(full_source_fallback_job(&jobs).is_some());
+
+        jobs[0].echo_trimmed = true;
+        assert!(full_source_fallback_job(&jobs).is_none());
     }
 
     fn segmented_test_job(
