@@ -636,6 +636,12 @@ export function App() {
   const noteDetailScrollerActive = activeView === "meetings" && !!selectedNote;
   const noteHasBreadcrumb = !!(originFolder || originAllNotes);
   const detailScrollerActive = activeView === "folders" && !!state.selectedFolderId;
+  // A settings drill-in (e.g. a skill detail) that pins its own frosted
+  // breadcrumb bar at the top of the panel and scrolls its content beneath —
+  // the same pinned-bar mechanic as opening a meeting note from a folder. When
+  // set, the outer body stops scrolling so the pinned bar stays fixed.
+  const [settingsDetailPinned, setSettingsDetailPinned] = useState(false);
+  const settingsDetailScrollerActive = activeView === "settings" && settingsDetailPinned;
 
   // ---- Tabs ------------------------------------------------------------
   // The current live navigation, reduced to a snapshot. Fields are gated by
@@ -1044,6 +1050,12 @@ export function App() {
     if (!el) return;
     return attachScrollThumbFade(el);
   }, [noteDetailScrollerActive, selectedNoteId]);
+
+  // Leaving the settings view drops any pinned settings drill-in, so the body
+  // scroller is never left frozen for a view that has no pinned bar.
+  useEffect(() => {
+    if (activeView !== "settings") setSettingsDetailPinned(false);
+  }, [activeView]);
 
   // Update state is read through refs so runUpdateCheck keeps a stable identity.
   // Otherwise the launch effect and the manual-check listener below would tear
@@ -2836,7 +2848,9 @@ export function App() {
             className="main-panel-body"
             data-active-view={activeView}
             data-detail-scroller={detailScrollerActive ? "true" : undefined}
-            data-note-detail-scroller={noteDetailScrollerActive ? "true" : undefined}
+            data-note-detail-scroller={
+              noteDetailScrollerActive || settingsDetailScrollerActive ? "true" : undefined
+            }
           >
             {error ? <p className="error-banner">{error}</p> : null}
             {billingNotice ? (
@@ -2862,6 +2876,7 @@ export function App() {
                   onEnableSystemAudio={handleEnableSystemAudio}
                   activeTab={settingsTab}
                   onTabChange={setSettingsTab}
+                  onDetailPinnedChange={setSettingsDetailPinned}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
                   updateReadyToRelaunch={readyUpdate != null}
                   onRelaunch={handleRelaunchUpdate}

@@ -154,7 +154,7 @@ function Monogram({ label, size }: { label: string; size: number }) {
         width: size,
         height: size,
         fontSize: Math.round(size * 0.55),
-        fontWeight: 600,
+        fontWeight: 500,
         lineHeight: 1,
         letterSpacing: "-0.02em",
       }}

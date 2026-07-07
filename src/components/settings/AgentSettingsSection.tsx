@@ -22,6 +22,7 @@ import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
+import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
 
 type AgentSettingsPanel = "messaging" | "files";
@@ -239,27 +240,19 @@ export function AgentSettingsSection() {
         </div>
       </div>
       <div className="settings-card settings-agent-card">
-        <div className="settings-section-tabs" role="tablist" aria-label="Agent settings">
-          <button
-            type="button"
-            aria-selected={panel === "messaging"}
-            onClick={() => {
-              setPanel("messaging");
+        <div className="settings-agent-tabs-bar">
+          <SegmentedControl<AgentSettingsPanel>
+            aria-label="Agent settings"
+            value={panel}
+            onValueChange={(next) => {
+              setPanel(next);
               setQuery("");
             }}
-          >
-            Messaging
-          </button>
-          <button
-            type="button"
-            aria-selected={panel === "files"}
-            onClick={() => {
-              setPanel("files");
-              setQuery("");
-            }}
-          >
-            Files
-          </button>
+            options={[
+              { value: "messaging", label: "Messaging" },
+              { value: "files", label: "Files" },
+            ]}
+          />
         </div>
         {error ? <p className="settings-row-error">{error}</p> : null}
         {panel === "messaging" ? (

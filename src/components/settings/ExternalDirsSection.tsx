@@ -1,11 +1,12 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconFolderShared } from "central-icons/IconFolderShared";
 import { IconLock } from "central-icons/IconLock";
 import { IconWarningSign } from "central-icons/IconWarningSign";
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   presenceMeta,
   shadowingExplanation,
@@ -55,6 +56,10 @@ export function ExternalDirsView({
 }) {
   const [draft, setDraft] = useState("");
   const [formError, setFormError] = useState<string>();
+  const [refreshSpins, setRefreshSpins] = useState(0);
+  // Which row is disclosed (one at a time). Keyed by the raw configured path,
+  // the row identity. Local to the view: the state layer owns no expansion.
+  const [openPath, setOpenPath] = useState<string>();
 
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
@@ -69,6 +74,11 @@ export function ExternalDirsView({
       return;
     }
     setDraft("");
+  };
+
+  const handleRefresh = () => {
+    setRefreshSpins((spins) => spins + 1);
+    state.refresh();
   };
 
   return (
@@ -125,12 +135,19 @@ export function ExternalDirsView({
           </div>
           <button
             type="button"
-            className="external-dirs-refresh"
+            className="icon-button external-dirs-refresh"
+            aria-label="Refresh external directories"
+            aria-busy={isLoadingFirst || state.busy}
+            title="Refresh external directories"
             disabled={isUnavailable || isLoadingFirst || state.busy}
-            onClick={state.refresh}
+            onClick={handleRefresh}
           >
-            <IconArrowRotateClockwise size={14} ariaHidden />
-            Refresh
+            <IconArrowRotateClockwise
+              size={14}
+              ariaHidden
+              className="balance-refresh-icon"
+              style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+            />
           </button>
         </div>
 
@@ -179,6 +196,10 @@ export function ExternalDirsView({
                   row={row}
                   mode={state.mode ?? mode}
                   busy={state.busy}
+                  open={openPath === row.rawPath}
+                  onToggle={() =>
+                    setOpenPath((current) => (current === row.rawPath ? undefined : row.rawPath))
+                  }
                   onRemove={() => state.remove(row.rawPath)}
                 />
               ))}

@@ -1157,9 +1157,10 @@ pub fn update_hermes_bridge_skill(
             // Skills loaded from external roots live outside the managed root
             // and are read-only in June: the agent loads them, but the editor
             // never writes them. Surface that instead of "not found".
-            let externals: Vec<(PathBuf, bool)> = external_skill_dirs(&app)
-                .into_iter()
-                .map(|dir| (dir, true))
+            let external_dirs = external_skill_dirs(&app);
+            let externals: Vec<(PathBuf, bool)> = external_dirs
+                .iter()
+                .filter_map(|dir| external_skill_dir_scan_path(dir).map(|path| (path, true)))
                 .collect();
             if resolve_skill_in_roots(&externals, &request.name).is_ok() {
                 return Err(AppError::new(
@@ -1705,20 +1706,34 @@ fn json_str(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 }
 
 /// Ordered skill roots June searches when opening a skill: the managed
-/// `$HERMES_HOME/skills` first (editable), then any `external_skill_dirs()`
-/// (read-only). The bool is the read-only flag for skills found under that
-/// root. Non-existent roots are skipped so a missing managed dir still lets
-/// external skills resolve.
+/// `$HERMES_HOME/skills` first (editable), then the effective
+/// `skills.external_dirs` list (read-only). The bool is the read-only flag for
+/// skills found under that root. Non-existent roots are skipped so a missing
+/// managed dir still lets external skills resolve.
 fn skill_search_roots(app: &AppHandle) -> Result<Vec<(PathBuf, bool)>, AppError> {
+    let hermes_home = resolve_june_hermes_home(app)?;
+    let external_dirs = external_skill_dirs_for_home(app, &hermes_home);
+    Ok(skill_search_roots_for_hermes_home(
+        &hermes_home,
+        &external_dirs,
+    ))
+}
+
+fn skill_search_roots_for_hermes_home(
+    hermes_home: &Path,
+    external_skill_dirs: &[PathBuf],
+) -> Vec<(PathBuf, bool)> {
     let mut roots = Vec::new();
-    let managed = resolve_june_hermes_home(app)?.join("skills");
+    let managed = hermes_home.join("skills");
     if managed.is_dir() {
         roots.push((managed, false));
     }
-    for dir in external_skill_dirs(app) {
-        roots.push((dir, true));
+    for dir in external_skill_dirs {
+        if let Some(resolved) = external_skill_dir_scan_path(dir) {
+            roots.push((resolved, true));
+        }
     }
-    Ok(roots)
+    roots
 }
 
 /// Resolves `name` against an ordered list of `(root, read_only)` pairs,
@@ -4656,7 +4671,19 @@ fn discover_external_skill_names(dir: &Path) -> Vec<String> {
 /// successful create, `Some(false)` on a permission error, and `None` when the
 /// outcome is ambiguous. The probe file is `.june-write-probe-<rand>` and is
 /// always cleaned up.
+///
+/// In a `pnpm tauri:dev` session the built-in external skill dir is
+/// `src-tauri/resources/hermes-skills`, which lives INSIDE the crate directory
+/// the Tauri dev file watcher observes. Creating (and deleting) a probe file
+/// there fires the watcher, which rebuilds and relaunches the whole app — so
+/// every add/refresh of an external dir made June quit and restart in dev (the
+/// bundled dir is surfaced to the inspector via `skills.external_dirs`). The
+/// dir is read-only to the app anyway, so debug builds skip the destructive
+/// probe for any path inside the dev crate tree and report it as not writable.
 fn probe_external_dir_writable(dir: &Path) -> Option<bool> {
+    if path_inside_dev_watch_root(dir) {
+        return Some(false);
+    }
     let suffix: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(12)
@@ -4678,6 +4705,32 @@ fn probe_external_dir_writable(dir: &Path) -> Option<bool> {
             // ambiguous error: do not claim a definite writability either way.
             _ => None,
         },
+    }
+}
+
+/// True when `dir` resolves inside the Tauri dev file-watch root — the crate
+/// directory (`src-tauri/`) that `pnpm tauri:dev` watches to rebuild and
+/// relaunch the app. Writing anything there (even a probe file that is
+/// immediately deleted) triggers a full app restart, so callers that create
+/// scratch files must avoid this tree in dev. Always `false` in release builds:
+/// there is no dev watcher, and the crate dir does not exist on an installed
+/// app.
+fn path_inside_dev_watch_root(dir: &Path) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        let watch_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // Compare canonical paths so a symlinked/`..`-laden configured dir still
+        // matches; fall back to the raw paths when either side cannot be
+        // canonicalized (e.g. the dir does not exist).
+        match (dir.canonicalize(), watch_root.canonicalize()) {
+            (Ok(dir), Ok(root)) => dir.starts_with(root),
+            _ => dir.starts_with(watch_root),
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = dir;
+        false
     }
 }
 
@@ -6314,7 +6367,7 @@ fn sync_hermes_config(
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
-        &external_skill_dirs(app),
+        &builtin_external_skill_dirs(app),
     )
 }
 
@@ -6325,21 +6378,23 @@ fn sync_hermes_config_with_external_dirs(
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
-    external_skill_dirs: &[PathBuf],
+    default_external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
+    let config_path = hermes_home.join("config.yaml");
+    let external_skill_dirs =
+        effective_external_skill_dirs_from_config(&config_path, default_external_skill_dirs);
     let config = render_hermes_config(
         &model,
         &base_url,
         provider_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
-        external_skill_dirs,
+        &external_skill_dirs,
         Some(june_context_mcp),
         Some(june_web_mcp),
         Some(june_image_mcp),
     );
-    let config_path = hermes_home.join("config.yaml");
     // MERGE over the existing config, never replace it: the jailed dashboard
     // persists admin changes (user-added MCP servers, tool filters, OAuth
     // client names, skill config) into this same file, and a plain overwrite
@@ -6387,6 +6442,78 @@ fn deep_merge_yaml(base: serde_yaml::Value, overlay: serde_yaml::Value) -> serde
             serde_yaml::Value::Mapping(base_map)
         }
         (_, overlay) => overlay,
+    }
+}
+
+fn effective_external_skill_dirs(hermes_home: &Path, default_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    effective_external_skill_dirs_from_config(&hermes_home.join("config.yaml"), default_dirs)
+}
+
+fn effective_external_skill_dirs_from_config(
+    config_path: &Path,
+    default_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for dir in default_dirs {
+        push_external_skill_dir(&mut dirs, dir.clone());
+    }
+    for dir in existing_external_skill_dirs(config_path) {
+        push_external_skill_dir(&mut dirs, dir);
+    }
+    dirs
+}
+
+fn existing_external_skill_dirs(config_path: &Path) -> Vec<PathBuf> {
+    let Ok(existing_text) = fs::read_to_string(config_path) else {
+        return Vec::new();
+    };
+    let Ok(existing) = serde_yaml::from_str::<serde_yaml::Value>(&existing_text) else {
+        return Vec::new();
+    };
+    external_skill_dirs_from_config_value(&existing)
+}
+
+fn external_skill_dirs_from_config_value(config: &serde_yaml::Value) -> Vec<PathBuf> {
+    let Some(external_dirs) = yaml_mapping_get(config, "skills")
+        .and_then(|skills| yaml_mapping_get(skills, "external_dirs"))
+    else {
+        return Vec::new();
+    };
+    match external_dirs {
+        serde_yaml::Value::String(raw) => external_skill_dir_from_config_entry(raw)
+            .into_iter()
+            .collect(),
+        serde_yaml::Value::Sequence(entries) => entries
+            .iter()
+            .filter_map(|entry| match entry {
+                serde_yaml::Value::String(raw) => external_skill_dir_from_config_entry(raw),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn yaml_mapping_get<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
+    let serde_yaml::Value::Mapping(mapping) = value else {
+        return None;
+    };
+    let lookup = serde_yaml::Value::String(key.to_string());
+    mapping.get(&lookup)
+}
+
+fn external_skill_dir_from_config_entry(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn push_external_skill_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
+    if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+        dirs.push(dir);
     }
 }
 
@@ -6547,12 +6674,27 @@ fn render_image_mcp_entry(
     )
 }
 
-/// External skill directories Hermes loads in addition to its built-in
-/// `$HERMES_HOME/skills`. User-global `~/.agents/skills` entries stay first so
-/// user/team skills can shadow app-bundled skills when names collide. The
-/// bundled resource directory is read-only and ships June-owned skills that
-/// should be available without a Hermes runtime bump.
+/// Effective external skill directories Hermes loads in addition to its
+/// built-in `$HERMES_HOME/skills`. User-global `~/.agents/skills` entries stay
+/// first so user/team skills can shadow app-bundled skills when names collide.
+/// Existing `skills.external_dirs` entries from `config.yaml` are appended so
+/// dashboard-persisted directories survive and are scanned after the defaults.
 fn external_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let defaults = builtin_external_skill_dirs(app);
+    let Ok(hermes_home) = resolve_june_hermes_home(app) else {
+        return defaults;
+    };
+    effective_external_skill_dirs(&hermes_home, &defaults)
+}
+
+fn external_skill_dirs_for_home(app: &AppHandle, hermes_home: &Path) -> Vec<PathBuf> {
+    effective_external_skill_dirs(hermes_home, &builtin_external_skill_dirs(app))
+}
+
+/// Built-in external skill directories June controls. The bundled resource
+/// directory is read-only and ships June-owned skills that should be available
+/// without a Hermes runtime bump.
+fn builtin_external_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for home in home_dir_candidates() {
         let candidate = home.join(".agents").join("skills");
@@ -6566,6 +6708,13 @@ fn external_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+fn external_skill_dir_scan_path(dir: &Path) -> Option<PathBuf> {
+    match expand_external_dir_path(&dir.to_string_lossy()) {
+        ExpandedPath::Resolved(path) => Some(path),
+        ExpandedPath::UnresolvedVar(_) => None,
+    }
 }
 
 fn bundled_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
@@ -8553,6 +8702,117 @@ mcp_servers:
     }
 
     #[test]
+    fn effective_external_skill_dirs_reads_existing_config_defensively() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let default = home.path().join("default-skills");
+        let custom = home.path().join("team-skills");
+        let string_config = home.path().join("string.yaml");
+        std::fs::write(
+            &string_config,
+            format!(
+                "skills:\n  external_dirs: {}\n",
+                yaml_string(&custom.to_string_lossy())
+            ),
+        )
+        .expect("seed string config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(
+                &string_config,
+                std::slice::from_ref(&default)
+            ),
+            vec![default.clone(), custom.clone()]
+        );
+
+        let list_config = home.path().join("list.yaml");
+        std::fs::write(
+            &list_config,
+            format!(
+                r#"skills:
+  external_dirs:
+    - {}
+    - 42
+    - ""
+    - {}
+    - {}
+"#,
+                yaml_string(&custom.to_string_lossy()),
+                yaml_string(&default.to_string_lossy()),
+                yaml_string(&home.path().join("more-skills").to_string_lossy()),
+            ),
+        )
+        .expect("seed list config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&list_config, std::slice::from_ref(&default)),
+            vec![default.clone(), custom, home.path().join("more-skills"),]
+        );
+
+        let bad_config = home.path().join("bad.yaml");
+        std::fs::write(&bad_config, ": not yaml : [").expect("seed bad config");
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&bad_config, std::slice::from_ref(&default)),
+            vec![default]
+        );
+    }
+
+    #[test]
+    fn sync_config_preserves_user_external_dirs_and_skill_roots_scan_them() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let default_dir = home.path().join("default-skills");
+        let custom_dir = home.path().join("team-skills");
+        let custom_skill = custom_dir.join("custom-skill");
+        std::fs::create_dir_all(&default_dir).expect("default dir");
+        std::fs::create_dir_all(&custom_skill).expect("custom skill dir");
+        std::fs::write(custom_skill.join("SKILL.md"), "# Custom\n").expect("custom skill");
+        std::fs::write(
+            home.path().join("config.yaml"),
+            format!(
+                "skills:\n  external_dirs:\n    - {}\n",
+                yaml_string(&custom_dir.to_string_lossy())
+            ),
+        )
+        .expect("seed config");
+
+        sync_hermes_config_with_external_dirs(
+            home.path(),
+            4242,
+            "proxy-token",
+            &test_june_context_mcp_config(),
+            &test_june_web_mcp_config(),
+            &test_june_image_mcp_config(),
+            std::slice::from_ref(&default_dir),
+        )
+        .expect("sync config");
+
+        let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
+        let value: serde_yaml::Value = serde_yaml::from_str(&config).expect("config parses");
+        let dirs = value["skills"]["external_dirs"]
+            .as_sequence()
+            .expect("external dirs sequence")
+            .iter()
+            .map(|value| value.as_str().expect("dir string").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            dirs,
+            vec![
+                default_dir.to_string_lossy().into_owned(),
+                custom_dir.to_string_lossy().into_owned(),
+            ]
+        );
+
+        let effective =
+            effective_external_skill_dirs(home.path(), std::slice::from_ref(&default_dir));
+        assert_eq!(effective, vec![default_dir, custom_dir.clone()]);
+        let roots = skill_search_roots_for_hermes_home(home.path(), &effective);
+        let (root, path, read_only) =
+            resolve_skill_in_roots(&roots, "custom-skill").expect("resolve custom skill");
+        assert_eq!(root, custom_dir);
+        assert!(path.ends_with(Path::new("custom-skill").join("SKILL.md")));
+        assert!(read_only);
+    }
+
+    #[test]
     fn render_hermes_config_lists_external_skill_dirs() {
         let dirs = vec![
             PathBuf::from("/Users/dev/.agents/skills"),
@@ -9701,6 +9961,55 @@ mcp_servers:
                     .starts_with(".june-write-probe-")
             });
         assert!(!leftover, "write probe file should be removed");
+    }
+
+    #[test]
+    fn write_probe_never_writes_inside_the_dev_watch_root() {
+        // The built-in external skill dir `src-tauri/resources/hermes-skills`
+        // lives inside the crate dir the Tauri dev watcher observes. Probing it
+        // must NOT create a scratch file there, because that fires the watcher
+        // and relaunches the whole app (June "keeps quitting" on every external
+        // dir add/refresh in dev). Regression guard for that quit loop.
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let resources = crate_dir.join("resources").join("hermes-skills");
+        std::fs::create_dir_all(&resources).expect("resources dir");
+
+        assert!(
+            path_inside_dev_watch_root(&resources),
+            "the bundled resources dir must be recognized as inside the watch root"
+        );
+
+        let before = probe_scratch_file_count(&resources);
+        // The probe reports read-only (Some(false)) without touching the tree.
+        assert_eq!(probe_external_dir_writable(&resources), Some(false));
+        let after = probe_scratch_file_count(&resources);
+        assert_eq!(
+            before, after,
+            "no `.june-write-probe-*` file may be created inside the dev watch root"
+        );
+
+        // A dir OUTSIDE the crate tree still gets the real destructive probe.
+        let outside = tempfile::tempdir().expect("tempdir");
+        assert!(!path_inside_dev_watch_root(outside.path()));
+        assert_eq!(probe_external_dir_writable(outside.path()), Some(true));
+    }
+
+    /// Counts leftover `.june-write-probe-*` files directly under `dir` so a
+    /// stray probe write inside the watched tree is caught.
+    fn probe_scratch_file_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".june-write-probe-")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     #[test]

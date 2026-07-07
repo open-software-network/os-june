@@ -459,6 +459,13 @@ describe("skill detail — component", () => {
     expect(screen.getByText(/bundled updates/i)).toBeInTheDocument();
   });
 
+  it("refreshes the skill from the top bar control", () => {
+    const refresh = vi.fn();
+    render(<SkillDetailView state={baseState({ refresh })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh skill" }));
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it("opens a diff confirmation and saves through it", () => {
     const save = vi.fn();
     const edited = WRITABLE.replace("Original body.", "Edited body.");
@@ -476,9 +483,9 @@ describe("skill detail — component", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /review and save/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     const dialog = screen.getByRole("dialog", {
-      name: /review changes before saving/i,
+      name: /confirm changes before saving/i,
     });
     expect(within(dialog).getByText(/added/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: /save changes/i }));
@@ -499,7 +506,7 @@ describe("skill detail — component", () => {
         })}
       />,
     );
-    expect(screen.getByRole("button", { name: /review and save/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     // The blocking error is shown inline.
     expect(screen.getByText(/missing a name/i)).toBeInTheDocument();
   });

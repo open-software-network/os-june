@@ -9,7 +9,7 @@ import { IconMoonStar } from "central-icons/IconMoonStar";
 import { IconSun } from "central-icons/IconSun";
 import { IconTelevision } from "central-icons/IconTelevision";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
 import {
   JUNE_COMMUNITY_URL,
   dictationHotkeyStatus,
@@ -64,6 +64,7 @@ import {
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { InlineNotice } from "../ui/InlineNotice";
 import { Switch } from "../ui/Switch";
+import { HoverTip } from "../ui/HoverTip";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
 import type { ReportCategory } from "../agent/composer/reportCategory";
 import { getStoredTheme, setStoredTheme, type ThemePreference } from "../../lib/theme";
@@ -83,7 +84,8 @@ import {
   withLocalGenerationOption,
 } from "../../lib/local-generation";
 import { ProviderLogo } from "./ProviderLogo";
-import { ModelMeta, ModelPickerDialog, modelOptions, selectedModel } from "./ModelPickerDialog";
+import { ModelMeta, modelOptions, selectedModel } from "./ModelPickerDialog";
+import { ModelPickerPopover, type ModelPickerFlyout } from "./ModelPickerPopover";
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { AgentSettingsSection } from "./AgentSettingsSection";
@@ -367,9 +369,15 @@ export function AppSettings({
   // bespoke in-context confirm below the toggle can name the exact version.
   const [reconcileVersion, setReconcileVersion] = useState<string>();
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
+  const [modelPickerFlyout, setModelPickerFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
+  const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelPickerPopoverRef = useRef<HTMLDivElement>(null);
+  const modelPickerSearchRef = useRef<HTMLInputElement>(null);
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
   const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
+  const [localModelSetupVisible, setLocalModelSetupVisible] = useState(false);
+  const [localModelStatus, setLocalModelStatus] = useState<string>();
   const [internalTab, setInternalTab] = useState<SettingsTab>("general");
   const [micPopoverPlacement, setMicPopoverPlacement] =
     useState<SelectPopoverPlacement>("align-selected");
@@ -843,6 +851,22 @@ export function AppSettings({
     }
   }
 
+  function closeModelPicker() {
+    setPickerMode(undefined);
+    setModelPickerFlyout(null);
+    setModelSearch("");
+  }
+
+  function selectModelFromPicker(mode: ProviderModelMode, modelId: string) {
+    const picked = modelOptionsForMode(mode).find((model) => model.id === modelId);
+    if (mode === "generation" && picked?.provider === "local") {
+      enableLocalGenerationFromPicker();
+    } else {
+      void selectVeniceModel(mode, modelId);
+    }
+    closeModelPicker();
+  }
+
   // True when the draft matches what's persisted, so enabling can skip a
   // redundant save. The catalog is derived from providerSettings, never a
   // re-fetch, so there's no awaited network call to overwrite the status.
@@ -857,7 +881,7 @@ export function AppSettings({
 
   // Persists the draft fields without changing the active provider. Returns
   // the updated settings on success (draft re-syncs from providerSettings via
-  // effect); surfaces validation errors through the status line.
+  // effect); surfaces validation errors next to the local controls.
   async function commitLocalGenerationSettings() {
     try {
       const next = await saveLocalGenerationSettings({
@@ -872,14 +896,14 @@ export function AppSettings({
       });
       return next;
     } catch (error) {
-      setStatus(messageFromError(error));
+      setLocalModelStatus(messageFromError(error));
       return undefined;
     }
   }
 
   async function handleSaveLocalModel() {
     const saved = await commitLocalGenerationSettings();
-    if (saved) setStatus("Local model saved.");
+    if (saved) setLocalModelStatus("Local model saved.");
   }
 
   // Flips the provider to the saved local endpoint. The backend enables from
@@ -893,9 +917,10 @@ export function AppSettings({
         modelId: next.generationModel,
       });
       setLocalEnableConfirm(false);
-      setStatus("Local model enabled.");
+      setLocalModelSetupVisible(true);
+      setLocalModelStatus("Local model enabled.");
     } catch (error) {
-      setStatus(messageFromError(error));
+      setLocalModelStatus(messageFromError(error));
     }
   }
 
@@ -908,10 +933,11 @@ export function AppSettings({
     const baseUrl = providerSettings.localGeneration.baseUrl.trim();
     if (!isLoopbackUrl(baseUrl)) {
       setLocalEnableConfirm(true);
+      setLocalModelSetupVisible(true);
       // The confirm affordance lives in the Local model section behind "More
       // options"; reveal it so the status message's instruction is reachable.
       setShowMoreModelOptions(true);
-      setStatus(
+      setLocalModelStatus(
         "This endpoint is not on this machine. Requests will leave your device. Confirm in the Local model section to enable it.",
       );
       return;
@@ -923,13 +949,15 @@ export function AppSettings({
     const baseUrl = localGenerationDraft.baseUrl.trim();
     const modelId = localGenerationDraft.modelId.trim();
     if (!baseUrl || !modelId) {
-      setStatus("Enter a local endpoint and model ID first.");
+      setLocalModelSetupVisible(true);
+      setLocalModelStatus("Enter a local endpoint and model ID first.");
       return;
     }
     // A remote endpoint takes a deliberate second step: the first flip reveals
     // the confirm affordance instead of enabling.
     if (!isLoopbackUrl(baseUrl) && !localEnableConfirm) {
       setLocalEnableConfirm(true);
+      setLocalModelSetupVisible(true);
       return;
     }
     if (!draftMatchesSavedLocal()) {
@@ -950,9 +978,9 @@ export function AppSettings({
         mode: "generation",
         modelId: next.generationModel,
       });
-      setStatus("Local model disabled.");
+      setLocalModelStatus("Local model disabled.");
     } catch (error) {
-      setStatus(messageFromError(error));
+      setLocalModelStatus(messageFromError(error));
     }
   }
 
@@ -973,6 +1001,7 @@ export function AppSettings({
   }
 
   function handleLocalToggle(enabled: boolean) {
+    setLocalModelSetupVisible(true);
     if (enabled) {
       void enableLocalGeneration();
     } else {
@@ -987,9 +1016,9 @@ export function AppSettings({
         apiKey: localGenerationDraft.apiKey,
       });
       setLocalProbeModels(result.models);
-      setStatus(`Connected. ${result.models.length} models available.`);
+      setLocalModelStatus(`Connected. ${result.models.length} models available.`);
     } catch (error) {
-      setStatus(messageFromError(error));
+      setLocalModelStatus(messageFromError(error));
     }
   }
 
@@ -1069,10 +1098,17 @@ export function AppSettings({
   const imageOptions = IMAGE_GENERATION_ENABLED
     ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
     : [];
-  const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
-  const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
   const localDraftBaseUrl = localGenerationDraft.baseUrl.trim();
   const localNonLoopback = localDraftBaseUrl.length > 0 && !isLoopbackUrl(localDraftBaseUrl);
+  const localModelHasDraft =
+    localDraftBaseUrl.length > 0 ||
+    localGenerationDraft.modelId.trim().length > 0 ||
+    localGenerationDraft.apiKey.length > 0;
+  const localModelHasSavedConfig =
+    providerSettings.localGeneration.baseUrl.trim().length > 0 ||
+    providerSettings.localGeneration.modelId.trim().length > 0;
+  const showLocalModelFields =
+    localModelEnabled || localModelSetupVisible || localModelHasDraft || localModelHasSavedConfig;
 
   // Advanced model settings (the Venice key and the local model) sit behind a
   // collapsed "More options" disclosure. Auto-expand it when a local model is
@@ -1080,8 +1116,43 @@ export function AppSettings({
   // behind the disclosure. It only ever expands: a manual collapse, or a later
   // disable, is left as the user set it.
   useEffect(() => {
-    if (localModelEnabled) setShowMoreModelOptions(true);
+    if (localModelEnabled) {
+      setShowMoreModelOptions(true);
+      setLocalModelSetupVisible(true);
+    }
   }, [localModelEnabled]);
+
+  useEffect(() => {
+    if (!pickerMode) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (modelPickerPopoverRef.current?.contains(target)) return;
+      if (modelPickerTriggerRef.current?.contains(target)) return;
+      closeModelPicker();
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (modelPickerFlyout?.kind === "all") {
+        setModelPickerFlyout(null);
+        setModelSearch("");
+      } else {
+        closeModelPicker();
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [pickerMode, modelPickerFlyout]);
+
+  useEffect(() => {
+    if (pickerMode === "image" || modelPickerFlyout?.kind === "all") {
+      modelPickerSearchRef.current?.focus();
+    }
+  }, [pickerMode, modelPickerFlyout]);
 
   useEffect(() => {
     if (micOpen) updateMicrophonePopoverPlacement();
@@ -1133,6 +1204,7 @@ export function AppSettings({
   function openModelPicker(mode: ProviderModelMode) {
     if (mode === "image" && !IMAGE_GENERATION_ENABLED) return;
     setPickerMode(mode);
+    setModelPickerFlyout(null);
     setModelSearch("");
     // Image models are a curated local list, not a fetched catalog.
     if (mode !== "image") void requestVeniceModels(mode);
@@ -1520,49 +1592,56 @@ export function AppSettings({
 
         {activeTab === "models" ? (
           <>
-            <ModelPickerDialog
-              open={!!pickerMode}
-              mode={pickerMode ?? "transcription"}
-              value={pickerValue}
-              options={pickerOptions}
-              search={modelSearch}
-              onSearchChange={setModelSearch}
-              onClose={() => setPickerMode(undefined)}
-              onSelect={(modelId) => {
-                if (!pickerMode) return;
-                const picked = pickerOptions.find((model) => model.id === modelId);
-                if (pickerMode === "generation" && picked?.provider === "local") {
-                  // The local option is built from the saved settings, so
-                  // selecting it enables from those persisted fields. It never
-                  // commits the (possibly unsaved) draft, and an off-device
-                  // endpoint routes through the two-step confirm below.
-                  enableLocalGenerationFromPicker();
-                } else {
-                  void selectVeniceModel(pickerMode, modelId);
-                }
-                setPickerMode(undefined);
-              }}
-            />
-
-            <section className="settings-group" aria-labelledby="models-heading">
+            <section
+              className="settings-group settings-models-group"
+              aria-labelledby="models-heading"
+            >
               <h2 id="models-heading" className="settings-group-heading">
                 AI models
               </h2>
-              <div className="settings-card">
+              <div className="settings-card settings-models-card">
                 <div className="settings-rows">
                   <ModelRow
+                    mode="transcription"
                     title="Transcription"
                     description="Speech-to-text for note recordings and dictation."
                     value={providerSettings.transcriptionModel}
                     options={transcriptionOptions}
-                    onOpen={() => openModelPicker("transcription")}
+                    open={pickerMode === "transcription"}
+                    flyout={modelPickerFlyout}
+                    search={modelSearch}
+                    triggerRef={modelPickerTriggerRef}
+                    popoverRef={modelPickerPopoverRef}
+                    searchRef={modelPickerSearchRef}
+                    onToggle={() =>
+                      pickerMode === "transcription"
+                        ? closeModelPicker()
+                        : openModelPicker("transcription")
+                    }
+                    onFlyoutChange={setModelPickerFlyout}
+                    onSearchChange={setModelSearch}
+                    onSelect={(modelId) => selectModelFromPicker("transcription", modelId)}
                   />
                   <ModelRow
+                    mode="generation"
                     title="Text"
                     description="Used for generated notes and agent responses."
                     value={modelValueForMode("generation")}
                     options={generationOptions}
-                    onOpen={() => openModelPicker("generation")}
+                    open={pickerMode === "generation"}
+                    flyout={modelPickerFlyout}
+                    search={modelSearch}
+                    triggerRef={modelPickerTriggerRef}
+                    popoverRef={modelPickerPopoverRef}
+                    searchRef={modelPickerSearchRef}
+                    onToggle={() =>
+                      pickerMode === "generation"
+                        ? closeModelPicker()
+                        : openModelPicker("generation")
+                    }
+                    onFlyoutChange={setModelPickerFlyout}
+                    onSearchChange={setModelSearch}
+                    onSelect={(modelId) => selectModelFromPicker("generation", modelId)}
                   />
                   <button
                     type="button"
@@ -1598,7 +1677,7 @@ export function AppSettings({
             {showMoreModelOptions ? (
               <section
                 id="local-model-section"
-                className="settings-group"
+                className="settings-group settings-models-group settings-local-model-group"
                 aria-labelledby="local-model-heading"
               >
                 <h2 id="local-model-heading" className="settings-group-heading">
@@ -1607,14 +1686,14 @@ export function AppSettings({
                 <p className="settings-group-description">
                   Advanced text generation through your own OpenAI-compatible endpoint.
                 </p>
-                <div className="settings-card">
+                <div className="settings-card settings-models-card">
                   <div className="settings-rows">
-                    <div className="settings-row">
+                    <div className="settings-row settings-local-model-toggle-row">
                       <div className="settings-row-info">
                         <h3 className="settings-row-title">Use local model</h3>
                         <p className="settings-row-description">
-                          Generated notes and agent responses use your local text model while
-                          transcription stays on the selected speech-to-text model.
+                          Route generated notes and agent responses through your own
+                          OpenAI-compatible endpoint.
                         </p>
                       </div>
                       <div className="settings-row-control">
@@ -1626,133 +1705,159 @@ export function AppSettings({
                       </div>
                     </div>
 
-                    <div className="settings-row settings-row-stack">
-                      <div className="settings-row-info">
-                        <h3 className="settings-row-title">Endpoint</h3>
-                        <p className="settings-row-description">
-                          OpenAI-compatible base URL, model id, and an optional API key.
-                        </p>
-                      </div>
-                      <div className="settings-row-control settings-local-model-fields">
-                        <label className="settings-field">
-                          <span>Base URL</span>
-                          <input
-                            value={localGenerationDraft.baseUrl}
-                            onChange={(event) => {
-                              const baseUrl = event.currentTarget.value;
-                              setLocalGenerationDraft((draft) => ({
-                                ...draft,
-                                baseUrl,
-                              }));
-                              // A base-URL edit invalidates a pending remote
-                              // confirm.
-                              setLocalEnableConfirm(false);
-                            }}
-                            placeholder="http://localhost:11434/v1"
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck={false}
-                          />
-                        </label>
-                        <label className="settings-field">
-                          <span>Model ID</span>
-                          <input
-                            value={localGenerationDraft.modelId}
-                            onChange={(event) => {
-                              const modelId = event.currentTarget.value;
-                              setLocalGenerationDraft((draft) => ({
-                                ...draft,
-                                modelId,
-                              }));
-                            }}
-                            placeholder="llama3.1:8b"
-                            list="local-generation-models"
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck={false}
-                          />
-                          <datalist id="local-generation-models">
-                            {localProbeModels.map((id) => (
-                              <option key={id} value={id} />
-                            ))}
-                          </datalist>
-                        </label>
-                        <label className="settings-field">
-                          <span>API key</span>
-                          <input
-                            type="password"
-                            value={localGenerationDraft.apiKey}
-                            onChange={(event) => {
-                              const apiKey = event.currentTarget.value;
-                              setLocalGenerationDraft((draft) => ({
-                                ...draft,
-                                apiKey,
-                              }));
-                            }}
-                            placeholder="Optional"
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck={false}
-                          />
-                        </label>
-                        {localNonLoopback ? (
-                          <p className="settings-local-model-warning" role="note">
-                            This endpoint is not on this machine. Requests will leave your device.
+                    {showLocalModelFields ? (
+                      <div className="settings-row settings-row-stack settings-local-model-fields-row">
+                        <div className="settings-row-info">
+                          <h3 className="settings-row-title">Endpoint</h3>
+                          <p className="settings-row-description">
+                            Add the base URL, model ID, and optional API key for your local text
+                            model.
                           </p>
-                        ) : null}
-                        <div className="settings-local-model-actions">
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            onClick={() => void testLocalConnection()}
-                          >
-                            Test connection
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            onClick={() => void handleSaveLocalModel()}
-                          >
-                            Save local model
-                          </button>
                         </div>
-                        {localEnableConfirm ? (
-                          <div className="settings-local-model-confirm" role="alert">
-                            <p className="settings-row-error">
+                        <div className="settings-row-control settings-local-model-fields">
+                          <label className="settings-field">
+                            <span>Base URL</span>
+                            <input
+                              value={localGenerationDraft.baseUrl}
+                              onChange={(event) => {
+                                const baseUrl = event.currentTarget.value;
+                                setLocalGenerationDraft((draft) => ({
+                                  ...draft,
+                                  baseUrl,
+                                }));
+                                setLocalEnableConfirm(false);
+                                setLocalModelStatus(undefined);
+                              }}
+                              placeholder="http://localhost:11434/v1"
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              spellCheck={false}
+                            />
+                          </label>
+                          <label className="settings-field">
+                            <span>Model ID</span>
+                            <input
+                              value={localGenerationDraft.modelId}
+                              onChange={(event) => {
+                                const modelId = event.currentTarget.value;
+                                setLocalGenerationDraft((draft) => ({
+                                  ...draft,
+                                  modelId,
+                                }));
+                                setLocalModelStatus(undefined);
+                              }}
+                              placeholder="llama3.1:8b"
+                              list="local-generation-models"
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              spellCheck={false}
+                            />
+                            <datalist id="local-generation-models">
+                              {localProbeModels.map((id) => (
+                                <option key={id} value={id} />
+                              ))}
+                            </datalist>
+                          </label>
+                          <label className="settings-field">
+                            <span>Local API key</span>
+                            <input
+                              type="password"
+                              value={localGenerationDraft.apiKey}
+                              onChange={(event) => {
+                                const apiKey = event.currentTarget.value;
+                                setLocalGenerationDraft((draft) => ({
+                                  ...draft,
+                                  apiKey,
+                                }));
+                                setLocalModelStatus(undefined);
+                              }}
+                              placeholder="Optional"
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              spellCheck={false}
+                            />
+                          </label>
+                          {localNonLoopback ? (
+                            <p className="settings-local-model-warning" role="note">
                               This endpoint is not on this machine. Requests will leave your device.
                             </p>
+                          ) : null}
+                          <div className="settings-local-model-actions">
                             <button
                               type="button"
                               className="btn btn-secondary"
-                              onClick={() => void enableLocalGeneration()}
+                              onClick={() => void testLocalConnection()}
                             >
-                              Enable anyway
+                              Test connection
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => void handleSaveLocalModel()}
+                            >
+                              Save local model
                             </button>
                           </div>
-                        ) : null}
+                          {localModelStatus ? (
+                            <p className="settings-local-model-status" role="status">
+                              {localModelStatus}
+                            </p>
+                          ) : null}
+                          {localEnableConfirm ? (
+                            <div className="settings-local-model-confirm" role="alert">
+                              <p className="settings-row-error">
+                                This endpoint is not on this machine. Requests will leave your
+                                device.
+                              </p>
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => void enableLocalGeneration()}
+                              >
+                                Enable anyway
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
+                    ) : null}
                   </div>
                 </div>
               </section>
             ) : null}
 
             {IMAGE_GENERATION_ENABLED ? (
-              <section className="settings-group" aria-labelledby="image-generation-heading">
+              <section
+                className="settings-group settings-models-group"
+                aria-labelledby="image-generation-heading"
+              >
                 <h2 id="image-generation-heading" className="settings-group-heading">
                   Image generation
                 </h2>
                 <p className="settings-group-description">
                   Choose the model June uses when you ask it to generate an image.
                 </p>
-                <div className="settings-card">
+                <div className="settings-card settings-models-card">
                   <div className="settings-rows">
                     <ModelRow
+                      mode="image"
                       title="Image"
                       description="Used when you generate an image from chat."
                       value={providerSettings.imageModel}
                       options={imageOptions}
-                      onOpen={() => openModelPicker("image")}
+                      open={pickerMode === "image"}
+                      flyout={modelPickerFlyout}
+                      search={modelSearch}
+                      triggerRef={modelPickerTriggerRef}
+                      popoverRef={modelPickerPopoverRef}
+                      searchRef={modelPickerSearchRef}
+                      directCatalog
+                      onToggle={() =>
+                        pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
+                      }
+                      onFlyoutChange={setModelPickerFlyout}
+                      onSearchChange={setModelSearch}
+                      onSelect={(modelId) => selectModelFromPicker("image", modelId)}
                     />
                     <div className="settings-row">
                       <div className="settings-row-info">
@@ -2155,43 +2260,101 @@ function numericPayload(value: unknown) {
 }
 
 function ModelRow({
+  mode,
   title,
   description,
   value,
   options,
-  onOpen,
+  open,
+  flyout,
+  search,
+  triggerRef,
+  popoverRef,
+  searchRef,
+  directCatalog,
+  onToggle,
+  onFlyoutChange,
+  onSearchChange,
+  onSelect,
 }: {
+  mode: ProviderModelMode;
   title: string;
   description: string;
   value: string;
   options: VeniceModelDto[];
-  onOpen: () => void;
+  open: boolean;
+  flyout: ModelPickerFlyout;
+  search: string;
+  triggerRef: RefObject<HTMLButtonElement>;
+  popoverRef: RefObject<HTMLDivElement>;
+  searchRef: RefObject<HTMLInputElement>;
+  directCatalog?: boolean;
+  onToggle: () => void;
+  onFlyoutChange: (flyout: ModelPickerFlyout) => void;
+  onSearchChange: (value: string) => void;
+  onSelect: (modelId: string) => void;
 }) {
   const model = selectedModel(options, value);
+  const modelLabel = `${title.toLowerCase()} model`;
   return (
-    <div className="settings-row">
+    <div className="settings-row settings-model-row">
       <div className="settings-row-info">
         <h3 className="settings-row-title">{title}</h3>
         <p className="settings-row-description">{description}</p>
       </div>
       <div className="settings-row-control settings-model-control">
-        <button
-          type="button"
-          className="model-summary-button"
-          onClick={onOpen}
-          aria-label={`Change ${title.toLowerCase()} model`}
+        <HoverTip
+          tip={<ModelSummaryHoverDetails model={model} />}
+          className="model-summary-tip-anchor"
+          width={280}
+          delay={280}
+          suppressed={open}
         >
-          <span className="model-summary-logo" aria-hidden>
-            <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
-          </span>
-          <span className="model-summary-name">{model.name}</span>
-          <IconChevronDownSmall size={14} />
-          <span className="model-summary-meta">
-            <ModelMeta model={model} />
-          </span>
-        </button>
+          <button
+            ref={open ? triggerRef : undefined}
+            type="button"
+            className="model-summary-button"
+            onClick={onToggle}
+            aria-label={`Change ${modelLabel}`}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+          >
+            <span className="model-summary-logo" aria-hidden>
+              <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
+            </span>
+            <span className="model-summary-name">{model.name}</span>
+            <IconChevronDownSmall size={14} aria-hidden />
+          </button>
+        </HoverTip>
+        {open ? (
+          <ModelPickerPopover
+            mode={mode}
+            flyout={flyout}
+            model={model}
+            options={options}
+            search={search}
+            popoverRef={popoverRef}
+            searchRef={searchRef}
+            className="settings-model-popover"
+            directCatalog={directCatalog}
+            title={modelLabel[0].toUpperCase() + modelLabel.slice(1)}
+            ariaLabel={`Choose ${modelLabel}`}
+            onFlyoutChange={onFlyoutChange}
+            onSearchChange={onSearchChange}
+            onSelect={onSelect}
+          />
+        ) : null}
       </div>
     </div>
+  );
+}
+
+function ModelSummaryHoverDetails({ model }: { model: VeniceModelDto }) {
+  return (
+    <span className="model-summary-tip">
+      <span className="model-summary-tip-name">{model.name}</span>
+      <ModelMeta model={model} />
+    </span>
   );
 }
 
@@ -2224,19 +2387,21 @@ function VeniceApiKeyRow({
         ) : null}
       </div>
       <div className="settings-row-control settings-secret-control">
-        <input
-          className="settings-secret-input"
-          type="password"
-          value={value}
-          autoComplete="off"
-          spellCheck={false}
-          placeholder={configured ? "Saved key hidden" : "Venice API key"}
-          aria-label="Venice API key"
-          onChange={(event) => onValueChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && canSave) onSave();
-          }}
-        />
+        <label className="settings-field settings-secret-field">
+          <span>API key</span>
+          <input
+            type="password"
+            value={value}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={configured ? "Saved key hidden" : "Venice API key"}
+            aria-label="Venice API key"
+            onChange={(event) => onValueChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && canSave) onSave();
+            }}
+          />
+        </label>
         <button type="button" className="btn btn-secondary" disabled={!canSave} onClick={onSave}>
           Save
         </button>

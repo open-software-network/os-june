@@ -17,6 +17,7 @@ import {
   searchHaystack,
   skillActivation,
   skillCategory,
+  skillLifecyclePolicy,
   skillPath,
   skillTags,
   sourceMeta,
@@ -24,6 +25,7 @@ import {
   type HermesSkillInfo,
   type InstalledSkillsEngine,
   type InstalledSkillsState,
+  type SkillLifecycleState,
 } from "../lib/hermes-admin";
 import { InstalledSkillsView } from "../components/settings/InstalledSkillsSection";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
@@ -356,6 +358,21 @@ function stubState(overrides: Partial<InstalledSkillsState> = {}): InstalledSkil
   };
 }
 
+function stubLifecycle(overrides: Partial<SkillLifecycleState> = {}): SkillLifecycleState {
+  return {
+    mode: "sandboxed",
+    profile: "default",
+    actions: new Map(),
+    sweeping: false,
+    policyFor: (skill) => skillLifecyclePolicy(skill),
+    run: vi.fn(),
+    checkForUpdates: vi.fn(),
+    updateAll: vi.fn(),
+    clearAction: vi.fn(),
+    ...overrides,
+  };
+}
+
 const VIEW_SKILLS: HermesSkillInfo[] = [
   skillFromWire({
     name: "pdf",
@@ -435,6 +452,25 @@ describe("InstalledSkillsView — component", () => {
     expect(toggle).toHaveBeenCalledWith("research", true);
   });
 
+  it("uses the shared refresh action to check for skill updates when lifecycle is available", () => {
+    const refresh = vi.fn();
+    const checkForUpdates = vi.fn();
+    const { container } = render(
+      <InstalledSkillsView
+        state={stubState({ skills: VIEW_SKILLS, refresh })}
+        lifecycle={stubLifecycle({ checkForUpdates })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh installed skills" }));
+    expect(checkForUpdates).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    const toolbar = container.querySelector(".installed-skills-toolbar");
+    expect(toolbar).not.toBeNull();
+    expect(
+      within(toolbar as HTMLElement).queryByRole("button", { name: "Check for updates" }),
+    ).toBeNull();
+  });
+
   it("disables the toggle and labels a read-only external skill", () => {
     render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
     const row = screen.getByText("company-style").closest("li");
@@ -444,15 +480,15 @@ describe("InstalledSkillsView — component", () => {
     expect(utils.getByRole("switch")).toBeDisabled();
   });
 
-  it("renders the open-skill action only when a handler is provided", () => {
+  it("opens a skill from the row body when a handler is provided", () => {
     const onOpenSkill = vi.fn();
     const { rerender } = render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
-    expect(screen.queryByRole("button", { name: /open pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "pdf" })).not.toBeInTheDocument();
 
     rerender(
       <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} onOpenSkill={onOpenSkill} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /open pdf/i }));
+    fireEvent.click(screen.getByRole("button", { name: "pdf" }));
     expect(onOpenSkill).toHaveBeenCalledWith("pdf");
   });
 

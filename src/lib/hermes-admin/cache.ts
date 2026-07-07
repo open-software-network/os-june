@@ -105,6 +105,7 @@ export type AdminNotification = {
   message: string;
   timing: ApplicationTiming;
   mutation: AdminMutation;
+  subject?: string;
   /** Epoch ms when raised. */
   at: number;
   /** True when this notification reports a failure (e.g. a background action
@@ -210,6 +211,7 @@ export class AdminStateCache {
       message: mutationNotification(mutation, subject),
       timing: timingForMutation(mutation),
       mutation,
+      subject,
     });
     return { invalidated, timing: timingForMutation(mutation) };
   }
@@ -276,6 +278,19 @@ export class AdminStateCache {
       this.notifications.splice(index, 1);
       this.notifyNotifications();
     }
+  }
+
+  /** Dismisses success notifications for a specific mutation subject. */
+  dismissNotificationsFor(mutation: AdminMutation, subject: string): void {
+    let removed = false;
+    for (let index = this.notifications.length - 1; index >= 0; index -= 1) {
+      const note = this.notifications[index];
+      if (!note.isError && note.mutation === mutation && note.subject === subject) {
+        this.notifications.splice(index, 1);
+        removed = true;
+      }
+    }
+    if (removed) this.notifyNotifications();
   }
 
   /** Raises a durable notification. */
