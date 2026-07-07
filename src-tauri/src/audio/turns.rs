@@ -40,6 +40,11 @@ const ECHO_SIMILARITY_TRIM: f32 = 0.55;
 /// regardless of level: the user's own voice does not correlate with the
 /// system reference, even when the system track is much louder.
 const ECHO_SIMILARITY_KEEP: f32 = 0.25;
+/// Energy loss after cancelling the system reference out of a microphone
+/// frame at or above which the frame was speaker bleed (echo). Genuine
+/// microphone speech is roughly orthogonal to the reference and survives the
+/// cancellation nearly intact.
+const ECHO_ERLE_TRIM_DB: f32 = 10.0;
 /// GCC-PHAT peak-over-mean below which the estimated echo lag is not trusted
 /// and echo rejection falls back to level evidence only. Independent signals
 /// measure well under this; a real echo path measures well over it.
@@ -52,6 +57,7 @@ const ECHO_LAG_PROBE_TURNS: usize = 3;
 const ECHO_LAG_PROBE_MIN_MS: i64 = 400;
 /// Probe cap: longer spans sharpen the estimate with diminishing returns.
 const ECHO_LAG_PROBE_MAX_MS: i64 = 4_000;
+const ERLE_RMS_FLOOR: f32 = 1.0e-6;
 
 #[derive(Debug, Clone)]
 pub struct DetectionSource {
@@ -91,6 +97,11 @@ struct DetectedSource {
     path: PathBuf,
     windows: Vec<f32>,
     turns: Vec<AudioTurn>,
+}
+
+struct EchoEvidence {
+    lag_ms: i64,
+    residual_windows: Option<Vec<f32>>,
 }
 
 pub fn detect_turns(sources: &[DetectionSource]) -> Result<Vec<AudioTurn>, AppError> {
@@ -441,7 +452,10 @@ fn detect_source_turns(
         config.pre_roll_ms < config.merge_gap_ms,
         "turn pre-roll must be smaller than the merge gap to avoid overlapping extracted audio"
     );
-    Ok((windows, apply_extraction_pre_roll(turns, config.pre_roll_ms)))
+    Ok((
+        windows,
+        apply_extraction_pre_roll(turns, config.pre_roll_ms),
+    ))
 }
 
 fn read_rms_windows(path: &Path) -> Result<Vec<f32>, AppError> {
@@ -542,13 +556,16 @@ fn apply_extraction_pre_roll(mut turns: Vec<AudioTurn>, pre_roll_ms: i64) -> Vec
 /// keeping the genuine remainder; the bled-over speech stays attributed to the
 /// system source. A mic turn entirely covered by bleed is trimmed to nothing.
 ///
-/// Bleed is identified by two tiers of evidence:
+/// Bleed is identified by three tiers of evidence:
 /// 1. Content similarity (preferred): per-frame normalized cross-correlation
 ///    against the system track, lag-aligned by a GCC-PHAT estimate of the
 ///    session's echo path. Bleed is a delayed copy of the reference, so it
 ///    correlates highly no matter how quiet; the user's own voice does not
 ///    correlate no matter how loud the system track is.
-/// 2. Level dominance (fallback, when no trustworthy lag exists or the audio
+/// 2. Cancellation depth (ambiguous similarity only): an adaptive canceller
+///    learns the reverberant echo path and checks whether the microphone frame
+///    collapses after removing the system reference.
+/// 3. Level dominance (fallback, when no trustworthy lag exists or the audio
 ///    cannot be scored): the system turn is clearly louder over the overlap.
 fn reject_speaker_echo_turns(detected: Vec<DetectedSource>) -> Vec<AudioTurn> {
     let system_sources: Vec<&DetectedSource> = detected
@@ -557,21 +574,30 @@ fn reject_speaker_echo_turns(detected: Vec<DetectedSource>) -> Vec<AudioTurn> {
         .collect();
     let mut turns = Vec::new();
     for source in &detected {
-        if source.source == "microphone" && !system_sources.is_empty() && !source.turns.is_empty()
-        {
+        if source.source == "microphone" && !system_sources.is_empty() && !source.turns.is_empty() {
             let config = config_for_source(&source.source);
             // One echo-path lag per (microphone, system) pair, reused across
             // every turn: the delay is a property of the session's playback
             // and capture chain, not of any single turn.
-            let lags: Vec<Option<i64>> = system_sources
+            let evidence: Vec<Option<EchoEvidence>> = system_sources
                 .iter()
-                .map(|system| estimate_echo_lag_ms(source, system))
+                .map(|system| {
+                    let lag_ms = estimate_echo_lag_ms(source, system)?;
+                    let residual_windows =
+                        echo::residual_rms_windows(&source.path, &system.path, lag_ms);
+                    Some(EchoEvidence {
+                        lag_ms,
+                        residual_windows,
+                    })
+                })
                 .collect();
             for turn in &source.turns {
                 let echo_spans: Vec<(i64, i64)> = system_sources
                     .iter()
-                    .zip(&lags)
-                    .flat_map(|(system, lag)| echo_evidence_spans(turn, source, system, *lag))
+                    .zip(&evidence)
+                    .flat_map(|(system, evidence)| {
+                        echo_evidence_spans(turn, source, system, evidence.as_ref())
+                    })
                     .collect();
                 turns.extend(trim_echo_from_microphone_turn(
                     turn,
@@ -626,9 +652,8 @@ fn estimate_echo_lag_ms(mic: &DetectedSource, system: &DetectedSource) -> Option
         }
     }
     let best = best?;
-    (best.confidence >= ECHO_LAG_MIN_CONFIDENCE).then(|| {
-        (best.delay_samples as i64 * 1000) / echo::SIMILARITY_SAMPLE_RATE as i64
-    })
+    (best.confidence >= ECHO_LAG_MIN_CONFIDENCE)
+        .then(|| (best.delay_samples as i64 * 1000) / echo::SIMILARITY_SAMPLE_RATE as i64)
 }
 
 /// Spans of `mic_turn` that are speaker bleed of `system` audio. Prefers the
@@ -639,7 +664,7 @@ fn echo_evidence_spans(
     mic_turn: &AudioTurn,
     mic: &DetectedSource,
     system: &DetectedSource,
-    lag_ms: Option<i64>,
+    evidence: Option<&EchoEvidence>,
 ) -> Vec<(i64, i64)> {
     let mut spans = Vec::new();
     for system_turn in &system.turns {
@@ -648,9 +673,15 @@ fn echo_evidence_spans(
         if end <= start {
             continue;
         }
-        if let Some(lag) = lag_ms {
-            if let Some(mut similarity_spans) = similarity_echo_spans(mic, system, start, end, lag)
-            {
+        if let Some(evidence) = evidence {
+            if let Some(mut similarity_spans) = similarity_echo_spans(
+                mic,
+                system,
+                start,
+                end,
+                evidence.lag_ms,
+                evidence.residual_windows.as_deref(),
+            ) {
                 spans.append(&mut similarity_spans);
                 continue;
             }
@@ -687,17 +718,17 @@ fn similarity_echo_spans(
     start_ms: i64,
     end_ms: i64,
     lag_ms: i64,
+    residual_windows: Option<&[f32]>,
 ) -> Option<Vec<(i64, i64)>> {
     let capture = echo::read_span_mono_16k(&mic.path, start_ms, end_ms)?;
     // The microphone hears the system audio `lag_ms` late, so the reference
     // for mic content at t is the system track at t - lag.
-    let reference =
-        echo::read_span_mono_16k(&system.path, start_ms - lag_ms, end_ms - lag_ms)?;
+    let reference = echo::read_span_mono_16k(&system.path, start_ms - lag_ms, end_ms - lag_ms)?;
     let frames = echo::windowed_ncc_frames(&capture, &reference);
     if frames.is_empty() {
         return None;
     }
-    let verdicts = smooth_verdicts(&frame_verdicts(&frames));
+    let verdicts = smooth_verdicts(&frame_verdicts(&frames, start_ms, residual_windows));
     Some(echo_runs_to_spans(&frames, &verdicts, start_ms))
 }
 
@@ -707,7 +738,11 @@ enum FrameVerdict {
     Genuine,
 }
 
-fn frame_verdicts(frames: &[echo::SimilarityFrame]) -> Vec<FrameVerdict> {
+fn frame_verdicts(
+    frames: &[echo::SimilarityFrame],
+    span_start_ms: i64,
+    residual_windows: Option<&[f32]>,
+) -> Vec<FrameVerdict> {
     let mut verdicts = Vec::with_capacity(frames.len());
     let mut previous = FrameVerdict::Genuine;
     for frame in frames {
@@ -717,19 +752,47 @@ fn frame_verdicts(frames: &[echo::SimilarityFrame]) -> Vec<FrameVerdict> {
             None => previous,
             Some(similarity) if similarity >= ECHO_SIMILARITY_TRIM => FrameVerdict::Echo,
             Some(similarity) if similarity <= ECHO_SIMILARITY_KEEP => FrameVerdict::Genuine,
-            // Ambiguous correlation: let the level evidence break the tie.
-            Some(_) => {
-                if frame.reference_rms >= frame.capture_rms * ECHO_DOMINANCE_RATIO {
-                    FrameVerdict::Echo
-                } else {
-                    FrameVerdict::Genuine
-                }
-            }
+            // Ambiguous correlation: cancellation depth is stronger evidence
+            // when available; otherwise let level evidence break the tie.
+            Some(_) => erle_frame_verdict(frame, span_start_ms, residual_windows)
+                .unwrap_or_else(|| level_frame_verdict(frame)),
         };
         verdicts.push(verdict);
         previous = verdict;
     }
     verdicts
+}
+
+fn erle_frame_verdict(
+    frame: &echo::SimilarityFrame,
+    span_start_ms: i64,
+    residual_windows: Option<&[f32]>,
+) -> Option<FrameVerdict> {
+    let residual_windows = residual_windows?;
+    let frame_start_ms =
+        span_start_ms + (frame.start_sample as i64 * 1000) / echo::SIMILARITY_SAMPLE_RATE as i64;
+    let window_index = (frame_start_ms.max(0) / WINDOW_MS) as usize;
+    let residual_rms = *residual_windows.get(window_index)?;
+    if frame.capture_rms <= ERLE_RMS_FLOOR {
+        return None;
+    }
+    if residual_rms <= ERLE_RMS_FLOOR {
+        return Some(FrameVerdict::Echo);
+    }
+    let erle_db = 20.0 * (frame.capture_rms / residual_rms).log10();
+    if erle_db >= ECHO_ERLE_TRIM_DB {
+        Some(FrameVerdict::Echo)
+    } else {
+        Some(FrameVerdict::Genuine)
+    }
+}
+
+fn level_frame_verdict(frame: &echo::SimilarityFrame) -> FrameVerdict {
+    if frame.reference_rms >= frame.capture_rms * ECHO_DOMINANCE_RATIO {
+        FrameVerdict::Echo
+    } else {
+        FrameVerdict::Genuine
+    }
 }
 
 /// Majority vote over a centered five-frame (75 ms) window so single-frame
@@ -1141,10 +1204,8 @@ mod tests {
         // reply is >3x quieter (level says bleed). Content similarity decides
         // correctly: bleed correlates with the lag-aligned system reference no
         // matter its level, the user's voice does not.
-        let dir = std::env::temp_dir().join(format!(
-            "os-june-similarity-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("os-june-similarity-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -1170,7 +1231,10 @@ mod tests {
         for index in (rate / 2)..(17 * rate / 10) {
             mic[index + lag_samples] += 0.5 * speech[index];
         }
-        for (offset, sample) in reply[..(39 * rate / 10) - (5 * rate / 2)].iter().enumerate() {
+        for (offset, sample) in reply[..(39 * rate / 10) - (5 * rate / 2)]
+            .iter()
+            .enumerate()
+        {
             mic[(5 * rate / 2) + offset] += 0.3 * sample;
         }
 
@@ -1217,6 +1281,102 @@ mod tests {
     }
 
     #[test]
+    fn erle_tier_trims_reverberant_bleed_and_keeps_quiet_reply() {
+        // Reverberant speaker bleed spreads across several delays. A single
+        // lag-aligned NCC frame is therefore only ambiguous, and the total
+        // level is not 3x below the system source, so pre-ERLE level fallback
+        // would keep the bleed as a microphone turn.
+        let dir = std::env::temp_dir().join(format!("os-june-erle-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+
+        let rate = 16_000_usize;
+        let speech = centered_splitmix_noise(7, 4 * rate);
+        let reply = centered_splitmix_noise(99, 4 * rate);
+        let taps = [
+            (80 * rate / 1_000, 0.28_f32),
+            (110 * rate / 1_000, 0.27_f32),
+            (140 * rate / 1_000, 0.27_f32),
+            (170 * rate / 1_000, 0.27_f32),
+            (200 * rate / 1_000, 0.27_f32),
+        ];
+
+        // System: 4s of remote speech, then 2s of silence so turns close.
+        let mut system = vec![0.0_f32; 6 * rate];
+        system[..4 * rate].copy_from_slice(&speech);
+
+        let mut mic = vec![0.0_f32; 6 * rate];
+        for index in (rate / 2)..(22 * rate / 10) {
+            for (delay, gain) in taps {
+                mic[index + delay] += gain * speech[index];
+            }
+        }
+        for (offset, sample) in reply[..(39 * rate / 10) - (5 * rate / 2)]
+            .iter()
+            .enumerate()
+        {
+            mic[(5 * rate / 2) + offset] += 0.3 * sample;
+        }
+
+        let aligned_bleed_start = (4 * rate / 5) + taps[0].0;
+        let aligned_bleed_end = (8 * rate / 5) + taps[0].0;
+        let bleed_frames = echo::windowed_ncc_frames(
+            &mic[aligned_bleed_start..aligned_bleed_end],
+            &system[4 * rate / 5..8 * rate / 5],
+        );
+        let strongest_bleed_ncc = bleed_frames
+            .iter()
+            .filter_map(|frame| frame.ncc)
+            .fold(0.0_f32, f32::max);
+        assert!(
+            strongest_bleed_ncc > ECHO_SIMILARITY_KEEP
+                && strongest_bleed_ncc < ECHO_SIMILARITY_TRIM,
+            "fixture must exercise the ambiguous NCC band, got max NCC {strongest_bleed_ncc:.3}"
+        );
+
+        write_samples(&system_path, &to_i16(&system));
+        write_samples(&mic_path, &to_i16(&mic));
+
+        let turns = detect_turns(&[
+            DetectionSource {
+                artifact_id: "mic".to_string(),
+                source: "microphone".to_string(),
+                path: mic_path,
+            },
+            DetectionSource {
+                artifact_id: "sys".to_string(),
+                source: "system".to_string(),
+                path: system_path,
+            },
+        ])
+        .unwrap();
+
+        assert!(
+            turns
+                .iter()
+                .filter(|turn| turn.source == "microphone")
+                .all(|turn| turn.start_ms >= 2_280),
+            "expected reverberant bleed to be trimmed from the microphone, got {turns:?}"
+        );
+        assert!(
+            turns.iter().any(|turn| turn.source == "microphone"
+                && turn.start_ms >= 2_280
+                && turn.start_ms <= 2_800
+                && turn.end_ms >= 3_700),
+            "expected the quiet reply to survive as microphone speech, got {turns:?}"
+        );
+        assert!(
+            turns
+                .iter()
+                .any(|turn| turn.source == "system" && turn.start_ms < 500),
+            "expected the system turn to survive, got {turns:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn echo_decision_trims_quiet_overlap_but_keeps_loud_or_isolated_mic() {
         // 30ms windows: window index == ms / 30. 200 windows == 6s.
         let mut mic_windows = vec![0.0_f32; 200];
@@ -1240,7 +1400,9 @@ mod tests {
         let mic = make_detected("microphone", mic_windows.clone(), vec![echo.clone()]);
         let echo_spans = echo_evidence_spans(&echo, &mic, &system, None);
         assert_eq!(echo_spans, vec![(0, 1_500)]);
-        assert!(trim_echo_from_microphone_turn(&echo, &echo_spans, min_turn_ms, pre_roll_ms).is_empty());
+        assert!(
+            trim_echo_from_microphone_turn(&echo, &echo_spans, min_turn_ms, pre_roll_ms).is_empty()
+        );
 
         // A mic turn with no overlapping system audio is genuine speech, kept whole.
         let genuine = make_turn("microphone", 3_600, 5_100);
@@ -1299,6 +1461,15 @@ mod tests {
             .collect()
     }
 
+    fn centered_splitmix_noise(seed: u64, len: usize) -> Vec<f32> {
+        let mut samples = echo::test_signals::splitmix_noise(seed, len);
+        let mean = samples.iter().copied().sum::<f32>() / samples.len().max(1) as f32;
+        for sample in &mut samples {
+            *sample -= mean;
+        }
+        samples
+    }
+
     fn make_detected(source: &str, windows: Vec<f32>, turns: Vec<AudioTurn>) -> DetectedSource {
         DetectedSource {
             source: source.to_string(),
@@ -1323,7 +1494,13 @@ mod tests {
     fn square_wave_ms(magnitude: i16, duration_ms: i64) -> Vec<i16> {
         let frames = (16_000 * duration_ms / 1_000) as usize;
         (0..frames)
-            .map(|index| if index % 2 == 0 { magnitude } else { -magnitude })
+            .map(|index| {
+                if index % 2 == 0 {
+                    magnitude
+                } else {
+                    -magnitude
+                }
+            })
             .collect()
     }
     fn write_samples(path: &Path, samples: &[i16]) {

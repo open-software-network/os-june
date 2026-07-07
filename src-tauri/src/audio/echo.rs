@@ -37,6 +37,18 @@ pub const ECHO_MAX_LAG_MS: i64 = 500;
 /// is skipped by similarity scoring. Well below the microphone detector's
 /// activity floor (0.012) so quiet-but-real bleed still gets scored.
 const SILENT_FRAME_RMS: f32 = 0.004;
+/// Block FFT size for the offline adaptive canceller. With overlap-save the
+/// modeled echo path is half this length: 2,048 taps, or 128 ms at 16 kHz,
+/// enough to absorb the early room tail after the bulk lag is aligned out.
+pub const AEC_FFT_SIZE: usize = 4_096;
+/// NLMS adaptation rate for the offline canceller. We can afford two passes
+/// over saved audio, so this stays conservative enough for stability while
+/// still converging within short meeting-open echo bursts.
+pub const AEC_STEP_SIZE: f32 = 0.5;
+const AEC_BLOCK_SIZE: usize = AEC_FFT_SIZE / 2;
+const AEC_PSD_SMOOTHING: f32 = 0.98;
+const AEC_PSD_INJECTION: f32 = 1.0 - AEC_PSD_SMOOTHING;
+const AEC_EPSILON: f32 = 1.0e-6;
 
 /// One scored frame of an aligned microphone/system span pair.
 pub struct SimilarityFrame {
@@ -61,6 +73,97 @@ pub struct DelayEstimate {
     /// sharp single peak (echo present, little competing speech) scores
     /// high; double-talk, periodic content, or absent echo scores low.
     pub confidence: f32,
+}
+
+/// Frequency-domain adaptive filter for offline speaker-bleed cancellation.
+///
+/// It models the post-lag echo path rather than a single delay, so reverb
+/// energy smeared over tens of milliseconds can still collapse while
+/// reference-orthogonal microphone speech remains in the residual.
+pub struct FdafCanceller {
+    reference_buffer: Vec<f32>,
+    weights: Vec<Complex<f32>>,
+    psd: Vec<f32>,
+    forward: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    inverse: std::sync::Arc<dyn rustfft::Fft<f32>>,
+}
+
+impl FdafCanceller {
+    pub fn new() -> Self {
+        let mut planner = FftPlanner::<f32>::new();
+        Self {
+            reference_buffer: vec![0.0; AEC_FFT_SIZE],
+            weights: vec![Complex::new(0.0, 0.0); AEC_FFT_SIZE],
+            psd: vec![1.0; AEC_FFT_SIZE],
+            forward: planner.plan_fft_forward(AEC_FFT_SIZE),
+            inverse: planner.plan_fft_inverse(AEC_FFT_SIZE),
+        }
+    }
+
+    /// Process one half-overlapped block and return the residual capture
+    /// frame. Both inputs must be exactly `AEC_FFT_SIZE / 2` samples; callers
+    /// that stream a file should zero-pad the final block.
+    pub fn process(&mut self, reference_frame: &[f32], capture_frame: &[f32]) -> Vec<f32> {
+        debug_assert_eq!(reference_frame.len(), AEC_BLOCK_SIZE);
+        debug_assert_eq!(capture_frame.len(), AEC_BLOCK_SIZE);
+
+        self.reference_buffer.copy_within(AEC_BLOCK_SIZE.., 0);
+        self.reference_buffer[AEC_BLOCK_SIZE..].copy_from_slice(reference_frame);
+
+        let mut x = to_complex(&self.reference_buffer, AEC_FFT_SIZE);
+        self.forward.process(&mut x);
+
+        let mut y_freq: Vec<Complex<f32>> = self
+            .weights
+            .iter()
+            .zip(x.iter())
+            .map(|(weight, bin)| weight * bin)
+            .collect();
+        self.inverse.process(&mut y_freq);
+        let scale = AEC_FFT_SIZE as f32;
+        let residual: Vec<f32> = capture_frame
+            .iter()
+            .zip(y_freq[AEC_BLOCK_SIZE..].iter())
+            .map(|(capture, estimate)| capture - (estimate.re / scale))
+            .collect();
+
+        let mut error = vec![Complex::new(0.0, 0.0); AEC_BLOCK_SIZE];
+        error.extend(residual.iter().map(|sample| Complex::new(*sample, 0.0)));
+        self.forward.process(&mut error);
+
+        for ((weight, psd), (x_bin, error_bin)) in self
+            .weights
+            .iter_mut()
+            .zip(self.psd.iter_mut())
+            .zip(x.iter().zip(error.iter()))
+        {
+            *psd = (AEC_PSD_SMOOTHING * *psd) + (AEC_PSD_INJECTION * x_bin.norm_sqr());
+            *weight += (x_bin.conj() * *error_bin) * (AEC_STEP_SIZE / (*psd + AEC_EPSILON));
+        }
+
+        // Constrain the gradient to the causal half of the block. This keeps
+        // circular convolution artifacts from becoming learned echo paths.
+        let mut impulse = self.weights.clone();
+        self.inverse.process(&mut impulse);
+        for bin in &mut impulse {
+            *bin /= scale;
+        }
+        impulse[AEC_BLOCK_SIZE..].fill(Complex::new(0.0, 0.0));
+        self.forward.process(&mut impulse);
+        self.weights = impulse;
+
+        residual
+    }
+
+    fn reset_stream_history(&mut self) {
+        self.reference_buffer.fill(0.0);
+    }
+}
+
+impl Default for FdafCanceller {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Estimate how many samples `capture` lags behind `reference` using the
@@ -207,9 +310,120 @@ pub fn read_span_mono_16k(path: &Path, start_ms: i64, end_ms: i64) -> Option<Vec
     let target_len = ((end_ms - start_ms) * SIMILARITY_SAMPLE_RATE as i64 / 1000).max(0) as usize;
     let mut span = Vec::with_capacity(target_len);
     span.resize(lead_samples.min(target_len), 0.0);
-    span.extend(resampled.drain(..).take(target_len - span.len().min(target_len)));
+    span.extend(
+        resampled
+            .drain(..)
+            .take(target_len - span.len().min(target_len)),
+    );
     span.resize(target_len, 0.0);
     Some(span)
+}
+
+/// Offline residual energy after learning the room echo path from the saved
+/// sources. The first pass learns from the whole recording and the second pass
+/// replays from t=0, so early bleed can be judged without an adaptive warm-up
+/// blind spot.
+pub fn residual_rms_windows(mic_path: &Path, system_path: &Path, lag_ms: i64) -> Option<Vec<f32>> {
+    let mic_duration_ms = wav_duration_ms(mic_path)?;
+    let mut canceller = FdafCanceller::new();
+    stream_cancellation_pass(
+        &mut canceller,
+        mic_path,
+        system_path,
+        lag_ms,
+        mic_duration_ms,
+        None,
+    )?;
+    canceller.reset_stream_history();
+
+    let mut collector = RmsWindowCollector::new();
+    stream_cancellation_pass(
+        &mut canceller,
+        mic_path,
+        system_path,
+        lag_ms,
+        mic_duration_ms,
+        Some(&mut collector),
+    )?;
+    Some(collector.finish())
+}
+
+fn stream_cancellation_pass(
+    canceller: &mut FdafCanceller,
+    mic_path: &Path,
+    system_path: &Path,
+    lag_ms: i64,
+    mic_duration_ms: i64,
+    mut collector: Option<&mut RmsWindowCollector>,
+) -> Option<()> {
+    let block_ms = (AEC_BLOCK_SIZE as i64 * 1000) / SIMILARITY_SAMPLE_RATE as i64;
+    let mut start_ms = 0_i64;
+    while start_ms < mic_duration_ms {
+        let end_ms = start_ms + block_ms;
+        let mut capture = read_span_mono_16k(mic_path, start_ms, end_ms)?;
+        let mut reference = read_span_mono_16k(system_path, start_ms - lag_ms, end_ms - lag_ms)?;
+        capture.resize(AEC_BLOCK_SIZE, 0.0);
+        reference.resize(AEC_BLOCK_SIZE, 0.0);
+        let residual = canceller.process(&reference, &capture);
+        if let Some(collector) = collector.as_deref_mut() {
+            let valid_samples = (((mic_duration_ms - start_ms).min(block_ms))
+                * SIMILARITY_SAMPLE_RATE as i64
+                / 1000) as usize;
+            collector.push(&residual[..valid_samples.min(residual.len())]);
+        }
+        start_ms += block_ms;
+    }
+    Some(())
+}
+
+fn wav_duration_ms(path: &Path) -> Option<i64> {
+    let reader = WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    if spec.sample_format != SampleFormat::Int || spec.bits_per_sample != 16 {
+        return None;
+    }
+    let sample_rate = spec.sample_rate.max(1) as i64;
+    Some((reader.duration() as i64 * 1000) / sample_rate)
+}
+
+struct RmsWindowCollector {
+    frames_per_window: usize,
+    sum_square: f64,
+    frames: usize,
+    windows: Vec<f32>,
+}
+
+impl RmsWindowCollector {
+    fn new() -> Self {
+        Self {
+            frames_per_window: (SIMILARITY_SAMPLE_RATE as i64 * SIMILARITY_FRAME_MS / 1000)
+                as usize,
+            sum_square: 0.0,
+            frames: 0,
+            windows: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, samples: &[f32]) {
+        for sample in samples {
+            self.sum_square += (*sample as f64).powi(2);
+            self.frames += 1;
+            if self.frames == self.frames_per_window {
+                self.windows
+                    .push((self.sum_square / self.frames as f64).sqrt() as f32);
+                self.sum_square = 0.0;
+                self.frames = 0;
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<f32> {
+        if self.frames > 0 {
+            self.windows
+                .push((self.sum_square / self.frames as f64).sqrt() as f32);
+        }
+        self.windows
+    }
 }
 
 fn rms(samples: &[f32]) -> f32 {
@@ -275,6 +489,55 @@ mod tests {
         out
     }
 
+    fn two_pass_residual(reference: &[f32], capture: &[f32]) -> Vec<f32> {
+        let len = reference.len().max(capture.len());
+        let mut canceller = FdafCanceller::new();
+        for start in (0..len).step_by(AEC_BLOCK_SIZE) {
+            let reference_frame = padded_frame(reference, start);
+            let capture_frame = padded_frame(capture, start);
+            let _ = canceller.process(&reference_frame, &capture_frame);
+        }
+        canceller.reset_stream_history();
+
+        let mut residual = Vec::with_capacity(len);
+        for start in (0..len).step_by(AEC_BLOCK_SIZE) {
+            let reference_frame = padded_frame(reference, start);
+            let capture_frame = padded_frame(capture, start);
+            residual.extend(canceller.process(&reference_frame, &capture_frame));
+        }
+        residual.truncate(len);
+        residual
+    }
+
+    fn padded_frame(samples: &[f32], start: usize) -> Vec<f32> {
+        let mut frame = vec![0.0; AEC_BLOCK_SIZE];
+        if start < samples.len() {
+            let available = (samples.len() - start).min(AEC_BLOCK_SIZE);
+            frame[..available].copy_from_slice(&samples[start..start + available]);
+        }
+        frame
+    }
+
+    fn tapped_echo(reference: &[f32], taps: &[(usize, f32)]) -> Vec<f32> {
+        let mut capture = vec![0.0; reference.len()];
+        for (delay, gain) in taps {
+            for (index, sample) in reference.iter().enumerate() {
+                if let Some(output) = capture.get_mut(index + delay) {
+                    *output += sample * gain;
+                }
+            }
+        }
+        capture
+    }
+
+    fn energy_loss_db(capture: &[f32], residual: &[f32], start: usize) -> f32 {
+        20.0 * (rms(&capture[start..]) / rms(&residual[start..]).max(1.0e-9)).log10()
+    }
+
+    fn rms_delta_db(left: &[f32], right: &[f32], start: usize) -> f32 {
+        (20.0 * (rms(&left[start..]) / rms(&right[start..]).max(1.0e-9)).log10()).abs()
+    }
+
     #[test]
     fn gcc_phat_recovers_known_echo_delay() {
         let reference = splitmix_noise(7, 16_000); // 1s at 16 kHz
@@ -330,5 +593,53 @@ mod tests {
         let silent = vec![0.0_f32; 16_000];
         let frames = windowed_ncc_frames(&silent, &reference);
         assert!(frames.iter().all(|frame| frame.ncc.is_none()));
+    }
+
+    #[test]
+    fn fdaf_cancels_scaled_delayed_copy() {
+        let reference = splitmix_noise(7, 8 * SIMILARITY_SAMPLE_RATE as usize);
+        let capture = tapped_echo(&reference, &[(640, 0.45)]);
+
+        let residual = two_pass_residual(&reference, &capture);
+        let tail_start = capture.len() / 2;
+        let loss_db = energy_loss_db(&capture, &residual, tail_start);
+
+        assert!(
+            loss_db >= 15.0,
+            "expected at least 15 dB cancellation, got {loss_db:.2} dB"
+        );
+    }
+
+    #[test]
+    fn fdaf_preserves_independent_noise() {
+        let reference = splitmix_noise(7, 8 * SIMILARITY_SAMPLE_RATE as usize);
+        let capture = splitmix_noise(99, reference.len());
+
+        let residual = two_pass_residual(&reference, &capture);
+        let tail_start = capture.len() / 2;
+        let delta_db = rms_delta_db(&capture, &residual, tail_start);
+
+        assert!(
+            delta_db <= 1.0,
+            "independent speech should survive cancellation, got {delta_db:.2} dB change"
+        );
+    }
+
+    #[test]
+    fn fdaf_cancels_multi_tap_reverberant_echo() {
+        let reference = splitmix_noise(7, 8 * SIMILARITY_SAMPLE_RATE as usize);
+        let capture = tapped_echo(
+            &reference,
+            &[(0, 0.22), (480, 0.20), (960, 0.18), (1_440, 0.16)],
+        );
+
+        let residual = two_pass_residual(&reference, &capture);
+        let tail_start = capture.len() / 2;
+        let loss_db = energy_loss_db(&capture, &residual, tail_start);
+
+        assert!(
+            loss_db >= 10.0,
+            "expected at least 10 dB cancellation, got {loss_db:.2} dB"
+        );
     }
 }
