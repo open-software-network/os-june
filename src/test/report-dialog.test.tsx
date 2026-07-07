@@ -170,6 +170,25 @@ describe("ReportDialog", () => {
     expect(onDropFiles).toHaveBeenCalledWith([file]);
   });
 
+  it("routes pasted images through the import callback and leaves text pastes alone", () => {
+    const onDropFiles = vi.fn();
+    render(<Harness onDropFiles={onDropFiles} />);
+    const textarea = screen.getByRole("textbox", { name: "Description" });
+    const image = new File(["png-bytes"], "", { type: "image/png" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: { items: [], files: [image] },
+    });
+    expect(onDropFiles).toHaveBeenCalledTimes(1);
+    const [pasted] = onDropFiles.mock.calls[0][0];
+    expect(pasted.name).toBe("pasted-image.png");
+
+    fireEvent.paste(textarea, {
+      clipboardData: { items: [], files: [] },
+    });
+    expect(onDropFiles).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks submit while a dropped file is still importing", async () => {
     let resolveImport: () => void = () => {};
     const onDropFiles = vi.fn(

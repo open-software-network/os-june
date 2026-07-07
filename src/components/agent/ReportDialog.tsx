@@ -1,7 +1,8 @@
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconPaperclip1 } from "central-icons/IconPaperclip1";
-import { type DragEvent, useId, useMemo, useState } from "react";
+import { type ClipboardEvent, type DragEvent, useId, useMemo, useState } from "react";
 
+import { clipboardImageFiles } from "../../lib/clipboard-files";
 import { messageFromError } from "../../lib/errors";
 import { submitIssueReport } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
@@ -83,6 +84,12 @@ export function ReportDialog({
     setDropActive(true);
   }
 
+  function queueFileImport(files: File[]) {
+    setError(null);
+    setDropsPending((count) => count + 1);
+    void Promise.resolve(onDropFiles(files)).finally(() => setDropsPending((count) => count - 1));
+  }
+
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setDropActive(false);
@@ -91,9 +98,18 @@ export function ReportDialog({
       setError("Drop files from Finder to attach them to the report.");
       return;
     }
-    setError(null);
-    setDropsPending((count) => count + 1);
-    void Promise.resolve(onDropFiles(files)).finally(() => setDropsPending((count) => count - 1));
+    queueFileImport(files);
+  }
+
+  // Pasted screenshots become attachments, same as the composer. Only image
+  // files are interceptable (Finder file copies never reach clipboardData);
+  // a plain text paste falls through to the textarea untouched.
+  function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
+    if (sent || busy) return;
+    const files = clipboardImageFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    queueFileImport(files);
   }
 
   async function handleSubmit() {
@@ -168,6 +184,7 @@ export function ReportDialog({
           onDragEnter={() => setDropActive(true)}
           onDragLeave={() => setDropActive(false)}
           onDrop={handleDrop}
+          onPaste={handlePaste}
         >
           <SegmentedControl
             value={category}
