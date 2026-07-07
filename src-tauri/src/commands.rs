@@ -5,7 +5,8 @@ use crate::{
             capture_start_timeout_error, capture_status_for_recovery, finish_active_capture,
             finish_capture, is_capture_active, microphone_device_available, microphone_device_hint,
             microphone_permission_state, pause_capture, resume_capture, start_capture_with_cancel,
-            CaptureRecoverySnapshot, StartedRecording, CAPTURE_START_TIMEOUT,
+            CaptureRecoverySnapshot, CaptureStartHandshake, CaptureStartState, StartedRecording,
+            CAPTURE_START_TIMEOUT,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -48,10 +49,7 @@ use sqlx_sqlite::SqlitePool;
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc, Arc, Mutex, OnceLock,
-};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -927,7 +925,7 @@ pub async fn start_recording(
 
 async fn start_capture_with_timeout<F>(start_capture: F) -> Result<StartedRecording, AppError>
 where
-    F: FnOnce(Arc<AtomicBool>) -> Result<StartedRecording, AppError> + Send + 'static,
+    F: FnOnce(Arc<CaptureStartHandshake>) -> Result<StartedRecording, AppError> + Send + 'static,
 {
     start_capture_with_timeout_and_cleanup(
         start_capture,
@@ -950,16 +948,16 @@ async fn start_capture_with_timeout_and_cleanup<F, C>(
     timeout: Duration,
 ) -> Result<StartedRecording, AppError>
 where
-    F: FnOnce(Arc<AtomicBool>) -> Result<StartedRecording, AppError> + Send + 'static,
+    F: FnOnce(Arc<CaptureStartHandshake>) -> Result<StartedRecording, AppError> + Send + 'static,
     C: FnOnce(&StartedRecording) + Send + 'static,
 {
-    let abandoned = Arc::new(AtomicBool::new(false));
-    let worker_abandoned = Arc::clone(&abandoned);
+    let handshake = Arc::new(Mutex::new(CaptureStartState::Pending));
+    let worker_handshake = Arc::clone(&handshake);
     let (sender, receiver) = mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("capture-start".to_string())
         .spawn(move || {
-            let result = start_capture(worker_abandoned);
+            let result = start_capture(worker_handshake);
             match result {
                 Ok(started) => {
                     if let Err(mpsc::SendError(Ok(started))) = sender.send(Ok(started)) {
@@ -974,20 +972,44 @@ where
         .map_err(|error| AppError::new("recording_start_failed", error.to_string()))?;
     drop(thread);
 
-    match tokio::task::spawn_blocking(move || receiver.recv_timeout(timeout))
-        .await
-        .map_err(|error| AppError::new("recording_start_failed", error.to_string()))?
-    {
-        Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            abandoned.store(true, Ordering::Release);
-            Err(capture_start_timeout_error())
+    tokio::task::spawn_blocking(move || {
+        match receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Abandon only a build that has not committed. If the builder
+                // already published (it won the race by a hair), its capture
+                // is live: take the in-flight result as success instead of
+                // stranding an active recording behind a timeout error.
+                let published = handshake
+                    .lock()
+                    .map(|mut state| {
+                        if *state == CaptureStartState::Published {
+                            true
+                        } else {
+                            *state = CaptureStartState::Abandoned;
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if published {
+                    receiver.recv().unwrap_or_else(|_| {
+                        Err(AppError::new(
+                            "recording_start_failed",
+                            "Recording start failed before reporting a result.",
+                        ))
+                    })
+                } else {
+                    Err(capture_start_timeout_error())
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AppError::new(
+                "recording_start_failed",
+                "Recording start failed before reporting a result.",
+            )),
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(AppError::new(
-            "recording_start_failed",
-            "Recording start failed before reporting a result.",
-        )),
-    }
+    })
+    .await
+    .map_err(|error| AppError::new("recording_start_failed", error.to_string()))?
 }
 
 #[tauri::command]
@@ -2112,7 +2134,7 @@ mod tests {
         start_capture_with_timeout_and_cleanup,
     };
     use crate::{
-        audio::capture::{is_capture_active, StartedRecording, StartedSource},
+        audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
         domain::types::{
             AppError, AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState,
             RecordingStatusDto, SourceReadinessDto,
@@ -2184,6 +2206,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn capture_published_just_before_timeout_is_returned_as_success() {
+        let result = start_capture_with_timeout_and_cleanup(
+            move |handshake| {
+                // Commit the publish (as the real builder does under the
+                // ACTIVE_RECORDING lock), then outlive the watchdog timeout
+                // before reporting: the watchdog must accept this capture as
+                // success rather than strand a live recording behind a
+                // timeout error.
+                *handshake.lock().expect("handshake lock") = CaptureStartState::Published;
+                std::thread::sleep(Duration::from_millis(60));
+                Ok(fake_started_recording("published-session"))
+            },
+            move |_| panic!("published capture must not be torn down as late success"),
+            Duration::from_millis(20),
+        )
+        .await;
+
+        let started = result.expect("published capture is a success, not a timeout");
+        assert_eq!(started.session_id, "published-session");
+    }
+
+    #[tokio::test]
     async fn capture_start_timeout_returns_timeout_without_registering_active_capture() {
         let builder_saw_abandoned = Arc::new(AtomicBool::new(false));
         let registered = Arc::new(AtomicBool::new(false));
@@ -2194,11 +2238,11 @@ mod tests {
 
         let result = start_capture_with_timeout_and_cleanup(
             move |abandoned| {
-                while !abandoned.load(Ordering::Acquire) {
+                while *abandoned.lock().expect("handshake lock") != CaptureStartState::Abandoned {
                     std::thread::sleep(Duration::from_millis(2));
                 }
                 builder_saw_abandoned_for_thread.store(true, Ordering::Release);
-                if !abandoned.load(Ordering::Acquire) {
+                if *abandoned.lock().expect("handshake lock") != CaptureStartState::Abandoned {
                     registered_for_thread.store(true, Ordering::Release);
                     return Ok(fake_started_recording("late-session"));
                 }
@@ -2234,7 +2278,7 @@ mod tests {
             move |abandoned| {
                 // Return only after the timeout has demonstrably fired; a
                 // fixed sleep races the timeout under machine load.
-                while !abandoned.load(Ordering::Acquire) {
+                while *abandoned.lock().expect("handshake lock") != CaptureStartState::Abandoned {
                     std::thread::sleep(Duration::from_millis(2));
                 }
                 let started = fake_started_recording("late-session");

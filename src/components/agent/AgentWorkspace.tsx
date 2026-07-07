@@ -5666,22 +5666,15 @@ export function AgentWorkspace({
       misses.delete(sessionId);
       const freshMessages = await refreshHermesSession(sessionId);
       if (!freshMessages) continue;
-      const title =
-        hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session";
       if (sessionHasAssistantAfterLatestUser(freshMessages)) {
-        const activityCounts = clearSessionActivity(sessionId);
-        // "completed" (not "failed") keeps the status quiet: its title falls back
-        // to lastStatus when nothing is active, and a stale "running" there
-        // would still render "Working…".
-        dispatchAgentSessionStatus({
-          sessionId,
-          title,
-          status: "completed",
-          summary: "June stopped.",
-          ...activityCounts,
-        });
+        // refreshHermesSession already saw the assistant reply while this
+        // session still counted as active, so it dispatched the terminal
+        // "June finished." status and cleared activity — dispatching a
+        // second completed status here would overwrite that summary.
         continue;
       }
+      const title =
+        hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session";
       const summary = "June stopped before replying.";
       recordSessionErrorActivity(sessionId, summary);
       setError(summary, { sessionId });

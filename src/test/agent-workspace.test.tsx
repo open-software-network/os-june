@@ -5517,19 +5517,15 @@ describe("AgentWorkspace", () => {
 
       expect(screen.getByText("Here is the answer.")).toBeInTheDocument();
       expect(screen.queryByText("June stopped before replying.")).toBeNull();
-      expect(statusDetails).toContainEqual(
-        expect.objectContaining({
-          sessionId: "session-1",
-          status: "completed",
-        }),
+      const terminal = statusDetails.filter(
+        (detail) =>
+          detail.sessionId === "session-1" &&
+          (detail.status === "completed" || detail.status === "failed"),
       );
-      expect(statusDetails).not.toContainEqual(
-        expect.objectContaining({
-          sessionId: "session-1",
-          status: "failed",
-          summary: "June stopped before replying.",
-        }),
-      );
+      // Exactly one terminal dispatch, from refreshHermesSession seeing the
+      // reply — a second "June stopped." would overwrite the finished summary.
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ status: "completed", summary: "June finished." });
     } finally {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
       vi.useRealTimers();

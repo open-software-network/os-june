@@ -30,6 +30,27 @@ use uuid::Uuid;
 pub const DEFAULT_SILENCE_THRESHOLD: f32 = 0.012;
 // Healthy devices open quickly; this bounds CPAL/CoreAudio hangs during device handoff.
 pub const CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Start handshake between the capture builder and its timeout watchdog.
+/// The builder commits `Published` in the same critical section that
+/// publishes `ACTIVE_RECORDING`, so the watchdog can never declare a timeout
+/// for a capture that is (or is about to be) active — it either abandons a
+/// still-pending build or accepts a published one as success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureStartState {
+    Pending,
+    Published,
+    Abandoned,
+}
+
+pub type CaptureStartHandshake = Mutex<CaptureStartState>;
+
+fn capture_start_abandoned(handshake: &CaptureStartHandshake) -> bool {
+    handshake
+        .lock()
+        .map(|state| *state == CaptureStartState::Abandoned)
+        .unwrap_or(false)
+}
 const RECOVERY_SNAPSHOT_INTERVAL_MS: i64 = 500;
 const MICROPHONE_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 const MICROPHONE_STREAM_WARNING_MESSAGE: &str =
@@ -272,7 +293,7 @@ pub fn start_capture(
         paths,
         note_id,
         source_mode,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(Mutex::new(CaptureStartState::Pending)),
     )
 }
 
@@ -281,7 +302,7 @@ pub fn start_capture_with_cancel(
     paths: &AppPaths,
     note_id: String,
     source_mode: RecordingSourceMode,
-    abandoned: Arc<AtomicBool>,
+    handshake: Arc<CaptureStartHandshake>,
 ) -> Result<StartedRecording, AppError> {
     {
         let active = ACTIVE_RECORDING.lock().map_err(|_| {
@@ -476,7 +497,7 @@ pub fn start_capture_with_cancel(
         None
     };
     let live_preview_enabled = live_preview.is_some() || system_live_preview.is_some();
-    if abandoned.load(Ordering::Acquire) {
+    if capture_start_abandoned(&handshake) {
         cleanup_abandoned_capture(
             writer,
             partial_path,
@@ -491,7 +512,7 @@ pub fn start_capture_with_cancel(
     stream
         .play()
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
-    if abandoned.load(Ordering::Acquire) {
+    if capture_start_abandoned(&handshake) {
         cleanup_abandoned_capture(
             writer,
             partial_path,
@@ -533,29 +554,53 @@ pub fn start_capture_with_cancel(
     let mut active = ACTIVE_RECORDING
         .lock()
         .map_err(|_| AppError::new("recording_lock_failed", "Recording state is unavailable."))?;
-    if abandoned.load(Ordering::Acquire) {
-        cleanup_abandoned_capture(
-            writer,
-            partial_path,
-            system_partial_path,
-            live_preview,
-            system_live_preview,
-            system_capture,
-            Some(stream),
-        );
-        return Err(capture_start_timeout_error());
-    }
-    if active.is_some() {
-        cleanup_abandoned_capture(
-            writer,
-            partial_path,
-            system_partial_path,
-            live_preview,
-            system_live_preview,
-            system_capture,
-            Some(stream),
-        );
-        return Err(recording_already_active_error());
+    // Commit-or-abandon happens atomically with the publish below (lock
+    // order: ACTIVE_RECORDING, then the handshake; the watchdog only ever
+    // takes the handshake). Past this block the watchdog treats the build as
+    // successfully published and returns it as success.
+    {
+        let Ok(mut state) = handshake.lock() else {
+            cleanup_abandoned_capture(
+                writer,
+                partial_path,
+                system_partial_path,
+                live_preview,
+                system_live_preview,
+                system_capture,
+                Some(stream),
+            );
+            return Err(AppError::new(
+                "recording_lock_failed",
+                "Recording state is unavailable.",
+            ));
+        };
+        if *state == CaptureStartState::Abandoned {
+            drop(state);
+            cleanup_abandoned_capture(
+                writer,
+                partial_path,
+                system_partial_path,
+                live_preview,
+                system_live_preview,
+                system_capture,
+                Some(stream),
+            );
+            return Err(capture_start_timeout_error());
+        }
+        if active.is_some() {
+            drop(state);
+            cleanup_abandoned_capture(
+                writer,
+                partial_path,
+                system_partial_path,
+                live_preview,
+                system_live_preview,
+                system_capture,
+                Some(stream),
+            );
+            return Err(recording_already_active_error());
+        }
+        *state = CaptureStartState::Published;
     }
 
     *active = Some(ActiveRecording {
