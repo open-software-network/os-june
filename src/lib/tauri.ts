@@ -1462,6 +1462,19 @@ export async function finishRecording(sessionId: string) {
   });
 }
 
+export type ResolveAgentRecorderRequestInput = {
+  requestId: string;
+  ok: boolean;
+  noteId?: string;
+  noteTitle?: string;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
+export async function resolveAgentRecorderRequest(request: ResolveAgentRecorderRequestInput) {
+  return invoke<void>("resolve_agent_recorder_request", { request });
+}
+
 export async function retryProcessing(noteId: string) {
   return invoke<NoteDto>("retry_processing", {
     request: { noteId, step: "all" },

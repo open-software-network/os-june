@@ -170,6 +170,7 @@ pub fn run() {
             commands::list_agent_tool_events,
             hermes_bridge::hermes_bridge_status,
             hermes_bridge::ensure_hermes_bridge_gateway,
+            hermes_bridge::resolve_agent_recorder_request,
             hermes_bridge::hermes_admin_request,
             hermes_bridge::hermes_mcp_oauth_login,
             hermes_bridge::hermes_reset_bundled_skill,

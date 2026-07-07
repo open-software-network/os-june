@@ -222,7 +222,7 @@ is UI; the reference is the token).
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, and `june_image`).
+`june_web`, `june_image`, and `june_recorder`).
 _Avoid_: using "tool" for all three.
 
 **Admin surface**:
