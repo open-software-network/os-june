@@ -5603,7 +5603,7 @@ input:focus-visible,
   background: color-mix(in oklch, var(--card) 92%, transparent);
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: 400;
   pointer-events: none;
 }
 
