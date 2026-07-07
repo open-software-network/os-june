@@ -173,10 +173,11 @@ def call_tool(
                 "POST",
                 "/recorder/start",
                 {"sourceMode": source_mode},
+                retry_5xx=False,
             )
             return tool_text_result(request_id, render_start_result(result))
         if name == "stop_recording":
-            result = proxy_json(base_url, token, "POST", "/recorder/stop", {})
+            result = proxy_json(base_url, token, "POST", "/recorder/stop", {}, retry_5xx=False)
             return tool_text_result(request_id, render_stop_result(result))
         if name == "recording_status":
             result = proxy_json(base_url, token, "GET", "/recorder/status", None)
@@ -199,7 +200,12 @@ def proxy_json(
     method: str,
     path: str,
     payload: dict[str, Any] | None,
+    retry_5xx: bool = True,
 ) -> dict[str, Any]:
+    # start/stop are not idempotent: a retried POST after a lease-expiry 504
+    # mints a NEW recorder request while the first may still be in flight,
+    # so mutations must pass retry_5xx=False (status stays retryable).
+    max_attempts = REQUEST_MAX_ATTEMPTS if retry_5xx else 1
     url = f"{base_url}{path}"
     data = None
     headers = {"Authorization": f"Bearer {token}"}
@@ -208,7 +214,7 @@ def proxy_json(
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     last_error: Exception | None = None
-    for attempt in range(REQUEST_MAX_ATTEMPTS):
+    for attempt in range(max_attempts):
         try:
             with urllib.request.urlopen(
                 request, timeout=REQUEST_TIMEOUT_SECONDS
@@ -220,12 +226,12 @@ def proxy_json(
                 parsed = json.loads(body)
             except json.JSONDecodeError:
                 parsed = {"success": False, "message": body or exc.reason}
-            if exc.code < 500 or attempt == REQUEST_MAX_ATTEMPTS - 1:
+            if exc.code < 500 or attempt == max_attempts - 1:
                 return parsed
             last_error = exc
         except urllib.error.URLError as exc:
             last_error = exc
-        if attempt < REQUEST_MAX_ATTEMPTS - 1:
+        if attempt < max_attempts - 1:
             time.sleep(REQUEST_RETRY_DELAY_SECONDS)
     raise ToolError(f"June recorder proxy is unavailable: {last_error}")
 

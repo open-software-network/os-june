@@ -870,7 +870,14 @@ pub fn resolve_agent_recorder_request(
                 "Recorder request was not found or has already timed out.",
             )
         })?;
-    let _ = sender.send(request);
+    // A dead receiver means the lease just expired: the proxy has already
+    // answered failure, so the frontend must see not_found and roll back.
+    sender.send(request).map_err(|_| {
+        AppError::new(
+            "agent_recorder_request_not_found",
+            "Recorder request was not found or has already timed out.",
+        )
+    })?;
     Ok(())
 }
 
@@ -6733,7 +6740,7 @@ fn render_recorder_mcp_entry(
     env:
       PYTHONUNBUFFERED: "1"
       {token_env}: {token}
-    timeout: 30
+    timeout: 620
     connect_timeout: 10
 "#,
         server_name = JUNE_RECORDER_MCP_SERVER_NAME,
@@ -7047,14 +7054,8 @@ async fn handle_june_provider_connection(
             return Ok(());
         }
     };
-    // Recorder mutations require the recorder-scoped secret; every other
-    // route keeps the general provider token. Distinct secrets, so neither
-    // authorizes the other's surface.
-    let required_token = if request.path.starts_with("/v1/recorder/") {
-        &state.recorder_token
-    } else {
-        &state.token
-    };
+    let required_token =
+        provider_proxy_required_token(&request.path, &state.token, &state.recorder_token);
     if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
             &mut stream,
@@ -7563,6 +7564,21 @@ fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_jso
         entry["context_length"] = serde_json::json!(context_tokens);
     }
     serde_json::json!({ "object": "list", "data": [entry] })
+}
+
+/// Recorder mutations require the recorder-scoped secret; every other route
+/// keeps the general provider token. Distinct secrets, so neither authorizes
+/// the other's surface.
+fn provider_proxy_required_token<'a>(
+    path: &str,
+    provider_token: &'a str,
+    recorder_token: &'a str,
+) -> &'a str {
+    if path.starts_with("/v1/recorder/") {
+        recorder_token
+    } else {
+        provider_token
+    }
 }
 
 fn provider_proxy_authorized(request: &HttpRequest, token: &str) -> bool {
@@ -8752,6 +8768,57 @@ mod tests {
     }
 
     #[test]
+    fn recorder_routes_require_the_recorder_scoped_token_and_vice_versa() {
+        // The general provider token every model call carries must never
+        // authorize microphone control, and the recorder secret must not
+        // open the provider surface.
+        for path in [
+            "/v1/recorder/start",
+            "/v1/recorder/stop",
+            "/v1/recorder/status",
+        ] {
+            assert_eq!(
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                "recorder-tok"
+            );
+        }
+        for path in [
+            "/v1/models",
+            "/v1/chat/completions",
+            "/v1/image/generate",
+            "/v1/recorder",
+        ] {
+            assert_eq!(
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                "provider-tok"
+            );
+        }
+
+        let provider_bearer = request_with_authorization("Bearer provider-tok");
+        let recorder_bearer = request_with_authorization("Bearer recorder-tok");
+        let recorder_required =
+            provider_proxy_required_token("/v1/recorder/start", "provider-tok", "recorder-tok");
+        let provider_required =
+            provider_proxy_required_token("/v1/models", "provider-tok", "recorder-tok");
+        assert!(!provider_proxy_authorized(
+            &provider_bearer,
+            recorder_required
+        ));
+        assert!(provider_proxy_authorized(
+            &recorder_bearer,
+            recorder_required
+        ));
+        assert!(!provider_proxy_authorized(
+            &recorder_bearer,
+            provider_required
+        ));
+        assert!(provider_proxy_authorized(
+            &provider_bearer,
+            provider_required
+        ));
+    }
+
+    #[test]
     fn provider_proxy_rejects_missing_or_malformed_authorization() {
         let missing = HttpRequest {
             method: "GET".to_string(),
@@ -9541,6 +9608,10 @@ mcp_servers:
         // general provider token.
         assert!(config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"recorder-proxy-tok\"\n"));
         assert!(!config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"proxy-tok\"\n"));
+        // The Hermes-side tool timeout must outlive the proxy lease (240s)
+        // plus the Python client's attempt (300s), or Hermes reports failure
+        // while June is still honestly waiting on the permission prompt.
+        assert!(config.contains("    timeout: 620\n"));
     }
 
     #[test]

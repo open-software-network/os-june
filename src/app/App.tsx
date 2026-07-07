@@ -93,7 +93,7 @@ import {
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
-import { messageFromError } from "../lib/errors";
+import { errorCode, messageFromError } from "../lib/errors";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
@@ -2531,90 +2531,112 @@ export function App() {
     };
   }, [appBlocked, bootstrapped, handleStartMeetingDetectedRecording]);
 
+  // The handler closes over frequently-changing state, but the Tauri listener
+  // must register exactly once: re-subscribing tears the listener down and
+  // events emitted in the gap are silently dropped (a dropped request costs
+  // the agent a full proxy lease). The ref always holds the latest closure.
+  const agentRecorderHandlerRef = useRef<(payload: AgentRecorderRequestPayload) => Promise<void>>(
+    async () => {},
+  );
+  agentRecorderHandlerRef.current = async (payload: AgentRecorderRequestPayload) => {
+    const requestId = typeof payload.requestId === "string" ? payload.requestId : "";
+    if (!requestId) return;
+
+    const resolve = (result: {
+      ok: boolean;
+      noteId?: string;
+      noteTitle?: string;
+      errorCode?: string;
+      errorMessage?: string;
+    }) => {
+      void resolveAgentRecorderRequest({ requestId, ...result }).catch(async (err) => {
+        console.warn("Failed to resolve agent recorder request", err);
+        // A transient resolve failure (IPC hiccup, poisoned lock) happens
+        // while the proxy is still waiting inside its lease: retry once
+        // instead of treating it as an expired request.
+        if (errorCode(err) !== "agent_recorder_request_not_found") {
+          try {
+            await resolveAgentRecorderRequest({ requestId, ...result });
+            return;
+          } catch (retryErr) {
+            if (errorCode(retryErr) !== "agent_recorder_request_not_found") {
+              console.warn("Agent recorder resolve retry failed", retryErr);
+              return;
+            }
+          }
+        }
+        // Lease expired: the proxy already told the agent this request
+        // failed. Leaving a recording running that the agent believes never
+        // started diverges tool state from app state, so stop a successful
+        // late start. The note (and any audio it captured) is kept: it is
+        // real user data and the recorder was visibly running.
+        if (result.ok && payload.action === "start") {
+          const active = recordingStatusRef.current;
+          if (active && recordingNoteIdRef.current === result.noteId) {
+            try {
+              await handleFinishRecording(active.sessionId, { rethrow: true });
+            } catch (rollbackErr) {
+              console.warn("Failed to stop expired agent recording", rollbackErr);
+            }
+          }
+        }
+      });
+    };
+
+    if (appBlocked || !bootstrapped) {
+      resolve({
+        ok: false,
+        errorCode: "app_not_ready",
+        errorMessage: "June is not ready to start or stop recording yet.",
+      });
+      return;
+    }
+
+    try {
+      if (payload.action === "start") {
+        const requestedSourceMode: RecordingSourceMode =
+          payload.sourceMode === "microphonePlusSystem" ? "microphonePlusSystem" : "microphoneOnly";
+        const note = await handleStartAgentRecording(requestedSourceMode);
+        resolve({ ok: true, noteId: note.id, noteTitle: note.title });
+        return;
+      }
+      if (payload.action === "stop") {
+        const activeRecording = recordingStatusRef.current;
+        const noteId = recordingNoteIdRef.current ?? activeRecording?.noteId;
+        const noteTitle = noteId
+          ? (state.notes.find((note) => note.id === noteId)?.title ?? selectedNote?.title)
+          : undefined;
+        if (!activeRecording) {
+          resolve({
+            ok: false,
+            errorCode: "recording_not_found",
+            errorMessage: "No recording is currently running.",
+          });
+          return;
+        }
+        await handleFinishRecording(activeRecording.sessionId, { rethrow: true });
+        resolve({ ok: true, noteId, noteTitle });
+        return;
+      }
+      resolve({
+        ok: false,
+        errorCode: "invalid_action",
+        errorMessage: "Recorder action must be start or stop.",
+      });
+    } catch (err) {
+      resolve({
+        ok: false,
+        errorCode: "agent_recorder_failed",
+        errorMessage: messageFromError(err),
+      });
+    }
+  };
+
   useEffect(() => {
     let aborted = false;
     let unlisten: (() => void) | undefined;
-    void listen(AGENT_RECORDER_REQUEST_EVENT, async (event) => {
-      const payload = (event.payload ?? {}) as AgentRecorderRequestPayload;
-      const requestId = typeof payload.requestId === "string" ? payload.requestId : "";
-      if (!requestId) return;
-
-      const resolve = (result: {
-        ok: boolean;
-        noteId?: string;
-        noteTitle?: string;
-        errorCode?: string;
-        errorMessage?: string;
-      }) => {
-        void resolveAgentRecorderRequest({ requestId, ...result }).catch(async (err) => {
-          console.warn("Failed to resolve agent recorder request", err);
-          // The proxy already told the agent this request failed. Leaving a
-          // recording running that the agent believes never started diverges
-          // tool state from app state, so stop a successful late start. The
-          // note (and any audio it captured) is kept: it is real user data
-          // and the recorder was visibly running.
-          if (result.ok && payload.action === "start") {
-            const active = recordingStatusRef.current;
-            if (active && recordingNoteIdRef.current === result.noteId) {
-              try {
-                await handleFinishRecording(active.sessionId, { rethrow: true });
-              } catch (rollbackErr) {
-                console.warn("Failed to stop expired agent recording", rollbackErr);
-              }
-            }
-          }
-        });
-      };
-
-      if (appBlocked || !bootstrapped) {
-        resolve({
-          ok: false,
-          errorCode: "app_not_ready",
-          errorMessage: "June is not ready to start or stop recording yet.",
-        });
-        return;
-      }
-
-      try {
-        if (payload.action === "start") {
-          const requestedSourceMode: RecordingSourceMode =
-            payload.sourceMode === "microphonePlusSystem"
-              ? "microphonePlusSystem"
-              : "microphoneOnly";
-          const note = await handleStartAgentRecording(requestedSourceMode);
-          resolve({ ok: true, noteId: note.id, noteTitle: note.title });
-          return;
-        }
-        if (payload.action === "stop") {
-          const activeRecording = recordingStatusRef.current;
-          const noteId = recordingNoteIdRef.current ?? activeRecording?.noteId;
-          const noteTitle = noteId
-            ? (state.notes.find((note) => note.id === noteId)?.title ?? selectedNote?.title)
-            : undefined;
-          if (!activeRecording) {
-            resolve({
-              ok: false,
-              errorCode: "recording_not_found",
-              errorMessage: "No recording is currently running.",
-            });
-            return;
-          }
-          await handleFinishRecording(activeRecording.sessionId, { rethrow: true });
-          resolve({ ok: true, noteId, noteTitle });
-          return;
-        }
-        resolve({
-          ok: false,
-          errorCode: "invalid_action",
-          errorMessage: "Recorder action must be start or stop.",
-        });
-      } catch (err) {
-        resolve({
-          ok: false,
-          errorCode: "agent_recorder_failed",
-          errorMessage: messageFromError(err),
-        });
-      }
+    void listen(AGENT_RECORDER_REQUEST_EVENT, (event) => {
+      void agentRecorderHandlerRef.current((event.payload ?? {}) as AgentRecorderRequestPayload);
     }).then((cleanup) => {
       if (aborted) cleanup();
       else unlisten = cleanup;
@@ -2623,7 +2645,7 @@ export function App() {
       aborted = true;
       unlisten?.();
     };
-  }, [appBlocked, bootstrapped, handleStartAgentRecording, selectedNote?.title, state.notes]);
+  }, []);
 
   async function handleFinishRecording(sessionId: string, options: { rethrow?: boolean } = {}) {
     // The recorder bar stays mounted (and clickable) for the duration of its

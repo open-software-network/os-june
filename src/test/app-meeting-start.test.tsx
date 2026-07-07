@@ -391,15 +391,11 @@ describe("agent recorder request event", () => {
 
   async function renderUntilAgentRecorderListener() {
     render(<App />);
+    // The listener registers exactly once; its handler reads app state
+    // through a latest-closure ref, so waiting for bootstrap data (getNote)
+    // is enough for the handler to see the ready app.
+    await waitForLoaded(() => expect(mocks.listeners.has(AGENT_RECORDER_REQUEST_EVENT)).toBe(true));
     await waitForLoaded(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    // The listener registers once before bootstrap resolves (its closure acks
-    // app_not_ready) and re-registers after `bootstrapped` flips. Waiting for
-    // the second registration guarantees the handler sees the ready app.
-    await waitForLoaded(() =>
-      expect(
-        mocks.listen.mock.calls.filter(([event]) => event === AGENT_RECORDER_REQUEST_EVENT).length,
-      ).toBeGreaterThanOrEqual(2),
-    );
   }
 
   it("starts a requested recording and acks with the created note", async () => {
