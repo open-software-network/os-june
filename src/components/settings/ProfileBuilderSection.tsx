@@ -4,29 +4,37 @@ import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
+import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconRobot2 } from "central-icons/IconRobot2";
 import { IconShield } from "central-icons/IconShield";
-import { useMemo, type ReactNode } from "react";
+import { IconTrashCan } from "central-icons/IconTrashCan";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   PROFILE_BUILDER_STEPS,
   STEP_META,
   buildCreatePlan,
   bundledSkillOptions,
+  canActivateProfile,
   canCreateProfile,
+  canRemoveProfile,
+  describeProfile,
   installableCatalogEntries,
   selectedModelToolSupport,
   slugifyProfileName,
   stepIndex,
   useProfileBuilder,
+  useProfileManager,
   validateProfileName,
   validateStep,
   type ChangeRisk,
   type HermesAdminMode,
   type ProfileBuilderState,
   type ProfileBuilderStep,
+  type ProfileManagerState,
 } from "../../lib/hermes-admin";
 import { ProviderLogo } from "./ProviderLogo";
 import { AdminNotifications } from "./AdminNotifications";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 type ProfileBuilderSectionProps = {
   /** The write-access mode whose runtime profiles are created in. Defaults to
@@ -47,16 +55,65 @@ type ProfileBuilderSectionProps = {
  * drive it with a stubbed state (no Tauri, no network).
  */
 export function ProfileBuilderSection({ mode = "sandboxed" }: ProfileBuilderSectionProps) {
-  const state = useProfileBuilder(mode);
-  return <ProfileBuilderView state={state} mode={mode} />;
+  const managerState = useProfileManager(mode);
+  const builderState = useProfileBuilder(mode);
+  return (
+    <ProfilesSurfaceView managerState={managerState} builderState={builderState} mode={mode} />
+  );
+}
+
+export function ProfilesSurfaceView({
+  managerState,
+  builderState,
+  mode = "sandboxed",
+}: {
+  managerState: ProfileManagerState;
+  builderState: ProfileBuilderState;
+  mode?: HermesAdminMode;
+}) {
+  const [view, setView] = useState<"list" | "wizard">("list");
+
+  useEffect(() => {
+    if (view !== "wizard" || builderState.create.phase !== "created") return;
+    managerState.refresh();
+    builderState.reset();
+    setView("list");
+  }, [builderState, managerState, view]);
+
+  if (view === "wizard") {
+    return (
+      <ProfileBuilderView
+        state={builderState}
+        mode={mode}
+        onBackToProfiles={() => {
+          builderState.reset();
+          managerState.refresh();
+          setView("list");
+        }}
+      />
+    );
+  }
+
+  return (
+    <ProfilesListView
+      state={managerState}
+      mode={mode}
+      onNewProfile={() => {
+        builderState.reset();
+        setView("wizard");
+      }}
+    />
+  );
 }
 
 export function ProfileBuilderView({
   state,
   mode = "sandboxed",
+  onBackToProfiles,
 }: {
   state: ProfileBuilderState;
   mode?: HermesAdminMode;
+  onBackToProfiles?: () => void;
 }) {
   const context = useMemo(
     () => ({ existingProfiles: state.existingProfiles, models: state.models }),
@@ -98,6 +155,12 @@ export function ProfileBuilderView({
 
   return (
     <BuilderShell mode={state.mode ?? mode} profile={state.profile} show>
+      {onBackToProfiles ? (
+        <button type="button" className="profile-builder-list-back" onClick={onBackToProfiles}>
+          <IconArrowLeft size={14} ariaHidden />
+          Back to profiles
+        </button>
+      ) : null}
       <AdminNotifications
         notifications={state.notifications}
         onDismiss={state.dismissNotification}
@@ -162,7 +225,7 @@ function BuilderShell({
   return (
     <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
       <h2 id="profile-builder-heading" className="settings-group-heading">
-        Profile builder
+        Profiles
       </h2>
       <p className="settings-group-description">
         Create a specialized profile with its own model, skills, MCP servers, and instructions. A
@@ -176,6 +239,231 @@ function BuilderShell({
       </p>
       {children}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Profiles list
+// ---------------------------------------------------------------------------
+
+function ProfilesListView({
+  state,
+  mode,
+  onNewProfile,
+}: {
+  state: ProfileManagerState;
+  mode: HermesAdminMode;
+  onNewProfile: () => void;
+}) {
+  const [toDelete, setToDelete] = useState<string | undefined>();
+  const isUnavailable = state.status === "unavailable";
+  const isErrored = state.status === "error";
+  const isLoadingFirst = state.status === "loading";
+  const hasProfiles = state.profiles.length > 0;
+  const onlyDefault = state.profiles.length === 1 && state.profiles[0]?.name === "default";
+
+  if (isUnavailable) {
+    return (
+      <ProfilesShell mode={mode} profile={undefined} show={false}>
+        <EmptyState
+          title="Hermes is not running"
+          description="Start Hermes to create a profile. A profile gives a task its own model, skills, MCP servers, and instructions."
+        />
+      </ProfilesShell>
+    );
+  }
+
+  return (
+    <ProfilesShell mode={mode} profile={undefined} show>
+      <div className="settings-card profiles-card">
+        <div className="profiles-toolbar">
+          <button
+            type="button"
+            className="profiles-refresh"
+            disabled={isLoadingFirst}
+            onClick={state.refresh}
+          >
+            <IconArrowRotateClockwise size={14} ariaHidden />
+            Refresh
+          </button>
+          <button type="button" className="profile-builder-create" onClick={onNewProfile}>
+            <IconPlusMedium size={14} ariaHidden />
+            New profile
+          </button>
+        </div>
+
+        {state.error && hasProfiles ? (
+          <p className="settings-row-error profiles-inline-error">
+            <IconExclamationCircle size={14} ariaHidden />
+            {state.error}
+          </p>
+        ) : null}
+
+        {isErrored && !hasProfiles ? (
+          <ErrorState
+            message={state.error ?? "Could not load profiles from Hermes."}
+            retryable
+            onRetry={state.refresh}
+          />
+        ) : isLoadingFirst ? (
+          <EmptyState
+            title="Loading profiles"
+            description="June is reading the profile list from Hermes."
+          />
+        ) : (
+          <>
+            <ul className="profiles-list" aria-label="Profiles">
+              {state.profiles.map((profile) => (
+                <ProfileRow
+                  key={profile.name}
+                  profile={profile}
+                  activeName={state.activeName}
+                  activeConfirmed={state.activeConfirmed}
+                  pending={state.pendingAction}
+                  onActivate={state.activate}
+                  onDelete={setToDelete}
+                />
+              ))}
+            </ul>
+            {!hasProfiles || onlyDefault ? (
+              <p className="profiles-empty-copy">
+                Create a profile when you want a task to use its own model, skills, MCP servers, or
+                instructions.
+              </p>
+            ) : null}
+          </>
+        )}
+      </div>
+
+      <DeleteProfileDialog
+        name={toDelete}
+        onClose={() => setToDelete(undefined)}
+        onConfirm={async () => {
+          if (toDelete) await state.remove(toDelete);
+        }}
+      />
+    </ProfilesShell>
+  );
+}
+
+function ProfilesShell({
+  mode,
+  profile,
+  show,
+  children,
+}: {
+  mode: HermesAdminMode;
+  profile?: string;
+  show: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
+      <h2 id="profile-builder-heading" className="settings-group-heading">
+        Profiles
+      </h2>
+      <p className="settings-group-description">
+        Manage profiles with their own model, skills, MCP servers, and instructions.{" "}
+        {show ? <ModeNote mode={mode} profile={profile} /> : null}
+      </p>
+      {children}
+    </section>
+  );
+}
+
+function ModeNote({ mode, profile }: { mode: HermesAdminMode; profile?: string }) {
+  const modeLabel = mode === "unrestricted" ? "Full mode" : "Sandboxed";
+  return (
+    <span className="profile-builder-mode-note">
+      Showing the {modeLabel} runtime
+      {profile ? ` (profile ${profile})` : ""}.
+    </span>
+  );
+}
+
+function ProfileRow({
+  profile,
+  activeName,
+  activeConfirmed,
+  pending,
+  onActivate,
+  onDelete,
+}: {
+  profile: ProfileManagerState["profiles"][number];
+  activeName: string;
+  activeConfirmed: boolean;
+  pending: ProfileManagerState["pendingAction"];
+  onActivate: (name: string) => Promise<boolean>;
+  onDelete: (name: string) => void;
+}) {
+  const activateGuard = canActivateProfile(profile.name, activeName, activeConfirmed);
+  const removeGuard = canRemoveProfile(profile.name, activeName, activeConfirmed);
+  const isActive = profile.name === activeName;
+  const pendingThisRow = pending?.name === profile.name;
+  const activating = pendingThisRow && pending?.kind === "activate";
+  const removing = pendingThisRow && pending?.kind === "remove";
+  const description = describeProfile(profile) || "No description provided.";
+
+  return (
+    <li className="profile-row">
+      <div className="profile-row-main">
+        <div className="profile-row-headline">
+          <span className="profile-row-name">{profile.name}</span>
+          {isActive ? <span className="profile-row-active">Active</span> : null}
+        </div>
+        <p className="profile-row-description">{description}</p>
+      </div>
+      <div className="profile-row-actions">
+        <button
+          type="button"
+          className="profile-row-activate"
+          disabled={!activateGuard.ok || pendingThisRow}
+          title={!activateGuard.ok ? activateGuard.reason : undefined}
+          onClick={() => void onActivate(profile.name)}
+        >
+          {activating ? "Saving" : "Make active"}
+        </button>
+        <button
+          type="button"
+          className="profile-row-delete"
+          aria-label={`Delete ${profile.name}`}
+          disabled={!removeGuard.ok || pendingThisRow}
+          title={!removeGuard.ok ? removeGuard.reason : "Delete profile"}
+          onClick={() => onDelete(profile.name)}
+        >
+          <IconTrashCan size={14} ariaHidden />
+          {removing ? "Deleting" : "Delete"}
+        </button>
+        {!removeGuard.ok ? <span className="profile-row-hint">{removeGuard.reason}</span> : null}
+      </div>
+    </li>
+  );
+}
+
+function DeleteProfileDialog({
+  name,
+  onClose,
+  onConfirm,
+}: {
+  name?: string;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  return (
+    <ConfirmDialog
+      open={Boolean(name)}
+      onClose={onClose}
+      onConfirm={onConfirm}
+      title={name ? `Delete "${name}"?` : "Delete profile?"}
+      description={
+        name
+          ? `Remove ${name}? New sessions will no longer load it. This cannot be undone.`
+          : undefined
+      }
+      confirmLabel="Delete profile"
+      confirmBusyLabel="Deleting"
+      destructive
+    />
   );
 }
 

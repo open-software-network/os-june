@@ -294,7 +294,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       {
         id: "profile-builder",
-        label: "Profile builder",
+        label: "Profiles",
         icon: <IconMagicWand size={16} />,
       },
       {

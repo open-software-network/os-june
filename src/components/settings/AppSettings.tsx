@@ -259,7 +259,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "taps", label: "Team skill taps" },
   { id: "toolsets", label: "Toolsets" },
   { id: "bundles", label: "Bundles" },
-  { id: "profile-builder", label: "Profile builder" },
+  { id: "profile-builder", label: "Profiles" },
   { id: "integrations-health", label: "Integrations health" },
   { id: "import-export", label: "Import / export" },
   { id: "about", label: "About" },
