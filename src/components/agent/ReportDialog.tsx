@@ -127,7 +127,13 @@ export function ReportDialog({
     if (sent || busy) return;
     const files = clipboardImageFiles(event.clipboardData);
     if (!files.length) return;
-    event.preventDefault();
+    // Mixed payload (e.g. a copied web-page selection carrying both text and
+    // an image): import the image but let the browser paste the text into the
+    // textarea — preventing default would silently drop the text the user
+    // meant to keep. With no meaningful text we preventDefault, which also
+    // stops screenshot tools' stray metadata from landing in the field.
+    const hasText = Boolean(event.clipboardData?.getData("text/plain")?.trim());
+    if (!hasText) event.preventDefault();
     queueFileImport(files);
   }
 

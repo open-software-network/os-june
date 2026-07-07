@@ -176,17 +176,38 @@ describe("ReportDialog", () => {
     const textarea = screen.getByRole("textbox", { name: "Description" });
     const image = new File(["png-bytes"], "", { type: "image/png" });
 
-    fireEvent.paste(textarea, {
-      clipboardData: { items: [], files: [image] },
+    const defaultNotPrevented = fireEvent.paste(textarea, {
+      clipboardData: { items: [], files: [image], getData: () => "" },
     });
     expect(onDropFiles).toHaveBeenCalledTimes(1);
     const [pasted] = onDropFiles.mock.calls[0][0];
     expect(pasted.name).toBe("pasted-image.png");
+    // Image-only paste preventDefault's, so fireEvent returns false.
+    expect(defaultNotPrevented).toBe(false);
 
     fireEvent.paste(textarea, {
-      clipboardData: { items: [], files: [] },
+      clipboardData: { items: [], files: [], getData: () => "" },
     });
     expect(onDropFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it("imports the image but keeps the text on a mixed image-and-text paste", () => {
+    const onDropFiles = vi.fn();
+    render(<Harness onDropFiles={onDropFiles} />);
+    const textarea = screen.getByRole("textbox", { name: "Description" });
+    const image = new File(["png-bytes"], "", { type: "image/png" });
+
+    const defaultNotPrevented = fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [],
+        files: [image],
+        getData: () => "Steps to reproduce",
+      },
+    });
+
+    expect(onDropFiles).toHaveBeenCalledTimes(1);
+    // The browser inserts the pasted text normally: default must not be prevented.
+    expect(defaultNotPrevented).toBe(true);
   });
 
   it("keeps drop and paste events inside the dialog", () => {
@@ -201,7 +222,9 @@ describe("ReportDialog", () => {
     const image = new File(["png"], "shot.png", { type: "image/png" });
 
     fireEvent.drop(textarea, { dataTransfer: { files: [image] } });
-    fireEvent.paste(textarea, { clipboardData: { items: [], files: [image] } });
+    fireEvent.paste(textarea, {
+      clipboardData: { items: [], files: [image], getData: () => "" },
+    });
 
     expect(outerDrop).not.toHaveBeenCalled();
     expect(outerPaste).not.toHaveBeenCalled();
