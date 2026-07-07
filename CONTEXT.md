@@ -96,6 +96,15 @@ never written to `transcripts`, never the note's source of truth (see
 [ADR-0002](docs/adr/0002-live-transcript-preview-strategy.md)).
 _Avoid_: realtime transcription, live captions, streaming.
 
+**Transcript coverage**:
+How much of a recording's detected speech ended up in persisted, successful
+note-transcription turns (`transcribed_ms` vs `detected_speech_ms`). Always
+measured against detected speech spans, never wall-clock recording duration —
+silence is not lost audio. Persisted per processing pass as a
+`transcript_coverage` checkpoint; surfaced on the note (non-blocking) when
+materially incomplete.
+_Avoid_: transcript completeness, duration coverage (wall-clock framing).
+
 **System audio helper**:
 The out-of-process macOS `.app` (`june-system-audio-recorder`) that captures
 system audio via CoreAudio process taps and reports over a `status.json` file

@@ -3,7 +3,7 @@ use crate::domain::types::{
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     DictationHistoryItemDto, DictionaryEntryDto, FolderDto, ListDictationHistoryResponse,
     ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus, RecordingSourceMode,
-    RecordingState, SessionFolderDto, TranscriptDto,
+    RecordingState, SessionFolderDto, TranscriptCoverageDto, TranscriptDto,
 };
 use chrono::{Duration, SecondsFormat, Utc};
 use sqlx::query::query;
@@ -164,6 +164,7 @@ impl Repositories {
             generated_content: row.get("generated_content"),
             edited_content: row.get("edited_content"),
             transcript: self.latest_transcript(note_id).await?,
+            transcript_coverage: self.transcript_coverage(note_id).await?,
             source_transcripts: self.source_transcripts(note_id).await?,
             recording: None,
             audio: self.latest_audio_artifact(note_id).await?,
@@ -1847,6 +1848,78 @@ impl Repositories {
                 last_error: row.get("last_error"),
             })
             .collect())
+    }
+
+    async fn transcript_coverage(
+        &self,
+        note_id: &str,
+    ) -> Result<Option<TranscriptCoverageDto>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT rc.details
+             FROM recording_sessions rs
+             INNER JOIN recording_checkpoints rc ON rc.recording_session_id = rs.id
+             WHERE rs.note_id = ?
+               AND rc.kind = 'transcript_coverage'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM recording_checkpoints newer
+                 WHERE newer.recording_session_id = rc.recording_session_id
+                   AND newer.kind = rc.kind
+                   AND (
+                     newer.created_at > rc.created_at
+                     OR (newer.created_at = rc.created_at AND newer.rowid > rc.rowid)
+                   )
+               )",
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut detected_speech_ms = 0_i64;
+        let mut transcribed_ms = 0_i64;
+        let mut any_warning = false;
+        let mut found = false;
+        for row in rows {
+            let Some(details) = row.get::<Option<String>, _>("details") else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&details) else {
+                continue;
+            };
+            found = true;
+            let session_detected = value
+                .get("totalDetectedSpeechMs")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default()
+                .max(0);
+            let session_transcribed = value
+                .get("totalTranscribedMs")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default()
+                .max(0);
+            detected_speech_ms = detected_speech_ms.saturating_add(session_detected);
+            transcribed_ms = transcribed_ms.saturating_add(session_transcribed);
+            // Recompute each session's warning from its stored totals with
+            // the CURRENT thresholds instead of trusting the serialized
+            // `warning` bit, so tuning the constants applies retroactively
+            // while per-session sensitivity is preserved.
+            any_warning |= crate::domain::processing::transcript_coverage_warning(
+                session_detected,
+                session_transcribed,
+            );
+        }
+        if !found {
+            return Ok(None);
+        }
+        let warning = crate::domain::processing::transcript_coverage_warning(
+            detected_speech_ms,
+            transcribed_ms,
+        ) || any_warning;
+        Ok(Some(TranscriptCoverageDto {
+            detected_speech_ms,
+            transcribed_ms,
+            warning,
+        }))
     }
 
     pub async fn successful_source_turn_transcripts_for_session(

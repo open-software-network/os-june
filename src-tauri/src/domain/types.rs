@@ -81,6 +81,8 @@ pub struct NoteDto {
     pub edited_content: Option<String>,
     pub transcript: Option<TranscriptDto>,
     #[serde(default)]
+    pub transcript_coverage: Option<TranscriptCoverageDto>,
+    #[serde(default)]
     pub source_transcripts: Vec<TranscriptDto>,
     pub recording: Option<RecordingSessionDto>,
     pub audio: Option<AudioArtifactDto>,
@@ -93,6 +95,14 @@ pub struct NoteDto {
     /// processing queue at the command layer, not persisted.
     #[serde(default)]
     pub queued_recordings: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptCoverageDto {
+    pub detected_speech_ms: i64,
+    pub transcribed_ms: i64,
+    pub warning: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

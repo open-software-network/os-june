@@ -8417,6 +8417,16 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.transcript-coverage-notice {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
 .transcript-view p {
   max-width: var(--content-max);
   margin: 0;

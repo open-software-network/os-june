@@ -29,6 +29,8 @@ const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
 const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
 const DICTIONARY_CONTEXT_MAX_ENTRIES: usize = 80;
 const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 2;
+const TRANSCRIPT_COVERAGE_WARN_RATIO: f64 = 0.8;
+const TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS: i64 = 60_000;
 const TRANSIENT_TRANSCRIPTION_ATTEMPTS: usize = 3;
 #[cfg(not(test))]
 const TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS: u64 = 300;
@@ -429,6 +431,7 @@ pub async fn process_saved_source_audio(
     )?;
     let turns = add_full_source_turns_for_missing_sources(&sources, turns);
     let turns = coalesce_turns_for_transcription(turns);
+    let coverage_turns = turns.clone();
     repos
         .add_checkpoint(
             session_id,
@@ -625,6 +628,35 @@ pub async fn process_saved_source_audio(
     let persisted_transcripts = repos
         .successful_source_turn_transcripts_for_session(session_id)
         .await?;
+    let transcript_coverage = compute_transcript_coverage(
+        &sources,
+        &coverage_turns,
+        &persisted_transcripts,
+        &visible_failures,
+    );
+    // Coverage is diagnostic only and must never fail note processing: a
+    // checkpoint that cannot be serialized or persisted is logged and skipped.
+    match serde_json::to_string(&transcript_coverage) {
+        Ok(payload) => {
+            if let Err(error) = repos
+                .add_checkpoint(session_id, "transcript_coverage", Some(payload))
+                .await
+            {
+                tracing::warn!(
+                    session_id,
+                    %error,
+                    "failed to persist transcript_coverage checkpoint"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                %error,
+                "failed to serialize transcript_coverage checkpoint"
+            );
+        }
+    }
     let first_transcript_id = persisted_transcripts
         .first()
         .map(|transcript| transcript.id.clone());
@@ -748,6 +780,178 @@ pub async fn process_saved_source_audio(
         )
         .await?;
     Ok(note)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptCoverageCheckpoint {
+    sources: Vec<TranscriptCoverageSource>,
+    total_detected_speech_ms: i64,
+    total_transcribed_ms: i64,
+    total_detected_turns: i64,
+    total_transcribed_turns: i64,
+    total_failed_turns: i64,
+    warning: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptCoverageSource {
+    source: String,
+    detected_speech_ms: i64,
+    transcribed_ms: i64,
+    detected_turns: i64,
+    transcribed_turns: i64,
+    failed_turns: i64,
+}
+
+fn compute_transcript_coverage(
+    sources: &[(String, String, PathBuf)],
+    detected_turns: &[AudioTurn],
+    persisted_transcripts: &[TranscriptDto],
+    failed_transcripts: &[FailedTranscriptCandidate],
+) -> TranscriptCoverageCheckpoint {
+    let mut source_entries = sources
+        .iter()
+        .map(|(_artifact_id, source, source_path)| {
+            let source_detected_turns = detected_turns
+                .iter()
+                .filter(|turn| turn.source == *source)
+                .collect::<Vec<_>>();
+            let source_transcripts = persisted_transcripts
+                .iter()
+                .filter(|transcript| transcript.source.as_deref() == Some(source.as_str()))
+                .collect::<Vec<_>>();
+            let failed_turns = failed_transcripts
+                .iter()
+                .filter(|failure| failure.input.source == *source)
+                .count() as i64;
+            let detected_sentinel = source_detected_turns
+                .iter()
+                .any(|turn| covers_full_source(turn.start_ms, turn.end_ms));
+            let transcribed_sentinel = source_transcripts.iter().any(|transcript| {
+                transcript
+                    .start_ms
+                    .zip(transcript.end_ms)
+                    .is_some_and(|(start_ms, end_ms)| covers_full_source(start_ms, end_ms))
+            });
+            // A no-speech outcome on a full-source sentinel means both the
+            // energy detector and the ASR agreed the source was silent (e.g.
+            // a muted microphone): silence must never count as missing
+            // speech, whether the failure row is visible or suppressed. Only
+            // real (non-no-speech) failures count the WAV as uncovered.
+            let non_silent_failed_turns = failed_transcripts
+                .iter()
+                .filter(|failure| failure.input.source == *source)
+                .filter(|failure| {
+                    !failure
+                        .input
+                        .warning
+                        .as_deref()
+                        .map(is_no_speech_message)
+                        .unwrap_or(false)
+                })
+                .count() as i64;
+            let detected_speech_ms = if detected_sentinel {
+                if transcribed_sentinel {
+                    0
+                } else if non_silent_failed_turns > 0 {
+                    source_wav_duration_ms(source_path).unwrap_or_default()
+                } else {
+                    0
+                }
+            } else {
+                source_detected_turns
+                    .iter()
+                    .map(|turn| span_ms(turn.start_ms, turn.end_ms))
+                    .sum()
+            };
+            let transcribed_ms = if transcribed_sentinel {
+                if detected_sentinel {
+                    detected_speech_ms
+                } else {
+                    source_detected_turns
+                        .iter()
+                        .map(|turn| span_ms(turn.start_ms, turn.end_ms))
+                        .sum()
+                }
+            } else {
+                source_transcripts
+                    .iter()
+                    .map(|transcript| {
+                        span_ms(
+                            transcript.start_ms.unwrap_or_default(),
+                            transcript.end_ms.unwrap_or_default(),
+                        )
+                    })
+                    .sum()
+            };
+            TranscriptCoverageSource {
+                source: source.clone(),
+                detected_speech_ms,
+                transcribed_ms,
+                detected_turns: source_detected_turns.len() as i64,
+                transcribed_turns: source_transcripts.len() as i64,
+                failed_turns,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    source_entries.sort_by(|left, right| left.source.cmp(&right.source));
+    let total_detected_speech_ms = source_entries
+        .iter()
+        .map(|source| source.detected_speech_ms)
+        .sum();
+    let total_transcribed_ms = source_entries
+        .iter()
+        .map(|source| source.transcribed_ms)
+        .sum();
+    let total_detected_turns = source_entries
+        .iter()
+        .map(|source| source.detected_turns)
+        .sum();
+    let total_transcribed_turns = source_entries
+        .iter()
+        .map(|source| source.transcribed_turns)
+        .sum();
+    let total_failed_turns = source_entries
+        .iter()
+        .map(|source| source.failed_turns)
+        .sum();
+    let warning = transcript_coverage_warning(total_detected_speech_ms, total_transcribed_ms);
+    TranscriptCoverageCheckpoint {
+        sources: source_entries,
+        total_detected_speech_ms,
+        total_transcribed_ms,
+        total_detected_turns,
+        total_transcribed_turns,
+        total_failed_turns,
+        warning,
+    }
+}
+
+pub(crate) fn transcript_coverage_warning(detected_speech_ms: i64, transcribed_ms: i64) -> bool {
+    let detected_speech_ms = detected_speech_ms.max(0);
+    let transcribed_ms = transcribed_ms.max(0);
+    detected_speech_ms > 0
+        && (transcribed_ms as f64) < TRANSCRIPT_COVERAGE_WARN_RATIO * (detected_speech_ms as f64)
+        && detected_speech_ms.saturating_sub(transcribed_ms)
+            >= TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS
+}
+
+fn covers_full_source(start_ms: i64, end_ms: i64) -> bool {
+    end_ms <= start_ms
+}
+
+fn span_ms(start_ms: i64, end_ms: i64) -> i64 {
+    end_ms.saturating_sub(start_ms).max(0)
+}
+
+fn source_wav_duration_ms(path: &Path) -> Option<i64> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate.max(1) as i64;
+    Some(((reader.duration() as i64) * 1000) / sample_rate)
 }
 
 #[derive(Debug, Clone)]
@@ -2381,6 +2585,233 @@ mod tests {
     }
 
     #[test]
+    fn transcript_coverage_counts_normal_turn_spans() {
+        let mic_path = PathBuf::from("microphone.wav");
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[
+                test_audio_turn("mic-artifact", "microphone", mic_path.clone(), 0, 0, 50_000),
+                test_audio_turn("mic-artifact", "microphone", mic_path, 1, 60_000, 130_000),
+            ],
+            &[test_transcript("microphone", 0, 0, 50_000)],
+            &[],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 120_000);
+        assert_eq!(coverage.total_transcribed_ms, 50_000);
+        assert_eq!(coverage.total_detected_turns, 2);
+        assert_eq!(coverage.total_transcribed_turns, 1);
+        assert!(coverage.warning);
+    }
+
+    #[test]
+    fn transcript_coverage_counts_full_source_sentinel_success_as_covered() {
+        let dir =
+            std::env::temp_dir().join(format!("os-june-coverage-success-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        write_loud_wav(&mic_path, 16_000, 16_000 * 90);
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                mic_path,
+                0,
+                0,
+                0,
+            )],
+            &[test_transcript("microphone", 0, 0, 0)],
+            &[],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert!(!coverage.warning);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transcript_coverage_counts_full_source_sentinel_failure_from_wav_duration() {
+        let dir =
+            std::env::temp_dir().join(format!("os-june-coverage-failure-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        write_loud_wav(&mic_path, 16_000, 16_000 * 90);
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                mic_path,
+                0,
+                0,
+                0,
+            )],
+            &[],
+            &[failed_candidate(
+                "microphone",
+                "The transcription service was unavailable. Please try again.",
+                0,
+            )],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 90_000);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert_eq!(coverage.total_failed_turns, 1);
+        assert!(coverage.warning);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transcript_coverage_treats_visible_no_speech_sentinel_as_silent() {
+        // Microphone no-speech failures stay visible (only system no-speech
+        // is suppressed), but a no-speech sentinel is still silence: both
+        // detectors agreed there was nothing to transcribe.
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-coverage-nospeech-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        write_loud_wav(&mic_path, 16_000, 16_000 * 90);
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                mic_path,
+                0,
+                0,
+                0,
+            )],
+            &[],
+            &[failed_candidate(
+                "microphone",
+                "No speech detected. Try speaking louder or moving closer to the microphone.",
+                0,
+            )],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert_eq!(coverage.total_failed_turns, 1);
+        assert!(!coverage.warning);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transcript_coverage_treats_suppressed_silent_sentinel_as_no_detected_speech() {
+        // A muted microphone in a dual-source meeting: sentinel turn, no
+        // persisted row, and the no-speech failure was suppressed (not
+        // visible). The silent source must not warn.
+        let dir =
+            std::env::temp_dir().join(format!("os-june-coverage-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        write_loud_wav(&mic_path, 16_000, 16_000 * 90);
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                mic_path,
+                0,
+                0,
+                0,
+            )],
+            &[],
+            &[],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert_eq!(coverage.total_failed_turns, 0);
+        assert!(!coverage.warning);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transcript_coverage_excludes_unknown_duration_sentinel_failure() {
+        let missing_path = PathBuf::from("missing.wav");
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                missing_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                missing_path,
+                0,
+                0,
+                0,
+            )],
+            &[],
+            &[],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert!(!coverage.warning);
+    }
+
+    #[test]
+    fn transcript_coverage_clamps_invalid_spans() {
+        let mic_path = PathBuf::from("microphone.wav");
+        let coverage = compute_transcript_coverage(
+            &[(
+                "mic-artifact".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            )],
+            &[test_audio_turn(
+                "mic-artifact",
+                "microphone",
+                mic_path,
+                0,
+                40_000,
+                10_000,
+            )],
+            &[test_transcript("microphone", 0, 50_000, 45_000)],
+            &[],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert!(!coverage.warning);
+    }
+
+    #[test]
+    fn transcript_coverage_warning_requires_ratio_and_absolute_floor() {
+        assert!(transcript_coverage_warning(300_000, 239_999));
+        assert!(!transcript_coverage_warning(300_000, 240_000));
+        assert!(!transcript_coverage_warning(100_000, 41_000));
+        assert!(transcript_coverage_warning(100_000, 40_000));
+    }
+
+    #[test]
     fn source_failure_summary_suppresses_silent_system_when_microphone_failed() {
         let summary = source_failure_summary(&[
             FailedTranscriptCandidate {
@@ -2836,6 +3267,40 @@ mod tests {
             source_path: PathBuf::from(source_path),
             covers_full_source: false,
             ..test_job(path, source, turn_index)
+        }
+    }
+
+    fn test_audio_turn(
+        artifact_id: &str,
+        source: &str,
+        source_path: PathBuf,
+        turn_index: i64,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> AudioTurn {
+        AudioTurn {
+            artifact_id: artifact_id.to_string(),
+            source: source.to_string(),
+            source_path,
+            extraction_start_ms: start_ms,
+            start_ms,
+            end_ms,
+            turn_index,
+        }
+    }
+
+    fn test_transcript(source: &str, turn_index: i64, start_ms: i64, end_ms: i64) -> TranscriptDto {
+        TranscriptDto {
+            id: format!("{source}-{turn_index}"),
+            text: "transcript".to_string(),
+            source_mode: Some(RecordingSourceMode::MicrophonePlusSystem),
+            source: Some(source.to_string()),
+            start_ms: Some(start_ms),
+            end_ms: Some(end_ms),
+            turn_index: Some(turn_index),
+            language: None,
+            status: "succeeded".to_string(),
+            last_error: None,
         }
     }
 

@@ -1024,6 +1024,26 @@ async fn finish_recording_session(
     let mut primary_file_size = 0;
     let validation_started = Instant::now();
     for source in &finished.sources {
+        let source_artifact = source_artifacts
+            .iter()
+            .find(|artifact| artifact.source == source.source.as_db());
+        if let Some(issue) = source.capture_issue.as_ref() {
+            repos
+                .add_source_checkpoint(
+                    &finished.session_id,
+                    source_artifact.map(|artifact| artifact.id.as_str()),
+                    Some(source.source.as_db()),
+                    "capture_stream_error",
+                    Some(
+                        serde_json::json!({
+                            "message": issue.message,
+                            "elapsedMs": issue.elapsed_ms,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await?;
+        }
         let validation = validate_audio_artifact(
             &source.final_path,
             source.elapsed_ms,
@@ -1040,10 +1060,7 @@ async fn finish_recording_session(
             primary_file_size = file_size;
         }
         let valid = source_audio_passes_validation(source.source, &validation);
-        if let Some(artifact) = source_artifacts
-            .iter()
-            .find(|artifact| artifact.source == source.source.as_db())
-        {
+        if let Some(artifact) = source_artifact {
             let final_path = source.final_path.to_string_lossy().into_owned();
             repos
                 .finalize_source_artifact(

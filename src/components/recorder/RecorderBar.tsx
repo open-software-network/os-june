@@ -53,11 +53,6 @@ export function RecorderBar({ status, onPause, onResume, onDone }: RecorderBarPr
       >
         <IconStop size={14} />
       </button>
-      {status.warnings?.map((warning) => (
-        <p className="recorder-warning" role="status" key={warning.code}>
-          {warning.message}
-        </p>
-      ))}
     </div>
   );
 }

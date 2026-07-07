@@ -279,6 +279,7 @@ export function NoteEditor({
   const shellState = recordingForNote?.state ?? "idle";
   const processingText = processingMessage(note.processingStatus);
   const transcriptText = transcriptToText(note, liveTranscriptTurns);
+  const transcriptCoverageNotice = transcriptCoverageNoticeText(note);
   const showTranscriptProcessing = processingStatus !== null;
   const showLivePreviewWaiting =
     recordingForNote?.livePreviewEnabled === true && liveTranscriptTurns.length === 0;
@@ -374,6 +375,9 @@ export function NoteEditor({
                 status={processingStatus}
               />
             ) : null}
+            {transcriptCoverageNotice ? (
+              <p className="transcript-coverage-notice">{transcriptCoverageNotice}</p>
+            ) : null}
             {visibleTurns.length ? (
               <div className="source-transcripts">
                 {visibleTurns.map((transcript) => (
@@ -444,7 +448,23 @@ export function NoteEditor({
         ) : (
           <div className="record-dock">
             <AnimatePresence>
-              {recordingForNote && consentReminderVisible ? (
+              {recordingForNote?.warnings?.length ? (
+                <motion.div
+                  key="source-warning"
+                  className="record-consent-note"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.22, ease: "easeOut" }}
+                >
+                  <InlineNotice
+                    className="record-consent-note-surface"
+                    aria-label="Recording source warning"
+                    body={recordingForNote.warnings[0].message}
+                  />
+                </motion.div>
+              ) : null}
+              {recordingForNote && consentReminderVisible && !recordingForNote.warnings?.length ? (
                 <motion.div
                   key="consent"
                   className="record-consent-note"
@@ -863,6 +883,17 @@ function transcriptToText(note: NoteDto, liveTurns: RenderedTranscriptTurn[] = [
     );
   }
   return note.transcript?.text ?? "";
+}
+
+function transcriptCoverageNoticeText(note: NoteDto): string | null {
+  const coverage = note.transcriptCoverage;
+  if (!coverage?.warning) return null;
+  const detectedSpeechMs = Math.max(0, coverage.detectedSpeechMs);
+  const transcribedMs = Math.max(0, coverage.transcribedMs);
+  const missingMs = Math.max(0, detectedSpeechMs - transcribedMs);
+  const missingMinutes = Math.max(1, Math.floor(missingMs / 60_000));
+  const detectedMinutes = Math.max(1, Math.floor(detectedSpeechMs / 60_000));
+  return `Parts of this recording could not be transcribed. About ${missingMinutes} of ${detectedMinutes} minutes of detected speech are missing from this transcript.`;
 }
 
 function orderedVisibleSourceTranscripts(note: NoteDto): RenderedTranscriptTurn[] {
