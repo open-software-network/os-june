@@ -1,8 +1,9 @@
 # Design components
 
 The shared UI primitives and the canonical answer for each recurring pattern.
-Companion docs: [foundations.md](foundations.md) (tokens and type) and
-[conventions.md](conventions.md) (naming and interaction rules).
+Companion docs: [foundations.md](foundations.md) (tokens and type),
+[conventions.md](conventions.md) (naming and interaction rules), and
+[taste.md](taste.md) (the sensibility behind the rules).
 
 Live examples render in the styleguide: run `pnpm dev`, then open
 `http://localhost:1421/styleguide.html` (sections `buttons`,

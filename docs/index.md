@@ -41,6 +41,7 @@ the `spec/` entries above for the enforceable versions).
 - [design/foundations.md](design/foundations.md) — theming model, token roles, and the type system (scale, heading mapping, two-weight system, family roles); ends with the pass-2 deviations worklist
 - [design/components.md](design/components.md) — pattern-to-canonical-answer map for the shared `src/components/ui/` primitives, the settings markup contract, and what is not yet systematized
 - [design/conventions.md](design/conventions.md) — flat-namespace naming, interaction and visual rules, theming pipeline, and how to open or extend the styleguide page
+- [design/taste.md](design/taste.md) — the sensibility behind the rules (quiet by default, weight as punctuation, color spent not sprayed); the portable layer for other projects
 
 ## Agent skill config (docs/agents/)
 

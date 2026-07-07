@@ -1,8 +1,9 @@
 # Design conventions
 
 Naming, interaction, and theming rules for working in June's stylesheet and UI.
-Companion docs: [foundations.md](foundations.md) (tokens and type) and
-[components.md](components.md) (the shared primitives).
+Companion docs: [foundations.md](foundations.md) (tokens and type),
+[components.md](components.md) (the shared primitives), and
+[taste.md](taste.md) (the sensibility behind the rules).
 
 Live values render in the styleguide: run `pnpm dev`, then open
 `http://localhost:1421/styleguide.html`.

@@ -2,7 +2,8 @@
 
 The theming model, design tokens, and type system that everything in June's UI
 builds on. Companion docs: [components.md](components.md) (the shared UI
-primitives) and [conventions.md](conventions.md) (naming and interaction rules).
+primitives), [conventions.md](conventions.md) (naming and interaction rules),
+and [taste.md](taste.md) (the sensibility behind the rules).
 
 Live values render in the styleguide: run `pnpm dev`, then open
 `http://localhost:1421/styleguide.html` (foundations sections: `color`, `type`,
