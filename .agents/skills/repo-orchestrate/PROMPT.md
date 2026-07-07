@@ -29,7 +29,7 @@ to end, with these headless adaptations:
 - You cannot ask clarifying questions. Where the task leaves a decision
   open, take the conservative path and record the assumption prominently in
   your report (and PR body, if publishing).
-- Work in a fresh worktree at {{REPO_ROOT}}/.claude/worktrees/<branch>,
+- Work in a fresh worktree at {{REPO_ROOT}}/.worktrees/<branch>,
   branched from {{BASE}} (fetch first). Copy {{REPO_ROOT}}/.env and
   {{REPO_ROOT}}/june-api/.env into it if they exist. Run `pnpm install`.
 - Implement following the repo's patterns (AGENTS.md and everything it

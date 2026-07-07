@@ -13,9 +13,10 @@ use june_providers::{
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
-    ImageService, ImageServiceDeps, NoteGenerateService, NoteGenerateServiceDeps,
-    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, VideoModelPrice, VideoService,
-    VideoServiceDeps, WebAugmentService, WebAugmentServiceDeps,
+    ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
+    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
+    PricingTable, VideoModelPrice, VideoService, VideoServiceDeps, WebAugmentService,
+    WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -136,7 +137,12 @@ fn build_router(
     let duration_probe: Arc<dyn june_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
-    let issue_reports = build_issue_report_sink(config, clients.default);
+    let issue_report_sink = build_issue_report_sink(config, clients.default);
+    let issue_reports = Arc::new(IssueReportService::new(IssueReportServiceDeps {
+        sink: issue_report_sink,
+        chat_completer: agent_chat_completer.clone(),
+        config: config.issue_reports.clone(),
+    }));
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
 

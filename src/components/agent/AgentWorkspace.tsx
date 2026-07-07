@@ -233,6 +233,7 @@ import {
   isTopUpRequiresMaxError,
   messageFromError,
 } from "../../lib/errors";
+import { clipboardImageFiles } from "../../lib/clipboard-files";
 import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
@@ -268,10 +269,12 @@ import { noteReferenceToken, type NoteReferenceInput } from "./composer/noteRefe
 import { CategoryIcon } from "./composer/CategoryIcon";
 import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
 import {
+  ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
   isReportCategory,
   REPORT_CATEGORIES,
   type ReportCategory,
 } from "./composer/reportCategory";
+import { ReportDialog } from "./ReportDialog";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
@@ -743,8 +746,8 @@ export type { AgentSessionsChangedDetail };
 
 export type AgentNewSessionDetail = {
   prompt?: string;
-  /** Seeds the composer with a category chip (and skips auto-submit) so the
-   * user lands ready to type a tagged report instead of an ordinary message. */
+  /** Opens the direct issue report dialog with the category preselected. No
+   * model runs, so there is nothing to charge. */
   category?: ReportCategory;
   /** Seeds the composer with a note chip (and skips auto-submit) so the user
    * lands ready to ask about that note instead of starting an ordinary ask. */
@@ -1863,6 +1866,17 @@ export function resetAgentSessionContinuity() {
   }
 }
 
+export function seedAgentComposerDraftForTest(
+  key: string,
+  snapshot: {
+    text: string;
+    category: ReportCategory | null;
+    attachments?: AgentAttachment[];
+  },
+) {
+  rememberComposerDraft(key, snapshot.text, snapshot.category, snapshot.attachments ?? []);
+}
+
 /** The catalog id that represents the current global generation selection:
  * the synthetic "Local: <id>" option when local generation is the active
  * provider, otherwise the configured remote model id. Pure so it can back both
@@ -1901,9 +1915,9 @@ export function AgentWorkspace({
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
-  // The message's single category tag, mirrored from the composer's chip. Null
-  // when the message carries no tag. Drives the report wrapper and (server
-  // side) the no-charge waiver.
+  // The message's single category tag, mirrored from a restored legacy chip.
+  // New reports use the direct popover instead; the server creates the
+  // team-facing diagnosis there because no model runs on the client.
   const [category, setCategory] = useState<ReportCategory | null>(null);
   // Live mirror of `draft` for closures (the hero-chip interval) that must read
   // the current value without re-subscribing.
@@ -1971,10 +1985,16 @@ export function AgentWorkspace({
   const sandboxMenuRef = useRef<HTMLDivElement | null>(null);
   const sandboxFirstItemRef = useRef<HTMLButtonElement | null>(null);
   const sandboxMenuWasOpenRef = useRef(false);
-  // The "+" popover: attach files, or tag the message as a report.
+  // The "+" popover: attach files, reference a note, or open the report form.
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachTriggerRef = useRef<HTMLButtonElement | null>(null);
   const attachMenuRef = useRef<HTMLDivElement | null>(null);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const [reportDialogCategory, setReportDialogCategory] = useState<ReportCategory>("bug");
+  const [reportDialogDescription, setReportDialogDescription] = useState("");
+  const [reportDialogAttachments, setReportDialogAttachments] = useState<AgentAttachment[]>([]);
+  // Bumped when a report is sent; see reportDialogAppendForCurrentGeneration.
+  const reportDialogGenerationRef = useRef(0);
   const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
     const restored = continuity?.sessionItems ?? [];
     if (!initialSession) return restored;
@@ -2286,9 +2306,6 @@ export function AgentWorkspace({
   const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
   const composerTiptapEditorRef = useRef<TiptapEditor | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
-  // A category to seed into the composer chip once the editor is ready, set by
-  // startNewTask for the sidebar/settings report entry points.
-  const pendingSeedCategoryRef = useRef<ReportCategory | null>(null);
   // A note reference to seed once the editor is ready, set by startNewTask for
   // note-level "Ask June" entry points.
   const pendingSeedNoteRefRef = useRef<{
@@ -3546,7 +3563,7 @@ export function AgentWorkspace({
     const pending = pendingNewSessionRequest();
     if (pending) {
       void windowEventHandlersRef.current.startNewTask(pending, {
-        deferCategorySeed: true,
+        deferSeed: true,
       });
     }
 
@@ -4725,7 +4742,7 @@ export function AgentWorkspace({
             category: reportCategory,
             // An attachments-only send has no typed text, but the server
             // requires a description; the report must not bounce there.
-            description: prepared.typedMessage || "No description was typed; see the attachments.",
+            description: prepared.typedMessage || ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
             followUps: [],
             attachmentNames: attachments.map((attachment) => attachment.name),
             attachmentPaths: attachments.map((attachment) => attachment.path),
@@ -4865,6 +4882,10 @@ export function AgentWorkspace({
   }
 
   function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
+    // The report dialog's JSX lives inside this form, so its events React-
+    // bubble here even though it renders in a portal; a report drop or paste
+    // must never land in the chat composer.
+    if (reportDialogOpen) return;
     event.preventDefault();
     setDropActive(false);
     const files = Array.from(event.dataTransfer.files);
@@ -4876,15 +4897,32 @@ export function AgentWorkspace({
   }
 
   function handleComposerPaste(event: ClipboardEvent<HTMLFormElement>) {
+    if (reportDialogOpen) return;
     const files = clipboardImageFiles(event.clipboardData);
     if (!files.length) return;
     event.preventDefault();
     void importPastedImageFiles(files);
   }
 
+  function agentAttachmentFromImportedFile(file: ImportedHermesFile): AgentAttachment {
+    return {
+      ...file,
+      id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
+      // Seed the structured attach status (feature 19). Images become
+      // `kind:"image"`, status `imported` — eligible for structured attach on
+      // the next submit. No bytes are kept here.
+      attach: attachmentStateFrom(file),
+    };
+  }
+
+  function addReportDialogAttachments(nextAttachments: AgentAttachment[]) {
+    setReportDialogAttachments((current) => [...current, ...nextAttachments]);
+  }
+
   async function importAttachments<T>(
     items: T[],
     importItem: (item: T) => Promise<ImportedHermesFile>,
+    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
   ) {
     if (!items.length) return true;
     setImportingFiles(true);
@@ -4896,17 +4934,12 @@ export function AgentWorkspace({
       for (const item of items) {
         imported.push(await importItem(item));
       }
-      setComposerAttachments((current) => [
-        ...current,
-        ...imported.map((file) => ({
-          ...file,
-          id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
-          // Seed the structured attach status (feature 19). Images become
-          // `kind:"image"`, status `imported` — eligible for structured attach on
-          // the next submit. No bytes are kept here.
-          attach: attachmentStateFrom(file),
-        })),
-      ]);
+      const nextAttachments = imported.map(agentAttachmentFromImportedFile);
+      if (options.onImported) {
+        options.onImported(nextAttachments);
+      } else {
+        setComposerAttachments((current) => [...current, ...nextAttachments]);
+      }
       setError(null);
       void loadFilesystemSnapshot();
       return true;
@@ -4919,24 +4952,34 @@ export function AgentWorkspace({
   }
 
   // Native paths come from the file picker and Tauri drag-drop events.
-  async function importDroppedFilePaths(paths: string[]) {
+  async function importDroppedFilePaths(
+    paths: string[],
+    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+  ) {
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
       .filter(Boolean)
       .slice(0, 8);
-    return importAttachments(uniquePaths, importHermesBridgeFile);
+    return importAttachments(uniquePaths, importHermesBridgeFile, options);
   }
 
   // DOM drops are how Finder files actually arrive: Tauri's drag-drop
   // interception is disabled (it has to be, so notes can use HTML5 drag into
   // folders) and WKWebView never exposes filesystem paths on dropped Files —
   // so read each blob and import its bytes.
-  async function importDroppedFiles(files: File[]) {
-    await importFileBytes(files, {
-      tooLargeMessage: "Dropped files must be 50 MB or smaller.",
-      readErrorMessage: (file) =>
-        // Reading fails for directories, which Finder happily lets you drop.
-        `Could not read "${file.name}". Folders can't be attached.`,
-    });
+  async function importDroppedFiles(
+    files: File[],
+    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+  ) {
+    await importFileBytes(
+      files,
+      {
+        tooLargeMessage: "Dropped files must be 50 MB or smaller.",
+        readErrorMessage: (file) =>
+          // Reading fails for directories, which Finder happily lets you drop.
+          `Could not read "${file.name}". Folders can't be attached.`,
+      },
+      options,
+    );
   }
 
   async function importPastedImageFiles(files: File[]) {
@@ -4946,16 +4989,24 @@ export function AgentWorkspace({
     });
   }
 
-  async function importFileBytes(files: File[], options: FileBytesImportOptions) {
-    await importAttachments(files.slice(0, 8), async (file) => {
-      if (file.size > 50 * 1024 * 1024) {
-        throw new Error(options.tooLargeMessage);
-      }
-      const bytes = await readFileBytes(file).catch(() => {
-        throw new Error(options.readErrorMessage(file));
-      });
-      return importHermesBridgeFileBytes(file.name, bytes);
-    });
+  async function importFileBytes(
+    files: File[],
+    options: FileBytesImportOptions,
+    importOptions: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+  ) {
+    await importAttachments(
+      files.slice(0, 8),
+      async (file) => {
+        if (file.size > 50 * 1024 * 1024) {
+          throw new Error(options.tooLargeMessage);
+        }
+        const bytes = await readFileBytes(file).catch(() => {
+          throw new Error(options.readErrorMessage(file));
+        });
+        return importHermesBridgeFileBytes(file.name, bytes);
+      },
+      importOptions,
+    );
   }
 
   function removeAttachment(id: string) {
@@ -4979,7 +5030,7 @@ export function AgentWorkspace({
 
   // The "+" picker routes through the same bridge import as drag-drop so the
   // agent always gets a real, readable path.
-  async function pickAttachments() {
+  async function pickAttachments(onImported?: (attachments: AgentAttachment[]) => void) {
     try {
       const selected = await openFileDialog({
         multiple: true,
@@ -4987,7 +5038,7 @@ export function AgentWorkspace({
       });
       if (!selected) return false;
       const paths = Array.isArray(selected) ? selected : [selected];
-      return await importDroppedFilePaths(paths);
+      return await importDroppedFilePaths(paths, { onImported });
     } catch (err) {
       setError(messageFromError(err));
       return false;
@@ -6732,15 +6783,14 @@ export function AgentWorkspace({
 
   async function startNewTask(
     request?: AgentNewSessionDetail,
-    options: { deferCategorySeed?: boolean } = {},
+    options: { deferSeed?: boolean } = {},
   ) {
     clearPendingNewSessionRequest();
     const seedCategory = request?.category ?? null;
     const seedNoteRef = seedCategory ? null : (request?.noteRef ?? null);
     const seedPrompt = request?.prompt?.trim() ?? "";
-    // A seeded report never auto-submits: the category chip lands in the
-    // composer for the user to type their report after, whatever prompt the
-    // request carried.
+    // A seeded report never auto-submits: the direct report dialog opens for
+    // the user to describe the issue and submit it without a model turn.
     // A seeded note reference follows the same rule: the chip lands in the
     // composer and the user decides what to send.
     const initialPrompt = seedCategory || seedNoteRef ? "" : seedPrompt;
@@ -6767,11 +6817,9 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = undefined;
     composerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
     setSelectedHermesSessionId(undefined);
-    // Seed the composer: a category chip for a report, a note chip for a note
-    // entry point, the prompt otherwise. The editor may not be mounted yet on
-    // a cold open, so stash chips for ComposerEditor's onReady to pick up and
-    // also try to apply now.
-    pendingSeedCategoryRef.current = seedCategory;
+    // Seed the report dialog, a note chip, or the prompt. The editor may not
+    // be mounted yet on a cold open, so stash note chips for ComposerEditor's
+    // onReady to pick up and also try to apply now.
     pendingSeedNoteRefRef.current = seedNoteRef
       ? {
           noteRef: seedNoteRef,
@@ -6781,10 +6829,10 @@ export function AgentWorkspace({
     if (seedCategory) {
       pendingSeedNoteRefRef.current = null;
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      seedComposerCategory({ defer: options.deferCategorySeed });
+      openReportDialog(seedCategory);
     } else if (seedNoteRef) {
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      seedComposerNoteRef({ defer: options.deferCategorySeed });
+      seedComposerNoteRef({ defer: options.deferSeed });
     } else if (initialPrompt) {
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       composerEditorRef.current?.setContent(initialPrompt);
@@ -6862,37 +6910,63 @@ export function AgentWorkspace({
     });
   }
 
-  /** Applies any pending seed category to the composer chip once the editor is
-   * available. Called from startNewTask (best-effort, the editor may not be
-   * mounted yet) and again from ComposerEditor's onReady. */
-  function seedComposerCategory(options: { defer?: boolean } = {}) {
-    if (!pendingSeedCategoryRef.current) return;
-    const editor = composerEditorRef.current;
-    // Not mounted yet (cold open) — leave it pending for onReady to apply.
-    if (!editor) return;
-    const applySeed = () => {
-      const seed = pendingSeedCategoryRef.current;
-      const currentEditor = composerEditorRef.current;
-      if (!seed || !currentEditor) return;
-      pendingSeedCategoryRef.current = null;
-      pendingSeedNoteRefRef.current = null;
-      draftRef.current = "";
-      categoryRef.current = seed;
-      setDraft("");
-      setCategory(seed);
-      rememberComposerDraft(NEW_SESSION_DRAFT_KEY, "", seed);
-      restoredComposerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
-      currentEditor.setContent("", seed);
+  function openReportDialog(categoryToOpen: ReportCategory) {
+    setAttachMenuOpen(false);
+    // Every entry-point open is a fresh report intent, so start clean —
+    // even when reopening the same category. An abandoned draft (closed
+    // without sending) must not survive close, because its stale
+    // attachments (screenshots, logs) could ride into a later report
+    // unnoticed. Bumping the generation also invalidates any in-flight
+    // attachment import from the abandoned draft (see
+    // reportDialogAppendForCurrentGeneration). Switching categories INSIDE
+    // the open dialog still keeps the in-progress form — that lives in the
+    // dialog's own category selector and is unaffected.
+    reportDialogGenerationRef.current += 1;
+    setReportDialogDescription("");
+    setReportDialogAttachments([]);
+    setReportDialogCategory(categoryToOpen);
+    setReportDialogOpen(true);
+    setIssueReportNotice(null);
+  }
+
+  /** Drops appends from imports that were still in flight when the report
+   * was sent or the dialog was reopened: without this a slow import
+   * repopulates the cleared attachment state and haunts the next report.
+   * Both send and the next open bump the generation, so a mid-flight import
+   * from an abandoned draft is discarded rather than resurfaced. */
+  function reportDialogAppendForCurrentGeneration() {
+    const generation = reportDialogGenerationRef.current;
+    return (attachments: AgentAttachment[]) => {
+      if (generation === reportDialogGenerationRef.current) {
+        addReportDialogAttachments(attachments);
+      }
     };
-    if (options.defer) {
-      window.setTimeout(applySeed, 0);
-    } else {
-      applySeed();
-    }
+  }
+
+  function pickReportDialogAttachments() {
+    return pickAttachments(reportDialogAppendForCurrentGeneration());
+  }
+
+  function importReportDialogDroppedFiles(files: File[]) {
+    return importDroppedFiles(files, { onImported: reportDialogAppendForCurrentGeneration() });
+  }
+
+  function removeReportDialogAttachment(id: string) {
+    setReportDialogAttachments((current) => current.filter((item) => item.id !== id));
+  }
+
+  // Clears the draft once a dialog report is delivered. The dialog stays
+  // open showing its own confirmation (no chat notice for dialog sends —
+  // the pill is legacy chip-flow only); closing it is the user's move.
+  function handleReportDialogSent() {
+    reportDialogGenerationRef.current += 1;
+    setReportDialogDescription("");
+    setReportDialogAttachments([]);
+    setError(null);
   }
 
   /** Applies any pending note reference to the composer once the editor is
-   * available. Mirrors seedComposerCategory for cold-open note entry points. */
+   * available for cold-open note entry points. */
   function seedComposerNoteRef(options: { defer?: boolean } = {}) {
     if (!pendingSeedNoteRefRef.current) return;
     const editor = composerEditorRef.current;
@@ -7958,7 +8032,6 @@ export function AgentWorkspace({
             onReady={(editor) => {
               composerTiptapEditorRef.current = editor;
               restoreComposerDraft(composerDraftKeyRef.current);
-              seedComposerCategory({ defer: true });
               seedComposerNoteRef({ defer: true });
             }}
           />
@@ -7967,12 +8040,15 @@ export function AgentWorkspace({
               type="button"
               ref={attachTriggerRef}
               className="agent-composer-attach"
-              aria-label="Attach files or tag this message"
-              title="Attach or tag"
+              aria-label="Add files, notes, or reports"
+              title="Add"
               aria-haspopup="menu"
               aria-expanded={attachMenuOpen}
               data-open={attachMenuOpen || undefined}
-              onClick={() => setAttachMenuOpen((open) => !open)}
+              onClick={() => {
+                setReportDialogOpen(false);
+                setAttachMenuOpen((open) => !open);
+              }}
             >
               <IconPlusMedium size={18} />
             </button>
@@ -8070,7 +8146,7 @@ export function AgentWorkspace({
             ref={attachMenuRef}
             className="agent-attach-menu"
             role="menu"
-            aria-label="Attach or tag this message"
+            aria-label="Add files, notes, or reports"
           >
             <button
               type="button"
@@ -8120,9 +8196,7 @@ export function AgentWorkspace({
                 type="button"
                 role="menuitem"
                 onClick={() => {
-                  setAttachMenuOpen(false);
-                  composerEditorRef.current?.insertCategory(reportCategory.key);
-                  composerEditorRef.current?.focus();
+                  openReportDialog(reportCategory.key);
                 }}
               >
                 <span className="agent-attach-menu-icon" data-category={reportCategory.key}>
@@ -8132,6 +8206,21 @@ export function AgentWorkspace({
               </button>
             ))}
           </div>
+        ) : null}
+        {reportDialogOpen ? (
+          <ReportDialog
+            category={reportDialogCategory}
+            description={reportDialogDescription}
+            attachments={reportDialogAttachments}
+            importingFiles={importingFiles}
+            onCategoryChange={setReportDialogCategory}
+            onDescriptionChange={setReportDialogDescription}
+            onAddFiles={pickReportDialogAttachments}
+            onDropFiles={importReportDialogDroppedFiles}
+            onRemoveAttachment={removeReportDialogAttachment}
+            onClose={() => setReportDialogOpen(false)}
+            onSent={handleReportDialogSent}
+          />
         ) : null}
         {composerModelOpen ? (
           <ComposerModelPopover
@@ -8247,8 +8336,8 @@ export function AgentWorkspace({
         onReportIssue={() => {
           // The sanitized, secret-free trace bundle for this session is the
           // payload an issue report should attach (payload previews come from
-          // `sanitizePayload`; there is no real reporting surface yet — see the
-          // feature 15 notes). Logged in dev until that surface lands.
+          // `sanitizePayload`). This trace affordance is not wired into the
+          // report dialog yet, so keep logging in dev.
           if (import.meta.env.DEV) {
             // biome-ignore lint/suspicious/noConsole: dev-only trace-bundle diagnostic
             console.debug(
@@ -10864,7 +10953,7 @@ function AgentChatTurnRow({
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">
-            <span className="text-shimmer">Thinking…</span>
+            <span className="text-shimmer shimmer">Thinking…</span>
           </p>
         ) : (
           // No actions on an empty/in-flight turn. There is nothing useful to
@@ -11273,7 +11362,7 @@ function AgentGeneratedImage({
     return (
       <div className="agent-generated-image" data-status="running" role="status" aria-live="polite">
         <div className="agent-generated-image-placeholder">
-          <span className="text-shimmer">Generating image…</span>
+          <span className="text-shimmer shimmer">Generating image…</span>
         </div>
       </div>
     );
@@ -11300,7 +11389,7 @@ function AgentGeneratedImage({
   const image = imageSrc ? (
     <img src={imageSrc} alt={part.prompt} draggable={false} />
   ) : part.path ? (
-    <span className="agent-generated-image-loading text-shimmer">Loading image...</span>
+    <span className="agent-generated-image-loading text-shimmer shimmer">Loading image...</span>
   ) : null;
   return (
     <figure className="agent-generated-image" data-status="complete">
@@ -12114,7 +12203,7 @@ function AgentThinkingGroup({
       onToggle={(event) => onOpenChange(event.currentTarget.open)}
     >
       <summary>
-        <span className={running ? "text-shimmer" : undefined}>
+        <span className={running ? "text-shimmer shimmer" : undefined}>
           {running ? "Thinking" : "Thought"}
         </span>
         <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
@@ -13508,91 +13597,6 @@ function safeText(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
-function clipboardImageFiles(data: DataTransfer | null): File[] {
-  if (!data) return [];
-  const itemFiles =
-    data.items && data.items.length
-      ? Array.from(data.items)
-          .filter((item) => item.kind === "file" && isClipboardImageType(item.type))
-          .map((item) => item.getAsFile())
-          .filter((file): file is File => Boolean(file))
-      : [];
-  if (itemFiles.length) return normalizeClipboardImageFiles(itemFiles);
-  return normalizeClipboardImageFiles(
-    Array.from(data.files ?? []).filter((file) => isClipboardImageType(file.type)),
-  );
-}
-
-function normalizeClipboardImageFiles(files: File[]): File[] {
-  if (files.length <= 1 || hasDistinctClipboardFileNames(files)) {
-    return files.map(ensureClipboardImageName);
-  }
-  const best = [...files].sort(
-    (left, right) => clipboardImageRank(right) - clipboardImageRank(left),
-  )[0];
-  return best ? [ensureClipboardImageName(best, 0)] : [];
-}
-
-function hasDistinctClipboardFileNames(files: File[]) {
-  const names = files.map((file) => file.name.trim()).filter(Boolean);
-  const stems = names.map(clipboardImageStem);
-  return (
-    names.length === files.length &&
-    new Set(names).size === files.length &&
-    new Set(stems).size === files.length
-  );
-}
-
-function ensureClipboardImageName(file: File, index: number) {
-  if (file.name.trim()) return file;
-  const suffix = index === 0 ? "" : `-${index + 1}`;
-  return new File([file], `pasted-image${suffix}.${clipboardImageExtension(file)}`, {
-    type: file.type,
-    lastModified: file.lastModified,
-  });
-}
-
-function isClipboardImageType(type: string) {
-  const mimeType = normalizedImageMimeType(type);
-  return (
-    mimeType === "image/png" ||
-    mimeType === "image/jpeg" ||
-    mimeType === "image/jpg" ||
-    mimeType === "image/tiff" ||
-    mimeType === "image/tif" ||
-    mimeType === "image/gif" ||
-    mimeType === "image/webp"
-  );
-}
-
-function clipboardImageExtension(file: File) {
-  const mimeType = normalizedImageMimeType(file.type);
-  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
-  if (mimeType === "image/tiff" || mimeType === "image/tif") return "tiff";
-  const subtype = mimeType.startsWith("image/") ? mimeType.slice(6) : "";
-  return subtype.replace(/[^a-z0-9]/g, "") || "png";
-}
-
-function clipboardImageStem(name: string) {
-  const trimmed = name.trim().toLowerCase();
-  const dot = trimmed.lastIndexOf(".");
-  return dot > 0 ? trimmed.slice(0, dot) : trimmed;
-}
-
-function clipboardImageRank(file: File) {
-  const mimeType = normalizedImageMimeType(file.type);
-  if (mimeType === "image/png") return 50;
-  if (mimeType === "image/tiff" || mimeType === "image/tif") return 40;
-  if (mimeType === "image/webp") return 30;
-  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return 20;
-  if (mimeType === "image/gif") return 10;
-  return 1;
-}
-
-function normalizedImageMimeType(type: string) {
-  return type.toLowerCase().split(";")[0];
-}
-
 function toolNames(toolset: HermesToolsetInfo) {
   return Array.isArray(toolset.tools) ? toolset.tools : [];
 }
@@ -13635,14 +13639,14 @@ function ActivityIndicator({
   );
 }
 
-// Bottom-of-timeline "responding" affordance: a shimmering label, reusing the
-// same text-shimmer the recorder uses while transcribing. Lives in the timeline
-// (not the header) so it reads like the agent is actively composing the next
-// turn.
+// Bottom-of-timeline "responding" affordance: a shimmering label, painted by
+// the same shared .shimmer utility the recorder uses while transcribing. Lives
+// in the timeline (not the header) so it reads like the agent is actively
+// composing the next turn.
 function AgentThinking() {
   return (
     <div className="agent-thinking" role="status" aria-live="polite">
-      <span className="text-shimmer agent-thinking-label">Thinking…</span>
+      <span className="text-shimmer shimmer agent-thinking-label">Thinking…</span>
     </div>
   );
 }

@@ -109,8 +109,8 @@ pub struct HudClientRect {
 /// don't poll from JS because WebKit throttles timers on the non-key HUD
 /// panel (and CSS :hover is unreliable there for the same reason). The
 /// stop button and the meeting prompt's corner dismiss each get a rect.
-/// (The window is sized exactly to the pill, so there's no click
-/// pass-through to manage — the whole window is interactive.)
+/// The window includes a small transparent gutter for the CSS shadow, but
+/// hover still keys off the controls themselves rather than the full frame.
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
     last_hover: std::sync::atomic::AtomicBool,
@@ -3424,7 +3424,8 @@ fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> 
     let work_top = work_area.position.y;
     let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
-    // The window is exactly the pill — anchor it directly.
+    // The window is the pill plus its transparent shadow gutter. Anchor the
+    // full frame; the webview centers the pill inside it.
     let x = work_center_x - window_size.width as i32 / 2;
     let y = work_top + HUD_TOP_MARGIN;
     Some((x, y))

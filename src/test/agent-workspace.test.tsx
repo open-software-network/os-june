@@ -11,6 +11,7 @@ import {
   SkillsToolsPanel,
   projectAgentActivityLevels,
   resetAgentSessionContinuity,
+  seedAgentComposerDraftForTest,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import {
@@ -192,6 +193,20 @@ const existingSession = {
   preview: "Existing preview",
   last_active: "2026-06-04T12:00:00Z",
 };
+
+function seedLegacyNewSessionReportDraft() {
+  seedAgentComposerDraftForTest("new-session", {
+    text: "",
+    category: "bug",
+  });
+}
+
+function seedLegacyExistingSessionReportDraft() {
+  seedAgentComposerDraftForTest("session:session-1", {
+    text: "",
+    category: "bug",
+  });
+}
 
 function mockGlmCapabilities(capabilities: string[]) {
   mocks.listVeniceModels.mockResolvedValue({
@@ -531,7 +546,7 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Message June" })).toBeInTheDocument();
     await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
     expect(screen.queryByText("Existing session")).toBeNull();
     expect(screen.queryByText("Existing task")).toBeNull();
@@ -672,7 +687,7 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("seeds a bug report chip without submitting", async () => {
+  it("opens the issue report dialog without submitting", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
@@ -680,14 +695,16 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    // The composer opens tagged with a Bug report chip instead of
-    // auto-submitting; the user types their report after it.
-    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Issue report" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Bug report" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
-  it("clears a stale new-session draft before seeding a report chip", async () => {
+  it("clears a stale new-session draft before opening a report dialog", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -696,7 +713,7 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Message June" })).toBeInTheDocument();
     await user.type(screen.getByRole("textbox"), "stale hero draft");
 
     act(() => {
@@ -707,11 +724,13 @@ describe("AgentWorkspace", () => {
       );
     });
 
-    expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    expect(screen.getByRole("textbox")).not.toHaveTextContent("stale hero draft");
+    expect(await screen.findByRole("dialog", { name: "Issue report" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message June" })).not.toHaveTextContent(
+      "stale hero draft",
+    );
   });
 
-  it("seeds a report chip immediately when the composer is already open", async () => {
+  it("opens a report dialog immediately when the composer is already open", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now() }),
@@ -729,11 +748,15 @@ describe("AgentWorkspace", () => {
       );
     });
 
-    expect(screen.getByText("Bug report")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Issue report" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Bug report" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
   });
 
-  it("seeds a report chip while the current session is still running", async () => {
+  it("opens a report dialog while the current session is still running", async () => {
     const user = userEvent.setup();
     let resolveSubmit: (() => void) | undefined;
     mocks.gatewayRequest.mockImplementation((method: string) => {
@@ -763,8 +786,12 @@ describe("AgentWorkspace", () => {
       );
     });
 
-    expect(await screen.findByText("Feedback")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(await screen.findByRole("dialog", { name: "Issue report" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Feedback" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Send report" })).toBeDisabled();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
 
     await act(async () => {
@@ -772,17 +799,81 @@ describe("AgentWorkspace", () => {
     });
   });
 
-  it("wraps a submitted issue report for June and waits for explicit send", async () => {
+  it("opens report rows from the plus menu without inserting a chip", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+      JSON.stringify({ createdAt: Date.now() }),
     );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("textbox", { name: "Message June" })).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Add files, notes, or reports",
+      }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Feature request" }));
+
+    expect(await screen.findByRole("dialog", { name: "Issue report" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Feature request" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(document.querySelector(".agent-category-chip")).toBeNull();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+  });
+
+  it("starts a fresh report dialog draft when reopening the same category", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("textbox", { name: "Message June" })).toBeInTheDocument();
+
+    // Open a Bug report and stage a draft: a description plus a dropped file.
+    await user.click(screen.getByRole("button", { name: "Add files, notes, or reports" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    await user.type(within(dialog).getByLabelText("Description"), "sensitive draft notes");
+    const dropZone = dialog.querySelector(".report-dialog-drop");
+    expect(dropZone).not.toBeNull();
+    fireEvent.drop(dropZone as HTMLElement, {
+      dataTransfer: {
+        files: [new File(["png"], "screenshot.png", { type: "image/png" })],
+      },
+    });
+    expect(await within(dialog).findByText("screenshot.png")).toBeInTheDocument();
+
+    // Abandon the draft without sending.
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Issue report" })).toBeNull());
+
+    // Reopening the SAME category is a new report intent: the abandoned
+    // draft (description + attachment) must not survive the close.
+    await user.click(screen.getByRole("button", { name: "Add files, notes, or reports" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
+
+    const reopened = await screen.findByRole("dialog", { name: "Issue report" });
+    expect(within(reopened).getByLabelText("Description")).toHaveValue("");
+    expect(within(reopened).queryByText("screenshot.png")).toBeNull();
+    expect(within(reopened).queryByRole("list", { name: "Attached files" })).toBeNull();
+  });
+
+  it("wraps a submitted issue report for June and waits for explicit send", async () => {
+    const user = userEvent.setup();
+    seedLegacyNewSessionReportDraft();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
 
     render(<AgentWorkspace />);
 
-    // Wait for the Bug report chip to seed, then type the report after it.
+    // Wait for the restored legacy Bug report chip, then type the report after it.
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
     const composer = await screen.findByRole("textbox");
     await user.type(composer, "The recorder crashes after long meetings");
@@ -882,15 +973,10 @@ describe("AgentWorkspace", () => {
         timestamp: "2026-06-11T10:00:10Z",
       },
     ]);
+    seedLegacyExistingSessionReportDraft();
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Attach files or tag this message",
-      }),
-    );
-    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
     await user.type(
       await screen.findByRole("textbox"),
@@ -937,15 +1023,11 @@ describe("AgentWorkspace", () => {
         timestamp: "2026-06-11T10:00:10Z",
       },
     ]);
+    seedLegacyExistingSessionReportDraft();
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Attach files or tag this message",
-      }),
-    );
-    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
     await user.type(
       await screen.findByRole("textbox"),
       "The recorder crashes from this existing chat",
@@ -998,15 +1080,11 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
     mocks.listHermesSessionMessages.mockResolvedValue([]);
+    seedLegacyExistingSessionReportDraft();
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Attach files or tag this message",
-      }),
-    );
-    await user.click(await screen.findByRole("menuitem", { name: "Bug report" }));
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
     await user.type(await screen.findByRole("textbox"), "Agent response text is losing spaces");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -1109,10 +1187,7 @@ describe("AgentWorkspace", () => {
 
   it("sends a report when the diagnosis refresh stalls", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
     let stalledRefreshStarted = false;
 
@@ -1167,10 +1242,7 @@ describe("AgentWorkspace", () => {
 
   it("appends report follow-ups before filing", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
 
     render(<AgentWorkspace />);
@@ -1248,10 +1320,7 @@ describe("AgentWorkspace", () => {
 
   it("restores a review-ready report after leaving and returning", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
     const first = render(<AgentWorkspace />);
 
@@ -1300,10 +1369,7 @@ describe("AgentWorkspace", () => {
 
   it("restores a review-ready report after an app restart", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
     const first = render(<AgentWorkspace />);
 
@@ -1373,10 +1439,7 @@ describe("AgentWorkspace", () => {
 
   it("restores a pending report follow-up after leaving before June answers", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
     const first = render(<AgentWorkspace />);
 
@@ -1450,10 +1513,7 @@ describe("AgentWorkspace", () => {
 
   it("does not restore a report after leaving during successful delivery", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let resolveDelivery: ((value: { received: boolean }) => void) | undefined;
     mocks.submitIssueReport.mockImplementation(
       () =>
@@ -1510,10 +1570,7 @@ describe("AgentWorkspace", () => {
 
   it("restores a report after leaving during failed delivery", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let rejectDelivery: ((error: Error) => void) | undefined;
     mocks.submitIssueReport.mockImplementation(
       () =>
@@ -1570,10 +1627,7 @@ describe("AgentWorkspace", () => {
 
   it("keeps a newer follow-up draft when an older report delivery finishes", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let resolveFirstDelivery: ((value: { received: boolean }) => void) | undefined;
     mocks.submitIssueReport
       .mockImplementationOnce(
@@ -1671,10 +1725,7 @@ describe("AgentWorkspace", () => {
 
   it("does not restore a stale report when an older delivery fails during a follow-up", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let rejectFirstDelivery: ((error: Error) => void) | undefined;
     mocks.submitIssueReport
       .mockImplementationOnce(
@@ -1766,10 +1817,7 @@ describe("AgentWorkspace", () => {
 
   it("does not restore a delivered report when a follow-up submit fails", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let resolveFirstDelivery: ((value: { received: boolean }) => void) | undefined;
     let rejectFollowUp: ((error: Error) => void) | undefined;
     mocks.submitIssueReport.mockImplementationOnce(
@@ -1859,10 +1907,7 @@ describe("AgentWorkspace", () => {
 
   it("restores a report when delivery and a follow-up submit both fail", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let rejectFirstDelivery: ((error: Error) => void) | undefined;
     let rejectFollowUp: ((error: Error) => void) | undefined;
     mocks.submitIssueReport.mockImplementationOnce(
@@ -1954,10 +1999,7 @@ describe("AgentWorkspace", () => {
 
   it("restores a report when a follow-up submit fails before delivery starts", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     mocks.gatewayRequest.mockImplementation((method: string, args?: unknown) => {
       if (method === "session.create") {
         return Promise.resolve({
@@ -2016,10 +2058,7 @@ describe("AgentWorkspace", () => {
 
   it("restores a report after leaving during a failed follow-up submit", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let rejectFollowUp: ((error: Error) => void) | undefined;
     mocks.gatewayRequest.mockImplementation((method: string, args?: unknown) => {
       if (method === "session.create") {
@@ -2166,10 +2205,7 @@ describe("AgentWorkspace", () => {
 
   it("does not show a failed issue report banner after switching away", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let rejectIssueReport: ((error: Error) => void) | undefined;
     mocks.submitIssueReport.mockImplementation(
       () =>
@@ -2229,10 +2265,7 @@ describe("AgentWorkspace", () => {
 
   it("clears a failed issue report banner after a successful retry", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     mocks.submitIssueReport
       .mockRejectedValueOnce(new Error("upstream_provider_failed"))
       .mockResolvedValue({ received: true });
@@ -2279,10 +2312,7 @@ describe("AgentWorkspace", () => {
 
   it("keeps report sending disabled while attachment imports are pending", async () => {
     const user = userEvent.setup();
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
-    );
+    seedLegacyNewSessionReportDraft();
     let resolveImport:
       | ((file: {
           name: string;

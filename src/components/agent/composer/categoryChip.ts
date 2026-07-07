@@ -12,7 +12,7 @@ import {
   type CategorySuggestionListHandle,
   type CategorySuggestionListProps,
 } from "./CategorySuggestionList";
-import { matchReportCategories, reportCategoryDef, type ReportCategory } from "./reportCategory";
+import { reportCategoryDef, type ReportCategory } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import { matchSkillSlashSuggestions } from "../../../lib/skill-slash-commands";
 import { matchBuiltinComposerSlashCommands } from "../../../lib/agent-composer-slash-commands";
@@ -100,8 +100,9 @@ function insertCategoryCommand(category: ReportCategory, range?: { from: number;
   };
 }
 
-/** Inserts (or swaps) the category chip at the current selection. Used by the
- * "+" popover and by the sidebar/settings "Report an issue" entry points. */
+/** Inserts (or swaps) the category chip at the current selection. Kept for
+ * restored older drafts and focused tests; new report entry points use the
+ * direct-submit popover instead. */
 export function insertReportCategory(editor: Editor, category: ReportCategory) {
   editor.chain().focus().command(insertCategoryCommand(category)).run();
 }
@@ -162,11 +163,6 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
       items: ({ query }) => composerSlashCommandItems(query, options.skills?.()),
       command: ({ editor, range, props }) => {
         const item = props as unknown as ComposerSlashCommandItem;
-        if (item.kind === "category") {
-          const { key: category } = item.category;
-          editor.chain().focus().command(insertCategoryCommand(category, range)).run();
-          return;
-        }
         if (item.kind === "builtin") {
           insertSlashCommandText(editor, item.command.insertText, range);
           return;
@@ -317,13 +313,8 @@ function composerSlashCommandItems(
     kind: "builtin" as const,
     command,
   }));
-  const categories = matchReportCategories(query).map((category) => ({
-    kind: "category" as const,
-    category,
-  }));
   return [
     ...builtins,
-    ...categories,
     ...matchSkillSlashSuggestions(query, skills, SLASH_MENU_SKILL_LIMIT).map((skill) => ({
       kind: "skill" as const,
       skill,

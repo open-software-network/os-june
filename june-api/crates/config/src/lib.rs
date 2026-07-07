@@ -37,6 +37,13 @@ pub const OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS: u64 = 60;
 pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 = DEFAULT_REQUEST_TIMEOUT_SECS
     - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
     - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+// 10s, not 30: the diagnosis runs inline before delivery, so its timeout is
+// user-facing "Sending" time. Typical completions land in 2-6s; anything
+// slower delivers undiagnosed rather than holding the dialog hostage.
+pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS: u64 = 10;
+/// Nobody files more than a handful of legitimate reports an hour; the cap
+/// only bounds June-funded diagnosis calls, never report delivery.
+pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_MAX_PER_USER_PER_HOUR: u64 = 6;
 /// The hold is minted after authorize returns and must cover generation
 /// plus settlement: 390 + 150 = 540, inside the 600-second platform cap.
 /// Anchoring on the route timeout instead produced 630, past the cap, and
@@ -57,7 +64,7 @@ const IMAGE_EDIT_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
     base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
 
-// --- Video generation (ADR 0012) ---------------------------------------------
+// --- Video generation (ADR 0013) ---------------------------------------------
 //
 // Video is an async job billed at completion: the hold is minted at
 // `/v1/video/generate` and must stay valid until the completing status poll
@@ -66,7 +73,7 @@ pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
 // yet OS Accounts still rejects any hold above 600s (`invalid_ttl`). So the
 // per-job budget is CAPPED so `job budget + settlement margin <= 600`; the
 // first-cut supported models/durations are chosen to complete within that
-// budget (ADR 0012 Decision 2). Widening it needs durable job state (#613).
+// budget (ADR 0013 Decision 2). Widening it needs durable job state (#613).
 /// Worst-case seconds a supported video job may take from queue to a completing
 /// poll. The first-cut allowlist/durations are picked to finish within this.
 pub const DEFAULT_VIDEO_JOB_MAX_SECS: u64 = 450;
@@ -81,7 +88,7 @@ pub const DEFAULT_VIDEO_HOLD_TTL_SECS: u64 =
 /// Defensive per-request credit ceiling: Venice caps a video at $10/request; at
 /// the 2.0x default markup that is 20000 credits (`$1 = 1000 credits`). A quote
 /// above this is rejected before authorize so a catalog change cannot authorize
-/// an unbounded hold (ADR 0012 Decision 1).
+/// an unbounded hold (ADR 0013 Decision 1).
 pub const DEFAULT_VIDEO_MAX_CREDITS_PER_REQUEST: u64 = 20_000;
 /// Maximum raw video body June API will buffer from Venice retrieve.
 pub const DEFAULT_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
@@ -137,7 +144,7 @@ pub struct AppConfig {
     /// Markup (fixed-point thousandths, `2000` = 2.0x) applied to the live Venice
     /// quote for each text-to-video model, keyed by model id. Video is
     /// quote-priced, not flat-priced: `credits = ceil(quote_usd * markup_millis)`
-    /// (ADR 0012 Decision 1). A model absent here is rejected `model_not_priced`
+    /// (ADR 0013 Decision 1). A model absent here is rejected `model_not_priced`
     /// at the `/video/generate` boundary before the wallet or Venice is touched,
     /// so this doubles as the allowlist. `$1 = 1000 credits`.
     #[serde(default = "default_video_pricing")]
@@ -221,6 +228,17 @@ pub struct IssueReportsConfig {
     /// sidesteps that. Empty omits the field and relies on the defaults.
     #[serde(default = "default_issue_report_reward_asset")]
     pub os_platform_reward_asset: String,
+    /// Optional model id used by June API to diagnose issue reports before
+    /// delivery. `None` preserves direct delivery with no upstream model call.
+    #[serde(default)]
+    pub diagnosis_model: Option<String>,
+    /// Wall-clock budget for the internal diagnosis call.
+    #[serde(default = "default_issue_report_diagnosis_timeout_secs")]
+    pub diagnosis_timeout_secs: u64,
+    /// Per-user hourly cap on June-funded diagnosis calls. The cap only skips
+    /// the diagnosis; report delivery itself is never limited.
+    #[serde(default = "default_issue_report_diagnosis_max_per_user_per_hour")]
+    pub diagnosis_max_per_user_per_hour: u64,
 }
 
 fn default_issue_report_api_url() -> String {
@@ -243,6 +261,14 @@ fn default_issue_report_reward_asset() -> String {
     "POINTS".to_string()
 }
 
+fn default_issue_report_diagnosis_timeout_secs() -> u64 {
+    DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS
+}
+
+fn default_issue_report_diagnosis_max_per_user_per_hour() -> u64 {
+    DEFAULT_ISSUE_REPORT_DIAGNOSIS_MAX_PER_USER_PER_HOUR
+}
+
 impl Default for IssueReportsConfig {
     fn default() -> Self {
         Self {
@@ -252,6 +278,9 @@ impl Default for IssueReportsConfig {
             os_platform_project: default_issue_report_project(),
             os_platform_label: default_issue_report_label(),
             os_platform_reward_asset: default_issue_report_reward_asset(),
+            diagnosis_model: None,
+            diagnosis_timeout_secs: default_issue_report_diagnosis_timeout_secs(),
+            diagnosis_max_per_user_per_hour: default_issue_report_diagnosis_max_per_user_per_hour(),
         }
     }
 }
@@ -273,6 +302,12 @@ impl Debug for IssueReportsConfig {
             .field("os_platform_project", &self.os_platform_project)
             .field("os_platform_label", &self.os_platform_label)
             .field("os_platform_reward_asset", &self.os_platform_reward_asset)
+            .field("diagnosis_model", &self.diagnosis_model)
+            .field("diagnosis_timeout_secs", &self.diagnosis_timeout_secs)
+            .field(
+                "diagnosis_max_per_user_per_hour",
+                &self.diagnosis_max_per_user_per_hour,
+            )
             .finish()
     }
 }
@@ -385,7 +420,7 @@ pub struct OsAccountsConfig {
     /// async job billed at completion, so the hold must cover the whole job
     /// lifetime (queue -> completing poll -> charge), not a single request. Sized
     /// to the job budget plus the settlement margin and capped at the platform
-    /// max (ADR 0012 Decision 2).
+    /// max (ADR 0013 Decision 2).
     #[serde(default = "default_video_hold_ttl_secs")]
     pub authorize_hold_ttl_video_secs: u64,
 }
@@ -678,15 +713,45 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
 /// and `DEFAULT_IMAGE_MODEL` in the Tauri providers module — every id here must
 /// be a current Venice image model (verified against the models list), or
 /// generation fails `image_generation_rejected`. Values are the Venice per-image
-/// cost with a ~2x margin (mirroring the flat web-tool pricing): SD3.5 ~$0.01 ->
-/// 20, Chroma ~$0.01 -> 20, Qwen Image ~$0.03 -> 60, FLUX 2 Pro ~$0.03 -> 60.
-/// `$1 = 1000 credits`.
+/// cost with a ~2x margin (mirroring the flat web-tool pricing). Models that
+/// price by resolution use their default 1K tier because June does not expose a
+/// higher-resolution image request control yet. `$1 = 1000 credits`.
 fn default_image_pricing() -> BTreeMap<String, u64> {
     BTreeMap::from([
         ("venice-sd35".to_string(), 20),
+        ("grok-imagine-image-quality".to_string(), 160),
+        ("krea-2-turbo".to_string(), 80),
         ("flux-2-pro".to_string(), 60),
+        ("flux-2-max".to_string(), 180),
+        ("gpt-image-2".to_string(), 540),
+        ("gpt-image-1-5".to_string(), 520),
+        ("hunyuan-image-v3".to_string(), 180),
+        ("ideogram-v4".to_string(), 120),
+        ("imagineart-1.5-pro".to_string(), 120),
+        ("krea-v2-large".to_string(), 140),
+        ("krea-v2-medium".to_string(), 80),
+        ("luma-uni-1".to_string(), 100),
+        ("luma-uni-1-max".to_string(), 240),
+        ("nano-banana-2".to_string(), 200),
+        ("nano-banana-pro".to_string(), 360),
+        ("nano-banana-2-lite".to_string(), 120),
+        ("recraft-v4".to_string(), 100),
+        ("recraft-v4-pro".to_string(), 580),
+        ("seedream-v4".to_string(), 100),
+        ("seedream-v5-lite".to_string(), 100),
+        ("qwen-image-2".to_string(), 100),
+        ("qwen-image-2-pro".to_string(), 200),
+        ("wan-2-7-text-to-image".to_string(), 75),
+        ("wan-2-7-pro-text-to-image".to_string(), 188),
+        ("grok-imagine-image".to_string(), 80),
+        ("lustify-sdxl".to_string(), 20),
+        ("lustify-v7".to_string(), 20),
+        ("lustify-v8".to_string(), 20),
         ("qwen-image".to_string(), 60),
+        ("wai-Illustrious".to_string(), 20),
+        ("z-image-turbo".to_string(), 20),
         ("chroma".to_string(), 20),
+        ("bria-bg-remover".to_string(), 60),
     ])
 }
 
@@ -707,7 +772,7 @@ fn default_image_edit_model() -> String {
 /// Curated text-to-video allowlist with per-model markups (`2000` = 2.0x, the
 /// image margin). Every id must be a current Venice text-to-video model, and its
 /// worst-case run at the supported durations must fit `DEFAULT_VIDEO_JOB_MAX_SECS`
-/// so the hold covers the whole job (ADR 0012). `credits = ceil(quote_usd * markup)`.
+/// so the hold covers the whole job (ADR 0013). `credits = ceil(quote_usd * markup)`.
 ///
 /// First-cut curation: every model here must accept the desktop fast-path's fixed
 /// default duration/resolution (5s / 720p) that the proxy injects when the client
@@ -889,6 +954,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         )?;
     }
     validate_request_limits(config)?;
+    validate_issue_report_diagnosis(config)?;
 
     let uses_openai = config
         .pricing
@@ -1010,6 +1076,26 @@ fn validate_video_pricing(config: &AppConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_issue_report_diagnosis(config: &AppConfig) -> Result<(), ConfigError> {
+    if config
+        .issue_reports
+        .diagnosis_model
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|model| !model.is_empty())
+    {
+        validate_positive_config(
+            "issue_reports.diagnosis_timeout_secs",
+            config.issue_reports.diagnosis_timeout_secs,
+        )?;
+        validate_positive_config(
+            "issue_reports.diagnosis_max_per_user_per_hour",
+            config.issue_reports.diagnosis_max_per_user_per_hour,
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
     validate_positive_config(
         "os_accounts.note_transcribe_preview_max_audio_secs",
@@ -1028,7 +1114,7 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
 
 /// The video hold has to cover the whole async job: the per-job budget plus the
 /// settlement margin for the completing poll's charge. A hold below that would
-/// expire mid-job and strand the charge (ADR 0012 Decision 2).
+/// expire mid-job and strand the charge (ADR 0013 Decision 2).
 fn validate_video_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
     let minimum = DEFAULT_VIDEO_JOB_MAX_SECS.saturating_add(VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS);
     if config.os_accounts.authorize_hold_ttl_video_secs < minimum {
@@ -1474,9 +1560,61 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_zero_issue_report_diagnosis_timeout_when_model_is_set() {
+        let mut config = valid_config();
+        config.issue_reports.diagnosis_model = Some("text-model".to_string());
+        config.issue_reports.diagnosis_timeout_secs = 0;
+
+        let result = validate(&config);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidRequired {
+                field: "issue_reports.diagnosis_timeout_secs",
+                reason: "must be > 0"
+            })
+        ));
+    }
+
+    #[test]
     fn default_config_prices_the_curated_image_models() {
         let config = valid_config();
-        for model in ["venice-sd35", "flux-2-pro", "qwen-image", "chroma"] {
+        for model in [
+            "venice-sd35",
+            "grok-imagine-image-quality",
+            "krea-2-turbo",
+            "flux-2-pro",
+            "flux-2-max",
+            "gpt-image-2",
+            "gpt-image-1-5",
+            "hunyuan-image-v3",
+            "ideogram-v4",
+            "imagineart-1.5-pro",
+            "krea-v2-large",
+            "krea-v2-medium",
+            "luma-uni-1",
+            "luma-uni-1-max",
+            "nano-banana-2",
+            "nano-banana-pro",
+            "nano-banana-2-lite",
+            "recraft-v4",
+            "recraft-v4-pro",
+            "seedream-v4",
+            "seedream-v5-lite",
+            "qwen-image-2",
+            "qwen-image-2-pro",
+            "wan-2-7-text-to-image",
+            "wan-2-7-pro-text-to-image",
+            "grok-imagine-image",
+            "lustify-sdxl",
+            "lustify-v7",
+            "lustify-v8",
+            "qwen-image",
+            "wai-Illustrious",
+            "z-image-turbo",
+            "chroma",
+            "bria-bg-remover",
+        ] {
             assert!(
                 config.image_pricing.get(model).is_some_and(|c| *c > 0),
                 "missing image price for {model}"

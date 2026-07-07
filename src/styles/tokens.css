@@ -54,6 +54,7 @@
   --font-serif: "Martina Plantijn", "Iowan Old Style", Georgia, serif;
   --font-mono: "Berkeley Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
+  --fs-2xs: 10px;
   --fs-xs: 11px;
   --fs-sm: 12px;
   --fs-md: 13px;
@@ -187,6 +188,10 @@
   --popover-foreground: oklch(27.24% 0.0015 84.59);
   --primary: oklch(34% 0.008 84.59);
   --primary-foreground: oklch(100% 0 none);
+  /* Text/icons on fixed brand, gradient, or destructive solids. Identical in
+   * both themes (no dark override) - unlike --primary-foreground, which
+   * inverts in dark mode. */
+  --on-solid: oklch(100% 0 none);
   --secondary: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --secondary-foreground: oklch(20.44% 0 none);
   --muted: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand-wash) 4%);
@@ -276,6 +281,9 @@
 
   /* Shadows ---------------------------------------------------------- */
   --shadow-sm: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 2px 4px oklch(24% 0.002 84.59 / 3%);
+  /* Compact overlay depth: fits inside the dictation HUD's transparent
+   * native gutter, unlike --shadow-md's long card shadow. */
+  --shadow-hud: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 4px 12px oklch(24% 0.002 84.59 / 8%);
   /* md leans ambient: faint contact, weight in the wide blurs, so lifted
    * surfaces glow softly instead of drawing a hard line under the edge. */
   --shadow-md:
@@ -382,6 +390,7 @@
   --selection-foreground: var(--foreground);
 
   --shadow-sm: 0 1px 2px oklch(0% 0 none / 24%), 0 2px 4px oklch(0% 0 none / 12%);
+  --shadow-hud: 0 1px 2px oklch(0% 0 none / 18%), 0 4px 12px oklch(0% 0 none / 28%);
   /* Same ambient bias as light md: soft contact, weight in the wide blurs. */
   --shadow-md:
     0 1px 2px oklch(0% 0 none / 12%), 0 4px 10px oklch(0% 0 none / 10%),

@@ -267,6 +267,16 @@ body {
   --mark-shine: var(--attention-bright);
 }
 
+/* The band mirrors the shadcn shimmer geometry in shimmer.css, translated to
+ * overlay-over-mask terms: base = transparent so the mark's own color shows
+ * through, highlight = --mark-shine. Single peak at 50% with soft 50%-mix
+ * shoulders and symmetric edges — the same stop structure as the text
+ * shimmer, no plateau. The 23%/77% edges keep the band's footprint on the
+ * overlay where the old 24%/78% shoulders sat, so the "live" signal strength
+ * is unchanged; the tilt lives entirely in the gradient angle
+ * (calc(90deg + 20deg), matching shimmer.css's default --shimmer-angle).
+ * Keep in sync with .mhud-mark::before in meeting-hud.css and
+ * .hud-meeting-mark::before in hud.css. */
 .agent-hud-mark[data-status="received"]::before,
 .agent-hud-mark[data-status="starting"]::before,
 .agent-hud-mark[data-status="running"]::before,
@@ -276,15 +286,14 @@ body {
   width: 115%;
   content: "";
   background: linear-gradient(
-    100deg,
-    transparent 0%,
-    color-mix(in oklch, var(--mark-shine) 32%, transparent) 24%,
-    var(--mark-shine) 46%,
-    var(--mark-shine) 56%,
-    color-mix(in oklch, var(--mark-shine) 32%, transparent) 78%,
-    transparent 100%
+    calc(90deg + 20deg),
+    transparent 23%,
+    color-mix(in oklch, var(--mark-shine) 50%, transparent) 36.5%,
+    var(--mark-shine) 50%,
+    color-mix(in oklch, var(--mark-shine) 50%, transparent) 63.5%,
+    transparent 77%
   );
-  transform: translate3d(0, 0, 0) skewX(-16deg);
+  transform: translate3d(0, 0, 0);
   will-change: transform;
   animation: agent-hud-shimmer 1320ms linear infinite;
 }
@@ -512,10 +521,12 @@ body {
   }
 }
 
-/* A transform-only highlight pass across the masked mark. */
+/* A transform-only highlight pass across the masked mark. The band's tilt
+ * lives in the gradient angle, not a skew, so the keyframe is a pure
+ * translate. */
 @keyframes agent-hud-shimmer {
   to {
-    transform: translate3d(230%, 0, 0) skewX(-16deg);
+    transform: translate3d(230%, 0, 0);
   }
 }
 
@@ -527,8 +538,15 @@ body {
     transition: none;
   }
 
+  /* The sweep and breathe animations are started by status-qualified selectors
+   * (.agent-hud-mark[data-status]::before, .agent-hud-status[data-status]), so
+   * plain .agent-hud-mark::before / .agent-hud-status resets lose on specificity
+   * and the motion survives. Match the attribute specificity here; this block
+   * sits later in the file, so equal specificity resolves in its favor. */
   .agent-hud-mark,
-  .agent-hud-status {
+  .agent-hud-mark[data-status]::before,
+  .agent-hud-status,
+  .agent-hud-status[data-status] {
     animation: none;
   }
 }

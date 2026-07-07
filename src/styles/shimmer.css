@@ -1,0 +1,105 @@
+/* Plain-CSS port of the `shimmer` text utility from the `shadcn` npm package
+ * (v4.13.0, its dist/tailwind.css — fetch with `pnpm dlx shadcn` to diff a
+ * newer upstream; the package is not a dependency, this file is the vendored
+ * copy). shadcn ships it as a Tailwind v4 `@utility`; this is the same recipe
+ * hand-written for June, which has no Tailwind. The variable API is kept identical to upstream so its docs
+ * apply verbatim: set `--shimmer-duration`, `--shimmer-spread`,
+ * `--shimmer-angle`, `--shimmer-color`, `--shimmer-image`, or
+ * `--shimmer-text-fill` on the element to tune a site.
+ *
+ * The paint is currentColor-based: the element must carry a real `color` (we
+ * use `var(--muted-foreground)` at the call sites) — that color is the shimmer
+ * base, and a soft wide highlight band sweeps across it. This differs from
+ * June's old hand-rolled shimmers, which set `color: transparent` and painted
+ * the color through the gradient. Any leftover `color: transparent` would make
+ * this gradient invisible.
+ *
+ * `.shimmer` is a pure paint utility: it owns only the sweep. Layout and
+ * typography (truncation, line-height, roll windows, font size) stay on the
+ * semantic class at each call site. */
+
+@property --shimmer-angle {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 20deg;
+}
+@property --shimmer-image {
+  syntax: "*";
+  inherits: false;
+}
+@property --shimmer-text-fill {
+  syntax: "*";
+  inherits: false;
+}
+
+@keyframes tw-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+.shimmer {
+  --_spread: var(--shimmer-spread, calc(3ch + 40px));
+  --_base: currentColor;
+  --_highlight: var(--shimmer-color, oklch(from currentColor l c h / calc(alpha * 0.2)));
+}
+
+/* The paint clips a gradient to the text and hides the glyph fill
+ * (-webkit-text-fill-color: transparent) so the gradient IS the text. That
+ * gradient is built from relative color syntax (oklch(from currentColor ...))
+ * and color-mix() — Level 5 color features. An older system WKWebView that
+ * rejects the gradient would still honor the transparent fill and render the
+ * label invisible. Gating the whole paint on relative-color support means
+ * unsupported engines skip it entirely and keep the element's solid `color`
+ * (no shimmer, but legible) — the graceful fallback shadcn's docs prescribe. */
+@supports (color: oklch(from red l c h)) {
+  .shimmer {
+    background-image: var(
+      --shimmer-image,
+      linear-gradient(
+        calc(90deg + var(--shimmer-angle, 20deg)),
+        var(--_base) calc(50% - var(--_spread)),
+        color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% - var(--_spread) * 0.5),
+        var(--_highlight) 50%,
+        color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% + var(--_spread) * 0.5),
+        var(--_base) calc(50% + var(--_spread))
+      )
+    );
+    background-repeat: no-repeat;
+    background-size: calc(200% + var(--_spread) * 2) 100%;
+    background-position: 0 0;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: var(--shimmer-text-fill, transparent);
+    animation: tw-shimmer var(--shimmer-duration, 2s) linear infinite;
+  }
+}
+
+/* Upstream's `@variant dark`. June's dark mode is `[data-theme="dark"]` (set by
+ * src/lib/theme.ts — there is no `.dark` class), so scope the brighter, more
+ * opaque highlight to that attribute. This selector is more specific than the
+ * bare `.shimmer` above, so it wins regardless of source order in the flat
+ * stylesheet. */
+[data-theme="dark"] .shimmer {
+  --_highlight: var(
+    --shimmer-color,
+    oklch(from currentColor max(0.8, calc(l + 0.4)) c h / calc(alpha + 0.4))
+  );
+}
+
+/* June is LTR-only, but keeping upstream's RTL flip is harmless and preserves
+ * fidelity with the vendored recipe. */
+.shimmer:where([dir="rtl"], [dir="rtl"] *) {
+  animation-direction: reverse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}

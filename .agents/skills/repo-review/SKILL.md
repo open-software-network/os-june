@@ -151,16 +151,24 @@ adversarial, not verified:
    Rust crates); frontend-only diffs can use
    `pnpm typecheck && pnpm check && pnpm test` (judge vitest by failure
    count, not exit code).
-3. Re-run the **adversarial** axis only — and alternate the reviewing
-   harness between rounds. A loop run on one harness converges to that
-   harness's blind spots; the finding sets are measurably disjoint
-   (CALIBRATION.md, PR #612: the single Claude round found what six Codex
-   rounds never would, and vice versa).
+3. Re-run the **adversarial** axis only — after EVERY fix commit, not once
+   at the end — and alternate the reviewing harness between rounds. A loop
+   run on one harness converges to that harness's blind spots; the finding
+   sets are measurably disjoint (CALIBRATION.md, PR #612: the single Claude
+   round found what six Codex rounds never would, and vice versa). The
+   alternation rule overrides the with-codex/with-claude single-harness
+   convention for convergence re-runs: PR #633 showed even two runners of
+   the same model family (codex CLI vs the Codex PR bot) have disjoint
+   finding sets, so a battery that never changes lens converges early and
+   falsely.
 4. Repeat until it returns `approve` / no material findings. Adversarial
    reviewers rarely return zero forever — findings that are hedged
    ("verify that..."), pre-existing parity, or restatements of documented
    trade-offs count as "nothing worth fixing"; say so explicitly with
-   evidence.
+   evidence. For a diff a delegate/implementer harness wrote, one approve
+   is not convergence: require two consecutive clean adversarial rounds
+   (PR #633: the local loop stopped at its first approve; six external
+   rounds then produced seven real findings).
 5. Hard cap: if the loop has not converged after ~5 rounds, stop and report
    the residual findings with dispositions instead of grinding — a loop
    that will not converge is itself a signal the change needs a human look.

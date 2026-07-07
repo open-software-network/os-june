@@ -47,9 +47,16 @@ export function SegmentedControl<T extends string>({
       if (!container || !button) return;
       const containerRect = container.getBoundingClientRect();
       const buttonRect = button.getBoundingClientRect();
+      // Rects include ancestor transforms, so measuring while a parent's
+      // entrance animation is mid-scale (e.g. the dialog card) would bake
+      // the shrunken geometry in permanently. Dividing by the container's
+      // own scale cancels the transform while keeping fractional layout
+      // precision (integer offsetLeft/offsetWidth snap the indicator up to
+      // a pixel off the true flex box and the label reads as shifted).
+      const scale = container.offsetWidth > 0 ? containerRect.width / container.offsetWidth : 1;
       setIndicator({
-        left: buttonRect.left - containerRect.left,
-        width: buttonRect.width,
+        left: (buttonRect.left - containerRect.left) / scale,
+        width: buttonRect.width / scale,
       });
     }
     measure();

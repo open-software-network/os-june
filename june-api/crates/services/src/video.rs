@@ -1,4 +1,4 @@
-//! Metered video generation (ADR 0012). Video is Venice's asynchronous,
+//! Metered video generation (ADR 0013). Video is Venice's asynchronous,
 //! dynamically priced surface, so it departs from image in three ways:
 //!
 //! 1. **Quote-derived pricing.** Before authorizing or queueing, the service
@@ -753,14 +753,14 @@ pub enum VideoStatusOutput {
 
 // --- Registry ----------------------------------------------------------------
 //
-// KNOWN BOUNDARY (ADR 0012 Decision 3): this registry is per-process memory. A
+// KNOWN BOUNDARY (ADR 0013 Decision 3): this registry is per-process memory. A
 // June API restart mid-job orphans the Venice job (the poll loop dies, the hold
 // expires, the user is not charged, and Venice may still bill June). Accepted
 // for the first cut and tied to durable-request-state follow-up #613. The fix is
 // NOT to derive the settlement key from the client request id (that reopens the
 // round-3 replay-funded-free-work hole) — it is durable job state.
 //
-// Because jobs store handles, not bytes (ADR 0012 Decision 4), the caps bound
+// Because jobs store handles, not bytes (ADR 0013 Decision 4), the caps bound
 // job count, not gigabytes.
 const VIDEO_LEDGER_JOB_TTL: Duration = Duration::from_mins(30);
 const VIDEO_LEDGER_CREATING_TTL: Duration = Duration::from_mins(15);

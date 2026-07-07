@@ -65,10 +65,10 @@ describe("meeting detection HUD", () => {
       rect: null,
     });
     // The window is resized to the measured pill (jsdom rects are zero)
-    // plus the meeting card's transparent gutter on each side.
+    // plus the meeting card's transparent shadow gutter on each side.
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_size", {
-      width: 32,
-      height: 32,
+      width: 36,
+      height: 36,
       animate: false,
     });
   });
@@ -384,7 +384,7 @@ describe("meeting detection HUD", () => {
     expect(chromeCalls()).toEqual([]);
     expect(mocks.invoke).toHaveBeenCalledWith(
       "dictation_hud_set_size",
-      expect.objectContaining({ width: 32, height: 32 }),
+      expect.objectContaining({ width: 36, height: 36 }),
     );
   });
 
@@ -550,10 +550,10 @@ describe("meeting detection HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_preferred_error_placement");
     // The window is sized to fit the message layer mirrored above/below the
     // pill, plus the shadow gutter (jsdom rects are zero: 2 gaps tall and
-    // 2 gutters all round).
+    // 2 compact HUD gutters all round).
     expect(mocks.invoke).toHaveBeenCalledWith(
       "dictation_hud_set_size",
-      expect.objectContaining({ width: 32, height: 48 }),
+      expect.objectContaining({ width: 36, height: 52 }),
     );
   });
 

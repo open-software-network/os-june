@@ -56,6 +56,15 @@ Trace how bad inputs, retries, concurrent actions, or partially completed operat
 If the user supplied a focus area, weight it heavily, but still report any other material issue you can defend.
 </review_method>
 
+<review_lenses>
+Apply each lens below explicitly — these encode failure classes that generic skepticism has demonstrably missed (see CALIBRATION.md, PR #633: a six-round external review found seven real defects after this axis returned approve; every one maps to a lens here):
+1. Reachability: for every new guard, check, or feature, enumerate the dispatch branches and call sites that decide whether it runs. List the paths that bypass it. A spec or amendment that scopes a path out does not clear it — report the bypass as a scope hole and let the caller triage it.
+2. Moved-line semantics: for every line the diff MOVES (not adds), re-derive the behavior of every downstream consumer of the value it produces. Relocating an initialization, clock anchor, or ordering-sensitive statement changes semantics that the added-lines view hides.
+3. Temporal drift: for every tunable constant or threshold whose decision is persisted, ask what happens when the constant changes after data exists. Persisted decisions go stale; prefer flagging designs that store inputs and recompute decisions at read time.
+4. Signal lifecycle: for every detector or transient signal, ask (a) can the state it watches fail to ever initialize (zero-callback, never-armed), and (b) can the signal be observed and then lost before its persistence point (transient condition clears before finish)? Both need a latch or a fallback anchor.
+5. Cross-layer consumers: for every DTO or event field the diff adds or repurposes, find the actual downstream consumers (UI components, other services) and verify which fields they read. A warning flag nobody renders, or a stale companion field they do render, is a defect.
+</review_lenses>
+
 <finding_bar>
 Report only material findings.
 Do not include style feedback, naming feedback, low-value cleanup, or speculative concerns without evidence.

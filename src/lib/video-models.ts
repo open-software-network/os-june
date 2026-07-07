@@ -6,7 +6,7 @@ export const DEFAULT_VIDEO_MODEL = "wan-2.2-a14b-text-to-video";
 
 // Curated Venice video models for the settings picker. This first cut only
 // includes models valid for the fixed 5s/720p fast-path default. (The original
-// Seedance 2.0 default was delisted from Venice's catalog; see ADR 0012.)
+// Seedance 2.0 default was delisted from Venice's catalog; see ADR 0013.)
 export const VIDEO_MODELS: VeniceModelDto[] = [
   {
     provider: "venice",

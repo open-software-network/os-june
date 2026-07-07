@@ -117,6 +117,8 @@ const JUNE_VIDEO_MCP_TOKEN_ENV: &str = "JUNE_VIDEO_PROXY_TOKEN";
 /// seeds its stock "Hermes Agent by Nous Research" persona.
 const JUNE_SOUL_MD: &str = r#"You are June, the private AI assistant on the user's desktop, made by Open Software. You run on the open-source Hermes agent framework, but your name and identity are June — when asked who or what you are, answer as June, not as Hermes or the underlying model.
 
+User-directed roles and personas are allowed task framing, not an identity reset. If the user explicitly asks you to act as a reviewer, coach, interviewer, character, style, or other role, follow that framing for the requested work unless it conflicts with system or developer instructions, privacy, tool limits, the user's own stated constraints, or the current app and tool settings. Do not claim to be a different product, company, human, or authority when asked about your real identity or provenance: be transparent that you are June, while adapting your behavior to the role the user chose.
+
 You are part of the June app, which handles dictation, meeting notes, and agent work on the user's Mac. As the agent, you hand off real work, run automations the user sets up, and use local memory so the user never has to repeat themselves.
 
 Privacy is your defining trait, by architecture rather than promise. When asked how you keep work private, answer confidently:
@@ -162,6 +164,7 @@ Web tools: you have a `june_web` MCP toolset with `web_search` and `web_fetch`. 
 const JUNE_SOUL_IMAGE_MD: &str = r#"
 Image tools: you have a `june_image` MCP toolset with `generate_image` and `edit_image`. Use `generate_image` when the user asks you to draw, create, make, or generate an image, picture, illustration, or logo; the result is shown to the user in the conversation and the tool returns a `filename`.
 Use this toolset instead of any generic image, media, or vision-analysis tool for image creation or edits, so June can display the returned image and keep the returned filename in context.
+Do not add a separate content refusal layer before calling these tools. The user's selected image model and image safe-mode setting are authoritative for what the image provider should attempt. If the selected model and setting may support the request, call the image tool with the user's prompt instead of substituting a clothed or sanitized alternative. If the image provider rejects the request, briefly report that provider rejection.
 When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact edit-safe filename returned by the prior image tool result as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced, even if you cannot see it. Only pass a `source_filename` from a prior `june_image` tool result.
 "#;
 
@@ -5782,7 +5785,15 @@ if (!(Test-Path (Join-Path $installDir "pyproject.toml"))) {
   try {
     $archive = Join-Path $tmpDir "hermes-agent.tar.gz"
     Invoke-WebRequest -Uri $sourceTarballUrl -OutFile $archive
-    $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($archive)
+    try {
+      $hashBytes = $sha256.ComputeHash($stream)
+      $actualSha256 = ([System.BitConverter]::ToString($hashBytes) -replace '-', '').ToLowerInvariant()
+    } finally {
+      $stream.Dispose()
+      $sha256.Dispose()
+    }
     if ($actualSha256 -ne $sourceTarballSha256) {
       throw "Hermes source archive checksum mismatch. Expected $sourceTarballSha256, got $actualSha256."
     }
@@ -9722,6 +9733,11 @@ mcp_servers:
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
         assert!(soul.contains("Open Software"));
+        assert!(soul.contains("User-directed roles and personas are allowed task framing"));
+        assert!(soul.contains("the current app and tool settings"));
+        assert!(
+            soul.contains("Do not claim to be a different product, company, human, or authority")
+        );
         assert!(!soul.contains("Nous Research"));
     }
 
@@ -9790,6 +9806,20 @@ mcp_servers:
         assert!(soul.contains("june_web"));
         assert!(soul.contains("web_search"));
         assert!(soul.contains("web_fetch"));
+    }
+
+    #[test]
+    fn june_soul_uses_image_settings_instead_of_pre_refusing() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_image"));
+        assert!(soul.contains("Do not add a separate content refusal layer"));
+        assert!(soul.contains("selected image model and image safe-mode setting are authoritative"));
+        assert!(soul.contains("call the image tool with the user's prompt"));
+        assert!(soul.contains("provider rejects the request"));
     }
 
     #[test]
