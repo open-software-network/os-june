@@ -856,6 +856,28 @@ pub async fn start_recording(
             .unwrap_or_else(|| "The selected recording sources are not ready.".to_string());
         return Err(AppError::new("source_not_ready", message));
     }
+    // First capture on a fresh install: the main app must own its TCC mic
+    // prompt (the dictation helper's grant is a different bundle). Resolve
+    // `not_determined` here, before the stream opens, so a denial is a clear
+    // error instead of a recording full of zeros.
+    #[cfg(target_os = "macos")]
+    {
+        let (permission_state, permission_hint) = tokio::task::spawn_blocking(
+            crate::audio::capture::request_microphone_permission_blocking,
+        )
+        .await
+        .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))?;
+        if matches!(
+            permission_state.as_str(),
+            "denied" | "restricted" | "not_determined"
+        ) {
+            return Err(AppError::new(
+                "microphone_permission_missing",
+                permission_hint
+                    .unwrap_or_else(|| "Microphone permission is required to record.".to_string()),
+            ));
+        }
+    }
     finish_active_capture_before_start(&repos).await?;
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
@@ -1281,13 +1303,21 @@ async fn finish_recording_session(
 
 fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
     let (microphone_state, microphone_hint) = microphone_permission_state();
-    let microphone_permission_granted = microphone_state == "granted";
+    // TCC grants are bundle-scoped, so the dictation helper's grant never
+    // covers the main app. `not_determined` (and the defensive `unknown`)
+    // must stay startable: the start path triggers the main app's own TCC
+    // prompt, and blocking here would leave a fresh install with no way to
+    // ever produce that prompt.
+    let microphone_permission_blocked =
+        matches!(microphone_state.as_str(), "denied" | "restricted");
     let microphone_device_available = microphone_device_available();
-    let microphone_ready = microphone_permission_granted && microphone_device_available;
-    let microphone_message = if microphone_permission_granted && !microphone_device_available {
+    let microphone_ready = !microphone_permission_blocked && microphone_device_available;
+    let microphone_message = if microphone_permission_blocked {
+        microphone_hint.clone()
+    } else if !microphone_device_available {
         Some(microphone_device_hint())
     } else {
-        microphone_hint.clone()
+        None
     };
     let mut sources = vec![SourceReadinessDto {
         source: RecordingSource::Microphone,
@@ -1296,9 +1326,8 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
         permission_state: microphone_state.clone(),
         device_available: microphone_device_available,
         capture_available: microphone_ready,
-        recovery_action: microphone_message.as_ref().and_then(|_| {
-            (!microphone_permission_granted).then(|| "openMicrophoneSettings".to_string())
-        }),
+        recovery_action: microphone_permission_blocked
+            .then(|| "openMicrophoneSettings".to_string()),
         message: microphone_message,
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {

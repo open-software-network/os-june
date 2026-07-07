@@ -198,6 +198,44 @@ fn microphone_authorization_status() -> MicrophoneAuthorizationStatus {
     }
 }
 
+/// TCC microphone grants are bundle-scoped: onboarding prompts through the
+/// dictation helper (`co.opensoftware.june.dictation-helper`), whose grant
+/// never covers the main app bundle. The main app must trigger its own TCC
+/// prompt before capture, or a fresh install records only zeros.
+#[cfg(target_os = "macos")]
+pub fn request_microphone_permission_blocking() -> (String, Option<String>) {
+    use objc2::{msg_send, runtime::AnyClass};
+    use objc2_foundation::NSString;
+
+    if microphone_authorization_status() != MicrophoneAuthorizationStatus::NotDetermined {
+        return microphone_permission_state();
+    }
+    let Some(device_class) = AnyClass::get(c"AVCaptureDevice") else {
+        return microphone_permission_state();
+    };
+    let (sender, receiver) = std::sync::mpsc::channel::<bool>();
+    let handler = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
+        let _ = sender.send(granted.as_bool());
+    });
+    let media_type = NSString::from_str("soun");
+    let _: () = unsafe {
+        msg_send![
+            device_class,
+            requestAccessForMediaType: &*media_type,
+            completionHandler: &*handler
+        ]
+    };
+    // The prompt has no OS-side timeout; a user who walks away must not hang
+    // the start command forever.
+    match receiver.recv_timeout(std::time::Duration::from_secs(120)) {
+        Ok(_) => microphone_permission_state(),
+        Err(_) => (
+            "not_determined".to_string(),
+            Some("Approve the macOS microphone prompt, then try again.".to_string()),
+        ),
+    }
+}
+
 pub fn microphone_device_available() -> bool {
     cpal::default_host().default_input_device().is_some()
 }
