@@ -23,6 +23,7 @@ import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
+import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
 import { IconGithub } from "central-icons/IconGithub";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
@@ -121,6 +122,8 @@ type SidebarProps = {
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   onNewAgentSession: () => void;
+  /** stored session id (not the runtime session id). */
+  onRenameAgentSession: (sessionId: string, title: string) => void;
   onSelectAgentSession: (session: HermesSessionInfo) => void;
   recoverableNoteIds?: ReadonlySet<string>;
   recordingStatus?: RecordingStatusDto | null;
@@ -348,6 +351,7 @@ export function Sidebar({
   onOpenMoveDialog,
   onRemoveNoteFromFolder,
   onNewAgentSession,
+  onRenameAgentSession,
   onSelectAgentSession,
   recoverableNoteIds,
   recordingStatus,
@@ -385,6 +389,7 @@ export function Sidebar({
   const [selectedAgentSessionId, setSelectedAgentSessionId] = useState<string>();
   const [agentSessionToDelete, setAgentSessionToDelete] = useState<HermesSessionInfo | null>(null);
   const [agentSessionDeleteError, setAgentSessionDeleteError] = useState<string | null>(null);
+  const [renamingAgentSessionId, setRenamingAgentSessionId] = useState<string | null>(null);
   const [deletingAgentSessionIds, setDeletingAgentSessionIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1087,11 +1092,14 @@ export function Sidebar({
                     waiting={waitingAgentSessionIds.has(session.id)}
                     unread={unreadAgentSessionIds.has(session.id)}
                     deleting={deletingAgentSessionIds.has(session.id)}
+                    renaming={renamingAgentSessionId === session.id}
                     menuOpen={menu?.kind === "agent-session" && menu.sessionId === session.id}
                     onSelect={() => {
                       setSelectedAgentSessionId(session.id);
                       onSelectAgentSession(session);
                     }}
+                    onRename={(title) => onRenameAgentSession(session.id, title)}
+                    onRenameEnd={() => setRenamingAgentSessionId(null)}
                     onOpenMenu={(anchor) => openMenuForAgentSession(session.id, anchor)}
                   />
                 ))}
@@ -1134,11 +1142,14 @@ export function Sidebar({
                       waiting={waitingAgentSessionIds.has(session.id)}
                       unread={unreadAgentSessionIds.has(session.id)}
                       deleting={deletingAgentSessionIds.has(session.id)}
+                      renaming={renamingAgentSessionId === session.id}
                       menuOpen={menu?.kind === "agent-session" && menu.sessionId === session.id}
                       onSelect={() => {
                         setSelectedAgentSessionId(session.id);
                         onSelectAgentSession(session);
                       }}
+                      onRename={(title) => onRenameAgentSession(session.id, title)}
+                      onRenameEnd={() => setRenamingAgentSessionId(null)}
                       onOpenMenu={(anchor) => openMenuForAgentSession(session.id, anchor)}
                     />
                   ))
@@ -1227,6 +1238,7 @@ export function Sidebar({
           right={menu.right}
           top={menu.top}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
+          onRename={() => setRenamingAgentSessionId(menuAgentSession.id)}
           onDelete={() => {
             setAgentSessionDeleteError(null);
             setAgentSessionToDelete(menuAgentSession);
@@ -1899,8 +1911,11 @@ function AgentSessionRow({
   waiting,
   unread,
   deleting,
+  renaming,
   menuOpen,
   onSelect,
+  onRename,
+  onRenameEnd,
   onOpenMenu,
 }: {
   session: HermesSessionInfo;
@@ -1909,14 +1924,52 @@ function AgentSessionRow({
   waiting: boolean;
   unread: boolean;
   deleting: boolean;
+  renaming: boolean;
   menuOpen: boolean;
   onSelect: () => void;
+  onRename: (title: string) => void;
+  onRenameEnd: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
 }) {
   const title = session.title || session.preview || "Untitled session";
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
   const time = formatSessionTime(sessionTimestamp(session));
   const menuRef = useRef<HTMLButtonElement>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const titleEditFinalizedRef = useRef(false);
+  const [titleDraft, setTitleDraft] = useState(title);
+
+  useEffect(() => {
+    if (renaming && titleInputRef.current) {
+      titleEditFinalizedRef.current = false;
+      setTitleDraft(title);
+      titleInputRef.current.focus();
+      titleInputRef.current.select();
+    }
+  }, [renaming, title]);
+
+  useEffect(() => {
+    if (!renaming) setTitleDraft(title);
+  }, [renaming, title]);
+
+  function commitRename(value: string) {
+    if (titleEditFinalizedRef.current) return;
+    titleEditFinalizedRef.current = true;
+    onRenameEnd();
+    const next = value.trim();
+    if (!next || next === title) {
+      setTitleDraft(title);
+      return;
+    }
+    onRename(next);
+  }
+
+  function cancelRename() {
+    titleEditFinalizedRef.current = true;
+    setTitleDraft(title);
+    onRenameEnd();
+  }
+
   return (
     <article
       className="note-row agent-sidebar-row"
@@ -1932,18 +1985,46 @@ function AgentSessionRow({
     >
       <div
         className="note-row-main"
-        role="button"
-        tabIndex={0}
-        onClick={onSelect}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onSelect();
-          }
-        }}
+        role={renaming ? undefined : "button"}
+        tabIndex={renaming ? undefined : 0}
+        onClick={renaming ? undefined : onSelect}
+        onKeyDown={
+          renaming
+            ? undefined
+            : (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect();
+                }
+              }
+        }
       >
         <span className="note-row-title">
-          <span className="note-row-title-text">{title}</span>
+          {renaming ? (
+            <input
+              ref={titleInputRef}
+              className="folder-note-title-input"
+              aria-label="Session name"
+              value={titleDraft}
+              onChange={(event) => setTitleDraft(event.currentTarget.value)}
+              onClick={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+              onBlur={(event) => commitRename(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitRename(event.currentTarget.value);
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelRename();
+                }
+              }}
+            />
+          ) : (
+            <span className="note-row-title-text">{title}</span>
+          )}
         </span>
       </div>
       {waiting ? (
@@ -2001,6 +2082,7 @@ function AgentSessionContextMenu({
   right,
   top,
   onTogglePinned,
+  onRename,
   onDelete,
   onClose,
 }: {
@@ -2009,6 +2091,7 @@ function AgentSessionContextMenu({
   right: number;
   top: number;
   onTogglePinned: () => void;
+  onRename: () => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -2029,6 +2112,17 @@ function AgentSessionContextMenu({
       >
         {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
         {pinned ? "Unpin session" : "Pin session"}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onRename();
+          onClose();
+        }}
+      >
+        <IconPencil size={14} />
+        Rename session
       </button>
       <div className="context-menu-separator" role="separator" />
       <button

@@ -1573,6 +1573,7 @@ function updateContinuityAfterIssueReportFollowUpSubmitFailed(
   });
 }
 
+/** stored session id (not the runtime session id). */
 export function recordManualAgentSessionTitle(sessionId: string, title: string) {
   if (!sessionContinuity) return;
   sessionContinuity = captureSessionContinuity({
@@ -6762,7 +6763,9 @@ export function AgentWorkspace({
     setHermesSessionItems((current) =>
       current.map((item) => (item.id === sessionId ? { ...item, title: next } : item)),
     );
-    void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {});
+    void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {
+      setError("Could not save the session name. It may revert after a restart.", { sessionId });
+    });
   }
 
   // Drops a deleted session from local state. Removing it from items fires
@@ -6831,7 +6834,10 @@ export function AgentWorkspace({
       firstUserMessageIndex >= 0
         ? messages
             .slice(firstUserMessageIndex + 1)
-            .find((message) => message.role === "assistant")
+            .find(
+              (message) =>
+                message.role === "assistant" && visibleHermesMessageText(message).trim(),
+            )
         : undefined;
     const reply = truncateAgentTitleResponseExcerpt(
       visibleHermesMessageText(firstAssistantReply).trim(),

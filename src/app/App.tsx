@@ -1920,6 +1920,7 @@ export function App() {
     }, 0);
   }, []);
 
+  /** stored session id (not the runtime session id). */
   const handleRenameAgentSession = useCallback(
     (sessionId: string, title: string) => {
       const next = title.trim();
@@ -1935,7 +1936,9 @@ export function App() {
       setAgentSessions((current) => current.map(renameSession));
       agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.map(renameSession);
       publishAgentMenuBarState();
-      void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {});
+      void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {
+        setError("Could not save the session name. It may revert after a restart.");
+      });
       recordManualAgentSessionTitle(sessionId, next);
     },
     [agentSessions, publishAgentMenuBarState],
@@ -2824,6 +2827,7 @@ export function App() {
           setActiveAgentSession(undefined);
           setActiveView("agent");
         }}
+        onRenameAgentSession={handleRenameAgentSession}
         onSelectAgentSession={(session) => {
           if (takeNewTabIntent()) {
             openTab({ view: "agent", agentSessionId: session.id });

@@ -131,6 +131,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -156,6 +157,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -196,6 +198,7 @@ describe("Sidebar primary navigation", () => {
           onOpenMoveDialog={vi.fn()}
           onRemoveNoteFromFolder={vi.fn()}
           onNewAgentSession={vi.fn()}
+          onRenameAgentSession={vi.fn()}
           onSelectAgentSession={vi.fn()}
         />,
       );
@@ -224,6 +227,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -249,6 +253,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -278,6 +283,7 @@ describe("Sidebar primary navigation", () => {
           onOpenMoveDialog={vi.fn()}
           onRemoveNoteFromFolder={vi.fn()}
           onNewAgentSession={vi.fn()}
+          onRenameAgentSession={vi.fn()}
           onSelectAgentSession={vi.fn()}
         />,
       );
@@ -335,6 +341,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -360,6 +367,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -405,6 +413,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -431,6 +440,7 @@ describe("Sidebar primary navigation", () => {
           onOpenMoveDialog={vi.fn()}
           onRemoveNoteFromFolder={vi.fn()}
           onNewAgentSession={vi.fn()}
+          onRenameAgentSession={vi.fn()}
           onSelectAgentSession={vi.fn()}
           onSettingsTabChange={vi.fn()}
         />,
@@ -483,6 +493,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -531,6 +542,7 @@ describe("Sidebar primary navigation", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );

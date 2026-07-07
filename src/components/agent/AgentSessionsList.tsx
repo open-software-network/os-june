@@ -41,6 +41,7 @@ type AgentSessionsListProps = {
   waitingSessionIds?: ReadonlySet<string>;
   onSelectSession: (session: HermesSessionInfo) => void;
   onNewSession: () => void;
+  /** stored session id (not the runtime session id). */
   onRenameSession: (sessionId: string, title: string) => void;
   onOpenMoveDialog: (sessionId: string) => void;
   onOpenMoveSessions: (sessionIds: string[]) => void;

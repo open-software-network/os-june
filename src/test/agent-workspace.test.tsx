@@ -3234,6 +3234,69 @@ describe("AgentWorkspace", () => {
     expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
   }, 10_000);
 
+  it("upgrades a prompt-only title from the first non-empty assistant reply", async () => {
+    const rawTitle = "I want you to summarize latest failures";
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "summarize latest failures",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const emptyAssistantMessage = {
+      id: "a-empty",
+      role: "assistant",
+      content: "",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "I found the failing path and isolated the missing persistence call.",
+      timestamp: "2026-06-04T12:00:02Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-upgrade-empty",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([userMessage])
+      .mockResolvedValue([userMessage, emptyAssistantMessage, assistantMessage]);
+    mocks.suggestAgentSessionTitle
+      .mockResolvedValueOnce({ title: "Failure Summary" })
+      .mockResolvedValueOnce({ title: "Persistence Fix" });
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-upgrade-empty",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:00Z",
+      },
+      "sandboxed",
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Failure Summary")).toBeInTheDocument();
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenLastCalledWith(
+      "summarize latest failures",
+      "I found the failing path and isolated the missing persistence call.",
+    );
+    expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
+  }, 10_000);
+
   it("persists manual header renames and blocks later title suggestions", async () => {
     const userMessage = {
       id: "u1",
@@ -3277,6 +3340,7 @@ describe("AgentWorkspace", () => {
       await screen.findByText("I want you to summarize the billing retry failure"),
     ).toBeInTheDocument();
     expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
+    mocks.ensureHermesBridgeSession.mockRejectedValueOnce(new Error("patch failed"));
 
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
@@ -3289,6 +3353,9 @@ describe("AgentWorkspace", () => {
       sessionId: "session-manual",
       title: "Billing retry notes",
     });
+    expect(
+      await screen.findByText("Could not save the session name. It may revert after a restart."),
+    ).toBeInTheDocument();
 
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 2600));
