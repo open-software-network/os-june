@@ -18,9 +18,10 @@ use june_domain::{
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
-    ImageService, ImageServiceDeps, NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService,
-    NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
-    WebAugmentService, WebAugmentServiceDeps,
+    ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
+    NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService, NoteGenerateServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
+    WebAugmentServiceDeps,
 };
 use pretty_assertions::assert_eq;
 use std::{
@@ -295,7 +296,7 @@ async fn integration_dictate_fills_language_when_provider_returns_none()
     // Venice ASR never returns a detected language, so the provider yields
     // `None` and the service must fill it in from the transcript text (JUN-180).
     let state = test_state_with_sinks_and_transcriber(
-        Arc::new(RecordingIssueReportSink::default()),
+        test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
         test_attestation(),
         Arc::new(LanguagelessTranscriber),
     );
@@ -329,7 +330,7 @@ async fn integration_dictate_prefers_requested_language_over_detection()
     // reach enrichment and win over text detection (JUN-180 P2). The transcript
     // text is English, but the request asks for Polish.
     let state = test_state_with_sinks_and_transcriber(
-        Arc::new(RecordingIssueReportSink::default()),
+        test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
         test_attestation(),
         Arc::new(LanguagelessTranscriber),
     );
@@ -795,25 +796,36 @@ fn test_state() -> ApiState {
 }
 
 fn test_state_with_attestation(attestation: AttestationInfo) -> ApiState {
-    test_state_with_sinks(Arc::new(RecordingIssueReportSink::default()), attestation)
+    test_state_with_sinks(
+        test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation,
+    )
 }
 
 fn test_state_with_issue_sink(
     issue_reports: Arc<dyn IssueReportSink>,
     attestation: AttestationInfo,
 ) -> ApiState {
-    test_state_with_sinks(issue_reports, attestation)
+    test_state_with_sinks(test_issue_report_service(issue_reports), attestation)
+}
+
+fn test_issue_report_service(issue_reports: Arc<dyn IssueReportSink>) -> Arc<IssueReportService> {
+    Arc::new(IssueReportService::new(IssueReportServiceDeps {
+        sink: issue_reports,
+        chat_completer: Arc::new(FakeChatCompleter),
+        config: june_config::IssueReportsConfig::default(),
+    }))
 }
 
 fn test_state_with_sinks(
-    issue_reports: Arc<dyn IssueReportSink>,
+    issue_reports: Arc<IssueReportService>,
     attestation: AttestationInfo,
 ) -> ApiState {
     test_state_with_sinks_and_transcriber(issue_reports, attestation, Arc::new(FakeTranscriber))
 }
 
 fn test_state_with_sinks_and_transcriber(
-    issue_reports: Arc<dyn IssueReportSink>,
+    issue_reports: Arc<IssueReportService>,
     attestation: AttestationInfo,
     transcriber: Arc<dyn Transcriber>,
 ) -> ApiState {

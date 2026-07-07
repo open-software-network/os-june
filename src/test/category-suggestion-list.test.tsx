@@ -2,7 +2,6 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { CategorySuggestionList } from "../components/agent/composer/CategorySuggestionList";
-import { REPORT_CATEGORIES } from "../components/agent/composer/reportCategory";
 
 describe("category suggestion list", () => {
   it("keeps rows compact and moves skill descriptions to hover detail", () => {
@@ -12,7 +11,6 @@ describe("category suggestion list", () => {
       <CategorySuggestionList
         command={command}
         items={[
-          { kind: "category", category: REPORT_CATEGORIES[0] },
           {
             kind: "skill",
             skill: {
@@ -26,8 +24,6 @@ describe("category suggestion list", () => {
       />,
     );
 
-    expect(screen.getByText("Bug report")).toBeInTheDocument();
-    expect(screen.queryByText("Something isn't working right")).not.toBeInTheDocument();
     expect(screen.getByText("Skills")).toBeInTheDocument();
     expect(screen.getByText("skill-creator")).toBeInTheDocument();
     expect(
@@ -94,7 +90,7 @@ describe("category suggestion list", () => {
       />,
     );
 
-    const list = screen.getByRole("listbox", { name: "Tag this message" });
+    const list = screen.getByRole("listbox", { name: "Slash commands" });
     const wrap = list.parentElement;
     expect(wrap).toHaveClass("agent-category-menu-scroll-wrap");
 

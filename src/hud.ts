@@ -112,17 +112,14 @@ const brailleWave = spinners.waverows;
 const EXIT_TRANSITION_MS = 240;
 // Matches the .hud.is-morphing fade (60ms) plus a frame of slack.
 const MORPH_FADE_MS = 80;
-// Transparent, click-through margin around the frostless HUD surface. Its
-// CSS shadow paints here and the meeting dismiss can overhang the card's
-// edge. This is the agent HUD model: transparent native window, CSS-painted
-// surface, no native vibrancy rim.
-const WINDOW_GUTTER = 16;
+// Transparent margin around the frostless HUD surface. The compact HUD shadow
+// paints here and the meeting dismiss can overhang the card's edge. Keep this
+// in sync with --shadow-hud's maximum spread in tokens.css; using the larger
+// app-card shadows here clips the overlay or forces a click-blocking window.
+const WINDOW_GUTTER = 18;
 // Gap between the error pill and the message layer that draws above/below it
 // — must match the .hud-error-layer margin in hud.css.
 const ERROR_LAYER_GAP = 8;
-// The error message layer's reveal / retract — must track the
-// .hud-error-layer grid-template-rows transition (--t-med) in hud.css.
-const ERROR_REVEAL_MS = 160;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
 
 function invokeBestEffort(command: string, args?: Record<string, unknown>) {
@@ -430,7 +427,7 @@ function setDismissHover(isHovered: boolean) {
 // Hovering anywhere over the card (plus the overhanging X) reveals the
 // corner dismiss; hovering the record button paints its hover wash.
 function pushDismissBoundsToNative() {
-  if (!hud || hud.dataset.state !== "meeting") {
+  if (hud?.dataset.state !== "meeting") {
     invokeBestEffort("dictation_hud_set_dismiss_bounds", { rect: null });
     invokeBestEffort("dictation_hud_set_record_bounds", { rect: null });
     return;
