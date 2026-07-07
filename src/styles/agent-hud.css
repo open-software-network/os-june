@@ -538,9 +538,15 @@ body {
     transition: none;
   }
 
+  /* The sweep and breathe animations are started by status-qualified selectors
+   * (.agent-hud-mark[data-status]::before, .agent-hud-status[data-status]), so
+   * plain .agent-hud-mark::before / .agent-hud-status resets lose on specificity
+   * and the motion survives. Match the attribute specificity here; this block
+   * sits later in the file, so equal specificity resolves in its favor. */
   .agent-hud-mark,
-  .agent-hud-mark::before,
-  .agent-hud-status {
+  .agent-hud-mark[data-status]::before,
+  .agent-hud-status,
+  .agent-hud-status[data-status] {
     animation: none;
   }
 }
