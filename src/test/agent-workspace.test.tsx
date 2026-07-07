@@ -23,6 +23,8 @@ import { hermesArtifactStore } from "../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 
+const formatTokenCount = (value: number) => value.toLocaleString();
+
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
   `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
@@ -4911,7 +4913,7 @@ describe("AgentWorkspace", () => {
     expect(await within(panel).findByText("GLM 5.2")).toBeInTheDocument();
     // The redesigned meter splits the reading (used, then a muted "/ limit
     // tokens" span) and the percent into separate legend elements.
-    expect(within(panel).getByText(/1,000 tokens/)).toBeInTheDocument();
+    expect(within(panel).getByText(new RegExp(`${formatTokenCount(1000)} tokens`))).toBeInTheDocument();
     expect(within(panel).getByText(/^10%$/)).toBeInTheDocument();
     expect(resumeCount).toBe(2);
   });

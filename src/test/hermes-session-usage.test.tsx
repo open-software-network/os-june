@@ -5,6 +5,11 @@ import type { VeniceModelDto } from "../lib/tauri";
 import { SessionUsagePanel } from "../components/agent/SessionUsagePanel";
 import { USAGE_DEMO_FIXTURES, USAGE_DEMO_ORDER } from "../lib/usage-panel-demo";
 
+const formatCount = (value: number) => value.toLocaleString();
+const numberPattern = (value: number) => new RegExp(formatCount(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+const tokensPattern = (value: number) =>
+  new RegExp(`${formatCount(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} tokens`);
+
 // A full usage payload as the gateway might return it. Mixes snake_case and a
 // nested tool-cost breakdown so the parser is exercised on realistic wire data.
 const FULL_RAW = {
@@ -154,8 +159,8 @@ describe("SessionUsagePanel", () => {
     ).toBeTruthy();
 
     // Context reading and percent surface from the meter (always visible).
-    expect(screen.getByText(/18,?000/)).toBeInTheDocument();
-    expect(screen.getByText(/200,?000 tokens/)).toBeInTheDocument();
+    expect(screen.getByText(numberPattern(18000))).toBeInTheDocument();
+    expect(screen.getByText(tokensPattern(200000))).toBeInTheDocument();
     expect(screen.getByText(/^9%$/)).toBeInTheDocument();
 
     // Token rows and cost live behind the "Show more" disclosure: collapsed by
@@ -176,9 +181,9 @@ describe("SessionUsagePanel", () => {
     );
     expect(disclosure).toHaveAttribute("data-open", "true");
     expect(disclosureInner).toHaveAttribute("aria-hidden", "false");
-    expect(screen.getByText(/1,?200/)).toBeInTheDocument();
+    expect(screen.getByText(numberPattern(1200))).toBeInTheDocument();
     expect(screen.getByText(/^800$/)).toBeInTheDocument();
-    expect(screen.getByText(/2,?000/)).toBeInTheDocument();
+    expect(screen.getByText(numberPattern(2000))).toBeInTheDocument();
     expect(screen.getByText(/\$0\.42/)).toBeInTheDocument();
     expect(screen.getByText("web_search")).toBeInTheDocument();
     expect(screen.getByText("code_subagent")).toBeInTheDocument();
@@ -275,7 +280,7 @@ describe("SessionUsagePanel", () => {
     expect(await screen.findByText("opus")).toBeInTheDocument();
     // The total-tokens row lives behind the disclosure; open it.
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
-    expect(screen.getByText(/2,?000/)).toBeInTheDocument();
+    expect(screen.getByText(numberPattern(2000))).toBeInTheDocument();
     // No cost row and no disclaimer when there is no cost, even when expanded.
     expect(screen.queryByText("Estimated cost")).toBeNull();
     expect(screen.queryByText(/Actual billing may differ/)).toBeNull();
@@ -394,10 +399,10 @@ describe("SessionUsagePanel", () => {
     );
     await waitFor(() => expect(fetchUsage).toHaveBeenCalledTimes(1));
     // Reading and percent computed against 200,000, not 1,000,000.
-    expect(await screen.findByText(/200,?000 tokens/)).toBeInTheDocument();
+    expect(await screen.findByText(tokensPattern(200000))).toBeInTheDocument();
     expect(screen.getByText(/^50%$/)).toBeInTheDocument();
     // The runtime's 1,000,000 does not surface as the denominator.
-    expect(screen.queryByText(/1,?000,?000 tokens/)).toBeNull();
+    expect(screen.queryByText(tokensPattern(1000000))).toBeNull();
   });
 
   it("renders 60 meter segments and lights the count matching the percent", async () => {

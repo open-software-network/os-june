@@ -71,7 +71,7 @@ export function humanizeSchedule(schedule: string): string {
 }
 
 export function compactScheduleLabel(schedule: string): string {
-  return humanizeSchedule(schedule).replace(/\bat (?=\d{1,2}:\d{2}\b)/, "");
+  return humanizeSchedule(schedule).replace(/\bat (?=\p{Number}{1,2}\D\p{Number}{2}\b)/u, "");
 }
 
 function parseField(raw: string, min: number, max: number, names?: string[]): CronField | null {

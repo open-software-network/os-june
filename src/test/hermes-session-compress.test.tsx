@@ -9,6 +9,8 @@ import { createHermesMethods } from "../lib/hermes-control-plane";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { SessionCompactDialog } from "../components/agent/AgentWorkspace";
 
+const numberPattern = (value: number) => new RegExp(value.toLocaleString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+
 // A full compress result as the gateway might return it, mixing snake_case and
 // a nested usage block so the parser is exercised on realistic wire data.
 const FULL_RAW = {
@@ -133,8 +135,8 @@ describe("SessionCompactDialog", () => {
     await userEvent.click(screen.getByRole("button", { name: /compact context/i }));
 
     // Both endpoints render (grouped formatting tolerated).
-    expect(await screen.findByText(/120,?000/)).toBeInTheDocument();
-    expect(screen.getByText(/18,?000/)).toBeInTheDocument();
+    expect(await screen.findByText(numberPattern(120_000))).toBeInTheDocument();
+    expect(screen.getByText(numberPattern(18_000))).toBeInTheDocument();
   });
 
   it("still shows success when the result has no token metrics", async () => {
