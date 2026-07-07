@@ -91,6 +91,7 @@ import {
   AGENT_OPEN_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
+  emitAgentSessionsChanged,
   type AgentGalleryDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
@@ -1949,6 +1950,14 @@ export function App() {
           detail: { sessionId, title: next },
         }),
       );
+      // The Agent HUD is a separate window listening on the cross-window
+      // sessions channel; without this emit it would show the old title until
+      // an unrelated sessions-changed broadcast.
+      emitAgentSessionsChanged({
+        sessions: agentMenuBarSessionsRef.current,
+        workingSessionIds: [...agentMenuBarWorkingSessionIdsRef.current],
+        waitingSessionIds: [...agentMenuBarWaitingSessionIdsRef.current],
+      });
     },
     [agentSessions, publishAgentMenuBarState],
   );
