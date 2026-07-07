@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       publish:
-        description: "Upload Windows assets to the releases repo"
+        description: "Final publish: upload Windows assets and update latest.json"
         required: true
         default: false
         type: boolean

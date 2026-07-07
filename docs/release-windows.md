@@ -98,11 +98,27 @@ and initial `latest.json`. It also records the source commit in a
 commit and rebuilds the same tree, so it does not depend on the bump and can run
 as soon as promote finishes.
 
-Once promote has published `vX.Y.Z`, run:
+Once promote has published `vX.Y.Z`, first run a non-publishing dry run:
 
 ```text
-GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z
+GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z, publish false
 ```
+
+Dry-run mode builds, signs, verifies, and uploads the NSIS output as a workflow
+artifact, but it does not upload release assets, clobber existing assets, or
+merge `windows-x86_64` into `latest.json`. Use the dry-run artifact for signing
+and payload inspection before the final publish.
+
+After the dry run passes and the artifact has been inspected, run the final
+publish explicitly:
+
+```text
+GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z, publish true
+```
+
+The `publish` input defaults to `false`, so a completed workflow run is not a
+published Windows release unless the summary says `Published release assets:
+yes`.
 
 The Windows workflow performs the release steps in order:
 
@@ -128,15 +144,15 @@ The Windows workflow performs the release steps in order:
     updater signature file exists, and inspects the NSIS payload, including the
     bundled Hermes launcher and Python runtime.
 11. Uploads the NSIS output as a workflow artifact.
-12. Uploads Windows release assets and merges `windows-x86_64` into
-    `latest.json` without removing macOS updater entries or the generated
-    release changelog.
+12. When `publish` is `true`, uploads Windows release assets and merges
+    `windows-x86_64` into `latest.json` without removing macOS updater entries
+    or the generated release changelog.
 
 ## Validation
 
-After the workflow publishes assets, download `June_x64-setup.exe` from
-`open-software-network/os-june-releases`, copy it to a clean Windows 11 VM, and
-run:
+After the workflow publishes assets with `publish` set to `true`, download
+`June_x64-setup.exe` from `open-software-network/os-june-releases`, copy it to a
+clean Windows 11 VM, and run:
 
 ```powershell
 $installer = "$env:USERPROFILE\Downloads\June_x64-setup.exe"
