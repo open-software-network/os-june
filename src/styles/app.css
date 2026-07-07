@@ -17367,6 +17367,27 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+.folder-note-title-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+  outline: 0;
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.folder-note-title-input:focus,
+.folder-note-title-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .folder-note-subtitle {
   display: inline-flex;
   align-items: center;

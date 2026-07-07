@@ -3234,6 +3234,72 @@ describe("AgentWorkspace", () => {
     expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
   }, 10_000);
 
+  it("persists manual header renames and blocks later title suggestions", async () => {
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "summarize the billing retry failure",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "The retry path skipped the persisted session title update.",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-manual",
+        title: "I want you to summarize the billing retry failure",
+        preview: "I want you to summarize the billing retry failure",
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([userMessage, assistantMessage]);
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-manual",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:00Z",
+      },
+      "sandboxed",
+    );
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText("I want you to summarize the billing retry failure"),
+    ).toBeInTheDocument();
+    expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Session name" });
+    await user.clear(input);
+    await user.type(input, "Billing retry notes{Enter}");
+
+    expect(await screen.findByText("Billing retry notes")).toBeInTheDocument();
+    expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+      sessionId: "session-manual",
+      title: "Billing retry notes",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-manual"),
+    );
+    expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
+  }, 10_000);
+
   it("does not suggest a title for non-replaceable loaded sessions without a title source", async () => {
     mocks.listHermesSessions.mockResolvedValue([
       {

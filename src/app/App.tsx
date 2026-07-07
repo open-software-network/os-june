@@ -15,6 +15,7 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
   markAgentNewSessionPending,
+  recordManualAgentSessionTitle,
   type AgentNewSessionDetail,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
@@ -1919,6 +1920,27 @@ export function App() {
     }, 0);
   }, []);
 
+  const handleRenameAgentSession = useCallback(
+    (sessionId: string, title: string) => {
+      const next = title.trim();
+      const currentSession = agentSessions.find((session) => session.id === sessionId);
+      const currentTitle =
+        currentSession?.title?.trim() ||
+        currentSession?.preview?.trim() ||
+        (currentSession ? "Untitled session" : "");
+      if (!next || next === currentTitle) return;
+
+      const renameSession = (session: HermesSessionInfo) =>
+        session.id === sessionId ? { ...session, title: next } : session;
+      setAgentSessions((current) => current.map(renameSession));
+      agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.map(renameSession);
+      publishAgentMenuBarState();
+      void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {});
+      recordManualAgentSessionTitle(sessionId, next);
+    },
+    [agentSessions, publishAgentMenuBarState],
+  );
+
   useEffect(() => {
     if (
       appBlocked ||
@@ -3034,6 +3056,7 @@ export function App() {
                     setActiveView("agent");
                   }}
                   onNewSession={handleNewAgentSession}
+                  onRenameSession={handleRenameAgentSession}
                   onOpenMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
                   onOpenMoveSessions={(sessionIds) => setMoveDialogSessionIds(sessionIds)}
                   onRemoveFromProject={(sessionId, folderId) =>

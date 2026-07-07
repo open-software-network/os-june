@@ -67,6 +67,7 @@ describe("AgentSessionsList", () => {
         waitingSessionIds={new Set(["waiting-session"])}
         onSelectSession={vi.fn()}
         onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onOpenMoveSessions={vi.fn()}
         onRemoveFromProject={vi.fn()}
@@ -100,6 +101,7 @@ describe("AgentSessionsList", () => {
         waitingSessionIds={new Set(["waiting-session"])}
         onSelectSession={vi.fn()}
         onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onOpenMoveSessions={onOpenMoveSessions}
         onRemoveFromProject={vi.fn()}
@@ -128,6 +130,7 @@ describe("AgentSessionsList", () => {
         waitingSessionIds={new Set(["waiting-session"])}
         onSelectSession={vi.fn()}
         onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onOpenMoveSessions={onOpenMoveSessions}
         onRemoveFromProject={vi.fn()}
@@ -158,6 +161,7 @@ describe("AgentSessionsList", () => {
         waitingSessionIds={new Set(["waiting-session"])}
         onSelectSession={vi.fn()}
         onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onOpenMoveSessions={vi.fn()}
         onRemoveFromProject={vi.fn()}
@@ -172,6 +176,100 @@ describe("AgentSessionsList", () => {
     expect(hermesMocks.deleteHermesSession).toHaveBeenCalledTimes(2);
     expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(1, "waiting-session");
     expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(2, "running-session");
+  });
+
+  it("renames a session row from the action menu", async () => {
+    const user = userEvent.setup();
+    const onRenameSession = vi.fn();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={onRenameSession}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Session name" });
+
+    await user.clear(input);
+    await user.type(input, "Manual session name{Enter}");
+
+    expect(onRenameSession).toHaveBeenCalledWith("idle-session", "Manual session name");
+  });
+
+  it("cancels row rename on Escape", async () => {
+    const user = userEvent.setup();
+    const onRenameSession = vi.fn();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={onRenameSession}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.type(screen.getByRole("textbox", { name: "Session name" }), "{Escape}");
+
+    expect(onRenameSession).not.toHaveBeenCalled();
+    expect(screen.getByText("Idle session")).toBeInTheDocument();
+  });
+
+  it("does not commit unchanged or empty row rename text", async () => {
+    const user = userEvent.setup();
+    const onRenameSession = vi.fn();
+    const { rerender } = render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={onRenameSession}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.type(screen.getByRole("textbox", { name: "Session name" }), "{Enter}");
+
+    rerender(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={onRenameSession}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.clear(screen.getByRole("textbox", { name: "Session name" }));
+    await user.type(screen.getByRole("textbox", { name: "Session name" }), "{Enter}");
+
+    expect(onRenameSession).not.toHaveBeenCalled();
   });
 });
 

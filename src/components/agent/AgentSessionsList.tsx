@@ -7,6 +7,7 @@ import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
+import { IconPencil } from "central-icons/IconPencil";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import {
@@ -40,6 +41,7 @@ type AgentSessionsListProps = {
   waitingSessionIds?: ReadonlySet<string>;
   onSelectSession: (session: HermesSessionInfo) => void;
   onNewSession: () => void;
+  onRenameSession: (sessionId: string, title: string) => void;
   onOpenMoveDialog: (sessionId: string) => void;
   onOpenMoveSessions: (sessionIds: string[]) => void;
   onRemoveFromProject: (sessionId: string, folderId: string) => void;
@@ -62,6 +64,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
       waitingSessionIds = EMPTY_SESSION_IDS,
       onSelectSession,
       onNewSession,
+      onRenameSession,
       onOpenMoveDialog,
       onOpenMoveSessions,
       onRemoveFromProject,
@@ -285,6 +288,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
                 checked={selectedIds.has(session.id)}
                 onToggleSelected={() => toggleSelected(session.id)}
                 onSelect={() => onSelectSession(session)}
+                onRename={(title) => onRenameSession(session.id, title)}
                 onOpenMove={() => onOpenMoveDialog(session.id)}
                 onRemoveFromProject={(folderId) => onRemoveFromProject(session.id, folderId)}
               />
@@ -418,6 +422,7 @@ function AgentSessionListRow({
   checked,
   onToggleSelected,
   onSelect,
+  onRename,
   onOpenMove,
   onRemoveFromProject,
 }: {
@@ -428,6 +433,7 @@ function AgentSessionListRow({
   checked: boolean;
   onToggleSelected: () => void;
   onSelect: () => void;
+  onRename: (title: string) => void;
   onOpenMove: () => void;
   onRemoveFromProject: (folderId: string) => void;
 }) {
@@ -438,6 +444,22 @@ function AgentSessionListRow({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(title);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const titleEditFinalizedRef = useRef(false);
+
+  useEffect(() => {
+    if (editingTitle && titleInputRef.current) {
+      titleEditFinalizedRef.current = false;
+      titleInputRef.current.focus();
+      titleInputRef.current.select();
+    }
+  }, [editingTitle]);
+
+  useEffect(() => {
+    if (!editingTitle) setTitleDraft(title);
+  }, [editingTitle, title]);
 
   useEffect(() => {
     if (!menu) return;
@@ -476,6 +498,66 @@ function AgentSessionListRow({
     }
   }
 
+  function commitRename(value: string) {
+    if (titleEditFinalizedRef.current) return;
+    titleEditFinalizedRef.current = true;
+    setEditingTitle(false);
+    const next = value.trim();
+    if (!next || next === title) {
+      setTitleDraft(title);
+      return;
+    }
+    onRename(next);
+  }
+
+  function cancelRename() {
+    titleEditFinalizedRef.current = true;
+    setTitleDraft(title);
+    setEditingTitle(false);
+  }
+
+  const rowMain = (
+    <>
+      <span className="folder-note-icon" aria-hidden>
+        {isScheduledRunSession(session) ? (
+          <IconArrowsRepeat size={15} />
+        ) : (
+          <IconBubble3 size={15} />
+        )}
+      </span>
+      <span className="folder-note-body">
+        {editingTitle ? (
+          <input
+            ref={titleInputRef}
+            className="folder-note-title-input"
+            aria-label="Session name"
+            value={titleDraft}
+            onChange={(event) => setTitleDraft(event.currentTarget.value)}
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onBlur={(event) => commitRename(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitRename(event.currentTarget.value);
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRename();
+              }
+            }}
+          />
+        ) : (
+          <span className="folder-note-title">{title}</span>
+        )}
+        <span className="folder-note-subtitle">
+          {projectName ? `${projectName} · ${preview}` : preview}
+        </span>
+      </span>
+    </>
+  );
+
   return (
     <li>
       <div
@@ -496,21 +578,13 @@ function AgentSessionListRow({
             {checked ? <IconCheckmark2Medium size={10} /> : null}
           </span>
         </label>
-        <button type="button" className="folder-note-main" onClick={onSelect}>
-          <span className="folder-note-icon" aria-hidden>
-            {isScheduledRunSession(session) ? (
-              <IconArrowsRepeat size={15} />
-            ) : (
-              <IconBubble3 size={15} />
-            )}
-          </span>
-          <span className="folder-note-body">
-            <span className="folder-note-title">{title}</span>
-            <span className="folder-note-subtitle">
-              {projectName ? `${projectName} · ${preview}` : preview}
-            </span>
-          </span>
-        </button>
+        {editingTitle ? (
+          <div className="folder-note-main">{rowMain}</div>
+        ) : (
+          <button type="button" className="folder-note-main" onClick={onSelect}>
+            {rowMain}
+          </button>
+        )}
         {status ? (
           <span
             className="agent-session-list-status"
@@ -555,6 +629,19 @@ function AgentSessionListRow({
             role="menu"
             onClick={(event) => event.stopPropagation()}
           >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenu(null);
+                setTitleDraft(title);
+                titleEditFinalizedRef.current = false;
+                setEditingTitle(true);
+              }}
+            >
+              <IconPencil size={14} />
+              Rename
+            </button>
             <button
               type="button"
               role="menuitem"

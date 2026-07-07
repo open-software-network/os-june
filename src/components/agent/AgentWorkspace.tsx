@@ -1573,6 +1573,32 @@ function updateContinuityAfterIssueReportFollowUpSubmitFailed(
   });
 }
 
+export function recordManualAgentSessionTitle(sessionId: string, title: string) {
+  if (!sessionContinuity) return;
+  sessionContinuity = captureSessionContinuity({
+    sessionItems: sessionContinuity.sessionItems.map((session) =>
+      session.id === sessionId ? { ...session, title } : session,
+    ),
+    pendingMessages: sessionContinuity.pendingMessages,
+    runtimeSessionIds: sessionContinuity.runtimeSessionIds,
+    liveEvents: sessionContinuity.liveEvents,
+    titleOverrides: {
+      ...sessionContinuity.titleOverrides,
+      [sessionId]: title,
+    },
+    titleSources: {
+      ...sessionContinuity.titleSources,
+      [sessionId]: "manual",
+    },
+    pendingIssueReports: sessionContinuity.pendingIssueReports,
+    reviewableIssueReports: sessionContinuity.reviewableIssueReports,
+    diagnosisRefreshIssueReportSessionIds: new Set(
+      sessionContinuity.diagnosisRefreshIssueReportSessionIds,
+    ),
+    submittingIssueReportSessionIds: new Set(sessionContinuity.submittingIssueReportSessionIds),
+  });
+}
+
 function dispatchIssueReportDeliverySettled(detail: IssueReportDeliverySettledDetail) {
   updateContinuityAfterIssueReportDelivery(detail);
   window.dispatchEvent(
@@ -6718,14 +6744,25 @@ export function AgentWorkspace({
   // use) and marks the session so the suggester won't clobber the user's name.
   // The sessions-changed effect propagates it to the sidebar.
   function renameHermesSession(sessionId: string, title: string) {
+    const next = title.trim();
+    const currentTitle =
+      sessionTitleOverridesRef.current[sessionId] ??
+      hermesSessionItems.find((item) => item.id === sessionId)?.title ??
+      "";
+    if (!next || next === currentTitle.trim()) return;
     titleSuggestionSessionIdsRef.current.add(sessionId);
     sessionTitleOverridesRef.current = {
       ...sessionTitleOverridesRef.current,
-      [sessionId]: title,
+      [sessionId]: next,
+    };
+    sessionTitleSourceRef.current = {
+      ...sessionTitleSourceRef.current,
+      [sessionId]: "manual",
     };
     setHermesSessionItems((current) =>
-      current.map((item) => (item.id === sessionId ? { ...item, title } : item)),
+      current.map((item) => (item.id === sessionId ? { ...item, title: next } : item)),
     );
+    void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {});
   }
 
   // Drops a deleted session from local state. Removing it from items fires
@@ -8426,8 +8463,7 @@ function AgentSessionBar({
 
   function commitRename() {
     setRenaming(false);
-    const next = draft.trim();
-    if (onRename && next && next !== title) onRename(next);
+    onRename?.(draft);
   }
 
   const hasMenu = Boolean(
