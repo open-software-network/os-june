@@ -107,6 +107,10 @@ const JUNE_RECORDER_MCP_SCRIPT: &str = include_str!("hermes/june_recorder_mcp.py
 /// Environment variable the `june_recorder` MCP reads its loopback proxy token
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_RECORDER_MCP_TOKEN_ENV: &str = "JUNE_RECORDER_PROXY_TOKEN";
+/// Hermes-side per-tool-call timeout for `june_recorder`; the top of the
+/// timeout stack (proxy lease < python client < this), pinned by
+/// `recorder_timeout_stack_ordering_holds`.
+const JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS: u64 = 620;
 const AGENT_RECORDER_REQUEST_EVENT: &str = "june://agent-recorder-request";
 // The frontend start path can legitimately take minutes: readiness runs
 // twice (React probes before startRecording, then the command re-probes) and
@@ -6782,10 +6786,11 @@ fn render_recorder_mcp_entry(
     env:
       PYTHONUNBUFFERED: "1"
       {token_env}: {token}
-    timeout: 620
+    timeout: {tool_timeout}
     connect_timeout: 10
 "#,
         server_name = JUNE_RECORDER_MCP_SERVER_NAME,
+        tool_timeout = JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS,
         command = yaml_string(&config.command),
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         base_url = yaml_string(base_url),
@@ -8810,6 +8815,28 @@ mod tests {
     }
 
     #[test]
+    fn recorder_timeout_stack_ordering_holds() {
+        // Parse the python client's timeout out of the embedded script so a
+        // bump of any leg fails a test instead of drifting by comment.
+        let python_timeout: u64 = JUNE_RECORDER_MCP_SCRIPT
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("REQUEST_TIMEOUT_SECONDS = "))
+            .expect("script declares REQUEST_TIMEOUT_SECONDS")
+            .trim()
+            .parse()
+            .expect("timeout is an integer");
+        let lease = AGENT_RECORDER_REQUEST_TIMEOUT.as_secs();
+        assert!(
+            lease + 30 <= python_timeout,
+            "python client ({python_timeout}s) must outlive the proxy lease ({lease}s) with slack"
+        );
+        assert!(
+            python_timeout + 30 <= JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS,
+            "hermes tool timeout ({JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS}s) must outlive the python client ({python_timeout}s) with slack"
+        );
+    }
+
+    #[test]
     fn agent_recorder_lease_outlives_the_worst_honest_start_path() {
         // Readiness runs twice on the agent start path (React probes before
         // startRecording, the command re-probes), each pass can wait the full
@@ -9667,10 +9694,13 @@ mcp_servers:
         // general provider token.
         assert!(config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"recorder-proxy-tok\"\n"));
         assert!(!config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"proxy-tok\"\n"));
-        // The Hermes-side tool timeout must outlive the proxy lease (240s)
-        // plus the Python client's attempt (300s), or Hermes reports failure
-        // while June is still honestly waiting on the permission prompt.
-        assert!(config.contains("    timeout: 620\n"));
+        // The Hermes-side tool timeout must sit at the top of the stack
+        // (proxy lease < python client < hermes), or Hermes reports failure
+        // while June is still honestly waiting on the permission prompt;
+        // `recorder_timeout_stack_ordering_holds` pins the full ordering.
+        assert!(config.contains(&format!(
+            "    timeout: {JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS}\n"
+        )));
     }
 
     #[test]
