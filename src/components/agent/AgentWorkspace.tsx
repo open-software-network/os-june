@@ -5294,11 +5294,18 @@ export function AgentWorkspace({
             "session.create",
             (() => {
               const activeProfile = getActiveHermesProfileName();
+              const underProfile = activeProfile !== "default";
               return {
                 title: nextSessionTitle ?? fallbackSessionTitle,
                 cols: 96,
-                ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-                ...(activeProfile !== "default" ? { profile: activeProfile } : {}),
+                // The composer's model IS June's global generation selection
+                // (there is no separate per-chat pick), and session.create
+                // treats `model` as a per-session override. Under a named
+                // profile the override would silently bypass the profile's own
+                // configured text model - the point of profiles - so it is
+                // omitted and the profile's model applies.
+                ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
+                ...(underProfile ? { profile: activeProfile } : {}),
               };
             })(),
           );

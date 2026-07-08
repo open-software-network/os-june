@@ -6275,7 +6275,9 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
         title: "Summarize Current Page",
         cols: 96,
-        model: "zai-org-glm-5-2",
+        // No `model`: the composer's model is June's GLOBAL generation
+        // selection, and sending it as the per-session override would bypass
+        // the profile's own configured text model (the point of profiles).
         profile: "research",
       }),
     );
