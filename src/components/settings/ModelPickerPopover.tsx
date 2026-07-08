@@ -156,9 +156,12 @@ export function ModelPickerPopover({
     const el = popoverRef.current;
     if (!el) return;
     if (!directCatalog) {
+      // Only clear the direct-catalog artifact. Never touch top/bottom here:
+      // in the composer the parent (AgentWorkspace) writes inline bottom/right
+      // to anchor this popover to the model pill, and this effect re-runs on
+      // every options/search change — blanking them would drop that anchor and
+      // snap the menu back to its default CSS position mid-interaction.
       el.style.removeProperty("--model-direct-catalog-room");
-      el.style.top = "";
-      el.style.bottom = "";
       return;
     }
     const trigger = el.parentElement?.querySelector<HTMLElement>(
