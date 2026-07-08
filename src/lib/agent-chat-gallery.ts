@@ -301,7 +301,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: "Approval: pending",
       description:
-        "Approval request awaiting a choice. Compact by default: header (title + waiting), the prose description clamped to two lines, a quiet Details disclosure for the full command, and the footer. Footer: split Approve (caret opens once / this session / always), Deny, and a right-aligned Explain first.",
+        "Approval request awaiting a choice. Header (title), the prose description, and the exact command (always visible — you must see what you approve, since Approve is live), then the footer: split Approve (caret opens once / this session / always), Deny, and a right-aligned Explain first.",
       turns: [
         assistantTurn("approval-pending", [
           {

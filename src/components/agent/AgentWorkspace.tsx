@@ -10497,6 +10497,7 @@ function CollapsibleActionCard({
   title,
   description,
   headerMeta,
+  command,
   hasDetails,
   expanded,
   onToggleExpanded,
@@ -10509,14 +10510,19 @@ function CollapsibleActionCard({
   /** A short signal pinned to the header row that must stay visible while
    * collapsed (e.g. the sudo blast-radius mode tag). */
   headerMeta?: ReactNode;
-  /** Whether there is extra body content worth a "Details" disclosure (a
-   * command, or the sudo mode notice). When false, no disclosure is rendered. */
+  /** SECURITY: the concrete command being authorized. Rendered ALWAYS (never
+   * behind the disclosure) so the exact command is visible at the decision
+   * point — the Approve button is live while the card is collapsed, so a user
+   * must be able to see what they are approving without expanding anything. */
+  command?: ReactNode;
+  /** Whether there is supplementary body content worth a "Details" disclosure
+   * (e.g. the sudo mode notice). The command is NOT gated on this. */
   hasDetails: boolean;
   expanded: boolean;
   onToggleExpanded: () => void;
   /** The actions row (or the in-flight result line), always visible. */
   footer: ReactNode;
-  /** The full body revealed on expand. */
+  /** Supplementary body revealed on expand (never the command). */
   children: ReactNode;
 }) {
   return (
@@ -10529,9 +10535,16 @@ function CollapsibleActionCard({
         <span className="agent-action-card-title">{title}</span>
         {headerMeta}
       </div>
-      <p className="agent-action-card-description" data-clamped={!expanded || undefined}>
+      {/* Only clamp when a Details expander exists to reveal the rest; otherwise
+       * a long description-only request would be truncated with no way to read
+       * it before choosing. */}
+      <p
+        className="agent-action-card-description"
+        data-clamped={(hasDetails && !expanded) || undefined}
+      >
         {description}
       </p>
+      {command}
       {hasDetails ? (
         <button
           type="button"
@@ -10980,19 +10993,18 @@ export function ApprovalPart({
     <CollapsibleActionCard
       title="Approval required"
       description={part.description}
-      hasDetails={Boolean(part.command)}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // The command is always shown; the only expandable body is the optional
+      // explanation, which its own "Explain first" button toggles.
+      hasDetails={false}
       expanded={expanded}
       onToggleExpanded={() => {
         const next = !expanded;
         setExpanded(next);
-        // Collapsing the card unmounts the explanation body, so resync the
-        // "Explain first" toggle rather than leave it stuck on "Hide
-        // explanation" with nothing shown.
         if (!next) setExplainOpen(false);
       }}
       footer={footer}
     >
-      {part.command ? <pre>{part.command}</pre> : null}
       {explainOpen ? (
         <div className="agent-approval-explanation" id={explanationId}>
           {explainState === "loading" ? (
@@ -11285,12 +11297,14 @@ export function SudoPart({
       title="Privilege escalation requested"
       description={reason}
       headerMeta={modeBadge}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // Command is always visible; Details reveals the fuller mode notice (the
+      // blast-radius badge already shows collapsed).
       hasDetails={true}
       expanded={expanded}
       onToggleExpanded={() => setExpanded((value) => !value)}
       footer={footer}
     >
-      {part.command ? <pre>{part.command}</pre> : null}
       {modeNotice}
     </CollapsibleActionCard>
   );

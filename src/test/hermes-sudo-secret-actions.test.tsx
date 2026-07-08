@@ -48,21 +48,23 @@ describe("SudoPart card", () => {
   it("blocks the session with an explicit approve/deny card showing the reason and mode", async () => {
     render(<SudoPart part={sudoPart()} onSudo={() => {}} />);
 
-    // Compact by default: the prose reason shows, the command is hidden behind
-    // Details, and the approve/deny actions are always visible.
+    // The prose reason and the exact command both show by default — SECURITY:
+    // the command must be visible at the decision point, since Approve is live
+    // while the card is collapsed.
     expect(
       screen.getByText(/ripgrep is required to search the dependency tree/),
     ).toBeInTheDocument();
-    expect(screen.queryByText("apt-get install ripgrep")).not.toBeInTheDocument();
+    expect(screen.getByText("apt-get install ripgrep")).toBeInTheDocument();
     // The unrestricted mode badge stays visible while collapsed so the blast
     // radius reads before expanding.
     expect(document.querySelector(".agent-sudo-mode-badge")?.textContent).toMatch(/unrestricted/i);
     expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
 
-    // Expanding Details reveals the full command pre and the execution-mode notice.
+    // Details reveals only the fuller execution-mode notice (the command is
+    // already shown above).
+    expect(document.querySelector(".agent-sudo-mode-notice")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /details/i }));
-    expect(screen.getByText("apt-get install ripgrep")).toBeInTheDocument();
     expect(document.querySelector(".agent-sudo-mode-notice")?.textContent).toMatch(/unrestricted/i);
   });
 
@@ -474,31 +476,26 @@ describe("action card refinements", () => {
     );
   });
 
-  it("the pending approval card shows the description and hides the command behind Details", async () => {
+  it("the pending approval card shows the description and the command together", () => {
     render(<ApprovalPart part={approvalPart()} onApproval={() => {}} />);
     // The header is a plain row now, not a toggle button.
     expect(screen.queryByRole("button", { name: /approval required/i })).toBeNull();
-    // Collapsed by default — the description shows, the command is not in the DOM
-    // yet, and the Details disclosure owns aria-expanded.
+    // SECURITY: the description AND the exact command are both visible by
+    // default — Approve is live while collapsed, so the user must see what they
+    // are authorizing without expanding anything. No Details disclosure to hide
+    // it behind.
     expect(screen.getByText("The agent wants to run a shell command.")).toBeInTheDocument();
-    expect(document.querySelector(".agent-approval-card pre")).toBeNull();
-    expect(screen.queryByText("rm -rf ./build && npm run build")).not.toBeInTheDocument();
-    const details = screen.getByRole("button", { name: /details/i });
-    expect(details.getAttribute("aria-expanded")).toBe("false");
-
-    // Expanding Details reveals the full command in a pre.
-    await userEvent.click(details);
-    expect(details.getAttribute("aria-expanded")).toBe("true");
     expect(document.querySelector(".agent-approval-card pre")?.textContent).toBe(
       "rm -rf ./build && npm run build",
     );
+    expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
   });
 
-  it("omits the Details disclosure on an approval whose only content is the description", () => {
+  it("shows the description alone when an approval has no command", () => {
     render(<ApprovalPart part={approvalPart({ command: undefined })} onApproval={() => {}} />);
-    // No command and no notice, so there is nothing to disclose.
+    // No command to show; the description still reads and there is no Details.
+    expect(document.querySelector(".agent-approval-card pre")).toBeNull();
     expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
-    // The description still reads.
     expect(screen.getByText("The agent wants to run a shell command.")).toBeInTheDocument();
   });
 

@@ -77,7 +77,7 @@ describe("pending action card styles", () => {
     );
   });
 
-  it("shows the description collapsed (clamped) and hides the command behind a Details disclosure", () => {
+  it("clamps the collapsed description and keeps the Details disclosure chrome (sudo mode notice)", () => {
     // The collapsed card shows the prose description clamped to two lines...
     const description = cssRuleFor(".agent-action-card-description[data-clamped]");
     expect(description).toContain("display: -webkit-box;");
