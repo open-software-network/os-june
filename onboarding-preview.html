@@ -148,6 +148,10 @@
             }
           : { signedIn: false, configured: true };
 
+        // Anonymous usage statistics consent, flipped by the telemetry step
+        // and the Settings > General > Privacy toggle.
+        let p3aSettings = { enabled: false, consentVersion: 1, consentedAtWeek: null };
+
         window.__JUNE_STUB__ = {
           emitEvent,
           p3aEvents,
@@ -157,14 +161,15 @@
           },
         };
 
+        // @tauri-apps/api >= 2.11 tears listeners down through this separate
+        // global; without it every unlisten throws in the browser preview.
         window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-          unregisterListener(event, eventId) {
-            const ids = listeners.get(event);
-            if (ids) ids.delete(eventId);
-            callbacks.delete(eventId);
+          unregisterListener(event, id) {
+            const set = listeners.get(event);
+            if (set) set.delete(id);
+            callbacks.delete(id);
           },
         };
-
         window.__TAURI_INTERNALS__ = {
           transformCallback(cb) {
             const id = nextId++;
@@ -338,6 +343,19 @@
                 }
                 return null;
               }
+              case "p3a_settings":
+                return { settings: p3aSettings };
+              case "set_p3a_enabled": {
+                const enabled = Boolean(args.request && args.request.enabled);
+                p3aSettings = {
+                  enabled,
+                  consentVersion: 1,
+                  consentedAtWeek: enabled ? "2026-W28" : null,
+                };
+                return { settings: p3aSettings };
+              }
+              case "p3a_record":
+                return null;
               default:
                 return null;
             }

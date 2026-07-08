@@ -6,13 +6,44 @@ const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;
 const HEARTBEAT_EVERY_ACTIVE_POLLS: u8 = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEETING_DETECTION_EVENT_NAME: &str = "meeting-detection-event";
-const ALLOWED_MIC_APP_BUNDLE_PREFIXES: &[&str] = &[
-    "company.thebrowser.Browser",
-    "com.google.Chrome",
-    "com.apple.Safari",
-    "com.microsoft.teams",
-    "com.microsoft.teams2",
-    "us.zoom.xos",
+
+struct AllowedMicApp {
+    bundle_prefix: &'static str,
+    label: &'static str,
+}
+
+const fn mic_app(bundle_prefix: &'static str, label: &'static str) -> AllowedMicApp {
+    AllowedMicApp {
+        bundle_prefix,
+        label,
+    }
+}
+
+const ALLOWED_MIC_APPS: &[AllowedMicApp] = &[
+    mic_app("ai.perplexity.comet", "Comet"),
+    mic_app("Cisco-Systems.Spark", "Webex"),
+    mic_app("com.apple.FaceTime", "FaceTime"),
+    mic_app("com.apple.Safari", "Safari"),
+    mic_app("com.brave.Browser", "Brave"),
+    mic_app("com.cisco.webexmeetingsapp", "Webex"),
+    mic_app("com.google.Chrome", "Chrome"),
+    mic_app("com.hnc.Discord", "Discord"),
+    mic_app("com.microsoft.edgemac", "Edge"),
+    mic_app("com.microsoft.teams", "Teams"),
+    mic_app("com.microsoft.teams2", "Teams"),
+    mic_app("com.operasoftware.Opera", "Opera"),
+    mic_app("com.tinyspeck.slackmacgap", "Slack"),
+    mic_app("com.vivaldi.Vivaldi", "Vivaldi"),
+    mic_app("company.thebrowser.Browser", "Arc"),
+    mic_app("company.thebrowser.dia", "Dia"),
+    mic_app("net.whatsapp.WhatsApp", "WhatsApp"),
+    mic_app("org.mozilla.firefox", "Firefox"),
+    mic_app("org.mozilla.firefoxdeveloperedition", "Firefox"),
+    mic_app("org.mozilla.nightly", "Firefox"),
+    mic_app("org.telegram.desktop", "Telegram"),
+    mic_app("org.whispersystems.signal-desktop", "Signal"),
+    mic_app("ru.keepcoder.Telegram", "Telegram"),
+    mic_app("us.zoom.xos", "Zoom"),
 ];
 
 pub fn setup(app: &mut tauri::App) {
@@ -129,9 +160,7 @@ pub(crate) fn active_allowed_external_processes(
 }
 
 fn is_allowed_microphone_app(bundle_id: &str) -> bool {
-    ALLOWED_MIC_APP_BUNDLE_PREFIXES
-        .iter()
-        .any(|prefix| bundle_id_matches_prefix(bundle_id, prefix))
+    allowed_mic_app(bundle_id).is_some()
 }
 
 fn bundle_id_matches_prefix(bundle_id: &str, prefix: &str) -> bool {
@@ -144,28 +173,20 @@ fn bundle_id_matches_prefix(bundle_id: &str, prefix: &str) -> bool {
 }
 
 fn app_label_from_bundle_id(bundle_id: &str) -> String {
-    if bundle_id_matches_prefix(bundle_id, "company.thebrowser.Browser") {
-        return "Arc".to_string();
-    }
-    if bundle_id_matches_prefix(bundle_id, "com.google.Chrome") {
-        return "Chrome".to_string();
-    }
-    if bundle_id_matches_prefix(bundle_id, "com.apple.Safari") {
-        return "Safari".to_string();
-    }
-    if bundle_id_matches_prefix(bundle_id, "com.microsoft.teams")
-        || bundle_id_matches_prefix(bundle_id, "com.microsoft.teams2")
-    {
-        return "Teams".to_string();
-    }
-    if bundle_id_matches_prefix(bundle_id, "us.zoom.xos") {
-        return "Zoom".to_string();
+    if let Some(app) = allowed_mic_app(bundle_id) {
+        return app.label.to_string();
     }
     bundle_id
         .rsplit('.')
         .find(|part| !part.trim().is_empty())
         .unwrap_or(bundle_id)
         .to_string()
+}
+
+fn allowed_mic_app(bundle_id: &str) -> Option<&'static AllowedMicApp> {
+    ALLOWED_MIC_APPS
+        .iter()
+        .find(|app| bundle_id_matches_prefix(bundle_id, app.bundle_prefix))
 }
 
 #[cfg(target_os = "macos")]
@@ -651,68 +672,131 @@ mod tests {
     }
 
     #[test]
-    fn chrome_mic_process_triggers_detection_filter() {
-        let exact = input_process(30, "com.google.Chrome");
-        let helper = input_process(31, "COM.GOOGLE.CHROME.helper");
+    fn supported_mic_processes_trigger_detection_filter() {
+        let cases = [
+            ("ai.perplexity.comet", "ai.perplexity.comet.helper", "Comet"),
+            (
+                "ai.perplexity.comet.ios",
+                "ai.perplexity.comet.ios.helper",
+                "Comet",
+            ),
+            ("Cisco-Systems.Spark", "Cisco-Systems.Spark.helper", "Webex"),
+            (
+                "com.apple.FaceTime",
+                "com.apple.FaceTime.helper",
+                "FaceTime",
+            ),
+            ("com.apple.Safari", "com.apple.Safari.WebContent", "Safari"),
+            ("com.brave.Browser", "com.brave.Browser.beta", "Brave"),
+            (
+                "com.cisco.webexmeetingsapp",
+                "com.cisco.webexmeetingsapp.helper",
+                "Webex",
+            ),
+            ("com.google.Chrome", "COM.GOOGLE.CHROME.helper", "Chrome"),
+            ("com.hnc.Discord", "com.hnc.Discord.helper", "Discord"),
+            (
+                "com.microsoft.edgemac",
+                "com.microsoft.edgemac.Beta",
+                "Edge",
+            ),
+            ("com.microsoft.teams", "com.microsoft.teams.helper", "Teams"),
+            (
+                "com.microsoft.teams2",
+                "com.microsoft.teams2.helper",
+                "Teams",
+            ),
+            (
+                "com.operasoftware.Opera",
+                "com.operasoftware.Opera.helper",
+                "Opera",
+            ),
+            (
+                "com.tinyspeck.slackmacgap",
+                "com.tinyspeck.slackmacgap.helper",
+                "Slack",
+            ),
+            (
+                "com.vivaldi.Vivaldi",
+                "com.vivaldi.Vivaldi.snapshot",
+                "Vivaldi",
+            ),
+            (
+                "company.thebrowser.Browser",
+                "company.thebrowser.Browser.helper",
+                "Arc",
+            ),
+            (
+                "company.thebrowser.dia",
+                "company.thebrowser.dia.helper",
+                "Dia",
+            ),
+            (
+                "net.whatsapp.WhatsApp",
+                "net.whatsapp.WhatsApp.helper",
+                "WhatsApp",
+            ),
+            (
+                "org.mozilla.firefox",
+                "org.mozilla.firefox.helper",
+                "Firefox",
+            ),
+            (
+                "org.mozilla.firefoxdeveloperedition",
+                "org.mozilla.firefoxdeveloperedition.helper",
+                "Firefox",
+            ),
+            (
+                "org.mozilla.nightly",
+                "org.mozilla.nightly.helper",
+                "Firefox",
+            ),
+            (
+                "org.telegram.desktop",
+                "org.telegram.desktop.helper",
+                "Telegram",
+            ),
+            (
+                "org.whispersystems.signal-desktop",
+                "org.whispersystems.signal-desktop.helper",
+                "Signal",
+            ),
+            (
+                "ru.keepcoder.Telegram",
+                "ru.keepcoder.Telegram.helper",
+                "Telegram",
+            ),
+            ("us.zoom.xos", "us.zoom.xos.helper", "Zoom"),
+        ];
 
-        assert_eq!(exact.app_label, "Chrome");
-        assert_eq!(helper.app_label, "Chrome");
-        assert_eq!(allowed_pids(&[exact, helper]), vec![30, 31]);
-    }
+        for (index, (exact_bundle_id, helper_bundle_id, label)) in cases.into_iter().enumerate() {
+            let exact_pid = 100 + (index as u32 * 2);
+            let helper_pid = exact_pid + 1;
+            let exact = input_process(exact_pid, exact_bundle_id);
+            let helper = input_process(helper_pid, helper_bundle_id);
 
-    #[test]
-    fn arc_mic_process_triggers_detection_filter() {
-        let exact = input_process(40, "company.thebrowser.Browser");
-        let helper = input_process(41, "company.thebrowser.Browser.helper");
-
-        assert_eq!(exact.app_label, "Arc");
-        assert_eq!(helper.app_label, "Arc");
-        assert_eq!(allowed_pids(&[exact, helper]), vec![40, 41]);
-    }
-
-    #[test]
-    fn safari_mic_process_triggers_detection_filter() {
-        let exact = input_process(42, "com.apple.Safari");
-        let helper = input_process(43, "com.apple.Safari.WebContent");
-
-        assert_eq!(exact.app_label, "Safari");
-        assert_eq!(helper.app_label, "Safari");
-        assert_eq!(allowed_pids(&[exact, helper]), vec![42, 43]);
-    }
-
-    #[test]
-    fn teams_mic_process_triggers_detection_filter() {
-        let classic = input_process(44, "com.microsoft.teams");
-        let classic_helper = input_process(45, "com.microsoft.teams.helper");
-        let modern = input_process(46, "com.microsoft.teams2");
-        let modern_helper = input_process(47, "com.microsoft.teams2.helper");
-
-        assert_eq!(classic.app_label, "Teams");
-        assert_eq!(classic_helper.app_label, "Teams");
-        assert_eq!(modern.app_label, "Teams");
-        assert_eq!(modern_helper.app_label, "Teams");
-        assert_eq!(
-            allowed_pids(&[classic, classic_helper, modern, modern_helper]),
-            vec![44, 45, 46, 47]
-        );
-    }
-
-    #[test]
-    fn zoom_mic_process_triggers_detection_filter() {
-        let exact = input_process(48, "us.zoom.xos");
-        let helper = input_process(49, "us.zoom.xos.helper");
-
-        assert_eq!(exact.app_label, "Zoom");
-        assert_eq!(helper.app_label, "Zoom");
-        assert_eq!(allowed_pids(&[exact, helper]), vec![48, 49]);
+            assert_eq!(exact.app_label, label, "{exact_bundle_id}");
+            assert_eq!(helper.app_label, label, "{helper_bundle_id}");
+            assert_eq!(
+                allowed_pids(&[exact, helper]),
+                vec![exact_pid, helper_pid],
+                "{exact_bundle_id}"
+            );
+        }
     }
 
     #[test]
     fn unlisted_mic_process_does_not_trigger_detection_filter() {
         assert!(allowed_pids(&[
-            input_process(51, "com.apple.FaceTime"),
-            input_process(52, "com.google.ChromeRemoteDesktop"),
-            input_process(53, "com.apple.WebKit.WebContent"),
+            input_process(55, "com.apple.PhotoBooth"),
+            input_process(56, "com.google.ChromeRemoteDesktop"),
+            input_process(57, "com.apple.WebKit.WebContent"),
+            input_process(58, "ai.perplexity.cometary"),
+            input_process(59, "company.thebrowser.dialog"),
+            input_process(60, "com.microsoft.teamsClassic"),
+            input_process(61, "net.whatsapp.WhatsAppBusiness"),
+            input_process(62, "org.mozilla.firefoxish"),
+            input_process(63, "org.whispersystems.signal-desktopx"),
         ])
         .is_empty());
     }
@@ -721,7 +805,7 @@ mod tests {
     fn detector_clears_when_allowed_mic_process_becomes_unlisted() {
         let mut state = MeetingDetectionState::default();
         let active_allowed = allowed_pids(&[input_process(60, "com.google.Chrome")]);
-        let active_unlisted = allowed_pids(&[input_process(61, "com.apple.FaceTime")]);
+        let active_unlisted = allowed_pids(&[input_process(61, "com.apple.PhotoBooth")]);
 
         assert_eq!(
             state.update(true, !active_allowed.is_empty(), false),
