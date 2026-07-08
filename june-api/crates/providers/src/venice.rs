@@ -719,13 +719,25 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                         return;
                     }
                     Err(error) => {
-                        tracing::error!(%error, url = %pump.url, model = %pump.model, "venice: agent chat body read failed");
+                        // Two distinct billing cases hide in this arm. Our own
+                        // client timeout cutting a stream that had already
+                        // delivered bytes is a deliberate cap (the metered
+                        // window keeps settlement inside the hold TTL), so it
+                        // settles like a delivered-but-unmetered body. An
+                        // upstream fault — or a cut before any byte arrived —
+                        // charges nothing, matching the buffered path which
+                        // errors before its charge line.
+                        let deliberate_cut = error.is_timeout() && !accumulated.is_empty();
+                        tracing::error!(%error, url = %pump.url, model = %pump.model, deliberate_cut, "venice: agent chat body read failed");
                         if forwarding {
                             let _ = pump.chunks_tx.send(Err(DomainError::UpstreamProvider));
                         }
-                        // Transport failure: charge nothing, matching the
-                        // buffered path which errors before its charge line.
-                        let _ = pump.outcome_tx.send(AgentChatStreamOutcome::Failed);
+                        let outcome = if deliberate_cut {
+                            AgentChatStreamOutcome::CompletedWithoutUsage
+                        } else {
+                            AgentChatStreamOutcome::Failed
+                        };
+                        let _ = pump.outcome_tx.send(outcome);
                         return;
                     }
                 }
@@ -2011,6 +2023,44 @@ mod tests {
                 base_url: base_url.to_string(),
             },
         )
+    }
+
+    fn short_timeout_agent(base_url: &str) -> VeniceAgentChat {
+        VeniceAgentChat::from_config(
+            http::client_with_timeout(Duration::from_millis(300)),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: base_url.to_string(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_client_timeout_after_delivery_resolves_completed_without_usage() {
+        // One chunk arrives, then the upstream stalls past the client's total
+        // timeout: our own deliberate cut after delivered bytes must settle
+        // like a delivered-but-unmetered body, not like an upstream fault.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (b"data: {\"choices\":[]}\n\n".to_vec(), Duration::ZERO),
+                (b"data: [DONE]\n\n".to_vec(), Duration::from_secs(5)),
+            ],
+        )
+        .await;
+        let agent = short_timeout_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let first = stream.chunks.recv().await.expect("first chunk");
+        assert!(first.is_ok(), "delivered chunk precedes the cut");
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+
+        assert_eq!(outcome, AgentChatStreamOutcome::CompletedWithoutUsage);
     }
 
     fn stream_request() -> AgentChatRequest {

@@ -58,7 +58,11 @@ charges after the stream ends.
   content was delivered and June does not silently absorb upstream cost, per
   the pricing policy in the June API PRD. A stream that dies on a transport
   failure settles NOTHING — the buffered path errors before its charge line
-  on the same failure, and the two must not diverge on error paths. Generate
+  on the same failure, and the two must not diverge on error paths. One
+  exception: when June API's own metered-client timeout cuts a stream that
+  had already delivered bytes (the cap that keeps settlement inside the hold
+  TTL), that is a deliberate cut of delivered content and settles at the
+  flat estimate like a missing usage frame. Generate
   disconnects cancel the whole call uncharged (all-or-nothing delivery,
   parity with the buffered handler being dropped).
 - **Hold TTLs cover the settle-after-upstream window**: agent chat and note
