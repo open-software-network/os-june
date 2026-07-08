@@ -25,15 +25,26 @@ import { contextLabel, pricingLabel } from "../../settings/ModelPickerDialog";
 export function ComposerModelPicker({
   open,
   model,
+  readOnly = false,
   triggerRef,
   onToggleOpen,
 }: {
   open: boolean;
   model?: VeniceModelDto;
+  readOnly?: boolean;
   triggerRef: RefObject<HTMLButtonElement>;
   onToggleOpen: () => void;
 }) {
   if (!model) return null;
+  if (readOnly) {
+    return (
+      <div className="agent-composer-model" data-readonly="true">
+        <span className="agent-composer-model-label">
+          <span>{model.name}</span>
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="agent-composer-model" data-open={open || undefined}>
       <button

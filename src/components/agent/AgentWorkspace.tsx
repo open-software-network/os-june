@@ -227,7 +227,10 @@ import {
   type ModelPrivacyBadge,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
-import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
+import {
+  MODEL_CHANGE_LOCKED_NOTICE,
+  MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
+} from "../../lib/hermes-model-switch";
 import {
   LOCAL_GENERATION_OPTION_ID_PREFIX,
   isLoopbackUrl,
@@ -1981,14 +1984,13 @@ export function AgentWorkspace({
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
   const defaultGenerationModelIdRef = useRef("");
-  const sessionModelOverridesRef = useRef<Record<string, string>>({});
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
   // Bring-your-own local text generation. When the global provider is "local"
   // the model catalog carries a synthetic "Local: <id>" option and the pill
   // resolves to it, so the composer never shows a raw local id or silently
   // reverts the app to metered remote generation. Kept as refs too because the
-  // async model-switch handler reads the latest values.
+  // async provider-selection handler reads the latest values.
   const [localGeneration, setLocalGeneration] = useState<LocalGenerationSettingsDto>({
     baseUrl: "",
     modelId: "",
@@ -2401,6 +2403,8 @@ export function AgentWorkspace({
     onSessionSelected?.(selectedHermesSession);
   }, [onSessionSelected, selectedHermesSession, selectedHermesSessionId]);
   const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(selectedHermesSessionId);
+  const composerModelLocked =
+    !!selectedHermesSessionId && !newSessionMode && !selectedHermesSessionIsProvisional;
   // When local generation is the active provider, the pill/selection is the
   // synthetic local option so it renders "Local: <id>" and never a raw id or a
   // stale remote override. Every session routes through the local endpoint.
@@ -2483,7 +2487,9 @@ export function AgentWorkspace({
     !modelSupportsImageInput(resolvedGenerationModel);
   const showImageModelWarning = showImageInputWarning || imageSlashBlockedByModel;
   const imageModelWarningText = imageSlashBlockedByModel
-    ? `${resolvedGenerationModel?.name ?? "This model"} can't read images. Switch to a vision model before using /image.`
+    ? composerModelLocked
+      ? `${resolvedGenerationModel?.name ?? "This model"} can't read images. Start a new session with a vision model before using /image.`
+      : `${resolvedGenerationModel?.name ?? "This model"} can't read images. Switch to a vision model before using /image.`
     : `${resolvedGenerationModel?.name ?? "This model"} can't read images.`;
   const composerInputSignature = useMemo(
     () =>
@@ -2915,7 +2921,6 @@ export function AgentWorkspace({
             waitingSessionIds: waitingSessions,
             pendingMessages,
             defaultModelId: defaultGenerationModelIdRef.current,
-            sessionModelOverrides: sessionModelOverridesRef.current,
           }),
         );
         setSelectedHermesSessionId((current) => {
@@ -3067,9 +3072,32 @@ export function AgentWorkspace({
     };
   }, [loadGenerationModel]);
 
+  useEffect(() => {
+    if (composerModelLocked) setComposerModelOpen(false);
+  }, [composerModelLocked]);
+
+  function composerModelSelectionLocked() {
+    const sessionId = selectedHermesSessionIdRef.current;
+    return Boolean(
+      sessionId && !newSessionModeRef.current && !isProvisionalHermesSessionId(sessionId),
+    );
+  }
+
+  function showComposerModelLockedNotice() {
+    setComposerModelOpen(false);
+    setModelSwitchNotice({
+      message: MODEL_CHANGE_LOCKED_NOTICE,
+      sessionId: selectedHermesSessionIdRef.current ?? null,
+    });
+  }
+
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
   function openComposerModelPicker() {
+    if (composerModelSelectionLocked()) {
+      showComposerModelLockedNotice();
+      return;
+    }
     setModelSearch("");
     setComposerModelFlyout(null);
     setComposerModelOpen(true);
@@ -3077,13 +3105,6 @@ export function AgentWorkspace({
     void loadGenerationModel();
   }
 
-  // Enables the saved local endpoint as the global generation provider. The
-  // local provider proxy routes EVERY request by the global provider and
-  // rewrites the model to the local id, so flipping the provider is what moves
-  // a running session onto local — a per-chat override could not. That makes
-  // the "switched this session" claim honest here without waiting on the
-  // /model ack; the dispatch is best effort, only to keep Hermes' own session
-  // model aligned (the local id is advertised on /v1/models once local is on).
   // Reflects the global generation selection into composer state directly (not
   // via the backend return value, which tests stub out): the remote flip and
   // the mount fetch already round-trip through commitGenerationSettings.
@@ -3094,9 +3115,8 @@ export function AgentWorkspace({
     setDefaultGenerationModelId(modelId);
   }
 
-  async function selectLocalGeneration(sessionId: string | undefined) {
+  async function selectLocalGeneration() {
     const localModelId = localGenerationRef.current.modelId.trim();
-    const modelName = localModelId ? `Local: ${localModelId}` : "the local model";
     const selectedModelId = localModelId ? localGenerationOptionId(localModelId) : "";
     // An off-device endpoint takes a deliberate second step, same invariant as
     // the Settings toggle: the first selection warns instead of enabling.
@@ -3108,7 +3128,7 @@ export function AgentWorkspace({
         setModelSwitchNotice({
           message:
             "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
-          sessionId: sessionId ?? null,
+          sessionId: null,
         });
         return false;
       }
@@ -3129,56 +3149,28 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    if (!sessionId) {
-      setModelSwitchNotice({
-        message: resolveModelSwitchOutcome({
-          hasActiveSession: false,
-          dispatchSucceeded: false,
-          modelName,
-        }).notice,
-        sessionId: null,
-      });
-      return true;
-    }
-    const rawLocalModelId = localGenerationRef.current.modelId.trim();
-    if (rawLocalModelId) {
-      try {
-        const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
-        await createHermesMethods(gateway).switchActiveSessionModel({
-          mode: hermesModeFor(sessionId),
-          sessionId,
-          model: rawLocalModelId,
-        });
-      } catch {
-        // Best effort: the proxy already serves this session from local.
-      }
-    }
     setModelSwitchNotice({
-      message: resolveModelSwitchOutcome({
-        hasActiveSession: true,
-        dispatchSucceeded: true,
-        modelName,
-      }).notice,
-      sessionId,
+      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
+      sessionId: null,
     });
     return true;
   }
 
-  // Switching the model always writes the global text-model selection (Settings'
-  // model rows and this pill refresh through the same changed event). When a
-  // session is open, it ALSO switches that live session via Hermes
-  // command.dispatch (/model …), and the UI only claims the running session
-  // moved when Hermes accepts the dispatch (feature 10) — except when the
-  // switch flips the global provider (local <-> remote), where the provider
-  // proxy decides the model for every request and so guarantees the claim.
+  // Switching the model from the composer is only allowed before a thread
+  // exists. It writes the app-wide text-model default (Settings' model rows and
+  // this pill refresh through the same changed event), and new sessions inherit
+  // that choice at creation time.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
-    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
+    if (composerModelSelectionLocked()) {
+      showComposerModelLockedNotice();
+      return false;
+    }
 
     // Local is a synthetic catalog option (prefixed id), so it routes through
     // the provider switch rather than a remote model set.
     if (modelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
-      return selectLocalGeneration(sessionId);
+      return selectLocalGeneration();
     }
     // Picking anything else stands down a pending off-device confirm: the
     // next local selection warns afresh instead of enabling in one step.
@@ -3191,85 +3183,18 @@ export function AgentWorkspace({
       setError(`${chosen.name} can't run June's tools, so it can't be used for the agent.`);
       return false;
     }
-    const modelName = chosen?.name ?? modelId;
-    // Selecting a remote model while local is active is an informed switch back
-    // to metered remote generation (the picker showed "Local: …" as current).
-    // The local proxy routes by the GLOBAL provider, so a per-chat override
-    // alone could not move this session off local: flip the global provider
-    // too, or the pill would claim a model the responses do not come from.
-    const wasLocalActive = generationProviderRef.current === "local";
-
-    // No open chat: changing the model updates the global generation default.
-    if (!sessionId) {
-      try {
-        await setVeniceModel("generation", modelId);
-        markRemoteGenerationSelected(modelId);
-        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
-        setError(null);
-      } catch (err) {
-        setError(messageFromError(err));
-        return false;
-      }
-      setModelSwitchNotice({
-        message: resolveModelSwitchOutcome({
-          hasActiveSession: false,
-          dispatchSucceeded: false,
-          modelName,
-        }).notice,
-        sessionId: null,
-      });
-      return true;
-    }
-
-    // Open chat coming off local: flip the global provider to remote first so
-    // the running session actually leaves the local endpoint before we claim it
-    // did. (In remote mode this is skipped — the switch stays per-chat.)
-    if (wasLocalActive) {
-      try {
-        await setVeniceModel("generation", modelId);
-        markRemoteGenerationSelected(modelId);
-        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
-      } catch (err) {
-        setError(messageFromError(err));
-        return false;
-      }
-    }
-
-    // Open chat: override the model for THIS chat, then dispatch /model to the
-    // live session so the running turn switches immediately. Hermes session
-    // metadata updates are title-only, so the per-chat override is the source
-    // of truth for this row.
-    sessionModelOverridesRef.current = {
-      ...sessionModelOverridesRef.current,
-      [sessionId]: modelId,
-    };
-    setHermesSessionItems((current) =>
-      current.map((session) =>
-        session.id === sessionId ? { ...session, model: modelId } : session,
-      ),
-    );
-    let dispatchSucceeded = false;
     try {
-      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
-      await createHermesMethods(gateway).switchActiveSessionModel({
-        mode: hermesModeFor(sessionId),
-        sessionId,
-        model: modelId,
-      });
-      dispatchSucceeded = true;
-    } catch {
-      // The per-chat override is saved; the notice explains the running session
-      // is unchanged and the new model applies next session.
-      dispatchSucceeded = false;
+      await setVeniceModel("generation", modelId);
+      markRemoteGenerationSelected(modelId);
+      dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+      return false;
     }
-    setError(null);
     setModelSwitchNotice({
-      message: resolveModelSwitchOutcome({
-        hasActiveSession: true,
-        dispatchSucceeded,
-        modelName,
-      }).notice,
-      sessionId,
+      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
+      sessionId: null,
     });
     return true;
   }
@@ -4128,6 +4053,11 @@ export function AgentWorkspace({
   }
 
   async function runModelSlashCommand(argument: string, commandText: string) {
+    if (composerModelSelectionLocked()) {
+      clearComposerCommandDraft(commandText);
+      showComposerModelLockedNotice();
+      return;
+    }
     const query = argument.trim();
     if (!query) {
       clearComposerCommandDraft(commandText);
@@ -7628,7 +7558,7 @@ export function AgentWorkspace({
                 className="agent-composer-image-warning-icon"
               />
               <span className="agent-composer-image-warning-text">{imageModelWarningText}</span>
-              {preferredVisionModel ? (
+              {preferredVisionModel && !composerModelLocked ? (
                 <button
                   type="button"
                   className="agent-composer-notice-button agent-composer-image-warning-action"
@@ -7639,8 +7569,8 @@ export function AgentWorkspace({
                     // case would drop the user into an unfiltered list that
                     // doesn't surface the eligible models. preferredVisionModel
                     // is pre-filtered to image + tool support and prefers a
-                    // suggested pick; handleSelectGenerationModel routes the
-                    // global default vs per-chat override.
+                    // suggested pick. This only appears before a thread
+                    // exists, where model changes still update the default.
                     void handleSelectGenerationModel(preferredVisionModel.id)
                   }
                 >
@@ -7678,7 +7608,7 @@ export function AgentWorkspace({
                 >
                   Edit message
                 </button>
-                {visibleComposerSizeWarning.switchModel ? (
+                {visibleComposerSizeWarning.switchModel && !composerModelLocked ? (
                   <button
                     type="button"
                     className="agent-composer-notice-button"
@@ -7774,6 +7704,7 @@ export function AgentWorkspace({
               <ComposerModelPicker
                 open={composerModelOpen}
                 model={generationModel}
+                readOnly={composerModelLocked}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {
@@ -7916,7 +7847,7 @@ export function AgentWorkspace({
             onSent={handleReportDialogSent}
           />
         ) : null}
-        {composerModelOpen ? (
+        {composerModelOpen && !composerModelLocked ? (
           <ModelPickerPopover
             mode="generation"
             flyout={composerModelFlyout}
@@ -12224,15 +12155,11 @@ function mergeActiveHermesSessions(
     waitingSessionIds: Set<string>;
     pendingMessages: Record<string, HermesSessionMessage[]>;
     defaultModelId?: string;
-    sessionModelOverrides?: Record<string, string>;
   },
 ) {
   const currentById = new Map(current.map((session) => [session.id, session]));
   const defaultModelId = options.defaultModelId?.trim();
-  const sessionModelOverrides = options.sessionModelOverrides ?? {};
   const mergedFresh = fresh.map((session) => {
-    const overrideModel = sessionModelOverrides[session.id]?.trim();
-    if (overrideModel) return { ...session, model: overrideModel };
     if (session.model?.trim()) return session;
     const currentModel = currentById.get(session.id)?.model?.trim();
     if (currentModel) return { ...session, model: currentModel };

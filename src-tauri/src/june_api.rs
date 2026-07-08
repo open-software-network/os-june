@@ -481,12 +481,20 @@ pub async fn proxy_agent_chat_completions(
     if crate::providers::generation_provider() == PROVIDER_LOCAL {
         return proxy_local_agent_chat_completions(body).await;
     }
-    // Remote provider safety net: a Hermes session started while local mode was
-    // on keeps sending the local model id (Hermes loads its model at spawn and
-    // does not reload on a settings change), which the remote backend rejects
-    // via require_priced_model and would hard-fail every message until restart.
-    // Degrade a stale local model id to the current global model instead.
-    let local_model_id = crate::providers::local_generation_settings().model_id;
+    // Existing sessions are model-locked. A session created while local mode was
+    // active keeps sending the raw local model id even if the global default is
+    // later changed back to Venice from the new-session composer. Honor that
+    // stored model by routing it to the local proxy while the endpoint remains
+    // configured, so the locked session does not silently move off-device.
+    let local_settings = crate::providers::local_generation_settings();
+    let local_model_id = local_settings.model_id.trim().to_string();
+    if should_proxy_request_to_configured_local_model(&body, &local_settings) {
+        return proxy_local_agent_chat_completions(body).await;
+    }
+    // Legacy safety net for invalid/stale local references that cannot be
+    // served locally (for example a prefixed synthetic id after settings were
+    // cleared): degrade to the current global model rather than sending an id
+    // the remote backend rejects via require_priced_model.
     let global_model = crate::providers::generation_model();
     redirect_stale_local_model(&mut body, &local_model_id, &global_model);
     // Computed after the redirect so a degraded stale-local body is gated on the
@@ -767,14 +775,28 @@ fn is_local_model_reference(model: &str, local_model_id: &str) -> bool {
         || model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX)
 }
 
-/// Rewrites a request that still carries a local model reference to the
-/// current global generation model, for the remote proxy path only. Mirrors
-/// the local path's unconditional model stomp: when the global provider is
-/// remote, a body still naming the local model is a stale spawn-time default
-/// from a session created while local mode was on, and the remote backend
-/// would reject it. Genuine remote per-session overrides (any non-synthetic
-/// id other than the configured local model id) are left untouched, so an
-/// explicit `/model` switch to a real remote model still wins.
+fn should_proxy_request_to_configured_local_model(
+    body: &serde_json::Value,
+    settings: &LocalGenerationSettings,
+) -> bool {
+    let local_model_id = settings.model_id.trim();
+    if settings.base_url.trim().is_empty() || local_model_id.is_empty() {
+        return false;
+    }
+    body.as_object()
+        .and_then(|object| object.get("model"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_some_and(|model| is_local_model_reference(model, local_model_id))
+}
+
+/// Rewrites a request that carries an unservable local model reference to the
+/// current global generation model, for the remote proxy path only. Configured
+/// local references are routed to the local proxy before this runs; this guard
+/// remains for legacy synthetic ids or cleared local settings that would never
+/// be valid remote model ids. Genuine remote per-session overrides (any
+/// non-synthetic id other than the configured local model id) are left
+/// untouched, so an explicit `/model` switch to a real remote model still wins.
 fn redirect_stale_local_model(
     body: &mut serde_json::Value,
     local_model_id: &str,
@@ -1998,10 +2020,61 @@ mod tests {
     }
 
     #[test]
-    fn remote_proxy_redirects_stale_local_model_to_global_model() {
-        // A session started while local mode was on keeps sending the local
-        // model id; on the remote path it must degrade to the global model
-        // rather than hard-fail against require_priced_model.
+    fn remote_proxy_routes_configured_local_model_to_local_proxy() {
+        let body = serde_json::json!({
+            "model": "llama3.1:8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let settings = LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: String::new(),
+        };
+
+        assert!(should_proxy_request_to_configured_local_model(
+            &body, &settings
+        ));
+    }
+
+    #[test]
+    fn remote_proxy_routes_configured_synthetic_local_model_to_local_proxy() {
+        let body = serde_json::json!({
+            "model": "__june_local_generation__:llama3.1%3A8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let settings = LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: String::new(),
+        };
+
+        assert!(should_proxy_request_to_configured_local_model(
+            &body, &settings
+        ));
+    }
+
+    #[test]
+    fn remote_proxy_does_not_route_unconfigured_local_model_to_local_proxy() {
+        let body = serde_json::json!({
+            "model": "llama3.1:8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let settings = LocalGenerationSettings {
+            base_url: String::new(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: String::new(),
+        };
+
+        assert!(!should_proxy_request_to_configured_local_model(
+            &body, &settings
+        ));
+    }
+
+    #[test]
+    fn remote_proxy_redirects_unservable_local_model_to_global_model() {
+        // A local model reference with no configured local endpoint cannot be
+        // served locally; on the remote path it degrades to the global model
+        // rather than hard-failing against require_priced_model.
         let mut body = serde_json::json!({
             "model": "llama3.1:8b",
             "messages": [{ "role": "user", "content": "hi" }],

@@ -4889,7 +4889,8 @@ input:focus-visible,
   min-width: 0;
 }
 
-.agent-composer-model-trigger {
+.agent-composer-model-trigger,
+.agent-composer-model-label {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
@@ -4902,9 +4903,18 @@ input:focus-visible,
   color: var(--muted-foreground);
   font: inherit;
   font-size: var(--fs-md);
+}
+
+.agent-composer-model-trigger {
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-model-label {
+  padding-inline: var(--sp-2);
+  color: color-mix(in oklch, var(--muted-foreground) 82%, transparent);
+  font-size: var(--fs-sm);
 }
 
 .agent-composer-model-trigger:hover,
@@ -4913,7 +4923,8 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-.agent-composer-model-trigger span {
+.agent-composer-model-trigger span,
+.agent-composer-model-label span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -15929,7 +15940,7 @@ input:focus-visible,
   /* Full-bleed bar, but the crumb lines up with the content gutter (sp-8)
    * rather than hugging the sidebar edge. */
   padding: var(--sp-2) var(--sp-8);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--detail-bar-border);
   background: color-mix(in oklch, var(--card) 78%, transparent);
   backdrop-filter: saturate(140%) blur(14px);
   -webkit-backdrop-filter: saturate(140%) blur(14px);

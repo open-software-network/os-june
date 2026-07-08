@@ -136,7 +136,7 @@ const methods: HermesCompatibilitySection = {
   "command.dispatch": {
     status: "supported",
     rationale:
-      "The composer model picker switches a live session by dispatching /model via switchActiveSessionModel (command.dispatch) and only claims success on the gateway ack; covered by hermes-model-switch and agent-workspace tests.",
+      "The typed switchActiveSessionModel seam dispatches /model via command.dispatch and returns the gateway ack; the composer keeps existing threads model-locked and only changes the default before session creation.",
     since: PIN,
   },
   "subagent.interrupt": {
