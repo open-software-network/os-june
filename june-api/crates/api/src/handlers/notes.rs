@@ -140,7 +140,26 @@ fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
         keep_alive.tick().await;
 
         loop {
+            // Biased so a disconnect that is already visible wins over a
+            // generation that became ready in the same wake: polling the
+            // generation first could drive it across its charge call after
+            // the client is known gone. (Once the charge request is on the
+            // wire nothing here can recall it — bias narrows the race to
+            // that unavoidable in-flight window.)
             tokio::select! {
+                biased;
+                // Cancel the moment the client is gone — not at the next
+                // keep-alive tick. Generation is all-or-nothing delivery:
+                // dropping the future cancels the upstream call and no charge
+                // settles, the same semantics a buffered request has when the
+                // connection drops (and deliberately different from agent
+                // chat's drain-and-settle, where content was already
+                // streamed). Waiting for a tick left a window where a
+                // generation completing after the disconnect billed for a
+                // result nobody received.
+                () = tx.closed() => {
+                    break;
+                }
                 result = &mut generation => {
                     let event = match result {
                         Ok(Ok(output)) => result_event(output).unwrap_or_else(|_| {
@@ -154,18 +173,6 @@ fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
                         Err(_elapsed) => error_event(envelope::timeout_response_parts(), None),
                     };
                     let _ = tx.send(Ok(Bytes::from(event)));
-                    break;
-                }
-                // Cancel the moment the client is gone — not at the next
-                // keep-alive tick. Generation is all-or-nothing delivery:
-                // dropping the future cancels the upstream call and no charge
-                // settles, the same semantics a buffered request has when the
-                // connection drops (and deliberately different from agent
-                // chat's drain-and-settle, where content was already
-                // streamed). Waiting for a tick left a window where a
-                // generation completing after the disconnect billed for a
-                // result nobody received.
-                () = tx.closed() => {
                     break;
                 }
                 _ = keep_alive.tick() => {
