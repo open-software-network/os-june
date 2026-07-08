@@ -433,6 +433,13 @@ function oauthServersState(): McpServersState {
 }
 
 describe("mcp oauth — McpServersView", () => {
+  async function openManageDialog(serverName = "linear") {
+    await act(async () => {
+      screen.getByRole("button", { name: `Manage ${serverName}` }).click();
+    });
+    expect(await screen.findByRole("dialog", { name: `Manage ${serverName}` })).toBeInTheDocument();
+  }
+
   it("renders the sign-in action and routes a click to the oauth controller", async () => {
     const signIn = vi.fn();
     const oauth: McpOauthState = {
@@ -443,6 +450,7 @@ describe("mcp oauth — McpServersView", () => {
     };
     render(<McpServersView state={oauthServersState()} oauth={oauth} />);
 
+    await openManageDialog();
     const button = await screen.findByRole("button", { name: "Sign in" });
     await act(async () => {
       button.click();
@@ -489,6 +497,7 @@ describe("mcp oauth — McpServersView", () => {
     };
     render(<McpServersView state={state} oauth={oauth} />);
 
+    await openManageDialog("todoist");
     const button = await screen.findByRole("button", { name: "Sign in" });
     await act(async () => {
       button.click();
@@ -500,7 +509,7 @@ describe("mcp oauth — McpServersView", () => {
   // still reports no auth status, but the cached token is on disk. A
   // successful test probe is proof enough: the panel reads "Signed in", not
   // "Sign-in status unknown".
-  it("shows Signed in when a test probe succeeded and the listing reports no status", () => {
+  it("shows Signed in when a test probe succeeded and the listing reports no status", async () => {
     const base = oauthServersState();
     const todoist = parseMcpServer({
       name: "todoist",
@@ -530,11 +539,12 @@ describe("mcp oauth — McpServersView", () => {
       busy: false,
     };
     render(<McpServersView state={state} oauth={oauth} />);
+    await openManageDialog("todoist");
     expect(screen.getByText("Signed in")).toBeInTheDocument();
     expect(screen.queryByText(/status unknown/i)).not.toBeInTheDocument();
   });
 
-  it("shows the waiting state and a manual sign-in link while signing in", () => {
+  it("shows the waiting state and a manual sign-in link while signing in", async () => {
     const oauth: McpOauthState = {
       logins: new Map([
         [
@@ -551,6 +561,7 @@ describe("mcp oauth — McpServersView", () => {
       busy: false,
     };
     render(<McpServersView state={oauthServersState()} oauth={oauth} />);
+    await openManageDialog();
     expect(screen.getByText(/Waiting for browser/i)).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /Open the sign-in page/i });
     expect(link).toHaveAttribute("href", "https://auth.linear.app/authorize");

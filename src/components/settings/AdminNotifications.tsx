@@ -1,6 +1,9 @@
+import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { useEffect } from "react";
 import type { AdminNotification } from "../../lib/hermes-admin";
+import { InlineNotice } from "../ui/InlineNotice";
 
 /** How long a success notice stays before auto-dismissing. Errors never time
  * out. */
@@ -10,9 +13,14 @@ const NOTIFICATION_TOAST_MS = 4500;
 const MAX_VISIBLE_NOTIFICATIONS = 3;
 
 /**
- * The one shared admin change-notice surface, rendered as toasts. A successful
- * change shows briefly then auto-dismisses so they never pile up; an error
- * stays until the user dismisses it (it must be seen). Newest first, capped.
+ * The one shared admin change-notice surface. A successful change shows briefly
+ * then auto-dismisses so they never pile up; an error stays until the user
+ * dismisses it (it must be seen). Duplicate messages are collapsed upstream in
+ * the cache, so identical notices never stack here. Newest first, capped.
+ *
+ * Each notice renders through the shared {@link InlineNotice} so admin change
+ * notices look the same as every other message on the AI settings pages, with a
+ * dismiss control in the notice's actions slot.
  *
  * Decoupled from any per-surface state type: it takes the notifications and a
  * dismiss callback directly, so every admin section (installed skills, MCP
@@ -40,26 +48,34 @@ export function AdminNotifications({
   if (notifications.length === 0) return null;
   const visible = [...notifications].reverse().slice(0, MAX_VISIBLE_NOTIFICATIONS);
   return (
-    <ul className="admin-notifications" aria-label="Recent changes">
+    <div className="admin-notifications" aria-label="Recent changes">
       {visible.map((note) => (
-        <li
+        <InlineNotice
           key={note.id}
           className="admin-notification"
-          data-tone={note.isError ? "destructive" : "info"}
+          tone={note.isError ? "destructive" : "info"}
           role="status"
-        >
-          <span className="admin-notification-text">{note.message}</span>
-          <button
-            type="button"
-            className="admin-notification-dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => onDismiss(note.id)}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-        </li>
+          icon={
+            note.isError ? (
+              <IconExclamationCircle size={15} ariaHidden />
+            ) : (
+              <IconCircleInfo size={15} ariaHidden />
+            )
+          }
+          body={note.message}
+          actions={
+            <button
+              type="button"
+              className="icon-button admin-notification-dismiss"
+              aria-label="Dismiss"
+              title="Dismiss"
+              onClick={() => onDismiss(note.id)}
+            >
+              <IconCrossSmall size={13} ariaHidden />
+            </button>
+          }
+        />
       ))}
-    </ul>
+    </div>
   );
 }

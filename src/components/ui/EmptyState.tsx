@@ -18,6 +18,7 @@ export function EmptyState({
   action,
   footer,
   label,
+  className,
 }: {
   icon?: ReactNode;
   title: ReactNode;
@@ -28,9 +29,12 @@ export function EmptyState({
   footer?: ReactNode;
   /** Accessible label for the region. */
   label?: string;
+  /** Extra class on the section — e.g. `empty-state-compact` to tighten the
+   * vertical padding when the empty state sits inside an already-boxed card. */
+  className?: string;
 }) {
   return (
-    <section className="empty-state" aria-label={label}>
+    <section className={`empty-state${className ? ` ${className}` : ""}`} aria-label={label}>
       <div className="empty-state-content">
         {icon ? (
           <span className="empty-state-icon" aria-hidden>

@@ -1,15 +1,14 @@
-import { IconArrowLeft } from "central-icons/IconArrowLeft";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCode } from "central-icons/IconCode";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconFileText } from "central-icons/IconFileText";
-import { IconFloppyDisk1 } from "central-icons/IconFloppyDisk1";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconLock } from "central-icons/IconLock";
 import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconWarningSign } from "central-icons/IconWarningSign";
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import {
   hasSupportingFiles,
   lifecycleClassMeta,
@@ -20,6 +19,7 @@ import {
   skillTags,
   sourceMeta,
   timingLabel,
+  useInstalledSkills,
   useSkillDetail,
   useSkillLifecycle,
   type HermesAdminMode,
@@ -33,6 +33,8 @@ import {
 import { AdminNotifications } from "./AdminNotifications";
 import { SkillLifecycleActions } from "./SkillLifecycleActions";
 import { SkillSetupSection } from "./SkillSetupSection";
+import { BreadcrumbBar } from "../ui/BreadcrumbBar";
+import { Switch } from "../ui/Switch";
 
 /**
  * The skill detail viewer and safe editor (spec 05). Opened as a sub-view off
@@ -70,7 +72,28 @@ export function SkillDetailSection({
   // Lifecycle actions refresh the skill's content on a successful mutation so the
   // detail view reflects a reset / update.
   const lifecycle = useSkillLifecycle(mode, undefined, state.refresh);
-  return <SkillDetailView state={state} lifecycle={lifecycle} onBack={onBack} />;
+  // The enable/disable switch in the detail bar shares the installed-skills
+  // inventory state with the list row toggle: the admin cache is keyed per mode
+  // and a toggle invalidates "skills", so flipping here and flipping in the list
+  // stay consistent. The live enabled flag comes from the inventory (with its
+  // optimistic flip) and falls back to the detail's own info when the inventory
+  // hasn't loaded that skill yet.
+  const inventory = useInstalledSkills(mode);
+  const inventorySkill = inventory.skills.find((item) => item.name === skill);
+  const enabled = inventorySkill?.enabled ?? state.info?.enabled ?? false;
+  const toggleAvailable = inventory.status === "ready" || inventory.status === "error";
+  const toggling = inventory.pending.has(skill);
+  return (
+    <SkillDetailView
+      state={state}
+      lifecycle={lifecycle}
+      onBack={onBack}
+      enabled={enabled}
+      canToggle={toggleAvailable}
+      toggling={toggling}
+      onToggleEnabled={(next) => inventory.toggle(skill, next)}
+    />
+  );
 }
 
 /** The render-only view, split out so component tests drive it with a stubbed
@@ -79,107 +102,181 @@ export function SkillDetailView({
   state,
   lifecycle,
   onBack,
+  enabled,
+  canToggle = false,
+  toggling = false,
+  onToggleEnabled,
 }: {
   state: SkillDetailState;
   /** The lifecycle action state, when available, so the detail surface can offer
    * update / audit / uninstall / reset and explain the disabled ones. */
   lifecycle?: SkillLifecycleState;
   onBack?: () => void;
+  /** The skill's live enabled flag, shared with the list row toggle. When
+   * omitted (e.g. a bare test render) the header switch is hidden. */
+  enabled?: boolean;
+  /** Whether the switch can act yet (the inventory has loaded a runtime). */
+  canToggle?: boolean;
+  /** True while a toggle is in flight (optimistic). */
+  toggling?: boolean;
+  onToggleEnabled?: (enabled: boolean) => void;
 }) {
   const { info, policy } = state;
   const isLoading = state.status === "loading";
   const isError = state.status === "error" && !state.original;
   const meta = sourceMeta(info?.source ?? "unknown");
   const headingId = "skill-detail-heading";
+  const title = info?.name ?? state.skill;
+  const [refreshSpins, setRefreshSpins] = useState(0);
 
+  function handleRefresh() {
+    setRefreshSpins((spins) => spins + 1);
+    state.refresh();
+  }
+
+  // Mirrors the meeting-note detail shell (App.tsx note-shell): the breadcrumb
+  // bar is a static sibling ABOVE a dedicated scroll container, never sticky
+  // inside scrolled content, so it stays pinned while everything beneath
+  // scrolls under the frosted bar (the data-has-detail-bar underlap).
   return (
-    <section className="settings-group skill-detail" aria-labelledby={headingId}>
-      <div className="skill-detail-topbar">
-        {onBack ? (
-          <button type="button" className="skill-detail-back" onClick={onBack}>
-            <IconArrowLeft size={14} ariaHidden />
-            Installed skills
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="skill-detail-refresh"
-          disabled={isLoading}
-          onClick={state.refresh}
-        >
-          <IconArrowRotateClockwise size={14} ariaHidden />
-          Refresh
-        </button>
-      </div>
-
-      <h2 id={headingId} className="settings-group-heading skill-detail-name">
-        {info?.name ?? state.skill}
-        <span className="skill-detail-source" data-source={info?.source}>
-          {meta.label}
-        </span>
-        {info?.version ? <span className="skill-detail-version">v{info.version}</span> : null}
-        {policy.editable ? null : (
-          <span className="skill-detail-readonly" title={policy.readOnlyReason}>
-            <IconLock size={12} ariaHidden />
-            Read only
-          </span>
-        )}
-      </h2>
-      <p className="settings-group-description">
-        {info?.description ?? meta.blurb}{" "}
-        <span className="skill-detail-mode-note">
-          Targeting the {state.mode === "unrestricted" ? "Full mode" : "Sandboxed"} runtime (profile{" "}
-          {state.profile}). Edits apply to new sessions.
-        </span>
-      </p>
-
-      <AdminNotifications
-        notifications={state.notifications}
-        onDismiss={state.dismissNotification}
-      />
-
-      {state.error ? (
-        <p className="skill-detail-error" role="alert">
-          <IconExclamationCircle size={14} ariaHidden />
-          {state.error}
-          {state.retryable ? (
-            <button type="button" className="skill-detail-retry" onClick={state.refresh}>
-              Try again
+    <div className="skill-detail-shell">
+      <BreadcrumbBar
+        backLabel="Back to installed skills"
+        onBack={onBack}
+        items={[{ label: "Installed skills", onClick: onBack }, { label: title }]}
+        actions={
+          <>
+            {onToggleEnabled ? (
+              <Switch
+                checked={enabled ?? false}
+                disabled={!canToggle || !policy.editable || toggling}
+                onCheckedChange={onToggleEnabled}
+                aria-label={`${enabled ? "Disable" : "Enable"} ${title}`}
+              />
+            ) : null}
+            <button
+              type="button"
+              className="icon-button skill-detail-refresh"
+              aria-label="Refresh skill"
+              aria-busy={isLoading}
+              disabled={isLoading}
+              title="Refresh skill"
+              onClick={handleRefresh}
+            >
+              <IconArrowRotateClockwise
+                size={14}
+                ariaHidden
+                className="balance-refresh-icon"
+                style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+              />
             </button>
-          ) : null}
-        </p>
-      ) : null}
-
-      {isLoading ? (
-        <p className="skill-detail-loading" role="status">
-          Loading skill...
-        </p>
-      ) : isError ? null : (
-        <>
-          <MetadataCard info={info} />
-
-          {info && lifecycle ? <LifecycleCard info={info} lifecycle={lifecycle} /> : null}
-
-          <SupportingFilesCard files={state.supportingFiles} />
-
-          {info ? (
-            <div className="settings-card skill-detail-setup-card">
-              <h3 className="skill-detail-card-heading">Setup</h3>
-              <SkillSetupSection skill={state.skill} skillRaw={info.raw} mode={state.mode} />
+          </>
+        }
+      />
+      <div className="skill-detail-scroll" data-has-detail-bar="true">
+        <section className="settings-page settings-group skill-detail" aria-labelledby={headingId}>
+          <header className="skill-detail-header">
+            <div className="skill-detail-title-row">
+              <h2 id={headingId} className="skill-detail-title">
+                {title}
+              </h2>
+              <div className="skill-detail-badges">
+                {/* The default "Skill" source (unknown) is redundant; only show
+                 * the badge for a meaningful source (bundled, hub, external). */}
+                {info?.source && info.source !== "unknown" ? (
+                  <span className="skill-detail-source" data-source={info.source}>
+                    {meta.label}
+                  </span>
+                ) : null}
+                {info?.version ? (
+                  <span className="skill-detail-version">v{info.version}</span>
+                ) : null}
+                {policy.editable ? null : (
+                  <span className="skill-detail-readonly" title={policy.readOnlyReason}>
+                    <IconLock size={12} ariaHidden />
+                    Read only
+                  </span>
+                )}
+              </div>
             </div>
+            <p className="skill-detail-description">{info?.description ?? meta.blurb}</p>
+            <p className="skill-detail-context">
+              Targeting the {state.mode === "unrestricted" ? "full mode" : "sandboxed"} runtime
+              (profile {state.profile}). Edits apply to new sessions.
+            </p>
+          </header>
+
+          <AdminNotifications
+            notifications={state.notifications}
+            onDismiss={state.dismissNotification}
+          />
+
+          {state.error ? (
+            <p className="skill-detail-error" role="alert">
+              <IconExclamationCircle size={14} ariaHidden />
+              {state.error}
+              {state.retryable ? (
+                <button type="button" className="skill-detail-retry" onClick={state.refresh}>
+                  Try again
+                </button>
+              ) : null}
+            </p>
           ) : null}
 
-          <SkillDocumentCard state={state} />
-        </>
-      )}
+          {isLoading ? (
+            <p className="skill-detail-loading" role="status">
+              Loading skill...
+            </p>
+          ) : isError ? null : (
+            <>
+              <SkillDetailBlock title="Details">
+                <MetadataList info={info} />
+              </SkillDetailBlock>
+
+              {info && lifecycle ? (
+                <SkillDetailBlock title="Manage">
+                  <LifecycleCard info={info} lifecycle={lifecycle} />
+                </SkillDetailBlock>
+              ) : null}
+
+              <SkillDetailBlock title="Supporting files">
+                <SupportingFilesCard files={state.supportingFiles} />
+              </SkillDetailBlock>
+
+              {info ? (
+                <SkillDetailBlock title="Setup">
+                  <div className="settings-card skill-detail-setup-card">
+                    <SkillSetupSection skill={state.skill} skillRaw={info.raw} mode={state.mode} />
+                  </div>
+                </SkillDetailBlock>
+              ) : null}
+
+              <SkillDetailBlock title="Skill document">
+                <SkillDocumentCard state={state} />
+              </SkillDetailBlock>
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function SkillDetailBlock({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="skill-detail-block">
+      <h3 className="skill-detail-section-heading">{title}</h3>
+      {children}
     </section>
   );
 }
 
-/** The metadata card: category, tags, platform restrictions, conditional
- * activation, on-disk path, and provenance blurb. Renders only what the
- * inventory actually reports. */
-function MetadataCard({ info }: { info?: HermesSkillInfo }) {
+/** The metadata facts: source, version, author, platform restrictions,
+ * conditional activation, on-disk path, plus any tags. Rendered as a quiet,
+ * card-less two-column labeled list (label above value, muted) rather than a
+ * boxed card, so it reads as reference detail and not another surface. Renders
+ * only what the inventory actually reports. */
+function MetadataList({ info }: { info?: HermesSkillInfo }) {
   const tags = info ? skillTags(info) : undefined;
   const restrictions = info ? platformRestrictions(info) : undefined;
   const activation = info ? skillActivation(info) : undefined;
@@ -188,13 +285,11 @@ function MetadataCard({ info }: { info?: HermesSkillInfo }) {
   const meta = sourceMeta(info?.source ?? "unknown");
 
   return (
-    <div className="settings-card skill-detail-meta-card">
-      <h3 className="skill-detail-card-heading">Details</h3>
-      <dl className="skill-detail-meta-grid">
+    <div className="settings-card skill-detail-meta">
+      <dl className="skill-detail-meta-list">
         <MetaItem label="Source" value={meta.label} hint={meta.blurb} />
         {author ? <MetaItem label="Author" value={author} /> : null}
         {info?.version ? <MetaItem label="Version" value={info.version} /> : null}
-        <MetaItem label="Enabled" value={info?.enabled ? "Yes" : "No"} />
         {restrictions ? (
           <MetaItem label="Platforms" value={`${restrictions.join(", ")} only`} />
         ) : null}
@@ -232,8 +327,12 @@ function LifecycleCard({
   const meta = lifecycleClassMeta(policy.lifecycleClass);
   return (
     <div className="settings-card skill-detail-lifecycle-card">
-      <h3 className="skill-detail-card-heading">Manage</h3>
-      <p className="skill-detail-lifecycle-blurb">{meta.blurb}</p>
+      <div className="skill-detail-info-row">
+        <div className="skill-detail-info-main">
+          <p className="skill-detail-info-title">{meta.label}</p>
+          <p className="skill-detail-info-description">{meta.blurb}</p>
+        </div>
+      </div>
       {policy.locallyModified ? (
         <p className="skill-detail-lifecycle-modified" role="note">
           <IconWarningSign size={13} ariaHidden />
@@ -257,10 +356,13 @@ function MetaItem({
   mono?: boolean;
 }) {
   return (
-    <div className="skill-detail-meta-item">
-      <dt className="skill-detail-meta-label">{label}</dt>
+    <div className="skill-detail-info-row">
+      <dt className="skill-detail-info-main">
+        <span className="skill-detail-info-title">{label}</span>
+        {hint ? <span className="skill-detail-info-description">{hint}</span> : null}
+      </dt>
       <dd
-        className={`skill-detail-meta-value${mono ? " skill-detail-meta-mono" : ""}`}
+        className={`skill-detail-info-value${mono ? " skill-detail-info-mono" : ""}`}
         title={hint}
       >
         {value}
@@ -275,14 +377,12 @@ function SupportingFilesCard({ files }: { files: SkillSupportingFiles }) {
   if (!hasSupportingFiles(files)) {
     return (
       <div className="settings-card skill-detail-files-card">
-        <h3 className="skill-detail-card-heading">Supporting files</h3>
         <p className="skill-detail-files-empty">No supporting files reported for this skill.</p>
       </div>
     );
   }
   return (
     <div className="settings-card skill-detail-files-card">
-      <h3 className="skill-detail-card-heading">Supporting files</h3>
       <FileGroup label="References" paths={files.references} />
       <FileGroup label="Templates" paths={files.templates} />
       <FileGroup
@@ -344,10 +444,10 @@ function SkillDocumentReadView({ state }: { state: SkillDetailState }) {
   return (
     <div className="settings-card skill-detail-doc-card">
       <div className="skill-detail-doc-header">
-        <h3 className="skill-detail-card-heading">
+        <span className="skill-detail-doc-title">
           <IconFileText size={14} ariaHidden />
           {state.relativePath ?? "SKILL.md"}
-        </h3>
+        </span>
         <span className="skill-detail-doc-readonly">
           <IconLock size={12} ariaHidden />
           {state.policy.readOnlyReason ?? "Read only"}
@@ -380,11 +480,29 @@ function SkillDocumentEditor({ state }: { state: SkillDetailState }) {
   return (
     <div className="settings-card skill-detail-doc-card">
       <div className="skill-detail-doc-header">
-        <h3 className="skill-detail-card-heading">
+        <span className="skill-detail-doc-title">
           <IconPencilLine size={14} ariaHidden />
           Edit {state.relativePath ?? "SKILL.md"}
-        </h3>
-        <span className="skill-detail-doc-timing">{timingLabel("next-session")}</span>
+        </span>
+        <div className="skill-detail-doc-header-actions">
+          <span className="skill-detail-doc-timing">{timingLabel("next-session")}</span>
+          <button
+            type="button"
+            className="skill-detail-revert"
+            disabled={!state.dirty || state.saving}
+            onClick={state.revert}
+          >
+            Revert
+          </button>
+          <button
+            type="button"
+            className="skill-detail-save"
+            disabled={!canSave}
+            onClick={() => setConfirming(true)}
+          >
+            {state.saving ? "Saving..." : "Save"}
+          </button>
+        </div>
       </div>
 
       {state.policy.warning ? (
@@ -417,26 +535,6 @@ function SkillDocumentEditor({ state }: { state: SkillDetailState }) {
           ))}
         </ul>
       ) : null}
-
-      <div className="skill-detail-editor-actions">
-        <button
-          type="button"
-          className="skill-detail-revert"
-          disabled={!state.dirty || state.saving}
-          onClick={state.revert}
-        >
-          Revert
-        </button>
-        <button
-          type="button"
-          className="skill-detail-save"
-          disabled={!canSave}
-          onClick={() => setConfirming(true)}
-        >
-          <IconFloppyDisk1 size={14} ariaHidden />
-          {state.saving ? "Saving..." : "Review and save"}
-        </button>
-      </div>
 
       {confirming ? (
         <SaveConfirm
@@ -489,7 +587,7 @@ function SaveConfirm({
     <div
       className="skill-detail-confirm"
       role="dialog"
-      aria-label="Review changes before saving"
+      aria-label="Confirm changes before saving"
       aria-modal="false"
     >
       <p className="skill-detail-confirm-summary">

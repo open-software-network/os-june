@@ -2,10 +2,11 @@ import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCircleX } from "central-icons/IconCircleX";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
+import { IconFilter2 } from "central-icons/IconFilter2";
+import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconShield } from "central-icons/IconShield";
 import { useEffect, useId, useMemo, useState } from "react";
 import {
-  buildToolPolicyBlock,
   compareToolPolicy,
   draftFromServer,
   precedenceNote,
@@ -17,6 +18,7 @@ import {
   type UtilityToggle,
 } from "../../lib/hermes-admin";
 import { Dialog } from "../ui/Dialog";
+import { Switch } from "../ui/Switch";
 
 /**
  * The per-server "Tools" panel (spec 16): configure a server's tool selection /
@@ -95,12 +97,16 @@ function McpToolsForm({
 }) {
   const [draft, setDraft] = useState<ToolPolicyDraft>(() => draftFromServer(server));
   const [saved, setSaved] = useState(false);
-  const headingId = useId();
+  const [toolQuery, setToolQuery] = useState("");
 
   // A fresh save notice clears as soon as the user edits again.
   useEffect(() => {
     setSaved(false);
   }, [draft]);
+
+  useEffect(() => {
+    setToolQuery("");
+  }, [server.name]);
 
   const comparison = useMemo(
     () => compareToolPolicy(server, draft, testResult),
@@ -109,7 +115,6 @@ function McpToolsForm({
   const precedence = useMemo(() => precedenceNote(draft), [draft]);
   const recommendAllowlist = shouldRecommendAllowlist(comparison);
 
-  const block = buildToolPolicyBlock(draft);
   const includeText = (draft.include ?? []).join("\n");
   const excludeText = (draft.exclude ?? []).join("\n");
 
@@ -145,7 +150,7 @@ function McpToolsForm({
   }
 
   return (
-    <div className="mcp-tools-form" aria-labelledby={headingId}>
+    <div className="mcp-tools-form">
       <CompareCounts comparison={comparison} />
 
       {comparison.empty ? (
@@ -165,7 +170,7 @@ function McpToolsForm({
 
       <fieldset className="mcp-tools-mode">
         <legend className="mcp-tools-legend">Filter mode</legend>
-        <div className="mcp-tools-mode-options" role="radiogroup" aria-label="Filter mode">
+        <div className="mcp-tools-mode-options">
           <ModeOption
             label="Allowlist"
             hint="Expose only chosen tools. Safest for sensitive servers."
@@ -200,9 +205,13 @@ function McpToolsForm({
         </p>
       ) : null}
 
-      {draft.mode !== "none" && comparison.tools.length > 0 ? (
-        <ToolList mode={draft.mode} tools={comparison.tools} onToggle={toggleToolInList} />
-      ) : null}
+      <ToolSelection
+        mode={draft.mode}
+        tools={comparison.tools}
+        query={toolQuery}
+        onQueryChange={setToolQuery}
+        onToggle={toggleToolInList}
+      />
 
       {draft.mode === "allowlist" ? (
         <NameListField
@@ -247,23 +256,30 @@ function McpToolsForm({
         />
       </fieldset>
 
-      <fieldset className="mcp-tools-advanced">
-        <legend className="mcp-tools-legend">Advanced</legend>
-        <ParallelRow
-          value={draft.supportsParallelToolCalls}
-          onChange={(value) => setDraft((d) => ({ ...d, supportsParallelToolCalls: value }))}
-        />
-        <SecondsRow
-          label="Request timeout (seconds)"
-          value={draft.timeoutSeconds}
-          onChange={(value) => setDraft((d) => ({ ...d, timeoutSeconds: value }))}
-        />
-        <SecondsRow
-          label="Connect timeout (seconds)"
-          value={draft.connectTimeoutSeconds}
-          onChange={(value) => setDraft((d) => ({ ...d, connectTimeoutSeconds: value }))}
-        />
-      </fieldset>
+      <details className="mcp-tools-advanced">
+        <summary>
+          <span className="mcp-tools-advanced-title">Advanced</span>
+          <span className="mcp-tools-advanced-description">
+            Optional concurrency and timeout settings.
+          </span>
+        </summary>
+        <div className="mcp-tools-advanced-fields">
+          <ParallelRow
+            value={draft.supportsParallelToolCalls}
+            onChange={(value) => setDraft((d) => ({ ...d, supportsParallelToolCalls: value }))}
+          />
+          <SecondsRow
+            label="Request timeout (seconds)"
+            value={draft.timeoutSeconds}
+            onChange={(value) => setDraft((d) => ({ ...d, timeoutSeconds: value }))}
+          />
+          <SecondsRow
+            label="Connect timeout (seconds)"
+            value={draft.connectTimeoutSeconds}
+            onChange={(value) => setDraft((d) => ({ ...d, connectTimeoutSeconds: value }))}
+          />
+        </div>
+      </details>
 
       {saveError ? (
         <p className="mcp-tools-error" role="alert">
@@ -292,14 +308,6 @@ function McpToolsForm({
           {saving ? "Saving" : "Save tool filter"}
         </button>
       </div>
-
-      {/* A debug-friendly, non-secret echo of exactly what will be written, so a
-          reviewer can see the scoped block. Tool names are not secret. */}
-      <details className="mcp-tools-preview">
-        <summary>What gets saved</summary>
-        <p className="mcp-tools-preview-path">mcp_servers.{server.name}.tools</p>
-        <pre className="mcp-tools-preview-block">{JSON.stringify(block, null, 2)}</pre>
-      </details>
     </div>
   );
 }
@@ -341,8 +349,7 @@ function ModeOption({
   return (
     <button
       type="button"
-      role="radio"
-      aria-checked={active}
+      aria-pressed={active}
       className="mcp-tools-mode-option"
       data-active={active}
       onClick={onSelect}
@@ -353,8 +360,60 @@ function ModeOption({
   );
 }
 
-/** The discovered tools list, each row clickable to add/remove from the active
- * list, with allowed state and a destructive highlight. */
+function ToolSelection({
+  mode,
+  tools,
+  query,
+  onQueryChange,
+  onToggle,
+}: {
+  mode: ToolFilterMode;
+  tools: ReturnType<typeof compareToolPolicy>["tools"];
+  query: string;
+  onQueryChange: (query: string) => void;
+  onToggle: (name: string) => void;
+}) {
+  const showSearch = tools.length > 6;
+  const trimmedQuery = query.trim().toLowerCase();
+  const visibleTools = useMemo(() => {
+    if (!trimmedQuery) return tools;
+    return tools.filter((tool) => {
+      const description = tool.description?.toLowerCase() ?? "";
+      return tool.name.toLowerCase().includes(trimmedQuery) || description.includes(trimmedQuery);
+    });
+  }, [tools, trimmedQuery]);
+
+  return (
+    <section className="mcp-tools-section" aria-label="Tools">
+      <div className="mcp-tools-section-head">
+        <h3 className="mcp-tools-legend">Tools</h3>
+        {showSearch ? (
+          <div className="mcp-tools-search">
+            <IconMagnifyingGlass size={14} ariaHidden className="mcp-tools-search-icon" />
+            <input
+              type="search"
+              value={query}
+              placeholder="Search tools"
+              aria-label="Search tools"
+              onChange={(event) => onQueryChange(event.currentTarget.value)}
+            />
+          </div>
+        ) : null}
+      </div>
+
+      {tools.length === 0 ? (
+        <ToolsEmptyState description="Test the server first to list the tools it exposes." />
+      ) : visibleTools.length === 0 ? (
+        <ToolsEmptyState description="Try a different search." />
+      ) : (
+        <ToolList mode={mode} tools={visibleTools} onToggle={onToggle} />
+      )}
+    </section>
+  );
+}
+
+/** The discovered tools list: name, one-line description, and a per-tool switch
+ * when the selected filter mode can include or exclude individual tools. */
 function ToolList({
   mode,
   tools,
@@ -364,8 +423,9 @@ function ToolList({
   tools: ReturnType<typeof compareToolPolicy>["tools"];
   onToggle: (name: string) => void;
 }) {
+  const canToggle = mode !== "none";
   return (
-    <ul className="mcp-tools-list" aria-label="Discovered tools">
+    <ul className="mcp-tools-list" aria-label="Discovered tools" data-can-toggle={canToggle}>
       {tools.map((tool) => (
         <li
           key={tool.name}
@@ -373,36 +433,40 @@ function ToolList({
           data-allowed={tool.allowed}
           data-destructive={tool.destructive}
         >
-          <button
-            type="button"
-            className="mcp-tools-row-toggle"
-            aria-pressed={tool.allowed}
-            title={
-              mode === "allowlist"
-                ? tool.allowed
-                  ? "Allowed. Click to remove from the allowlist."
-                  : "Not allowed. Click to add to the allowlist."
-                : tool.allowed
-                  ? "Allowed. Click to add to the blocklist."
-                  : "Blocked. Click to remove from the blocklist."
-            }
-            onClick={() => onToggle(tool.name)}
-          >
-            <span className="mcp-tools-row-state" aria-hidden>
-              {tool.allowed ? <IconCircleCheck size={13} /> : <IconCircleX size={13} />}
-            </span>
+          <span className="mcp-tools-row-copy">
             <span className="mcp-tools-row-name">{tool.name}</span>
-            {tool.destructive ? (
-              <span className="mcp-tools-row-destructive" title="Destructive">
-                <IconExclamationCircle size={11} ariaHidden />
-                Destructive
-              </span>
-            ) : null}
-          </button>
-          {tool.description ? <p className="mcp-tools-row-desc">{tool.description}</p> : null}
+            <span className="mcp-tools-row-desc">
+              {tool.description?.trim() || "No description provided."}
+            </span>
+          </span>
+          {tool.destructive ? (
+            <span className="mcp-tools-row-destructive" title="Destructive">
+              <IconExclamationCircle size={11} ariaHidden />
+              Destructive
+            </span>
+          ) : null}
+          {canToggle ? (
+            <Switch
+              checked={tool.allowed}
+              aria-label={`${tool.allowed ? "Disable" : "Enable"} ${tool.name}`}
+              onCheckedChange={() => onToggle(tool.name)}
+            />
+          ) : null}
         </li>
       ))}
     </ul>
+  );
+}
+
+function ToolsEmptyState({ description }: { description: string }) {
+  return (
+    <div className="mcp-tools-empty" role="status">
+      <span className="mcp-tools-empty-icon" aria-hidden>
+        <IconFilter2 size={18} />
+      </span>
+      <p className="mcp-tools-empty-title">No tools found</p>
+      <p className="mcp-tools-empty-description">{description}</p>
+    </div>
   );
 }
 

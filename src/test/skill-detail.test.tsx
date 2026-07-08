@@ -452,11 +452,40 @@ describe("skill detail — component", () => {
     expect(screen.getByText(/instructions/i)).toBeInTheDocument();
   });
 
+  it("disables the detail switch for read-only external skills", () => {
+    const toggle = vi.fn();
+    const info = externalSkill();
+    render(
+      <SkillDetailView
+        state={baseState({
+          skill: "company-style",
+          info,
+          policy: skillEditPolicy({ source: "external", readOnly: true }),
+        })}
+        enabled={true}
+        canToggle={true}
+        onToggleEnabled={toggle}
+      />,
+    );
+
+    const switchControl = screen.getByRole("switch", { name: "Disable company-style" });
+    expect(switchControl).toBeDisabled();
+    fireEvent.click(switchControl);
+    expect(toggle).not.toHaveBeenCalled();
+  });
+
   it("renders an editor for a writable skill and a pre-edit warning", () => {
     render(<SkillDetailView state={baseState({})} />);
     expect(screen.getByLabelText(/skill instructions and metadata/i)).toBeInTheDocument();
     // The bundled pre-edit warning is shown.
     expect(screen.getByText(/bundled updates/i)).toBeInTheDocument();
+  });
+
+  it("refreshes the skill from the top bar control", () => {
+    const refresh = vi.fn();
+    render(<SkillDetailView state={baseState({ refresh })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh skill" }));
+    expect(refresh).toHaveBeenCalledOnce();
   });
 
   it("opens a diff confirmation and saves through it", () => {
@@ -476,9 +505,9 @@ describe("skill detail — component", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /review and save/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     const dialog = screen.getByRole("dialog", {
-      name: /review changes before saving/i,
+      name: /confirm changes before saving/i,
     });
     expect(within(dialog).getByText(/added/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: /save changes/i }));
@@ -499,7 +528,7 @@ describe("skill detail — component", () => {
         })}
       />,
     );
-    expect(screen.getByRole("button", { name: /review and save/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     // The blocking error is shown inline.
     expect(screen.getByText(/missing a name/i)).toBeInTheDocument();
   });

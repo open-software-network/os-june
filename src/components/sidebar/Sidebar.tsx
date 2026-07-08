@@ -8,8 +8,10 @@ import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBox2 } from "central-icons/IconBox2";
 import { IconBrain2 } from "central-icons/IconBrain2";
+import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
+import { IconElements } from "central-icons/IconElements";
+import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
-import { IconFolderShared } from "central-icons/IconFolderShared";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
@@ -25,14 +27,12 @@ import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPin } from "central-icons/IconPin";
 import { IconGithub } from "central-icons/IconGithub";
-import { IconPlugin2 } from "central-icons/IconPlugin2";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconToolbox } from "central-icons/IconToolbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconGauge } from "central-icons/IconGauge";
-import { IconServer1 } from "central-icons/IconServer1";
 import { IconShield } from "central-icons/IconShield";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStore1 } from "central-icons/IconStore1";
@@ -240,12 +240,12 @@ const SETTINGS_SIDEBAR_GROUPS: {
       {
         id: "skills",
         label: "Installed skills",
-        icon: <IconPlugin2 size={16} />,
+        icon: <IconElements size={16} />,
       },
       {
         id: "external-dirs",
         label: "External skill directories",
-        icon: <IconFolderShared size={16} />,
+        icon: <IconBuildingBlocks size={16} />,
       },
       {
         id: "skill-review",
@@ -255,7 +255,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
       {
         id: "mcp",
         label: "MCP servers",
-        icon: <IconServer1 size={16} />,
+        icon: <IconModelcontextprotocol size={16} />,
       },
       {
         id: "mcp-catalog",
