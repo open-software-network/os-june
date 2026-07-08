@@ -185,6 +185,10 @@ export type JuneHermesEvent =
       name?: string;
       text: string;
       isClarify: boolean;
+      /** Pruned MCP/tool result image content. Kept so first-party image
+       * content blocks can render inline in the live turn; general tool text
+       * still uses the sanitized/display fields above. */
+      content?: unknown;
       /** Sanitized opaque payload for display/details. Keep consumers from
        * depending on raw wire structure. */
       sanitizedPayload?: unknown;

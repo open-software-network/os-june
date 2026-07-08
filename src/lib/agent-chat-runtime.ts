@@ -176,8 +176,16 @@ export type AgentChatTurn = {
 };
 
 const MEDIA_IMAGE_EXTENSION_PATTERN = "png|jpe?g|gif|webp|tiff?|bmp|avif";
+// A Hermes MEDIA reference is either an absolute path
+// (`MEDIA:/…/image_cache/img.png`, which can contain spaces like "Application
+// Support") or a bare filename (`MEDIA:img_ae9ed1ffc669.png`) — the model
+// commonly echoes just the `filename` the june_image tool returned rather than
+// a full path. The bare form uses a filename-safe charset (no slash, no space)
+// so it can't swallow surrounding prose; the absolute form stays permissive.
+// The backend (validate_hermes_file_path) resolves a bare filename against the
+// generated-image roots before loading it.
 const MEDIA_IMAGE_REFERENCE_PATTERN = new RegExp(
-  `MEDIA:(/[^\\r\\n]+?\\.(?:${MEDIA_IMAGE_EXTENSION_PATTERN}))(?:[)\\].,;:]?)(?=\\s|$)`,
+  `MEDIA:((?:/[^\\r\\n]+?|[A-Za-z0-9._-]+?)\\.(?:${MEDIA_IMAGE_EXTENSION_PATTERN}))(?:[)\\].,;:]?)(?=\\s|$)`,
   "gi",
 );
 const mediaImageReferencePattern = () =>
@@ -490,7 +498,7 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
         // A billing failure is recognizable from its "Error:" text prefix; a
         // context overflow is not, so only fold it when the turn actually
         // failed — an ordinary sentence that mentions "context length" stays prose.
-        const displayText = stripMediaImageReferences(text);
+        const displayText = stripMediaImageReferences(text).trim();
         const imageParts = imagePartsFromHermesContent(text);
         const notice = displayText
           ? (creditsNoticeFromTurnText(displayText) ??
@@ -503,10 +511,17 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
           currentAssistant.parts = currentAssistant.parts.filter((part) => part.type !== "text");
           currentAssistant.parts.push(notice);
         } else if (text) {
-          if (displayText.trim()) {
-            completeAssistantTextPart(currentAssistant.parts, displayText);
-          } else if (imageParts.length) {
+          if (imageParts.length) {
+            // The streamed deltas still hold the raw `MEDIA:` line, and
+            // completeAssistantTextPart would keep them as a prefix of the
+            // stripped complete text. Replace the text wholesale with the
+            // stripped prose (or drop it) so the reference never stays visible.
             removeAssistantTextParts(currentAssistant.parts);
+            if (displayText) {
+              currentAssistant.parts.push({ type: "text", text: displayText, status: "complete" });
+            }
+          } else if (displayText) {
+            completeAssistantTextPart(currentAssistant.parts, displayText);
           }
           appendImageParts(currentAssistant.parts, imageParts);
         }
@@ -608,6 +623,9 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
           text: event.text,
           status,
         });
+        if (status === "complete") {
+          appendImageParts(currentAssistant.parts, imagePartsFromHermesContent(event.content));
+        }
         break;
       }
 
@@ -855,7 +873,8 @@ function appendImageParts(parts: AgentChatPart[], images: AgentChatImagePart[]) 
       (part) =>
         part.type === "image" &&
         ((image.path && part.path === image.path) ||
-          (image.dataUrl && part.dataUrl === image.dataUrl)),
+          (image.dataUrl && part.dataUrl === image.dataUrl) ||
+          (image.name && part.name === image.name)),
     );
     if (!exists) parts.push(image);
   }

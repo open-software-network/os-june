@@ -73,6 +73,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={() => onChangeView("agent")}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -106,6 +107,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={onSelectAgentSession}
       />,
     );
@@ -151,6 +153,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={onNewAgentSession}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -203,6 +206,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -290,6 +294,7 @@ describe("folders UI", () => {
           onOpenMoveDialog={vi.fn()}
           onRemoveNoteFromFolder={vi.fn()}
           onNewAgentSession={vi.fn()}
+          onRenameAgentSession={vi.fn()}
           onSelectAgentSession={vi.fn()}
         />,
       );
@@ -324,6 +329,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -365,6 +371,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -411,6 +418,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -453,6 +461,7 @@ describe("folders UI", () => {
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
         onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );

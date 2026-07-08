@@ -72,6 +72,16 @@ export function isHermesServerError(message?: string) {
   return /Hermes API returned 5\d\d\b/.test(message);
 }
 
+export const HERMES_SERVER_ERROR_MESSAGE = "June ran into a problem with that request.";
+
+/** Human-readable Hermes command error. Transient Hermes REST 5xx errors are
+ * local runtime faults, so user-facing surfaces should not leak the raw bridge
+ * wire string (`Hermes API returned 500: ...`). */
+export function describeHermesError(err: unknown): string {
+  const message = messageFromError(err);
+  return isHermesServerError(message) ? HERMES_SERVER_ERROR_MESSAGE : message;
+}
+
 /** Whether an error message means the request outgrew the model's context (or
  * the agent request-size limit) — a hard size failure the user must act on
  * (trim the input, attach a smaller file, start a fresh session), NOT something

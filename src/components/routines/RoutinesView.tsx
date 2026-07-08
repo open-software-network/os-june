@@ -14,6 +14,7 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconZap } from "central-icons/IconZap";
 import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { describeHermesError } from "../../lib/errors";
 import {
   isReplaceableScheduledRunTitle,
   listScheduledRunSessions,
@@ -66,6 +67,7 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
   const [loadingState, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorRetryable, setErrorRetryable] = useState(false);
   const [query, setQuery] = useState("");
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<RoutineJob | null>(null);
@@ -74,6 +76,7 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
   const [createError, setCreateError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailErrorRetryable, setDetailErrorRetryable] = useState(false);
   const [describeDraft, setDescribeDraft] = useState("");
   const [refreshSpins, setRefreshSpins] = useState(0);
   // Per-routine mode choice for the routine being described. Defaults to
@@ -101,10 +104,12 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
       const jobs = await listRoutines();
       setRoutines(sortRoutines(jobs));
       setError(null);
+      setErrorRetryable(false);
       return null;
     } catch (err) {
-      const message = messageFromError(err);
+      const message = describeRoutineError(err);
       setError(message);
+      setErrorRetryable(true);
       return message;
     } finally {
       setLoading(false);
@@ -199,9 +204,13 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
       // sets on failure) — clearing here would mask a failed reload.
       const reloadError = await loadRoutines();
       setDetailError(reloadError);
+      setDetailErrorRetryable(reloadError !== null);
     } catch (err) {
-      setError(messageFromError(err));
-      setDetailError(messageFromError(err));
+      const message = describeRoutineError(err);
+      setError(message);
+      setErrorRetryable(false);
+      setDetailError(message);
+      setDetailErrorRetryable(false);
     } finally {
       markBusy(routine.job_id, false);
     }
@@ -212,8 +221,10 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
     try {
       await triggerRoutine(routine.job_id);
       setDetailError(null);
+      setDetailErrorRetryable(false);
     } catch (err) {
-      setDetailError(messageFromError(err));
+      setDetailError(describeRoutineError(err));
+      setDetailErrorRetryable(false);
       throw err;
     } finally {
       markBusy(routine.job_id, false);
@@ -224,10 +235,12 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
     setSaving(true);
     try {
       await updateRoutine(jobId, updates);
-      await loadRoutines();
-      setDetailError(null);
+      const reloadError = await loadRoutines();
+      setDetailError(reloadError);
+      setDetailErrorRetryable(reloadError !== null);
     } catch (err) {
-      setDetailError(messageFromError(err));
+      setDetailError(describeRoutineError(err));
+      setDetailErrorRetryable(false);
     } finally {
       setSaving(false);
     }
@@ -240,9 +253,10 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
       await loadRoutines();
       setCreateError(null);
       setDetailError(null);
+      setDetailErrorRetryable(false);
       setPage({ kind: "detail", jobId: created.job_id });
     } catch (err) {
-      setCreateError(messageFromError(err));
+      setCreateError(describeRoutineError(err));
     } finally {
       setCreating(false);
     }
@@ -257,12 +271,16 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
       await removeRoutine(routine.job_id);
       setRoutines((prev) => prev.filter((entry) => entry.job_id !== routine.job_id));
       setError(null);
+      setErrorRetryable(false);
       setPage((current) =>
         current.kind === "detail" && current.jobId === routine.job_id ? { kind: "list" } : current,
       );
     } catch (err) {
-      setError(messageFromError(err));
-      setDetailError(messageFromError(err));
+      const message = describeRoutineError(err);
+      setError(message);
+      setErrorRetryable(false);
+      setDetailError(message);
+      setDetailErrorRetryable(false);
     }
   }
 
@@ -284,12 +302,26 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
 
   function openDetail(routine: RoutineJob) {
     setDetailError(null);
+    setDetailErrorRetryable(false);
     setPage({ kind: "detail", jobId: routine.job_id });
   }
 
   function refreshNow() {
     setRefreshSpins((spins) => spins + 1);
     void refresh();
+  }
+
+  function retryListLoad() {
+    setRefreshSpins((spins) => spins + 1);
+    void loadRoutines();
+  }
+
+  function retryDetailLoad() {
+    setRefreshSpins((spins) => spins + 1);
+    void loadRoutines().then((reloadError) => {
+      setDetailError(reloadError);
+      setDetailErrorRetryable(reloadError !== null);
+    });
   }
 
   const detailRoutine = page.kind === "detail" ? (routinesById.get(page.jobId) ?? null) : null;
@@ -362,6 +394,8 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
           onRunNow={() => runNow(detailRoutine)}
           onDelete={() => setPendingDelete(detailRoutine)}
           onOpenRun={onOpenRun}
+          onRetryLoad={detailErrorRetryable ? retryDetailLoad : undefined}
+          retrying={refreshing}
         />
         {dialogs}
       </>
@@ -413,7 +447,13 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
         </div>
       ) : null}
 
-      {error ? <p className="error-banner">{error}</p> : null}
+      {error ? (
+        <RoutineErrorBanner
+          message={error}
+          onRetry={errorRetryable ? retryListLoad : undefined}
+          retrying={refreshing}
+        />
+      ) : null}
 
       {loading ? (
         <div className="folders-empty">
@@ -435,7 +475,12 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
               routine={routine}
               busy={busyIds.has(routine.job_id)}
               onOpen={() => openDetail(routine)}
-              onRunNow={() => void runNow(routine).catch((err) => setError(messageFromError(err)))}
+              onRunNow={() =>
+                void runNow(routine).catch((err) => {
+                  setError(describeRoutineError(err));
+                  setErrorRetryable(false);
+                })
+              }
               onDelete={() => setPendingDelete(routine)}
             />
           ))}
@@ -680,12 +725,40 @@ function timeValue(iso: string | null | undefined) {
   return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time;
 }
 
-function messageFromError(err: unknown) {
+function describeRoutineError(err: unknown) {
   if (err && typeof err === "object" && "message" in err) {
     const message = (err as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
+    if (typeof message === "string" && message) return describeHermesError(err);
   }
   return "Routines are unavailable. Is June's agent running?";
+}
+
+function RoutineErrorBanner({
+  message,
+  onRetry,
+  retrying,
+}: {
+  message: string;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
+  return (
+    <div className="error-banner routines-error-banner" role="alert">
+      <p>{message}</p>
+      {onRetry ? (
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={onRetry}
+          disabled={retrying}
+          aria-busy={retrying || undefined}
+        >
+          <IconArrowRotateClockwise size={14} className="balance-refresh-icon" aria-hidden />
+          Try again
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 const DEJUNE_MODE_OPTIONS = [
