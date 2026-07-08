@@ -1,11 +1,16 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
     ERR_METERING, ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
-    TRANSIENT_RETRY_AFTER_SECS, error_response, error_response_with_retry_after,
+    TRANSIENT_RETRY_AFTER_SECS,
 };
-use axum::{http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    http::{StatusCode, header},
+    response::IntoResponse,
+};
 use june_domain::AuthError;
 use june_services::ServiceError;
+use serde_json::json;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -51,26 +56,24 @@ impl ApiError {
             message: message.into(),
         }
     }
-}
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
+    pub(crate) fn response_parts(&self) -> (StatusCode, serde_json::Value) {
         match self {
             Self::BadRequest { code, message } => {
-                error_response(StatusCode::BAD_REQUEST, code, &message)
+                error_parts(StatusCode::BAD_REQUEST, *code, message)
             }
             Self::Unauthorized { code, message } => {
-                error_response(StatusCode::UNAUTHORIZED, code, &message)
+                error_parts(StatusCode::UNAUTHORIZED, *code, message)
             }
-            Self::PayloadTooLarge => error_response(
+            Self::PayloadTooLarge => error_parts(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 ERR_PAYLOAD_TOO_LARGE,
                 "payload_too_large",
             ),
             Self::Unprocessable { code, message } => {
-                error_response(StatusCode::UNPROCESSABLE_ENTITY, code, &message)
+                error_parts(StatusCode::UNPROCESSABLE_ENTITY, *code, message)
             }
-            Self::InsufficientCredits => error_response(
+            Self::InsufficientCredits => error_parts(
                 StatusCode::PAYMENT_REQUIRED,
                 ERR_INSUFFICIENT_CREDITS,
                 "insufficient_credits",
@@ -78,13 +81,14 @@ impl IntoResponse for ApiError {
             // Transient metering denial (e.g. a concurrency cap): the user is
             // funded and the upstream providers are fine — tell the client to
             // retry shortly instead of pretending the provider failed.
-            Self::AuthorizationDenied => error_response_with_retry_after(
+            // (IntoResponse adds the Retry-After header; the streamed error
+            // event carries only status + body.)
+            Self::AuthorizationDenied => error_parts(
                 StatusCode::TOO_MANY_REQUESTS,
                 ERR_AUTHORIZATION_DENIED,
                 "authorization_denied",
-                TRANSIENT_RETRY_AFTER_SECS,
             ),
-            Self::Upstream => error_response(
+            Self::Upstream => error_parts(
                 StatusCode::BAD_GATEWAY,
                 ERR_UPSTREAM,
                 "upstream_provider_failed",
@@ -92,18 +96,41 @@ impl IntoResponse for ApiError {
             // The metering/billing provider (OS Accounts) failed — a service
             // dependency outage, NOT the LLM gateway. Distinct status + code so
             // the two can be told apart from the symptom alone.
-            Self::Metering => error_response(
+            Self::Metering => error_parts(
                 StatusCode::SERVICE_UNAVAILABLE,
                 ERR_METERING,
                 "metering_provider_failed",
             ),
-            Self::Internal => error_response(
+            Self::Internal => error_parts(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL,
                 "internal_error",
             ),
         }
     }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let set_retry_after = matches!(self, Self::AuthorizationDenied);
+        let (status, body) = self.response_parts();
+        let mut response = (status, Json(body)).into_response();
+        if set_retry_after
+            && let Ok(value) =
+                axum::http::HeaderValue::from_str(&TRANSIENT_RETRY_AFTER_SECS.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        response
+    }
+}
+
+fn error_parts(status: StatusCode, code: i32, message: &str) -> (StatusCode, serde_json::Value) {
+    // Derived from ApiResponse so the streamed error event can never drift
+    // from the buffered envelope shape.
+    let body = serde_json::to_value(crate::envelope::ApiResponse::err(code, message))
+        .unwrap_or_else(|_| json!({ "data": null, "success": false }));
+    (status, body)
 }
 
 impl From<ServiceError> for ApiError {

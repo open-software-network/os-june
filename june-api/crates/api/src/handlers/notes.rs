@@ -1,7 +1,7 @@
 use crate::{
     audio::validate_audio,
     auth::{authenticated_user, provider_credentials},
-    envelope::ApiResponse,
+    envelope::{self, ApiResponse},
     error::ApiError,
     multipart::MultipartFields,
     state::ApiState,
@@ -9,8 +9,10 @@ use crate::{
 };
 use axum::{
     Json,
+    body::{Body, Bytes},
     extract::{Multipart, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Response},
 };
 use june_domain::{ModelId, ModelKind};
 use june_services::{
@@ -18,6 +20,9 @@ use june_services::{
     PricingError, PricingTable,
 };
 use serde::{Deserialize, Serialize};
+use std::{convert::Infallible, time::Duration};
+use tokio::{sync::mpsc, time::MissedTickBehavior};
+use tokio_stream::wrappers::ReceiverStream;
 
 pub(crate) async fn transcribe(
     State(state): State<ApiState>,
@@ -81,30 +86,93 @@ pub(crate) async fn generate(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<GenerateRequest>,
-) -> Result<Json<ApiResponse<GenerateResponse>>, ApiError> {
+) -> Result<Response, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
     let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     require_priced_model(&state, &model_id, ModelKind::Text)?;
-    let output = state
-        .note_generate()
-        .generate(NoteGenerateParams {
-            user_id,
-            note_id: required(request.note_id, "note_id_required")?,
-            prompt_version: required(request.prompt_version, "prompt_version_required")?,
-            title: request.title,
-            transcript: request.transcript,
-            transcript_source_labels: request.transcript_source_labels,
-            manual_notes: request.manual_notes,
-            language: request.language,
-            existing_generated_note: request.existing_generated_note,
-            model_id: ModelId(model_id),
-            provider_credentials,
+
+    let stream = request.stream;
+    let params = NoteGenerateParams {
+        user_id,
+        note_id: required(request.note_id, "note_id_required")?,
+        prompt_version: required(request.prompt_version, "prompt_version_required")?,
+        title: request.title,
+        transcript: request.transcript,
+        transcript_source_labels: request.transcript_source_labels,
+        manual_notes: request.manual_notes,
+        language: request.language,
+        existing_generated_note: request.existing_generated_note,
+        model_id: ModelId(model_id),
+        provider_credentials,
+    };
+
+    if stream {
+        return Ok(stream_generate(state, params));
+    }
+
+    let output = state.note_generate().generate(params).await?;
+    Ok(Json(ApiResponse::ok(GenerateResponse::from(output))).into_response())
+}
+
+fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(16);
+    let request_timeout = Duration::from_secs(state.limits().request_timeout_secs);
+    tokio::spawn(async move {
+        let generation =
+            tokio::time::timeout(request_timeout, state.note_generate().generate(params));
+        tokio::pin!(generation);
+        let mut keep_alive = tokio::time::interval(Duration::from_secs(10));
+        keep_alive.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        keep_alive.tick().await;
+
+        loop {
+            tokio::select! {
+                result = &mut generation => {
+                    let event = match result {
+                        Ok(Ok(output)) => result_event(output)
+                            .unwrap_or_else(|_| error_event(ApiError::Internal.response_parts())),
+                        Ok(Err(error)) => error_event(ApiError::from(error).response_parts()),
+                        Err(_elapsed) => error_event(envelope::timeout_response_parts()),
+                    };
+                    let _ = tx.send(Ok(Bytes::from(event))).await;
+                    break;
+                }
+                _ = keep_alive.tick() => {
+                    if tx.send(Ok(Bytes::from_static(b": keep-alive\n\n"))).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, "text/event-stream")],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response()
+}
+
+fn result_event(output: NoteGenerateOutput) -> Result<String, serde_json::Error> {
+    let body = ApiResponse::ok(GenerateResponse::from(output));
+    Ok(format!(
+        "event: result\ndata: {}\n\n",
+        serde_json::to_string(&body)?
+    ))
+}
+
+fn error_event((status, body): (StatusCode, serde_json::Value)) -> String {
+    format!(
+        "event: error\ndata: {}\n\n",
+        serde_json::json!({
+            "status": status.as_u16(),
+            "body": body,
         })
-        .await?;
-    Ok(Json(ApiResponse::ok(GenerateResponse::from(output))))
+    )
 }
 
 impl GenerateRequest {
@@ -157,6 +225,8 @@ pub struct GenerateRequest {
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub stream: bool,
 }
 
 #[derive(Serialize)]
