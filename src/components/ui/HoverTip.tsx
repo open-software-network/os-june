@@ -125,6 +125,7 @@ export function HoverTip({
     "aria-describedby": ariaDescribedBy,
     onBlur,
     onFocus,
+    onKeyDown,
     onMouseEnter,
     onMouseLeave,
     ...restSpanProps
@@ -207,6 +208,20 @@ export function HoverTip({
     if (!mounted) return;
     cancelClose();
     closeTimerRef.current = window.setTimeout(hide, HOVER_INTENT_MS);
+  }
+
+  function elementInsideHoverTipSurface(element: EventTarget | null) {
+    return element instanceof Node && Boolean(tipRef.current?.contains(element));
+  }
+
+  function elementInsideAnchor(element: EventTarget | null) {
+    return element instanceof Node && Boolean(anchorRef.current?.contains(element));
+  }
+
+  function firstTipFocusable() {
+    return tipRef.current?.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
   }
 
   // Measure the rendered tip and clamp its centered position to the viewport,
@@ -325,7 +340,30 @@ export function HoverTip({
       }}
       onBlur={(event) => {
         onBlur?.(event);
+        if (
+          interactive &&
+          (elementInsideAnchor(event.relatedTarget) ||
+            elementInsideHoverTipSurface(event.relatedTarget))
+        ) {
+          return;
+        }
         hide();
+      }}
+      onKeyDown={(event) => {
+        onKeyDown?.(event);
+        if (
+          event.defaultPrevented ||
+          !interactive ||
+          event.key !== "Tab" ||
+          event.shiftKey ||
+          !mounted
+        ) {
+          return;
+        }
+        const focusTarget = firstTipFocusable();
+        if (!focusTarget) return;
+        event.preventDefault();
+        focusTarget.focus();
       }}
     >
       {children}
@@ -353,6 +391,19 @@ export function HoverTip({
                   : undefined
               }
               onMouseLeave={interactive ? hide : undefined}
+              onBlur={
+                interactive
+                  ? (event) => {
+                      if (
+                        elementInsideAnchor(event.relatedTarget) ||
+                        elementInsideHoverTipSurface(event.relatedTarget)
+                      ) {
+                        return;
+                      }
+                      hide();
+                    }
+                  : undefined
+              }
               style={{
                 top: coords?.top ?? anchor.bottom,
                 left: coords?.left ?? 0,

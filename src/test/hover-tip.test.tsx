@@ -82,6 +82,31 @@ describe("HoverTip", () => {
     }
   });
 
+  it("lets keyboard users tab from an interactive anchor into the portaled tip", () => {
+    render(
+      <HoverTip
+        tip={
+          <div>
+            Details
+            <button type="button">Show more</button>
+          </div>
+        }
+        interactive
+      >
+        <button type="button">Change model</button>
+      </HoverTip>,
+    );
+
+    const anchorButton = screen.getByRole("button", { name: "Change model" });
+    fireEvent.focus(anchorButton);
+    const tooltip = screen.getByRole("tooltip");
+
+    fireEvent.keyDown(anchorButton, { key: "Tab" });
+
+    expect(screen.getByRole("button", { name: "Show more" })).toHaveFocus();
+    expect(tooltip).toHaveAttribute("data-state", "open");
+  });
+
   it("keeps a compact tip below the anchor near the viewport bottom when it fits", () => {
     // jsdom has no layout, so feed the geometry the measure pass reads: a short
     // anchor low in a tall-enough viewport, and a one-line tip that fits below.

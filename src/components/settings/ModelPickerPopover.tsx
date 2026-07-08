@@ -277,10 +277,11 @@ export function ModelPickerPopover({
     const height = card.getBoundingClientRect().height;
     if (height <= 0) return;
     const maxTop = window.innerHeight - height - MODEL_HOVERCARD_VIEWPORT_MARGIN;
-    const clampedTop = Math.max(MODEL_HOVERCARD_VIEWPORT_MARGIN, Math.min(detailPos.top, maxTop));
-    if (Math.abs(clampedTop - detailPos.top) > 0.5) {
-      setDetailPos((prev) => (prev ? { ...prev, top: clampedTop } : prev));
-    }
+    setDetailPos((prev) => {
+      if (!prev) return prev;
+      const clampedTop = Math.max(MODEL_HOVERCARD_VIEWPORT_MARGIN, Math.min(prev.top, maxTop));
+      return Math.abs(clampedTop - prev.top) > 0.5 ? { ...prev, top: clampedTop } : prev;
+    });
   }, [detailPos]);
 
   useLayoutEffect(() => {
@@ -303,13 +304,11 @@ export function ModelPickerPopover({
     const height = card.getBoundingClientRect().height;
     if (height <= 0) return;
     const maxTop = window.innerHeight - height - MODEL_HOVERCARD_VIEWPORT_MARGIN;
-    const clampedTop = Math.max(
-      MODEL_HOVERCARD_VIEWPORT_MARGIN,
-      Math.min(catalogHover.top, maxTop),
-    );
-    if (Math.abs(clampedTop - catalogHover.top) > 0.5) {
-      setCatalogHover((prev) => (prev ? { ...prev, top: clampedTop } : prev));
-    }
+    setCatalogHover((prev) => {
+      if (!prev) return prev;
+      const clampedTop = Math.max(MODEL_HOVERCARD_VIEWPORT_MARGIN, Math.min(prev.top, maxTop));
+      return Math.abs(clampedTop - prev.top) > 0.5 ? { ...prev, top: clampedTop } : prev;
+    });
   }, [catalogHover]);
 
   const query = search.trim().toLowerCase();
@@ -571,8 +570,7 @@ export function ModelPickerPopover({
                   onSelect={onSelect}
                   onHover={(hoverModel, row, immediate) => {
                     if (!immediate && catalogTracker.isActive()) {
-                      catalogTracker.stop();
-                      setBridging(false);
+                      return;
                     }
                     cancelCatalogClose();
                     if (immediate || catalogHover) {
@@ -630,8 +628,7 @@ export function ModelPickerPopover({
                   data-active={(flyout?.kind === "model" && flyout.id === option.id) || undefined}
                   onMouseEnter={() => {
                     if (modelTracker.isActive()) {
-                      modelTracker.stop();
-                      setBridging(false);
+                      return;
                     }
                     const open = () => onFlyoutChange({ kind: "model", id: option.id });
                     if (flyout) {
@@ -670,8 +667,7 @@ export function ModelPickerPopover({
             data-active={flyout?.kind === "all" || undefined}
             onMouseEnter={() => {
               if (modelTracker.isActive()) {
-                modelTracker.stop();
-                setBridging(false);
+                return;
               }
               const open = () => onFlyoutChange({ kind: "all" });
               if (flyout) {
