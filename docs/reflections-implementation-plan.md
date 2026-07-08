@@ -21,7 +21,7 @@
 │                    │                                                │
 │         ┌──────────┴───────────┐                                    │
 │         ▼                      ▼                                    │
-│   local model            June API /v1/generate                     │
+│   local model            June API /v1/notes/generate               │
 │   (fully on-device)      (TEE, zero retention, text only)          │
 │         └──────────┬───────────┘                                    │
 │                    ▼                                                │
@@ -140,9 +140,10 @@ battery budget from Phase 0 re-confirmed on the integrated build.
 ### Generation + delivery
 
 - Toolless generation call through the existing provider selection:
-  `PROVIDER_LOCAL` end-to-end on-device, else June API `/v1/generate`
-  with the standard authorize/charge flow (reflections are metered like
-  any note generation; local is unmetered, consistent with JUN-156).
+  `PROVIDER_LOCAL` end-to-end on-device, else June API
+  `/v1/notes/generate` with the standard authorize/charge flow
+  (reflections are metered like any note generation; local is unmetered,
+  consistent with JUN-156).
 - Scheduler: tokio task in the reflections module (P3A scheduler shape):
   fire at the user's local delivery time, catch up on wake if the machine
   slept through it, never double-fire per day (send-once bookkeeping).
