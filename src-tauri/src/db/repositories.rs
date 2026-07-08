@@ -18,9 +18,144 @@ pub struct Repositories {
     pub pool: SqlitePool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct P3aCounterState {
+    pub raw_value: u64,
+    pub reported_value: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct P3aPendingReport {
+    pub question_id: String,
+    pub epoch: String,
+    pub raw_value: u64,
+    pub reported_value: u64,
+}
+
 impl Repositories {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    pub async fn increment_p3a_counter(
+        &self,
+        question_id: &str,
+        epoch: &str,
+        amount: u64,
+    ) -> Result<P3aCounterState, sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO p3a_counters (question_id, epoch, raw_value, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(question_id, epoch) DO UPDATE SET
+               raw_value = raw_value + excluded.raw_value,
+               updated_at = excluded.updated_at",
+        )
+        .bind(question_id)
+        .bind(epoch)
+        .bind(i64::try_from(amount).unwrap_or(i64::MAX))
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.p3a_counter_state(question_id, epoch)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn mark_p3a_events_reported(
+        &self,
+        question_id: &str,
+        epoch: &str,
+        reported_value: u64,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "UPDATE p3a_counters
+             SET reported_value = CASE
+                   WHEN reported_value < ? THEN ?
+                   ELSE reported_value
+                 END,
+                 reported_at = ?,
+                 updated_at = ?
+             WHERE question_id = ? AND epoch = ?",
+        )
+        .bind(i64::try_from(reported_value).unwrap_or(i64::MAX))
+        .bind(i64::try_from(reported_value).unwrap_or(i64::MAX))
+        .bind(&now)
+        .bind(&now)
+        .bind(question_id)
+        .bind(epoch)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_p3a_counters(&self) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM p3a_counters")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn p3a_counter_value(
+        &self,
+        question_id: &str,
+        epoch: &str,
+    ) -> Result<Option<i64>, sqlx::error::Error> {
+        let row = query("SELECT raw_value FROM p3a_counters WHERE question_id = ? AND epoch = ?")
+            .bind(question_id)
+            .bind(epoch)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|row| row.get("raw_value")))
+    }
+
+    pub async fn p3a_counter_state(
+        &self,
+        question_id: &str,
+        epoch: &str,
+    ) -> Result<Option<P3aCounterState>, sqlx::error::Error> {
+        let row = query(
+            "SELECT raw_value, reported_value FROM p3a_counters WHERE question_id = ? AND epoch = ?",
+        )
+        .bind(question_id)
+        .bind(epoch)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| {
+            let raw_value = row.get::<i64, _>("raw_value").max(0) as u64;
+            let reported_value = row.get::<i64, _>("reported_value").max(0) as u64;
+            P3aCounterState {
+                raw_value,
+                reported_value,
+            }
+        }))
+    }
+
+    pub async fn unreported_p3a_counters(
+        &self,
+    ) -> Result<Vec<P3aPendingReport>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT question_id, epoch, raw_value, reported_value
+             FROM p3a_counters
+             WHERE raw_value > reported_value
+             ORDER BY epoch ASC, question_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let raw_value = row.get::<i64, _>("raw_value").max(0) as u64;
+                let reported_value = row.get::<i64, _>("reported_value").max(0) as u64;
+                P3aPendingReport {
+                    question_id: row.get("question_id"),
+                    epoch: row.get("epoch"),
+                    raw_value,
+                    reported_value,
+                }
+            })
+            .collect())
     }
 
     pub async fn list_folders(&self) -> Result<Vec<FolderDto>, sqlx::error::Error> {

@@ -991,7 +991,7 @@ export function App() {
 
   // Modifier state for the click that's about to fire a navigation. A
   // capture-phase listener records it before React's bubble-phase handlers run,
-  // so any nav surface (sidebar, notes list, command palette) can open in a new
+  // so any nav surface (sidebar, notes list, command prompt) can open in a new
   // tab via ⌘/Ctrl-click or middle-click without threading flags through props.
   const newTabIntentRef = useRef(false);
   useEffect(() => {

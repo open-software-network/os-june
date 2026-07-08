@@ -34,6 +34,7 @@ import {
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { isMacLikePlatform } from "../../lib/platform";
+import { useScrollFade } from "../../lib/use-scroll-fade";
 
 const NO_DICTATIONS: DictationHistoryItemDto[] = [];
 
@@ -316,7 +317,7 @@ function DictationHistoryRow({
   const [open, setOpen] = useState(false);
   // Position-aware scroll fades: only when the body actually overflows, and
   // only on the edge(s) with hidden content.
-  const [fade, setFade] = useState({ top: false, bottom: false });
+  const fade = useScrollFade(scrollRef);
 
   useEffect(() => {
     const el = textRef.current;
@@ -332,20 +333,11 @@ function DictationHistoryRow({
     return () => observer.disconnect();
   }, [item.text]);
 
-  const updateFade = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const canScroll = el.scrollHeight - el.clientHeight > 1;
-    const atTop = el.scrollTop <= 1;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    setFade({ top: canScroll && !atTop, bottom: canScroll && !atBottom });
-  }, []);
-
   useEffect(() => {
     if (!open) return;
-    const id = requestAnimationFrame(updateFade);
+    const id = requestAnimationFrame(fade.update);
     return () => cancelAnimationFrame(id);
-  }, [open, updateFade]);
+  }, [open, fade.update]);
 
   const expandProps = truncated
     ? {
@@ -418,13 +410,7 @@ function DictationHistoryRow({
           </button>
         }
       >
-        <div
-          className="transcript-dialog-scroll"
-          ref={scrollRef}
-          onScroll={updateFade}
-          data-fade-top={fade.top || undefined}
-          data-fade-bottom={fade.bottom || undefined}
-        >
+        <div className="transcript-dialog-scroll scroll-fade-mask" ref={scrollRef} {...fade.props}>
           <p>{item.text}</p>
         </div>
       </Dialog>

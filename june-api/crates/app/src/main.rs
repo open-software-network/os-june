@@ -6,15 +6,16 @@ use june_config::{
 };
 use june_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
-    MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceImageEditor,
-    VeniceImageGenerator, VeniceModelCatalog, client_with_timeout, default_client, jwks_client,
+    LogP3aSink, MultiFormatDurationProbe, OsAccountsHttpClient, OsAccountsP3aSink,
+    OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceAugment, VeniceCleaner,
+    VeniceGenerator, VeniceImageEditor, VeniceImageGenerator, VeniceModelCatalog,
+    client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
     ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
     NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    P3aReportService, P3aReportServiceDeps, PricingTable, WebAugmentService, WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -152,10 +153,14 @@ fn build_router(
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
     let issue_report_sink = build_issue_report_sink(config, clients.default);
+    let p3a_sink = build_p3a_sink(config, clients.default);
     let issue_reports = Arc::new(IssueReportService::new(IssueReportServiceDeps {
         sink: issue_report_sink,
         chat_completer: agent_chat_completer.clone(),
         config: config.issue_reports.clone(),
+    }));
+    let p3a_reports = Arc::new(P3aReportService::new(P3aReportServiceDeps {
+        sink: p3a_sink,
     }));
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
@@ -245,6 +250,7 @@ fn build_router(
         web,
         image,
         issue_reports,
+        p3a_reports,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
@@ -368,6 +374,19 @@ fn build_issue_report_sink(
     } else {
         tracing::info!("no issue report sink configured; reports will be logged only");
         Arc::new(LogIssueReportSink)
+    }
+}
+
+fn build_p3a_sink(config: &AppConfig, http: &reqwest::Client) -> Arc<dyn june_domain::P3aSink> {
+    if config.local_dev.enabled {
+        tracing::info!("local dev mode enabled; P3A reports will be logged only");
+        Arc::new(LogP3aSink)
+    } else if let Some(sink) = OsAccountsP3aSink::from_config(http.clone(), &config.os_accounts) {
+        tracing::info!("P3A reports will be forwarded to OS Accounts");
+        Arc::new(sink)
+    } else {
+        tracing::warn!("P3A ingest token is missing; reports will be logged only");
+        Arc::new(LogP3aSink)
     }
 }
 

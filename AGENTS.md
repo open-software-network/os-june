@@ -102,6 +102,7 @@ distinct from the `specs/` Spec Kit feature specs.)
 - [font-weights](spec/font-weights.md) — only 400 and `var(--fw-medium)`, never raw 500/600/700
 - [font-families](spec/font-families.md) — sans is the voice; serif for headings/display, mono for code
 - [control-sizes](spec/control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
+- [scroll-fade](spec/scroll-fade.md) — clipped scrollers use the shared `useScrollFade` + `.scroll-fade` / `.scroll-fade-mask` primitive
 
 ## PR and description conventions
 

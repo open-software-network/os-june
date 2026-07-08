@@ -244,6 +244,33 @@ struct DictateCleanupBody {
     model: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct P3aReportRequest {
+    pub schema: u32,
+    pub question_id: String,
+    pub epoch: String,
+    pub platform: String,
+    pub version_series: String,
+    pub bucket: u8,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct P3aReportBody {
+    schema: u32,
+    question_id: String,
+    epoch: String,
+    platform: String,
+    version_series: String,
+    bucket: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct P3aReportResponse {
+    accepted: bool,
+}
+
 pub async fn transcribe_saved_audio(
     request: TranscriptionRequest,
 ) -> Result<TranscriptionProviderResult, AppError> {
@@ -375,6 +402,26 @@ pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String,
     let response: CleanupResponse =
         post_json("/v1/dictate/cleanup", &body, send_venice_api_key).await?;
     Ok(response.text)
+}
+
+pub async fn submit_p3a_report(request: P3aReportRequest) -> Result<(), AppError> {
+    let body = P3aReportBody {
+        schema: request.schema,
+        question_id: request.question_id,
+        epoch: request.epoch,
+        platform: request.platform,
+        version_series: request.version_series,
+        bucket: request.bucket,
+    };
+    let response: P3aReportResponse = post_json("/v1/p3a/reports", &body, false).await?;
+    if response.accepted {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "p3a_report_rejected",
+            "Telemetry report was rejected.",
+        ))
+    }
 }
 
 pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {

@@ -405,6 +405,16 @@ impl std::fmt::Debug for IssueReportAttachment {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct P3aReport {
+    pub product_slug: String,
+    pub question_id: String,
+    pub epoch: String,
+    pub platform: String,
+    pub version_series: String,
+    pub bucket: u8,
+}
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum DomainError {
     #[error("model is not priced")]
@@ -494,6 +504,11 @@ pub trait TokenVerifier: Send + Sync {
 #[async_trait]
 pub trait IssueReportSink: Send + Sync {
     async fn deliver(&self, report: IssueReport) -> Result<(), DomainError>;
+}
+
+#[async_trait]
+pub trait P3aSink: Send + Sync {
+    async fn submit(&self, report: P3aReport) -> Result<(), DomainError>;
 }
 
 pub trait AudioDurationProbe: Send + Sync {

@@ -318,6 +318,8 @@ impl Debug for LocalDevConfig {
 pub struct OsAccountsConfig {
     pub api_url: String,
     pub app_api_key: String,
+    #[serde(default)]
+    pub p3a_ingest_token: String,
     pub iss: String,
     pub aud: String,
     pub jwks_refresh_secs: u64,
@@ -355,6 +357,7 @@ impl Debug for OsAccountsConfig {
             .debug_struct("OsAccountsConfig")
             .field("api_url", &self.api_url)
             .field("app_api_key", &REDACTED)
+            .field("p3a_ingest_token", &REDACTED)
             .field("iss", &self.iss)
             .field("aud", &self.aud)
             .field("jwks_refresh_secs", &self.jwks_refresh_secs)
@@ -726,6 +729,7 @@ impl Default for AppConfig {
             os_accounts: OsAccountsConfig {
                 api_url: String::new(),
                 app_api_key: String::new(),
+                p3a_ingest_token: String::new(),
                 iss: "os-accounts-dev".to_string(),
                 aud: "june-api-dev".to_string(),
                 jwks_refresh_secs: 300,
@@ -824,6 +828,11 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
             "os_accounts.app_api_key",
             &config.os_accounts.app_api_key,
             OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
+        )?;
+        validate_required_secret(
+            "os_accounts.p3a_ingest_token",
+            &config.os_accounts.p3a_ingest_token,
+            &[],
         )?;
     }
     validate_request_limits(config)?;
@@ -1177,6 +1186,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.os_accounts.api_url = "http://127.0.0.1:3000".to_string();
         config.os_accounts.app_api_key = "osk_test".to_string();
+        config.os_accounts.p3a_ingest_token = "p3a-test-token".to_string();
         config.upstreams.openai.api_key = "sk-test".to_string();
         config.upstreams.venice.api_key = "venice-test".to_string();
         config
@@ -1583,6 +1593,21 @@ mod tests {
         let result = validate(&config);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_missing_p3a_ingest_token() {
+        let mut config = valid_config();
+        config.os_accounts.p3a_ingest_token = String::new();
+
+        let result = validate(&config);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::MissingRequired {
+                field: "os_accounts.p3a_ingest_token"
+            })
+        ));
     }
 
     #[test]

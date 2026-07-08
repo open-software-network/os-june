@@ -13,16 +13,16 @@ use june_domain::{
     AgentChatStreamOutcome, AudioDurationProbe, AuthError, Authorization, AuthorizeRequest,
     CleanedText, Cleaner, CleanupRequest, Credits, DomainError, GeneratedImage, GeneratedNote,
     GenerationRequest, Generator, ImageEditRequest, ImageEditor, ImageGenerationRequest,
-    ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient, Receipt, TokenUsage,
-    Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest, WebFetchResult,
-    WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
+    ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient, P3aReport, P3aSink, Receipt,
+    TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
+    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
     ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
     NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService, NoteGenerateServiceDeps,
-    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
-    WebAugmentServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, P3aReportService, P3aReportServiceDeps,
+    PricingTable, WebAugmentService, WebAugmentServiceDeps,
 };
 use pretty_assertions::assert_eq;
 use std::{
@@ -190,6 +190,48 @@ async fn integration_note_generate_stream_sends_keep_alive_before_result()
 }
 
 #[tokio::test]
+async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
+-> Result<(), Box<dyn Error>> {
+    let sink = Arc::new(RecordingP3aSink::default());
+    let app = router(test_state_with_p3a_sink(sink.clone()));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/p3a/reports",
+            &serde_json::json!({
+                "schema": 1,
+                "questionId": "dictation.sessions",
+                "epoch": "2026-W28",
+                "platform": "macos",
+                "versionSeries": "0.0.x",
+                "bucket": 0,
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["accepted"], true);
+    assert_eq!(
+        sink.reports()?,
+        vec![P3aReport {
+            product_slug: "june".to_string(),
+            question_id: "dictation.sessions".to_string(),
+            epoch: "2026-W28".to_string(),
+            platform: "macos".to_string(),
+            version_series: "0.0.x".to_string(),
+            bucket: 0,
+        }]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_generate_stream_auth_failure_stays_json_401() -> Result<(), Box<dyn Error>>
 {
     let response = send(json_request(
@@ -210,6 +252,29 @@ async fn integration_note_generate_stream_auth_failure_stays_json_401() -> Resul
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
     assert_eq!(body["error_code"], 3001);
+    assert_eq!(body["message"], "missing_bearer_token");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_p3a_report_requires_user_auth() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/p3a/reports",
+        &serde_json::json!({
+            "schema": 1,
+            "questionId": "dictation.sessions",
+            "epoch": "2026-W28",
+            "platform": "macos",
+            "versionSeries": "0.0.x",
+            "bucket": 0,
+        }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
     assert_eq!(body["message"], "missing_bearer_token");
     Ok(())
 }
@@ -992,6 +1057,7 @@ fn test_state_with_sinks_and_transcriber(
         transcriber,
         generator: Arc::new(FakeGenerator),
         request_timeout_secs: 5,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
     })
 }
 
@@ -1005,6 +1071,18 @@ fn test_state_with_generator_and_timeout(
         transcriber: Arc::new(FakeTranscriber),
         generator,
         request_timeout_secs,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+    })
+}
+
+fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
+    test_state_from_deps(TestStateDeps {
+        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation: test_attestation(),
+        transcriber: Arc::new(FakeTranscriber),
+        generator: Arc::new(FakeGenerator),
+        request_timeout_secs: 5,
+        p3a_sink,
     })
 }
 
@@ -1014,6 +1092,7 @@ struct TestStateDeps {
     transcriber: Arc<dyn Transcriber>,
     generator: Arc<dyn Generator>,
     request_timeout_secs: u64,
+    p3a_sink: Arc<dyn P3aSink>,
 }
 
 fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
@@ -1081,6 +1160,9 @@ fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
         })),
         image,
         issue_reports: deps.issue_reports,
+        p3a_reports: Arc::new(P3aReportService::new(P3aReportServiceDeps {
+            sink: deps.p3a_sink,
+        })),
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
@@ -1357,6 +1439,32 @@ impl IssueReportSink for RecordingIssueReportSink {
         self.reports
             .lock()
             .map_err(|_| DomainError::UpstreamProvider)?
+            .push(report);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingP3aSink {
+    reports: Mutex<Vec<P3aReport>>,
+}
+
+impl RecordingP3aSink {
+    fn reports(&self) -> Result<Vec<P3aReport>, Box<dyn Error>> {
+        Ok(self
+            .reports
+            .lock()
+            .map_err(|_| "reports lock poisoned")?
+            .clone())
+    }
+}
+
+#[async_trait]
+impl P3aSink for RecordingP3aSink {
+    async fn submit(&self, report: P3aReport) -> Result<(), DomainError> {
+        self.reports
+            .lock()
+            .map_err(|_| DomainError::MeteringProvider)?
             .push(report);
         Ok(())
     }

@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use june_config::OsAccountsConfig;
 use june_domain::{
-    Authorization, AuthorizeRequest, ChargeRequest, Credits, DomainError, OsAccountsClient, Receipt,
+    Authorization, AuthorizeRequest, ChargeRequest, Credits, DomainError, OsAccountsClient,
+    P3aReport, P3aSink, Receipt,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -48,6 +49,12 @@ pub struct OsAccountsHttpClient {
     app_api_key: String,
 }
 
+pub struct OsAccountsP3aSink {
+    http: reqwest::Client,
+    api_url: String,
+    ingest_token: String,
+}
+
 impl OsAccountsHttpClient {
     pub fn from_config(http: reqwest::Client, config: &OsAccountsConfig) -> Self {
         Self::new(http, &config.api_url, &config.app_api_key)
@@ -59,6 +66,69 @@ impl OsAccountsHttpClient {
             api_url: api_url.trim_end_matches('/').to_string(),
             app_api_key: app_api_key.to_string(),
         }
+    }
+}
+
+impl OsAccountsP3aSink {
+    pub fn from_config(http: reqwest::Client, config: &OsAccountsConfig) -> Option<Self> {
+        let token = config.p3a_ingest_token.trim();
+        if token.is_empty() {
+            None
+        } else {
+            Some(Self::new(http, &config.api_url, token))
+        }
+    }
+
+    pub fn new(http: reqwest::Client, api_url: &str, ingest_token: &str) -> Self {
+        Self {
+            http,
+            api_url: api_url.trim_end_matches('/').to_string(),
+            ingest_token: ingest_token.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl P3aSink for OsAccountsP3aSink {
+    async fn submit(&self, report: P3aReport) -> Result<(), DomainError> {
+        let url = format!("{}/p3a/reports", self.api_url);
+        let body = P3aReportWireRequest::from(report);
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.ingest_token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, %url, "os_accounts: P3A report transport error");
+                DomainError::MeteringProvider
+            })?;
+        let status = response.status();
+        if status.is_server_error() {
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(%status, %url, body_bytes = body.len(), "os_accounts: P3A report server error");
+            return Err(DomainError::MeteringProvider);
+        }
+        let raw = response.text().await.map_err(|error| {
+            tracing::error!(%error, %url, "os_accounts: P3A report body read failed");
+            DomainError::MeteringProvider
+        })?;
+        let envelope: Envelope<P3aIngestWire> = serde_json::from_str(&raw).map_err(|error| {
+            tracing::error!(%error, %url, body_bytes = raw.len(), "os_accounts: P3A report JSON parse failed");
+            DomainError::MeteringProvider
+        })?;
+        if envelope.success && envelope.data.as_ref().is_some_and(|data| data.accepted) {
+            return Ok(());
+        }
+        tracing::error!(
+            %status,
+            %url,
+            body_bytes = raw.len(),
+            error_code = ?envelope.error_code,
+            "os_accounts: P3A report rejected"
+        );
+        Err(DomainError::MeteringProvider)
     }
 }
 
@@ -315,12 +385,41 @@ impl From<ReceiptWire> for Receipt {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct P3aReportWireRequest {
+    product_slug: String,
+    question_id: String,
+    epoch: String,
+    platform: String,
+    version_series: String,
+    bucket: u8,
+}
+
+impl From<P3aReport> for P3aReportWireRequest {
+    fn from(report: P3aReport) -> Self {
+        Self {
+            product_slug: report.product_slug,
+            question_id: report.question_id,
+            epoch: report.epoch,
+            platform: report.platform,
+            version_series: report.version_series,
+            bucket: report.bucket,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct P3aIngestWire {
+    accepted: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::OsAccountsHttpClient;
+    use super::{OsAccountsHttpClient, OsAccountsP3aSink};
     use crate::http;
     use june_domain::{
-        ActionSlug, AuthorizeRequest, ChargeRequest, Credits, DomainError, OsAccountsClient, UserId,
+        ActionSlug, AuthorizeRequest, ChargeRequest, Credits, DomainError, OsAccountsClient,
+        P3aReport, P3aSink, UserId,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -371,6 +470,42 @@ mod tests {
         assert_eq!(authorization.action_token, Some("agts_test".to_string()));
         assert_eq!(authorization.cap_credits, Some(Credits(50)));
         assert!(authorization.allowed);
+    }
+
+    #[tokio::test]
+    async fn p3a_submit_sends_ingest_token_and_report() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/p3a/reports"))
+            .and(header("authorization", "Bearer p3a-token"))
+            .and(body_json(json!({
+                "product_slug": "june",
+                "question_id": "dictation.sessions",
+                "epoch": "2026-W28",
+                "platform": "macos",
+                "version_series": "0.0.x",
+                "bucket": 0,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "data": {
+                    "accepted": true,
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let sink = OsAccountsP3aSink::new(http::default_client(), &server.uri(), "p3a-token");
+        sink.submit(P3aReport {
+            product_slug: "june".to_string(),
+            question_id: "dictation.sessions".to_string(),
+            epoch: "2026-W28".to_string(),
+            platform: "macos".to_string(),
+            version_series: "0.0.x".to_string(),
+            bucket: 0,
+        })
+        .await
+        .expect("P3A submit succeeds");
     }
 
     #[tokio::test]
