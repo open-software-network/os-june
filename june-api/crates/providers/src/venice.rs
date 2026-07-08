@@ -819,8 +819,12 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
             // that beats corrupting the frame — and upstreams flush whole
             // events in practice, so the suppressed window is rare and short.
             _ = heartbeat.tick(), if forwarding && is_sse && at_line_start => {
+                // A comment line with NO trailing blank line: a blank line
+                // dispatches whatever event fields are already buffered, so
+                // `\n\n` would split a legal multi-line event stalled between
+                // its data lines. A lone comment line is ignored everywhere.
                 if pump.chunks_tx
-                    .send(Ok(bytes::Bytes::from_static(b": keep-alive\n\n")))
+                    .send(Ok(bytes::Bytes::from_static(b": keep-alive\n")))
                     .is_err()
                 {
                     forwarding = false;
@@ -2009,7 +2013,7 @@ mod tests {
             .await
             .expect("first chunk")
             .expect("heartbeat chunk");
-        assert_eq!(heartbeat, bytes::Bytes::from_static(b": keep-alive\n\n"));
+        assert_eq!(heartbeat, bytes::Bytes::from_static(b": keep-alive\n"));
         let outcome = stream.outcome.await.expect("outcome sender resolves");
         let AgentChatStreamOutcome::Usage(usage) = outcome else {
             panic!("expected usage outcome, got {outcome:?}");

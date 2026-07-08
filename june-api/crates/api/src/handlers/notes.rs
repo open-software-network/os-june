@@ -171,7 +171,9 @@ fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
                 _ = keep_alive.tick() => {
                     // Unbounded sends never fail on backpressure; a failure
                     // means the client vanished between closed() polls.
-                    if tx.send(Ok(Bytes::from_static(b": keep-alive\n\n"))).is_err() {
+                    // Comment line only — no blank line (same rule as the
+                    // chat pump: a blank line dispatches buffered SSE fields).
+                    if tx.send(Ok(Bytes::from_static(b": keep-alive\n"))).is_err() {
                         break;
                     }
                 }
