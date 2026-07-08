@@ -6260,14 +6260,19 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("open the release notes")).toBeInTheDocument();
   });
 
-  it("clears a working session the runtime is no longer running", async () => {
+  it("marks a disappeared working session failed when no assistant reply persisted", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
     // A recent trailing user message with no reply resumes the session as
     // working on mount — the exact state a dead run (provider failure, app
     // quit mid-turn) leaves behind.
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "m1",
-        role: "user",
+        role: "user" as const,
         content: "still waiting on this",
         timestamp: new Date().toISOString(),
       },
@@ -6301,7 +6306,86 @@ describe("AgentWorkspace", () => {
 
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {});
       expect(screen.queryByText("Thinking…")).toBeNull();
+      expect(screen.getByText("June stopped before replying.")).toBeInTheDocument();
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-1",
+          status: "failed",
+          summary: "June stopped before replying.",
+        }),
+      );
+      expect(hermesActivityStore.getRecord("session-1")?.phase).toBe("error");
+      expect(statusDetails).not.toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-1",
+          status: "completed",
+          summary: "June stopped.",
+        }),
+      );
     } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps disappeared working sessions quiet when an assistant reply persisted", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    const userOnly = [
+      {
+        id: "m1",
+        role: "user",
+        content: "still waiting on this",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    mocks.listHermesSessionMessages.mockResolvedValueOnce(userOnly).mockResolvedValue([
+      ...userOnly,
+      {
+        id: "m2",
+        role: "assistant" as const,
+        content: "Here is the answer.",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(screen.getByText("Here is the answer.")).toBeInTheDocument();
+      expect(screen.queryByText("June stopped before replying.")).toBeNull();
+      const terminal = statusDetails.filter(
+        (detail) =>
+          detail.sessionId === "session-1" &&
+          (detail.status === "completed" || detail.status === "failed"),
+      );
+      // Exactly one terminal dispatch, from refreshHermesSession seeing the
+      // reply — a second "June stopped." would overwrite the finished summary.
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ status: "completed", summary: "June finished." });
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
       vi.useRealTimers();
     }
   });

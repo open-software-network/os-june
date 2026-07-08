@@ -239,6 +239,8 @@ import { preferredVisionFallbackModel } from "../../lib/suggested-models";
 import { modelOptions, selectedModel as selectedModelOption } from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import {
+  HERMES_SERVER_ERROR_MESSAGE,
+  describeHermesError,
   isHermesServerError,
   isHermesSessionsStartupRequestError,
   isTopUpRequiresMaxError,
@@ -349,22 +351,6 @@ const SESSION_NOT_AVAILABLE_MESSAGE =
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
-}
-
-// A Hermes REST 5xx (`Hermes API returned 5xx: …`) is a transient server-side
-// fault, so session-load handlers show this June-branded line instead of the raw
-// wire string — which read as a doubled "500 Internal Server Error: Internal
-// Server Error" before the bridge deduped it (JUN-167). The banner's own
-// "Try again" button provides the retry, so the message stays a plain
-// description. `visibleErrorRetryable` keys off this
-// constant to offer that retry.
-const HERMES_SERVER_ERROR_MESSAGE = "June ran into a problem with that request.";
-
-// Picks the banner text for a caught session-command error: a transient Hermes
-// 5xx becomes the friendly retryable line; anything else passes through raw.
-function describeAgentError(err: unknown): string {
-  const message = messageFromError(err);
-  return isHermesServerError(message) ? HERMES_SERVER_ERROR_MESSAGE : message;
 }
 
 // Dev-tools response gallery handle. Registered at module scope so
@@ -2955,7 +2941,7 @@ export function AgentWorkspace({
         if (options.suppressSessionGoneError && isSessionGoneError(message)) {
           return "failed";
         }
-        setError(describeAgentError(err), reportableAgentErrorOptions(err));
+        setError(describeHermesError(err), reportableAgentErrorOptions(err));
         return "failed";
       } finally {
         if (!keepLoading) {
@@ -3489,7 +3475,7 @@ export function AgentWorkspace({
         // an error banner (JUN-116).
         if (isSessionGoneError(message)) return;
         setError(
-          describeAgentError(err),
+          describeHermesError(err),
           reportableAgentErrorOptions(err, { sessionId: selectedHermesSessionId }),
         );
       });
@@ -3519,7 +3505,7 @@ export function AgentWorkspace({
         }
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(describeAgentError(err), reportableAgentErrorOptions(err));
+        if (!cancelled) setError(describeHermesError(err), reportableAgentErrorOptions(err));
       });
     return () => {
       cancelled = true;
@@ -3541,7 +3527,7 @@ export function AgentWorkspace({
         if (cancelled) return;
         setBridge(status);
       } catch (err) {
-        if (!cancelled) setError(describeAgentError(err), reportableAgentErrorOptions(err));
+        if (!cancelled) setError(describeHermesError(err), reportableAgentErrorOptions(err));
       }
     })();
     return () => {
@@ -5620,7 +5606,7 @@ export function AgentWorkspace({
         await refreshHermesSession(sessionId);
       }
     } catch (err) {
-      setError(describeAgentError(err), reportableAgentErrorOptions(err));
+      setError(describeHermesError(err), reportableAgentErrorOptions(err));
     }
   }
 
@@ -5767,17 +5753,26 @@ export function AgentWorkspace({
         continue;
       }
       misses.delete(sessionId);
-      const activityCounts = clearSessionActivity(sessionId);
-      // "completed" (not "failed") keeps the status quiet: its title falls back
-      // to lastStatus when nothing is active, and a stale "running" there
-      // would still render "Working…".
+      const freshMessages = await refreshHermesSession(sessionId);
+      if (!freshMessages) continue;
+      if (sessionHasAssistantAfterLatestUser(freshMessages)) {
+        // refreshHermesSession already saw the assistant reply while this
+        // session still counted as active, so it dispatched the terminal
+        // "June finished." status and cleared activity — dispatching a
+        // second completed status here would overwrite that summary.
+        continue;
+      }
+      const title =
+        hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session";
+      const summary = "June stopped before replying.";
+      recordSessionErrorActivity(sessionId, summary);
+      setError(summary, { sessionId });
       dispatchAgentSessionStatus({
         sessionId,
-        title:
-          hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session",
-        status: "completed",
-        summary: "June stopped.",
-        ...activityCounts,
+        title,
+        status: "failed",
+        summary,
+        ...agentActivityCountsFromStore(),
       });
     }
   }
@@ -5805,11 +5800,12 @@ export function AgentWorkspace({
   async function refreshHermesSession(sessionId: string) {
     try {
       const messages = await listSessionMessagesOrdered(sessionId);
-      if (!messages) return;
+      if (!messages) return undefined;
       const retainedPending = retainUnpersistedPendingMessages(
         pendingHermesMessagesRef.current[sessionId] ?? [],
         messages,
       );
+      const combined = [...messages, ...retainedPending];
       setHermesSessionMessages((current) => {
         const next = {
           ...current,
@@ -5827,7 +5823,7 @@ export function AgentWorkspace({
         return next;
       });
       void suggestTitleForUntitledSession(sessionId, messages);
-      if (sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])) {
+      if (sessionHasAssistantAfterLatestUser(combined)) {
         promotePendingIssueReportToReview(sessionId, {
           queueDiagnosisRefresh: false,
         });
@@ -5853,13 +5849,15 @@ export function AgentWorkspace({
         setLiveEvents(liveEventsRef.current);
       }
       await loadHermesSessions();
+      return combined;
     } catch (err) {
       const message = messageFromError(err);
       // Background refresh racing a just-created session: a transient
       // "Session not found" 404 resolves on the next poll, so don't surface
       // it as an error banner (JUN-116).
-      if (isSessionGoneError(message)) return;
-      setError(describeAgentError(err), reportableAgentErrorOptions(err, { sessionId }));
+      if (isSessionGoneError(message)) return undefined;
+      setError(describeHermesError(err), reportableAgentErrorOptions(err, { sessionId }));
+      return undefined;
     }
   }
 

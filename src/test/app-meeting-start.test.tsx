@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
-import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import type { AccountStatus, BootstrapResponse, NoteDto, RecordingSessionDto } from "../lib/tauri";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   finishRecording: vi.fn(),
   retryProcessing: vi.fn(),
   recoverRecording: vi.fn(),
+  resolveAgentRecorderRequest: vi.fn(),
   dictationHelperCommand: vi.fn(),
   listDictationHistory: vi.fn(),
   osAccountsStatus: vi.fn(),
@@ -84,6 +85,7 @@ vi.mock("../lib/tauri", () => ({
   finishRecording: mocks.finishRecording,
   retryProcessing: mocks.retryProcessing,
   recoverRecording: mocks.recoverRecording,
+  resolveAgentRecorderRequest: mocks.resolveAgentRecorderRequest,
   dictationHelperCommand: mocks.dictationHelperCommand,
   listDictationHistory: mocks.listDictationHistory,
   osAccountsStatus: mocks.osAccountsStatus,
@@ -312,5 +314,179 @@ describe("meeting start transcription event", () => {
     for (const cleanup of cleanups) {
       expect(cleanup).toHaveBeenCalledOnce();
     }
+  });
+});
+
+describe("agent recorder request event", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.listeners.clear();
+
+    const first = note();
+    const payload: BootstrapResponse = {
+      folders: [],
+      notes: [first],
+      activeRecoveries: [],
+      providerConfigured: true,
+    };
+    const account: AccountStatus = {
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
+      balance: { usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
+    };
+
+    mocks.getCurrentWindow.mockReturnValue({
+      show: vi.fn().mockResolvedValue(undefined),
+      unminimize: vi.fn().mockResolvedValue(undefined),
+      setFocus: vi.fn().mockResolvedValue(undefined),
+      startDragging: vi.fn().mockResolvedValue(undefined),
+    });
+    mocks.bootstrapApp.mockResolvedValue(payload);
+    mocks.getNote.mockResolvedValue(first);
+    mocks.createNote.mockResolvedValue(
+      note({ id: "note-agent", title: "Agent recording", generatedContent: undefined }),
+    );
+    mocks.checkRecordingSourceReadiness.mockResolvedValue({
+      sourceMode: "microphonePlusSystem",
+      sources: [
+        { source: "microphone", ready: true },
+        { source: "system", ready: true },
+      ],
+    });
+    mocks.startRecording.mockResolvedValue(recording({ id: "rec-agent", noteId: "note-agent" }));
+    mocks.getRecordingStatus.mockResolvedValue({
+      sessionId: "rec-agent",
+      noteId: "note-agent",
+      sourceMode: "microphonePlusSystem",
+      state: "recording",
+      elapsedMs: 500,
+      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+      silenceWarning: false,
+      bytesWritten: 2048,
+    });
+    mocks.finishRecording.mockResolvedValue({
+      note: note({ id: "note-agent", title: "Agent recording", processingStatus: "transcribing" }),
+      recording: recording({ id: "rec-agent", noteId: "note-agent" }),
+      validation: {},
+      validations: [],
+      processingStarted: true,
+      warnings: [],
+    });
+    mocks.dictationHelperCommand.mockResolvedValue(undefined);
+    mocks.listDictationHistory.mockResolvedValue({ items: [], retentionDays: 7 });
+    mocks.osAccountsStatus.mockResolvedValue(account);
+    mocks.osAccountsLogin.mockResolvedValue(account);
+    mocks.osAccountsLogout.mockResolvedValue(undefined);
+    mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
+    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.updateNote.mockImplementation(async (input) => ({ ...first, ...input }));
+    mocks.resolveAgentRecorderRequest.mockResolvedValue(undefined);
+  });
+
+  // The agent-recorder chain is fully mocked but multi-hop async; the 1s
+  // default waitFor timeout flakes under full-suite machine load.
+  const waitForLoaded = <T,>(callback: () => T) => waitFor(callback, { timeout: 5_000 });
+
+  async function renderUntilAgentRecorderListener() {
+    render(<App />);
+    // The listener registers exactly once; its handler reads app state
+    // through a latest-closure ref, so waiting for bootstrap data (getNote)
+    // is enough for the handler to see the ready app.
+    await waitForLoaded(() => expect(mocks.listeners.has(AGENT_RECORDER_REQUEST_EVENT)).toBe(true));
+    await waitForLoaded(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+  }
+
+  it("starts a requested recording and acks with the created note", async () => {
+    await renderUntilAgentRecorderListener();
+
+    await act(async () => {
+      await mocks.listeners.get(AGENT_RECORDER_REQUEST_EVENT)?.({
+        payload: {
+          requestId: "req-start",
+          action: "start",
+          sourceMode: "microphonePlusSystem",
+        },
+      });
+    });
+
+    await waitForLoaded(() => {
+      expect(mocks.startRecording).toHaveBeenCalledWith("note-agent", "microphonePlusSystem");
+      expect(mocks.resolveAgentRecorderRequest).toHaveBeenCalledWith({
+        requestId: "req-start",
+        ok: true,
+        noteId: "note-agent",
+        noteTitle: "Agent recording",
+      });
+    });
+  });
+
+  it("acks start with an error when recording is already running", async () => {
+    await renderUntilAgentRecorderListener();
+    await act(async () => {
+      await mocks.listeners.get(AGENT_RECORDER_REQUEST_EVENT)?.({
+        payload: {
+          requestId: "req-first",
+          action: "start",
+          sourceMode: "microphonePlusSystem",
+        },
+      });
+    });
+    await waitForLoaded(() => expect(mocks.startRecording).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      await mocks.listeners.get(AGENT_RECORDER_REQUEST_EVENT)?.({
+        payload: {
+          requestId: "req-second",
+          action: "start",
+          sourceMode: "microphonePlusSystem",
+        },
+      });
+    });
+
+    expect(mocks.resolveAgentRecorderRequest).toHaveBeenLastCalledWith({
+      requestId: "req-second",
+      ok: false,
+      errorCode: "agent_recorder_failed",
+      errorMessage: "A recording is already running for note note-agent.",
+    });
+  });
+
+  it("stops the active recording and acks the owning note", async () => {
+    await renderUntilAgentRecorderListener();
+    await act(async () => {
+      await mocks.listeners.get(AGENT_RECORDER_REQUEST_EVENT)?.({
+        payload: {
+          requestId: "req-start",
+          action: "start",
+          sourceMode: "microphonePlusSystem",
+        },
+      });
+    });
+    // Wait for the start ACK (not just the startRecording call): the stop
+    // below must see the recording status already reflected, or it races
+    // into the recording_not_found branch under suite load.
+    await waitForLoaded(() =>
+      expect(mocks.resolveAgentRecorderRequest).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: "req-start", ok: true }),
+      ),
+    );
+
+    await act(async () => {
+      await mocks.listeners.get(AGENT_RECORDER_REQUEST_EVENT)?.({
+        payload: { requestId: "req-stop", action: "stop" },
+      });
+    });
+
+    await waitForLoaded(() => {
+      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-agent");
+      expect(mocks.resolveAgentRecorderRequest).toHaveBeenLastCalledWith({
+        requestId: "req-stop",
+        ok: true,
+        noteId: "note-agent",
+        noteTitle: "Agent recording",
+      });
+    });
   });
 });

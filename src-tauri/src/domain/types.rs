@@ -347,6 +347,8 @@ pub struct TranscriptDto {
     pub language: Option<String>,
     pub status: String,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub recorded_silence: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +426,7 @@ pub struct SourceValidationDto {
     pub actual_duration_ms: Option<i64>,
     pub duration_within_tolerance: bool,
     pub non_silent_signal: bool,
+    pub recorded_silence: bool,
     pub peak_amplitude: Option<f32>,
     pub rms_amplitude: Option<f32>,
     pub warnings: Vec<String>,
@@ -448,6 +451,8 @@ pub struct AudioValidationDto {
     pub actual_duration_ms: i64,
     pub duration_within_tolerance: bool,
     pub non_silent_signal: bool,
+    #[serde(default)]
+    pub recorded_silence: bool,
     pub peak_amplitude: f32,
     pub rms_amplitude: f32,
     pub warnings: Vec<String>,

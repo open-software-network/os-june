@@ -75,6 +75,7 @@ import {
   removeSessionFromFolder,
   recoverRecording,
   renameFolder,
+  resolveAgentRecorderRequest,
   resumeRecording,
   retryProcessing,
   startRecording,
@@ -85,7 +86,7 @@ import {
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
-import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
   AGENT_OPEN_EVENT,
@@ -97,7 +98,7 @@ import {
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
-import { messageFromError } from "../lib/errors";
+import { errorCode, messageFromError } from "../lib/errors";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
@@ -209,6 +210,12 @@ const TAB_ICON_SIZE = 14;
 type RecordingInactivityPrompt = {
   sessionId: string;
   expiresAt: number;
+};
+
+type AgentRecorderRequestPayload = {
+  requestId?: unknown;
+  action?: unknown;
+  sourceMode?: unknown;
 };
 
 function agentSessionTabTitle(session?: HermesSessionInfo): string | undefined {
@@ -2381,8 +2388,12 @@ export function App() {
   }
 
   const handleStartRecordingForNote = useCallback(
-    async (noteId: string, options: { startAlreadyClaimed?: boolean } = {}): Promise<boolean> => {
+    async (
+      noteId: string,
+      options: { startAlreadyClaimed?: boolean; sourceMode?: RecordingSourceMode } = {},
+    ): Promise<boolean> => {
       const startAlreadyClaimed = options.startAlreadyClaimed ?? false;
+      const requestedSourceMode = options.sourceMode ?? sourceMode;
       if (
         recordingStatusRef.current ||
         (!startAlreadyClaimed && recordingStartInFlightRef.current)
@@ -2397,7 +2408,7 @@ export function App() {
       }
       setLiveTranscriptEvents([]);
       setRecordingNote(noteId);
-      const startingStatus = startingRecordingStatus(noteId, sourceMode);
+      const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
       dispatch({
         type: "recordingStatusChanged",
@@ -2405,7 +2416,7 @@ export function App() {
       });
       try {
         setCheckingSourceReadiness(true);
-        const readiness = await checkRecordingSourceReadiness(sourceMode);
+        const readiness = await checkRecordingSourceReadiness(requestedSourceMode);
         setSourceReadiness(readiness);
 
         const micSource = readiness.sources.find((source) => source.source === "microphone");
@@ -2423,9 +2434,9 @@ export function App() {
         // setSourceReadiness above.
         const systemSource = readiness.sources.find((source) => source.source === "system");
         const effectiveMode: RecordingSourceMode =
-          sourceMode === "microphonePlusSystem" && !systemSource?.ready
+          requestedSourceMode === "microphonePlusSystem" && !systemSource?.ready
             ? "microphoneOnly"
-            : sourceMode;
+            : requestedSourceMode;
 
         const recording = await startRecording(noteId, effectiveMode);
         setRecordingNote(noteId);
@@ -2475,7 +2486,11 @@ export function App() {
       });
       if (started) return;
 
-      await deleteNote(note.id);
+      try {
+        await deleteNote(note.id);
+      } catch (deleteErr) {
+        console.warn("Failed to delete note after recording start failed", deleteErr);
+      }
       const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
       const restoreNoteId =
@@ -2494,6 +2509,65 @@ export function App() {
       }
     }
   }, [handleStartRecordingForNote, selectedNoteId]);
+
+  const handleStartAgentRecording = useCallback(
+    async (requestedSourceMode: RecordingSourceMode) => {
+      if (recordingStartInFlightRef.current || recordingStatusRef.current) {
+        throw new Error(
+          `A recording is already running for note ${recordingNoteIdRef.current ?? "unknown"}.`,
+        );
+      }
+      recordingStartInFlightRef.current = true;
+      const previousNoteId = selectedNoteId;
+      let handedStartClaimToRecorder = false;
+      let createdNoteId: string | undefined;
+      try {
+        const note = await createNote(undefined);
+        createdNoteId = note.id;
+        dispatch({ type: "noteLoaded", note });
+        setOriginFolderId(undefined);
+        setOriginAllNotes(false);
+        setActiveView("meetings");
+        handedStartClaimToRecorder = true;
+        const started = await handleStartRecordingForNote(note.id, {
+          startAlreadyClaimed: true,
+          sourceMode: requestedSourceMode,
+        });
+        if (started) return note;
+
+        try {
+          await deleteNote(note.id);
+        } catch (deleteErr) {
+          console.warn("Failed to delete note after recording start failed", deleteErr);
+        }
+        const response = await listNotes();
+        dispatch({ type: "notesLoaded", notes: response.items });
+        const restoreNoteId =
+          previousNoteId && previousNoteId !== note.id ? previousNoteId : response.items[0]?.id;
+        if (restoreNoteId) {
+          const restored = await getNote(restoreNoteId);
+          dispatch({ type: "noteLoaded", note: restored });
+        } else {
+          handleEmptyNotesAfterDelete();
+        }
+        throw new Error("Recording did not start.");
+      } catch (err) {
+        if (createdNoteId && !handedStartClaimToRecorder) {
+          try {
+            await deleteNote(createdNoteId);
+          } catch (deleteErr) {
+            console.warn("Failed to delete note after recording start failed", deleteErr);
+          }
+        }
+        throw err;
+      } finally {
+        if (!handedStartClaimToRecorder) {
+          recordingStartInFlightRef.current = false;
+        }
+      }
+    },
+    [handleStartRecordingForNote, selectedNoteId],
+  );
 
   // Click the floating global recorder pill to jump back to the note the
   // recording belongs to (it lives wherever you started it, which may not be
@@ -2529,7 +2603,123 @@ export function App() {
     };
   }, [appBlocked, bootstrapped, handleStartMeetingDetectedRecording]);
 
-  async function handleFinishRecording(sessionId: string) {
+  // The handler closes over frequently-changing state, but the Tauri listener
+  // must register exactly once: re-subscribing tears the listener down and
+  // events emitted in the gap are silently dropped (a dropped request costs
+  // the agent a full proxy lease). The ref always holds the latest closure.
+  const agentRecorderHandlerRef = useRef<(payload: AgentRecorderRequestPayload) => Promise<void>>(
+    async () => {},
+  );
+  agentRecorderHandlerRef.current = async (payload: AgentRecorderRequestPayload) => {
+    const requestId = typeof payload.requestId === "string" ? payload.requestId : "";
+    if (!requestId) return;
+
+    const resolve = (result: {
+      ok: boolean;
+      noteId?: string;
+      noteTitle?: string;
+      errorCode?: string;
+      errorMessage?: string;
+    }) => {
+      void resolveAgentRecorderRequest({ requestId, ...result }).catch(async (err) => {
+        console.warn("Failed to resolve agent recorder request", err);
+        // A transient resolve failure (IPC hiccup, poisoned lock) happens
+        // while the proxy is still waiting inside its lease: retry once
+        // instead of treating it as an expired request.
+        if (errorCode(err) !== "agent_recorder_request_not_found") {
+          try {
+            await resolveAgentRecorderRequest({ requestId, ...result });
+            return;
+          } catch (retryErr) {
+            if (errorCode(retryErr) !== "agent_recorder_request_not_found") {
+              console.warn("Agent recorder resolve retry failed", retryErr);
+              return;
+            }
+          }
+        }
+        // Lease expired: the proxy already told the agent this request
+        // failed. Leaving a recording running that the agent believes never
+        // started diverges tool state from app state, so stop a successful
+        // late start. The note (and any audio it captured) is kept: it is
+        // real user data and the recorder was visibly running.
+        if (result.ok && payload.action === "start") {
+          const active = recordingStatusRef.current;
+          if (active && recordingNoteIdRef.current === result.noteId) {
+            try {
+              await handleFinishRecording(active.sessionId, { rethrow: true });
+            } catch (rollbackErr) {
+              console.warn("Failed to stop expired agent recording", rollbackErr);
+            }
+          }
+        }
+      });
+    };
+
+    if (appBlocked || !bootstrapped) {
+      resolve({
+        ok: false,
+        errorCode: "app_not_ready",
+        errorMessage: "June is not ready to start or stop recording yet.",
+      });
+      return;
+    }
+
+    try {
+      if (payload.action === "start") {
+        const requestedSourceMode: RecordingSourceMode =
+          payload.sourceMode === "microphonePlusSystem" ? "microphonePlusSystem" : "microphoneOnly";
+        const note = await handleStartAgentRecording(requestedSourceMode);
+        resolve({ ok: true, noteId: note.id, noteTitle: note.title });
+        return;
+      }
+      if (payload.action === "stop") {
+        const activeRecording = recordingStatusRef.current;
+        const noteId = recordingNoteIdRef.current ?? activeRecording?.noteId;
+        const noteTitle = noteId
+          ? (state.notes.find((note) => note.id === noteId)?.title ?? selectedNote?.title)
+          : undefined;
+        if (!activeRecording) {
+          resolve({
+            ok: false,
+            errorCode: "recording_not_found",
+            errorMessage: "No recording is currently running.",
+          });
+          return;
+        }
+        await handleFinishRecording(activeRecording.sessionId, { rethrow: true });
+        resolve({ ok: true, noteId, noteTitle });
+        return;
+      }
+      resolve({
+        ok: false,
+        errorCode: "invalid_action",
+        errorMessage: "Recorder action must be start or stop.",
+      });
+    } catch (err) {
+      resolve({
+        ok: false,
+        errorCode: "agent_recorder_failed",
+        errorMessage: messageFromError(err),
+      });
+    }
+  };
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen(AGENT_RECORDER_REQUEST_EVENT, (event) => {
+      void agentRecorderHandlerRef.current((event.payload ?? {}) as AgentRecorderRequestPayload);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, []);
+
+  async function handleFinishRecording(sessionId: string, options: { rethrow?: boolean } = {}) {
     // The recorder bar stays mounted (and clickable) for the duration of its
     // exit animation after the first stop click, so a fast double-click would
     // fire finishRecording twice — the second call fails with a scary
@@ -2564,6 +2754,7 @@ export function App() {
       if (!owningNoteId || !(await applyNoteScopedProcessingFailure(owningNoteId, err))) {
         setError(messageFromError(err));
       }
+      if (options.rethrow) throw err;
     } finally {
       finishingSessionsRef.current.delete(sessionId);
     }

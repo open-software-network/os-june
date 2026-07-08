@@ -150,6 +150,46 @@ describe("NoteEditor", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows a notice when a source recorded pure silence but the note is ready", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-mic",
+              text: "",
+              source: "microphone",
+              startMs: 0,
+              endMs: 23_000,
+              turnIndex: 0,
+              status: "failed",
+              lastError:
+                "The microphone recorded silence for the whole session. Check that the right microphone is selected in Settings and that macOS input volume is up.",
+              recordedSilence: true,
+            },
+            {
+              id: "turn-system",
+              text: "System side text",
+              source: "system",
+              startMs: 0,
+              endMs: 23_000,
+              turnIndex: 1,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getAllByText(
+        "The microphone recorded silence for the whole session. Check that the right microphone is selected in Settings and that macOS input volume is up.",
+      ).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
   it("does not show transcript coverage notice without a warning", () => {
     const { rerender } = render(
       <NoteEditor

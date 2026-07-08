@@ -27,6 +27,7 @@ fn labeled_transcript_keeps_microphone_and_system_sections() {
             start_ms: Some(2_000),
             end_ms: Some(3_000),
             turn_index: Some(1),
+            recorded_silence: false,
         },
         SourceTranscriptInput {
             source: "system".to_string(),
@@ -36,6 +37,7 @@ fn labeled_transcript_keeps_microphone_and_system_sections() {
             start_ms: Some(1_000),
             end_ms: Some(1_800),
             turn_index: Some(0),
+            recorded_silence: false,
         },
     ]);
 
@@ -56,6 +58,7 @@ fn processing_uses_only_valid_source_transcripts() {
             start_ms: None,
             end_ms: None,
             turn_index: None,
+            recorded_silence: false,
         },
         SourceTranscriptInput {
             source: "system".to_string(),
@@ -65,6 +68,7 @@ fn processing_uses_only_valid_source_transcripts() {
             start_ms: None,
             end_ms: None,
             turn_index: None,
+            recorded_silence: false,
         },
     ]);
 
@@ -83,6 +87,7 @@ fn coalesces_consecutive_same_source_transcripts_for_display() {
             start_ms: Some(1_000),
             end_ms: Some(3_000),
             turn_index: Some(0),
+            recorded_silence: false,
         },
         SourceTranscriptInput {
             source: "system".to_string(),
@@ -92,6 +97,7 @@ fn coalesces_consecutive_same_source_transcripts_for_display() {
             start_ms: Some(4_000),
             end_ms: Some(5_000),
             turn_index: Some(1),
+            recorded_silence: false,
         },
         SourceTranscriptInput {
             source: "microphone".to_string(),
@@ -101,6 +107,7 @@ fn coalesces_consecutive_same_source_transcripts_for_display() {
             start_ms: Some(7_000),
             end_ms: Some(8_000),
             turn_index: Some(2),
+            recorded_silence: false,
         },
     ]);
 
@@ -124,6 +131,7 @@ fn builds_transcription_context_from_previous_turns() {
             start_ms: Some(1_000),
             end_ms: Some(5_000),
             turn_index: Some(0),
+            recorded_silence: false,
         },
         SourceTranscriptInput {
             source: "microphone".to_string(),
@@ -133,6 +141,7 @@ fn builds_transcription_context_from_previous_turns() {
             start_ms: Some(6_000),
             end_ms: Some(7_000),
             turn_index: Some(1),
+            recorded_silence: false,
         },
     ])
     .expect("context should be built");
