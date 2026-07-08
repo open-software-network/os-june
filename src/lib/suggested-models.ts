@@ -11,8 +11,8 @@ export type SuggestedModel = {
  * Curated picks for the model picker's "Suggested" tab — the handful of
  * models we actually recommend, weighed on benchmark performance, price,
  * tool use, and privacy (June's agent needs tool calling, and June's pitch
- * is zero-retention privacy, so every pick here is a "private" catalog model
- * that supports tools).
+ * is zero-retention privacy, so every text pick here is a "private" catalog
+ * model that supports tools).
  *
  * Curation snapshot (June 2026), from the live Venice catalog plus public
  * benchmarks (SWE-bench agentic coding, Artificial Analysis intelligence
@@ -63,11 +63,46 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
       reason: "Best multilingual accuracy at the same low price, with zero data retention.",
     },
   ],
-  // Image models are a curated local list (see lib/image-models.ts), not a
-  // priced catalog the picker fetches, so there is no "Suggested" subset to
-  // surface — the picker shows the full curated list.
-  image: [],
-  video: [],
+  // Image models come from the curated local list in lib/image-models.ts, not
+  // a fetched catalog; these picks are the shortlist the picker surfaces above
+  // "All models". The default (DEFAULT_IMAGE_MODEL, venice-sd35) stays first so
+  // it is always visible without expanding.
+  image: [
+    {
+      id: "venice-sd35",
+      reason:
+        "Default pick: Venice's Stable Diffusion 3.5 model, a private all-rounder for everyday images.",
+    },
+    {
+      id: "z-image-turbo",
+      reason: "Fastest pick: quick, low-cost generations with zero data retention.",
+    },
+    {
+      id: "qwen-image",
+      reason: "Quality pick: strong text rendering and prompt adherence for detailed images.",
+    },
+    {
+      id: "lustify-v8",
+      reason: "Uncensored pick: the least restricted image model, with zero data retention.",
+    },
+  ],
+  // Video is a small curated local list (lib/video-models.ts); all three
+  // private-tier models are suggested so they show without expanding "All
+  // models". The default (DEFAULT_VIDEO_MODEL, wan-2.2-a14b) stays first.
+  video: [
+    {
+      id: "wan-2.2-a14b-text-to-video",
+      reason: "Default pick: fast 5 second 720p clips, the lowest-cost option.",
+    },
+    {
+      id: "grok-imagine-text-to-video-private",
+      reason: "Photorealistic pick: lifelike clips with audio, zero data retention.",
+    },
+    {
+      id: "ltx-2-19b-full-text-to-video",
+      reason: "Quality pick: higher-detail open-source model with audio.",
+    },
+  ],
 };
 
 /**

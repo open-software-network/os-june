@@ -59,6 +59,7 @@ export type TranscriptDto = {
   language?: string;
   status: "pending" | "running" | "succeeded" | "failed";
   lastError?: string;
+  recordedSilence?: boolean;
 };
 
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
@@ -642,6 +643,7 @@ export type AudioValidationDto = {
   actualDurationMs: number;
   durationWithinTolerance: boolean;
   nonSilentSignal: boolean;
+  recordedSilence?: boolean;
   peakAmplitude: number;
   rmsAmplitude: number;
   warnings: string[];
@@ -656,6 +658,7 @@ export type SourceValidationDto = {
   actualDurationMs?: number;
   durationWithinTolerance: boolean;
   nonSilentSignal: boolean;
+  recordedSilence?: boolean;
   peakAmplitude?: number;
   rmsAmplitude?: number;
   warnings: string[];
@@ -850,9 +853,13 @@ export async function saveAgentHermesSession(input: { taskId: string; hermesSess
   });
 }
 
-export async function suggestAgentSessionTitle(prompt: string) {
+export async function suggestAgentSessionTitle(prompt: string, response?: string) {
+  const trimmedResponse = response?.trim();
   return invoke<SuggestAgentSessionTitleResponse>("suggest_agent_session_title", {
-    request: { prompt },
+    request: {
+      prompt,
+      ...(trimmedResponse ? { response: trimmedResponse } : {}),
+    },
   });
 }
 
@@ -1485,6 +1492,19 @@ export async function finishRecording(sessionId: string) {
   return invoke<FinishRecordingResponse>("finish_recording", {
     request: { sessionId },
   });
+}
+
+export type ResolveAgentRecorderRequestInput = {
+  requestId: string;
+  ok: boolean;
+  noteId?: string;
+  noteTitle?: string;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
+export async function resolveAgentRecorderRequest(request: ResolveAgentRecorderRequestInput) {
+  return invoke<void>("resolve_agent_recorder_request", { request });
 }
 
 export async function retryProcessing(noteId: string) {

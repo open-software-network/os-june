@@ -280,6 +280,7 @@ export function NoteEditor({
   const processingText = processingMessage(note.processingStatus);
   const transcriptText = transcriptToText(note, liveTranscriptTurns);
   const transcriptCoverageNotice = transcriptCoverageNoticeText(note);
+  const silentSourceNotice = silentSourceNoticeText(note);
   const showTranscriptProcessing = processingStatus !== null;
   const showLivePreviewWaiting =
     recordingForNote?.livePreviewEnabled === true && liveTranscriptTurns.length === 0;
@@ -377,6 +378,9 @@ export function NoteEditor({
             ) : null}
             {transcriptCoverageNotice ? (
               <p className="transcript-coverage-notice">{transcriptCoverageNotice}</p>
+            ) : null}
+            {silentSourceNotice ? (
+              <p className="transcript-coverage-notice">{silentSourceNotice}</p>
             ) : null}
             {visibleTurns.length ? (
               <div className="source-transcripts">
@@ -894,6 +898,16 @@ function transcriptCoverageNoticeText(note: NoteDto): string | null {
   const missingMinutes = Math.max(1, Math.floor(missingMs / 60_000));
   const detectedMinutes = Math.max(1, Math.floor(detectedSpeechMs / 60_000));
   return `Parts of this recording could not be transcribed. About ${missingMinutes} of ${detectedMinutes} minutes of detected speech are missing from this transcript.`;
+}
+
+// A source that recorded pure silence fails transcription with a targeted
+// message, but a note can still finish ready on its other source; surface
+// that message as a notice instead of leaving it buried in the turn list.
+function silentSourceNoticeText(note: NoteDto): string | null {
+  const silent = (note.sourceTranscripts ?? []).find(
+    (turn) => turn.recordedSilence && !turn.text.trim() && turn.lastError,
+  );
+  return silent?.lastError ?? null;
 }
 
 function orderedVisibleSourceTranscripts(note: NoteDto): RenderedTranscriptTurn[] {

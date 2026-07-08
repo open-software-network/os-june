@@ -5215,13 +5215,6 @@ input:focus-visible,
   padding: var(--sp-1);
 }
 
-.agent-composer-model-direct {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-height: 0;
-}
-
 .agent-composer-model-search {
   display: grid;
   grid-template-columns: 14px minmax(0, 1fr);
@@ -9822,6 +9815,15 @@ input:focus-visible,
   font-weight: 400;
 }
 
+/* A live mic that has produced only silence is a session about to be lost;
+ * the hint reads as a problem (destructive), not ambience. */
+.recorder-silence-warning,
+.global-recorder-warning {
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
 /* Waveform ---------------------------------------------------------- */
 
 /* Mirrors the dictation HUD bars (.hud-bar) so the recorder waveform reads as
@@ -10045,6 +10047,21 @@ input:focus-visible,
   background: var(--destructive-soft);
   color: color-mix(in oklch, var(--destructive) 60%, var(--foreground));
   font-size: var(--fs-md);
+}
+
+.routines-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.routines-error-banner p {
+  margin: 0;
+}
+
+.routines-error-banner .btn {
+  flex: 0 0 auto;
 }
 
 /* Positive sibling of .error-banner for transient good news (billing
@@ -18154,6 +18171,27 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.folder-note-title-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+  outline: 0;
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.folder-note-title-input:focus,
+.folder-note-title-input:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .folder-note-subtitle {

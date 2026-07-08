@@ -24,7 +24,12 @@ import type { HermesMcpAuthStatus, HermesMcpServerInfo, HermesMcpTransport } fro
 
 /** June-owned MCP servers are implementation details. They are configured by
  * the app at runtime and should not appear in user-managed MCP surfaces. */
-export const INTERNAL_MCP_SERVER_NAMES = ["june_context", "june_web", "june_image"] as const;
+export const INTERNAL_MCP_SERVER_NAMES = [
+  "june_context",
+  "june_web",
+  "june_image",
+  "june_recorder",
+] as const;
 
 const INTERNAL_MCP_SERVER_NAME_SET = new Set<string>(INTERNAL_MCP_SERVER_NAMES);
 

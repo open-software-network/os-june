@@ -2666,34 +2666,43 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("button", { name: /More options/ }));
     expect(screen.getByRole("switch", { name: "Blur adult content in images" })).toBeChecked();
 
-    // The picker opens with the curated image options (no backend fetch).
+    // The picker opens with the curated image options (no backend fetch) and,
+    // like text/voice, shows only the suggested picks up top — the rest of the
+    // catalog lives behind the All models flyout.
     await user.click(screen.getByRole("button", { name: "Change image model" }));
     const defaultImageOption = await screen.findByRole("option", { name: /Venice SD3\.5/ });
     expect(defaultImageOption).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /FLUX 2 Pro/ })).toBeInTheDocument();
-    // Expanded image catalog (from main) rendered through the shared popover:
-    // the models are listed, but their metadata is revealed on hover, not inline.
-    expect(screen.getByText("GPT Image 2")).toBeInTheDocument();
-    expect(screen.getByText("Lustify v8")).toBeInTheDocument();
-    expect(screen.getByText("Z-Image Turbo")).toBeInTheDocument();
-    expect(defaultImageOption).not.toHaveTextContent(
+    expect(screen.getByRole("option", { name: /Z-Image Turbo/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Qwen Image/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Lustify v8/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /FLUX 2 Pro/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /GPT Image 2/ })).not.toBeInTheDocument();
+
+    // All models reveals the full curated catalog in the flyout, with model
+    // metadata revealed on hover, not inline.
+    await user.click(screen.getByRole("button", { name: "All models" }));
+    const panel = await screen.findByRole("group", { name: "All image models" });
+    expect(within(panel).getByRole("option", { name: /FLUX 2 Pro/ })).toBeInTheDocument();
+    expect(within(panel).getByRole("option", { name: /GPT Image 2/ })).toBeInTheDocument();
+    const panelDefaultOption = within(panel).getByRole("option", { name: /Venice SD3\.5/ });
+    expect(panelDefaultOption).not.toHaveTextContent(
       "Venice's default Stable Diffusion 3.5 image model.",
     );
-    await user.hover(defaultImageOption);
+    await user.hover(panelDefaultOption);
     expect(
       await screen.findByText("Venice's default Stable Diffusion 3.5 image model."),
     ).toBeInTheDocument();
-    await user.unhover(defaultImageOption);
+    await user.unhover(panelDefaultOption);
     expect(screen.queryByText("Model details unavailable")).not.toBeInTheDocument();
-    await user.type(screen.getByLabelText("Search models"), "uncensored");
-    expect(screen.getByRole("option", { name: /Lustify v7/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Lustify v8/ })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /FLUX 2 Pro/ })).not.toBeInTheDocument();
-    await user.clear(screen.getByLabelText("Search models"));
+    await user.type(within(panel).getByLabelText("Search models"), "uncensored");
+    expect(within(panel).getByRole("option", { name: /Lustify v7/ })).toBeInTheDocument();
+    expect(within(panel).getByRole("option", { name: /Lustify v8/ })).toBeInTheDocument();
+    expect(within(panel).queryByRole("option", { name: /FLUX 2 Pro/ })).not.toBeInTheDocument();
+    await user.clear(within(panel).getByLabelText("Search models"));
     // Image models are not fetched from the catalog.
     expect(mocks.listVeniceModels).not.toHaveBeenCalledWith("image");
 
-    await user.click(await screen.findByRole("option", { name: /FLUX 2 Pro/ }));
+    await user.click(await within(panel).findByRole("option", { name: /FLUX 2 Pro/ }));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("image", "flux-2-pro");
     // The picker closes after a selection.
     await waitFor(() =>

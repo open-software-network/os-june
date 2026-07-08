@@ -11,6 +11,7 @@ pub const MIN_RECORDING_MS: i64 = 1_000;
 const MIN_POSITIVE_DURATION_DRIFT_MS: i64 = 60_000;
 const MAX_POSITIVE_DURATION_DRIFT_MS: i64 = 10 * 60_000;
 const POSITIVE_DURATION_DRIFT_RATIO_DENOMINATOR: i64 = 4;
+const SILENT_PEAK_AMPLITUDE_MAX: f32 = f32::EPSILON;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AudioValidationConfig {
@@ -47,6 +48,7 @@ pub fn validate_audio_artifact(
         actual_duration_ms: 0,
         duration_within_tolerance: false,
         non_silent_signal: false,
+        recorded_silence: false,
         peak_amplitude: 0.0,
         rms_amplitude: 0.0,
         warnings: Vec::new(),
@@ -107,7 +109,13 @@ pub fn validate_audio_artifact(
     if samples > 0 {
         result.rms_amplitude = (sum_square / samples as f64).sqrt() as f32;
     }
-    result.non_silent_signal = samples > 0;
+    result.non_silent_signal = result.peak_amplitude > SILENT_PEAK_AMPLITUDE_MAX;
+    result.recorded_silence = samples > 0 && !result.non_silent_signal;
+    if result.recorded_silence {
+        result
+            .warnings
+            .push("audio contains only silence".to_string());
+    }
 
     Ok(result)
 }
@@ -546,6 +554,58 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("not readable WAV")));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn flags_structurally_valid_silent_wav_without_failing_validation() {
+        let dir = std::env::temp_dir().join(format!("os-june-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("microphone.wav");
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(&path, spec).unwrap();
+        for _ in 0..16_000 {
+            writer.write_sample(0_i16).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let result = validate_audio_artifact(&path, 1_000, AudioValidationConfig::default())
+            .expect("validation should run");
+
+        assert!(result.readable_audio);
+        assert!(result.non_zero_size);
+        assert!(!result.non_silent_signal);
+        assert!(result.recorded_silence);
+        assert_eq!(result.peak_amplitude, 0.0);
+        assert_eq!(result.rms_amplitude, 0.0);
+        assert!(source_audio_passes_validation(
+            RecordingSource::Microphone,
+            &result
+        ));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn does_not_flag_normal_wav_as_silent() {
+        let dir = std::env::temp_dir().join(format!("os-june-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("microphone.wav");
+        write_wav(&path, 1_000);
+
+        let result = validate_audio_artifact(&path, 1_000, AudioValidationConfig::default())
+            .expect("validation should run");
+
+        assert!(result.non_silent_signal);
+        assert!(!result.recorded_silence);
+        assert!(result.peak_amplitude > 0.0);
+        assert!(result.rms_amplitude > 0.0);
 
         let _ = std::fs::remove_dir_all(dir);
     }

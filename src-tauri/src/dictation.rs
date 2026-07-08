@@ -419,12 +419,24 @@ pub struct DictationSettingsResponse {
 /// transcribing a fraction of a second of noise. Mirrors the helper's old
 /// holdThreshold, which used to absorb these by delaying the start.
 const PUSH_TO_TALK_MIN_HOLD: Duration = Duration::from_millis(160);
+const TOGGLE_SHORTCUT_DEBOUNCE: Duration = Duration::from_millis(275);
+/// A toggle ack normally arrives within milliseconds; if the helper dies (or
+/// a permission prompt never calls back) no ack event ever comes, and an
+/// unexpiring in-flight flag would wedge the shortcut until app restart.
+const TOGGLE_ACK_EXPIRY: Duration = Duration::from_secs(8);
+/// Finalizing normally resolves in a few seconds (one dictation round-trip);
+/// a helper that dies mid-finalize emits no terminal event, so the
+/// suppression must expire rather than wedge the shortcut.
+const FINALIZING_SUPPRESSION_EXPIRY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Default)]
 struct ShortcutActivationController {
     active_mode: Option<DictationShortcutKind>,
     push_to_talk_is_down: bool,
     push_started_at: Option<Instant>,
+    toggle_command_in_flight: bool,
+    last_toggle_command_at: Option<Instant>,
+    helper_finalizing_since: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -479,23 +491,62 @@ impl ShortcutActivationController {
             }
             (DictationShortcutKind::Toggle, ShortcutKeyEdge::Down) => match self.active_mode {
                 Some(DictationShortcutKind::PushToTalk) => None,
-                Some(DictationShortcutKind::Toggle) => {
+                Some(DictationShortcutKind::Toggle) if self.can_send_toggle_command(now) => {
                     self.active_mode = None;
+                    self.mark_toggle_command_sent(now);
                     Some(DictationCommand::ToggleListening)
                 }
-                None => {
+                Some(DictationShortcutKind::Toggle) => None,
+                None if self.can_send_toggle_command(now) => {
                     self.active_mode = Some(DictationShortcutKind::Toggle);
+                    self.mark_toggle_command_sent(now);
                     Some(DictationCommand::ToggleListening)
                 }
+                None => None,
             },
             (DictationShortcutKind::Toggle, ShortcutKeyEdge::Up) => None,
         }
+    }
+
+    fn can_send_toggle_command(&self, now: Instant) -> bool {
+        let in_flight = self.toggle_command_in_flight
+            && self
+                .last_toggle_command_at
+                .map_or(true, |last| now.duration_since(last) < TOGGLE_ACK_EXPIRY);
+        let finalizing = self
+            .helper_finalizing_since
+            .is_some_and(|since| now.duration_since(since) < FINALIZING_SUPPRESSION_EXPIRY);
+        !in_flight
+            && !finalizing
+            && self.last_toggle_command_at.map_or(true, |last| {
+                now.duration_since(last) >= TOGGLE_SHORTCUT_DEBOUNCE
+            })
+    }
+
+    fn mark_toggle_command_sent(&mut self, now: Instant) {
+        self.toggle_command_in_flight = true;
+        self.last_toggle_command_at = Some(now);
+    }
+
+    fn acknowledge_toggle_command(&mut self) {
+        self.toggle_command_in_flight = false;
+    }
+
+    fn mark_helper_finalizing(&mut self) {
+        self.helper_finalizing_since = Some(Instant::now());
+    }
+
+    fn clear_helper_finalizing(&mut self) {
+        self.helper_finalizing_since = None;
     }
 
     fn reset(&mut self) {
         self.active_mode = None;
         self.push_to_talk_is_down = false;
         self.push_started_at = None;
+        self.toggle_command_in_flight = false;
+        self.last_toggle_command_at = None;
+        self.helper_finalizing_since = None;
     }
 }
 
@@ -1611,6 +1662,26 @@ fn reset_shortcut_activation(app: &AppHandle) {
     }
 }
 
+fn acknowledge_shortcut_toggle(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.acknowledge_toggle_command();
+        }
+    }
+}
+
+fn update_shortcut_helper_finalizing(app: &AppHandle, finalizing: bool) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            if finalizing {
+                controller.mark_helper_finalizing();
+            } else {
+                controller.clear_helper_finalizing();
+            }
+        }
+    }
+}
+
 fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
     // The start path needs a signed-in OS Accounts session for the
     // transcription that follows, but the token check must not sit between
@@ -1624,7 +1695,10 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
     // before. ToggleListening can also start, but we can't tell
     // start-from-stop without extra state; transcribe_recording_ready acts
     // as the backstop there.
-    forward_dictation_command(app, command, shortcut_label);
+    let forwarded = forward_dictation_command(app, command, shortcut_label);
+    if !forwarded && matches!(command, DictationCommand::ToggleListening) {
+        reset_shortcut_activation(app);
+    }
     if matches!(command, DictationCommand::StartListening) {
         let app = app.clone();
         let label = shortcut_label.to_string();
@@ -1646,7 +1720,11 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
     }
 }
 
-fn forward_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
+fn forward_dictation_command(
+    app: &AppHandle,
+    command: DictationCommand,
+    shortcut_label: &str,
+) -> bool {
     let Some(state) = app.try_state::<HelperState>() else {
         emit_dictation_event_value(
             app,
@@ -1655,12 +1733,14 @@ fn forward_dictation_command(app: &AppHandle, command: DictationCommand, shortcu
                 "Dictation helper process is not running.",
             )),
         );
-        return;
+        return false;
     };
 
     if let Err(error) = send_helper_command(&state, command.helper_command(shortcut_label)) {
         emit_dictation_event_value(app, app_error_event(error));
+        return false;
     }
+    true
 }
 
 /// Instant (millis since the Unix epoch) of the last signed-out prompt.
@@ -2225,6 +2305,25 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .and_then(serde_json::Value::as_str);
 
     handle_shortcut_key_event(app, event_type, event.as_ref());
+    if matches!(
+        event_type,
+        Some(
+            "listening_started"
+                | "finalizing_transcript"
+                | "recording_discarded"
+                | "final_transcript"
+                | "error"
+        )
+    ) {
+        acknowledge_shortcut_toggle(app);
+    }
+    match event_type {
+        Some("finalizing_transcript") => update_shortcut_helper_finalizing(app, true),
+        Some("listening_started" | "recording_discarded" | "final_transcript" | "error") => {
+            update_shortcut_helper_finalizing(app, false);
+        }
+        _ => {}
+    }
 
     if matches!(event_type, Some("recording_ready")) {
         if let Some(event) = event.as_ref() {
@@ -4252,9 +4351,182 @@ mod tests {
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::Toggle, now),
             None
         );
+        controller.acknowledge_toggle_command();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE
+            ),
+            Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn rapid_toggle_edges_send_one_command_until_acknowledged() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        let commands = [
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            controller.handle_edge(
+                ShortcutKeyEdge::Up,
+                DictationShortcutKind::Toggle,
+                now + Duration::from_millis(20),
+            ),
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + Duration::from_millis(100),
+            ),
+            controller.handle_edge(
+                ShortcutKeyEdge::Up,
+                DictationShortcutKind::Toggle,
+                now + Duration::from_millis(120),
+            ),
+        ];
+
+        assert_eq!(
+            commands
+                .into_iter()
+                .flatten()
+                .filter(|command| *command == DictationCommand::ToggleListening)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn acknowledged_toggle_still_respects_debounce_window() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
             Some(DictationCommand::ToggleListening)
+        );
+        controller.acknowledge_toggle_command();
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE - Duration::from_millis(1)
+            ),
+            None
+        );
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE
+            ),
+            Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn unacknowledged_toggle_expires_instead_of_wedging_the_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+        // No ack ever arrives (helper died / permission prompt never called
+        // back). Within the expiry the toggle stays suppressed...
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE
+            ),
+            None
+        );
+        // ...and past the expiry the shortcut recovers on its own.
+        controller.last_toggle_command_at = Some(now - TOGGLE_ACK_EXPIRY);
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn stuck_finalizing_suppression_expires_instead_of_wedging_the_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        controller.helper_finalizing_since = Some(now - FINALIZING_SUPPRESSION_EXPIRY);
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn toggle_during_helper_finalizing_is_dropped_without_parity_flip() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+        controller.acknowledge_toggle_command();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE
+            ),
+            Some(DictationCommand::ToggleListening)
+        );
+        controller.acknowledge_toggle_command();
+        controller.mark_helper_finalizing();
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE + Duration::from_secs(1)
+            ),
+            None
+        );
+        controller.clear_helper_finalizing();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::Toggle,
+                now + TOGGLE_SHORTCUT_DEBOUNCE + Duration::from_secs(2)
+            ),
+            Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn toggle_gate_never_drops_push_to_talk_release() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.toggle_command_in_flight = true;
+        controller.last_toggle_command_at = Some(now);
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Up,
+                DictationShortcutKind::PushToTalk,
+                now + PUSH_TO_TALK_MIN_HOLD
+            ),
+            Some(DictationCommand::StopAndPaste)
         );
     }
 

@@ -1757,7 +1757,6 @@ export function AppSettings({
                       triggerRef={modelPickerTriggerRef}
                       popoverRef={modelPickerPopoverRef}
                       searchRef={modelPickerSearchRef}
-                      directCatalog
                       onToggle={() =>
                         pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
                       }
@@ -1779,7 +1778,6 @@ export function AppSettings({
                       triggerRef={modelPickerTriggerRef}
                       popoverRef={modelPickerPopoverRef}
                       searchRef={modelPickerSearchRef}
-                      directCatalog
                       onToggle={() =>
                         pickerMode === "video" ? closeModelPicker() : openModelPicker("video")
                       }
@@ -2391,7 +2389,6 @@ function ModelRow({
   triggerRef,
   popoverRef,
   searchRef,
-  directCatalog,
   onToggle,
   onFlyoutChange,
   onSearchChange,
@@ -2408,7 +2405,6 @@ function ModelRow({
   triggerRef: RefObject<HTMLButtonElement>;
   popoverRef: RefObject<HTMLDivElement>;
   searchRef: RefObject<HTMLInputElement>;
-  directCatalog?: boolean;
   onToggle: () => void;
   onFlyoutChange: (flyout: ModelPickerFlyout) => void;
   onSearchChange: (value: string) => void;
@@ -2456,7 +2452,6 @@ function ModelRow({
             popoverRef={popoverRef}
             searchRef={searchRef}
             className="settings-model-popover"
-            directCatalog={directCatalog}
             title={modelLabel[0].toUpperCase() + modelLabel.slice(1)}
             ariaLabel={`Choose ${modelLabel}`}
             onFlyoutChange={onFlyoutChange}
