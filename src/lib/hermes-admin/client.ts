@@ -586,12 +586,20 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
       parseProfileActivateResult,
     );
 
-  /** True only when the response CONFIRMS the requested profile became the
-   * sticky active value. A missing or mismatched `active` is a failure even on
-   * a 2xx: trusting it would desync June's in-app active-profile store from
-   * the on-disk pointer that Rust-side model overrides resolve against. */
-  const activationConfirmed = (name: string, result: HermesProfileActivateResult): boolean =>
-    result.ok && result.active?.trim().toLowerCase() === name.trim().toLowerCase();
+  /** Case-insensitive name equality for activation confirmation. */
+  const sameProfileName = (a: string, b: string): boolean =>
+    a.trim().toLowerCase() === b.trim().toLowerCase();
+
+  /** Fast path: the response body itself confirms the requested profile is the
+   * sticky active value (the pinned Hermes always echoes
+   * `{ok: true, active: <normalized name>}`). When the body is bodyless or
+   * ambiguous, the caller reconciles against the authoritative
+   * `GET /api/profiles/active` instead of failing - a bare 2xx is a legitimate
+   * success elsewhere in this client, and throwing after a server-side write
+   * would leave June's store pointing at the OLD profile while the on-disk
+   * pointer (which Rust-side model overrides resolve against) already moved. */
+  const activationEchoConfirms = (name: string, result: HermesProfileActivateResult): boolean =>
+    result.ok && result.active !== undefined && sameProfileName(result.active, name);
 
   return {
     list() {
@@ -609,11 +617,28 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
     },
     async activate(name) {
       const result = await activateProfile(name);
-      if (!activationConfirmed(name, result)) {
+      if (result.ok === false) {
         throw new HermesAdminError({
           endpoint: "POST /api/profiles/active",
           kind: "parse",
           safeMessage: "Hermes could not activate that profile.",
+          retryable: false,
+        });
+      }
+      if (activationEchoConfirms(name, result)) return;
+      // No usable echo (bodyless 2xx, unexpected shape, or a mismatched name):
+      // reconcile against the authoritative sticky read rather than trusting
+      // the request. This never trusts the requested name, and it never fails
+      // a switch that actually landed just because the body was quiet.
+      const authoritative = await send(
+        { method: "GET", path: "/api/profiles/active", scopeToProfile: false },
+        parseActiveProfile,
+      );
+      if (!sameProfileName(authoritative.active, name)) {
+        throw new HermesAdminError({
+          endpoint: "POST /api/profiles/active",
+          kind: "parse",
+          safeMessage: `Hermes reports "${authoritative.active}" as the active profile.`,
           retryable: false,
         });
       }
