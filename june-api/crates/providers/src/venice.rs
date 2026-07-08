@@ -653,6 +653,7 @@ impl VeniceChat {
         let task_content_type = content_type.clone();
         let task_url = url.clone();
         let task_model = model.0.clone();
+        let drain_for_settlement = !auth.unmetered;
         tokio::spawn(async move {
             pump_agent_chat_stream(StreamPump {
                 response: &mut response,
@@ -661,6 +662,7 @@ impl VeniceChat {
                 content_type: task_content_type,
                 url: task_url,
                 model: task_model,
+                drain_for_settlement,
             })
             .await;
         });
@@ -747,6 +749,12 @@ struct StreamPump<'a> {
     content_type: String,
     url: String,
     model: String,
+    /// Whether the upstream must be drained to its usage frame after the
+    /// client is gone. True for metered streams (June settles a charge from
+    /// that frame). False for BYOK: there is no charge to protect, and
+    /// draining would keep spending the user's own upstream account on a
+    /// response nobody reads — dropping the connection stops generation.
+    drain_for_settlement: bool,
 }
 
 async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
@@ -773,6 +781,10 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                         // Unbounded send: draining to the usage frame must not
                         // block on a slow client, or settlement stalls with it.
                         if forwarding && pump.chunks_tx.send(Ok(chunk)).is_err() {
+                            if !pump.drain_for_settlement {
+                                let _ = pump.outcome_tx.send(AgentChatStreamOutcome::Failed);
+                                return;
+                            }
                             forwarding = false;
                         }
                         // Heartbeats are silence-gated: an active upstream is
@@ -827,6 +839,10 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                     .send(Ok(bytes::Bytes::from_static(b": keep-alive\n")))
                     .is_err()
                 {
+                    if !pump.drain_for_settlement {
+                        let _ = pump.outcome_tx.send(AgentChatStreamOutcome::Failed);
+                        return;
+                    }
                     forwarding = false;
                 }
             }
@@ -2165,6 +2181,35 @@ mod tests {
             panic!("expected usage outcome, got {outcome:?}");
         };
         assert_eq!(usage.prompt_tokens, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_unmetered_aborts_instead_of_draining_after_disconnect() {
+        // BYOK: no June charge to protect, so a client disconnect must drop
+        // the upstream connection instead of draining it on the user's own
+        // upstream account. Detection here rides the (test-shortened)
+        // heartbeat tick; the second stub chunk arrives far later.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (b"data: {\"choices\":[]}\n\n".to_vec(), Duration::ZERO),
+                (b"data: [DONE]\n\n".to_vec(), Duration::from_secs(5)),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+        let mut request = stream_request();
+        request.unmetered = true;
+
+        let stream = agent.complete_stream(request).await.expect("stream starts");
+        drop(stream.chunks);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), stream.outcome)
+            .await
+            .expect("outcome must resolve long before the delayed upstream chunk")
+            .expect("outcome sender resolves");
+        assert_eq!(outcome, AgentChatStreamOutcome::Failed);
     }
 
     fn short_timeout_agent(base_url: &str) -> VeniceAgentChat {
