@@ -3,9 +3,9 @@ use crate::transcription::TranscriptionWireResponse;
 use async_trait::async_trait;
 use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig};
 use june_domain::{
-    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, CleanedText, Cleaner,
-    CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator, ProviderCredentials,
-    TokenUsage, Transcriber, Transcript, TranscriptionRequest,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, CleanedText,
+    Cleaner, CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator,
+    ProviderCredentials, TokenUsage, Transcriber, Transcript, TranscriptionRequest,
 };
 use reqwest::{
     StatusCode,
@@ -13,11 +13,16 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use tokio::sync::{mpsc, oneshot};
 
 pub const PROVIDER_NAME: &str = "venice";
 
 const CREDITS_PER_USD: f64 = 1_000.0;
 const RATE_SCALE: f64 = 1_000_000.0;
+#[cfg(not(test))]
+const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 /// A 20% markup over upstream cost is a 1.2x retail price.
 const RETAIL_PRICE_MULTIPLIER: f64 = 1.2;
 
@@ -331,6 +336,15 @@ impl AgentChatCompleter for VeniceAgentChat {
             .complete_raw(request.body, request.model, &request.provider_credentials)
             .await
     }
+
+    async fn complete_stream(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        self.chat
+            .complete_stream(request.body, request.model, &request.provider_credentials)
+            .await
+    }
 }
 
 impl VeniceCleaner {
@@ -476,35 +490,11 @@ impl VeniceChat {
 
     async fn complete_raw(
         &self,
-        mut body: serde_json::Value,
+        body: serde_json::Value,
         model: june_domain::ModelId,
         provider_credentials: &ProviderCredentials,
     ) -> Result<AgentChatCompletion, DomainError> {
-        let Some(object) = body.as_object_mut() else {
-            return Err(DomainError::InvalidInput {
-                reason: "invalid_chat_completion_body".to_string(),
-            });
-        };
-        object.insert(
-            "model".to_string(),
-            serde_json::Value::String(model.0.clone()),
-        );
-        inject_safety_context(object);
-        sanitize_tool_schemas(object);
-        if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
-            let stream_options = object
-                .entry("stream_options")
-                .or_insert_with(|| serde_json::json!({}));
-            // Replace a non-object `stream_options` instead of leaving it:
-            // without `include_usage` the stream carries no usage frame, so
-            // metering fails after the upstream call has already been made.
-            if !stream_options.is_object() {
-                *stream_options = serde_json::json!({});
-            }
-            if let Some(options) = stream_options.as_object_mut() {
-                options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
-            }
-        }
+        let body = prepare_agent_chat_body(body, &model)?;
         let url = format!("{}/chat/completions", self.base_url);
         let response = self
             .http
@@ -529,25 +519,16 @@ impl VeniceChat {
             DomainError::UpstreamProvider
         })?;
         if !status.is_success() {
-            // The upstream error body is the only place Venice states WHY it
-            // rejected the request (e.g. its tool-schema normalizer bugs) —
-            // but agent chat bodies can carry private note/chat content that a
-            // validation error might echo. Log ONLY the structured error field
-            // from a JSON error body (capped), never a raw body preview, so
-            // this path keeps the provider-wide no-payload-in-logs rule.
-            let error_detail = upstream_error_detail(&body).unwrap_or_default();
-            tracing::error!(
-                %status,
-                %url,
-                model = %model.0,
-                body_bytes = body.len(),
-                error_detail = %error_detail,
-                "venice: agent chat non-success response"
-            );
-            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
-                return Err(error);
-            }
-            return Err(DomainError::UpstreamProvider);
+            return Err(handle_agent_chat_non_success(
+                AgentChatNonSuccess {
+                    status,
+                    url: &url,
+                    model: &model.0,
+                    body_bytes: body.len(),
+                    body: &body,
+                },
+                provider_credentials,
+            ));
         }
         let usage = usage_from_chat_body(&body, &content_type)?;
         Ok(AgentChatCompletion {
@@ -556,6 +537,196 @@ impl VeniceChat {
             provider: PROVIDER_NAME.to_string(),
             usage,
         })
+    }
+
+    async fn complete_stream(
+        &self,
+        body: serde_json::Value,
+        model: june_domain::ModelId,
+        provider_credentials: &ProviderCredentials,
+    ) -> Result<AgentChatStream, DomainError> {
+        let body = prepare_agent_chat_body(body, &model)?;
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut response = self
+            .http
+            .post(&url)
+            .bearer_auth(venice_api_key(&self.api_key, provider_credentials))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
+                DomainError::UpstreamProvider
+            })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        if !status.is_success() {
+            let body = response.bytes().await.map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+                DomainError::UpstreamProvider
+            })?;
+            return Err(handle_agent_chat_non_success(
+                AgentChatNonSuccess {
+                    status,
+                    url: &url,
+                    model: &model.0,
+                    body_bytes: body.len(),
+                    body: &body,
+                },
+                provider_credentials,
+            ));
+        }
+
+        let (chunks_tx, chunks_rx) = mpsc::channel(32);
+        let (usage_tx, usage_rx) = oneshot::channel();
+        let task_content_type = content_type.clone();
+        let task_url = url.clone();
+        let task_model = model.0.clone();
+        tokio::spawn(async move {
+            pump_agent_chat_stream(StreamPump {
+                response: &mut response,
+                chunks_tx,
+                usage_tx,
+                content_type: task_content_type,
+                url: task_url,
+                model: task_model,
+            })
+            .await;
+        });
+
+        Ok(AgentChatStream {
+            content_type,
+            provider: PROVIDER_NAME.to_string(),
+            chunks: chunks_rx,
+            usage: usage_rx,
+        })
+    }
+}
+
+fn prepare_agent_chat_body(
+    mut body: serde_json::Value,
+    model: &june_domain::ModelId,
+) -> Result<serde_json::Value, DomainError> {
+    let Some(object) = body.as_object_mut() else {
+        return Err(DomainError::InvalidInput {
+            reason: "invalid_chat_completion_body".to_string(),
+        });
+    };
+    object.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.0.clone()),
+    );
+    inject_safety_context(object);
+    sanitize_tool_schemas(object);
+    if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+        let stream_options = object
+            .entry("stream_options")
+            .or_insert_with(|| serde_json::json!({}));
+        // Replace a non-object `stream_options` instead of leaving it:
+        // without `include_usage` the stream carries no usage frame, so
+        // metering fails after the upstream call has already been made.
+        if !stream_options.is_object() {
+            *stream_options = serde_json::json!({});
+        }
+        if let Some(options) = stream_options.as_object_mut() {
+            options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
+        }
+    }
+    Ok(body)
+}
+
+fn handle_agent_chat_non_success(
+    error: AgentChatNonSuccess<'_>,
+    provider_credentials: &ProviderCredentials,
+) -> DomainError {
+    // The upstream error body is the only place Venice states WHY it
+    // rejected the request (e.g. its tool-schema normalizer bugs) —
+    // but agent chat bodies can carry private note/chat content that a
+    // validation error might echo. Log ONLY the structured error field
+    // from a JSON error body (capped), never a raw body preview, so
+    // this path keeps the provider-wide no-payload-in-logs rule.
+    let error_detail = upstream_error_detail(error.body).unwrap_or_default();
+    tracing::error!(
+        status = %error.status,
+        url = %error.url,
+        model = %error.model,
+        body_bytes = error.body_bytes,
+        error_detail = %error_detail,
+        "venice: agent chat non-success response"
+    );
+    if let Some(error) = user_venice_key_auth_error(error.status, provider_credentials) {
+        return error;
+    }
+    DomainError::UpstreamProvider
+}
+
+#[derive(Clone, Copy)]
+struct AgentChatNonSuccess<'a> {
+    status: StatusCode,
+    url: &'a str,
+    model: &'a str,
+    body_bytes: usize,
+    body: &'a [u8],
+}
+
+struct StreamPump<'a> {
+    response: &'a mut reqwest::Response,
+    chunks_tx: mpsc::Sender<Result<bytes::Bytes, DomainError>>,
+    usage_tx: oneshot::Sender<Result<TokenUsage, DomainError>>,
+    content_type: String,
+    url: String,
+    model: String,
+}
+
+async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
+    let mut accumulated = Vec::new();
+    let mut forwarding = true;
+    let is_sse = pump.content_type.contains("text/event-stream");
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + STREAM_HEARTBEAT_INTERVAL,
+        STREAM_HEARTBEAT_INTERVAL,
+    );
+    loop {
+        tokio::select! {
+            chunk = pump.response.chunk() => {
+                match chunk {
+                    Ok(Some(chunk)) => {
+                        accumulated.extend_from_slice(&chunk);
+                        if forwarding
+                            && pump.chunks_tx.send(Ok(chunk)).await.is_err()
+                        {
+                            forwarding = false;
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = pump.usage_tx.send(usage_from_chat_body(&accumulated, &pump.content_type));
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, url = %pump.url, model = %pump.model, "venice: agent chat body read failed");
+                        if forwarding {
+                            let _ = pump.chunks_tx.send(Err(DomainError::UpstreamProvider)).await;
+                        }
+                        let _ = pump.usage_tx.send(Err(DomainError::UpstreamProvider));
+                        return;
+                    }
+                }
+            }
+            _ = heartbeat.tick(), if forwarding && is_sse => {
+                if pump.chunks_tx
+                    .send(Ok(bytes::Bytes::from_static(b": keep-alive\n\n")))
+                    .await
+                    .is_err()
+                {
+                    forwarding = false;
+                }
+            }
+        }
     }
 }
 
@@ -1139,10 +1310,10 @@ fn strip_scaffolding_tags(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SAFETY_CONTEXT, VeniceAgentChat, VeniceGenerator, VeniceModelsApiResponse,
-        cleanup_generated_note_text, cleanup_source_text, generation_source_text,
-        inject_safety_context, sanitize_tool_schemas, strip_scaffolding_tags,
-        venice_priced_model_items,
+        SAFETY_CONTEXT, STREAM_HEARTBEAT_INTERVAL, VeniceAgentChat, VeniceGenerator,
+        VeniceModelsApiResponse, cleanup_generated_note_text, cleanup_source_text,
+        generation_source_text, inject_safety_context, sanitize_tool_schemas,
+        strip_scaffolding_tags, venice_priced_model_items,
     };
     use crate::http;
     use june_config::ModelType;
@@ -1153,6 +1324,11 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{body_string_contains, header, method, path},
@@ -1587,6 +1763,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_chat_stream_forwards_chunks_and_resolves_usage() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}],\"usage\":null}\n\n"
+                        .to_vec(),
+                    Duration::ZERO,
+                ),
+                (
+                    b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n"
+                        .to_vec(),
+                    Duration::ZERO,
+                ),
+                (b"data: [DONE]\n\n".to_vec(), Duration::ZERO),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.chunks.recv().await {
+            body.extend_from_slice(&chunk.expect("chunk succeeds"));
+        }
+        let usage = stream
+            .usage
+            .await
+            .expect("usage sender resolves")
+            .expect("usage parses");
+
+        assert!(String::from_utf8_lossy(&body).contains("\"content\":\"hel\""));
+        assert_eq!(usage.prompt_tokens, 3);
+        assert_eq!(usage.completion_tokens, 4);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_missing_usage_resolves_usage_error() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![(b"data: {\"choices\":[]}\n\n".to_vec(), Duration::ZERO)],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let usage = stream.usage.await.expect("usage sender resolves");
+
+        assert_eq!(usage, Err(DomainError::UpstreamProvider));
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_non_success_returns_error_before_streaming() {
+        let (base_url, _server) = stream_stub(
+            400,
+            "application/json",
+            vec![(br#"{"error":"bad request"}"#.to_vec(), Duration::ZERO)],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let Err(error) = agent.complete_stream(stream_request()).await else {
+            panic!("non-success status should be an error");
+        };
+
+        assert_eq!(error, DomainError::UpstreamProvider);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_drains_usage_after_receiver_is_dropped() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![(
+                b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":6}}\n\n"
+                    .to_vec(),
+                Duration::from_millis(10),
+            )],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+        drop(stream.chunks);
+        let usage = stream
+            .usage
+            .await
+            .expect("usage sender resolves")
+            .expect("usage parses after disconnect");
+
+        assert_eq!(usage.prompt_tokens, 5);
+        assert_eq!(usage.completion_tokens, 6);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_emits_sse_heartbeat_when_upstream_stalls() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![(
+                b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":8}}\n\n"
+                    .to_vec(),
+                STREAM_HEARTBEAT_INTERVAL + Duration::from_millis(30),
+            )],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let heartbeat = stream
+            .chunks
+            .recv()
+            .await
+            .expect("first chunk")
+            .expect("heartbeat chunk");
+        assert_eq!(heartbeat, bytes::Bytes::from_static(b": keep-alive\n\n"));
+        let usage = stream
+            .usage
+            .await
+            .expect("usage sender resolves")
+            .expect("usage ignores heartbeat");
+        assert_eq!(usage.prompt_tokens, 7);
+        assert_eq!(usage.completion_tokens, 8);
+    }
+
+    #[tokio::test]
     async fn generator_sends_safety_context_ahead_of_the_system_prompt() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1673,6 +1992,58 @@ mod tests {
         assert_eq!(messages[0]["content"], SAFETY_CONTEXT);
         assert_eq!(messages[1]["content"], "client system prompt");
         assert_eq!(messages[2]["content"], "hi");
+    }
+
+    fn test_agent(base_url: &str) -> VeniceAgentChat {
+        VeniceAgentChat::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: base_url.to_string(),
+            },
+        )
+    }
+
+    fn stream_request() -> AgentChatRequest {
+        AgentChatRequest {
+            body: json!({
+                "model": "text-model",
+                "stream": true,
+                "messages": [{ "role": "user", "content": "hi" }],
+            }),
+            model: ModelId("text-model".to_string()),
+            provider_credentials: ProviderCredentials::default(),
+        }
+    }
+
+    async fn stream_stub(
+        status: u16,
+        content_type: &'static str,
+        chunks: Vec<(Vec<u8>, Duration)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind stub");
+        let address = listener.local_addr().expect("stub local addr");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.expect("read request");
+            let reason = if status == 200 { "OK" } else { "Bad Request" };
+            let headers = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n"
+            );
+            socket
+                .write_all(headers.as_bytes())
+                .await
+                .expect("write headers");
+            for (chunk, delay) in chunks {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                socket.write_all(&chunk).await.expect("write chunk");
+            }
+            socket.shutdown().await.expect("shutdown stub");
+        });
+        (format!("http://{address}"), handle)
     }
 
     #[test]

@@ -89,6 +89,16 @@ pub struct AgentChatCompletion {
     pub usage: TokenUsage,
 }
 
+/// A streaming agent chat completion: response headers have been received
+/// from the upstream; body chunks arrive on `chunks` as the upstream
+/// produces them, and `usage` resolves once the body has fully drained.
+pub struct AgentChatStream {
+    pub content_type: String,
+    pub provider: String,
+    pub chunks: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, DomainError>>,
+    pub usage: tokio::sync::oneshot::Receiver<Result<TokenUsage, DomainError>>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
@@ -415,6 +425,11 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+
+    async fn complete_stream(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError>;
 }
 
 #[async_trait]

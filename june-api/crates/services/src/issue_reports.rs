@@ -280,8 +280,8 @@ mod tests {
     use async_trait::async_trait;
     use june_config::IssueReportsConfig;
     use june_domain::{
-        AgentChatCompleter, AgentChatCompletion, AgentChatRequest, DomainError, IssueReport,
-        IssueReportAttachment, IssueReportSink, TokenUsage, UserId,
+        AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, DomainError,
+        IssueReport, IssueReportAttachment, IssueReportSink, TokenUsage, UserId,
     };
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -568,6 +568,13 @@ mod tests {
                     ))
                 }
             }
+        }
+
+        async fn complete_stream(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatStream, DomainError> {
+            Err(DomainError::UpstreamProvider)
         }
     }
 

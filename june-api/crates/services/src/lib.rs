@@ -15,7 +15,9 @@ mod prompts;
 mod util;
 mod web_augment;
 
-pub use agent_chat::{AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps};
+pub use agent_chat::{
+    AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps, AgentChatStreamOutput,
+};
 pub use dictate::{
     DictateCleanupOutput, DictateCleanupParams, DictateService, DictateServiceDeps,
     DictateTranscribeOutput, DictateTranscribeParams,
@@ -50,16 +52,19 @@ mod tests {
     use async_trait::async_trait;
     use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
     use june_domain::{
-        AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe,
-        Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner, CleanupRequest,
-        Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
+        AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
+        AudioDurationProbe, Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner,
+        CleanupRequest, Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
         OsAccountsClient, ProviderCredentials, Receipt, TokenUsage, Transcriber, Transcript,
         TranscriptionRequest, UserId,
     };
     use pretty_assertions::assert_eq;
     use std::{
         collections::BTreeMap,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::{Duration, Instant},
     };
 
@@ -1065,6 +1070,136 @@ mod tests {
         assert_eq!(os_accounts.events(), Vec::new());
     }
 
+    #[tokio::test]
+    async fn agent_chat_stream_settles_charge_from_usage_after_stream_end() {
+        let os_accounts = Arc::new(RecordingOsAccounts::with_cap(Some(100)));
+        let service = AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                1,
+                ModelType::Text,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            chat_completer: Arc::new(FixedAgentChatCompleter),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+        });
+
+        let _output = service
+            .complete_stream(agent_chat_params())
+            .await
+            .expect("stream starts");
+
+        let idempotency_key = wait_for_charge_idempotency_key(&os_accounts)
+            .await
+            .expect("stream settlement charges");
+        assert!(idempotency_key.starts_with("agent_chat:usr_123:text-model:"));
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "agent_chat".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 30,
+                    idempotency_key,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_missing_usage_charges_flat_estimate_clamped_to_cap() {
+        let os_accounts = Arc::new(RecordingOsAccounts::with_cap(Some(40)));
+        let service = AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                1,
+                ModelType::Text,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            chat_completer: Arc::new(MissingUsageAgentChatCompleter),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+        });
+
+        let _output = service
+            .complete_stream(agent_chat_params())
+            .await
+            .expect("stream starts");
+
+        let _ = wait_for_charge_idempotency_key(&os_accounts)
+            .await
+            .expect("fallback settlement charges");
+        assert!(
+            os_accounts
+                .events()
+                .into_iter()
+                .any(|event| matches!(event, RecordedCall::Charge { credits: 40, .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_user_venice_key_skips_wallet_metering() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(venice_models([(
+                "text-model",
+                PriceUnit::Tokens,
+                1,
+                ModelType::Text,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            chat_completer: Arc::new(FixedAgentChatCompleter),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+        });
+
+        let _output = service
+            .complete_stream(AgentChatParams {
+                provider_credentials: user_venice_credentials(),
+                ..agent_chat_params()
+            })
+            .await
+            .expect("stream starts with user Venice key");
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(os_accounts.events(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_authorize_deny_returns_before_completer_call() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            allow: false,
+            deny_reason: Some("concurrency_cap_exceeded".to_string()),
+            ..RecordingOsAccounts::default()
+        });
+        let completer = Arc::new(CountingAgentChatCompleter::default());
+        let service = AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                1,
+                ModelType::Text,
+            )]))),
+            os_accounts,
+            chat_completer: completer.clone(),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+        });
+
+        let result = service.complete_stream(agent_chat_params()).await;
+
+        assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
+        assert_eq!(completer.calls.load(Ordering::SeqCst), 0);
+    }
+
     async fn wait_for_charge_idempotency_key(os_accounts: &RecordingOsAccounts) -> Option<String> {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
@@ -1132,6 +1267,19 @@ mod tests {
     fn user_venice_credentials() -> ProviderCredentials {
         ProviderCredentials {
             venice_api_key: Some("vc_user_key".to_string()),
+        }
+    }
+
+    fn agent_chat_params() -> AgentChatParams {
+        AgentChatParams {
+            user_id: UserId("usr_123".to_string()),
+            model_id: ModelId("text-model".to_string()),
+            body: serde_json::json!({
+                "model": "text-model",
+                "messages": [{ "role": "user", "content": "hello" }],
+                "stream": true,
+            }),
+            provider_credentials: ProviderCredentials::default(),
         }
     }
 
@@ -1296,6 +1444,85 @@ mod tests {
                     completion_tokens: 20,
                 },
             })
+        }
+
+        async fn complete_stream(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatStream, DomainError> {
+            let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel(4);
+            let (usage_tx, usage_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let _ = chunks_tx
+                    .send(Ok(bytes::Bytes::from_static(br"data: hello\n\n")))
+                    .await;
+                let _ = usage_tx.send(Ok(TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                }));
+            });
+            Ok(AgentChatStream {
+                content_type: "text/event-stream".to_string(),
+                provider: "test".to_string(),
+                chunks: chunks_rx,
+                usage: usage_rx,
+            })
+        }
+    }
+
+    struct MissingUsageAgentChatCompleter;
+
+    #[async_trait]
+    impl AgentChatCompleter for MissingUsageAgentChatCompleter {
+        async fn complete(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatCompletion, DomainError> {
+            Err(DomainError::UpstreamProvider)
+        }
+
+        async fn complete_stream(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatStream, DomainError> {
+            let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel(4);
+            let (usage_tx, usage_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let _ = chunks_tx
+                    .send(Ok(bytes::Bytes::from_static(br"data: hello\n\n")))
+                    .await;
+                let _ = usage_tx.send(Err(DomainError::UpstreamProvider));
+            });
+            Ok(AgentChatStream {
+                content_type: "text/event-stream".to_string(),
+                provider: "test".to_string(),
+                chunks: chunks_rx,
+                usage: usage_rx,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingAgentChatCompleter {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AgentChatCompleter for CountingAgentChatCompleter {
+        async fn complete(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatCompletion, DomainError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(DomainError::UpstreamProvider)
+        }
+
+        async fn complete_stream(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatStream, DomainError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(DomainError::UpstreamProvider)
         }
     }
 

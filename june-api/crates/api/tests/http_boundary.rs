@@ -9,12 +9,13 @@ use june_config::{
     DEFAULT_MAX_IMAGE_EDIT_BYTES, ModelPriceConfig, ModelProvider, ModelType, PriceUnit,
 };
 use june_domain::{
-    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
-    Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageEditRequest, ImageEditor,
-    ImageGenerationRequest, ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
-    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, AudioDurationProbe,
+    AuthError, Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits,
+    DomainError, GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageEditRequest,
+    ImageEditor, ImageGenerationRequest, ImageGenerator, IssueReport, IssueReportSink,
+    OsAccountsClient, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+    WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
+    WebSearchResults, WebSearcher,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
@@ -80,6 +81,32 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
     assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
     assert_eq!(body["data"]["creditsCharged"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/chat/completions",
+        &serde_json::json!({
+            "model": "text-model",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hello" }]
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let body = response_text(response).await?;
+    assert_eq!(body, "data: {\"choices\":[]}\n\n");
     Ok(())
 }
 
@@ -1276,6 +1303,29 @@ impl AgentChatCompleter for FakeChatCompleter {
                 prompt_tokens: 100,
                 completion_tokens: 100,
             },
+        })
+    }
+
+    async fn complete_stream(
+        &self,
+        _request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel(4);
+        let (usage_tx, usage_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = chunks_tx
+                .send(Ok(Vec::from(&b"data: {\"choices\":[]}\n\n"[..]).into()))
+                .await;
+            let _ = usage_tx.send(Ok(TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 100,
+            }));
+        });
+        Ok(AgentChatStream {
+            content_type: "text/event-stream".to_string(),
+            provider: "fake-chat".to_string(),
+            chunks: chunks_rx,
+            usage: usage_rx,
         })
     }
 }
