@@ -3577,6 +3577,15 @@ export function AgentWorkspace({
     restoreComposerDraft(composerDraftKey);
   }, [activePanel, composerDraftKey]);
 
+  // The busy toast's advice ("wait for the reply") goes stale the moment the
+  // selected session stops working — including when the user switches to an
+  // idle session — so dismiss it then rather than leaving it up for the full
+  // toast duration. Dismissing an absent toast is a no-op.
+  useEffect(() => {
+    if (selectedHermesSessionId && workingSessionIds.has(selectedHermesSessionId)) return;
+    toast.dismiss(SESSION_BUSY_TOAST_ID);
+  }, [selectedHermesSessionId, workingSessionIds]);
+
   async function prepareComposerSubmission(
     message: string,
     messageAttachments: AgentAttachment[],
