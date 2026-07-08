@@ -336,7 +336,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     );
 
     return (
-      <div ref={frameRef} className="agent-composer-editor-root">
+      <div ref={frameRef} className="agent-composer-editor-root scroll-fade">
         <EditorContent editor={editor} />
       </div>
     );

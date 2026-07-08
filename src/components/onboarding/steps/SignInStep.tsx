@@ -3,6 +3,7 @@ import { IconCalendar1 } from "central-icons/IconCalendar1";
 import { IconLock } from "central-icons/IconLock";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
+import { IconTelegram } from "central-icons/IconTelegram";
 import { isMacLikePlatform } from "../../../lib/platform";
 import { juneOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
@@ -124,15 +125,14 @@ export function SignInStep({
         ))}
       </ul>
       <p className="onboarding-community">
-        Join us in the{" "}
         <button
           type="button"
           className="onboarding-community-link"
           onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
         >
-          June community on Telegram
+          <IconTelegram size={16} aria-hidden />
+          <span>Join the June community on Telegram</span>
         </button>
-        .
       </p>
       {account.configured ? (
         <div className="welcome-providers">

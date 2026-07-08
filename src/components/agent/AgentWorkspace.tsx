@@ -196,6 +196,7 @@ import {
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
 import { normalizeSteerText, steeringLiveEvent } from "../../lib/hermes-session-steer";
+import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
@@ -11625,28 +11626,13 @@ function AgentArtifactPanel({
   // dictation history dialog): the header has no divider, so the top fade is
   // what tells you content has scrolled up behind it.
   const bodyRef = useRef<HTMLDivElement>(null);
-  const [fade, setFade] = useState({ top: false, bottom: false });
-  const updateFade = useCallback(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const canScroll = el.scrollHeight - el.clientHeight > 1;
-    const atTop = el.scrollTop <= 1;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    setFade({ top: canScroll && !atTop, bottom: canScroll && !atBottom });
-  }, []);
+  const fade = useScrollFade(bodyRef);
+  // Re-measure when the panel swaps between the artifact preview and the list,
+  // or when the preview content changes (the hook re-wires its observers on the
+  // element swap; this catches same-element content changes).
   useEffect(() => {
-    const id = requestAnimationFrame(updateFade);
-    const el = bodyRef.current;
-    if (el && typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(updateFade);
-      observer.observe(el);
-      return () => {
-        cancelAnimationFrame(id);
-        observer.disconnect();
-      };
-    }
-    return () => cancelAnimationFrame(id);
-  }, [updateFade, preview, state.view]);
+    fade.update();
+  }, [fade.update, preview, state.view]);
 
   const q = query.trim().toLowerCase();
   const visibleArtifacts = q
@@ -11775,11 +11761,9 @@ function AgentArtifactPanel({
         {artifact ? (
           <div
             ref={bodyRef}
-            className="agent-artifact-panel-body"
+            className="agent-artifact-panel-body scroll-fade-mask"
             data-kind={preview.kind}
-            data-fade-top={fade.top || undefined}
-            data-fade-bottom={fade.bottom || undefined}
-            onScroll={updateFade}
+            {...fade.props}
           >
             {preview.kind === "loading" ? (
               <Spinner />
@@ -11813,11 +11797,9 @@ function AgentArtifactPanel({
           <>
             <div
               ref={bodyRef}
-              className="agent-artifact-panel-body"
+              className="agent-artifact-panel-body scroll-fade-mask"
               data-kind="list"
-              data-fade-top={fade.top || undefined}
-              data-fade-bottom={fade.bottom || undefined}
-              onScroll={updateFade}
+              {...fade.props}
             >
               {visibleArtifacts.length ? (
                 <ul className="agent-artifact-panel-list">

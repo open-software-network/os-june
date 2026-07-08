@@ -37,11 +37,28 @@ modules or scoping. That has consequences:
   near-black, so `data-theme="dark"` re-tunes them.
 - **One ambient shadow per popover composite.** Stacking shadows on nested
   popover layers muddies the edge.
-- **No `mask-image` on scrollers.** It triggers WKWebView compositing bugs; use a
-  contained overlay fade instead.
+- **Scroll edge fades use the shared primitive.** A clipped scroller melts its
+  hidden edge via `useScrollFade` + `.scroll-fade` (contained gradient overlays,
+  WKWebView-safe for popovers) or `.scroll-fade-mask` (`mask-image`, for large
+  in-window panel scrollers only). Never hand-roll the measurement or the CSS.
+  See [spec/scroll-fade](../../spec/scroll-fade.md). Note: a `mask-image` fade on
+  a composited popover scroller triggers WKWebView compositing bugs — reach for
+  the `.scroll-fade` overlay flavor there.
 - **Icons are explicitly sized.** Use `central-icons` / `central-icons-filled`
   only (see [spec/icons-central-only](../../spec/icons-central-only.md)), always
   with the `size` prop.
+- **Radius follows the element's tier, not its pixel size.** The `--r-*` scale
+  maps to element classes, so pick by what the element _is_:
+  - `--r-xs` (4px) — keycaps, badges, chips, pills' inner rows, and other small
+    inline decorations.
+  - `--r-sm` (6px) — **square icon buttons** (`.icon-button`,
+    `.agent-icon-button`) and small interactive controls. A clickable icon
+    square is `--r-sm`, even at 22px; don't drop it to `--r-xs` just because it
+    is small — that reads as a badge, not a button.
+  - `--r-md` (8px) and up — cards, inputs, popovers, dialogs, and larger
+    surfaces.
+  A new button should copy the radius token of the nearest existing button of
+  its kind rather than eyeballing a value.
 
 ## Theming implementation
 

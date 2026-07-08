@@ -8,6 +8,14 @@ pub enum Question {
     AgentPrivacyGuard,
     ModelsPrivacyMode,
     OnboardingCompleted,
+    OnboardingUseCaseWork,
+    OnboardingUseCasePersonal,
+    OnboardingUseCaseSchool,
+    OnboardingUseCaseCreative,
+    OnboardingUseCaseCoding,
+    OnboardingUseCaseMeetings,
+    OnboardingUseCaseOther,
+    OnboardingUseCaseNotSure,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +84,62 @@ pub const ALL_QUESTIONS: &[QuestionDef] = &[
         buckets: &["completed"],
         decision: "Onboarding funnel health",
     },
+    QuestionDef {
+        question: Question::OnboardingUseCaseWork,
+        id: "onboarding.use-case.work",
+        prompt: "Onboarding interest selected: work",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingUseCasePersonal,
+        id: "onboarding.use-case.personal",
+        prompt: "Onboarding interest selected: personal",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingUseCaseSchool,
+        id: "onboarding.use-case.school",
+        prompt: "Onboarding interest selected: school",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingUseCaseCreative,
+        id: "onboarding.use-case.creative",
+        prompt: "Onboarding interest selected: creative projects",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingUseCaseCoding,
+        id: "onboarding.use-case.coding",
+        prompt: "Onboarding interest selected: coding",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingUseCaseMeetings,
+        id: "onboarding.use-case.meetings",
+        prompt: "Onboarding interest selected: meetings",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingUseCaseOther,
+        id: "onboarding.use-case.other",
+        prompt: "Onboarding interest selected: other",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingUseCaseNotSure,
+        id: "onboarding.use-case.not-sure",
+        prompt: "Onboarding interest selected: not sure yet",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
 ];
 
 impl Question {
@@ -122,7 +186,15 @@ impl Question {
                 }
             }
             Self::ModelsPrivacyMode => raw.min(2) as u8,
-            Self::OnboardingCompleted => 0,
+            Self::OnboardingCompleted
+            | Self::OnboardingUseCaseWork
+            | Self::OnboardingUseCasePersonal
+            | Self::OnboardingUseCaseSchool
+            | Self::OnboardingUseCaseCreative
+            | Self::OnboardingUseCaseCoding
+            | Self::OnboardingUseCaseMeetings
+            | Self::OnboardingUseCaseOther
+            | Self::OnboardingUseCaseNotSure => 0,
         }
     }
 
@@ -153,6 +225,9 @@ mod tests {
         assert_eq!(Question::DictationSessions.event_bucket(), 0);
         assert_eq!(Question::AgentSessions.event_bucket(), 0);
         assert_eq!(Question::OnboardingCompleted.event_bucket(), 0);
+        assert_eq!(Question::OnboardingUseCaseWork.event_bucket(), 0);
+        assert_eq!(Question::OnboardingUseCaseOther.event_bucket(), 0);
+        assert_eq!(Question::OnboardingUseCaseNotSure.event_bucket(), 0);
     }
 
     #[test]

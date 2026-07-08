@@ -8,6 +8,8 @@ import {
   isOnboardingComplete,
   markOnboardingComplete,
   ONBOARDING_COMPLETED_EVENT,
+  onboardingCustomUseCase,
+  onboardingUseCases,
   onboardingResumeStep,
   resetOnboardingForReplay,
   setOnboardingResumeStep,
@@ -183,6 +185,11 @@ describe("OnboardingFlow", () => {
     render(<OnboardingFlow {...flowProps({ onComplete })} />);
     await screen.findByRole("heading", { name: "Help improve June" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", {
+      name: "What are you interested in using June for?",
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Work" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
     return onComplete;
   }
@@ -243,6 +250,7 @@ describe("OnboardingFlow", () => {
 
     expect(onComplete).toHaveBeenCalledOnce();
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
     // Completion is the caller's job (App marks it), not the flow's.
     expect(isOnboardingComplete()).toBe(false);
   });
@@ -263,7 +271,9 @@ describe("OnboardingFlow", () => {
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(mocks.setP3aEnabled).toHaveBeenCalledWith(false);
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    await screen.findByRole("heading", {
+      name: "What are you interested in using June for?",
+    });
   });
 
   it("saves anonymous usage statistics consent when selected", async () => {
@@ -275,6 +285,56 @@ describe("OnboardingFlow", () => {
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(mocks.setP3aEnabled).toHaveBeenCalledWith(true);
+    await screen.findByRole("heading", {
+      name: "What are you interested in using June for?",
+    });
+  });
+
+  it("asks what the user wants to use June for", async () => {
+    const user = userEvent.setup();
+    setOnboardingResumeStep("usage-intent");
+    render(<OnboardingFlow {...flowProps()} />);
+
+    await screen.findByRole("heading", {
+      name: "What are you interested in using June for?",
+    });
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(continueButton).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Work" }));
+    await user.click(screen.getByRole("button", { name: "Personal" }));
+    expect(continueButton).toBeEnabled();
+
+    await user.click(continueButton);
+
+    expect(onboardingUseCases()).toEqual(["work", "personal"]);
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.personal");
+    await screen.findByRole("heading", { name: "Let June listen and type" });
+  });
+
+  it("saves a custom onboarding use case locally", async () => {
+    const user = userEvent.setup();
+    setOnboardingResumeStep("usage-intent");
+    render(<OnboardingFlow {...flowProps()} />);
+
+    await screen.findByRole("heading", {
+      name: "What are you interested in using June for?",
+    });
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+
+    await user.click(screen.getByRole("button", { name: "Other" }));
+    expect(continueButton).toBeDisabled();
+
+    await user.type(screen.getByPlaceholderText("Type your own use case"), "  family admin  ");
+    expect(continueButton).toBeEnabled();
+
+    await user.click(continueButton);
+
+    expect(onboardingUseCases()).toEqual(["other"]);
+    expect(onboardingCustomUseCase()).toBe("family admin");
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.other");
+    expect(mocks.p3aRecord.mock.calls.flat()).not.toContain("family admin");
     await screen.findByRole("heading", { name: "Let June listen and type" });
   });
 
@@ -441,13 +501,17 @@ describe("OnboardingFlow", () => {
     const user = userEvent.setup();
     const onAccountChanged = vi.fn();
     mocks.osAccountsLogin.mockResolvedValue(account);
-    render(<OnboardingFlow {...flowProps({ account: signedOutAccount, onAccountChanged })} />);
+    const { rerender } = render(
+      <OnboardingFlow {...flowProps({ account: signedOutAccount, onAccountChanged })} />,
+    );
 
     await screen.findByRole("heading", { name: "Welcome to June" });
     await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
     expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
     await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
+    rerender(<OnboardingFlow {...flowProps({ account, onAccountChanged })} />);
+    await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
   });
 
   it("opens the June community from the welcome step", async () => {
@@ -457,7 +521,7 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", { name: "Welcome to June" });
     await user.click(
       screen.getByRole("button", {
-        name: "June community on Telegram",
+        name: "Join the June community on Telegram",
       }),
     );
 
@@ -493,6 +557,11 @@ describe("OnboardingFlow", () => {
     const user = userEvent.setup();
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
     await screen.findByRole("heading", { name: "Help improve June" });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", {
+      name: "What are you interested in using June for?",
+    });
+    await user.click(screen.getByRole("button", { name: "Work" }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
 

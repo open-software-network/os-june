@@ -2882,40 +2882,98 @@ input:focus-visible,
   padding: var(--sp-1) var(--sp-6) 0;
 }
 
+/* ============================================================================
+ * Scroll fades (design system)
+ *
+ * A scroller melts its clipped edge when content is hidden above or below the
+ * viewport. Driven by the `useScrollFade` hook, which sets `data-fade-top` /
+ * `data-fade-bottom` only on the edge(s) with hidden content (so a fade never
+ * shows when everything fits). Two flavors, one contract:
+ *
+ *  - `.scroll-fade`      — contained overlays: `::before`/`::after` gradients
+ *    pinned to the wrapper's edges. WKWebView-safe for popovers (a mask on the
+ *    scroller rides the scrolled content in WebKit and bleeds past the bounds).
+ *    Put the class + data attributes on a non-scrolling wrapper; the scroller
+ *    is its child. Tunables: `--scroll-fade-size`, `--scroll-fade-color`,
+ *    `--scroll-fade-inset-right`.
+ *  - `.scroll-fade-mask` — mask-image gradient on the scroller itself. Reveals
+ *    the real content at the edge (clean in light + dark) for large panel
+ *    scrollers. Put the class + data attributes on the scroller. Tunable:
+ *    `--scroll-fade-size`.
+ * ============================================================================ */
+.scroll-fade {
+  position: relative;
+}
+
+.scroll-fade::before,
+.scroll-fade::after {
+  content: "";
+  position: absolute;
+  right: var(--scroll-fade-inset-right, 0);
+  left: 0;
+  z-index: 1;
+  height: var(--scroll-fade-size, 24px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.scroll-fade::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade[data-fade-top]::before,
+.scroll-fade[data-fade-bottom]::after {
+  opacity: 1;
+}
+
+.scroll-fade-mask[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
+.scroll-fade-mask[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+}
+
+.scroll-fade-mask:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
 .agent-artifact-panel-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: var(--sp-5) var(--sp-6) var(--sp-7);
   overscroll-behavior: contain;
-  --fade: 28px;
-}
-
-.agent-artifact-panel-body[data-fade-top][data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--fade),
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--fade),
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-}
-
-.agent-artifact-panel-body[data-fade-top]:not([data-fade-bottom]) {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
-  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
-}
-
-.agent-artifact-panel-body:not([data-fade-top])[data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
 }
 
 .agent-artifact-panel-body[data-kind="list"] {
@@ -3119,7 +3177,7 @@ input:focus-visible,
 }
 
 /* Session usage / context / cost panel (feature 09). A centered modal over the
- * session, modeled on the command palette: scrim + frosted popover card. The
+ * session, modeled on the command prompt: scrim + frosted popover card. The
  * card is a compact usage summary: a segmented context meter, lean breakdown
  * rows, and a footer total behind a hairline. */
 .agent-usage-overlay {
@@ -5238,6 +5296,7 @@ input:focus-visible,
   min-height: 0;
   overflow: hidden;
   contain: paint;
+  --scroll-fade-size: 16px;
 }
 
 .agent-composer-model-list {
@@ -5247,38 +5306,6 @@ input:focus-visible,
   gap: var(--sp-px);
   min-height: 0;
   overflow-y: auto;
-}
-
-/* Scroll fades, contained: overlays pinned to the scroll viewport's edges
- * (a mask on the scroller rides the scrolled content in WebKit and bleeds
- * past the bounds). Rows melt into the popover surface at the boundary and
- * nothing can paint outside the panel. */
-.agent-composer-model-list-wrap::before,
-.agent-composer-model-list-wrap::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  left: 0;
-  z-index: 1;
-  height: 16px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.agent-composer-model-list-wrap::before {
-  top: 0;
-  background: linear-gradient(to bottom, var(--popover), transparent);
-}
-
-.agent-composer-model-list-wrap::after {
-  bottom: 0;
-  background: linear-gradient(to top, var(--popover), transparent);
-}
-
-.agent-composer-model-list-wrap[data-fade-top="true"]::before,
-.agent-composer-model-list-wrap[data-fade-bottom="true"]::after {
-  opacity: 1;
 }
 
 .agent-composer-model-empty {
@@ -5507,42 +5534,19 @@ input:focus-visible,
   word-break: break-word;
 }
 
+/* Uses the shared `.scroll-fade` primitive. `.agent-composer-editor-root`
+ * itself is the scroll viewport (it is not React-state driven — ComposerEditor
+ * writes `data-fade-*` directly inside its ProseMirror update, and drops the
+ * fades while a range selection is active), so the class + overrides live here
+ * and the overlays inset from the right to clear the composer's gutter. */
 .agent-composer-editor-root {
   position: relative;
   width: 100%;
   min-height: var(--control-lg);
   overflow: hidden;
-}
-
-/* Same edge-fade recipe as the composer model list: overlays are pinned to the
- * scroll viewport, and data-fade-* only appears when that edge has hidden
- * content. This turns the capped editor's hard clip into a soft melt. */
-.agent-composer-editor-root::before,
-.agent-composer-editor-root::after {
-  content: "";
-  position: absolute;
-  right: var(--sp-1);
-  left: 0;
-  z-index: 1;
-  height: 18px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.agent-composer-editor-root::before {
-  top: 0;
-  background: linear-gradient(to bottom, var(--agent-composer-scroll-fade), transparent);
-}
-
-.agent-composer-editor-root::after {
-  bottom: 0;
-  background: linear-gradient(to top, var(--agent-composer-scroll-fade), transparent);
-}
-
-.agent-composer-editor-root[data-fade-top="true"]::before,
-.agent-composer-editor-root[data-fade-bottom="true"]::after {
-  opacity: 1;
+  --scroll-fade-size: 18px;
+  --scroll-fade-color: var(--agent-composer-scroll-fade);
+  --scroll-fade-inset-right: var(--sp-1);
 }
 
 .agent-composer-editor p {
@@ -5703,6 +5707,7 @@ input:focus-visible,
   width: 100%;
   overflow: hidden;
   contain: paint;
+  --scroll-fade-size: 16px;
 }
 
 .agent-category-menu,
@@ -5720,34 +5725,6 @@ input:focus-visible,
   max-height: var(--agent-category-menu-max-height, 280px);
   overflow-y: auto;
   overscroll-behavior: contain;
-}
-
-.agent-category-menu-scroll-wrap::before,
-.agent-category-menu-scroll-wrap::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  left: 0;
-  z-index: 1;
-  height: 16px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.agent-category-menu-scroll-wrap::before {
-  top: 0;
-  background: linear-gradient(to bottom, var(--popover), transparent);
-}
-
-.agent-category-menu-scroll-wrap::after {
-  bottom: 0;
-  background: linear-gradient(to top, var(--popover), transparent);
-}
-
-.agent-category-menu-scroll-wrap[data-fade-top="true"]::before,
-.agent-category-menu-scroll-wrap[data-fade-bottom="true"]::after {
-  opacity: 1;
 }
 
 .agent-attach-menu {
@@ -6822,9 +6799,9 @@ input:focus-visible,
   display: none;
 }
 
-/* Command palette ---------------------------------------------------- */
+/* Command prompt ----------------------------------------------------- */
 
-.command-palette-backdrop {
+.command-prompt-backdrop {
   position: fixed;
   inset: 0;
   /* Above the titlebar chrome (drag layer 100, tab bar 101, sidebar toggle
@@ -6833,16 +6810,22 @@ input:focus-visible,
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 18px 16px;
-  background: oklch(0% 0 none / 36%);
-  backdrop-filter: blur(8px);
+  /* Sit the panel in the upper third (Linear/Raycast convention) rather than
+   * dead center — centering would make it jump as the result count changes.
+   * Keep flex-start so the top edge is stable; the clamp scales the offset
+   * with viewport height. */
+  padding: clamp(48px, 14vh, 160px) 16px 16px;
+  /* Same scrim treatment as the dialog system (.dialog-backdrop). */
+  background: var(--scrim);
+  backdrop-filter: saturate(140%) blur(8px);
+  -webkit-backdrop-filter: saturate(140%) blur(8px);
 }
 
-.command-palette {
+.command-prompt {
   width: min(512px, calc(100vw - 32px));
   max-height: min(72vh, 520px);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--popover-border);
   border-radius: 12px;
@@ -6853,18 +6836,20 @@ input:focus-visible,
     0 0 0 1px oklch(100% 0 none / 4%);
 }
 
-.command-palette-search {
+.command-prompt-search {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-2);
   height: 44px;
   padding: 0 14px;
-  border-bottom: 1px solid var(--border-subtle);
+  /* Barely-there hairline: half the strength of --border-subtle, just enough
+   * to seat the search row without drawing a visible divider. */
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
   color: var(--muted-foreground);
 }
 
-.command-palette-search input {
+.command-prompt-search input {
   min-width: 0;
   border: 0;
   outline: 0;
@@ -6873,33 +6858,68 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.command-palette-search input::placeholder {
+.command-prompt-search input::placeholder {
   color: var(--muted-foreground);
 }
 
-.command-palette-results {
+/* Clear button: a quiet keycap-like gray square replacing the native
+ * type="search" clear affordance. */
+.command-prompt-clear {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  /* --r-sm matches the app's other square icon buttons (.icon-button);
+   * --r-xs is the keycap/badge tier. */
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.command-prompt-clear:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+/* The wrapper is the non-scrolling grid row that carries the shared
+ * `.scroll-fade` overlays; the results list scrolls inside it. */
+.command-prompt-results-wrap {
+  display: flex;
+  flex-direction: column;
   min-height: 280px;
+  overflow: hidden;
+}
+
+.command-prompt-results {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px;
 }
 
-.command-palette-group + .command-palette-group {
+.command-prompt-group + .command-prompt-group {
   margin-top: 8px;
 }
 
-.command-palette-group-title {
+.command-prompt-group-title {
   padding: 5px 9px 7px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
 }
 
-.command-palette-group-list {
+.command-prompt-group-list {
   display: grid;
   gap: 2px;
 }
 
-.command-palette-item {
+.command-prompt-item {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
@@ -6915,18 +6935,28 @@ input:focus-visible,
   cursor: pointer;
 }
 
-.command-palette-item[data-active="true"] {
-  background: var(--sidebar-accent);
+.command-prompt-item[data-active="true"] {
+  /* Same subtle gray wash as the identity/context menus — lighter than
+   * --sidebar-accent, quieter than a brand tint. The single highlight for
+   * every way of landing on a row: hover, arrow keys, and Tab focus all
+   * drive the same active index, so only one row is ever lit. */
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
 }
 
-.command-palette-item-icon {
+/* Tab focus reuses that active-row highlight (via onFocus syncing the active
+ * index) — so the row needs no separate focus ring of its own. */
+.command-prompt-item:focus-visible {
+  outline: none;
+}
+
+.command-prompt-item-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--muted-foreground);
 }
 
-.command-palette-item-label {
+.command-prompt-item-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6934,13 +6964,13 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.command-palette-item-meta {
+.command-prompt-item-meta {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   white-space: nowrap;
 }
 
-.command-palette-empty {
+.command-prompt-empty {
   display: grid;
   min-height: 160px;
   place-items: center;
@@ -6948,47 +6978,11 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.command-palette-footer {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  min-height: 28px;
-  padding: 0 12px;
-  border-top: 1px solid var(--border-subtle);
-  background: color-mix(in oklch, var(--muted) 35%, transparent);
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
-.command-palette-footer span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.command-palette-footer kbd {
-  min-width: 20px;
-  height: 17px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 5px;
-  border: 0;
-  border-radius: var(--r-xs);
-  background: color-mix(in oklch, var(--muted) 70%, transparent);
-  color: var(--muted-foreground);
-  font-family: var(--font-sans);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-medium);
-}
-
 @media (max-width: 560px) {
-  .command-palette {
-    max-height: calc(100vh - 32px);
-  }
-
-  .command-palette-footer {
-    gap: 10px;
+  .command-prompt {
+    /* Fit under the upper-third top padding: leave room for the clamp offset
+     * above plus the 16px bottom gutter (32px covers it with breathing room). */
+    max-height: min(100vh - clamp(48px, 14vh, 160px) - 32px, 640px);
   }
 }
 
@@ -18545,34 +18539,7 @@ input:focus-visible,
 .transcript-dialog-scroll {
   max-height: min(52vh, 420px);
   overflow-y: auto;
-  --fade: 26px;
-}
-
-.transcript-dialog-scroll[data-fade-top][data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--fade),
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--fade),
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-}
-
-.transcript-dialog-scroll[data-fade-top]:not([data-fade-bottom]) {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
-  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
-}
-
-.transcript-dialog-scroll:not([data-fade-top])[data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
+  --scroll-fade-size: 26px;
 }
 
 .transcript-dialog-scroll p {
@@ -19920,6 +19887,29 @@ input:focus-visible,
   height: 100%;
 }
 
+/* The 3D glass June mark on the welcome / sign-in surfaces. A fixed square box
+   reserves the same footprint whether the WebGL canvas or the flat fallback mark
+   renders inside it, so degrading to the static mark never shifts layout. Kept
+   small on purpose — a hero brand moment, not a takeover. */
+.welcome-mark-glass {
+  display: inline-flex;
+  width: 112px;
+  height: 112px;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  line-height: 0;
+  margin-bottom: var(--sp-2);
+}
+
+/* Only the fallback mark is an <svg> (the glass renders a <canvas>). Size the
+   fallback up so it reads as a deliberate mark, not a shrunken glyph. */
+.welcome-mark-glass svg {
+  display: block;
+  width: 72px;
+  height: auto;
+}
+
 .welcome-title {
   margin: 0;
   font-family: var(--font-serif);
@@ -20089,7 +20079,6 @@ input:focus-visible,
  * shouldn't stretch with it — keep them in a centered, button-width column. */
 .welcome-card-intro .welcome-providers,
 .welcome-card-intro .welcome-status,
-.welcome-card-intro .onboarding-community,
 .welcome-card-intro .welcome-terms {
   width: 100%;
   max-width: 320px;
@@ -20253,9 +20242,13 @@ input:focus-visible,
     color var(--t-fast) var(--ease-out);
 }
 
+/* Same translucent-veil approach as the community link: the topbar sits on the
+ * welcome gradient, so a --card-based fill painted a mismatched patch and
+ * --warm-strong text went near-invisible in dark. Veil + --foreground blends
+ * cleanly and keeps contrast in both themes. */
 .onboarding-back:hover {
-  background: color-mix(in oklch, var(--warm-soft) 44%, var(--card));
-  color: var(--warm-strong);
+  background: color-mix(in oklch, var(--brand) 10%, transparent);
+  color: var(--foreground);
 }
 
 .onboarding-back:focus-visible {
@@ -20391,32 +20384,51 @@ input:focus-visible,
   text-wrap: pretty;
 }
 
+/* Not a boxed card — a quiet, content-width chip so it reads as an aside, not a
+ * second button competing with the sign-in action below it. */
 .onboarding-community {
   margin: var(--sp-1) 0 0;
-  padding: var(--sp-3) var(--sp-4);
-  border: 1px solid color-mix(in oklch, var(--brand) 18%, var(--border));
-  border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--warm-soft) 34%, var(--card));
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.45;
   text-align: center;
 }
 
 .onboarding-community-link {
-  margin: 0;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 auto;
+  padding: var(--sp-1) var(--sp-3);
   border: 0;
+  border-radius: var(--r-pill);
   background: transparent;
-  color: var(--foreground);
+  color: var(--muted-foreground);
   font: inherit;
+  font-size: var(--fs-sm);
   font-weight: 400;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
 }
 
+.onboarding-community-link svg {
+  flex-shrink: 0;
+  color: var(--brand);
+}
+
+/* Hover tints the background only (never a border) — the house rule. A
+ * translucent brand veil (mixed with transparent, NOT --card) so it blends into
+ * the warm welcome gradient this sits on at any point, instead of painting a
+ * flat --card-based patch that mismatches the backdrop. Text lands on
+ * --foreground for reliable contrast in both themes. */
 .onboarding-community-link:hover {
-  color: var(--warm-strong);
+  background: color-mix(in oklch, var(--brand) 10%, transparent);
+  color: var(--foreground);
+}
+
+.onboarding-community-link:focus-visible {
+  outline: none;
+  color: var(--foreground);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .onboarding-skip {
@@ -20431,6 +20443,128 @@ input:focus-visible,
 
 .onboarding-skip:hover {
   color: var(--foreground);
+}
+
+.onboarding-intent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+  min-inline-size: 0;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.onboarding-intent-option {
+  display: flex;
+  min-width: 0;
+  min-height: var(--control-xl);
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  /* Hover/selection carry on the fill only; the border is static chrome and
+   * never transitions (see docs/design/conventions.md). */
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.onboarding-intent-option:nth-last-child(1):nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+/* Warm-soft wash, matching the onboarding surface's own hover idiom
+ * (.onboarding-back:hover). Background only — the border stays put. */
+.onboarding-intent-option:hover {
+  background: color-mix(in oklch, var(--warm-soft) 20%, var(--card));
+}
+
+.onboarding-intent-option:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.onboarding-intent-option[aria-pressed="true"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 34%, var(--border));
+  background: color-mix(in oklch, var(--warm-soft) 34%, var(--card));
+}
+
+/* Selected + hover deepens rather than lightens, so the ramp reads
+ * card -> hover -> selected -> selected-hover. */
+.onboarding-intent-option[aria-pressed="true"]:hover {
+  background: color-mix(in oklch, var(--warm-soft) 44%, var(--card));
+}
+
+.onboarding-intent-option span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A rounded-square checkbox (multiple can be picked), mirroring the
+ * canonical .folder-note-select-box: unchecked outline, filled on select. */
+.onboarding-intent-check {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--card);
+  color: var(--on-solid);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.onboarding-intent-option[aria-pressed="true"] .onboarding-intent-check {
+  border-color: var(--warm-strong);
+  background: var(--warm-strong);
+}
+
+.onboarding-intent-other {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-block-start: var(--sp-3);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.onboarding-intent-other input {
+  height: var(--control-xl);
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  padding: 0 var(--sp-3);
+  outline: 0;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.onboarding-intent-other input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.onboarding-intent-other input:hover {
+  border-color: var(--ring);
+}
+
+.onboarding-intent-other input:focus,
+.onboarding-intent-other input:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 /* Permissions: one bordered card, one row per permission — icon chip, a
@@ -23275,35 +23409,6 @@ input:focus-visible,
   padding: var(--sp-3) var(--note-chat-inset) var(--sp-4);
   overflow-y: auto;
   overscroll-behavior: contain;
-  --fade: 28px;
-}
-
-/* Same edge-fade recipe as the files panel body. */
-.note-chat-scroll[data-fade-top][data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--fade),
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--fade),
-    #000 calc(100% - var(--fade)),
-    transparent
-  );
-}
-
-.note-chat-scroll[data-fade-top]:not([data-fade-bottom]) {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
-  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
-}
-
-.note-chat-scroll:not([data-fade-top])[data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--fade)), transparent);
 }
 
 .note-chat-thread {
