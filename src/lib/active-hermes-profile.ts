@@ -22,6 +22,7 @@ export type ActiveHermesProfileRefreshOptions = {
  * silently rebind new sessions to `default` when the sticky active profile is
  * known to be something else. */
 let activeProfileName = DEFAULT_HERMES_PROFILE;
+let hydrationStarted = false;
 const listeners = new Set<Listener>();
 
 function emit(): void {
@@ -51,10 +52,15 @@ export function setActiveHermesProfileName(name: string): void {
 /** Test-only: resets the store to default so cases stay isolated. */
 export function resetActiveHermesProfileForTests(): void {
   activeProfileName = DEFAULT_HERMES_PROFILE;
+  hydrationStarted = false;
 }
 
 export function subscribe(listener: Listener): () => void {
   listeners.add(listener);
+  if (!hydrationStarted) {
+    hydrationStarted = true;
+    void refreshActiveHermesProfile();
+  }
   return () => {
     listeners.delete(listener);
   };

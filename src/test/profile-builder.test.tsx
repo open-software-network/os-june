@@ -167,19 +167,13 @@ describe("profile builder — wizard state back/next/validation", () => {
     expect(canAdvance("identity", named, ctx())).toBe(true);
   });
 
-  it("does not block the optional steps (toolsets/skills/mcps)", () => {
+  it("does not block the optional steps (skills/mcps)", () => {
     const form = validForm();
-    expect(canAdvance("toolsets", form, ctx())).toBe(true);
     expect(canAdvance("skills", form, ctx())).toBe(true);
     expect(canAdvance("mcps", form, ctx())).toBe(true);
   });
 
-  it("warns (does not block) on Full mode and missing specialized SOUL", () => {
-    const full = validForm({ sandbox: "unrestricted" });
-    const fullValidation = validateStep("toolsets", full, ctx());
-    expect(fullValidation.error).toBeUndefined();
-    expect(fullValidation.warnings.length).toBeGreaterThan(0);
-
+  it("warns (does not block) on missing specialized SOUL", () => {
     const specialized = validForm({ identity: "specialized", soul: "" });
     const idValidation = validateStep("identity", specialized, ctx());
     expect(idValidation.error).toBeUndefined();
@@ -221,11 +215,10 @@ describe("profile builder — model tool-calling gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("profile builder — create plan + payload", () => {
-  it("labels Full mode as a high-risk change in the plan", () => {
-    const plan = buildCreatePlan(validForm({ sandbox: "unrestricted" }));
-    const danger = plan.find((change) => change.risk === "danger");
-    expect(danger).toBeDefined();
-    expect(danger?.detail).toMatch(/full mode/i);
+  it("does not include a sandbox policy row in the plan", () => {
+    const plan = buildCreatePlan(validForm());
+    expect(plan.some((change) => /sandbox|full mode/i.test(change.target))).toBe(false);
+    expect(plan.some((change) => /sandbox|full mode/i.test(change.detail))).toBe(false);
   });
 
   it("includes a SOUL change only when a SOUL was written", () => {

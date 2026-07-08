@@ -48,14 +48,7 @@ export type ProfileBuilderModelCatalog = {
 };
 
 /** The ordered wizard steps. */
-export const PROFILE_BUILDER_STEPS = [
-  "identity",
-  "model",
-  "toolsets",
-  "skills",
-  "mcps",
-  "review",
-] as const;
+export const PROFILE_BUILDER_STEPS = ["identity", "model", "skills", "mcps", "review"] as const;
 
 export type ProfileBuilderStep = (typeof PROFILE_BUILDER_STEPS)[number];
 
@@ -69,10 +62,6 @@ export const STEP_META: Readonly<Record<ProfileBuilderStep, { title: string; hin
     model: {
       title: "Model",
       hint: "Pick the generation model. It must support tool calling.",
-    },
-    toolsets: {
-      title: "Toolsets",
-      hint: "Choose the sandbox policy for this profile.",
     },
     skills: {
       title: "Skills",
@@ -93,10 +82,6 @@ export const STEP_META: Readonly<Record<ProfileBuilderStep, { title: string; hin
  * are added. */
 export type ProfileIdentityKind = "june-default" | "specialized";
 
-/** How the profile treats local subprocesses, stdio MCP servers, scripts, and
- * external directories. June's safe default is sandboxed. */
-export type ProfileSandboxPolicy = "sandboxed" | "unrestricted";
-
 /** The mutable wizard state. */
 export type ProfileBuilderForm = {
   /** Profile name/slug. The slug is derived from this. */
@@ -115,7 +100,6 @@ export type ProfileBuilderForm = {
   voiceProvider: string;
   /** Explicit per-profile image model override. Empty keeps June's default. */
   imageModel: string;
-  sandbox: ProfileSandboxPolicy;
   /** Keep June's bundled skills (clones them from default). */
   keepBundledSkills: boolean;
   /** Bundled skill names to keep when `keepBundledSkills` is true and the user
@@ -129,8 +113,8 @@ export type ProfileBuilderForm = {
   mcpCatalogInstalls: string[];
 };
 
-/** The fresh form a new wizard starts from. June default identity, sandboxed,
- * bundled skills kept — the safe, June-correct starting point. */
+/** The fresh form a new wizard starts from. June default identity and bundled
+ * skills kept: the safe, June-correct starting point. */
 export function emptyProfileForm(): ProfileBuilderForm {
   return {
     name: "",
@@ -142,7 +126,6 @@ export function emptyProfileForm(): ProfileBuilderForm {
     voiceModel: "",
     voiceProvider: "",
     imageModel: "",
-    sandbox: "sandboxed",
     keepBundledSkills: true,
     keepSkills: [],
     hubSkills: [],
@@ -283,24 +266,10 @@ export function validateStep(
       }
       return { error: undefined, warnings };
     }
-    case "toolsets": {
-      if (form.sandbox === "unrestricted") {
-        warnings.push(
-          "Full mode lets this profile run local subprocesses and scripts without the sandbox. Use it only for trusted work.",
-        );
-      }
-      return { error: undefined, warnings };
-    }
     case "skills":
       return { error: undefined, warnings };
-    case "mcps": {
-      if (form.sandbox === "sandboxed" && form.mcpCatalogInstalls.length > 0) {
-        warnings.push(
-          "Some MCP servers run local subprocesses. In sandboxed mode they stay jailed. Switch to Full mode only if a server needs broader access.",
-        );
-      }
+    case "mcps":
       return { error: undefined, warnings };
-    }
     case "review":
       // Review re-runs the gating steps so a late edit cannot slip a bad model
       // or name through.
@@ -353,9 +322,9 @@ export function previousStep(step: ProfileBuilderStep): ProfileBuilderStep {
 // Create plan (the review step's "what will change" with risk labels)
 // ---------------------------------------------------------------------------
 
-/** How risky a planned change is. `info` is benign, `caution` writes config or
- * secrets, `danger` weakens the sandbox or runs external code. */
-export type ChangeRisk = "info" | "caution" | "danger";
+/** How risky a planned change is. `info` is benign, `caution` writes config,
+ * secrets, or installs external code. */
+export type ChangeRisk = "info" | "caution";
 
 /** One planned file/config change, shown on the review step. */
 export type PlannedChange = {
@@ -503,15 +472,6 @@ export function buildCreatePlan(
     detail: "June's built-in tools are always included.",
     risk: "info",
   });
-
-  if (form.sandbox === "unrestricted") {
-    changes.push({
-      target: `${root}/config.yaml (sandbox)`,
-      detail:
-        "Runs this profile in Full mode: local subprocesses, scripts, and external directories are not sandboxed.",
-      risk: "danger",
-    });
-  }
 
   return changes;
 }

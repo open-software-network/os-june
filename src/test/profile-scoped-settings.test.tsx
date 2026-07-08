@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InstalledSkillsSection } from "../components/settings/InstalledSkillsSection";
 import { McpServersSection } from "../components/settings/McpServersSection";
-import { setActiveHermesProfileName } from "../lib/active-hermes-profile";
+import {
+  resetActiveHermesProfileForTests,
+  setActiveHermesProfileName,
+} from "../lib/active-hermes-profile";
 import { FakeHermesServer, type FakeHermesScenario } from "./fixtures/fake-hermes-server";
 
 const mocks = vi.hoisted(() => ({
@@ -111,17 +114,18 @@ function routeAdminRequests(servers: ServerSet): string[] {
 describe("profile-scoped settings sections", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    setActiveHermesProfileName("default");
+    resetActiveHermesProfileForTests();
   });
 
   afterEach(() => {
-    setActiveHermesProfileName("default");
+    resetActiveHermesProfileForTests();
   });
 
   describe("McpServersSection", () => {
     it("requests MCP servers for the active profile", async () => {
       const servers = makeServers();
       const paths = routeAdminRequests(servers);
+      Object.assign(servers.default, { activeProfile: "work" });
       setActiveHermesProfileName("work");
 
       render(<McpServersSection />);
@@ -164,6 +168,7 @@ describe("profile-scoped settings sections", () => {
     it("requests installed skills for the active profile", async () => {
       const servers = makeServers();
       const paths = routeAdminRequests(servers);
+      Object.assign(servers.default, { activeProfile: "work" });
       setActiveHermesProfileName("work");
 
       render(<InstalledSkillsSection />);

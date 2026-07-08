@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 
 import {
   getActiveHermesProfileName,
@@ -102,5 +102,19 @@ describe("active Hermes profile store", () => {
     });
 
     expect(result.current).toBe("research");
+  });
+
+  it("hydrates from the sticky active profile on first hook mount", async () => {
+    mocks.invoke.mockResolvedValue({ active: "research", current: "default" });
+
+    const { result } = renderHook(() => useActiveHermesProfileName());
+
+    await waitFor(() => expect(result.current).toBe("research"));
+    expect(mocks.invoke).toHaveBeenCalledWith("hermes_admin_request", {
+      mode: "sandboxed",
+      method: "GET",
+      path: "/api/profiles/active",
+      body: undefined,
+    });
   });
 });

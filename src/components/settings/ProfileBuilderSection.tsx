@@ -7,7 +7,6 @@ import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconRobot2 } from "central-icons/IconRobot2";
-import { IconShield } from "central-icons/IconShield";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import {
   useCallback,
@@ -68,9 +67,9 @@ type ProfileBuilderSectionProps = {
 };
 
 /**
- * June's native guided Profile Builder (spec 20). A six-step wizard that creates
- * an isolated Hermes profile with identity/SOUL, model/provider, sandbox policy,
- * skills, and MCP servers, then optionally makes it active. It validates
+ * June's native guided Profile Builder (spec 20). A five-step wizard that creates
+ * an isolated Hermes profile with identity/SOUL, model/provider, skills, and MCP
+ * servers, then optionally makes it active. It validates
  * the model's tool-calling capability before allowing creation, shows exactly
  * what files/config will change (with risk labels) on the review step, and
  * surfaces success/failure with rollback messaging.
@@ -713,8 +712,6 @@ function StepBody({ state }: { state: ProfileBuilderState }) {
       return <IdentityStep state={state} />;
     case "model":
       return <ModelStep state={state} />;
-    case "toolsets":
-      return <ToolsetsStep state={state} />;
     case "skills":
       return <SkillsStep state={state} />;
     case "mcps":
@@ -1071,46 +1068,6 @@ function profileModelToVeniceModel(model: ProfileBuilderState["models"][number])
   };
 }
 
-function ToolsetsStep({ state }: { state: ProfileBuilderState }) {
-  const { form } = state;
-  return (
-    <fieldset className="profile-builder-fieldset">
-      <legend className="profile-builder-field-label">Sandbox policy</legend>
-      <label className="profile-builder-radio">
-        <input
-          type="radio"
-          name="sandbox"
-          checked={form.sandbox === "sandboxed"}
-          onChange={() => state.update({ sandbox: "sandboxed" })}
-        />
-        <span>
-          <span className="profile-builder-radio-title">
-            <IconShield size={13} ariaHidden /> Sandboxed (default)
-          </span>
-          <span className="profile-builder-radio-detail">
-            Local subprocesses, scripts, and external directories stay jailed. The safe default for
-            most profiles.
-          </span>
-        </span>
-      </label>
-      <label className="profile-builder-radio">
-        <input
-          type="radio"
-          name="sandbox"
-          checked={form.sandbox === "unrestricted"}
-          onChange={() => state.update({ sandbox: "unrestricted" })}
-        />
-        <span>
-          <span className="profile-builder-radio-title">Full mode</span>
-          <span className="profile-builder-radio-detail">
-            No sandbox. Use only for trusted work that needs broad local access.
-          </span>
-        </span>
-      </label>
-    </fieldset>
-  );
-}
-
 function SkillsStep({ state }: { state: ProfileBuilderState }) {
   const { form } = state;
   const bundled = bundledSkillOptions(state.skills);
@@ -1266,8 +1223,8 @@ function ReviewStep({ state }: { state: ProfileBuilderState }) {
 }
 
 function RiskBadge({ risk }: { risk: ChangeRisk }) {
-  const label = risk === "danger" ? "High" : risk === "caution" ? "Review" : "Safe";
-  const tone = risk === "danger" ? "destructive" : risk === "caution" ? "warning" : "info";
+  const label = risk === "caution" ? "Review" : "Safe";
+  const tone = risk === "caution" ? "warning" : "info";
   return (
     <span className="profile-builder-risk" data-tone={tone}>
       {label}

@@ -262,7 +262,6 @@ describe("profiles settings surface", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Create and make active" }));
 
     expect(screen.getByText(/could not make it active: something went wrong/i)).toBeInTheDocument();

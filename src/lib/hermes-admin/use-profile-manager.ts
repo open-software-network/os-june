@@ -201,6 +201,27 @@ export class ProfileManagerController {
     this.error = null;
     this.recompute();
     try {
+      const active = await this.engine.client.profiles.active();
+      if (this.disposed) return false;
+      this.activeName = active.active || "default";
+      this.activeConfirmed = true;
+      setActiveHermesProfileName(this.activeName);
+      if (this.activeName === name) {
+        this.pendingAction = null;
+        this.error = "Switch to another profile before deleting this one.";
+        this.recompute();
+        return false;
+      }
+    } catch {
+      if (this.disposed) return false;
+      this.pendingAction = null;
+      this.activeConfirmed = false;
+      this.error = "Can't confirm which profile is active. Refresh and try again.";
+      this.recompute();
+      return false;
+    }
+
+    try {
       await this.engine.client.profiles.remove(name);
       if (this.disposed) return true;
       this.pendingAction = null;

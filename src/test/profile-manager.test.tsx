@@ -197,6 +197,35 @@ describe("profile manager - hook flows", () => {
     controller.dispose();
   });
 
+  it("rechecks the sticky active profile before deleting", async () => {
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "research", active: false },
+      ],
+      activeProfile: "default",
+    });
+    const controller = new ProfileManagerController(harness as ProfileManagerEngine);
+    await controller.load();
+    expect(controller.getSnapshot().activeName).toBe("default");
+
+    Object.assign(harness.server, { activeProfile: "research" });
+    const ok = await controller.remove("research");
+
+    expect(ok).toBe(false);
+    expect(controller.getSnapshot().activeName).toBe("research");
+    expect(controller.getSnapshot().activeConfirmed).toBe(true);
+    expect(controller.getSnapshot().error).toBe(
+      "Switch to another profile before deleting this one.",
+    );
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/research",
+      ),
+    ).toBe(false);
+    controller.dispose();
+  });
+
   it("keeps a successful action true but blocks later writes when reload cannot confirm active", async () => {
     const harness = makeAdminHarness({
       profiles: [
