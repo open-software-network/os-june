@@ -50,6 +50,91 @@ the backend allowlist for generated image models; newly exposed models are price
 with the same flat ~2x convention as the original list. Models that Venice prices
 by resolution use the default 1K tier until June exposes resolution controls.
 
+## Addendum - 2026-07-06 (JUN-209: safe mode on by default + consent dialog)
+
+Supersedes the **safe_mode** bullet above: the toggle now defaults **on**,
+and a stored value is only honored when the user actually chose it. Any
+settings save serializes the whole struct, so files written by pre-JUN-209
+builds pin an explicit `false` the user never picked (reproduced on dev
+machines days after JUN-171 landed). A serde-default flip alone would miss
+those files, so the load path coerces: unless the persisted
+`image_safe_mode_set_by_user` marker is true, `image_safe_mode` reads `true`
+regardless of the stored value. The marker is set only by
+`set_image_safe_mode` (the Settings toggle and the consent dialog); users
+who deliberately opted out before the marker existed get flipped back on
+once and can opt out again.
+
+With a filtering default, the user needs an explicit, informed way out.
+June adds a **safe-mode consent dialog**, gated by an on-device keyword
+heuristic (`image_safety::may_request_explicit_content`) so benign prompts
+never see it:
+
+- `/image` flow: shown *before* the billable request. "Keep safe mode on"
+  proceeds (pinned `safeMode: true`); "Turn off safe mode" persists the
+  toggle off and proceeds unfiltered - that persisted toggle is the
+  remembered preference.
+- Agent tool path: the loopback proxy cannot block a tool call on user input,
+  so it emits a best-effort `image-safe-mode-consent` Tauri event and the
+  generation proceeds blurred; the dialog then offers to turn safe mode off
+  for *future* images. The tool call is never delayed, altered, or failed by
+  consent.
+- "Don't ask again" persists `image_safe_mode_prompt_dismissed`. Explicitly
+  re-enabling safe mode resets it, so re-opting into safety re-arms the
+  dialog.
+
+The dialog gate works differently per surface:
+
+- Agent tool path: **free**. The model is already in the loop (it is the one
+  calling the tool), so it self-classifies via a required `may_be_explicit`
+  boolean on `generate_image`/`edit_image`. The proxy ORs that self-report
+  with the on-device wordlist to decide the consent event, and strips the
+  field before forwarding upstream. Self-report is filled by the very model
+  the user is steering, so it can under-report - the failure mode is bounded
+  exactly like a wordlist miss: no dialog, and Venice `safe_mode` still
+  enforces the blur.
+- `/image` fast path: wordlist first, then a **model check**. The on-device
+  wordlist (`image_safety::may_request_explicit_content`) short-circuits the
+  obvious cases for free; when it is silent AND safe mode is on AND the
+  consent prompt is not dismissed, June asks the user's text model whether
+  the prompt requests explicit content (a one-shot temperature-0 YES/NO
+  chat completion through the same June API path as agent session titles,
+  metered as a normal agent-chat call). Classifier failure or timeout falls
+  back to the wordlist verdict; the check can delay but never block or fail
+  a generation. Originally this surface was wordlist-only, but the wordlist
+  is English-only and a Polish prompt reproduced the systematic miss
+  (blurred result, no consent offer) - a model check is the only
+  language-agnostic gate available on a path with no model in the loop.
+  Accepted trade-offs, decided with the user: a small metered call per
+  flagged-state generation, ~1-3s added latency before the dialog, and the
+  prompt travels to June API for screening BEFORE consent whenever safe
+  mode is on (it previously left the device only on actual generation).
+
+Trade-offs accepted: the heuristic is a conservative wordlist (misses
+euphemisms, some false positives) - acceptable because it only gates the
+dialog; Venice `safe_mode` remains the enforcement, and a false negative just
+means a blurred image with no offer. The wire shape is unchanged
+(`Option<bool>`, absent = Venice default), so older app builds are
+unaffected.
+
+## Addendum - 2026-07-07 (edit sources for attached images)
+
+`edit_image` now accepts a second source kind: the plain filename of an image
+the user attached or pasted into the conversation. The Hermes runtime saves
+attachments as `upload_*.png` into the same images directory the `june_image`
+MCP uses, but the original edit contract required an HMAC-signed reference
+minted only for `june_image` tool results - so the agent could not edit
+attached images at all and fell back to vision-analyze + regenerate, which
+the SOUL forbids and which double-charges when it works.
+
+Security shape: bare filenames get NO new power. They are accepted only when
+they are a plain name (no path separators) with the attachment prefix
+(`upload_*`), carry a known image extension, and canonicalize inside the
+canonicalized images root (symlink escapes rejected), then go through the
+same size cap and content sniffing as signed references. Hermes can already
+read and write that directory directly, so this widens nothing; tool-output
+files (`generated-image-*`) still require a signed reference, keeping their
+content-hash binding.
+
 ## Context
 
 JUN-129 shipped `/image <prompt>` as a client-side slash command: it creates a

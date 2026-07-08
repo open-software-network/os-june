@@ -17,6 +17,7 @@ import {
   searchHaystack,
   skillActivation,
   skillCategory,
+  skillLifecyclePolicy,
   skillPath,
   skillTags,
   sourceMeta,
@@ -24,6 +25,7 @@ import {
   type HermesSkillInfo,
   type InstalledSkillsEngine,
   type InstalledSkillsState,
+  type SkillLifecycleState,
 } from "../lib/hermes-admin";
 import { InstalledSkillsView } from "../components/settings/InstalledSkillsSection";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
@@ -356,6 +358,21 @@ function stubState(overrides: Partial<InstalledSkillsState> = {}): InstalledSkil
   };
 }
 
+function stubLifecycle(overrides: Partial<SkillLifecycleState> = {}): SkillLifecycleState {
+  return {
+    mode: "sandboxed",
+    profile: "default",
+    actions: new Map(),
+    sweeping: false,
+    policyFor: (skill) => skillLifecyclePolicy(skill),
+    run: vi.fn(),
+    checkForUpdates: vi.fn(),
+    updateAll: vi.fn(),
+    clearAction: vi.fn(),
+    ...overrides,
+  };
+}
+
 const VIEW_SKILLS: HermesSkillInfo[] = [
   skillFromWire({
     name: "pdf",
@@ -410,10 +427,11 @@ describe("InstalledSkillsView — component", () => {
     expect(screen.queryByText("pdf")).not.toBeInTheDocument();
   });
 
-  it("filters by category chip", () => {
+  it("filters by category from the category select", () => {
     render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
-    // Click the "Documents" category chip.
-    fireEvent.click(screen.getByRole("button", { name: /Documents/ }));
+    // Open the category select, then pick the "Documents" option.
+    fireEvent.click(screen.getByRole("button", { name: /filter by category/i }));
+    fireEvent.click(screen.getByRole("option", { name: /Documents/ }));
     expect(screen.getByText("pdf")).toBeInTheDocument();
     expect(screen.queryByText("research")).not.toBeInTheDocument();
   });
@@ -435,6 +453,25 @@ describe("InstalledSkillsView — component", () => {
     expect(toggle).toHaveBeenCalledWith("research", true);
   });
 
+  it("uses the shared refresh action to check for skill updates when lifecycle is available", () => {
+    const refresh = vi.fn();
+    const checkForUpdates = vi.fn();
+    const { container } = render(
+      <InstalledSkillsView
+        state={stubState({ skills: VIEW_SKILLS, refresh })}
+        lifecycle={stubLifecycle({ checkForUpdates })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh installed skills" }));
+    expect(checkForUpdates).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    const toolbar = container.querySelector(".installed-skills-toolbar");
+    expect(toolbar).not.toBeNull();
+    expect(
+      within(toolbar as HTMLElement).queryByRole("button", { name: "Check for updates" }),
+    ).toBeNull();
+  });
+
   it("disables the toggle and labels a read-only external skill", () => {
     render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
     const row = screen.getByText("company-style").closest("li");
@@ -444,15 +481,15 @@ describe("InstalledSkillsView — component", () => {
     expect(utils.getByRole("switch")).toBeDisabled();
   });
 
-  it("renders the open-skill action only when a handler is provided", () => {
+  it("opens a skill from the row body when a handler is provided", () => {
     const onOpenSkill = vi.fn();
     const { rerender } = render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
-    expect(screen.queryByRole("button", { name: /open pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "pdf" })).not.toBeInTheDocument();
 
     rerender(
       <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} onOpenSkill={onOpenSkill} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /open pdf/i }));
+    fireEvent.click(screen.getByRole("button", { name: "pdf" }));
     expect(onOpenSkill).toHaveBeenCalledWith("pdf");
   });
 
@@ -486,15 +523,18 @@ describe("InstalledSkillsView — component", () => {
   });
 
   it("always shows the standing next-session lifecycle banner, even on a clean page", () => {
-    const { rerender } = render(<InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />);
+    const { container, rerender } = render(
+      <InstalledSkillsView state={stubState({ skills: VIEW_SKILLS })} />,
+    );
     // Clean page: the standing next-session banner is shown up front, so the
     // timing is clear before any toggle (not the raw clean snapshot copy).
-    expect(screen.getByText("Applies next session")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Your changes take effect in new sessions. Current sessions are unaffected.",
+        "Applies next session. Your changes take effect in new sessions. Current sessions are unaffected.",
       ),
     ).toBeInTheDocument();
+    expect(container.querySelector(".installed-skills-lifecycle.inline-notice")).not.toBeNull();
+    expect(container.querySelector(".installed-skills-lifecycle-eyebrow")).toBeNull();
 
     // A non-clean lifecycle (a pending restart) overrides with its own copy.
     rerender(
@@ -510,7 +550,9 @@ describe("InstalledSkillsView — component", () => {
         })}
       />,
     );
-    expect(screen.getByText("Restart required")).toBeInTheDocument();
+    expect(
+      screen.getByText("Restart required. Restart the Hermes gateway to apply these changes."),
+    ).toBeInTheDocument();
   });
 
   it("renders dismissible durable notifications", () => {

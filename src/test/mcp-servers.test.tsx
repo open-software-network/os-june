@@ -10,6 +10,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   McpServersController,
+  INTERNAL_MCP_SERVER_NAMES,
   authMeta,
   canEditServer,
   editFromServer,
@@ -28,6 +29,7 @@ import {
   transportMeta,
   useMcpFilteringController,
   useMcpServersController,
+  userManagedMcpServers,
   validateDraft,
   type HermesMcpServerInfo,
   type McpFilteringState,
@@ -138,6 +140,27 @@ describe("mcp servers — view logic", () => {
     expect(filterServers(servers, "query").map((s) => s.name)).toEqual(["sqlite"]);
     expect(filterServers(servers, "linear.app").map((s) => s.name)).toEqual(["linear"]);
     expect(serverHaystack(servers[0])).toContain("query");
+  });
+
+  it("hides June-owned internal MCP servers from user-managed lists", () => {
+    const servers = [
+      ...INTERNAL_MCP_SERVER_NAMES.map((name) =>
+        serverFromWire({
+          name,
+          enabled: true,
+          transport: "stdio",
+          command: `${name}_mcp.py`,
+        }),
+      ),
+      serverFromWire({
+        name: "linear",
+        enabled: true,
+        transport: "http",
+        url: "https://mcp.linear.app",
+      }),
+    ];
+
+    expect(userManagedMcpServers(servers).map((server) => server.name)).toEqual(["linear"]);
   });
 
   it("treats a server as having available tools only when enabled with active tools", () => {
@@ -549,6 +572,25 @@ describe("mcp servers — controller", () => {
     controller.dispose();
   });
 
+  it("clears restart-required state when a toggle returns to the applied value", async () => {
+    const harness = makeAdminHarness(mcpStdioWithToolsScenario());
+    const controller = new McpServersController(harness as McpServersEngine);
+    await controller.load();
+
+    await controller.setEnabled("sqlite", false);
+    expect(controller.getSnapshot().lifecycle.state).toBe("gateway-restart-required");
+    expect(controller.getSnapshot().notifications.at(-1)?.message).toMatch(/restart/i);
+
+    await controller.setEnabled("sqlite", true);
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.servers.find((s) => s.name === "sqlite")?.enabled).toBe(true);
+    expect(snapshot.lifecycle.state).toBe("clean");
+    expect(snapshot.notifications.some((note) => /restart/i.test(note.message))).toBe(false);
+
+    controller.dispose();
+  });
+
   it("rolls back an optimistic toggle and surfaces a safe error on failure", async () => {
     const harness = makeAdminHarness(mcpStdioWithToolsScenario());
     const controller = new McpServersController(harness as McpServersEngine);
@@ -762,23 +804,29 @@ const VIEW_SERVERS: HermesMcpServerInfo[] = [
 ];
 
 describe("McpServersView — component", () => {
-  it("lists servers with transport, risk, and status, and redacts secrets", () => {
+  it("lists concise server rows and shows metadata in the details dialog", () => {
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS })} />);
     expect(screen.getByText("sqlite")).toBeInTheDocument();
     expect(screen.getByText("linear")).toBeInTheDocument();
 
     const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
-    expect(sqliteRow.getByText("Local (stdio)")).toBeInTheDocument();
-    expect(sqliteRow.getByText("Local subprocess")).toBeInTheDocument();
+    expect(sqliteRow.getByText(/local subprocess/i)).toBeInTheDocument();
     expect(sqliteRow.getByText("Connected")).toBeInTheDocument();
-    // The redacted env summary shows a count, never the value.
-    expect(sqliteRow.getByText(/Environment: 1 hidden/)).toBeInTheDocument();
+    expect(sqliteRow.queryByText("mcp-server-sqlite")).not.toBeInTheDocument();
+
+    fireEvent.click(sqliteRow.getByRole("button", { name: /manage sqlite/i }));
+    expect(screen.getByText("Manage sqlite")).toBeInTheDocument();
+    expect(screen.getByText("Local (stdio)")).toBeInTheDocument();
+    expect(screen.getByText("SQLITE_KEY")).toBeInTheDocument();
     expect(screen.queryByText(/secret-value-never-shown/)).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getByText("Close").closest("button") as HTMLButtonElement);
+
     const linearRow = within(screen.getByText("linear").closest("li") as HTMLElement);
-    expect(linearRow.getByText("Remote (OAuth)")).toBeInTheDocument();
-    expect(linearRow.getByText("Not signed in")).toBeInTheDocument();
     expect(linearRow.getByText("Connection error")).toBeInTheDocument();
+    fireEvent.click(linearRow.getByRole("button", { name: /manage linear/i }));
+    expect(screen.getByText("Remote (OAuth)")).toBeInTheDocument();
+    expect(screen.getByText("Not signed in")).toBeInTheDocument();
   });
 
   it("filters servers by the search box", () => {
@@ -803,7 +851,8 @@ describe("McpServersView — component", () => {
     const test = vi.fn(() => Promise.resolve({ pending: false }));
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS, test })} />);
     const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
-    fireEvent.click(sqliteRow.getByRole("button", { name: /^test$/i }));
+    fireEvent.click(sqliteRow.getByRole("button", { name: /manage sqlite/i }));
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }));
     expect(test).toHaveBeenCalledWith("sqlite");
   });
 
@@ -824,14 +873,16 @@ describe("McpServersView — component", () => {
     ]);
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS, tests })} />);
     const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
-    expect(sqliteRow.getByText(/Discovered 2 tools/)).toBeInTheDocument();
-    expect(sqliteRow.getByText("execute")).toBeInTheDocument();
+    fireEvent.click(sqliteRow.getByRole("button", { name: /manage sqlite/i }));
+    expect(screen.getByText(/Discovered 2 tools/)).toBeInTheDocument();
+    expect(screen.getByText("execute")).toBeInTheDocument();
   });
 
   it("opens a delete confirmation that warns when tools are available", async () => {
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS })} />);
     const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
-    fireEvent.click(sqliteRow.getByRole("button", { name: /delete sqlite/i }));
+    fireEvent.click(sqliteRow.getByRole("button", { name: /manage sqlite/i }));
+    fireEvent.click(screen.getByRole("button", { name: /delete server/i }));
     await waitFor(() => expect(screen.getByText(/currently exposes tools/i)).toBeInTheDocument());
   });
 
@@ -849,23 +900,25 @@ describe("McpServersView — component", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /edit sqlite/i }));
+    fireEvent.click(screen.getByRole("button", { name: /manage sqlite/i }));
     expect(clearEditError).toHaveBeenCalled();
   });
 
-  it("shows no Edit action when the edit slice is not wired", () => {
+  it("shows details without editable fields when the edit slice is not wired", () => {
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS })} />);
-    expect(screen.queryByRole("button", { name: /edit sqlite/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /manage sqlite/i }));
+    expect(screen.queryByRole("button", { name: /save changes/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/cannot be edited from June/i)).toBeInTheDocument();
   });
 
   it("edits a stdio server's command through a pre-filled dialog", async () => {
     const editServer = vi.fn(() => Promise.resolve(true));
     render(<McpServersView state={stubState({ servers: VIEW_SERVERS, editServer })} />);
     const sqliteRow = within(screen.getByText("sqlite").closest("li") as HTMLElement);
-    fireEvent.click(sqliteRow.getByRole("button", { name: /edit sqlite/i }));
+    fireEvent.click(sqliteRow.getByRole("button", { name: /manage sqlite/i }));
 
     // The dialog opens pre-filled with the current command.
-    await waitFor(() => expect(screen.getByText("Edit sqlite")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Manage sqlite")).toBeInTheDocument());
     const command = screen.getByLabelText("Command") as HTMLInputElement;
     expect(command.value).toBe("mcp-server-sqlite");
 
@@ -888,9 +941,11 @@ describe("McpServersView — component", () => {
   it("opens the add-server dialog and validates before sending", async () => {
     const add = vi.fn(() => Promise.resolve(true));
     render(<McpServersView state={stubState({ add })} />);
-    fireEvent.click(screen.getByRole("button", { name: /add server/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add mcp server/i }));
 
-    await waitFor(() => expect(screen.getByText("Add MCP server")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: "Add MCP server" })).toBeInTheDocument(),
+    );
     // Submitting with a blank name surfaces an error and does not send.
     const submit = screen.getAllByRole("button", { name: /add server/i });
     fireEvent.click(submit[submit.length - 1]);
@@ -905,8 +960,10 @@ describe("McpServersView — component", () => {
   it("accepts a typed stdio server without crashing (currentTarget)", async () => {
     const add = vi.fn(() => Promise.resolve(true));
     render(<McpServersView state={stubState({ add })} />);
-    fireEvent.click(screen.getByRole("button", { name: /add server/i }));
-    await waitFor(() => expect(screen.getByText("Add MCP server")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /add mcp server/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: "Add MCP server" })).toBeInTheDocument(),
+    );
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "fs" },
@@ -927,10 +984,12 @@ describe("McpServersView — component", () => {
   it("accepts a typed http server with an auth header without crashing", async () => {
     const add = vi.fn(() => Promise.resolve(true));
     render(<McpServersView state={stubState({ add })} />);
-    fireEvent.click(screen.getByRole("button", { name: /add server/i }));
-    await waitFor(() => expect(screen.getByText("Add MCP server")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /add mcp server/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: "Add MCP server" })).toBeInTheDocument(),
+    );
 
-    fireEvent.click(screen.getByRole("radio", { name: /remote \(http\)/i }));
+    fireEvent.click(screen.getByRole("button", { name: /streamable http/i }));
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "linear" },
     });
@@ -970,6 +1029,28 @@ describe("McpServersView — component", () => {
   it("shows the no-servers empty state for an empty ready list", () => {
     render(<McpServersView state={stubState({ servers: [] })} />);
     expect(screen.getByText("No MCP servers")).toBeInTheDocument();
+  });
+
+  it("does not show internal June MCP servers in the section", () => {
+    render(
+      <McpServersView
+        state={stubState({
+          servers: INTERNAL_MCP_SERVER_NAMES.map((name) =>
+            serverFromWire({
+              name,
+              enabled: true,
+              transport: "stdio",
+              command: `${name}_mcp.py`,
+            }),
+          ),
+        })}
+      />,
+    );
+
+    expect(screen.getByText("No MCP servers")).toBeInTheDocument();
+    for (const name of INTERNAL_MCP_SERVER_NAMES) {
+      expect(screen.queryByText(name)).not.toBeInTheDocument();
+    }
   });
 
   it("shows an inline error with retry when the load failed", () => {

@@ -63,6 +63,7 @@ Apply each lens below explicitly — these encode failure classes that generic s
 3. Temporal drift: for every tunable constant or threshold whose decision is persisted, ask what happens when the constant changes after data exists. Persisted decisions go stale; prefer flagging designs that store inputs and recompute decisions at read time.
 4. Signal lifecycle: for every detector or transient signal, ask (a) can the state it watches fail to ever initialize (zero-callback, never-armed), and (b) can the signal be observed and then lost before its persistence point (transient condition clears before finish)? Both need a latch or a fallback anchor.
 5. Cross-layer consumers: for every DTO or event field the diff adds or repurposes, find the actual downstream consumers (UI components, other services) and verify which fields they read. A warning flag nobody renders, or a stale companion field they do render, is a defect.
+6. Reshaped-collection consumers: when the diff filters, trims, splits, or reorders a collection (turns, jobs, rows), walk EVERY downstream consumer of that collection and ask whether it can undo the reshaping — merge across removed gaps, resurrect from a raw source on fallback/retry paths, or replay cached derivatives keyed by position. (PR #522: three separate consumers silently reversed echo trimming — a coalescer bridging trimmed spans, and two full-source fallbacks; each found one round apart. After the first family member, sweep the whole family.)
 </review_lenses>
 
 <finding_bar>

@@ -986,6 +986,75 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
     })
 }
 
+/// One-shot YES/NO classification: does this image prompt request explicit
+/// (adult) content? Language-agnostic - this backs the /image consent gate
+/// where no model is otherwise in the loop. Metered like any agent chat.
+pub async fn classify_image_prompt_explicit(prompt: &str) -> Result<bool, AppError> {
+    if prompt.trim().is_empty() {
+        return Err(AppError::new(
+            "image_prompt_classification_empty",
+            "Cannot classify an empty image prompt.",
+        ));
+    }
+    let response = proxy_agent_chat_completions(serde_json::json!({
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a strict content classifier for an image generator. The user message is an image-generation prompt, in any language. Answer with exactly one word: YES if it requests adult, sexual, nude, or otherwise explicit content; NO otherwise. Answer NO when the request is ambiguous or benign."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0,
+        // Sized for reasoning models: hidden thinking spends from the same
+        // budget as the one-word answer, and a cap hit mid-think yields no
+        // classification at all.
+        "max_tokens": 500
+    }))
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(AppError::new(
+            "image_prompt_classification_failed",
+            format!(
+                "Image prompt classification returned status {}.",
+                response.status
+            ),
+        ));
+    }
+    let body = response.collect_body().await?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|error| AppError::new("image_prompt_classification_invalid", error.to_string()))?;
+    let text = extract_chat_completion_text(&value).ok_or_else(|| {
+        AppError::new(
+            "image_prompt_classification_invalid",
+            "Image prompt classification did not return text.",
+        )
+    })?;
+    parse_explicit_classification(&text).ok_or_else(|| {
+        AppError::new(
+            "image_prompt_classification_invalid",
+            "Image prompt classification did not return YES or NO.",
+        )
+    })
+}
+
+fn parse_explicit_classification(text: &str) -> Option<bool> {
+    let text = text
+        .trim()
+        .trim_matches(|character: char| !character.is_alphanumeric())
+        .trim();
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("yes") {
+        Some(true)
+    } else if lower.starts_with("no") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 // Matches the server's per-attachment cap; bigger files are listed by name
 // in the report but their bytes stay local.
 const ISSUE_ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024;
@@ -1785,6 +1854,17 @@ mod tests {
             Some("Create a quarterly planning briefing with follow")
         );
         assert_eq!(clean_agent_session_title("   "), None);
+    }
+
+    #[test]
+    fn parses_explicit_classification_yes_no_answers() {
+        assert_eq!(parse_explicit_classification("YES"), Some(true));
+        assert_eq!(parse_explicit_classification("no."), Some(false));
+        assert_eq!(parse_explicit_classification("  Yes\n"), Some(true));
+        assert_eq!(parse_explicit_classification("**NO**"), Some(false));
+        assert_eq!(parse_explicit_classification("maybe"), None);
+        assert_eq!(parse_explicit_classification(""), None);
+        assert_eq!(parse_explicit_classification("The answer is yes."), None);
     }
 
     #[test]

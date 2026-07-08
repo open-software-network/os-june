@@ -1,6 +1,6 @@
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
-import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconLock } from "central-icons/IconLock";
@@ -27,8 +27,12 @@ import {
   type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
 import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
+import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
+import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { AdminNotifications } from "./AdminNotifications";
+import { SettingsPageHeader } from "./AppSettings";
 import { SkillDetailSection } from "./SkillDetailSection";
 import { SkillLifecycleActions } from "./SkillLifecycleActions";
 import { SetupStatusBadge, SkillSetupSection } from "./SkillSetupSection";
@@ -126,6 +130,7 @@ export function InstalledSkillsView({
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>(ALL_CATEGORIES);
+  const [refreshSpins, setRefreshSpins] = useState(0);
   // The skill whose inline setup panel is open (one at a time).
   const [openSetup, setOpenSetup] = useState<string | null>(null);
 
@@ -158,17 +163,30 @@ export function InstalledSkillsView({
   const isErrored = state.status === "error";
   const isLoadingFirst = state.status === "loading";
   const hasSkills = state.skills.length > 0;
+  const isRefreshing = isLoadingFirst || Boolean(lifecycle?.sweeping);
+
+  function handleRefresh() {
+    setRefreshSpins((spins) => spins + 1);
+    if (lifecycle) {
+      lifecycle.checkForUpdates();
+      return;
+    }
+    state.refresh();
+  }
 
   return (
     <section className="settings-group installed-skills" aria-labelledby="installed-skills-heading">
-      <h2 id="installed-skills-heading" className="settings-group-heading">
-        Installed skills
-      </h2>
-      <p className="settings-group-description">
-        Browse the skills Hermes has installed and choose which ones future sessions can use.
-        Changes apply to new sessions.{" "}
-        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
-      </p>
+      <SettingsPageHeader
+        id="installed-skills-heading"
+        title="Installed skills"
+        blurb={
+          <>
+            Browse the skills Hermes has installed and choose which ones future sessions can use.
+            Changes apply to new sessions.{" "}
+            <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
+          </>
+        }
+      />
 
       <LifecycleBanner state={state} />
       <AdminNotifications
@@ -178,8 +196,12 @@ export function InstalledSkillsView({
 
       <div className="settings-card installed-skills-card">
         <div className="installed-skills-toolbar">
-          <div className="installed-skills-search">
-            <IconMagnifyingGlass size={15} ariaHidden className="installed-skills-search-icon" />
+          <div className="settings-search installed-skills-search">
+            <IconMagnifyingGlass
+              size={15}
+              ariaHidden
+              className="settings-search-icon installed-skills-search-icon"
+            />
             <input
               type="search"
               value={query}
@@ -189,16 +211,22 @@ export function InstalledSkillsView({
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
-          {lifecycle ? (
-            <button
-              type="button"
-              className="installed-skills-check"
-              disabled={isUnavailable || isLoadingFirst || lifecycle.sweeping}
-              onClick={lifecycle.checkForUpdates}
-            >
-              <IconArrowRotateClockwise size={14} ariaHidden />
-              {lifecycle.sweeping ? "Checking..." : "Check for updates"}
-            </button>
+          {categories.length > 1 && !isUnavailable ? (
+            <Select
+              className="installed-skills-category-select"
+              ariaLabel="Filter by category"
+              placeholder="All categories"
+              value={activeCategory}
+              onChange={setCategory}
+              options={[
+                { value: ALL_CATEGORIES, label: "All categories", count: state.skills.length },
+                ...categories.map((name) => ({
+                  value: name,
+                  label: name,
+                  count: state.skills.filter((skill) => skillCategory(skill) === name).length,
+                })),
+              ]}
+            />
           ) : null}
           {lifecycle && updatableCount > 0 ? (
             <button
@@ -213,12 +241,19 @@ export function InstalledSkillsView({
           ) : null}
           <button
             type="button"
-            className="installed-skills-refresh"
-            disabled={isUnavailable || isLoadingFirst}
-            onClick={state.refresh}
+            className="icon-button installed-skills-refresh"
+            aria-label="Refresh installed skills"
+            aria-busy={isRefreshing}
+            disabled={isUnavailable || isRefreshing}
+            title="Refresh installed skills"
+            onClick={handleRefresh}
           >
-            <IconArrowRotateClockwise size={14} ariaHidden />
-            Refresh
+            <IconArrowRotateClockwise
+              size={14}
+              ariaHidden
+              className="balance-refresh-icon"
+              style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+            />
           </button>
         </div>
         {lifecycle?.sweepError ? (
@@ -226,26 +261,6 @@ export function InstalledSkillsView({
             <IconExclamationCircle size={14} ariaHidden />
             {lifecycle.sweepError}
           </p>
-        ) : null}
-
-        {categories.length > 1 && !isUnavailable ? (
-          <div className="installed-skills-filters" role="group" aria-label="Filter by category">
-            <CategoryChip
-              label="All"
-              count={state.skills.length}
-              active={activeCategory === ALL_CATEGORIES}
-              onSelect={() => setCategory(ALL_CATEGORIES)}
-            />
-            {categories.map((name) => (
-              <CategoryChip
-                key={name}
-                label={name}
-                count={state.skills.filter((skill) => skillCategory(skill) === name).length}
-                active={activeCategory === name}
-                onSelect={() => setCategory(name)}
-              />
-            ))}
-          </div>
         ) : null}
 
         {state.error && hasSkills ? (
@@ -351,46 +366,20 @@ function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
   const detail = clean
     ? "Your changes take effect in new sessions. Current sessions are unaffected."
     : snapshot.detail;
+  const body = detail ? `${label}. ${detail}` : label;
   return (
-    <div className="installed-skills-lifecycle" data-tone={tone} role="status">
-      <span className="installed-skills-lifecycle-eyebrow">
-        <IconCircleInfo size={15} ariaHidden />
-        {label}
-      </span>
-      <span className="installed-skills-lifecycle-body">{detail}</span>
-    </div>
+    <InlineNotice
+      className="installed-skills-lifecycle"
+      tone={tone}
+      icon={<IconCircleInfo size={15} ariaHidden />}
+      body={body}
+    />
   );
 }
 
-/** A category filter chip. */
-function CategoryChip({
-  label,
-  count,
-  active,
-  onSelect,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="installed-skills-chip"
-      aria-pressed={active}
-      onClick={onSelect}
-    >
-      {label}
-      <span className="installed-skills-chip-count">{count}</span>
-    </button>
-  );
-}
-
-/** One skill row: name + source pill, description, metadata (path / platform
- * restrictions / conditional activation), an optional open-detail action, and
- * the enable/disable toggle. Read-only (external) skills show a lock and a
- * disabled switch. */
+/** One skill row: name + source pill, one muted description line, lifecycle
+ * actions, setup, and the enable/disable toggle. The main row target opens the
+ * detail surface; trailing controls stay independent. */
 function SkillRow({
   skill,
   pending,
@@ -428,65 +417,62 @@ function SkillRow({
   const path = skillPath(skill);
   const readOnly = Boolean(skill.readOnly);
   const labelId = `installed-skill-${cssId(skill.name)}`;
+  const descriptionId = `${labelId}-description`;
   const panelId = `installed-skill-setup-${cssId(skill.name)}`;
   const canSetUp = Boolean(setupBadge && onToggleSetup);
+  const description = skill.description || meta.blurb;
+  const subtitleParts = [
+    description,
+    path,
+    activation?.requires ? `Requires ${activation.requires.join(", ")}` : undefined,
+    activation?.fallback ? `Falls back to ${activation.fallback.join(", ")}` : undefined,
+  ].filter(Boolean);
+
+  const mainContent = (
+    <>
+      <div className="installed-skill-headline">
+        <span className="installed-skill-name" id={labelId}>
+          {skill.name}
+        </span>
+        <SourcePill source={skill.source} label={meta.label} />
+        {skill.version ? <span className="installed-skill-version">v{skill.version}</span> : null}
+        {setupBadge ? <SetupStatusBadge badge={setupBadge} /> : null}
+        {readOnly ? (
+          <span className="installed-skill-readonly" title={meta.blurb}>
+            <IconLock size={12} ariaHidden />
+            Read only
+          </span>
+        ) : null}
+        {restrictions ? (
+          <span className="installed-skill-restriction">
+            <IconWarningSign size={12} ariaHidden />
+            {restrictions.join(", ")} only
+          </span>
+        ) : null}
+      </div>
+
+      <p className="installed-skill-description" id={descriptionId}>
+        {subtitleParts.join(" / ")}
+      </p>
+    </>
+  );
 
   return (
     <li className="installed-skill-row" data-enabled={skill.enabled}>
-      <div className="installed-skill-main">
-        <div className="installed-skill-headline">
-          <span className="installed-skill-name" id={labelId}>
-            {skill.name}
-          </span>
-          <SourcePill source={skill.source} label={meta.label} />
-          {skill.version ? <span className="installed-skill-version">v{skill.version}</span> : null}
-          {setupBadge ? <SetupStatusBadge badge={setupBadge} /> : null}
-          {readOnly ? (
-            <span className="installed-skill-readonly" title={meta.blurb}>
-              <IconLock size={12} ariaHidden />
-              Read only
-            </span>
-          ) : null}
-        </div>
-
-        {skill.description ? (
-          <p className="installed-skill-description">{skill.description}</p>
+      <div className="installed-skill-main-wrap">
+        {onOpen ? (
+          <button
+            type="button"
+            className="installed-skill-main installed-skill-main-button"
+            aria-labelledby={labelId}
+            aria-describedby={descriptionId}
+            onClick={onOpen}
+          >
+            {mainContent}
+          </button>
         ) : (
-          <p className="installed-skill-description installed-skill-description-muted">
-            {meta.blurb}
-          </p>
+          <div className="installed-skill-main">{mainContent}</div>
         )}
-
-        <div className="installed-skill-meta">
-          {path ? (
-            <span className="installed-skill-meta-item" title={path}>
-              {path}
-            </span>
-          ) : null}
-          {activation?.requires ? (
-            <span className="installed-skill-meta-item">
-              Requires {activation.requires.join(", ")}
-            </span>
-          ) : null}
-          {activation?.fallback ? (
-            <span className="installed-skill-meta-item">
-              Falls back to {activation.fallback.join(", ")}
-            </span>
-          ) : null}
-          {restrictions ? (
-            <span className="installed-skill-restriction">
-              <IconWarningSign size={12} ariaHidden />
-              {restrictions.join(", ")} only
-            </span>
-          ) : null}
-        </div>
-
-        {readOnly ? (
-          <p className="installed-skill-note">
-            Loaded from an external directory. It may be shared with other tools and cannot be
-            changed from June.
-          </p>
-        ) : null}
 
         {lifecycle ? (
           <SkillLifecycleActions
@@ -510,17 +496,6 @@ function SkillRow({
             {setupOpen ? "Hide setup" : "Set up"}
           </button>
         ) : null}
-        {onOpen ? (
-          <button
-            type="button"
-            className="installed-skill-open"
-            aria-label={`Open ${skill.name}`}
-            title="Open skill"
-            onClick={onOpen}
-          >
-            <IconArrowUpRight size={14} ariaHidden />
-          </button>
-        ) : null}
         <span className="installed-skill-toggle">
           <Switch
             checked={skill.enabled}
@@ -534,6 +509,9 @@ function SkillRow({
             </span>
           ) : null}
         </span>
+        {onOpen ? (
+          <IconChevronRightSmall size={14} aria-hidden className="installed-skill-chevron" />
+        ) : null}
       </div>
 
       {canSetUp && setupOpen ? (
@@ -575,15 +553,16 @@ function SkillsLoading() {
   );
 }
 
+/** The shared empty-state surface with this section's glyph, so it reads the
+ * same as the other settings pages instead of a bespoke box. */
 function EmptyState({ title, description }: { title: string; description: string }) {
   return (
-    <div className="installed-skills-empty" role="status">
-      <span className="installed-skills-empty-icon" aria-hidden>
-        <IconPlugin2 size={22} />
-      </span>
-      <p className="installed-skills-empty-title">{title}</p>
-      <p className="installed-skills-empty-description">{description}</p>
-    </div>
+    <EmptyStateSurface
+      className="empty-state-compact"
+      icon={<IconPlugin2 size={22} />}
+      title={title}
+      description={description}
+    />
   );
 }
 

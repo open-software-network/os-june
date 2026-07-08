@@ -61,6 +61,16 @@ export function modelSupportsTools(
   });
 }
 
+export function modelAvailableForMode(
+  mode: ProviderModelMode,
+  model: Partial<Pick<VeniceModelDto, "capabilities" | "provider">>,
+) {
+  if (mode === "generation" && model.provider && !modelSupportsTools(model)) {
+    return false;
+  }
+  return true;
+}
+
 /** Whether the model can read image input (vision). Mirrors
  * `modelSupportsTools`: key off the authoritative capability flag on
  * `capabilities` only, never `traits`. Venice's backend emits a capability
