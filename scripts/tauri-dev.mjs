@@ -75,13 +75,12 @@ tauriArgs.push(
   JSON.stringify({ build: { devUrl: `http://127.0.0.1:${frontendPort}` } }),
 );
 
-const child = spawn(tauriCommand(), ["dev", ...tauriArgs], {
+const child = spawn(tauriCommand(), tauriCommandArgs(["dev", ...tauriArgs]), {
   env: {
     ...process.env,
     VITE_PORT: String(frontendPort),
     ...(replayOnboarding ? { VITE_JUNE_REPLAY_ONBOARDING: "1" } : {}),
   },
-  shell: process.platform === "win32",
   stdio: "inherit",
 });
 
@@ -95,8 +94,19 @@ child.on("error", (error) => {
 });
 
 function tauriCommand() {
+  if (process.platform === "win32") {
+    return process.execPath;
+  }
   const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
-  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", binary);
+  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", "tauri");
   return existsSync(localBinary) ? localBinary : "tauri";
+}
+
+function tauriCommandArgs(args) {
+  if (process.platform !== "win32") {
+    return args;
+  }
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const tauriJs = resolve(scriptDir, "..", "node_modules", "@tauri-apps", "cli", "tauri.js");
+  return [tauriJs, ...args];
 }

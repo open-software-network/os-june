@@ -7193,33 +7193,13 @@ export function AgentWorkspace({
   const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
   const downloadArtifact = (artifact: AgentArtifact) => {
     const requestSessionId = selectedHermesSessionIdRef.current;
-    console.info("[artifact-download] ui:start", {
-      sessionId: requestSessionId,
-      artifactName: artifact.name,
-      artifactPath: artifact.path,
-      source: "artifact-card",
-    });
     void downloadHermesBridgeFile(artifact.path)
       .then((destination) => {
-        console.info("[artifact-download] ui:success", {
-          sessionId: requestSessionId,
-          artifactName: artifact.name,
-          artifactPath: artifact.path,
-          destination,
-          source: "artifact-card",
-        });
         if (selectedHermesSessionIdRef.current === requestSessionId) {
           showDownloadNotice(artifact.name, { destination, mode: "downloads" });
         }
       })
       .catch((err: unknown) => {
-        console.warn("[artifact-download] ui:failed", {
-          sessionId: requestSessionId,
-          artifactName: artifact.name,
-          artifactPath: artifact.path,
-          source: "artifact-card",
-          error: err,
-        });
         setError(messageFromError(err), { sessionId: requestSessionId ?? null });
       });
   };
@@ -7236,21 +7216,8 @@ export function AgentWorkspace({
     // save those directly via an anchor download.
     if (part.path) {
       const requestSessionId = selectedHermesSessionIdRef.current;
-      console.info("[artifact-download] ui:start", {
-        sessionId: requestSessionId,
-        artifactName: part.name?.trim() || "Generated image",
-        artifactPath: part.path,
-        source: "generated-image-path",
-      });
       void downloadHermesBridgeFile(part.path)
         .then((destination) => {
-          console.info("[artifact-download] ui:success", {
-            sessionId: requestSessionId,
-            artifactName: part.name?.trim() || "Generated image",
-            artifactPath: part.path,
-            destination,
-            source: "generated-image-path",
-          });
           if (selectedHermesSessionIdRef.current === requestSessionId) {
             showDownloadNotice(part.name?.trim() || "Generated image", {
               destination,
@@ -7259,13 +7226,6 @@ export function AgentWorkspace({
           }
         })
         .catch((err: unknown) => {
-          console.warn("[artifact-download] ui:failed", {
-            sessionId: requestSessionId,
-            artifactName: part.name?.trim() || "Generated image",
-            artifactPath: part.path,
-            source: "generated-image-path",
-            error: err,
-          });
           setError(messageFromError(err), { sessionId: requestSessionId ?? null });
         });
       return;
@@ -7276,22 +7236,12 @@ export function AgentWorkspace({
         part.name?.trim() || "generated-image.png",
         "png",
       );
-      console.info("[artifact-download] ui:start", {
-        sessionId: requestSessionId,
-        artifactName: fileName,
-        source: "generated-image-data-url",
-      });
       const link = document.createElement("a");
       link.href = part.dataUrl;
       link.download = fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
-      console.info("[artifact-download] ui:success", {
-        sessionId: requestSessionId,
-        artifactName: fileName,
-        source: "generated-image-data-url",
-      });
       if (selectedHermesSessionIdRef.current === requestSessionId) {
         showDownloadNotice(fileName, { mode: "browser" });
       }
