@@ -582,7 +582,7 @@ impl VeniceChat {
             ));
         }
 
-        let (chunks_tx, chunks_rx) = mpsc::channel(32);
+        let (chunks_tx, chunks_rx) = mpsc::unbounded_channel();
         let (usage_tx, usage_rx) = oneshot::channel();
         let task_content_type = content_type.clone();
         let task_url = url.clone();
@@ -676,7 +676,7 @@ struct AgentChatNonSuccess<'a> {
 
 struct StreamPump<'a> {
     response: &'a mut reqwest::Response,
-    chunks_tx: mpsc::Sender<Result<bytes::Bytes, DomainError>>,
+    chunks_tx: mpsc::UnboundedSender<Result<bytes::Bytes, DomainError>>,
     usage_tx: oneshot::Sender<Result<TokenUsage, DomainError>>,
     content_type: String,
     url: String,
@@ -697,9 +697,9 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                 match chunk {
                     Ok(Some(chunk)) => {
                         accumulated.extend_from_slice(&chunk);
-                        if forwarding
-                            && pump.chunks_tx.send(Ok(chunk)).await.is_err()
-                        {
+                        // Unbounded send: draining to the usage frame must not
+                        // block on a slow client, or settlement stalls with it.
+                        if forwarding && pump.chunks_tx.send(Ok(chunk)).is_err() {
                             forwarding = false;
                         }
                     }
@@ -710,7 +710,7 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                     Err(error) => {
                         tracing::error!(%error, url = %pump.url, model = %pump.model, "venice: agent chat body read failed");
                         if forwarding {
-                            let _ = pump.chunks_tx.send(Err(DomainError::UpstreamProvider)).await;
+                            let _ = pump.chunks_tx.send(Err(DomainError::UpstreamProvider));
                         }
                         let _ = pump.usage_tx.send(Err(DomainError::UpstreamProvider));
                         return;
@@ -720,7 +720,6 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
             _ = heartbeat.tick(), if forwarding && is_sse => {
                 if pump.chunks_tx
                     .send(Ok(bytes::Bytes::from_static(b": keep-alive\n\n")))
-                    .await
                     .is_err()
                 {
                     forwarding = false;

@@ -92,10 +92,15 @@ pub struct AgentChatCompletion {
 /// A streaming agent chat completion: response headers have been received
 /// from the upstream; body chunks arrive on `chunks` as the upstream
 /// produces them, and `usage` resolves once the body has fully drained.
+///
+/// `chunks` is deliberately unbounded: the producer must be able to drain the
+/// upstream to its usage frame at upstream speed even when the client reads
+/// slowly, or billing settlement would be hostage to client pace. Worst-case
+/// memory is the full response body — the same profile as the buffered path.
 pub struct AgentChatStream {
     pub content_type: String,
     pub provider: String,
-    pub chunks: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, DomainError>>,
+    pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
     pub usage: tokio::sync::oneshot::Receiver<Result<TokenUsage, DomainError>>,
 }
 

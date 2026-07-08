@@ -1310,12 +1310,10 @@ impl AgentChatCompleter for FakeChatCompleter {
         &self,
         _request: AgentChatRequest,
     ) -> Result<AgentChatStream, DomainError> {
-        let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel(4);
+        let (chunks_tx, chunks_rx) = tokio::sync::mpsc::unbounded_channel();
         let (usage_tx, usage_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let _ = chunks_tx
-                .send(Ok(Vec::from(&b"data: {\"choices\":[]}\n\n"[..]).into()))
-                .await;
+            let _ = chunks_tx.send(Ok(Vec::from(&b"data: {\"choices\":[]}\n\n"[..]).into()));
             let _ = usage_tx.send(Ok(TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 100,

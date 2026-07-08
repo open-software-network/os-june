@@ -14,7 +14,7 @@ use axum::{
 };
 use june_domain::{ModelId, ModelKind};
 use june_services::AgentChatParams;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub(crate) async fn chat_completions(
     State(state): State<ApiState>,
@@ -54,7 +54,7 @@ pub(crate) async fn chat_completions(
         return Ok((
             StatusCode::OK,
             [(CONTENT_TYPE, output.content_type)],
-            Body::from_stream(ReceiverStream::new(output.chunks)),
+            Body::from_stream(UnboundedReceiverStream::new(output.chunks)),
         )
             .into_response());
     }

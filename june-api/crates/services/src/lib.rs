@@ -1450,12 +1450,10 @@ mod tests {
             &self,
             _request: AgentChatRequest,
         ) -> Result<AgentChatStream, DomainError> {
-            let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel(4);
+            let (chunks_tx, chunks_rx) = tokio::sync::mpsc::unbounded_channel();
             let (usage_tx, usage_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
-                let _ = chunks_tx
-                    .send(Ok(bytes::Bytes::from_static(br"data: hello\n\n")))
-                    .await;
+                let _ = chunks_tx.send(Ok(bytes::Bytes::from_static(br"data: hello\n\n")));
                 let _ = usage_tx.send(Ok(TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 20,
@@ -1485,12 +1483,10 @@ mod tests {
             &self,
             _request: AgentChatRequest,
         ) -> Result<AgentChatStream, DomainError> {
-            let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel(4);
+            let (chunks_tx, chunks_rx) = tokio::sync::mpsc::unbounded_channel();
             let (usage_tx, usage_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
-                let _ = chunks_tx
-                    .send(Ok(bytes::Bytes::from_static(br"data: hello\n\n")))
-                    .await;
+                let _ = chunks_tx.send(Ok(bytes::Bytes::from_static(br"data: hello\n\n")));
                 let _ = usage_tx.send(Err(DomainError::UpstreamProvider));
             });
             Ok(AgentChatStream {

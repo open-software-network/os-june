@@ -191,7 +191,7 @@ pub struct AgentChatOutput {
 pub struct AgentChatStreamOutput {
     pub content_type: String,
     pub provider: String,
-    pub chunks: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, DomainError>>,
+    pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
 }
 
 fn body_digest(body: &serde_json::Value) -> String {

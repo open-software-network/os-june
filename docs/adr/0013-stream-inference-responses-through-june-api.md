@@ -70,6 +70,16 @@ charges after the stream ends.
 - The route-level tower timeout (600s) now bounds only the handler future
   (time to response headers); the streamed body is bounded by the upstream
   client's 600s total timeout instead.
+- The client-facing chunk channel is unbounded so the provider can always
+  drain the upstream to its usage frame at upstream speed — settlement must
+  never be hostage to a slow reader. Worst-case memory equals the full
+  response body, the same profile buffering had.
+- Settlement for a streamed response happens in a spawned task after bytes
+  were delivered. June API is stateless (no durable pending-charge ledger —
+  the same property the buffered path has for a crash between upstream
+  completion and charge), so a process death mid-stream loses that charge;
+  the hold expiring protects the user, June absorbs the upstream cost. A
+  durable settlement ledger is a deliberate non-goal here.
 - Other buffered inference paths (`/v1/transcribe`, `/v1/dictate`,
   `/v1/generate` legacy shape, image generation) remain exposed to proxy
   read timeouts if their upstream calls run long. They keep working today
