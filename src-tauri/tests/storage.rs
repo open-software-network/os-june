@@ -31,6 +31,68 @@ async fn migrations_create_empty_store() {
 }
 
 #[tokio::test]
+async fn p3a_counters_increment_and_clear() {
+    let repos = test_repositories().await;
+
+    let first = repos
+        .increment_p3a_counter("dictation.sessions", "2026-W28", 1)
+        .await
+        .expect("counter should increment");
+    assert_eq!(first.raw_value, 1);
+    assert_eq!(first.reported_value, 0);
+
+    let second = repos
+        .increment_p3a_counter("dictation.sessions", "2026-W28", 2)
+        .await
+        .expect("counter should increment again");
+    assert_eq!(second.raw_value, 3);
+    assert_eq!(second.reported_value, 0);
+
+    assert_eq!(
+        repos
+            .p3a_counter_value("dictation.sessions", "2026-W28")
+            .await
+            .expect("counter should load"),
+        Some(3),
+    );
+    repos
+        .mark_p3a_events_reported("dictation.sessions", "2026-W28", 2)
+        .await
+        .expect("reported cursor should save");
+
+    assert_eq!(
+        repos
+            .p3a_counter_state("dictation.sessions", "2026-W28")
+            .await
+            .expect("counter state should load")
+            .map(|state| state.reported_value),
+        Some(2),
+    );
+    let pending = repos
+        .unreported_p3a_counters()
+        .await
+        .expect("pending counters should load");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].question_id, "dictation.sessions");
+    assert_eq!(pending[0].epoch, "2026-W28");
+    assert_eq!(pending[0].raw_value, 3);
+    assert_eq!(pending[0].reported_value, 2);
+
+    repos
+        .clear_p3a_counters()
+        .await
+        .expect("counters should clear");
+
+    assert_eq!(
+        repos
+            .p3a_counter_value("dictation.sessions", "2026-W28")
+            .await
+            .expect("counter should load after clear"),
+        None,
+    );
+}
+
+#[tokio::test]
 async fn migrations_tolerate_concurrent_startup() {
     let dir = tempdir().expect("tempdir");
     let database_path = dir.path().join("notes.sqlite3");

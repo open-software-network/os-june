@@ -114,6 +114,7 @@ import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
+import { PrivacySettingsSection } from "./PrivacySettingsSection";
 
 const THEME_OPTIONS: readonly {
   value: ThemePreference;
@@ -1406,6 +1407,8 @@ export function AppSettings({
               onEnableAccessibility={onEnableAccessibility}
               onEnableSystemAudio={onEnableSystemAudio}
             />
+
+            <PrivacySettingsSection />
           </>
         ) : null}
 

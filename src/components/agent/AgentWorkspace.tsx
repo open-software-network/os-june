@@ -11,7 +11,7 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
-import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
@@ -19,6 +19,7 @@ import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
 import { IconFinder } from "central-icons/IconFinder";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconFolders } from "central-icons/IconFolders";
+import { IconLightBulbSimple } from "central-icons/IconLightBulbSimple";
 import { IconConsole } from "central-icons/IconConsole";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStopCircle } from "central-icons/IconStopCircle";
@@ -33,7 +34,6 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
-import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconCheckCircle2 } from "central-icons/IconCheckCircle2";
 import { IconConcise } from "central-icons/IconConcise";
@@ -44,7 +44,6 @@ import { IconFileText } from "central-icons/IconFileText";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
 import { IconGauge } from "central-icons/IconGauge";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
-import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconNoteText } from "central-icons/IconNoteText";
@@ -61,6 +60,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
@@ -80,6 +80,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { toast } from "../ui/Toaster";
 import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
@@ -196,6 +197,7 @@ import {
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
 import { normalizeSteerText, steeringLiveEvent } from "../../lib/hermes-session-steer";
+import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
@@ -227,7 +229,10 @@ import {
   type ModelPrivacyBadge,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
-import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
+import {
+  MODEL_CHANGE_LOCKED_NOTICE,
+  MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
+} from "../../lib/hermes-model-switch";
 import {
   LOCAL_GENERATION_OPTION_ID_PREFIX,
   isLoopbackUrl,
@@ -348,6 +353,23 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
 const SESSION_NOT_AVAILABLE_MESSAGE =
   "This session is no longer available. Open another conversation or start a new one.";
+
+// A stable id for the "June is still working" nudge (fired when a send is
+// rejected mid-turn), so repeated send attempts refresh one toast instead of
+// stacking.
+const SESSION_BUSY_TOAST_ID = "agent-session-busy";
+
+// A stable id for the model control's notices (default-model changed,
+// model-locked on an existing session, off-device confirm), so they replace one
+// another in a single toast rather than stacking.
+const MODEL_SWITCH_TOAST_ID = "agent-model-switch";
+
+// Stable ids so the fork lifecycle (creating → branched) rides one
+// self-replacing toast, and repeat report deliveries reuse a single "sent"
+// confirmation rather than stacking.
+const BRANCH_TOAST_ID = "agent-branch";
+const ISSUE_REPORT_SENT_TOAST_ID = "agent-issue-report-sent";
+const DOWNLOAD_TOAST_ID = "agent-download";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
@@ -809,11 +831,6 @@ type AgentWorkspaceError = {
 type AgentWorkspaceErrorOptions = {
   sessionId?: string | null;
   issueReport?: PendingIssueReport;
-};
-
-type AgentWorkspaceNotice = {
-  message: string;
-  sessionId: string | null;
 };
 
 type ImageSafeModeConsentChoice =
@@ -1764,13 +1781,6 @@ export function AgentWorkspace({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
-  // A rejected send into a still-running session, explained by the composer.
-  // Separate from `errorState` because background session refreshes clear that
-  // banner on success — this notice must survive until the turn finishes.
-  const [busyNotice, setBusyNotice] = useState<string | null>(null);
-  // Confirmation that a submitted issue report reached the June team; shown
-  // in the composer notice slot until dismissed by the next send.
-  const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
   const [submittingErrorIssueReport, setSubmittingErrorIssueReport] = useState(false);
   const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
     null,
@@ -1780,30 +1790,9 @@ export function AgentWorkspace({
   const imageSafeModeConsentRequestRef = useRef<ImageSafeModeConsentRequest | null>(null);
   const composerSizeProceedSignatureRef = useRef<string | null>(null);
   const composerSizeProceedInputSignatureRef = useRef<string | null>(null);
-  // Honest result of the last model switch (feature 10): scoped to the session
-  // it acted on so it survives background refreshes and disappears when the
-  // user moves to another conversation. A null sessionId means it reports a
-  // default-only change shown on the hero.
-  const [modelSwitchNotice, setModelSwitchNotice] = useState<{
-    message: string;
-    sessionId: string | null;
-  } | null>(null);
-  // Feature 07: after a successful fork, the banner that tells the user the
-  // freshly-opened session was branched from another. Keyed by the NEW
-  // session's id so it shows only while that session is selected, then clears
-  // itself once they navigate away.
-  const [branchedNotice, setBranchedNotice] = useState<{
-    sessionId: string;
-    sourceTitle: string;
-  } | null>(null);
-  const [downloadNotice, setDownloadNotice] = useState<{
-    fileName: string;
-    destination?: string;
-    mode: "downloads" | "browser";
-  } | null>(null);
-  const downloadNoticeTimeoutRef = useRef<number | undefined>(undefined);
-  const branchedNoticeRef = useRef(branchedNotice);
-  const [branchingNotice, setBranchingNotice] = useState<{ sourceTitle: string } | null>(null);
+  // Feature 07: the fork lifecycle (creating → branched) is surfaced as a
+  // toast — a loading toast while the branch is created, resolving into a
+  // "Branched from …" confirmation. See branchFromMessage.
   // Which message a branch is currently in flight for, so its action shows a
   // disabled/working state and double-clicks can't fork twice.
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null);
@@ -1987,14 +1976,13 @@ export function AgentWorkspace({
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
   const defaultGenerationModelIdRef = useRef("");
-  const sessionModelOverridesRef = useRef<Record<string, string>>({});
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
   // Bring-your-own local text generation. When the global provider is "local"
   // the model catalog carries a synthetic "Local: <id>" option and the pill
   // resolves to it, so the composer never shows a raw local id or silently
   // reverts the app to metered remote generation. Kept as refs too because the
-  // async model-switch handler reads the latest values.
+  // async provider-selection handler reads the latest values.
   const [localGeneration, setLocalGeneration] = useState<LocalGenerationSettingsDto>({
     baseUrl: "",
     modelId: "",
@@ -2054,42 +2042,6 @@ export function AgentWorkspace({
   // the stored value loads, so a card never flashes the wrong state.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean>();
   const [cliAccessSubmitting, setCliAccessSubmitting] = useState(false);
-
-  const showDownloadNotice = useCallback(
-    (fileName: string, options: { destination?: string; mode: "downloads" | "browser" }) => {
-      if (downloadNoticeTimeoutRef.current !== undefined) {
-        window.clearTimeout(downloadNoticeTimeoutRef.current);
-      }
-      setDownloadNotice({
-        fileName,
-        destination: options.destination,
-        mode: options.mode,
-      });
-      downloadNoticeTimeoutRef.current = window.setTimeout(() => {
-        setDownloadNotice((current) =>
-          current?.fileName === fileName && current?.mode === options.mode ? null : current,
-        );
-        downloadNoticeTimeoutRef.current = undefined;
-      }, 5000);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (downloadNoticeTimeoutRef.current !== undefined) {
-        window.clearTimeout(downloadNoticeTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    setDownloadNotice(null);
-    if (downloadNoticeTimeoutRef.current !== undefined) {
-      window.clearTimeout(downloadNoticeTimeoutRef.current);
-      downloadNoticeTimeoutRef.current = undefined;
-    }
-  }, [selectedHermesSessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2443,6 +2395,8 @@ export function AgentWorkspace({
     onSessionSelected?.(selectedHermesSession);
   }, [onSessionSelected, selectedHermesSession, selectedHermesSessionId]);
   const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(selectedHermesSessionId);
+  const composerModelLocked =
+    !!selectedHermesSessionId && !newSessionMode && !selectedHermesSessionIsProvisional;
   // When local generation is the active provider, the pill/selection is the
   // synthetic local option so it renders "Local: <id>" and never a raw id or a
   // stale remote override. Every session routes through the local endpoint.
@@ -2525,7 +2479,9 @@ export function AgentWorkspace({
     !modelSupportsImageInput(resolvedGenerationModel);
   const showImageModelWarning = showImageInputWarning || imageSlashBlockedByModel;
   const imageModelWarningText = imageSlashBlockedByModel
-    ? `${resolvedGenerationModel?.name ?? "This model"} can't read images. Switch to a vision model before using /image.`
+    ? composerModelLocked
+      ? `${resolvedGenerationModel?.name ?? "This model"} can't read images. Start a new session with a vision model before using /image.`
+      : `${resolvedGenerationModel?.name ?? "This model"} can't read images. Switch to a vision model before using /image.`
     : `${resolvedGenerationModel?.name ?? "This model"} can't read images.`;
   const composerInputSignature = useMemo(
     () =>
@@ -2636,16 +2592,6 @@ export function AgentWorkspace({
   const visibleErrorRetryable =
     visibleError != null &&
     (GATEWAY_CONNECTION_ERROR.test(visibleError) || visibleError === HERMES_SERVER_ERROR_MESSAGE);
-  const visibleIssueReportNotice =
-    issueReportNotice && issueReportNotice.sessionId === (selectedHermesSessionId ?? null)
-      ? issueReportNotice.message
-      : null;
-  // The model-switch notice (feature 10) shows on the session it acted on; a
-  // null sessionId is the default-only notice, shown while no session is open.
-  const visibleModelSwitchNotice =
-    modelSwitchNotice && modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
-      ? modelSwitchNotice.message
-      : null;
   // Unsupported Hermes events for the selected session surface a generic,
   // recoverable notice (and sanitized dev details). Subscribing to the store's
   // version re-derives the notice whenever a new unsupported frame lands.
@@ -2957,7 +2903,6 @@ export function AgentWorkspace({
             waitingSessionIds: waitingSessions,
             pendingMessages,
             defaultModelId: defaultGenerationModelIdRef.current,
-            sessionModelOverrides: sessionModelOverridesRef.current,
           }),
         );
         setSelectedHermesSessionId((current) => {
@@ -3109,9 +3054,29 @@ export function AgentWorkspace({
     };
   }, [loadGenerationModel]);
 
+  useEffect(() => {
+    if (composerModelLocked) setComposerModelOpen(false);
+  }, [composerModelLocked]);
+
+  function composerModelSelectionLocked() {
+    const sessionId = selectedHermesSessionIdRef.current;
+    return Boolean(
+      sessionId && !newSessionModeRef.current && !isProvisionalHermesSessionId(sessionId),
+    );
+  }
+
+  function showComposerModelLockedNotice() {
+    setComposerModelOpen(false);
+    toast(MODEL_CHANGE_LOCKED_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
+  }
+
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
   function openComposerModelPicker() {
+    if (composerModelSelectionLocked()) {
+      showComposerModelLockedNotice();
+      return;
+    }
     setModelSearch("");
     setComposerModelFlyout(null);
     setComposerModelOpen(true);
@@ -3119,13 +3084,6 @@ export function AgentWorkspace({
     void loadGenerationModel();
   }
 
-  // Enables the saved local endpoint as the global generation provider. The
-  // local provider proxy routes EVERY request by the global provider and
-  // rewrites the model to the local id, so flipping the provider is what moves
-  // a running session onto local — a per-chat override could not. That makes
-  // the "switched this session" claim honest here without waiting on the
-  // /model ack; the dispatch is best effort, only to keep Hermes' own session
-  // model aligned (the local id is advertised on /v1/models once local is on).
   // Reflects the global generation selection into composer state directly (not
   // via the backend return value, which tests stub out): the remote flip and
   // the mount fetch already round-trip through commitGenerationSettings.
@@ -3136,9 +3094,8 @@ export function AgentWorkspace({
     setDefaultGenerationModelId(modelId);
   }
 
-  async function selectLocalGeneration(sessionId: string | undefined) {
+  async function selectLocalGeneration() {
     const localModelId = localGenerationRef.current.modelId.trim();
-    const modelName = localModelId ? `Local: ${localModelId}` : "the local model";
     const selectedModelId = localModelId ? localGenerationOptionId(localModelId) : "";
     // An off-device endpoint takes a deliberate second step, same invariant as
     // the Settings toggle: the first selection warns instead of enabling.
@@ -3147,11 +3104,10 @@ export function AgentWorkspace({
     if (!isLoopbackUrl(baseUrl)) {
       if (localEnableConfirmArmedForRef.current !== baseUrl) {
         localEnableConfirmArmedForRef.current = baseUrl;
-        setModelSwitchNotice({
-          message:
-            "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
-          sessionId: sessionId ?? null,
-        });
+        toast.warning(
+          "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+          { id: MODEL_SWITCH_TOAST_ID },
+        );
         return false;
       }
       localEnableConfirmArmedForRef.current = null;
@@ -3171,56 +3127,25 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    if (!sessionId) {
-      setModelSwitchNotice({
-        message: resolveModelSwitchOutcome({
-          hasActiveSession: false,
-          dispatchSucceeded: false,
-          modelName,
-        }).notice,
-        sessionId: null,
-      });
-      return true;
-    }
-    const rawLocalModelId = localGenerationRef.current.modelId.trim();
-    if (rawLocalModelId) {
-      try {
-        const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
-        await createHermesMethods(gateway).switchActiveSessionModel({
-          mode: hermesModeFor(sessionId),
-          sessionId,
-          model: rawLocalModelId,
-        });
-      } catch {
-        // Best effort: the proxy already serves this session from local.
-      }
-    }
-    setModelSwitchNotice({
-      message: resolveModelSwitchOutcome({
-        hasActiveSession: true,
-        dispatchSucceeded: true,
-        modelName,
-      }).notice,
-      sessionId,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
-  // Switching the model always writes the global text-model selection (Settings'
-  // model rows and this pill refresh through the same changed event). When a
-  // session is open, it ALSO switches that live session via Hermes
-  // command.dispatch (/model …), and the UI only claims the running session
-  // moved when Hermes accepts the dispatch (feature 10) — except when the
-  // switch flips the global provider (local <-> remote), where the provider
-  // proxy decides the model for every request and so guarantees the claim.
+  // Switching the model from the composer is only allowed before a thread
+  // exists. It writes the app-wide text-model default (Settings' model rows and
+  // this pill refresh through the same changed event), and new sessions inherit
+  // that choice at creation time.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
-    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
+    if (composerModelSelectionLocked()) {
+      showComposerModelLockedNotice();
+      return false;
+    }
 
     // Local is a synthetic catalog option (prefixed id), so it routes through
     // the provider switch rather than a remote model set.
     if (modelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
-      return selectLocalGeneration(sessionId);
+      return selectLocalGeneration();
     }
     // Picking anything else stands down a pending off-device confirm: the
     // next local selection warns afresh instead of enabling in one step.
@@ -3233,86 +3158,16 @@ export function AgentWorkspace({
       setError(`${chosen.name} can't run June's tools, so it can't be used for the agent.`);
       return false;
     }
-    const modelName = chosen?.name ?? modelId;
-    // Selecting a remote model while local is active is an informed switch back
-    // to metered remote generation (the picker showed "Local: …" as current).
-    // The local proxy routes by the GLOBAL provider, so a per-chat override
-    // alone could not move this session off local: flip the global provider
-    // too, or the pill would claim a model the responses do not come from.
-    const wasLocalActive = generationProviderRef.current === "local";
-
-    // No open chat: changing the model updates the global generation default.
-    if (!sessionId) {
-      try {
-        await setVeniceModel("generation", modelId);
-        markRemoteGenerationSelected(modelId);
-        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
-        setError(null);
-      } catch (err) {
-        setError(messageFromError(err));
-        return false;
-      }
-      setModelSwitchNotice({
-        message: resolveModelSwitchOutcome({
-          hasActiveSession: false,
-          dispatchSucceeded: false,
-          modelName,
-        }).notice,
-        sessionId: null,
-      });
-      return true;
-    }
-
-    // Open chat coming off local: flip the global provider to remote first so
-    // the running session actually leaves the local endpoint before we claim it
-    // did. (In remote mode this is skipped — the switch stays per-chat.)
-    if (wasLocalActive) {
-      try {
-        await setVeniceModel("generation", modelId);
-        markRemoteGenerationSelected(modelId);
-        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
-      } catch (err) {
-        setError(messageFromError(err));
-        return false;
-      }
-    }
-
-    // Open chat: override the model for THIS chat, then dispatch /model to the
-    // live session so the running turn switches immediately. Hermes session
-    // metadata updates are title-only, so the per-chat override is the source
-    // of truth for this row.
-    sessionModelOverridesRef.current = {
-      ...sessionModelOverridesRef.current,
-      [sessionId]: modelId,
-    };
-    setHermesSessionItems((current) =>
-      current.map((session) =>
-        session.id === sessionId ? { ...session, model: modelId } : session,
-      ),
-    );
-    let dispatchSucceeded = false;
     try {
-      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
-      await createHermesMethods(gateway).switchActiveSessionModel({
-        mode: hermesModeFor(sessionId),
-        sessionId,
-        model: modelId,
-      });
-      dispatchSucceeded = true;
-    } catch {
-      // The per-chat override is saved; the notice explains the running session
-      // is unchanged and the new model applies next session.
-      dispatchSucceeded = false;
+      await setVeniceModel("generation", modelId);
+      markRemoteGenerationSelected(modelId);
+      dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+      return false;
     }
-    setError(null);
-    setModelSwitchNotice({
-      message: resolveModelSwitchOutcome({
-        hasActiveSession: true,
-        dispatchSucceeded,
-        modelName,
-      }).notice,
-      sessionId,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
@@ -3723,14 +3578,14 @@ export function AgentWorkspace({
     restoreComposerDraft(composerDraftKey);
   }, [activePanel, composerDraftKey]);
 
-  // The busy notice's advice ("wait for the reply") expires the moment the
-  // selected session stops working — including when the user switches to a
-  // session that isn't running.
+  // The busy toast's advice ("wait for the reply") goes stale the moment the
+  // selected session stops working — including when the user switches to an
+  // idle session — so dismiss it then rather than leaving it up for the full
+  // toast duration. Dismissing an absent toast is a no-op.
   useEffect(() => {
-    if (!busyNotice) return;
     if (selectedHermesSessionId && workingSessionIds.has(selectedHermesSessionId)) return;
-    setBusyNotice(null);
-  }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
+    toast.dismiss(SESSION_BUSY_TOAST_ID);
+  }, [selectedHermesSessionId, workingSessionIds]);
 
   async function prepareComposerSubmission(
     message: string,
@@ -4170,6 +4025,11 @@ export function AgentWorkspace({
   }
 
   async function runModelSlashCommand(argument: string, commandText: string) {
+    if (composerModelSelectionLocked()) {
+      clearComposerCommandDraft(commandText);
+      showComposerModelLockedNotice();
+      return;
+    }
     const query = argument.trim();
     if (!query) {
       clearComposerCommandDraft(commandText);
@@ -4390,7 +4250,6 @@ export function AgentWorkspace({
             submittingIssueReportSessionIdsRef.current.has(reportFollowUpSessionId),
         };
       }
-      setIssueReportNotice(null);
       await submitHermesSession(runtimeContent, undefined, {
         displayContent: prepared.displayContent,
         titleContent: prepared.titleContent,
@@ -4401,7 +4260,7 @@ export function AgentWorkspace({
         deferredFailedIssueReportDeliverySessionIdsRef.current.delete(reportFollowUpSessionId);
       }
       setError(null);
-      setBusyNotice(null);
+      toast.dismiss(SESSION_BUSY_TOAST_ID);
     } catch (err) {
       // Restore the composer so a failed send doesn't eat the message, its
       // category chip, or its attachments — but only where the user hasn't
@@ -4445,9 +4304,9 @@ export function AgentWorkspace({
       }
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
-        // connection banner along with showing the notice.
+        // connection banner along with showing the nudge.
         setError(null);
-        setBusyNotice(SESSION_BUSY_NOTICE);
+        toast(SESSION_BUSY_NOTICE, { id: SESSION_BUSY_TOAST_ID });
       } else {
         setError(messageFromError(err));
       }
@@ -4657,16 +4516,6 @@ export function AgentWorkspace({
     }
   }
 
-  // A success notice about one report reads fine anywhere, but not stale on
-  // a conversation the user opened later.
-  useEffect(() => {
-    setIssueReportNotice(null);
-  }, [selectedHermesSessionId]);
-
-  useEffect(() => {
-    branchedNoticeRef.current = branchedNotice;
-  }, [branchedNotice]);
-
   /** Sends the captured report plus June's diagnostic reply (the last
    * assistant message of the turn) to the June team. The diagnosis fetch is
    * best-effort: a report without June's assessment still beats no report. */
@@ -4697,12 +4546,7 @@ export function AgentWorkspace({
         sessionId,
       });
       clearErrorForSession(sessionId);
-      if (selectedHermesSessionIdRef.current === sessionId) {
-        setIssueReportNotice({
-          message: ISSUE_REPORT_SENT_MESSAGE,
-          sessionId,
-        });
-      }
+      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
@@ -4751,19 +4595,10 @@ export function AgentWorkspace({
       });
       if (sessionId) {
         clearErrorForSession(sessionId);
-        if (selectedHermesSessionIdRef.current === sessionId) {
-          setIssueReportNotice({
-            message: ISSUE_REPORT_SENT_MESSAGE,
-            sessionId,
-          });
-        }
       } else {
         setError(null);
-        setIssueReportNotice({
-          message: ISSUE_REPORT_SENT_MESSAGE,
-          sessionId: null,
-        });
       }
+      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
     } catch (err) {
       setError(`The issue report could not be sent. ${messageFromError(err)}`, {
         sessionId: sessionId ?? null,
@@ -6178,7 +6013,14 @@ export function AgentWorkspace({
     const sourceTitle =
       hermesSessionItems.find((session) => session.id === sessionId || session.id === modeSessionId)
         ?.title ?? "this session";
-    setBranchingNotice({ sourceTitle });
+    // The fork lifecycle rides one self-replacing toast: a loading toast while
+    // the branch is created, upgraded in place to the "Branched from …"
+    // confirmation on success, or dismissed if the branch fails (the failure
+    // surfaces on the error banner instead).
+    const branchToastId = toast.loading(`Creating branch from ${sourceTitle}`, {
+      id: BRANCH_TOAST_ID,
+    });
+    let branched = false;
     const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
@@ -6346,9 +6188,8 @@ export function AgentWorkspace({
       selectedHermesSessionIdRef.current = result.sessionId;
       setSelectedHermesSessionId(result.sessionId);
       setActivePanel("chat");
-      const nextBranchedNotice = { sessionId: result.sessionId, sourceTitle };
-      branchedNoticeRef.current = nextBranchedNotice;
-      setBranchedNotice(nextBranchedNotice);
+      branched = true;
+      toast.success(`Branched from ${sourceTitle}`, { id: branchToastId });
       composerEditorRef.current?.setContent(branchComposerText, null);
       setError(null);
       await loadHermesSessions({ suppressSessionGoneError: true });
@@ -6368,7 +6209,9 @@ export function AgentWorkspace({
     } finally {
       branchingMessageIdRef.current = null;
       setBranchingMessageId(null);
-      setBranchingNotice(null);
+      // A failed or aborted branch never resolves the loading toast; drop it so
+      // the error banner is the only surface. Success already upgraded it.
+      if (!branched) toast.dismiss(branchToastId);
     }
   }
 
@@ -6570,7 +6413,6 @@ export function AgentWorkspace({
     setReportDialogAttachments([]);
     setReportDialogCategory(categoryToOpen);
     setReportDialogOpen(true);
-    setIssueReportNotice(null);
   }
 
   /** Drops appends from imports that were still in flight when the report
@@ -7196,7 +7038,13 @@ export function AgentWorkspace({
     void downloadHermesBridgeFile(artifact.path)
       .then((destination) => {
         if (selectedHermesSessionIdRef.current === requestSessionId) {
-          showDownloadNotice(artifact.name, { destination, mode: "downloads" });
+          toast.success(`Downloaded ${artifact.name}`, {
+            id: DOWNLOAD_TOAST_ID,
+            action: {
+              label: "Show file",
+              onClick: () => void revealPath(destination),
+            },
+          });
         }
       })
       .catch((err: unknown) => {
@@ -7219,9 +7067,12 @@ export function AgentWorkspace({
       void downloadHermesBridgeFile(part.path)
         .then((destination) => {
           if (selectedHermesSessionIdRef.current === requestSessionId) {
-            showDownloadNotice(part.name?.trim() || "Generated image", {
-              destination,
-              mode: "downloads",
+            toast.success(`Downloaded ${part.name?.trim() || "Generated image"}`, {
+              id: DOWNLOAD_TOAST_ID,
+              action: {
+                label: "Show file",
+                onClick: () => void revealPath(destination),
+              },
             });
           }
         })
@@ -7243,7 +7094,7 @@ export function AgentWorkspace({
       link.click();
       link.remove();
       if (selectedHermesSessionIdRef.current === requestSessionId) {
-        showDownloadNotice(fileName, { mode: "browser" });
+        toast(`Download started: ${fileName}`, { id: DOWNLOAD_TOAST_ID });
       }
     }
   };
@@ -7575,9 +7426,10 @@ export function AgentWorkspace({
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
         <AnimatePresence>
-          {busyNotice || galleryErrors ? (
-            // Same fade as the recording-consent note, so the pill dissolves
-            // when the turn finishes instead of vanishing.
+          {galleryErrors ? (
+            // Dev gallery only: the busy nudge is a toast in real use (see
+            // SESSION_BUSY_TOAST_ID); this renders the old inline pill so
+            // __agentErrors can still screenshot that surface.
             <motion.p
               key="busy-notice"
               className="agent-composer-notice"
@@ -7588,52 +7440,8 @@ export function AgentWorkspace({
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
               <DotSpinner />
-              {busyNotice ?? SESSION_BUSY_NOTICE}
+              {SESSION_BUSY_NOTICE}
             </motion.p>
-          ) : downloadNotice ? (
-            <motion.div
-              className="agent-composer-notice agent-composer-notice-action"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-              aria-label={
-                downloadNotice.mode === "browser"
-                  ? `Download started: ${downloadNotice.fileName}`
-                  : `Downloaded ${downloadNotice.fileName}`
-              }
-            >
-              <span className="agent-composer-notice-message" aria-hidden="true">
-                <span>
-                  {downloadNotice.mode === "browser" ? "Download started:" : "Downloaded"}
-                </span>
-                <span className="agent-composer-notice-file" title={downloadNotice.fileName}>
-                  {downloadNotice.fileName}
-                </span>
-              </span>
-              {downloadNotice.destination ? (
-                <button
-                  type="button"
-                  className="agent-composer-notice-button"
-                  onClick={() => {
-                    if (downloadNotice.destination) {
-                      void revealPath(downloadNotice.destination);
-                    }
-                  }}
-                >
-                  Show file
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="agent-composer-notice-button"
-                aria-label="Dismiss"
-                onClick={() => setDownloadNotice(null)}
-              >
-                <IconCrossMedium size={14} />
-              </button>
-            </motion.div>
           ) : visibleIssueReportReview ? (
             <motion.div
               key="issue-report-review"
@@ -7671,30 +7479,6 @@ export function AgentWorkspace({
                       : "Send report"}
               </button>
             </motion.div>
-          ) : visibleIssueReportNotice ? (
-            <motion.p
-              key="issue-report-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {visibleIssueReportNotice}
-            </motion.p>
-          ) : visibleModelSwitchNotice ? (
-            <motion.p
-              key="model-switch-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {visibleModelSwitchNotice}
-            </motion.p>
           ) : null}
         </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
@@ -7740,7 +7524,7 @@ export function AgentWorkspace({
                 className="agent-composer-image-warning-icon"
               />
               <span className="agent-composer-image-warning-text">{imageModelWarningText}</span>
-              {preferredVisionModel ? (
+              {preferredVisionModel && !composerModelLocked ? (
                 <button
                   type="button"
                   className="agent-composer-notice-button agent-composer-image-warning-action"
@@ -7751,8 +7535,8 @@ export function AgentWorkspace({
                     // case would drop the user into an unfiltered list that
                     // doesn't surface the eligible models. preferredVisionModel
                     // is pre-filtered to image + tool support and prefers a
-                    // suggested pick; handleSelectGenerationModel routes the
-                    // global default vs per-chat override.
+                    // suggested pick. This only appears before a thread
+                    // exists, where model changes still update the default.
                     void handleSelectGenerationModel(preferredVisionModel.id)
                   }
                 >
@@ -7790,7 +7574,7 @@ export function AgentWorkspace({
                 >
                   Edit message
                 </button>
-                {visibleComposerSizeWarning.switchModel ? (
+                {visibleComposerSizeWarning.switchModel && !composerModelLocked ? (
                   <button
                     type="button"
                     className="agent-composer-notice-button"
@@ -7886,6 +7670,7 @@ export function AgentWorkspace({
               <ComposerModelPicker
                 open={composerModelOpen}
                 model={generationModel}
+                readOnly={composerModelLocked}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {
@@ -8028,7 +7813,7 @@ export function AgentWorkspace({
             onSent={handleReportDialogSent}
           />
         ) : null}
-        {composerModelOpen ? (
+        {composerModelOpen && !composerModelLocked ? (
           <ModelPickerPopover
             mode="generation"
             flyout={composerModelFlyout}
@@ -8543,15 +8328,6 @@ export function AgentWorkspace({
                   reportBugSubmitting={submittingErrorIssueReport}
                   onDismiss={() => setError(null)}
                 />
-              ) : null}
-              {branchedNotice && branchedNotice.sessionId === selectedHermesSessionId ? (
-                <AgentBranchedBanner
-                  sourceTitle={branchedNotice.sourceTitle}
-                  onDismiss={() => setBranchedNotice(null)}
-                />
-              ) : null}
-              {branchingNotice ? (
-                <AgentBranchingBanner sourceTitle={branchingNotice.sourceTitle} />
               ) : null}
               {detailContent}
               {composer}
@@ -10089,6 +9865,7 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "context" }> => part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const concreteResponse = turnIsConcreteResponse(turn);
   const copyText = copyableTextForTurn(turn);
 
   async function copyTurn() {
@@ -10166,7 +9943,7 @@ function AgentChatTurnRow({
     </HoverTip>
   ) : null;
   const turnActions =
-    copyAction || branchAction || timestampAction ? (
+    concreteResponse && (copyAction || branchAction || timestampAction) ? (
       <div className="agent-turn-actions" data-branching={branchSubmitting ? "true" : undefined}>
         <div className="agent-turn-actions-inner">
           {/* The timestamp sits on the outer/far side of the row: before the
@@ -10184,11 +9961,7 @@ function AgentChatTurnRow({
     return (
       <>
         {contextParts.map((part, index) => (
-          <ContextCompactionPart
-            key={`${turn.id}:context:${index}`}
-            createdAt={turn.createdAt}
-            part={part}
-          />
+          <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
         ))}
       </>
     );
@@ -10257,11 +10030,7 @@ function AgentChatTurnRow({
               </div>
             )
           ) : part.type === "context" ? (
-            <ContextCompactionPart
-              key={`${turn.id}:context:${index}`}
-              createdAt={turn.createdAt}
-              part={part}
-            />
+            <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
           ) : part.type === "approval" ? (
             <ApprovalPart
               key={`${turn.id}:approval:${part.id}`}
@@ -10301,11 +10070,7 @@ function AgentChatTurnRow({
               />
             )
           ) : part.type === "steering" ? (
-            <SteeringPart
-              key={`${turn.id}:steering:${index}`}
-              createdAt={turn.createdAt}
-              part={part}
-            />
+            <SteeringPart key={`${turn.id}:steering:${index}`} part={part} />
           ) : part.type === "image" ? (
             <AgentGeneratedImage
               key={`${turn.id}:image:${index}`}
@@ -10355,26 +10120,20 @@ function userPromptTextForTurn(turn: AgentChatTurn): string {
     .trim();
 }
 
-function ContextCompactionPart({
-  createdAt,
-  part,
-}: {
-  createdAt: string;
-  part: Extract<AgentChatPart, { type: "context" }>;
-}) {
+function ContextCompactionPart({ part }: { part: Extract<AgentChatPart, { type: "context" }> }) {
   return (
     <details className="agent-context-summary">
       <summary>
         {/* Same hover affordance as the tool rows: the glyph cross-fades to a
          * plain-text "+"/"−" so the row reads as one quiet, expandable line.
-         * IconConcise (thinned via CSS) marks the squeeze of compaction. */}
+         * IconConcise (thinned via CSS) marks the squeeze of compaction. No
+         * timestamp: this is a system marker, not a concrete message. */}
         <span className="agent-tool-icon">
           <IconConcise size={15} className="agent-context-icon-glyph" />
           <span className="agent-tool-icon-expand">+</span>
           <span className="agent-tool-icon-minimize">−</span>
         </span>
         <span className="agent-context-label">Context compacted</span>
-        <time>{relativeDate(createdAt)}</time>
       </summary>
       <MarkdownContent markdown={part.text} />
     </details>
@@ -10583,36 +10342,6 @@ function AgentErrorBanner({
   );
 }
 
-// Feature 07: confirms the freshly-opened session was forked from another, so
-// the user understands why they're suddenly in a new (but pre-populated)
-// thread. role="status" (not "alert") — this is reassurance, not an error.
-function AgentBranchedBanner({
-  sourceTitle,
-  onDismiss,
-}: {
-  sourceTitle: string;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="agent-branched-banner" role="status">
-      <IconBranchSimple size={14} aria-hidden />
-      <p>Branched from {sourceTitle}</p>
-      <button type="button" aria-label="Dismiss" onClick={onDismiss}>
-        <IconCrossMedium size={14} />
-      </button>
-    </div>
-  );
-}
-
-function AgentBranchingBanner({ sourceTitle }: { sourceTitle: string }) {
-  return (
-    <div className="agent-branching-banner" role="status" aria-live="polite">
-      <DotSpinner className="agent-branching-banner-spinner" />
-      <p>Creating branch from {sourceTitle}</p>
-    </div>
-  );
-}
-
 function visibleAgentWorkspaceError(
   error: AgentWorkspaceError | null,
   selectedSessionId: string | undefined,
@@ -10638,7 +10367,7 @@ function CreditsNoticePart({
       className="agent-credits-notice"
       tone="destructive"
       role="alert"
-      icon={<IconWallet3 size={14} aria-hidden />}
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
       body="June stopped because your balance ran out."
       actions={
         onTopUp ? (
@@ -10673,13 +10402,7 @@ function ContextOverflowNoticePart() {
  * June toward mid-run, recorded quietly in the transcript so the conversation
  * shows what changed course. Mirrors {@link ContextCompactionPart}'s quiet,
  * timestamped system-row styling. */
-function SteeringPart({
-  createdAt,
-  part,
-}: {
-  createdAt: string;
-  part: Extract<AgentChatPart, { type: "steering" }>;
-}) {
+function SteeringPart({ part }: { part: Extract<AgentChatPart, { type: "steering" }> }) {
   return (
     <div className="agent-steering-item">
       <span className="agent-steering-icon" aria-hidden>
@@ -10687,7 +10410,6 @@ function SteeringPart({
       </span>
       <span className="agent-steering-label">Steering</span>
       <span className="agent-steering-text">{part.text}</span>
-      <time>{relativeDate(createdAt)}</time>
     </div>
   );
 }
@@ -10797,7 +10519,263 @@ function AgentGeneratedImage({
   );
 }
 
-function ClarifyPart({
+/** A resolved action card renders as a quiet, expandable one-line row instead
+ * of a full card — a receipt in the transcript rather than a prompt. The row
+ * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross)
+ * that cross-fades to a plain-text "+"/"−" on hover (pure opacity — no layout
+ * shift, a WKWebView compositing constraint), a short outcome label, and a
+ * truncated one-line detail. Expanding reveals the full detail body (the
+ * `children`) minus the action buttons. */
+function ResolvedActionRow({
+  denied = false,
+  label,
+  detail,
+  children,
+}: {
+  /** Renders the cross glyph and destructive tint instead of the checkmark. */
+  denied?: boolean;
+  /** Short outcome word(s), e.g. "Approved once" / "Answered" / "Denied". */
+  label: string;
+  /** One-line truncated detail shown inline on the collapsed row. */
+  detail?: ReactNode;
+  /** The full detail body revealed on expand. */
+  children?: ReactNode;
+}) {
+  return (
+    <details
+      className="agent-tool-disclosure agent-resolved-row"
+      data-choice={denied ? "deny" : "done"}
+    >
+      <summary>
+        <span className="agent-tool-icon">
+          {denied ? (
+            <IconCrossSmall size={15} className="agent-tool-icon-glyph agent-resolved-icon-glyph" />
+          ) : (
+            <IconCheckmark2Small
+              size={15}
+              className="agent-tool-icon-glyph agent-resolved-icon-glyph"
+            />
+          )}
+          <span className="agent-tool-icon-expand">+</span>
+          <span className="agent-tool-icon-minimize">−</span>
+        </span>
+        <span className="agent-tool-name agent-resolved-label">{label}</span>
+        {detail !== undefined ? <span className="agent-resolved-detail">{detail}</span> : null}
+      </summary>
+      {children !== undefined ? <div className="agent-resolved-body">{children}</div> : null}
+    </details>
+  );
+}
+
+/** The condensed chrome shared by the pending approval and sudo cards. The
+ * header is a plain row (title + optional inline mode tag + waiting status) —
+ * not a toggle. Below it the prose `description` reads at all times, clamped to
+ * two lines while collapsed. When there is more to show (`hasDetails` — a
+ * command, or the sudo mode notice) a quiet "Details" disclosure sits under the
+ * description and reveals the full body (`children`: the full command `pre` and
+ * any extra detail). The actions row (`footer`) is always visible. Collapsed by
+ * default so a long command never dominates the card before a decision. */
+function CollapsibleActionCard({
+  title,
+  description,
+  headerMeta,
+  command,
+  hasDetails,
+  expanded,
+  onToggleExpanded,
+  footer,
+  children,
+}: {
+  title: string;
+  /** The prose description (part.description / sudo reason), always visible. */
+  description: ReactNode;
+  /** A short signal pinned to the header row that must stay visible while
+   * collapsed (e.g. the sudo blast-radius mode tag). */
+  headerMeta?: ReactNode;
+  /** SECURITY: the concrete command being authorized. Rendered ALWAYS (never
+   * behind the disclosure) so the exact command is visible at the decision
+   * point — the Approve button is live while the card is collapsed, so a user
+   * must be able to see what they are approving without expanding anything. */
+  command?: ReactNode;
+  /** Whether there is supplementary body content worth a "Details" disclosure
+   * (e.g. the sudo mode notice). The command is NOT gated on this. */
+  hasDetails: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  /** The actions row (or the in-flight result line), always visible. */
+  footer: ReactNode;
+  /** Supplementary body revealed on expand (never the command). */
+  children: ReactNode;
+}) {
+  return (
+    <article
+      className="agent-approval-card agent-action-card"
+      data-status="pending"
+      data-expanded={expanded || undefined}
+    >
+      <div className="agent-action-card-header">
+        <span className="agent-action-card-title">{title}</span>
+        {headerMeta}
+      </div>
+      {/* Only clamp when a Details expander exists to reveal the rest; otherwise
+       * a long description-only request would be truncated with no way to read
+       * it before choosing. */}
+      <p
+        className="agent-action-card-description"
+        data-clamped={(hasDetails && !expanded) || undefined}
+      >
+        {description}
+      </p>
+      {command}
+      {hasDetails ? (
+        <button
+          type="button"
+          className="agent-action-card-details"
+          aria-expanded={expanded}
+          onClick={onToggleExpanded}
+        >
+          Details
+          <IconChevronDownSmall size={14} className="agent-disclosure-chevron" aria-hidden />
+        </button>
+      ) : null}
+      {expanded ? <div className="agent-action-card-body">{children}</div> : null}
+      {footer}
+    </article>
+  );
+}
+
+/** The approval footer's primary control: a split button. "Approve" approves
+ * "once"; the attached caret opens a small scope menu ("Approve once" /
+ * "Approve for this session" / "Always approve", the last hidden when
+ * `allowPermanent` is false). Dismisses on outside click or Escape and supports
+ * arrow-key navigation, mirroring the repo's other hand-rolled menus. */
+function ApproveSplitButton({
+  disabled,
+  allowPermanent,
+  onChoice,
+}: {
+  disabled: boolean;
+  allowPermanent?: boolean;
+  onChoice: (choice: AgentApprovalChoice) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const scopeRef = useRef<HTMLButtonElement | null>(null);
+
+  // Close on a click outside the split wrapper or on Escape.
+  useEffect(() => {
+    if (!open) return;
+    function onPointer(event: MouseEvent) {
+      if (wrapRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        // Escape is a keyboard dismissal — return focus to the caret trigger so
+        // it doesn't drop to <body> when the focused menu item unmounts.
+        scopeRef.current?.focus();
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // Move focus into the menu when it opens so arrow keys land immediately.
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }, [open]);
+
+  const items: { choice: AgentApprovalChoice; label: string }[] = [
+    { choice: "once", label: "Approve once" },
+    { choice: "session", label: "Approve for this session" },
+    ...(allowPermanent
+      ? [{ choice: "always" as AgentApprovalChoice, label: "Always approve" }]
+      : []),
+  ];
+
+  function choose(choice: AgentApprovalChoice) {
+    setOpen(false);
+    onChoice(choice);
+  }
+
+  function onMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [],
+    );
+    if (!buttons.length) return;
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      buttons[(current + 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      buttons[(current - 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      buttons[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      buttons[buttons.length - 1]?.focus();
+    }
+  }
+
+  return (
+    <div className="agent-approval-split" ref={wrapRef}>
+      <button
+        type="button"
+        className="agent-approval-approve"
+        disabled={disabled}
+        onClick={() => onChoice("once")}
+      >
+        Approve
+      </button>
+      <button
+        ref={scopeRef}
+        type="button"
+        className="agent-approval-scope"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Approve options"
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <IconChevronDownSmall size={14} aria-hidden />
+      </button>
+      {open ? (
+        <div
+          ref={menuRef}
+          className="agent-approval-scope-menu"
+          role="menu"
+          aria-label="Approve scope"
+          onKeyDown={onMenuKeyDown}
+        >
+          {items.map((item) => (
+            <button
+              key={item.choice}
+              type="button"
+              role="menuitem"
+              className="agent-approval-scope-item"
+              disabled={disabled}
+              onClick={() => choose(item.choice)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function ClarifyPart({
   onClarify,
   part,
   submitting,
@@ -10810,25 +10788,25 @@ function ClarifyPart({
   const [draft, setDraft] = useState("");
   const disabled = part.status !== "pending" || submitting !== undefined;
 
+  // Resolved clarify collapses to a quiet receipt row: "Answered" (or "Skipped")
+  // plus the question, expandable to the full question and answer.
+  if (part.status !== "pending") {
+    const answered = Boolean(part.answer?.trim());
+    return (
+      <ResolvedActionRow label={answered ? "Answered" : "Skipped"} detail={part.question}>
+        <p>{part.question}</p>
+        {answered ? <p className="agent-clarify-answer">{part.answer}</p> : null}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
     <article className="agent-clarify-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconBubbleWide size={14} />
-      </span>
       <div>
         <div className="agent-tool-title">
           <span>Clarify</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Answered"}
-          </span>
         </div>
-        <p>{part.question}</p>
-        {part.answer !== undefined ? (
-          <p className="agent-clarify-answer">{part.answer.trim() ? part.answer : "Skipped"}</p>
-        ) : null}
+        <p className="agent-clarify-question">{part.question}</p>
         {part.status === "pending" ? (
           <>
             {!typing && part.choices.length ? (
@@ -10864,6 +10842,7 @@ function ClarifyPart({
                 }}
               >
                 <textarea
+                  className="dialog-textarea agent-clarify-textarea"
                   value={draft}
                   disabled={disabled}
                   rows={3}
@@ -10923,60 +10902,61 @@ type AgentCliAccessCardProps = {
  * live setting rather than stored per message: a revisited transcript shows
  * "Enabled" once the grant is on, and re-offers the choice while it is off.
  * Mirrors the approval card chrome. */
-function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
+export function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
   const [dismissed, setDismissed] = useState(false);
   const enabled = cliAccess?.enabled === true;
   const resolved = enabled || dismissed;
   const busy = Boolean(cliAccess?.submitting);
+
+  const description = (
+    <p>
+      June wants write access to the state folders of your coding CLIs (Claude Code, Codex, Gemini,
+      opencode) so they stay logged in and can save their work in sandboxed sessions. Those folders
+      configure software that also runs outside June's sandbox. Enabling turns on "Agent CLI access"
+      in Settings and restarts the sandboxed runtime.
+    </p>
+  );
+
+  // Resolved collapses to a quiet receipt row, expandable to the description.
+  if (resolved) {
+    return (
+      <ResolvedActionRow denied={!enabled} label={enabled ? "Agent CLI access enabled" : "Not now"}>
+        {description}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
-    <article className="agent-approval-card" data-status={resolved ? "resolved" : "pending"}>
-      <span className="agent-tool-icon">
-        <IconConsole size={14} />
-      </span>
+    <article className="agent-approval-card" data-status="pending">
       <div>
         <div className="agent-tool-title">
           <span>Agent CLI access requested</span>
-          <span className="agent-tool-live-status" data-status={resolved ? "complete" : "running"}>
-            {resolved ? "Resolved" : "Waiting"}
-          </span>
         </div>
-        <p>
-          June wants write access to the state folders of your coding CLIs (Claude Code, Codex,
-          Gemini, opencode) so they stay logged in and can save their work in sandboxed sessions.
-          Those folders configure software that also runs outside June's sandbox. Enabling turns on
-          "Agent CLI access" in Settings and restarts the sandboxed runtime.
-        </p>
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={enabled ? "once" : "deny"}>
-            {enabled ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
-            {enabled ? "Agent CLI access enabled" : "Not now"}
-          </p>
-        ) : (
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy || !cliAccess || cliAccess.enabled === undefined}
-              onClick={() => cliAccess?.onEnable()}
-            >
-              {busy ? "Enabling…" : "Enable Agent CLI access"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={busy}
-              onClick={() => setDismissed(true)}
-            >
-              Not now
-            </button>
-          </div>
-        )}
+        {description}
+        <div className="agent-approval-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy || !cliAccess || cliAccess.enabled === undefined}
+            onClick={() => cliAccess?.onEnable()}
+          >
+            {busy ? "Enabling…" : "Enable Agent CLI access"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost agent-approval-deny"
+            disabled={busy}
+            onClick={() => setDismissed(true)}
+          >
+            Not now
+          </button>
+        </div>
       </div>
     </article>
   );
 }
 
-function ApprovalPart({
+export function ApprovalPart({
   onApproval,
   part,
   submitting,
@@ -10990,7 +10970,13 @@ function ApprovalPart({
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
   const activeChoice = part.choice ?? submitting;
-  const resolved = part.status !== "pending" || activeChoice !== undefined;
+  // A card that has actually resolved collapses to a receipt row. A submission
+  // still in flight (submitting set, status pending) keeps the card so the
+  // in-progress line ("Approving once") stays visible until it resolves.
+  const resolved = part.status !== "pending";
+  const showResult = resolved || activeChoice !== undefined;
+  // The whole card is compact by default; expanding reveals the full body.
+  const [expanded, setExpanded] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   // "Explain first" asks the generation model what this specific request
   // would do — the request stays parked, nothing is approved by asking.
@@ -11003,6 +10989,8 @@ function ApprovalPart({
   function toggleExplain() {
     const nextOpen = !explainOpen;
     setExplainOpen(nextOpen);
+    // Opening the explanation auto-expands the card so the panel has room.
+    if (nextOpen) setExpanded(true);
     if (!nextOpen || explainState === "loading" || explainState === "ready") {
       return;
     }
@@ -11020,117 +11008,115 @@ function ApprovalPart({
       });
   }
 
-  return (
-    <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconShieldCheck size={14} />
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>Approval required</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Resolved"}
-          </span>
-        </div>
+  // Resolved collapses to a quiet receipt row: the outcome label plus the
+  // command (or description) truncated to one line, expandable to the full
+  // description and command — no action buttons.
+  if (resolved) {
+    return (
+      <ResolvedActionRow
+        denied={activeChoice === "deny"}
+        label={approvalChoiceLabel(activeChoice)}
+        detail={
+          part.command ? (
+            <span className="agent-resolved-mono">{part.command}</span>
+          ) : (
+            part.description
+          )
+        }
+      >
         <p>{part.description}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        {!resolved && explainOpen ? (
-          <div className="agent-approval-explanation" id={explanationId}>
-            {explainState === "loading" ? (
-              <p className="agent-approval-explanation-loading" role="status" aria-live="polite">
-                <Spinner aria-hidden />
-                <span>Working out what this request does…</span>
-              </p>
-            ) : explainState === "ready" && explanation ? (
-              explanation
-                .split(/\n{2,}/)
-                .map((paragraph) => paragraph.trim())
-                .filter(Boolean)
-                .map((paragraph, index) => <p key={index}>{paragraph}</p>)
-            ) : (
-              // Generation unavailable (offline, signed out): keep the
-              // static framing rather than an empty panel.
-              <p>
-                June is paused because this request needs your explicit permission before it can
-                continue.
-              </p>
-            )}
-            <p>
-              Approve once allows only this request. This session allows matching requests until the
-              session ends.{" "}
-              {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
-              Deny blocks the request.
+      </ResolvedActionRow>
+    );
+  }
+
+  const footer = showResult ? (
+    // Submission in flight (status still pending): the in-progress line stays
+    // in the card until the request actually resolves.
+    <p className="agent-approval-result" data-choice={activeChoice}>
+      {activeChoice === "deny" ? <IconCrossMedium size={14} /> : <IconCheckmark1Small size={14} />}
+      {approvalChoiceLabel(activeChoice, submitting !== undefined)}
+    </p>
+  ) : (
+    // Compact footer: a split "Approve" (approves once, caret opens the scope
+    // menu) and a quiet "Deny" anchor the row; "Explain first" demotes to a
+    // plain text-level button pushed to the right edge.
+    <div className="agent-approval-actions">
+      <ApproveSplitButton
+        disabled={disabled}
+        allowPermanent={part.allowPermanent}
+        onChoice={(choice) => onApproval(part, choice)}
+      />
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-deny"
+        disabled={disabled}
+        onClick={() => onApproval(part, "deny")}
+      >
+        Deny
+      </button>
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-explain"
+        aria-expanded={explainOpen}
+        // Only advertise the panel while it's actually in the DOM (the body
+        // renders only when the card is expanded and the explanation is open).
+        aria-controls={explainOpen ? explanationId : undefined}
+        disabled={disabled}
+        onClick={toggleExplain}
+      >
+        <IconLightBulbSimple size={14} aria-hidden />
+        {explainOpen ? "Hide explanation" : "Explain first"}
+      </button>
+    </div>
+  );
+
+  return (
+    <CollapsibleActionCard
+      title="Approval required"
+      description={part.description}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // The command is always shown; the only expandable body is the optional
+      // explanation, which its own "Explain first" button toggles.
+      hasDetails={false}
+      expanded={expanded}
+      onToggleExpanded={() => {
+        const next = !expanded;
+        setExpanded(next);
+        if (!next) setExplainOpen(false);
+      }}
+      footer={footer}
+    >
+      {explainOpen ? (
+        <div className="agent-approval-explanation" id={explanationId}>
+          {explainState === "loading" ? (
+            <p className="agent-approval-explanation-loading" role="status" aria-live="polite">
+              <Spinner aria-hidden />
+              <span>Working out what this request does…</span>
             </p>
-          </div>
-        ) : null}
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={activeChoice}>
-            {activeChoice === "deny" ? (
-              <IconCrossMedium size={14} />
-            ) : (
-              <IconCheckmark1Small size={14} />
-            )}
-            {approvalChoiceLabel(
-              activeChoice,
-              part.status === "pending" && submitting !== undefined,
-            )}
+          ) : explainState === "ready" && explanation ? (
+            explanation
+              .split(/\n{2,}/)
+              .map((paragraph) => paragraph.trim())
+              .filter(Boolean)
+              .map((paragraph, index) => <p key={index}>{paragraph}</p>)
+          ) : (
+            // Generation unavailable (offline, signed out): keep the
+            // static framing rather than an empty panel.
+            <p>
+              June is paused because this request needs your explicit permission before it can
+              continue.
+            </p>
+          )}
+          <p>
+            Approve once allows only this request. This session allows matching requests until the
+            session ends.{" "}
+            {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
+            Deny blocks the request.
           </p>
-        ) : (
-          // System buttons (.btn) — quiet soft-fill choices, ghost deny. The
-          // repeated per-button icons read as noise, so labels stand alone.
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary agent-approval-explain"
-              aria-expanded={explainOpen}
-              aria-controls={explanationId}
-              disabled={disabled}
-              onClick={toggleExplain}
-            >
-              <IconCircleQuestionmark size={14} />
-              {explainOpen ? "Hide explanation" : "Explain first"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onApproval(part, "once")}
-            >
-              Approve once
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onApproval(part, "session")}
-            >
-              This session
-            </button>
-            {part.allowPermanent ? (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={disabled}
-                onClick={() => onApproval(part, "always")}
-              >
-                Always
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={disabled}
-              onClick={() => onApproval(part, "deny")}
-            >
-              Deny
-            </button>
-          </div>
-        )}
-      </div>
-    </article>
+        </div>
+      ) : null}
+    </CollapsibleActionCard>
   );
 }
 
@@ -11150,6 +11136,22 @@ export function branchSourceSessionIdForTurn(turn: Pick<AgentChatTurn, "parts">)
     if (sessionId) return sessionId;
   }
   return undefined;
+}
+
+/** Whether a turn is a concrete message — the only kind that carries per-turn
+ * affordances (copy / branch / timestamp). A user message always qualifies; an
+ * assistant turn qualifies once it has produced a real answer: non-empty text
+ * or a finished image. Everything else is process or interaction — thinking in
+ * progress, tool calls, approval/clarify/sudo/secret cards, context summaries,
+ * in-flight/empty turns — and gets nothing below it. An allowlist (not a
+ * per-type blocklist) so new process/card part types stay quiet by default. */
+export function turnIsConcreteResponse(turn: Pick<AgentChatTurn, "role" | "parts">) {
+  if (turn.role === "user") return true;
+  return turn.parts.some(
+    (part) =>
+      (part.type === "text" && part.text.trim().length > 0) ||
+      (part.type === "image" && part.status === "complete"),
+  );
 }
 
 function previousBranchableMessageIndex(messages: HermesSessionMessage[], beforeIndex: number) {
@@ -11272,75 +11274,121 @@ export function SudoPart({
   submitting?: "approve" | "deny";
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
-  const resolved = part.status !== "pending" || submitting !== undefined;
+  // A card that has actually resolved collapses to a receipt row. A submission
+  // still in flight (submitting set, status pending) keeps the card.
+  const resolved = part.status !== "pending";
+  const showResult = resolved || submitting !== undefined;
+  // The whole card is compact by default; expanding reveals the full body.
+  const [expanded, setExpanded] = useState(false);
   // Absent mode defaults to the safe direction (sandboxed) so the card never
   // implies more access than is being granted.
   const mode: HermesMode = part.mode ?? "sandboxed";
   const unrestricted = mode === "unrestricted";
   const decided = part.approved ?? (submitting ? submitting === "approve" : undefined);
 
-  return (
-    <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        {unrestricted ? <IconShieldCrossed size={14} /> : <IconShieldCheck size={14} />}
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>Privilege escalation requested</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Resolved"}
-          </span>
-        </div>
+  const modeCopy = unrestricted
+    ? "Will run unrestricted (full write access)"
+    : "Will run sandboxed (limited write access)";
+
+  // Pending: the blast radius shows as an InlineNotice — warning chrome for
+  // unrestricted, neutral for sandboxed.
+  const modeNotice = (
+    <InlineNotice
+      className="agent-sudo-mode-notice"
+      tone={unrestricted ? "warning" : "info"}
+      icon={
+        unrestricted ? (
+          <IconShieldCrossed size={14} aria-hidden />
+        ) : (
+          <IconShieldCheck size={14} aria-hidden />
+        )
+      }
+      body={modeCopy}
+    />
+  );
+
+  // Receipt: the same mode line, but as quiet plain text — receipts carry no
+  // notice chrome.
+  const modeReceiptLine = (
+    <p className="agent-sudo-mode-receipt" data-mode={mode}>
+      {modeCopy}
+    </p>
+  );
+
+  // Collapsed pending: the full InlineNotice lives behind Details, so the header
+  // still has to carry the blast radius at the moment of decision — but only for
+  // the unrestricted (elevated) case. A small warning badge pinned in the header
+  // row does it. Sandboxed is the safe default and shows no collapsed badge (the
+  // full mode line still appears in Details for both).
+  const modeBadge = unrestricted ? (
+    <span className="agent-sudo-mode-badge">
+      <IconExclamationTriangle size={12} aria-hidden />
+      Unrestricted
+    </span>
+  ) : null;
+
+  // Resolved collapses to a quiet receipt row: "Approved"/"Denied" plus the
+  // command, expandable to the reason, command, and execution mode.
+  if (resolved) {
+    return (
+      <ResolvedActionRow
+        denied={!decided}
+        label={decided ? "Approved" : "Denied"}
+        detail={
+          part.command ? <span className="agent-resolved-mono">{part.command}</span> : undefined
+        }
+      >
         <p>{part.reason ?? "June needs elevated permissions before it can continue."}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        <p
-          className="agent-sudo-mode"
-          data-mode={mode}
-          title={
-            unrestricted
-              ? "Runs with full write access, outside June's sandbox."
-              : "Runs inside June's write sandbox."
-          }
-        >
-          {unrestricted ? (
-            <IconShieldCrossed size={12} aria-hidden />
-          ) : (
-            <IconShieldCheck size={12} aria-hidden />
-          )}
-          {unrestricted
-            ? "Will run unrestricted (full write access)"
-            : "Will run sandboxed (limited write access)"}
-        </p>
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
-            {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
-            {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
-          </p>
-        ) : (
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onSudo(part, true)}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={disabled}
-              onClick={() => onSudo(part, false)}
-            >
-              Deny
-            </button>
-          </div>
-        )}
-      </div>
-    </article>
+        {modeReceiptLine}
+      </ResolvedActionRow>
+    );
+  }
+
+  const reason = part.reason ?? "June needs elevated permissions before it can continue.";
+
+  const footer = showResult ? (
+    <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
+      {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
+      {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
+    </p>
+  ) : (
+    // Sudo keeps a simple Approve/Deny pair.
+    <div className="agent-approval-actions">
+      <button
+        type="button"
+        className="btn btn-secondary"
+        disabled={disabled}
+        onClick={() => onSudo(part, true)}
+      >
+        Approve
+      </button>
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-deny"
+        disabled={disabled}
+        onClick={() => onSudo(part, false)}
+      >
+        Deny
+      </button>
+    </div>
+  );
+
+  return (
+    <CollapsibleActionCard
+      title="Privilege escalation requested"
+      description={reason}
+      headerMeta={modeBadge}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // Command is always visible; Details reveals the fuller mode notice (the
+      // blast-radius badge already shows collapsed).
+      hasDetails={true}
+      expanded={expanded}
+      onToggleExpanded={() => setExpanded((value) => !value)}
+      footer={footer}
+    >
+      {modeNotice}
+    </CollapsibleActionCard>
   );
 }
 
@@ -11386,78 +11434,80 @@ export function SecretPart({
     onCancel?.(part);
   }
 
+  const keyLine = label ? (
+    <p className="agent-secret-key">
+      <span>Key</span>
+      <code>{label}</code>
+    </p>
+  ) : null;
+
+  // Resolved collapses to a quiet receipt row: "Secret provided" plus the
+  // redacted key name (never the value), expandable to the reason and key.
+  // SECURITY: no secret value is ever rendered here — only the reason and the
+  // already-redacted key label.
+  if (part.status !== "pending") {
+    return (
+      <ResolvedActionRow
+        label="Secret provided"
+        detail={label ? <span className="agent-resolved-mono">{label}</span> : undefined}
+      >
+        <p>{part.reason ?? "June needs a secret value before it can continue."}</p>
+        {keyLine}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
     <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconLock size={14} />
-      </span>
       <div>
         <div className="agent-tool-title">
           <span>Secret requested</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Provided"}
-          </span>
         </div>
         <p>{part.reason ?? "June needs a secret value before it can continue."}</p>
-        {label ? (
-          <p className="agent-secret-key">
-            <span>Key</span>
-            <code>{label}</code>
+        {keyLine}
+        <form
+          className="agent-secret-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+        >
+          <label htmlFor={inputId} className="agent-secret-label">
+            Secret value
+          </label>
+          <input
+            id={inputId}
+            type="password"
+            className="dialog-input agent-secret-input"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            // The browser must never store or suggest this value.
+            data-1p-ignore
+            data-lpignore="true"
+            disabled={disabled}
+            value={value}
+            placeholder="Paste the value"
+            onChange={(event) => setValue(event.currentTarget.value)}
+          />
+          <p className="agent-secret-note">
+            Sent straight to the agent and never saved, logged, or shown.
           </p>
-        ) : null}
-        {part.status === "pending" ? (
-          <form
-            className="agent-secret-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submit();
-            }}
-          >
-            <label htmlFor={inputId} className="agent-secret-label">
-              Secret value
-            </label>
-            <input
-              id={inputId}
-              type="password"
-              className="agent-secret-input"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              // The browser must never store or suggest this value.
-              data-1p-ignore
-              data-lpignore="true"
-              disabled={disabled}
-              value={value}
-              placeholder="Paste the value"
-              onChange={(event) => setValue(event.currentTarget.value)}
-            />
-            <p className="agent-secret-note">
-              Sent straight to the agent and never saved, logged, or shown.
-            </p>
-            <div className="agent-approval-actions">
-              <button type="submit" className="btn btn-secondary" disabled={disabled || !value}>
-                {submitting ? "Submitting" : "Submit"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost agent-approval-deny"
-                disabled={submitting !== undefined}
-                onClick={cancel}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        ) : (
-          <p className="agent-approval-result" data-choice="once">
-            <IconCheckmark1Small size={14} />
-            Secret provided
-          </p>
-        )}
+          <div className="agent-approval-actions">
+            <button type="submit" className="btn btn-secondary" disabled={disabled || !value}>
+              {submitting ? "Submitting" : "Submit"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost agent-approval-deny"
+              disabled={submitting !== undefined}
+              onClick={cancel}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       </div>
     </article>
   );
@@ -11806,28 +11856,13 @@ function AgentArtifactPanel({
   // dictation history dialog): the header has no divider, so the top fade is
   // what tells you content has scrolled up behind it.
   const bodyRef = useRef<HTMLDivElement>(null);
-  const [fade, setFade] = useState({ top: false, bottom: false });
-  const updateFade = useCallback(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const canScroll = el.scrollHeight - el.clientHeight > 1;
-    const atTop = el.scrollTop <= 1;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    setFade({ top: canScroll && !atTop, bottom: canScroll && !atBottom });
-  }, []);
+  const fade = useScrollFade(bodyRef);
+  // Re-measure when the panel swaps between the artifact preview and the list,
+  // or when the preview content changes (the hook re-wires its observers on the
+  // element swap; this catches same-element content changes).
   useEffect(() => {
-    const id = requestAnimationFrame(updateFade);
-    const el = bodyRef.current;
-    if (el && typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(updateFade);
-      observer.observe(el);
-      return () => {
-        cancelAnimationFrame(id);
-        observer.disconnect();
-      };
-    }
-    return () => cancelAnimationFrame(id);
-  }, [updateFade, preview, state.view]);
+    fade.update();
+  }, [fade.update, preview, state.view]);
 
   const q = query.trim().toLowerCase();
   const visibleArtifacts = q
@@ -11956,11 +11991,9 @@ function AgentArtifactPanel({
         {artifact ? (
           <div
             ref={bodyRef}
-            className="agent-artifact-panel-body"
+            className="agent-artifact-panel-body scroll-fade-mask"
             data-kind={preview.kind}
-            data-fade-top={fade.top || undefined}
-            data-fade-bottom={fade.bottom || undefined}
-            onScroll={updateFade}
+            {...fade.props}
           >
             {preview.kind === "loading" ? (
               <Spinner />
@@ -11994,11 +12027,9 @@ function AgentArtifactPanel({
           <>
             <div
               ref={bodyRef}
-              className="agent-artifact-panel-body"
+              className="agent-artifact-panel-body scroll-fade-mask"
               data-kind="list"
-              data-fade-top={fade.top || undefined}
-              data-fade-bottom={fade.bottom || undefined}
-              onScroll={updateFade}
+              {...fade.props}
             >
               {visibleArtifacts.length ? (
                 <ul className="agent-artifact-panel-list">
@@ -12336,15 +12367,11 @@ function mergeActiveHermesSessions(
     waitingSessionIds: Set<string>;
     pendingMessages: Record<string, HermesSessionMessage[]>;
     defaultModelId?: string;
-    sessionModelOverrides?: Record<string, string>;
   },
 ) {
   const currentById = new Map(current.map((session) => [session.id, session]));
   const defaultModelId = options.defaultModelId?.trim();
-  const sessionModelOverrides = options.sessionModelOverrides ?? {};
   const mergedFresh = fresh.map((session) => {
-    const overrideModel = sessionModelOverrides[session.id]?.trim();
-    if (overrideModel) return { ...session, model: overrideModel };
     if (session.model?.trim()) return session;
     const currentModel = currentById.get(session.id)?.model?.trim();
     if (currentModel) return { ...session, model: currentModel };

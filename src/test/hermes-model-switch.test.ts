@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHermesMethods } from "../lib/hermes-control-plane";
 import {
+  MODEL_CHANGE_LOCKED_NOTICE,
   MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-  MODEL_SWITCH_FAILED_NOTICE,
-  modelSwitchSuccessNotice,
-  resolveModelSwitchOutcome,
 } from "../lib/hermes-model-switch";
 
 describe("switchActiveSessionModel — typed control-plane seam", () => {
@@ -40,51 +38,18 @@ describe("switchActiveSessionModel — typed control-plane seam", () => {
   });
 });
 
-describe("resolveModelSwitchOutcome — honest three-state decision", () => {
-  it("reports an active-session switch only when the dispatch was accepted", () => {
-    const outcome = resolveModelSwitchOutcome({
-      hasActiveSession: true,
-      dispatchSucceeded: true,
-      modelName: "Kimi K2.6",
-    });
-    expect(outcome.state).toBe("active-session-switched");
-    expect(outcome.notice).toBe(modelSwitchSuccessNotice("Kimi K2.6"));
-  });
-
-  it("reports default-only when there is no active session", () => {
-    const outcome = resolveModelSwitchOutcome({
-      hasActiveSession: false,
-      dispatchSucceeded: false,
-      modelName: "Kimi K2.6",
-    });
-    expect(outcome.state).toBe("default-changed");
-    expect(outcome.notice).toBe(MODEL_SWITCH_DEFAULT_ONLY_NOTICE);
-  });
-
-  it("never claims success when the active-session dispatch failed", () => {
-    const outcome = resolveModelSwitchOutcome({
-      hasActiveSession: true,
-      dispatchSucceeded: false,
-      modelName: "Kimi K2.6",
-    });
-    expect(outcome.state).toBe("switch-failed");
-    expect(outcome.notice).toBe(MODEL_SWITCH_FAILED_NOTICE);
-    // The per-chat override is saved regardless, so the honest copy says this
-    // chat will use the new model next time rather than the running session.
-    expect(outcome.notice).toContain("next time");
-    // It must NOT claim the global default moved — the open-chat path never
-    // touches the default.
-    expect(outcome.notice).not.toContain("default");
-  });
-
+describe("composer model notices", () => {
   it("copy carries no em or en dashes", () => {
-    const notices = [
-      modelSwitchSuccessNotice("Kimi K2.6"),
-      MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-      MODEL_SWITCH_FAILED_NOTICE,
-    ];
+    const notices = [MODEL_SWITCH_DEFAULT_ONLY_NOTICE, MODEL_CHANGE_LOCKED_NOTICE];
     for (const notice of notices) {
       expect(notice).not.toMatch(/[–—]/);
     }
+  });
+
+  it("distinguishes new-session defaults from locked existing threads", () => {
+    expect(MODEL_SWITCH_DEFAULT_ONLY_NOTICE).toBe(
+      "Default model updated. It applies to new sessions.",
+    );
+    expect(MODEL_CHANGE_LOCKED_NOTICE).toBe("Start a new session to change models.");
   });
 });

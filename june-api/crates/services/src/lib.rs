@@ -10,6 +10,7 @@ mod language;
 mod metering;
 mod note_generate;
 mod note_transcribe;
+mod p3a;
 mod pricing;
 mod prompts;
 mod util;
@@ -33,6 +34,7 @@ pub use note_generate::{
 pub use note_transcribe::{
     NoteTranscribeOutput, NoteTranscribeParams, NoteTranscribeService, NoteTranscribeServiceDeps,
 };
+pub use p3a::{P3aReportParams, P3aReportService, P3aReportServiceDeps};
 pub use pricing::{PricingError, PricingTable};
 pub use web_augment::{
     WebAugmentService, WebAugmentServiceDeps, WebFetchOutput, WebFetchParams, WebSearchOutput,

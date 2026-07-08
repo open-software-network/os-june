@@ -71,7 +71,7 @@ Wispr buries data-sharing as one screen. Privacy is June's reason to exist, so i
 
 Right panel: a simple animated diagram — your Mac (files/memory/agent inside a solid border) with one thin arrow out labeled "prompt → zero-retention model" and nothing coming back but the answer.
 
-**6. Choose your data sharing preference.** Single toggle, **default OFF** (Wispr makes you choose; June's brand demands the private default): "Share anonymized usage analytics to help improve June." Below: "Either way: we store only your account, login, and billing records. Your prompts, transcripts, files, and memory are not on that list. Change anytime in Settings → Privacy." Link: `Learn how we use data`.
+**6. Choose your data sharing preference.** Single toggle, **default OFF** (Wispr makes you choose; June's brand demands the private default): "Share anonymized usage analytics to help improve June." Below: "Either way: we store only your account, login, and billing records. Your prompts, transcripts, files, and memory are not on that list. Change anytime in Settings → General." Link: `Learn how we use data`.
 
 ### Stage 3 — Permissions (3 screens) — _mirrors Wispr exactly_
 

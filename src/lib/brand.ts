@@ -17,6 +17,7 @@
 // in index.html, which sets --brand and --brand-wash before the bundle runs to
 // avoid a flash.
 
+import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 export type BrandId = "rose" | "clay" | "sage" | "ocean" | "plum";
@@ -59,6 +60,12 @@ export function getStoredBrand(): BrandId {
 }
 
 const ACCENT_EVENT = "june://accent";
+// Same-window signal for JS consumers that can't read the CSS `--brand` var —
+// notably the WebGL glass mark, which needs the concrete brand id to pick its
+// palette and live-update (with its own color fade) when the accent changes.
+// `applyBrandVar` only mutates an inline style, so there's no attribute mutation
+// to observe; this CustomEvent is the runtime change signal.
+const BRAND_CHANGE_EVENT = "june://brand-change";
 const BRAND_TRANSITION_MS = 220;
 const BRAND_TRANSITION_BUFFER_MS = 80;
 let brandTransitionTimer: number | undefined;
@@ -97,6 +104,11 @@ export function setStoredBrand(id: BrandId) {
     // Apply still works for this session.
   }
   applyBrand(id, { animate: true });
+  // Notify same-window subscribers (the glass mark) in this tick; localStorage
+  // is already written above, so getStoredBrand() reads the new value.
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(BRAND_CHANGE_EVENT, { detail: id }));
+  }
   // Tell the separate HUD webviews (agent/meeting/recording) to recolor too.
   if (inTauri()) {
     window.setTimeout(() => {
@@ -153,4 +165,27 @@ export function subscribeBrand() {
   void import("@tauri-apps/api/event").then(({ listen }) =>
     listen<BrandId>(ACCENT_EVENT, (event) => applyBrandVar(event.payload, { animate: true })),
   );
+}
+
+// ---- React binding -------------------------------------------------------
+
+function subscribeBrandChange(onChange: () => void) {
+  // Another tab/window changing the stored accent fires `storage`; re-read then.
+  // Scope to our key (or a full clear, key === null) so unrelated localStorage
+  // writes don't trigger a needless brand re-read.
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY || e.key === null) onChange();
+  };
+  window.addEventListener(BRAND_CHANGE_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(BRAND_CHANGE_EVENT, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+/** The live selected brand id. Re-reads on setStoredBrand (same window) and on a
+ *  cross-window storage change; safe to call during SSR-less client renders. */
+export function useBrandId(): BrandId {
+  return useSyncExternalStore(subscribeBrandChange, getStoredBrand, () => DEFAULT_BRAND);
 }

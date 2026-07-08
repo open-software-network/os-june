@@ -212,6 +212,27 @@ export type ProviderModelSettingsResponse = {
   settings: ProviderModelSettingsDto;
 };
 
+export type P3aSettingsDto = {
+  enabled: boolean;
+  consentVersion: number;
+  consentedAtWeek?: string | null;
+};
+
+export type P3aSettingsResponse = {
+  settings: P3aSettingsDto;
+};
+
+export type P3aQuestionDto = {
+  id: string;
+  prompt: string;
+  buckets: string[];
+  decision: string;
+};
+
+export type P3aQuestionCatalogResponse = {
+  questions: P3aQuestionDto[];
+};
+
 export type VeniceModelDto = {
   provider: string;
   id: string;
@@ -1630,6 +1651,26 @@ export async function deleteDictationHistoryItem(id: string) {
 
 export async function providerModelSettings() {
   return invoke<ProviderModelSettingsResponse>("provider_model_settings");
+}
+
+export async function p3aSettings() {
+  return invoke<P3aSettingsResponse>("p3a_settings");
+}
+
+export async function p3aQuestionCatalog() {
+  return invoke<P3aQuestionCatalogResponse>("p3a_question_catalog");
+}
+
+export async function setP3aEnabled(enabled: boolean) {
+  return invoke<P3aSettingsResponse>("set_p3a_enabled", {
+    request: { enabled },
+  });
+}
+
+export async function p3aRecord(questionId: string) {
+  return invoke<void>("p3a_record", {
+    request: { questionId },
+  });
 }
 
 export async function listVeniceModels(mode: ProviderModelMode) {

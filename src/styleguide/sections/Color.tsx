@@ -29,7 +29,15 @@ const COLOR_GROUPS: { label: string; names: string[] }[] = [
   },
   {
     label: "Border and ring",
-    names: ["--border", "--border-subtle", "--input", "--ring", "--ring-focus", "--focus-ring"],
+    names: [
+      "--border",
+      "--border-subtle",
+      "--detail-bar-border",
+      "--input",
+      "--ring",
+      "--ring-focus",
+      "--focus-ring",
+    ],
   },
   {
     label: "Brand and derived tints",

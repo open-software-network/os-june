@@ -1,7 +1,6 @@
 import {
   forwardRef,
   useCallback,
-  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -10,6 +9,7 @@ import {
 import { IconNoteText } from "central-icons/IconNoteText";
 
 import type { NoteListItemDto } from "../../../lib/tauri";
+import { useScrollFade } from "../../../lib/use-scroll-fade";
 
 export type NoteSuggestionListProps = {
   items: NoteListItemDto[];
@@ -47,23 +47,10 @@ export const NoteSuggestionList = forwardRef<NoteSuggestionListHandle, NoteSugge
   ({ items, command }, ref) => {
     const [selected, setSelected] = useState(0);
     const [activeSource, setActiveSource] = useState<"keyboard" | "pointer" | null>(null);
-    const [fade, setFade] = useState({ top: false, bottom: false });
     const menuRef = useRef<HTMLDivElement | null>(null);
+    const fade = useScrollFade(menuRef);
     const itemIds = items.map((item) => item.id).join("\u0000");
     const lastItemIdsRef = useRef(itemIds);
-
-    const updateFade = useCallback(() => {
-      const el = menuRef.current;
-      if (!el) return;
-      const canScroll = el.scrollHeight - el.clientHeight > 1;
-      const atTop = el.scrollTop <= 1;
-      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-      setFade((prev) => {
-        const top = canScroll && !atTop;
-        const bottom = canScroll && !atBottom;
-        return prev.top === top && prev.bottom === bottom ? prev : { top, bottom };
-      });
-    }, []);
 
     useLayoutEffect(() => {
       // Reset the highlight whenever filtering changes the result set so Enter
@@ -73,18 +60,8 @@ export const NoteSuggestionList = forwardRef<NoteSuggestionListHandle, NoteSugge
         setSelected(0);
         setActiveSource(null);
       }
-      updateFade();
-      const frame = window.requestAnimationFrame(updateFade);
-      return () => window.cancelAnimationFrame(frame);
-    }, [itemIds, updateFade]);
-
-    useEffect(() => {
-      const el = menuRef.current;
-      if (!el || typeof ResizeObserver === "undefined") return;
-      const observer = new ResizeObserver(updateFade);
-      observer.observe(el);
-      return () => observer.disconnect();
-    }, [updateFade]);
+      fade.update();
+    }, [itemIds, fade.update]);
 
     const choose = useCallback(
       (index: number) => {
@@ -129,18 +106,14 @@ export const NoteSuggestionList = forwardRef<NoteSuggestionListHandle, NoteSugge
 
     return (
       <div className="agent-category-menu-shell agent-note-suggestion-menu-shell">
-        <div
-          className="agent-category-menu-scroll-wrap"
-          data-fade-top={fade.top || undefined}
-          data-fade-bottom={fade.bottom || undefined}
-        >
+        <div className="agent-category-menu-scroll-wrap scroll-fade" {...fade.props}>
           <div
             ref={menuRef}
             className="agent-category-menu agent-note-suggestion-menu"
             role="listbox"
             aria-label="Reference a note"
             onScroll={() => {
-              updateFade();
+              fade.update();
             }}
           >
             {items.map((item, index) => {

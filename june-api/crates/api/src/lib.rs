@@ -34,6 +34,7 @@ pub use handlers::image::{ImageEditRequest, ImageGenerateRequest, ImageGenerateR
 pub use handlers::issues::IssueReportResponse;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
+pub use handlers::p3a::{P3aReportRequest, P3aReportResponse};
 pub use handlers::web::{WebFetchRequest, WebSearchRequest};
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
@@ -95,6 +96,10 @@ pub fn router(state: ApiState) -> Router {
             // Reports carry screenshot uploads, so they get the audio-sized
             // body budget rather than the JSON one.
             post(handlers::issues::submit).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
+        )
+        .route(
+            "/v1/p3a/reports",
+            post(handlers::p3a::submit).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .layer(timeout)
         .layer(TraceLayer::new_for_http())
