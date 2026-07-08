@@ -35,7 +35,7 @@ import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
 import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import { NotesList, type NotesListHandle } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
-import { AppSettings, type SettingsTab } from "../components/settings/AppSettings";
+import { AppSettings, SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { TabBar, type TabItem } from "../components/tabs/TabBar";
 import { defaultNav, makeTabId, navEquals, type Tab, type TabNav } from "./tabs/tabs";
@@ -238,6 +238,7 @@ function tabMeta(
   notes: NoteListItemDto[],
   folders: FolderDto[],
   sessions: HermesSessionInfo[],
+  settingsSectionLabel?: string,
 ): { title: string; icon: ReactNode } {
   switch (nav.view) {
     case "meetings": {
@@ -285,7 +286,9 @@ function tabMeta(
       };
     case "settings":
       return {
-        title: "Settings",
+        // Surface the active settings section (e.g. "MCP servers") in the tab
+        // strip so the label says what you are looking at, not just "Settings".
+        title: settingsSectionLabel?.trim() || "Settings",
         icon: <IconSettingsGear4 size={TAB_ICON_SIZE} />,
       };
     case "notes":
@@ -673,6 +676,12 @@ export function App() {
   const selectedRecovery = selectedNote ? recoveriesByNote.get(selectedNote.id) : undefined;
   const noteDetailScrollerActive = activeView === "meetings" && !!selectedNote;
   const detailScrollerActive = activeView === "folders" && !!state.selectedFolderId;
+  // A settings drill-in (e.g. a skill detail) that pins its own frosted
+  // breadcrumb bar at the top of the panel and scrolls its content beneath —
+  // the same pinned-bar mechanic as opening a meeting note from a folder. When
+  // set, the outer body stops scrolling so the pinned bar stays fixed.
+  const [settingsDetailPinned, setSettingsDetailPinned] = useState(false);
+  const settingsDetailScrollerActive = activeView === "settings" && settingsDetailPinned;
 
   // ---- Tabs ------------------------------------------------------------
   // The current live navigation, reduced to a snapshot. Fields are gated by
@@ -998,13 +1007,27 @@ export function App() {
     return intent;
   }, []);
 
+  // The label of the active settings section, so a tab parked on the Settings
+  // view reads e.g. "MCP servers" instead of the generic "Settings". Only the
+  // active tab is on the live settings view, so the section label applies to it.
+  const settingsSectionLabel = useMemo(
+    () => SETTINGS_TABS.find((tab) => tab.id === settingsTab)?.label,
+    [settingsTab],
+  );
+
   const tabItems = useMemo<TabItem[]>(
     () =>
       tabs.map((tab) => ({
         id: tab.id,
-        ...tabMeta(tab.nav, state.notes, state.folders, agentSessions),
+        ...tabMeta(
+          tab.nav,
+          state.notes,
+          state.folders,
+          agentSessions,
+          tab.id === activeTabId ? settingsSectionLabel : undefined,
+        ),
       })),
-    [tabs, state.notes, state.folders, agentSessions],
+    [tabs, state.notes, state.folders, agentSessions, activeTabId, settingsSectionLabel],
   );
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
@@ -1081,6 +1104,12 @@ export function App() {
     if (!el) return;
     return attachScrollThumbFade(el);
   }, [noteDetailScrollerActive, selectedNoteId]);
+
+  // Leaving the settings view drops any pinned settings drill-in, so the body
+  // scroller is never left frozen for a view that has no pinned bar.
+  useEffect(() => {
+    if (activeView !== "settings") setSettingsDetailPinned(false);
+  }, [activeView]);
 
   // Update state is read through refs so runUpdateCheck keeps a stable identity.
   // Otherwise the launch effect and the manual-check listener below would tear
@@ -3079,7 +3108,9 @@ export function App() {
             className="main-panel-body"
             data-active-view={activeView}
             data-detail-scroller={detailScrollerActive ? "true" : undefined}
-            data-note-detail-scroller={noteDetailScrollerActive ? "true" : undefined}
+            data-note-detail-scroller={
+              noteDetailScrollerActive || settingsDetailScrollerActive ? "true" : undefined
+            }
           >
             {error ? <p className="error-banner">{error}</p> : null}
             {billingNotice ? (
@@ -3105,6 +3136,7 @@ export function App() {
                   onEnableSystemAudio={handleEnableSystemAudio}
                   activeTab={settingsTab}
                   onTabChange={setSettingsTab}
+                  onDetailPinnedChange={setSettingsDetailPinned}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
                   updateReadyToRelaunch={readyUpdate != null}
                   onRelaunch={handleRelaunchUpdate}

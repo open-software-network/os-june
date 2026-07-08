@@ -2002,11 +2002,22 @@ describe("AppSettings", () => {
         }),
       );
       expect(await screen.findByRole("option", { name: /Parakeet/ })).toBeInTheDocument();
-      // The non-suggested catalog lives under the All tab.
-      await user.click(screen.getByRole("tab", { name: "All" }));
-      expect(screen.getAllByText("$0.0001 per second audio").length).toBeGreaterThan(0);
-      expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
-      await user.click(await screen.findByRole("option", { name: /GPT-4o Transcribe/ }));
+      const parakeetOption = screen.getByRole("option", { name: /Parakeet/ });
+      expect(parakeetOption).not.toHaveTextContent("$0.0001 per second audio");
+      await user.hover(parakeetOption);
+      expect(await screen.findByText(/\$0\.0001 per second audio/)).toBeInTheDocument();
+      await user.unhover(parakeetOption);
+      // The non-suggested catalog lives behind the All models row.
+      await user.click(screen.getByRole("button", { name: "All models" }));
+      const transcriptionPanel = await screen.findByRole("group", {
+        name: "All transcription models",
+      });
+      expect(
+        within(transcriptionPanel).getByRole("option", { name: /GPT-4o mini Transcribe/ }),
+      ).toBeInTheDocument();
+      await user.click(
+        await within(transcriptionPanel).findByRole("option", { name: /GPT-4o Transcribe/ }),
+      );
       expect(mocks.setVeniceModel).toHaveBeenCalledWith("transcription", "gpt-4o-transcribe");
       expect(modelChanged).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2022,14 +2033,11 @@ describe("AppSettings", () => {
           name: "Change text model",
         }),
       );
-      await user.click(screen.getByRole("tab", { name: "All" }));
-      expect(
-        screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
-      ).toBeGreaterThan(0);
-      expect(screen.getAllByText("Private mode").length).toBeGreaterThan(0);
-      expect(screen.getByText("Anonymous mode")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "All models" }));
+      const textPanel = await screen.findByRole("group", { name: "All text models" });
+      expect(within(textPanel).getByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
       expect(screen.queryByText("Anon")).not.toBeInTheDocument();
-      await user.click(await screen.findByRole("option", { name: /Venice Uncensored/ }));
+      await user.click(await within(textPanel).findByRole("option", { name: /Venice Uncensored/ }));
       expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
       expect(modelChanged).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2044,7 +2052,7 @@ describe("AppSettings", () => {
     }
   });
 
-  it("keeps the local model config collapsed behind More options until expanded", async () => {
+  it("keeps local endpoint fields hidden until local setup starts", async () => {
     const user = userEvent.setup();
 
     render(
@@ -2062,7 +2070,7 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
 
-    // The primary pickers are visible, but the local model config is hidden
+    // The primary pickers are visible, but advanced local controls are hidden
     // behind a collapsed "More options" disclosure by default.
     const trigger = await screen.findByRole("button", { name: /More options/ });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -2072,9 +2080,15 @@ describe("AppSettings", () => {
     await user.click(trigger);
 
     expect(trigger).toHaveAttribute("aria-expanded", "true");
-    expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
+    const localSwitch = await screen.findByRole("switch", { name: "Use local text model" });
+    expect(localSwitch).toBeInTheDocument();
+    expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+
+    await user.click(localSwitch);
+
     expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
+    expect(screen.getByText("Enter a local endpoint and model ID first.")).toBeInTheDocument();
   });
 
   it("auto-expands More options when a local model is already enabled", async () => {
@@ -2118,6 +2132,8 @@ describe("AppSettings", () => {
     // An active local model must never be hidden: the disclosure opens itself so
     // the enabled toggle and endpoint config stay reachable.
     expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /More options/ })).toHaveAttribute(
       "aria-expanded",
       "true",
@@ -2146,9 +2162,10 @@ describe("AppSettings", () => {
       await user.click(await screen.findByRole("tab", { name: "Models" }));
       // The local model config lives behind the "More options" disclosure.
       await user.click(await screen.findByRole("button", { name: /More options/ }));
+      await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
       await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
       await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
-      await user.type(screen.getByLabelText("API key"), "sk-test");
+      await user.type(screen.getByLabelText("Local API key"), "sk-test");
       await user.click(screen.getByRole("switch", { name: "Use local text model" }));
 
       // A dirty, loopback draft is persisted first, then the provider flips —
@@ -2272,12 +2289,13 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     await user.click(await screen.findByRole("button", { name: "Change text model" }));
-    await user.click(await screen.findByRole("tab", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: "All models" }));
+    const panel = await screen.findByRole("group", { name: "All text models" });
 
     // Exactly one option references the local model id, and it is the
     // prefixed "Local:" entry — never a bare duplicate that would persist the
     // local id as the remote model (finding 1).
-    const llamaOptions = screen
+    const llamaOptions = within(panel)
       .getAllByRole("option")
       .filter((option) => option.textContent?.includes("llama3.1:8b"));
     expect(llamaOptions).toHaveLength(1);
@@ -2325,11 +2343,12 @@ describe("AppSettings", () => {
     expect(screen.queryByText("Local: venice-uncensored")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Change text model" }));
-    await user.click(screen.getByRole("tab", { name: "All" }));
+    await user.click(screen.getByRole("button", { name: "All models" }));
+    const panel = await screen.findByRole("group", { name: "All text models" });
     expect(
-      await screen.findByRole("option", { name: /Local: venice-uncensored/ }),
+      await within(panel).findByRole("option", { name: /Local: venice-uncensored/ }),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
+    await user.click(within(panel).getByRole("option", { name: /Venice Uncensored/ }));
 
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
     expect(mocks.saveLocalGenerationSettings).not.toHaveBeenCalled();
@@ -2374,8 +2393,9 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     await user.click(screen.getByRole("button", { name: "Change text model" }));
-    await user.click(screen.getByRole("tab", { name: "All" }));
-    await user.click(await screen.findByRole("option", { name: /Local: llama3\.1:8b/ }));
+    await user.click(screen.getByRole("button", { name: "All models" }));
+    const panel = await screen.findByRole("group", { name: "All text models" });
+    await user.click(await within(panel).findByRole("option", { name: /Local: llama3\.1:8b/ }));
 
     // The picker option is built from the saved settings, so selecting it
     // enables from them (finding 3) rather than committing the draft.
@@ -2421,8 +2441,9 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     await user.click(screen.getByRole("button", { name: "Change text model" }));
-    await user.click(screen.getByRole("tab", { name: "All" }));
-    await user.click(await screen.findByRole("option", { name: /Local: llama3\.1:8b/ }));
+    await user.click(screen.getByRole("button", { name: "All models" }));
+    const panel = await screen.findByRole("group", { name: "All text models" });
+    await user.click(await within(panel).findByRole("option", { name: /Local: llama3\.1:8b/ }));
 
     // An off-device endpoint is never enabled silently: the picker reveals
     // the confirm affordance in the Local model section instead.
@@ -2464,6 +2485,7 @@ describe("AppSettings", () => {
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
     await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
     await user.click(screen.getByRole("button", { name: "Test connection" }));
 
@@ -2498,6 +2520,7 @@ describe("AppSettings", () => {
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
     await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "https://models.example.com/v1");
     await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
 
@@ -2585,29 +2608,28 @@ describe("AppSettings", () => {
     await user.click(await screen.findByRole("button", { name: "Change text model" }));
 
     // Suggested is the default view: only the curated picks present in the
-    // catalog show, each with its recommendation reason.
+    // catalog show in the compact root menu.
     expect(await screen.findByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
     expect(await screen.findByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Venice Uncensored/ })).not.toBeInTheDocument();
-    expect(screen.getByText(/Default pick/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All models" })).toBeInTheDocument();
 
-    // All shows the full catalog, without recommendation copy.
-    await user.click(screen.getByRole("tab", { name: "All" }));
-    expect(screen.getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
+    // All models shows the full available catalog in the flyout.
+    await user.click(screen.getByRole("button", { name: "All models" }));
+    const panel = await screen.findByRole("group", { name: "All text models" });
+    expect(within(panel).getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
     expect(screen.queryByText(/Default pick/)).not.toBeInTheDocument();
 
-    // Searching looks across the whole catalog even from Suggested, and a
-    // suggested pick stays selectable.
-    await user.click(screen.getByRole("tab", { name: "Suggested" }));
-    await user.type(screen.getByLabelText("Search models"), "uncensored");
-    expect(screen.getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
-    await user.clear(screen.getByLabelText("Search models"));
-    await user.click(screen.getByRole("option", { name: /GLM 5\.1/ }));
+    // Searching filters the available catalog, and a suggested pick stays selectable.
+    await user.type(within(panel).getByLabelText("Search models"), "uncensored");
+    expect(within(panel).getByRole("option", { name: /Venice Uncensored/ })).toBeInTheDocument();
+    await user.clear(within(panel).getByLabelText("Search models"));
+    await user.click(within(panel).getByRole("option", { name: /GLM 5\.1/ }));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-1");
   });
 
-  it("shows the image model in AI models and saves the default image model", async () => {
+  it("shows the image generation section and saves the default image model", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -2624,30 +2646,40 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
 
-    const modelsSection = screen.getByRole("heading", { name: "AI models" }).closest("section");
-    expect(modelsSection).not.toBeNull();
-    expect(screen.queryByRole("heading", { name: "Image generation" })).not.toBeInTheDocument();
+    // Our dedicated Image generation section (kept over main's inline row).
+    const imageSection = screen
+      .getByRole("heading", { name: "Image generation" })
+      .closest("section");
+    expect(imageSection).not.toBeNull();
     expect(
-      within(modelsSection as HTMLElement).getByRole("button", { name: "Change image model" }),
+      within(imageSection as HTMLElement).getByRole("button", { name: "Change image model" }),
     ).toBeInTheDocument();
-    expect(within(modelsSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
+    expect(within(imageSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
+    // Safe mode lives in the image section and defaults on (JUN-209).
     expect(
-      screen.queryByRole("switch", { name: "Blur adult content in images" }),
-    ).not.toBeInTheDocument();
+      within(imageSection as HTMLElement).getByRole("switch", {
+        name: "Blur adult content in images",
+      }),
+    ).toBeInTheDocument();
 
     // The picker opens with the curated image options (no backend fetch).
     await user.click(screen.getByRole("button", { name: "Change image model" }));
-    expect(await screen.findByRole("option", { name: /Venice SD3\.5/ })).toBeInTheDocument();
+    const defaultImageOption = await screen.findByRole("option", { name: /Venice SD3\.5/ });
+    expect(defaultImageOption).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /FLUX 2 Pro/ })).toBeInTheDocument();
+    // Expanded image catalog (from main) rendered through the shared popover:
+    // the models are listed, but their metadata is revealed on hover, not inline.
     expect(screen.getByText("GPT Image 2")).toBeInTheDocument();
     expect(screen.getByText("Lustify v8")).toBeInTheDocument();
     expect(screen.getByText("Z-Image Turbo")).toBeInTheDocument();
+    expect(defaultImageOption).not.toHaveTextContent(
+      "Venice's default Stable Diffusion 3.5 image model.",
+    );
+    await user.hover(defaultImageOption);
     expect(
-      screen.getAllByText("Venice's default Stable Diffusion 3.5 image model.").length,
-    ).toBeGreaterThan(0);
-    expect(screen.getAllByText("Private").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Anonymized").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Uncensored").length).toBeGreaterThan(0);
+      await screen.findByText("Venice's default Stable Diffusion 3.5 image model."),
+    ).toBeInTheDocument();
+    await user.unhover(defaultImageOption);
     expect(screen.queryByText("Model details unavailable")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Search models"), "uncensored");
     expect(screen.getByRole("option", { name: /Lustify v7/ })).toBeInTheDocument();
@@ -2665,44 +2697,9 @@ describe("AppSettings", () => {
     );
   });
 
-  it("keeps image Safe mode behind More options and toggles it once expanded", async () => {
-    const user = userEvent.setup();
-    render(
-      <AppSettings
-        account={signedInAccount}
-        accountLoading={false}
-        sourceMode="microphoneOnly"
-        checkingSourceReadiness={false}
-        onAccountChanged={vi.fn()}
-        onAccountRefresh={vi.fn()}
-        onSourceModeChange={vi.fn()}
-        onEnableSystemAudio={vi.fn()}
-      />,
-    );
-
-    await user.click(await screen.findByRole("tab", { name: "Models" }));
-
-    expect(screen.getByRole("button", { name: "Change image model" })).toBeInTheDocument();
-    expect(
-      screen.queryByRole("switch", { name: "Blur adult content in images" }),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /More options/ }));
-
-    const safeModeSwitch = await screen.findByRole("switch", {
-      name: "Blur adult content in images",
-    });
-    expect(safeModeSwitch).toHaveAttribute("aria-checked", "true");
-
-    await user.click(safeModeSwitch);
-
-    expect(mocks.setImageSafeMode).toHaveBeenCalledWith(false);
-    expect(await screen.findByText("Safe mode off: images are not filtered.")).toBeInTheDocument();
-  });
-
-  it("blocks selecting a text model that cannot use tools", async () => {
+  it("hides text models that cannot use tools", async () => {
     // June's agent works through tool calls — a tool-less model (Venice's
-    // E2EE models) bricks it, so the picker must not let it be selected.
+    // E2EE models) bricks it, so the picker leaves it out entirely.
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -2719,20 +2716,14 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     await user.click(await screen.findByRole("button", { name: "Change text model" }));
-    // Tool-less models are not suggested, so judge them on the All tab.
-    await user.click(await screen.findByRole("tab", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: "All models" }));
+    const panel = await screen.findByRole("group", { name: "All text models" });
 
-    const toolless = await screen.findByRole("option", {
-      name: /E2EE Private/,
-    });
-    expect(toolless).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getAllByText("No tools").length).toBeGreaterThan(0);
-
-    await user.click(toolless);
-    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+    expect(within(panel).queryByRole("option", { name: /E2EE Private/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("No tools")).not.toBeInTheDocument();
 
     // Tool-capable models stay selectable.
-    await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
+    await user.click(within(panel).getByRole("option", { name: /Venice Uncensored/ }));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "venice-uncensored");
   });
 
@@ -2977,8 +2968,8 @@ describe("AppSettings", () => {
       />,
     );
 
+    // Files is its own settings group on the Agent tab now (no inner tabs).
     await user.click(screen.getByRole("tab", { name: "Agent" }));
-    await user.click(screen.getByRole("button", { name: "Files" }));
 
     expect(await screen.findByText("Workspace")).toBeInTheDocument();
     expect(screen.getByText("Memory")).toBeInTheDocument();
@@ -3004,8 +2995,8 @@ describe("AppSettings", () => {
         />,
       );
 
+      // Messaging loads on mount of the Agent tab (no inner tabs).
       fireEvent.click(screen.getByRole("tab", { name: "Agent" }));
-      fireEvent.click(screen.getByRole("button", { name: "Messaging" }));
 
       await act(async () => {
         vi.advanceTimersByTime(MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS);
@@ -3014,7 +3005,9 @@ describe("AppSettings", () => {
 
       expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
       expect(screen.getByText("No matching platforms")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+      // Messaging and Files each render their own toolbar refresh now.
+      const messaging = screen.getByRole("region", { name: "Messaging platforms" });
+      expect(within(messaging).getByRole("button", { name: "Refresh" })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -3070,8 +3063,13 @@ describe("AppSettings", () => {
     const cliSwitch = await screen.findByRole("switch", {
       name: "Allow agent CLI access",
     });
-    // The disclosure names the deferred-execution risk, not just the benefit.
-    expect(screen.getByText(/runs outside June's sandbox/)).toBeInTheDocument();
+    // The deferred-execution risk moved off the row into a HoverTip on the info
+    // affordance next to the title; focusing it reveals the full caveat.
+    const infoAffordance = screen.getByRole("note", {
+      name: "Agent CLI access details",
+    });
+    infoAffordance.focus();
+    expect(await screen.findByText(/runs outside June's sandbox/)).toBeInTheDocument();
 
     await waitFor(() => expect(cliSwitch).toBeEnabled());
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
@@ -3083,5 +3081,58 @@ describe("AppSettings", () => {
     await user.click(cliSwitch);
     await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false));
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("drills into a messaging platform as a pinned detail with bar actions", async () => {
+    const user = userEvent.setup();
+    mocks.hermesBridgeMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        {
+          id: "slack",
+          name: "Slack",
+          description: "Reach the agent from Slack.",
+          enabled: false,
+          configured: false,
+          state: "ready",
+          envVars: [],
+        },
+      ],
+    });
+    const onDetailPinnedChange = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="agent"
+        onTabChange={vi.fn()}
+        onDetailPinnedChange={onDetailPinnedChange}
+      />,
+    );
+
+    // Drill into the platform from the list.
+    const platformButton = await screen.findByRole("button", { name: /Slack/ });
+    await user.click(platformButton);
+
+    // The detail pins at the top: a breadcrumb back affordance appears, the
+    // host is told a detail scroller is active, and the Save + enable actions
+    // live in the bar (not a separate footer). The enable action is the shared
+    // Switch component (role="switch"), not a bespoke Enable button.
+    expect(
+      await screen.findByRole("button", { name: "Back to messaging platforms" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(onDetailPinnedChange).toHaveBeenLastCalledWith(true));
+    expect(screen.getByRole("switch", { name: /Slack/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeInTheDocument();
+
+    // Returning to the list unpins the detail.
+    await user.click(screen.getByRole("button", { name: "Back to messaging platforms" }));
+    await waitFor(() => expect(onDetailPinnedChange).toHaveBeenLastCalledWith(false));
   });
 });

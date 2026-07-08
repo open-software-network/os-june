@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-export type InlineNoticeTone = "warning" | "destructive";
+export type InlineNoticeTone = "info" | "warning" | "destructive";
 
 type InlineNoticeProps = {
   eyebrow?: ReactNode;
@@ -26,15 +26,11 @@ export function InlineNotice({
   const classes = ["inline-notice", className].filter(Boolean).join(" ");
   return (
     <section className={classes} data-tone={tone} role={role} aria-label={ariaLabel}>
-      <p className="inline-notice-message">
-        {eyebrow || icon ? (
-          <span className="inline-notice-eyebrow">
-            {icon}
-            {eyebrow}
-          </span>
-        ) : null}
+      {icon ? <span className="inline-notice-icon">{icon}</span> : null}
+      <div className="inline-notice-message">
+        {eyebrow ? <span className="inline-notice-eyebrow">{eyebrow}</span> : null}
         <span className="inline-notice-body">{body}</span>
-      </p>
+      </div>
       {actions ? <div className="inline-notice-actions">{actions}</div> : null}
     </section>
   );

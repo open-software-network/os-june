@@ -11,8 +11,8 @@
  * case, no em/en-dashes, per June conventions.
  *
  * Two hard rules this module owns:
- * - secrets (env values, header values, auth tokens) are NEVER surfaced; the
- *   list shows redacted placeholders and the count of configured fields only;
+ * - secrets (env values, header values, auth tokens) are NEVER surfaced; detail
+ *   views may show secret field keys, but never their values;
  * - a stdio command/args or an HTTP URL the user types is validated for shape
  *   and screened for shell/path-injection metacharacters BEFORE it is sent, so
  *   June never hands Hermes an argument that could break out of the intended
@@ -21,6 +21,31 @@
 
 import type { HermesAddMcpServerPayload } from "./client";
 import type { HermesMcpAuthStatus, HermesMcpServerInfo, HermesMcpTransport } from "./schemas";
+
+/** June-owned MCP servers are implementation details. They are configured by
+ * the app at runtime and should not appear in user-managed MCP surfaces. */
+export const INTERNAL_MCP_SERVER_NAMES = [
+  "june_context",
+  "june_web",
+  "june_image",
+  "june_recorder",
+] as const;
+
+const INTERNAL_MCP_SERVER_NAME_SET = new Set<string>(INTERNAL_MCP_SERVER_NAMES);
+
+export function isInternalMcpServerName(name: string): boolean {
+  return INTERNAL_MCP_SERVER_NAME_SET.has(name);
+}
+
+export function isUserManagedMcpServer(server: HermesMcpServerInfo): boolean {
+  return !isInternalMcpServerName(server.name);
+}
+
+export function userManagedMcpServers(
+  servers: readonly HermesMcpServerInfo[],
+): HermesMcpServerInfo[] {
+  return servers.filter(isUserManagedMcpServer);
+}
 
 // ---------------------------------------------------------------------------
 // Transport / risk labels

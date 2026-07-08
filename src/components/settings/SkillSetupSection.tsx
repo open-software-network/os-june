@@ -1,11 +1,9 @@
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
-import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconEyeOpen } from "central-icons/IconEyeOpen";
 import { IconEyeSlash } from "central-icons/IconEyeSlash";
 import { IconLock } from "central-icons/IconLock";
-import { IconWarningSign } from "central-icons/IconWarningSign";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   timingLabel,
@@ -167,20 +165,23 @@ export function SkillSetupView({
 }
 
 /** The setup status badge: Ready / Missing API key / Missing config / Optional
- * setup skipped. Exported so the Installed skills row can render it inline. */
+ * setup skipped. Exported so the Installed skills row can render it inline.
+ * Renders the app's shared status pill (`.status-pill`), the same neutral
+ * surface-subtle pill with a leading status dot used by the external-dir rows,
+ * so setup status reads the same everywhere. */
 export function SetupStatusBadge({ badge }: { badge: SkillSetupBadgeModel }) {
   return (
-    <span className="skill-setup-badge" data-tone={badge.tone} data-status={badge.status}>
-      {badge.tone === "ready" ? (
-        <IconCircleCheck size={12} ariaHidden />
-      ) : badge.tone === "attention" ? (
-        <IconWarningSign size={12} ariaHidden />
-      ) : (
-        <IconCircleInfo size={12} ariaHidden />
-      )}
+    <span className="status-pill" data-tone={statusPillTone(badge.tone)} data-status={badge.status}>
       {badge.label}
     </span>
   );
+}
+
+/** Maps a skill-setup badge tone to the shared status-pill tone vocabulary. */
+function statusPillTone(tone: SkillSetupBadgeModel["tone"]): "ok" | "warning" | "muted" {
+  if (tone === "ready") return "ok";
+  if (tone === "attention") return "warning";
+  return "muted";
 }
 
 /** One required-secret row. Shows configured/missing state WITHOUT the value, a
