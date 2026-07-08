@@ -8126,6 +8126,43 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("uses the active profile image model for the /image slash command", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        imageModel: "global-image-model",
+        imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
+      },
+      effectiveSettings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        imageModel: "active-profile-image-model",
+        imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
+      },
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mockImageGenerationSuccess();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.generateImage).toHaveBeenCalledWith(
+      "a red bicycle",
+      "active-profile-image-model",
+      expect.any(String),
+      false,
+    );
+  });
+
   it.each([
     {
       name: "safe mode off",

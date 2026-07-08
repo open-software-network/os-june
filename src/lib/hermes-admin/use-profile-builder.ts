@@ -19,6 +19,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { setActiveHermesProfileName } from "../active-hermes-profile";
+import { imageModelCatalog } from "../image-models";
 import {
   hermesBridgeStatus,
   listVeniceModels,
@@ -311,13 +312,13 @@ export class ProfileBuilderController {
       const [settings, voice, image] = await Promise.all([
         providerModelSettings(),
         listVeniceModels("transcription"),
-        listVeniceModels("image"),
+        Promise.resolve({ models: imageModelCatalog() }),
       ]);
       if (this.disposed) return;
       this.effectiveModelSettings = {
-        transcriptionProvider: settings.effectiveSettings.transcriptionProvider,
-        transcriptionModel: settings.effectiveSettings.transcriptionModel,
-        imageModel: settings.effectiveSettings.imageModel,
+        transcriptionProvider: settings.settings.transcriptionProvider,
+        transcriptionModel: settings.settings.transcriptionModel,
+        imageModel: settings.settings.imageModel,
       };
       this.voiceModels = voice.models;
       this.imageModels = image.models;

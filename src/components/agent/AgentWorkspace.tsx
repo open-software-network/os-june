@@ -4008,7 +4008,8 @@ export function AgentWorkspace({
     try {
       const settingsResponse = await providerModelSettings();
       settings = settingsResponse.settings;
-      pinnedModel = settings.imageModel || undefined;
+      pinnedModel =
+        settingsResponse.effectiveSettings?.imageModel || settings.imageModel || undefined;
       pinnedSafeMode = settings.imageSafeMode;
     } catch {
       // Non-fatal: generation proceeds with server-resolved settings.

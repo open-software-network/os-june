@@ -90,7 +90,7 @@ import {
   ModelPickerPopover,
   type ModelPickerFlyout,
 } from "./ModelPickerPopover";
-import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
+import { DEFAULT_IMAGE_MODEL, imageModelCatalog } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
@@ -1154,7 +1154,7 @@ export function AppSettings({
   // model when clicked.
   const generationOptions = modelOptions(generationCatalog, modelValueForMode("generation"));
   const imageOptions = IMAGE_GENERATION_ENABLED
-    ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
+    ? modelOptions(imageModelCatalog(), providerSettings.imageModel)
     : [];
   const localDraftBaseUrl = localGenerationDraft.baseUrl.trim();
   const localNonLoopback = localDraftBaseUrl.length > 0 && !isLoopbackUrl(localDraftBaseUrl);

@@ -78,6 +78,8 @@ const IMAGE_MODEL = {
   capabilities: [],
 };
 
+const GLOBAL_IMAGE_MODEL = "venice-sd35";
+
 function ctx(overrides: Partial<ProfileBuilderContext> = {}): ProfileBuilderContext {
   return {
     existingProfiles: [],
@@ -316,6 +318,24 @@ describe("profile builder — create success/failure + rollback", () => {
   beforeEach(() => {
     mocks.setProfileModelOverrides.mockResolvedValue(undefined);
     resetActiveHermesProfileForTests();
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "global-voice",
+        imageModel: GLOBAL_IMAGE_MODEL,
+      },
+      effectiveSettings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "active-profile-voice",
+        imageModel: "active-profile-image",
+      },
+    });
+    mocks.listVeniceModels.mockImplementation(async (mode) => ({
+      mode,
+      modelType: mode === "transcription" ? "transcription" : "image",
+      selectedModel: mode === "transcription" ? "global-voice" : GLOBAL_IMAGE_MODEL,
+      models: mode === "transcription" ? [VOICE_MODEL] : [],
+    }));
   });
 
   it("creates a profile, writes its SOUL, makes it active, and feeds the app store", async () => {
@@ -467,6 +487,39 @@ describe("profile builder — create success/failure + rollback", () => {
       transcriptionProvider: "venice",
       transcriptionModel: "voice-fast",
       imageModel: "image-private",
+    });
+
+    controller.dispose();
+  });
+
+  it("loads image choices from the frontend catalog when the backend image catalog is empty", async () => {
+    const engine = makeBuilderEngine();
+    const controller = new ProfileBuilderController(engine);
+    await controller.load();
+    await flush();
+
+    controller.setStep("model");
+    await flush();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.imageModels.length).toBeGreaterThan(0);
+    expect(snapshot.imageModels.some((model) => model.id === GLOBAL_IMAGE_MODEL)).toBe(true);
+
+    controller.dispose();
+  });
+
+  it("uses global model settings for June's default placeholders", async () => {
+    const engine = makeBuilderEngine();
+    const controller = new ProfileBuilderController(engine);
+    await controller.load();
+    await flush();
+
+    controller.setStep("model");
+    await flush();
+
+    expect(controller.getSnapshot().effectiveModelSettings).toMatchObject({
+      transcriptionModel: "global-voice",
+      imageModel: GLOBAL_IMAGE_MODEL,
     });
 
     controller.dispose();
