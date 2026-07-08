@@ -859,6 +859,8 @@ type AgentArtifact = {
 
 type AgentAttachment = ImportedHermesFile & {
   id: string;
+  /** Original `/image` prompt for hidden fast-path context handoff. */
+  sourcePrompt?: string;
   /** Ephemeral image data for hidden `/image` fast-path holds. Kept out of
    * visible composer state, artifacts, and traces; cleared with the hold after
    * the next successful prompt submit. */
@@ -874,7 +876,6 @@ type PersistedImageSlashTurn = {
   id: string;
   sessionId: string;
   prompt: string;
-  sourcePrompt: string;
   path: string;
   name: string;
   createdAt: string;
@@ -1007,6 +1008,7 @@ function storedPendingImageSlashAttachments(sessionId: string): AgentAttachment[
       return {
         ...file,
         id: `held-image:${turn.id}`,
+        sourcePrompt: turn.prompt,
         attach: attachmentStateFrom(file, sessionId),
       };
     });
@@ -1077,10 +1079,6 @@ function persistedImageSlashTurn(
     id: candidate.id,
     sessionId,
     prompt: candidate.prompt,
-    sourcePrompt:
-      typeof candidate.sourcePrompt === "string" && candidate.sourcePrompt.trim()
-        ? candidate.sourcePrompt
-        : candidate.prompt,
     path: candidate.path,
     name: candidate.name,
     createdAt: candidate.createdAt,
@@ -1156,6 +1154,28 @@ function uniqueAttachmentsByWorkspacePath(attachments: AgentAttachment[]) {
     seen.add(key);
     return true;
   });
+}
+
+function promptSubmitContentWithFastPathImageContext(
+  content: string,
+  heldImages: AgentAttachment[],
+) {
+  const prompts = [
+    ...new Set(
+      heldImages
+        .map((attachment) => attachment.sourcePrompt?.trim())
+        .filter((prompt): prompt is string => Boolean(prompt)),
+    ),
+  ];
+  if (!prompts.length) return content;
+  const context =
+    prompts.length === 1
+      ? `Previous /image request: ${prompts[0]}`
+      : [
+          "Previous /image requests:",
+          ...prompts.map((prompt, index) => `${index + 1}. ${prompt}`),
+        ].join("\n");
+  return `${context}\n\n${content}`;
 }
 
 /** Thrown when a structured image attach fails so the prompt is NOT sent with a
@@ -3826,7 +3846,6 @@ export function AgentWorkspace({
         id: turnId,
         sessionId,
         prompt,
-        sourcePrompt: prompt,
         path: result.file.path,
         name: result.file.name,
         createdAt,
@@ -3855,6 +3874,7 @@ export function AgentWorkspace({
       const heldImage: AgentAttachment = {
         ...result.file,
         id: `held-image:${sessionId}:${Date.now()}`,
+        sourcePrompt: prompt,
         attachDataUrl: result.dataUrl,
         attach: attachmentStateFrom(result.file, sessionId),
       };
@@ -4083,7 +4103,6 @@ export function AgentWorkspace({
       id: turnId,
       sessionId,
       prompt,
-      sourcePrompt: prompt,
       path: "",
       name: "",
       createdAt,
@@ -5207,7 +5226,10 @@ export function AgentWorkspace({
             runtimeContent: content,
           })
         : undefined;
-    const promptSubmitContent = imageInputFallbackContent ?? content;
+    const promptSubmitContent = promptSubmitContentWithFastPathImageContext(
+      imageInputFallbackContent ?? content,
+      heldFastPathImages,
+    );
     // Issue reports skip title suggestion: the content is the wrapped
     // investigation prompt, which would title the session after the wrapper.
     const titlePromise =
