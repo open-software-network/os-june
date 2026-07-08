@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        zero_receipt,
+        new_charge_operation_id, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -74,7 +74,7 @@ impl AgentChatService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let body_digest = body_digest(&params.body);
+        let idempotency_key = idempotency_key(&params.user_id, &params.body);
         let completion = self
             .chat_completer
             .complete(AgentChatRequest {
@@ -92,10 +92,7 @@ impl AgentChatService {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
             credits: charge_credits,
-            idempotency_key: format!(
-                "agent_chat:{}:{}:{}",
-                params.user_id.0, params.model_id.0, body_digest
-            ),
+            idempotency_key,
         })
         .await?;
         log_settled(
@@ -150,7 +147,7 @@ impl AgentChatService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let body_digest = body_digest(&params.body);
+        let idempotency_key = idempotency_key(&params.user_id, &params.body);
         let stream = self
             .chat_completer
             .complete_stream(AgentChatRequest {
@@ -168,7 +165,7 @@ impl AgentChatService {
             action_token: authorization.action_token,
             cap_credits: authorization.cap_credits,
             flat_estimate_credits: self.flat_estimate_credits,
-            body_digest,
+            idempotency_key,
             outcome: stream.outcome,
         });
         Ok(AgentChatStreamOutput {
@@ -203,6 +200,23 @@ fn body_digest(body: &serde_json::Value) -> String {
     sha256_hex(body.to_string().as_bytes())
 }
 
+/// Each paid chat attempt gets a globally unique settlement scope, minted
+/// before the upstream call (same rule as the image keys). A retried
+/// identical body runs a fresh upstream completion that delivers its own
+/// content, so it settles its own charge — under the old digest-only key the
+/// second attempt's settlement replayed as a no-op, delivering content
+/// without a wallet movement. Unlike images there is no retry ledger in
+/// front: chat has no client-supplied request id, and any retry that reaches
+/// the upstream does real billable work. The digest stays for debuggability.
+fn idempotency_key(user_id: &UserId, body: &serde_json::Value) -> String {
+    format!(
+        "agent_chat:{}:attempt:{}:{}",
+        user_id.0,
+        new_charge_operation_id(),
+        body_digest(body)
+    )
+}
+
 struct StreamSettlement {
     pricing: Arc<PricingTable>,
     os_accounts: Arc<dyn OsAccountsClient>,
@@ -211,7 +225,7 @@ struct StreamSettlement {
     action_token: String,
     cap_credits: Credits,
     flat_estimate_credits: u64,
-    body_digest: String,
+    idempotency_key: String,
     outcome: tokio::sync::oneshot::Receiver<AgentChatStreamOutcome>,
 }
 
@@ -265,10 +279,7 @@ async fn settle_stream_charge(params: StreamSettlement) {
         os_accounts: params.os_accounts.as_ref(),
         action_token: params.action_token,
         credits,
-        idempotency_key: format!(
-            "agent_chat:{}:{}:{}",
-            params.user_id.0, params.model_id.0, params.body_digest
-        ),
+        idempotency_key: params.idempotency_key,
     })
     .await
     {

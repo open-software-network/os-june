@@ -36,8 +36,15 @@ charges after the stream ends.
 - **Agent chat (`stream: true`)**: June API forwards upstream SSE bytes as
   they arrive. The provider pump accumulates the body on the side and
   resolves token usage from the final SSE frame once the upstream ends; the
-  service settles the charge then (same idempotency key scheme as the
-  buffered path). While the upstream is silent (long prompt evaluation), June
+  service settles the charge then. Both chat paths settle under an
+  attempt-scoped idempotency key
+  (`agent_chat:{user}:attempt:{operation_id}:{body_digest}`, the image key
+  scheme): a retried identical body runs a fresh upstream completion that
+  delivers its own content, so it must settle its own charge — a
+  content-derived key let that second settlement replay as a no-op. Unlike
+  images there is no retry-dedup ledger in front, deliberately: chat has no
+  client-supplied request id, and any retry that reaches the upstream does
+  real billable work. While the upstream is silent (long prompt evaluation), June
   API emits SSE comment heartbeats (`: keep-alive`) so neither proxy hop sees
   an idle response. Buffered (`stream` absent/false) behavior is unchanged.
 - **Note generation**: `POST /v1/notes/generate` gains an opt-in

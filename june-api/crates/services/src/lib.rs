@@ -1094,7 +1094,12 @@ mod tests {
         let idempotency_key = wait_for_charge_idempotency_key(&os_accounts)
             .await
             .expect("stream settlement charges");
-        assert!(idempotency_key.starts_with("agent_chat:usr_123:text-model:"));
+        let rest = idempotency_key
+            .strip_prefix("agent_chat:usr_123:attempt:")
+            .expect("settlement key is attempt-scoped");
+        let (operation_id, digest) = rest.split_once(':').expect("attempt:digest");
+        uuid::Uuid::parse_str(operation_id).expect("attempt scope is a UUID");
+        assert_eq!(digest.len(), 64, "digest suffix is full sha256 hex");
         assert_eq!(
             os_accounts.events(),
             vec![
@@ -1110,6 +1115,54 @@ mod tests {
                     idempotency_key,
                 },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_chat_retried_identical_body_settles_under_a_fresh_key() {
+        // A retried identical body runs a fresh upstream completion that
+        // delivers its own content; a key derived from content alone would
+        // replay the first settlement and deliver the second one free.
+        let os_accounts = Arc::new(RecordingOsAccounts::with_cap(Some(100)));
+        let service = AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                1,
+                ModelType::Text,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            chat_completer: Arc::new(FixedAgentChatCompleter),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+        });
+
+        service
+            .complete(agent_chat_params())
+            .await
+            .expect("first attempt succeeds");
+        service
+            .complete(agent_chat_params())
+            .await
+            .expect("retried attempt succeeds");
+
+        let keys: Vec<String> = os_accounts
+            .events()
+            .into_iter()
+            .filter_map(|call| match call {
+                RecordedCall::Charge {
+                    idempotency_key, ..
+                } => Some(idempotency_key),
+                RecordedCall::Authorize { .. } => None,
+            })
+            .collect();
+        assert_eq!(keys.len(), 2, "both attempts settle a charge");
+        assert_ne!(keys[0], keys[1], "each attempt has its own settlement key");
+        let digest_of = |key: &str| key.rsplit(':').next().map(str::to_string);
+        assert_eq!(
+            digest_of(&keys[0]),
+            digest_of(&keys[1]),
+            "identical bodies share the digest suffix"
         );
     }
 

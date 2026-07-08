@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        zero_receipt,
+        new_charge_operation_id, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key},
@@ -21,7 +21,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Notify;
-use uuid::Uuid;
 
 /// Metered image generation. Each generation is flat-priced per model (Venice
 /// bills per image), so the authorize estimate and the settled charge are the
@@ -465,10 +464,6 @@ struct PendingImageCharge {
     credits: Credits,
     idempotency_key: String,
     created_at: Instant,
-}
-
-fn new_charge_operation_id() -> String {
-    Uuid::now_v7().to_string()
 }
 
 /// Settled replays are kept only briefly: each entry pins a full base64 image
