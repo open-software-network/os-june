@@ -17,7 +17,7 @@ function privacyModeIcon(mode: ModelPrivacyBadge["mode"], size: number) {
 /**
  * The single chip for a model's privacy badge — the icon-by-mode (lock / ghost /
  * anonymous) plus its label. Shared by the model picker (`ModelMeta`), the chat
- * model hover cards (`ComposerModelCardContent`), the chat session bar
+ * model hover cards (`ModelPickerCardContent`), the chat session bar
  * (`PrivacyModeBadge`), and the session usage panel so the surfaces stay
  * identical.
  *
@@ -88,11 +88,9 @@ export function ModelPrivacyChip({
 }
 
 /**
- * The ghost marker for a model-picker row: our private mascot in a small
- * brand-tinted (clay) squircle pinned to the row's trailing edge, shown only for
- * a private (zero-retention) model. Anonymous and E2EE models get nothing here —
- * the row's hover card still carries their full privacy detail. Hovering the
- * ghost pops the shared {@link HoverTip} explaining private mode.
+ * The compact private marker for model-picker rows. It stays icon-only because
+ * row details live in the hover card. Anonymous/E2EE models keep their privacy
+ * detail in the hover card instead of adding a trailing row icon.
  */
 export function ModelRowPrivacyBadge({ model }: { model: VeniceModelDto }) {
   const badge = modelPrivacyBadge(model);
@@ -104,7 +102,7 @@ export function ModelRowPrivacyBadge({ model }: { model: VeniceModelDto }) {
       data-mode={badge.mode}
       aria-label={`${badge.label}: ${badge.description}`}
     >
-      {privacyModeIcon("private", 13)}
+      {privacyModeIcon("private", 14)}
     </HoverTip>
   );
 }

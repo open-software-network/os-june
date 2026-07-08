@@ -4941,6 +4941,40 @@ input:focus-visible,
   isolation: isolate;
 }
 
+.agent-composer-model-popover[data-direct-catalog="true"] {
+  /* Header + search + about seven rows with a small scroll preview, expressed
+   * from the menu's spacing and control-size tokens instead of a pixel cap. */
+  --model-direct-catalog-list-window-h: calc(
+    var(--control-lg) +
+    var(--sp-px) +
+    var(--control-lg) +
+    var(--sp-px) +
+    var(--control-lg) +
+    var(--sp-px) +
+    var(--control-lg) +
+    var(--sp-px) +
+    var(--control-lg) +
+    var(--sp-px) +
+    var(--control-lg) +
+    var(--sp-px) +
+    var(--control-lg) +
+    var(--sp-7)
+  );
+  --model-direct-catalog-max-h: calc(
+    var(--sp-2) +
+    var(--control-md) +
+    var(--sp-1) +
+    var(--control-lg) +
+    var(--sp-3) +
+    var(--model-direct-catalog-list-window-h) +
+    var(--sp-2)
+  );
+  max-height: min(
+    var(--model-direct-catalog-room, var(--model-direct-catalog-max-h)),
+    var(--model-direct-catalog-max-h)
+  );
+}
+
 .agent-composer-model-title {
   margin: 0;
   /* A touch more top padding so the label sits centered in its strip rather
@@ -4983,6 +5017,16 @@ input:focus-visible,
   background: var(--secondary);
 }
 
+/* While a safe-polygon hover traversal is in flight the popover carries
+   data-hover-bridging: only the active row (the one whose card is open) may
+   read as highlighted, so a row the pointer merely crosses on its diagonal
+   path to the card does not also light up. Higher specificity than the :hover
+   rule above so it wins regardless of source order in this flat stylesheet. */
+.agent-composer-model-popover[data-hover-bridging]
+.agent-composer-model-row:hover:not([data-active="true"]) {
+  background: transparent;
+}
+
 .agent-composer-model-row[aria-selected="true"] {
   color: var(--foreground);
 }
@@ -5015,41 +5059,46 @@ input:focus-visible,
 .agent-composer-model-row-check,
 .agent-composer-model-row-chevron {
   flex: 0 0 auto;
-  margin-left: auto;
 }
 
 .agent-composer-model-row-check {
   width: 16px;
+  margin-left: auto;
   color: var(--foreground);
 }
 
 .agent-composer-model-row-chevron {
+  margin-left: auto;
   color: var(--muted-foreground);
 }
 
-/* Trailing privacy marker: the private ghost in a small brand-tinted squircle,
- * same clay tint recipe as .agent-safety-badge so it reads as the same family.
- * Always pinned to the row's trailing edge — it sits last in the DOM, so a
- * selected row's checkmark appears to its left (the check claims the auto gap)
- * and the ghost's position never shifts whether or not the row is selected. */
+/* Trailing private marker: a compact mode icon in the same clay-tinted family
+ * as .agent-safety-badge. It claims the auto gap on private rows; if the row is
+ * also selected, the selected checkmark sits immediately to its left. */
 .model-row-privacy {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
   width: 20px;
   height: 20px;
   margin-left: auto;
+  padding: 0;
   border-radius: var(--r-sm);
   background: color-mix(in oklch, var(--brand) 14%, transparent);
   color: var(--warm-strong);
+  line-height: 0;
 }
 
+/* Center the glyph on whole pixels: a 14px icon in the 20px box leaves a 3px
+ * ring on every side (an odd 13px icon rounded to 3.5px and read off-center). */
 .model-row-privacy svg {
+  display: block;
   color: var(--warm-strong);
 }
 
-/* When a checkmark precedes the ghost, the check already claimed the auto gap,
- * so the ghost just trails it by the row gap and stays flush to the edge. */
+/* When the selected checkmark precedes the private marker, the check already
+ * claimed the auto gap, so the icon just trails it and stays flush right. */
 .agent-composer-model-row-check ~ .model-row-privacy {
   margin-left: 0;
 }
@@ -5060,10 +5109,10 @@ input:focus-visible,
   margin-top: var(--sp-1);
 }
 
-/* Second layer: a side panel hanging off the root menu — the hover detail
- * card for a suggested model, or the searchable full catalog. The bottom
- * anchor here is the panel's; the detail card gets repositioned to its
- * hovered row from JS (see the flyout measure effect). */
+/* Second layer: the searchable full-catalog panel hanging off the root menu,
+ * anchored to the panel's bottom edge. (The suggested-model detail card renders
+ * as a body-portaled .agent-composer-model-hovercard so the note-chat panel
+ * can't clip or cover it — see the model pickers.) */
 .agent-composer-model-flyout {
   position: absolute;
   bottom: -1px;
@@ -5114,14 +5163,34 @@ input:focus-visible,
 }
 
 .agent-composer-model-detail .agent-composer-model-surface {
-  gap: var(--sp-1);
-  width: 232px;
+  gap: var(--sp-2);
+  width: 248px;
   padding: var(--sp-3);
+}
+
+.agent-composer-model-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agent-composer-model-detail-content[data-animate-change="true"] {
+  animation: agent-composer-model-detail-content-in var(--t-fast) var(--ease-out);
+}
+
+@keyframes agent-composer-model-detail-content-in {
+  from {
+    opacity: 0.72;
+    filter: blur(4px);
+    transform: translateY(1px);
+  }
 }
 
 .agent-composer-model-detail-name {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
   margin: 0;
   font-size: var(--fs-md);
@@ -5129,63 +5198,184 @@ input:focus-visible,
 }
 
 .agent-composer-model-detail-name > span:first-child {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-composer-model-detail-name .model-trait-icon {
+/* The privacy chip uses the themed (brand-tinted clay) pill so it reads as the
+ * same family as the trailing row marker. Pin it so it never shrinks against a
+ * long model name. */
+.agent-composer-model-detail-name .agent-safety-badge {
   flex: 0 0 auto;
-  font-weight: 400;
 }
 
-.agent-composer-model-detail-values {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+/* ============================================================================
+ * Scroll fades (design system)
+ *
+ * A scroller melts its clipped edge when content is hidden above or below the
+ * viewport. Driven by the `useScrollFade` hook, which sets `data-fade-top` /
+ * `data-fade-bottom` only on the edge(s) with hidden content (so a fade never
+ * shows when everything fits). Two flavors, one contract:
+ *
+ *  - `.scroll-fade`      — contained overlays: `::before`/`::after` gradients
+ *    pinned to the wrapper's edges. WKWebView-safe for popovers (a mask on the
+ *    scroller rides the scrolled content in WebKit and bleeds past the bounds).
+ *    Put the class + data attributes on a non-scrolling wrapper; the scroller
+ *    is its child. Tunables: `--scroll-fade-size`, `--scroll-fade-color`,
+ *    `--scroll-fade-inset-right`.
+ *  - `.scroll-fade-mask` — mask-image gradient on the scroller itself. Reveals
+ *    the real content at the edge (clean in light + dark) for large panel
+ *    scrollers. Put the class + data attributes on the scroller. Tunable:
+ *    `--scroll-fade-size`.
+ * ============================================================================ */
+.scroll-fade {
+  position: relative;
+}
+
+.scroll-fade::before,
+.scroll-fade::after {
+  content: "";
+  position: absolute;
+  right: var(--scroll-fade-inset-right, 0);
+  left: 0;
+  z-index: 1;
+  height: var(--scroll-fade-size, 24px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.scroll-fade::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade[data-fade-top]::before,
+.scroll-fade[data-fade-bottom]::after {
+  opacity: 1;
+}
+
+.scroll-fade-mask[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
+.scroll-fade-mask[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+}
+
+.scroll-fade-mask:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
+/* The card always shows the full description (no "Show more" toggle): a capped,
+ * scrollable box so the card can never grow after it opens, which keeps the
+ * open-time viewport clamp correct and the expansion keyboard-neutral. It rides
+ * the shared `.scroll-fade` primitive with a tighter fade sized for the short
+ * box. */
+.agent-composer-model-detail-desc-wrap {
+  --scroll-fade-size: 14px;
+  overflow: hidden;
+  contain: paint;
 }
 
 .agent-composer-model-detail-desc {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   margin: 0;
-  overflow: hidden;
+  max-height: 104px;
+  overflow-y: auto;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
 }
 
-/* When the description is clamped it's wrapped in a HoverTip; the wrapper span
- * must stretch so the clamped text keeps the card's full width (an inline span
- * would shrink-wrap and throw off the two-line measurement). */
-.agent-composer-model-detail-desc-tip {
-  display: block;
+/* The card's spec table: pricing and context as label/value rows, set on a
+ * subtle inset panel (rather than a divider) so it reads as its own group.
+ * Muted labels on the left, values hugging the right edge. */
+.agent-composer-model-detail-specs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.agent-composer-model-detail-specs dt {
+  color: var(--muted-foreground);
+}
+
+.agent-composer-model-detail-specs dd {
+  margin: 0;
+  color: var(--popover-foreground);
+  text-align: right;
 }
 
 /* The catalog rows' hover card — same body as the suggested-model detail
  * card, but fixed-positioned beside the hovered row (set from JS) so it can
  * escape the panel's clipping and tracks the pointer like Codex's item
- * tooltips. Interactive so the pointer can reach its (clamped) description and
- * its hover tip; a close debounce keeps it alive across the gap from the row. */
+ * tooltips. Interactive so the pointer can move onto and read the card; a
+ * close debounce keeps it alive across the gap from the row. */
 .agent-composer-model-hovercard {
   position: fixed;
-  z-index: 3;
+  /* Portaled to document.body, so it must clear every panel it can open over —
+   * notably the note-chat panel (z-index 6) and its resize handle (z-index 71).
+   * Shares the top transient layer with .hover-tip (also z-index 140). */
+  z-index: 140;
   display: block;
   pointer-events: auto;
   color: var(--popover-foreground);
-  /* Keep the hover card above the panel so the panel shadow/fade cannot wash
-   * over the card. Clip only the side facing the panel; the other three sides
-   * keep the same elevation, and the clipped side cannot bleed back into the
-   * panel. */
-  clip-path: inset(-48px 0 -48px -48px);
+  transition:
+    top var(--t-med) var(--ease-spring),
+    right var(--t-med) var(--ease-spring),
+    left var(--t-med) var(--ease-spring);
   animation: agent-composer-model-flyout-left var(--t-med) var(--ease-out);
 }
 
 .agent-composer-model-hovercard[data-side="right"] {
-  clip-path: inset(-48px -48px -48px 0);
   animation-name: agent-composer-model-flyout-right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-model-hovercard {
+    transition: none;
+  }
+
+  .agent-composer-model-detail-content[data-animate-change="true"] {
+    animation: none;
+  }
 }
 
 .agent-composer-model-all-panel {
@@ -5204,7 +5394,7 @@ input:focus-visible,
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-3);
   min-height: 0;
 }
 
@@ -5254,8 +5444,11 @@ input:focus-visible,
 /* The list's scroll viewport plus its edge fades. The wrap exists so the
  * overlays can sit at top: 0 / bottom: 0 of the exact scroll area — no
  * hand-computed offsets to drift out of place. */
+/* Catalog list scroller. Fades come from the shared `.scroll-fade` primitive
+ * (contained overlays, WKWebView-safe for this popover); only the fade size is
+ * tuned here so rows melt into the popover surface at the boundary. */
 .agent-composer-model-list-wrap {
-  position: relative;
+  --scroll-fade-size: 16px;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -5271,38 +5464,6 @@ input:focus-visible,
   gap: var(--sp-px);
   min-height: 0;
   overflow-y: auto;
-}
-
-/* Scroll fades, contained: overlays pinned to the scroll viewport's edges
- * (a mask on the scroller rides the scrolled content in WebKit and bleeds
- * past the bounds). Rows melt into the popover surface at the boundary and
- * nothing can paint outside the panel. */
-.agent-composer-model-list-wrap::before,
-.agent-composer-model-list-wrap::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  left: 0;
-  z-index: 1;
-  height: 16px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.agent-composer-model-list-wrap::before {
-  top: 0;
-  background: linear-gradient(to bottom, var(--popover), transparent);
-}
-
-.agent-composer-model-list-wrap::after {
-  bottom: 0;
-  background: linear-gradient(to top, var(--popover), transparent);
-}
-
-.agent-composer-model-list-wrap[data-fade-top="true"]::before,
-.agent-composer-model-list-wrap[data-fade-bottom="true"]::after {
-  opacity: 1;
 }
 
 .agent-composer-model-empty {
@@ -8147,6 +8308,23 @@ input:focus-visible,
   padding: 0 var(--sp-8) var(--sp-5);
 }
 
+.main-panel-body[data-active-view="settings"] {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+  padding-bottom: calc(var(--sp-5) + 96px);
+}
+
+.main-panel-body[data-active-view="settings"]::-webkit-scrollbar {
+  width: var(--scrollbar-w);
+  background: transparent;
+}
+
+.main-panel-body[data-active-view="settings"]::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  background-clip: padding-box;
+}
+
 /* Top + bottom fades for the main card. Top is short (28px) since no
  * sticky header sits there; bottom is taller (96px) so content dissolves
  * cleanly behind the record button. Same scroll-timeline trick as the
@@ -8173,6 +8351,7 @@ input:focus-visible,
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
+  opacity: 0;
   /* Soften any static opacity flip (e.g. leaving the agent view, where the
    * :has() rule below holds the dissolve at 0) so the veil never pops in a
    * single frame over content. Matches the warm wash's 280ms fade. Lives
@@ -10489,6 +10668,10 @@ input:focus-visible,
   letter-spacing: 0;
 }
 
+.settings-group-heading + .settings-group-description {
+  margin-top: calc(-1 * var(--sp-1));
+}
+
 /* The platforms group heading carries a quiet muted count beside it (the count
  * that used to live on the in-list h3). */
 .agent-messaging-heading {
@@ -11062,12 +11245,13 @@ input:focus-visible,
  * the external-dir summary hover), not a full-bleed edge-to-edge band. Content
  * stays left-aligned; the bottom border is dropped so the rounded fill reads as
  * a single rectangle. */
-.settings-rows .settings-more-options-trigger,
 .settings-more-options-trigger {
-  width: auto;
-  /* Top inset so the rounded hover fill has clear separation from the row/border
-   * directly above it. */
-  margin: var(--sp-3) calc(var(--sp-3) * -1) 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-6);
+  width: 100%;
+  margin: 0;
   padding: var(--sp-3);
   border: 0;
   border-radius: var(--r-md);
@@ -11077,6 +11261,26 @@ input:focus-visible,
   cursor: pointer;
   color: inherit;
   transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.settings-more-options-row {
+  width: auto;
+  margin: var(--sp-2) calc(var(--sp-3) * -1);
+}
+
+.settings-row-divider {
+  height: 1px;
+  margin: 0;
+  background: var(--border-subtle);
+}
+
+.settings-row:has(+ .settings-row-divider) {
+  border-bottom: 0;
+}
+
+.settings-more-options-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .settings-more-options-trigger:hover {
@@ -15494,8 +15698,8 @@ input:focus-visible,
 .model-summary-hovercard {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  width: 232px;
+  gap: var(--sp-2);
+  width: 248px;
   max-width: 100%;
 }
 
@@ -15525,6 +15729,10 @@ input:focus-visible,
    * box width to hug the widest line, so the box edges match the text edges. */
   text-wrap: balance;
   pointer-events: none;
+}
+
+.hover-tip[data-interactive="true"] {
+  pointer-events: auto;
 }
 
 /* First frame: rendered hidden so its content width can be measured before the

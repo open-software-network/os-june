@@ -2005,6 +2005,9 @@ describe("AppSettings", () => {
       const parakeetOption = screen.getByRole("option", { name: /Parakeet/ });
       expect(parakeetOption).not.toHaveTextContent("$0.0001 per second audio");
       await user.hover(parakeetOption);
+      expect(
+        await screen.findByText("Speech-to-text model for transcribing audio."),
+      ).toBeInTheDocument();
       expect(await screen.findByText(/\$0\.0001 per second audio/)).toBeInTheDocument();
       await user.unhover(parakeetOption);
       // The non-suggested catalog lives behind the All models row.
@@ -2072,7 +2075,7 @@ describe("AppSettings", () => {
 
     // The primary pickers are visible, but advanced local controls are hidden
     // behind a collapsed "More options" disclosure by default.
-    const trigger = await screen.findByRole("button", { name: /More options/ });
+    const trigger = await screen.findByRole("button", { name: "More options for AI models" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("switch", { name: "Use local text model" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
@@ -2134,7 +2137,7 @@ describe("AppSettings", () => {
     expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
     expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /More options/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "More options for AI models" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
@@ -2161,7 +2164,7 @@ describe("AppSettings", () => {
 
       await user.click(await screen.findByRole("tab", { name: "Models" }));
       // The local model config lives behind the "More options" disclosure.
-      await user.click(await screen.findByRole("button", { name: /More options/ }));
+      await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
       await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
       await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
       await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
@@ -2446,11 +2449,11 @@ describe("AppSettings", () => {
     await user.click(await within(panel).findByRole("option", { name: /Local: llama3\.1:8b/ }));
 
     // An off-device endpoint is never enabled silently: the picker reveals
-    // the confirm affordance in the Local model section instead.
+    // the confirm affordance in More options instead.
     expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
     expect(
       await screen.findByText(
-        "This endpoint is not on this machine. Requests will leave your device. Confirm in the Local model section to enable it.",
+        "This endpoint is not on this machine. Requests will leave your device. Confirm in More options to enable it.",
       ),
     ).toBeInTheDocument();
     const confirm = await screen.findByRole("button", {
@@ -2484,7 +2487,7 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
-    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
     await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
     await user.click(screen.getByRole("button", { name: "Test connection" }));
@@ -2519,7 +2522,7 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
-    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
     await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "https://models.example.com/v1");
     await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
@@ -2573,7 +2576,7 @@ describe("AppSettings", () => {
     // The Venice API key lives behind "More options" so the average user never
     // has to reason about it. It should be hidden until the row is expanded.
     expect(screen.queryByLabelText("Venice API key")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /More options/ }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
 
     const input = await screen.findByLabelText("Venice API key");
     await user.type(input, "  vc_test_key  ");
@@ -2655,9 +2658,15 @@ describe("AppSettings", () => {
       within(imageSection as HTMLElement).getByRole("button", { name: "Change image model" }),
     ).toBeInTheDocument();
     expect(within(imageSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
-    // Safe mode lives in the image section and defaults on (JUN-209).
+    // Safe mode lives behind More options and defaults on (JUN-209).
     expect(
-      within(imageSection as HTMLElement).getByRole("switch", {
+      within(imageSection as HTMLElement).queryByRole("switch", {
+        name: "Blur adult content in images",
+      }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More options for image generation" }));
+    expect(
+      screen.getByRole("switch", {
         name: "Blur adult content in images",
       }),
     ).toBeInTheDocument();

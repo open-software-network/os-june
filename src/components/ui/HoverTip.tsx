@@ -94,6 +94,9 @@ type HoverTipProps = HTMLAttributes<HTMLSpanElement> & {
    * trigger's own picker popover is open, so the hover callout never fights the
    * popover for the same anchor. */
   suppressed?: boolean;
+  /** Keeps the callout alive while the pointer moves onto it. Use only for
+   * rich, card-like tips with controls inside. */
+  interactive?: boolean;
   children: ReactNode;
 };
 
@@ -114,6 +117,7 @@ export function HoverTip({
   compact = false,
   delay = HOVER_INTENT_MS,
   suppressed = false,
+  interactive = false,
   children,
   ...spanProps
 }: HoverTipProps) {
@@ -121,14 +125,16 @@ export function HoverTip({
     "aria-describedby": ariaDescribedBy,
     onBlur,
     onFocus,
+    onKeyDown,
     onMouseEnter,
     onMouseLeave,
     ...restSpanProps
   } = spanProps;
   const anchorRef = useRef<HTMLSpanElement | null>(null);
-  const tipRef = useRef<HTMLSpanElement | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
   // The side committed by the first measure pass, held for the tip's whole
   // mounted lifetime: a re-hover or a content swap (e.g. "Copy message" →
   // "Copied") re-measures, and re-deciding the side then would visibly
@@ -139,10 +145,12 @@ export function HoverTip({
   const [anchor, setAnchor] = useState<TipAnchor>();
   // The final clamped coordinates, set after measuring the rendered tip.
   const [coords, setCoords] = useState<TipCoords>();
+  const [measureVersion, setMeasureVersion] = useState(0);
   // "open" once revealed (enter animation runs), "closing" during the exit
   // fade. Absent while measuring or unmounted.
   const [phase, setPhase] = useState<"open" | "closing">();
   const mounted = anchor !== undefined;
+  const portalTarget = typeof document === "undefined" ? null : document.body;
   const describedBy = [ariaDescribedBy, mounted ? tooltipId : null].filter(Boolean).join(" ");
 
   const cancelHoverIntent = useCallback(() => {
@@ -197,6 +205,34 @@ export function HoverTip({
     cancelClose();
     closeTimerRef.current = window.setTimeout(unmount, EXIT_MS);
   }
+
+  function hideAfterInteractiveGrace() {
+    cancelHoverIntent();
+    if (!mounted) return;
+    cancelClose();
+    closeTimerRef.current = window.setTimeout(hide, HOVER_INTENT_MS);
+  }
+
+  function elementInsideHoverTipSurface(element: EventTarget | null) {
+    return element instanceof Node && Boolean(tipRef.current?.contains(element));
+  }
+
+  function elementInsideAnchor(element: EventTarget | null) {
+    return element instanceof Node && Boolean(anchorRef.current?.contains(element));
+  }
+
+  function firstTipFocusable() {
+    return tipRef.current?.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+  }
+
+  const cancelResizeMeasure = useCallback(() => {
+    if (resizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    }
+  }, []);
 
   // Measure the rendered tip and clamp its centered position to the viewport,
   // all before paint, so the reveal never jumps. jsdom reports a zero-width
@@ -262,15 +298,47 @@ export function HoverTip({
       Math.max(anchor.centerX - boxWidth / 2, VIEWPORT_MARGIN),
       Math.max(window.innerWidth - boxWidth - VIEWPORT_MARGIN, VIEWPORT_MARGIN),
     );
-    setCoords({ side, top: side === "bottom" ? anchor.bottom : anchor.top, left, width });
-  }, [anchor, tip]);
+    const rawTop = side === "bottom" ? anchor.bottom : anchor.top;
+    let top = rawTop;
+    // Vertical viewport clamp is scoped to interactive tips only: those carry
+    // tall, card-like content (the model summary card) that can run off a
+    // window edge. Plain tooltips keep their exact prior top so this change has
+    // no blast radius on the many small tips across the app.
+    if (interactive && tipHeight > 0) {
+      top =
+        side === "bottom"
+          ? Math.min(rawTop, window.innerHeight - tipHeight - VIEWPORT_MARGIN)
+          : Math.max(rawTop, tipHeight + VIEWPORT_MARGIN);
+      top = Math.max(VIEWPORT_MARGIN, Math.min(top, window.innerHeight - VIEWPORT_MARGIN));
+    }
+    setCoords({ side, top, left, width });
+  }, [anchor, tip, measureVersion, interactive]);
+
+  useLayoutEffect(() => {
+    if (!interactive || !mounted || typeof ResizeObserver === "undefined") return;
+    const node = tipRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => {
+      cancelResizeMeasure();
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        setMeasureVersion((version) => version + 1);
+      });
+    });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      cancelResizeMeasure();
+    };
+  }, [interactive, mounted, cancelResizeMeasure]);
 
   useEffect(
     () => () => {
       cancelHoverIntent();
       cancelClose();
+      cancelResizeMeasure();
     },
-    [cancelHoverIntent, cancelClose],
+    [cancelHoverIntent, cancelClose, cancelResizeMeasure],
   );
 
   // Force-close the moment suppression turns on (the picker popover opened over
@@ -285,14 +353,22 @@ export function HoverTip({
   useEffect(() => {
     if (!mounted) return;
     // Scroll/resize would drift the tip off its anchor; cut it immediately
-    // rather than fading in place.
-    window.addEventListener("scroll", unmount, true);
+    // rather than fading in place. An interactive tip can itself hold a scroll
+    // region (e.g. a capped description), so a scroll that originates inside the
+    // tip must not dismiss it — only outside scrolls do.
+    const onScroll = (event: Event) => {
+      if (interactive && event.target instanceof Node && tipRef.current?.contains(event.target)) {
+        return;
+      }
+      unmount();
+    };
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", unmount);
     return () => {
-      window.removeEventListener("scroll", unmount, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", unmount);
     };
-  }, [mounted, unmount]);
+  }, [mounted, unmount, interactive]);
 
   return (
     <span
@@ -305,7 +381,8 @@ export function HoverTip({
       }}
       onMouseLeave={(event) => {
         onMouseLeave?.(event);
-        hide();
+        if (interactive) hideAfterInteractiveGrace();
+        else hide();
       }}
       onFocus={(event) => {
         onFocus?.(event);
@@ -313,17 +390,41 @@ export function HoverTip({
       }}
       onBlur={(event) => {
         onBlur?.(event);
+        if (
+          interactive &&
+          (elementInsideAnchor(event.relatedTarget) ||
+            elementInsideHoverTipSurface(event.relatedTarget))
+        ) {
+          return;
+        }
         hide();
+      }}
+      onKeyDown={(event) => {
+        onKeyDown?.(event);
+        if (
+          event.defaultPrevented ||
+          !interactive ||
+          event.key !== "Tab" ||
+          event.shiftKey ||
+          !mounted
+        ) {
+          return;
+        }
+        const focusTarget = firstTipFocusable();
+        if (!focusTarget) return;
+        event.preventDefault();
+        focusTarget.focus();
       }}
     >
       {children}
-      {mounted
+      {mounted && portalTarget
         ? createPortal(
-            <span
+            <div
               ref={tipRef}
               id={tooltipId}
               className={compact ? "hover-tip hover-tip-compact" : "hover-tip"}
               role="tooltip"
+              data-interactive={interactive || undefined}
               data-side={coords?.side ?? "bottom"}
               // Hidden until measured: the enter animation runs only once the
               // final position is revealed, never while offscreen.
@@ -331,6 +432,28 @@ export function HoverTip({
               onTransitionEnd={(event) => {
                 if (event.propertyName === "opacity" && phase === "closing") unmount();
               }}
+              onMouseEnter={
+                interactive
+                  ? () => {
+                      cancelClose();
+                      setPhase("open");
+                    }
+                  : undefined
+              }
+              onMouseLeave={interactive ? hide : undefined}
+              onBlur={
+                interactive
+                  ? (event) => {
+                      if (
+                        elementInsideAnchor(event.relatedTarget) ||
+                        elementInsideHoverTipSurface(event.relatedTarget)
+                      ) {
+                        return;
+                      }
+                      hide();
+                    }
+                  : undefined
+              }
               style={{
                 top: coords?.top ?? anchor.bottom,
                 left: coords?.left ?? 0,
@@ -341,8 +464,8 @@ export function HoverTip({
               }}
             >
               {tip}
-            </span>,
-            document.body,
+            </div>,
+            portalTarget,
           )
         : null}
     </span>
