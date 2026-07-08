@@ -1,4 +1,4 @@
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { useId, useState } from "react";
 import {
   onboardingCustomUseCase,
@@ -65,7 +65,7 @@ export function UsageIntentStep({ onContinue }: { onContinue: () => void }) {
               onClick={() => toggle(id)}
             >
               <span className="onboarding-intent-check" aria-hidden>
-                {active ? <IconCheckmark1Small size={15} /> : null}
+                {active ? <IconCheckmark2Small size={14} /> : null}
               </span>
               <span>{label}</span>
             </button>

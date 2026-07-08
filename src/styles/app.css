@@ -20458,24 +20458,21 @@ input:focus-visible,
   font-size: var(--fs-md);
   text-align: left;
   cursor: pointer;
+  /* Hover/selection carry on the fill only; the border is static chrome and
+   * never transitions (see docs/design/conventions.md). */
   transition:
-    border-color var(--t-fast) var(--ease-out),
     background-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-out);
+    box-shadow var(--t-fast) var(--ease-out);
 }
 
 .onboarding-intent-option:nth-last-child(1):nth-child(odd) {
   grid-column: 1 / -1;
 }
 
+/* Warm-soft wash, matching the onboarding surface's own hover idiom
+ * (.onboarding-back:hover). Background only — the border stays put. */
 .onboarding-intent-option:hover {
-  border-color: color-mix(in oklch, var(--brand) 24%, var(--border));
   background: color-mix(in oklch, var(--warm-soft) 20%, var(--card));
-}
-
-.onboarding-intent-option:active {
-  transform: translateY(1px);
 }
 
 .onboarding-intent-option:focus-visible {
@@ -20488,25 +20485,35 @@ input:focus-visible,
   background: color-mix(in oklch, var(--warm-soft) 34%, var(--card));
 }
 
+/* Selected + hover deepens rather than lightens, so the ramp reads
+ * card -> hover -> selected -> selected-hover. */
+.onboarding-intent-option[aria-pressed="true"]:hover {
+  background: color-mix(in oklch, var(--warm-soft) 44%, var(--card));
+}
+
 .onboarding-intent-option span:last-child {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
+/* A rounded-square checkbox (multiple can be picked), mirroring the
+ * canonical .folder-note-select-box: unchecked outline, filled on select. */
 .onboarding-intent-check {
   flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: 1px solid var(--border);
-  border-radius: 50%;
-  color: var(--warm-strong);
+  border-radius: var(--r-xs);
+  background: var(--card);
+  color: var(--on-solid);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .onboarding-intent-option[aria-pressed="true"] .onboarding-intent-check {
-  border-color: color-mix(in oklch, var(--warm-strong) 36%, transparent);
-  background: color-mix(in oklch, var(--warm-soft) 42%, var(--card));
+  border-color: var(--warm-strong);
+  background: var(--warm-strong);
 }
 
 .onboarding-intent-other {
@@ -20521,22 +20528,30 @@ input:focus-visible,
 .onboarding-intent-other input {
   height: var(--control-xl);
   min-width: 0;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--card);
   color: var(--foreground);
   font: inherit;
   font-size: var(--fs-md);
   padding: 0 var(--sp-3);
+  outline: 0;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
 }
 
 .onboarding-intent-other input::placeholder {
   color: var(--muted-foreground);
 }
 
-.onboarding-intent-other input:focus {
-  outline: none;
-  border-color: color-mix(in oklch, var(--brand) 30%, var(--border));
+.onboarding-intent-other input:hover {
+  border-color: var(--ring);
+}
+
+.onboarding-intent-other input:focus,
+.onboarding-intent-other input:focus-visible {
+  border-color: var(--ring-focus);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
