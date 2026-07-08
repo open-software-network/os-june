@@ -20378,8 +20378,8 @@ input:focus-visible,
   font-weight: 400;
   cursor: pointer;
   transition:
-    color 0.15s ease,
-    background-color 0.15s ease;
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
 }
 
 .onboarding-community-link svg {

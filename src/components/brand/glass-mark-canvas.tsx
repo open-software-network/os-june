@@ -10,7 +10,7 @@
 // lighting values in GLASS_DEFAULTS below are the tuned rig from that repo. The
 // per-brand COLORS come in as a GlassPalette prop (see src/lib/brand-glass.ts).
 
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
   Environment,
@@ -22,7 +22,6 @@ import {
 } from "@react-three/drei";
 import * as THREE from "three";
 import { SVGLoader } from "three-stdlib";
-import { useSyncExternalStore } from "react";
 import type { GlassPalette } from "../../lib/brand-glass";
 
 // The two glyph paths (viewBox 0 0 12 14), matching the flat JuneMark SVG.
@@ -338,6 +337,10 @@ function GlassMark({ p }: { p: GlassParams }) {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", endDrag);
       window.removeEventListener("pointercancel", endDrag);
+      // Reset any grab/grabbing cursor we set on <body>: if the mark unmounts
+      // while hovered or mid-drag (e.g. sign-in advances the wizard), the
+      // Three.js pointer-out never fires and the cursor would stay stuck.
+      document.body.style.cursor = "";
     };
   }, []);
 

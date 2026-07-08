@@ -170,12 +170,17 @@ export function subscribeBrand() {
 // ---- React binding -------------------------------------------------------
 
 function subscribeBrandChange(onChange: () => void) {
-  window.addEventListener(BRAND_CHANGE_EVENT, onChange);
   // Another tab/window changing the stored accent fires `storage`; re-read then.
-  window.addEventListener("storage", onChange);
+  // Scope to our key (or a full clear, key === null) so unrelated localStorage
+  // writes don't trigger a needless brand re-read.
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY || e.key === null) onChange();
+  };
+  window.addEventListener(BRAND_CHANGE_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
   return () => {
     window.removeEventListener(BRAND_CHANGE_EVENT, onChange);
-    window.removeEventListener("storage", onChange);
+    window.removeEventListener("storage", onStorage);
   };
 }
 
