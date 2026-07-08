@@ -163,7 +163,7 @@ _Avoid_: permission, profile.
 A named Hermes configuration (its own home subtree, SOUL, model default,
 skills, MCP servers) a session runs under; `default` always exists. The
 **active profile** is the sticky default new sessions pick up — June writes
-it on switch and also threads it explicitly on `session.create` (ADR 0013).
+it on switch and also threads it explicitly on `session.create` (ADR 0014).
 Managed in Settings under Profiles. A profile may specialize June, but the
 agent still presents as June.
 _Avoid_: "profile" for Runtime mode, the Seatbelt sandbox profile, or the

@@ -14,7 +14,7 @@ servers** (`mcp` — stabilized in JUN-137: add / test / toggle / edit / delete,
 with a non-destructive connection-field edit), and **Profiles**
 (`profile-builder` — stabilized in JUN-145/JUN-210: list / switch / delete
 around the guided create wizard; new chats follow the active profile, see
-ADR 0013).
+ADR 0014).
 
 Hidden (added by this PR, not yet stabilized):
 
@@ -79,7 +79,7 @@ const groups = localDev
 | id | known status |
 |----|--------------|
 | `mcp` | shipped (JUN-137): unhidden; add / test / toggle / edit / delete verified. Edit is connection-field only (command/args/url) via a scoped, non-destructive `mcp_servers.<name>.<field>` config write; editing secrets/transport is a delete-and-re-add followup |
-| `profile-builder` | shipped (JUN-145 + JUN-210): unhidden as "Profiles"; list / switch / delete around the create wizard, new chats and profile-scoped settings surfaces follow the active profile (ADR 0013). Edit-after-create is a followup |
+| `profile-builder` | shipped (JUN-145 + JUN-210): unhidden as "Profiles"; list / switch / delete around the create wizard, new chats and profile-scoped settings surfaces follow the active profile (ADR 0014). Edit-after-create is a followup |
 | `mcp-security` | works (config-write contract fixed) |
 | `skills-hub` | search + loading fixed; install needs a GITHUB_TOKEN configured in June (Team skill taps), since the sandbox can't read the gh keyring |
 | `taps` | hosts the GITHUB_TOKEN secret setup |
