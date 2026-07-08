@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { dispatchP3aSettingsChanged, TELEMETRY_QUESTIONS_URL } from "../../../lib/p3a";
+import { dispatchP3aSettingsChanged } from "../../../lib/p3a";
 import { setP3aEnabled } from "../../../lib/tauri";
 import { Switch } from "../../ui/Switch";
 import { StepActions, StepCard } from "../StepChrome";
@@ -37,9 +37,6 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
             Never your recordings, notes, or anything you or the AI writes. Just coarse feature
             counts, listed publicly.
           </p>
-          <a href={TELEMETRY_QUESTIONS_URL} target="_blank" rel="noreferrer">
-            See exactly what is shared
-          </a>
         </div>
         <Switch
           checked={enabled}

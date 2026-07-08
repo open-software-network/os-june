@@ -20050,7 +20050,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-5);
   width: min(100%, 480px);
-  margin: var(--sp-2) auto var(--sp-4);
+  margin: var(--sp-2) auto 0;
   padding: var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
@@ -20078,13 +20078,11 @@ input:focus-visible,
   line-height: 1.5;
 }
 
-.onboarding-privacy-copy a {
-  width: max-content;
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  text-decoration: underline;
-  text-decoration-color: color-mix(in oklch, var(--foreground) 28%, transparent);
-  text-underline-offset: 3px;
+.onboarding-card-privacy .welcome-providers,
+.onboarding-card-privacy .welcome-status {
+  width: 100%;
+  max-width: 320px;
+  margin-inline: auto;
 }
 
 .funding-hint {

@@ -250,6 +250,7 @@ describe("OnboardingFlow", () => {
     render(<OnboardingFlow {...flowProps()} />);
 
     await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
+    expect(screen.queryByText("See exactly what is shared")).not.toBeInTheDocument();
     expect(
       screen.getByRole("switch", { name: "Share anonymous usage statistics" }),
     ).toHaveAttribute("aria-checked", "false");
