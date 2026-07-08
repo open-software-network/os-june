@@ -574,7 +574,13 @@ describe("AppSettings", () => {
     );
 
     await screen.findByRole("heading", { name: "General" });
-    expect(screen.getByText(/Only anonymous counts that help us understand/)).toBeInTheDocument();
+    // Privacy is the last group in General, below system permissions.
+    const permissionsHeading = screen.getByRole("heading", { name: "System permissions" });
+    const privacyHeading = screen.getByRole("heading", { name: "Privacy" });
+    expect(
+      permissionsHeading.compareDocumentPosition(privacyHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByText(/Anonymous counts of feature usage/)).toBeInTheDocument();
     expect(screen.queryByText("How usage statistics work")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
       "href",

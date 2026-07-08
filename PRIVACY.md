@@ -7,7 +7,7 @@ inference through June API.
 ## Optional usage statistics
 
 June can ask for opt-in anonymous usage statistics during onboarding and in
-Settings > Privacy. The default is off.
+Settings > General > Privacy. The default is off.
 
 When enabled in this release, June stores the choice and local counters on the
 device. It does not send telemetry reports yet. Future reporting is limited to

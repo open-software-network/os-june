@@ -25,8 +25,8 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
 
   return (
     <StepCard
-      title="Share anonymous usage statistics?"
-      subtitle="This is optional and off by default."
+      title="Help improve June"
+      subtitle="Optional and off by default. Change it anytime in Settings."
       wide
       className="onboarding-card-privacy"
     >
@@ -34,8 +34,8 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
         <div className="onboarding-privacy-copy">
           <h2>Share anonymous usage statistics</h2>
           <p>
-            Never your recordings, notes, or written content. Only anonymous counts that help us
-            understand feature usage.
+            Anonymous counts of feature usage, like how many dictation sessions happen in a week.
+            Never your recordings, notes, or anything you write, and nothing that can identify you.
           </p>
           <a href={TELEMETRY_INFO_URL} target="_blank" rel="noreferrer">
             Learn how it works

@@ -38,7 +38,7 @@ export function PrivacySettingsSection() {
       setStatus(
         enabled
           ? "Anonymous usage statistics are on for this device."
-          : "Anonymous usage statistics are off and local counters were deleted.",
+          : "Anonymous usage statistics are off. Usage data stored on this device was deleted.",
       );
     } catch {
       setStatus("Could not update usage statistics. Try again.");
@@ -48,12 +48,12 @@ export function PrivacySettingsSection() {
   }
 
   return (
-    <section className="settings-group" aria-labelledby="general-usage-statistics-heading">
-      <h2 id="general-usage-statistics-heading" className="settings-group-heading">
-        Anonymous usage statistics
+    <section className="settings-group" aria-labelledby="general-privacy-heading">
+      <h2 id="general-privacy-heading" className="settings-group-heading">
+        Privacy
       </h2>
       <p className="settings-group-description">
-        Opt in to anonymous product usage counts that help prioritize June work.
+        Choose whether June shares anonymous usage statistics with Open Software. Off by default.
       </p>
       <div className="settings-card">
         <div className="settings-rows">
@@ -61,8 +61,8 @@ export function PrivacySettingsSection() {
             <div className="settings-row-info">
               <h3 className="settings-row-title">Share anonymous usage statistics</h3>
               <p className="settings-row-description">
-                Never your recordings, notes, or written content. Only anonymous counts that help us
-                understand feature usage.{" "}
+                Anonymous counts of feature usage, like how many dictation sessions happen in a
+                week. Never your recordings, notes, or anything you write.{" "}
                 <a
                   className="settings-inline-link"
                   href={TELEMETRY_INFO_URL}
