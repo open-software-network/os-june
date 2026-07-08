@@ -20433,6 +20433,113 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+.onboarding-intent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+  min-inline-size: 0;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.onboarding-intent-option {
+  display: flex;
+  min-width: 0;
+  min-height: var(--control-xl);
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.onboarding-intent-option:nth-last-child(1):nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+.onboarding-intent-option:hover {
+  border-color: color-mix(in oklch, var(--brand) 24%, var(--border));
+  background: color-mix(in oklch, var(--warm-soft) 20%, var(--card));
+}
+
+.onboarding-intent-option:active {
+  transform: translateY(1px);
+}
+
+.onboarding-intent-option:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.onboarding-intent-option[aria-pressed="true"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 34%, var(--border));
+  background: color-mix(in oklch, var(--warm-soft) 34%, var(--card));
+}
+
+.onboarding-intent-option span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.onboarding-intent-check {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--warm-strong);
+}
+
+.onboarding-intent-option[aria-pressed="true"] .onboarding-intent-check {
+  border-color: color-mix(in oklch, var(--warm-strong) 36%, transparent);
+  background: color-mix(in oklch, var(--warm-soft) 42%, var(--card));
+}
+
+.onboarding-intent-other {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-block-start: var(--sp-3);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.onboarding-intent-other input {
+  height: var(--control-xl);
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  padding: 0 var(--sp-3);
+}
+
+.onboarding-intent-other input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.onboarding-intent-other input:focus {
+  outline: none;
+  border-color: color-mix(in oklch, var(--brand) 30%, var(--border));
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
 /* Permissions: one bordered card, one row per permission — icon chip, a
  * line of copy, the grant affordance. A granted row trades its icon for a
  * check and tints terracotta. */

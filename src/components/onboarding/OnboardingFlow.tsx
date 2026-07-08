@@ -8,9 +8,10 @@ import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TelemetryConsentStep } from "./steps/TelemetryConsentStep";
+import { UsageIntentStep } from "./steps/UsageIntentStep";
 import { usePermissionStatuses, useSystemAudioStatus } from "./use-permission-status";
 
-type StepId = "sign-in" | "telemetry" | "permissions" | "dictation-practice";
+type StepId = "sign-in" | "telemetry" | "usage-intent" | "permissions" | "dictation-practice";
 
 // The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
 // on the Rust side.
@@ -40,8 +41,14 @@ function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
   );
 }
 
-const MAC_STEPS: StepId[] = ["sign-in", "telemetry", "permissions", "dictation-practice"];
-const NON_MAC_STEPS: StepId[] = ["sign-in", "telemetry", "permissions"];
+const MAC_STEPS: StepId[] = [
+  "sign-in",
+  "telemetry",
+  "usage-intent",
+  "permissions",
+  "dictation-practice",
+];
+const NON_MAC_STEPS: StepId[] = ["sign-in", "telemetry", "usage-intent", "permissions"];
 
 type Props = {
   account: AccountStatus;
@@ -66,6 +73,7 @@ function browserOnboardingDemoStep(): StepId | null {
   const step = new URLSearchParams(window.location.search).get("juneDemoStep");
   return step === "sign-in" ||
     step === "telemetry" ||
+    step === "usage-intent" ||
     step === "permissions" ||
     step === "dictation-practice"
     ? step
@@ -184,6 +192,8 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
           <SignInStep account={account} onAccountChanged={onAccountChanged} onContinue={goNext} />
         ) : stepId === "telemetry" ? (
           <TelemetryConsentStep onContinue={goNext} />
+        ) : stepId === "usage-intent" ? (
+          <UsageIntentStep onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep
             statuses={permissionStatuses}

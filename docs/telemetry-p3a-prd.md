@@ -154,6 +154,14 @@ platform (`macos` / `windows` / `linux`) and app version series (e.g.
 | `agent.privacy-guard` | Agent privacy guard mode (sampled weekly) | off / structured | Rampart default-on decision |
 | `models.privacy-mode` | Most-selected model privacy mode this week | e2ee / private / anonymous | Model catalog and TEE roadmap |
 | `onboarding.completed` | Onboarding completed | completed | Onboarding funnel health |
+| `onboarding.use-case.work` | Onboarding interest selected: work | selected | New-user intent and activation segmentation |
+| `onboarding.use-case.personal` | Onboarding interest selected: personal | selected | New-user intent and activation segmentation |
+| `onboarding.use-case.school` | Onboarding interest selected: school | selected | New-user intent and activation segmentation |
+| `onboarding.use-case.creative` | Onboarding interest selected: creative projects | selected | New-user intent and activation segmentation |
+| `onboarding.use-case.coding` | Onboarding interest selected: coding | selected | New-user intent and activation segmentation |
+| `onboarding.use-case.meetings` | Onboarding interest selected: meetings | selected | New-user intent and activation segmentation |
+| `onboarding.use-case.other` | Onboarding interest selected: other | selected | New-user intent and activation segmentation |
+| `onboarding.use-case.not-sure` | Onboarding interest selected: not sure yet | selected | New-user intent and activation segmentation |
 
 Explicitly rejected for v1: anything billing-related (balance, top-ups —
 too sensitive next to OS Accounts identity), country/region (population too
