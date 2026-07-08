@@ -29,7 +29,6 @@ export function ModelPickerPopover({
   popoverRef,
   searchRef,
   className,
-  directCatalog = false,
   title = "Model",
   ariaLabel = `Choose ${modelModeLabel(mode)} model`,
   suggestedListLabel = `Suggested ${modelModeLabel(mode)} models`,
@@ -46,7 +45,6 @@ export function ModelPickerPopover({
   popoverRef: RefObject<HTMLDivElement>;
   searchRef: RefObject<HTMLInputElement>;
   className?: string;
-  directCatalog?: boolean;
   title?: string;
   ariaLabel?: string;
   suggestedListLabel?: string;
@@ -132,7 +130,7 @@ export function ModelPickerPopover({
 
   useLayoutEffect(() => {
     updateFade();
-  }, [directCatalog, flyout, options, search, updateFade]);
+  }, [flyout, options, search, updateFade]);
 
   useEffect(() => {
     setCatalogHover(null);
@@ -274,78 +272,65 @@ export function ModelPickerPopover({
       className={["agent-composer-model-popover", className].filter(Boolean).join(" ")}
       role="dialog"
       aria-label={ariaLabel}
-      data-direct-catalog={directCatalog || undefined}
       onMouseLeave={() => {
         cancelHoverIntent();
         if (flyout?.kind === "model") onFlyoutChange(null);
       }}
     >
       <p className="agent-composer-model-title">{title}</p>
-      {directCatalog ? (
-        <div className="agent-composer-model-direct" role="group" aria-label={allModelsLabel}>
-          {catalogList(allModelsLabel)}
-        </div>
-      ) : (
-        <>
-          <div className="agent-composer-model-menu" role="listbox" aria-label={suggestedListLabel}>
-            {suggested.length ? (
-              suggested.map(({ model: option }) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  className="agent-composer-model-row"
-                  role="option"
-                  aria-selected={option.id === model.id}
-                  data-active={(flyout?.kind === "model" && flyout.id === option.id) || undefined}
-                  onMouseEnter={() =>
-                    hoverIntent(() => onFlyoutChange({ kind: "model", id: option.id }))
-                  }
-                  onFocus={() => {
-                    cancelHoverIntent();
-                    onFlyoutChange({ kind: "model", id: option.id });
-                  }}
-                  onClick={() => onSelect(option.id)}
-                >
-                  <ModelPickerOptionText model={option} />
-                  {option.id === model.id ? (
-                    <IconCheckmark2Small
-                      size={14}
-                      aria-hidden
-                      className="agent-composer-model-row-check"
-                    />
-                  ) : null}
-                </button>
-              ))
-            ) : (
-              <p className="agent-composer-model-empty">Loading suggested models.</p>
-            )}
-          </div>
-          <button
-            type="button"
-            className="agent-composer-model-row agent-composer-model-all"
-            aria-haspopup="true"
-            aria-expanded={flyout?.kind === "all"}
-            data-active={flyout?.kind === "all" || undefined}
-            onMouseEnter={() => hoverIntent(() => onFlyoutChange({ kind: "all" }))}
-            onFocus={() => {
-              cancelHoverIntent();
-              onFlyoutChange({ kind: "all" });
-            }}
-            onClick={() => {
-              cancelHoverIntent();
-              onFlyoutChange({ kind: "all" });
-              searchRef.current?.focus();
-            }}
-          >
-            <span className="agent-composer-model-row-name">All models</span>
-            <IconChevronRightSmall
-              size={16}
-              aria-hidden
-              className="agent-composer-model-row-chevron"
-            />
-          </button>
-        </>
-      )}
+      <div className="agent-composer-model-menu" role="listbox" aria-label={suggestedListLabel}>
+        {suggested.length ? (
+          suggested.map(({ model: option }) => (
+            <button
+              key={option.id}
+              type="button"
+              className="agent-composer-model-row"
+              role="option"
+              aria-selected={option.id === model.id}
+              data-active={(flyout?.kind === "model" && flyout.id === option.id) || undefined}
+              onMouseEnter={() =>
+                hoverIntent(() => onFlyoutChange({ kind: "model", id: option.id }))
+              }
+              onFocus={() => {
+                cancelHoverIntent();
+                onFlyoutChange({ kind: "model", id: option.id });
+              }}
+              onClick={() => onSelect(option.id)}
+            >
+              <ModelPickerOptionText model={option} />
+              {option.id === model.id ? (
+                <IconCheckmark2Small
+                  size={14}
+                  aria-hidden
+                  className="agent-composer-model-row-check"
+                />
+              ) : null}
+            </button>
+          ))
+        ) : (
+          <p className="agent-composer-model-empty">Loading suggested models.</p>
+        )}
+      </div>
+      <button
+        type="button"
+        className="agent-composer-model-row agent-composer-model-all"
+        aria-haspopup="true"
+        aria-expanded={flyout?.kind === "all"}
+        data-active={flyout?.kind === "all" || undefined}
+        onMouseEnter={() => hoverIntent(() => onFlyoutChange({ kind: "all" }))}
+        onFocus={() => {
+          cancelHoverIntent();
+          onFlyoutChange({ kind: "all" });
+        }}
+        onClick={() => {
+          cancelHoverIntent();
+          onFlyoutChange({ kind: "all" });
+          searchRef.current?.focus();
+        }}
+      >
+        <span className="agent-composer-model-row-name">All models</span>
+        <IconChevronRightSmall size={16} aria-hidden className="agent-composer-model-row-chevron" />
+      </button>
       {detail ? (
         <div ref={flyoutRef} className="agent-composer-model-flyout agent-composer-model-detail">
           <div className="agent-composer-model-surface">
@@ -366,7 +351,7 @@ export function ModelPickerPopover({
           <div className="agent-composer-model-surface">{catalogList(allModelsLabel)}</div>
         </div>
       ) : null}
-      {(flyout?.kind === "all" || directCatalog) && catalogHover ? (
+      {flyout?.kind === "all" && catalogHover ? (
         <div
           ref={hovercardRef}
           className="agent-composer-model-hovercard agent-composer-model-detail"
