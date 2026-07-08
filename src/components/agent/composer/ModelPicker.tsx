@@ -10,13 +10,8 @@ import { createPortal } from "react-dom";
 import { modelSupportsTools, type ModelPrivacyBadge } from "../../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../../lib/suggested-models";
 import type { VeniceModelDto } from "../../../lib/tauri";
-import {
-  createHoverBridgeTracker,
-  pointInRect,
-  rectFromElement,
-  type HoverBridgePoint,
-  type HoverBridgeRect,
-} from "../../ui/hoverBridge";
+import { rectFromElement, type HoverBridgeRect } from "../../ui/hoverBridge";
+import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../../ui/useModelHoverBridge";
 import { HoverTip } from "../../ui/HoverTip";
 import { ModelPrivacyChip, ModelRowPrivacyBadge } from "../../ui/ModelPrivacyChip";
 import { ModelPickerCardContent } from "../../settings/ModelPickerPopover";
@@ -163,19 +158,6 @@ export function ComposerModelPopover({
     [popoverRef],
   );
 
-  // One tracker per hover surface: the suggested-row detail flyout and the
-  // catalog hovercard. `onExpire` (pointer stalled inside the wedge) routes
-  // through a ref so it always runs the latest hand-off closure.
-  const modelHandoffRef = useRef<(point: HoverBridgePoint) => void>(() => {});
-  const [modelTracker] = useState(() =>
-    createHoverBridgeTracker({ onExpire: (point) => modelHandoffRef.current(point) }),
-  );
-  const modelAnchorRef = useRef(false);
-  const catalogHandoffRef = useRef<(point: HoverBridgePoint) => void>(() => {});
-  const [catalogTracker] = useState(() =>
-    createHoverBridgeTracker({ onExpire: (point) => catalogHandoffRef.current(point) }),
-  );
-  const catalogAnchorRef = useRef(false);
   const portalTarget = typeof document === "undefined" ? null : document.body;
   // Position-aware scroll fades on the catalog list, same treatment as the
   // artifact panel body: only when it overflows, only on edges with hidden
@@ -353,157 +335,31 @@ export function ComposerModelPopover({
     [cancelCatalogClose],
   );
 
-  // Suggested-row detail flyout: a single window listener drives the whole safe
-  // polygon. Leaving the active row anchors a fresh wedge toward the card;
-  // while the wedge holds, the card stays put and other rows' hover is
-  // suppressed. When the wedge is dropped (pointer left it or stalled), hover is
-  // handed to the row now under the pointer, which re-opens its own card.
-  useEffect(() => {
-    if (flyout?.kind !== "model") return;
-    const tracker = modelTracker;
-    // The flyout just opened because the pointer (or focus) is on a row.
-    modelAnchorRef.current = true;
+  const resolveFilteredOption = useCallback(
+    (id: string) => filteredOptionsRef.current.find((item) => item.id === id),
+    [],
+  );
 
-    const activeRow = () =>
-      popoverRef.current?.querySelector<HTMLElement>(
-        '.agent-composer-model-row[data-active="true"]',
-      );
+  const modelBridge = useModelDetailHoverBridge({
+    flyout,
+    popoverRef,
+    cardRef: flyoutRef,
+    cancelHoverIntent,
+    setBridging,
+    onFlyoutChange,
+  });
 
-    function handoff(point: HoverBridgePoint) {
-      const target = document
-        .elementFromPoint(point.x, point.y)
-        ?.closest<HTMLElement>(".agent-composer-model-row");
-      if (target && popoverRef.current?.contains(target)) {
-        // Re-targeting another row: keep the bridging marker suppressing the new
-        // row's raw :hover through the hover-intent delay, and lift it only as
-        // the new card opens (when data-active transfers). Otherwise the still-
-        // open card's row and the freshly hovered row both read as highlighted
-        // during the delay.
-        if (target.classList.contains("agent-composer-model-all")) {
-          cancelHoverIntent();
-          onFlyoutChange({ kind: "all" });
-          setBridging(false);
-          return;
-        }
-        const id = target.getAttribute("data-model-id");
-        if (id) {
-          cancelHoverIntent();
-          onFlyoutChange({ kind: "model", id });
-          setBridging(false);
-          return;
-        }
-      }
-      // No re-target (pointer left the list): lift the suppression immediately.
-      setBridging(false);
-      onFlyoutChange(null);
-    }
-    modelHandoffRef.current = handoff;
-
-    function handlePointerMove(event: PointerEvent) {
-      const point = { x: event.clientX, y: event.clientY };
-      const card = flyoutRef.current;
-      const row = activeRow();
-      if (!card || !row) return;
-      if (pointInRect(point, rectFromElement(card)) || pointInRect(point, rectFromElement(row))) {
-        modelAnchorRef.current = true;
-        cancelHoverIntent();
-        tracker.stop();
-        setBridging(false);
-        return;
-      }
-      if (tracker.isActive()) {
-        if (tracker.update(point)) setBridging(true);
-        else handoff(point);
-        return;
-      }
-      if (modelAnchorRef.current) {
-        modelAnchorRef.current = false;
-        const rowRect = rectFromElement(row);
-        const cardRect = rectFromElement(card);
-        const side = cardRect.left >= rowRect.right ? "right" : "left";
-        tracker.begin(point, rowRect, cardRect, side);
-        setBridging(true);
-      }
-    }
-    window.addEventListener("pointermove", handlePointerMove, true);
-    return () => {
-      window.removeEventListener("pointermove", handlePointerMove, true);
-      tracker.stop();
-      setBridging(false);
-    };
-  }, [flyout, modelTracker, onFlyoutChange, popoverRef, cancelHoverIntent, setBridging]);
-
-  // Catalog hovercard: the same safe-polygon machine, anchored on the hovered
-  // catalog row and its card.
-  useEffect(() => {
-    if (!catalogHover) return;
-    const tracker = catalogTracker;
-    catalogAnchorRef.current = true;
-    const { rowRect, side } = catalogHover;
-
-    function handoff(point: HoverBridgePoint) {
-      const target = document
-        .elementFromPoint(point.x, point.y)
-        ?.closest<HTMLElement>(".agent-composer-model-row");
-      if (target && listRef.current?.contains(target)) {
-        const id = target.getAttribute("data-model-id");
-        const option = id ? filteredOptionsRef.current.find((item) => item.id === id) : undefined;
-        if (option) {
-          cancelHoverIntent();
-          showCatalogHover(option, target);
-          setBridging(false);
-          return;
-        }
-      }
-      // No re-target: lift the suppression immediately.
-      setBridging(false);
-      scheduleCatalogClose();
-    }
-    catalogHandoffRef.current = handoff;
-
-    function handlePointerMove(event: PointerEvent) {
-      const point = { x: event.clientX, y: event.clientY };
-      const card = hovercardRef.current;
-      if (!card) return;
-      if (pointInRect(point, rectFromElement(card)) || pointInRect(point, rowRect)) {
-        catalogAnchorRef.current = true;
-        cancelHoverIntent();
-        cancelCatalogClose();
-        tracker.stop();
-        setBridging(false);
-        return;
-      }
-      if (tracker.isActive()) {
-        if (tracker.update(point)) {
-          setBridging(true);
-          cancelCatalogClose();
-        } else {
-          handoff(point);
-        }
-        return;
-      }
-      if (catalogAnchorRef.current) {
-        catalogAnchorRef.current = false;
-        tracker.begin(point, rowRect, rectFromElement(card), side);
-        setBridging(true);
-        cancelCatalogClose();
-      }
-    }
-    window.addEventListener("pointermove", handlePointerMove, true);
-    return () => {
-      window.removeEventListener("pointermove", handlePointerMove, true);
-      tracker.stop();
-      setBridging(false);
-    };
-  }, [
+  const catalogBridge = useCatalogHoverBridge({
     catalogHover,
-    catalogTracker,
+    cardRef: hovercardRef,
+    listRef,
+    resolveOption: resolveFilteredOption,
     showCatalogHover,
     cancelHoverIntent,
     cancelCatalogClose,
     scheduleCatalogClose,
     setBridging,
-  ]);
+  });
 
   if (!model) return null;
 
@@ -535,7 +391,7 @@ export function ComposerModelPopover({
               data-model-id={option.id}
               data-active={(flyout?.kind === "model" && flyout.id === option.id) || undefined}
               onMouseEnter={() => {
-                if (modelTracker.isActive()) {
+                if (modelBridge.isActive()) {
                   return;
                 }
                 const open = () => onFlyoutChange({ kind: "model", id: option.id });
@@ -574,7 +430,7 @@ export function ComposerModelPopover({
         aria-expanded={flyout?.kind === "all"}
         data-active={flyout?.kind === "all" || undefined}
         onMouseEnter={() => {
-          if (modelTracker.isActive()) {
+          if (modelBridge.isActive()) {
             return;
           }
           const open = () => onFlyoutChange({ kind: "all" });
@@ -676,7 +532,7 @@ export function ComposerModelPopover({
                       active={catalogHover?.model.id === option.id}
                       onSelect={onSelect}
                       onHover={(hoverModel, row, immediate) => {
-                        if (!immediate && catalogTracker.isActive()) {
+                        if (!immediate && catalogBridge.isActive()) {
                           return;
                         }
                         cancelCatalogClose();

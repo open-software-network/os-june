@@ -300,7 +300,11 @@ export function HoverTip({
     );
     const rawTop = side === "bottom" ? anchor.bottom : anchor.top;
     let top = rawTop;
-    if (tipHeight > 0) {
+    // Vertical viewport clamp is scoped to interactive tips only: those carry
+    // tall, card-like content (the model summary card) that can run off a
+    // window edge. Plain tooltips keep their exact prior top so this change has
+    // no blast radius on the many small tips across the app.
+    if (interactive && tipHeight > 0) {
       top =
         side === "bottom"
           ? Math.min(rawTop, window.innerHeight - tipHeight - VIEWPORT_MARGIN)
@@ -308,7 +312,7 @@ export function HoverTip({
       top = Math.max(VIEWPORT_MARGIN, Math.min(top, window.innerHeight - VIEWPORT_MARGIN));
     }
     setCoords({ side, top, left, width });
-  }, [anchor, tip, measureVersion]);
+  }, [anchor, tip, measureVersion, interactive]);
 
   useLayoutEffect(() => {
     if (!interactive || !mounted || typeof ResizeObserver === "undefined") return;
