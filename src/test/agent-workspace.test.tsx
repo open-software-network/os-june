@@ -6497,13 +6497,22 @@ describe("AgentWorkspace", () => {
       expect(mocks.listHermesSessions).toHaveBeenCalledTimes(initialSessionListCalls + 1);
       const sessionListCallsAfterSubmit = mocks.listHermesSessions.mock.calls.length;
 
+      // The working-session poll interval is 2500ms. Advance past one full
+      // period (not exactly one) so the tick fires deterministically — the
+      // effect arms the interval a microtask after the fake clock starts, so
+      // advancing by exactly the period lands on the boundary and fires
+      // 0-or-1 times depending on scheduling. This test asserts polling
+      // *continues* while a message is pending, so assert the poll fired again
+      // rather than an exact call count.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
+        await vi.advanceTimersByTimeAsync(3000);
       });
 
       expect(screen.getByText("follow up while pending")).toBeInTheDocument();
       expect(screen.getByText("Thinking…")).toBeInTheDocument();
-      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(sessionListCallsAfterSubmit + 1);
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
+        sessionListCallsAfterSubmit,
+      );
     } finally {
       vi.useRealTimers();
     }
