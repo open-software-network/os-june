@@ -4605,9 +4605,155 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
-/* No per-state / collapsed overrides or left transition needed: the single
- * max(--sidebar-w-current, --sp-3) rule above already tracks the card edge in
- * every state, and animating that one variable tweens it in lockstep. */
+/* Toast notifications (sonner) ---------------------------------------------
+ * Sonner is mounted unstyled (toastOptions.unstyled) and rendered into a
+ * portal at document.body, tucked into the workspace's top-right corner. Every
+ * visual comes from these tokens, so toasts follow all five theme presets and
+ * dark mode automatically. The surface mirrors a popover: --popover fill,
+ * hairline --popover-border, and the soft ambient --shadow-md (a lighter lift
+ * than --shadow-lg — a floating notice, not a raised card). Only the tone icon
+ * is tinted; the surface stays neutral so the whole toast family reads as one
+ * calm system. */
+.june-toast {
+  /* Height model: the row is center-aligned, so every child — tone icon, text,
+   * action, close — sits on one optical line and a single-line toast reads
+   * perfectly centered. Height is driven by the tallest child (the controls)
+   * plus symmetric padding; no per-element margin nudging. */
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-md);
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  font-size: var(--fs-md);
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.june-toast:focus-visible {
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 2px var(--focus-ring);
+}
+
+/* Leading tone glyph, vertically centered against the message. */
+.june-toast-icon {
+  order: 0;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
+.june-toast-content {
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.june-toast-title {
+  font-size: var(--fs-md);
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+  /* Quieter than body copy: notifications are transient status, not document
+   * text. */
+  color: color-mix(in oklch, var(--foreground) 74%, var(--muted-foreground));
+}
+
+/* Stacked (collapsed) toasts: sonner squashes the back toasts to the front
+ * toast's height, but only fades their content when running styled — its
+ * fade rule is gated on [data-styled='true'], which unstyled mode disables.
+ * Replicate it here so squashed back toasts never show overflowing text. */
+.june-toast[data-expanded="false"][data-front="false"] {
+  overflow: hidden;
+}
+
+.june-toast[data-expanded="false"][data-front="false"] > * {
+  opacity: 0;
+}
+
+.june-toast-description {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+/* Tone accents: the leading glyph only. */
+.june-toast--success .june-toast-icon {
+  color: var(--success);
+}
+
+.june-toast--error .june-toast-icon {
+  color: var(--destructive);
+}
+
+.june-toast--warning .june-toast-icon {
+  color: var(--warm-strong);
+}
+
+.june-toast--info .june-toast-icon {
+  color: var(--brand);
+}
+
+/* The dot spinner already carries its own size and currentColor. */
+.june-toast--loading .june-toast-icon {
+  color: var(--muted-foreground);
+}
+
+/* Actions use the existing grey .btn-secondary family, sized down to a compact
+ * control for the toast. */
+.june-toast .june-toast-action,
+.june-toast .june-toast-cancel {
+  flex-shrink: 0;
+  height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.june-toast .june-toast-action {
+  order: 3;
+}
+
+.june-toast .june-toast-cancel {
+  order: 2;
+}
+
+/* Sonner renders the close button first. Order it to the far right and let
+ * .icon-button provide the squircle hit target, matched to the action button's
+ * height so the pair reads as a set; keep it quiet at rest. */
+.june-toast .june-toast-close {
+  order: 4;
+  position: static;
+  flex-shrink: 0;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  transform: none;
+  margin-left: calc(var(--sp-1) * -1);
+  color: var(--muted-foreground);
+  letter-spacing: 0;
+}
+
+.june-toast .june-toast-close:hover {
+  color: var(--foreground);
+}
 
 .agent-composer[data-drop-active="true"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -10045,58 +10191,8 @@ input:focus-visible,
   margin-top: var(--sp-5);
 }
 
-/* Feature 07: the calm "Branched from <title>" confirmation. Neutral-toned
- * (this is reassurance, not an error) and laid out like the error banner so
- * the two read as a consistent family. */
-.agent-main > .agent-branched-banner,
-.agent-main > .agent-branching-banner {
-  margin-top: var(--sp-5);
-}
-
-.agent-branched-banner,
-.agent-branching-banner {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--accent);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-}
-
-.agent-branched-banner svg,
-.agent-branching-banner-spinner {
-  flex-shrink: 0;
-  color: var(--muted-foreground);
-}
-
-.agent-branched-banner p,
-.agent-branching-banner p {
-  margin: 0;
-  min-width: 0;
-  flex: 1;
-}
-
-.agent-branched-banner button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  height: 24px;
-  min-width: 24px;
-  padding: 0 var(--sp-2);
-  border: none;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.agent-branched-banner button:hover {
-  background: color-mix(in oklch, var(--foreground) 8%, transparent);
-}
+/* Feature 07: the fork lifecycle (creating → branched) is now surfaced as a
+ * toast, not an inline banner — see branchFromMessage in AgentWorkspace.tsx. */
 
 .agent-turn-action-spinner {
   color: var(--warm-strong);

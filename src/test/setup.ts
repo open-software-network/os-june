@@ -1,7 +1,9 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, render } from "@testing-library/react";
 import { MotionGlobalConfig } from "framer-motion";
+import { createElement } from "react";
 import { afterEach, beforeEach, vi } from "vitest";
+import { Toaster, toast } from "../components/ui/Toaster";
 import { markOnboardingComplete } from "../lib/onboarding";
 
 // Resolve framer-motion animations instantly. Without this the frameloop
@@ -100,9 +102,22 @@ function setNavigatorPlatform(platform: string, userAgent: string) {
 // Existing App tests exercise the signed-in main shell; pre-complete the
 // first-run onboarding so the wizard doesn't gate them. Onboarding tests
 // opt back in by clearing localStorage.
+//
+// The app mounts the toast host once in the App shell, but component tests
+// render surfaces (e.g. AgentWorkspace) without it. Mount a Toaster per test via
+// RTL's own render so the existing cleanup() tears it down between tests: sonner
+// portals toasts to document.body (so `screen` queries still find them), and
+// unmounting the Toaster removes that portal synchronously — no toast lingers
+// into the next test's queries. Surface-fired toasts also carry stable ids
+// (model switch, branch, issue-report sent, busy) so a re-fire updates one toast
+// in place rather than stacking a duplicate node.
 beforeEach(() => {
   setNavigatorPlatform("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)");
   markOnboardingComplete();
+  render(createElement(Toaster));
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  toast.dismiss();
+  cleanup();
+});
