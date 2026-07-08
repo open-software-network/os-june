@@ -228,6 +228,7 @@ struct GenerateBody {
     language: Option<String>,
     existing_generated_note: Option<String>,
     model: String,
+    stream: bool,
 }
 
 #[derive(Serialize)]
@@ -303,9 +304,10 @@ pub async fn generate_note_from_transcript(
         language: request.language,
         existing_generated_note: request.existing_generated_note,
         model,
+        stream: true,
     };
     let response: GenerateResponse =
-        post_json("/v1/notes/generate", &body, send_venice_api_key).await?;
+        post_generate_note("/v1/notes/generate", &body, send_venice_api_key).await?;
     Ok(GenerationProviderResult {
         content: response.content,
         title_suggestion: response.title_suggestion,
@@ -1459,6 +1461,183 @@ where
     parse_response(path, response).await
 }
 
+async fn post_generate_note<B>(
+    path: &str,
+    body: &B,
+    send_venice_api_key: bool,
+) -> Result<GenerateResponse, AppError>
+where
+    B: Serialize,
+{
+    let response = authed_send(path, send_venice_api_key, |client, url, token| {
+        client.post(url).bearer_auth(token).json(body)
+    })
+    .await?;
+    let status = response.status();
+    if !status.is_success() {
+        return parse_response(path, response).await;
+    }
+    if response_is_event_stream(&response) {
+        return parse_generate_sse_response(path, response).await;
+    }
+    parse_response(path, response).await
+}
+
+fn response_is_event_stream(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase())
+        .is_some_and(|value| value.starts_with("text/event-stream"))
+}
+
+async fn parse_generate_sse_response(
+    path: &str,
+    mut response: reqwest::Response,
+) -> Result<GenerateResponse, AppError> {
+    let mut parser = GenerateSseParser::default();
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if let Some(event) = parser.push(&chunk)? {
+            return parse_generate_terminal_event(path, event);
+        }
+    }
+    if let Some(event) = parser.finish()? {
+        return parse_generate_terminal_event(path, event);
+    }
+    Err(generate_stream_ended_unexpectedly())
+}
+
+fn parse_generate_terminal_event(
+    path: &str,
+    event: GenerateTerminalEvent,
+) -> Result<GenerateResponse, AppError> {
+    match event {
+        GenerateTerminalEvent::Result(body) => {
+            parse_response_body(path, reqwest::StatusCode::OK, None, &body)
+        }
+        GenerateTerminalEvent::Error { status, body } => {
+            let status =
+                reqwest::StatusCode::from_u16(status).unwrap_or(reqwest::StatusCode::BAD_GATEWAY);
+            parse_response_body(path, status, None, &body.to_string())
+        }
+    }
+}
+
+fn generate_stream_ended_unexpectedly() -> AppError {
+    AppError::new(
+        "june_request_failed",
+        "The note generation stream ended unexpectedly.",
+    )
+}
+
+#[derive(Debug, PartialEq)]
+enum GenerateTerminalEvent {
+    Result(String),
+    Error {
+        status: u16,
+        body: serde_json::Value,
+    },
+}
+
+#[derive(Default)]
+struct GenerateSseParser {
+    buffer: Vec<u8>,
+    event: Option<String>,
+    data: Vec<String>,
+}
+
+impl GenerateSseParser {
+    fn push(&mut self, chunk: &[u8]) -> Result<Option<GenerateTerminalEvent>, AppError> {
+        self.buffer.extend_from_slice(chunk);
+        while let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            let line = self.buffer.drain(..=newline).collect::<Vec<_>>();
+            let line = line.strip_suffix(b"\n").unwrap_or(&line);
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let line = std::str::from_utf8(line).map_err(|error| {
+                AppError::new(
+                    "june_api_response_invalid",
+                    format!("The note generation stream contained invalid UTF-8: {error}"),
+                )
+            })?;
+            if let Some(event) = self.push_line(line)? {
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
+    }
+
+    fn finish(&mut self) -> Result<Option<GenerateTerminalEvent>, AppError> {
+        if !self.buffer.is_empty() {
+            let line = std::str::from_utf8(&self.buffer).map_err(|error| {
+                AppError::new(
+                    "june_api_response_invalid",
+                    format!("The note generation stream contained invalid UTF-8: {error}"),
+                )
+            })?;
+            let line = line.strip_suffix('\r').unwrap_or(line).to_string();
+            self.buffer.clear();
+            if let Some(event) = self.push_line(&line)? {
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
+    }
+
+    fn push_line(&mut self, line: &str) -> Result<Option<GenerateTerminalEvent>, AppError> {
+        if line.is_empty() {
+            return self.dispatch();
+        }
+        if line.starts_with(':') {
+            return Ok(None);
+        }
+        if let Some(value) = line.strip_prefix("event:") {
+            self.event = Some(sse_field_value(value).to_string());
+            return Ok(None);
+        }
+        if let Some(value) = line.strip_prefix("data:") {
+            self.data.push(sse_field_value(value).to_string());
+        }
+        Ok(None)
+    }
+
+    fn dispatch(&mut self) -> Result<Option<GenerateTerminalEvent>, AppError> {
+        let event = self.event.take();
+        if self.data.is_empty() {
+            return Ok(None);
+        }
+        let data = std::mem::take(&mut self.data).join("\n");
+        match event.as_deref() {
+            Some("result") => Ok(Some(GenerateTerminalEvent::Result(data))),
+            Some("error") => {
+                let error: GenerateStreamError = serde_json::from_str(&data).map_err(|error| {
+                    tracing::warn!(
+                        body_bytes = data.len(),
+                        %error,
+                        "june api returned an invalid note generation stream error"
+                    );
+                    AppError::new("june_api_response_invalid", INVALID_JUNE_RESPONSE_MESSAGE)
+                })?;
+                Ok(Some(GenerateTerminalEvent::Error {
+                    status: error.status,
+                    body: error.body,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct GenerateStreamError {
+    status: u16,
+    body: serde_json::Value,
+}
+
+fn sse_field_value(value: &str) -> &str {
+    value.strip_prefix(' ').unwrap_or(value)
+}
+
 async fn post_json_image_retryable<T, B>(
     path: &str,
     body: &B,
@@ -1778,6 +1957,165 @@ fn network_error(error: reqwest::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOTE_GENERATE_PATH: &str = "/v1/notes/generate";
+
+    fn generate_success_envelope(content: &str) -> String {
+        serde_json::json!({
+            "success": true,
+            "data": {
+                "content": content,
+                "titleSuggestion": "Summary",
+                "provider": "venice",
+                "promptVersion": "test-prompt"
+            }
+        })
+        .to_string()
+    }
+
+    fn insufficient_credits_envelope() -> serde_json::Value {
+        serde_json::json!({
+            "success": false,
+            "errorCode": ERR_INSUFFICIENT_CREDITS,
+            "message": "insufficient_credits"
+        })
+    }
+
+    fn parse_sse_chunks(chunks: &[&[u8]]) -> Result<Option<GenerateTerminalEvent>, AppError> {
+        let mut parser = GenerateSseParser::default();
+        for chunk in chunks {
+            if let Some(event) = parser.push(chunk)? {
+                return Ok(Some(event));
+            }
+        }
+        parser.finish()
+    }
+
+    fn expect_generate_error(
+        result: Result<GenerateResponse, AppError>,
+        message: &str,
+    ) -> AppError {
+        match result {
+            Ok(_) => panic!("{message}"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn generate_buffered_json_response_parses_success() {
+        let response: GenerateResponse = parse_response_body(
+            NOTE_GENERATE_PATH,
+            reqwest::StatusCode::OK,
+            None,
+            &generate_success_envelope("Generated note"),
+        )
+        .expect("buffered JSON envelope should parse");
+
+        assert_eq!(response.content, "Generated note");
+        assert_eq!(response.title_suggestion.as_deref(), Some("Summary"));
+        assert_eq!(response.provider, "venice");
+        assert_eq!(response.prompt_version.as_deref(), Some("test-prompt"));
+    }
+
+    #[test]
+    fn generate_sse_keep_alive_comments_then_result_parse_success() {
+        let stream = format!(
+            ": keep-alive\n\n: keep-alive\n\nevent: result\ndata: {}\n\n",
+            generate_success_envelope("Streamed note")
+        );
+        let event = parse_sse_chunks(&[stream.as_bytes()])
+            .expect("SSE should parse")
+            .expect("SSE should contain a terminal event");
+
+        let response = parse_generate_terminal_event(NOTE_GENERATE_PATH, event)
+            .expect("result event should parse through the API envelope");
+
+        assert_eq!(response.content, "Streamed note");
+        assert_eq!(response.provider, "venice");
+    }
+
+    #[test]
+    fn generate_sse_error_maps_like_buffered_non_success_response() {
+        let body = insufficient_credits_envelope();
+        let buffered = parse_response_body::<GenerateResponse>(
+            NOTE_GENERATE_PATH,
+            reqwest::StatusCode::PAYMENT_REQUIRED,
+            None,
+            &body.to_string(),
+        );
+        let buffered = expect_generate_error(buffered, "buffered insufficient credits should fail");
+        let stream = format!(
+            "event: error\ndata: {}\n\n",
+            serde_json::json!({
+                "status": reqwest::StatusCode::PAYMENT_REQUIRED.as_u16(),
+                "body": body,
+            })
+        );
+        let event = parse_sse_chunks(&[stream.as_bytes()])
+            .expect("SSE error should parse")
+            .expect("SSE should contain a terminal event");
+        let streamed = expect_generate_error(
+            parse_generate_terminal_event(NOTE_GENERATE_PATH, event),
+            "streamed insufficient credits should fail",
+        );
+
+        assert_eq!(streamed.code, buffered.code);
+        assert_eq!(streamed.message, buffered.message);
+        assert_eq!(streamed.details, buffered.details);
+    }
+
+    #[test]
+    fn generate_sse_truncated_without_terminal_event_reports_unexpected_end() {
+        let event = parse_sse_chunks(&[b": keep-alive\n\n", b"event: result\n"])
+            .expect("truncated SSE should still be valid UTF-8");
+        let error = event
+            .map(|event| {
+                expect_generate_error(
+                    parse_generate_terminal_event(NOTE_GENERATE_PATH, event),
+                    "truncated stream must not produce a successful response",
+                )
+            })
+            .unwrap_or_else(generate_stream_ended_unexpectedly);
+
+        assert_eq!(error.code, "june_request_failed");
+        assert_eq!(
+            error.message,
+            "The note generation stream ended unexpectedly."
+        );
+    }
+
+    #[test]
+    fn generate_sse_chunk_boundary_can_split_line() {
+        let body = generate_success_envelope("Split note");
+        let chunks = [
+            b": keep-al".as_slice(),
+            b"ive\n\nevent: res".as_slice(),
+            b"ult\ndata: ".as_slice(),
+            body.as_bytes(),
+            b"\n\n".as_slice(),
+        ];
+        let event = parse_sse_chunks(&chunks)
+            .expect("split SSE should parse")
+            .expect("split SSE should contain a terminal event");
+        let response = parse_generate_terminal_event(NOTE_GENERATE_PATH, event)
+            .expect("split result should parse through the API envelope");
+
+        assert_eq!(response.content, "Split note");
+    }
+
+    #[test]
+    fn generate_sse_multiline_data_joins_with_newlines() {
+        let stream = b"event: result\n\
+data: {\"success\":true,\n\
+data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"venice\",\"promptVersion\":\"test\"}}\n\n";
+        let event = parse_sse_chunks(&[stream])
+            .expect("multiline SSE should parse")
+            .expect("multiline SSE should contain a terminal event");
+        let response = parse_generate_terminal_event(NOTE_GENERATE_PATH, event)
+            .expect("multiline result should parse after newline joining");
+
+        assert_eq!(response.content, "Joined");
+    }
 
     #[test]
     fn extracts_text_and_strips_inline_think_blocks() {
