@@ -1341,8 +1341,6 @@ export function AppSettings({
               onRefresh={onAccountRefresh}
             />
 
-            <PrivacySettingsSection />
-
             <section className="settings-group" aria-labelledby="appearance-heading">
               <h2 id="appearance-heading" className="settings-group-heading">
                 Appearance
@@ -1409,6 +1407,8 @@ export function AppSettings({
               onEnableAccessibility={onEnableAccessibility}
               onEnableSystemAudio={onEnableSystemAudio}
             />
+
+            <PrivacySettingsSection />
           </>
         ) : null}
 

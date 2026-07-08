@@ -181,7 +181,7 @@ describe("OnboardingFlow", () => {
 
   async function renderFlow(onComplete = vi.fn()) {
     render(<OnboardingFlow {...flowProps({ onComplete })} />);
-    await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
+    await screen.findByRole("heading", { name: "Help improve June" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
     return onComplete;
@@ -250,7 +250,7 @@ describe("OnboardingFlow", () => {
   it("keeps anonymous usage statistics off by default", async () => {
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
+    await screen.findByRole("heading", { name: "Help improve June" });
     expect(screen.queryByText("See exactly what is shared")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
       "href",
@@ -270,7 +270,7 @@ describe("OnboardingFlow", () => {
     const user = userEvent.setup();
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
+    await screen.findByRole("heading", { name: "Help improve June" });
     await user.click(screen.getByRole("switch", { name: "Share anonymous usage statistics" }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -492,7 +492,7 @@ describe("OnboardingFlow", () => {
   it("does not ask unsubscribed users for a card during onboarding", async () => {
     const user = userEvent.setup();
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
-    await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
+    await screen.findByRole("heading", { name: "Help improve June" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
 
