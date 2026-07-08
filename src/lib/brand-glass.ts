@@ -26,13 +26,16 @@ export type GlassPalette = {
 
 export const GLASS_PALETTES: Record<BrandId, GlassPalette> = {
   clay: {
-    // The flagship jewel — the one vivid, full-chroma palette (the proven
-    // terracotta look all the others were derived from).
-    bodyColor: "#f5a16d",
-    bodyTint: "#e08b56",
-    backdrop: "#efb796",
-    edgeColor: "#ff9a59",
-    topColor: "#ffbd8b",
+    // The flagship jewel — still the fullest-chroma palette, but pulled back one
+    // notch from the original vivid set (S ×0.82, L −2%) so it reads as a dusty
+    // terracotta rather than a hot neon orange. The edge/top lights had been
+    // fully saturated and drove most of the brightness; they come down the most.
+    // streakColor stays a crisp white specular highlight.
+    bodyColor: "#e79e70",
+    bodyTint: "#d1885a",
+    backdrop: "#e5b396",
+    edgeColor: "#ef975f",
+    topColor: "#f4b98c",
     streakColor: "#fff2e8",
     envLight: "#f7ece1",
     envDark: "#2a1a12",
