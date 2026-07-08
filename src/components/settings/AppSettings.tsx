@@ -1731,6 +1731,28 @@ export function AppSettings({
                     onSearchChange={setModelSearch}
                     onSelect={(modelId) => selectModelFromPicker("generation", modelId)}
                   />
+                  {IMAGE_GENERATION_ENABLED ? (
+                    <ModelRow
+                      mode="image"
+                      title="Image"
+                      description="Used when you generate an image from chat."
+                      value={providerSettings.imageModel}
+                      options={imageOptions}
+                      open={pickerMode === "image"}
+                      flyout={modelPickerFlyout}
+                      search={modelSearch}
+                      triggerRef={modelPickerTriggerRef}
+                      popoverRef={modelPickerPopoverRef}
+                      searchRef={modelPickerSearchRef}
+                      directCatalog
+                      onToggle={() =>
+                        pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
+                      }
+                      onFlyoutChange={setModelPickerFlyout}
+                      onSearchChange={setModelSearch}
+                      onSelect={(modelId) => selectModelFromPicker("image", modelId)}
+                    />
+                  ) : null}
                   <button
                     type="button"
                     className="settings-row settings-more-options-trigger"
@@ -1749,14 +1771,34 @@ export function AppSettings({
                     />
                   </button>
                   {showMoreModelOptions ? (
-                    <VeniceApiKeyRow
-                      id="models-more-options"
-                      configured={providerSettings.veniceApiKeyConfigured}
-                      value={veniceApiKeyDraft}
-                      onValueChange={setVeniceApiKeyDraft}
-                      onSave={() => void saveVeniceApiKey()}
-                      onRemove={() => void removeVeniceApiKey()}
-                    />
+                    <>
+                      <VeniceApiKeyRow
+                        id="models-more-options"
+                        configured={providerSettings.veniceApiKeyConfigured}
+                        value={veniceApiKeyDraft}
+                        onValueChange={setVeniceApiKeyDraft}
+                        onSave={() => void saveVeniceApiKey()}
+                        onRemove={() => void removeVeniceApiKey()}
+                      />
+                      {IMAGE_GENERATION_ENABLED ? (
+                        <div className="settings-row">
+                          <div className="settings-row-info">
+                            <h3 className="settings-row-title">Safe mode</h3>
+                            <p className="settings-row-description">
+                              Blur adult content in generated and edited images. On by default; your
+                              image work stays private either way.
+                            </p>
+                          </div>
+                          <div className="settings-row-control">
+                            <Switch
+                              checked={providerSettings.imageSafeMode}
+                              aria-label="Blur adult content in images"
+                              onCheckedChange={toggleImageSafeMode}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+                    </>
                   ) : null}
                 </div>
               </div>
@@ -1909,60 +1951,6 @@ export function AppSettings({
                         </div>
                       </div>
                     ) : null}
-                  </div>
-                </div>
-              </section>
-            ) : null}
-
-            {IMAGE_GENERATION_ENABLED ? (
-              <section
-                className="settings-group settings-models-group"
-                aria-labelledby="image-generation-heading"
-              >
-                <h2 id="image-generation-heading" className="settings-group-heading">
-                  Image generation
-                </h2>
-                <p className="settings-group-description">
-                  Choose the model June uses when you ask it to generate an image.
-                </p>
-                <div className="settings-card settings-models-card">
-                  <div className="settings-rows">
-                    <ModelRow
-                      mode="image"
-                      title="Image"
-                      description="Used when you generate an image from chat."
-                      value={providerSettings.imageModel}
-                      options={imageOptions}
-                      open={pickerMode === "image"}
-                      flyout={modelPickerFlyout}
-                      search={modelSearch}
-                      triggerRef={modelPickerTriggerRef}
-                      popoverRef={modelPickerPopoverRef}
-                      searchRef={modelPickerSearchRef}
-                      directCatalog
-                      onToggle={() =>
-                        pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
-                      }
-                      onFlyoutChange={setModelPickerFlyout}
-                      onSearchChange={setModelSearch}
-                      onSelect={(modelId) => selectModelFromPicker("image", modelId)}
-                    />
-                    <div className="settings-row">
-                      <div className="settings-row-info">
-                        <h3 className="settings-row-title">Safe mode</h3>
-                        <p className="settings-row-description">
-                          Blur adult content in generated and edited images. On by default; your
-                          image work stays private either way.
-                        </p>
-                      </div>
-                      <div className="settings-row-control">
-                        <Switch
-                          checked={providerSettings.imageSafeMode}
-                          aria-label="Blur adult content in images"
-                          onCheckedChange={toggleImageSafeMode}
-                        />
-                      </div>
-                    </div>
                   </div>
                 </div>
               </section>
