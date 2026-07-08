@@ -787,25 +787,14 @@ fn default_video_pricing() -> BTreeMap<String, u32> {
     // credit price still comes from the quote, so pricier models cost more
     // without a per-model markup table. Mirrors `VIDEO_MODELS` in
     // src/lib/video-models.ts and `KNOWN_VIDEO_MODELS` in the desktop providers
-    // module; keep the three in sync. The original Seedance 2.0 default was
-    // delisted from Venice's live catalog (quote tolerated it, queue rejected it
-    // with a 400), so it is deliberately absent.
+    // module; keep the three in sync. Kept to three curated `private`-tier models
+    // (fast default / photorealistic / higher-detail). The original Seedance 2.0
+    // default was delisted from Venice's live catalog (quote tolerated it, queue
+    // rejected it with a 400), so it is deliberately absent.
     BTreeMap::from([
         ("wan-2.2-a14b-text-to-video".to_string(), 2000),
-        ("wan-2-7-text-to-video".to_string(), 2000),
-        ("wan-2.6-text-to-video".to_string(), 2000),
-        ("wan-2.5-preview-text-to-video".to_string(), 2000),
         ("grok-imagine-text-to-video-private".to_string(), 2000),
-        ("ltx-2-19b-distilled-text-to-video".to_string(), 2000),
         ("ltx-2-19b-full-text-to-video".to_string(), 2000),
-        ("longcat-text-to-video".to_string(), 2000),
-        ("longcat-distilled-text-to-video".to_string(), 2000),
-        ("vidu-q3-text-to-video".to_string(), 2000),
-        ("pixverse-v5.6-text-to-video".to_string(), 2000),
-        ("pixverse-c1-text-to-video".to_string(), 2000),
-        ("happyhorse-1-1-text-to-video".to_string(), 2000),
-        ("happyhorse-1-0-text-to-video".to_string(), 2000),
-        ("wan-2-7-uncensored-text-to-video".to_string(), 2000),
     ])
 }
 

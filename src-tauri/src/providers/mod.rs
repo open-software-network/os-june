@@ -30,20 +30,8 @@ pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
 /// an update. Keep in sync when the curated list changes.
 pub const KNOWN_VIDEO_MODELS: &[&str] = &[
     DEFAULT_VIDEO_MODEL,
-    "wan-2-7-text-to-video",
-    "wan-2.6-text-to-video",
-    "wan-2.5-preview-text-to-video",
     "grok-imagine-text-to-video-private",
-    "ltx-2-19b-distilled-text-to-video",
     "ltx-2-19b-full-text-to-video",
-    "longcat-text-to-video",
-    "longcat-distilled-text-to-video",
-    "vidu-q3-text-to-video",
-    "pixverse-v5.6-text-to-video",
-    "pixverse-c1-text-to-video",
-    "happyhorse-1-1-text-to-video",
-    "happyhorse-1-0-text-to-video",
-    "wan-2-7-uncensored-text-to-video",
 ];
 pub const DEFAULT_VIDEO_DURATION: &str = "5s";
 pub const DEFAULT_VIDEO_RESOLUTION: &str = "720p";
@@ -1574,8 +1562,8 @@ mod tests {
     #[test]
     fn sanitize_settings_keeps_a_curated_video_model() {
         // A non-default curated id must survive load unchanged — otherwise the
-        // expanded allowlist would silently collapse every pick to the default.
-        let curated = "wan-2-7-text-to-video";
+        // allowlist would silently collapse every pick to the default.
+        let curated = "grok-imagine-text-to-video-private";
         assert!(KNOWN_VIDEO_MODELS.contains(&curated));
         let settings = ProviderModelSettings {
             video_model: curated.to_string(),
