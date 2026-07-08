@@ -2335,6 +2335,10 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         return;
     }
     if let Some(transcript) = outcome.transcript.as_ref() {
+        crate::p3a::record_question_best_effort(
+            app.clone(),
+            crate::p3a::questions::Question::DictationSessions,
+        );
         spawn_dictation_history_write(app.clone(), transcript.clone());
     }
     if let Some(event) = outcome.event {

@@ -375,11 +375,9 @@ describe("Sidebar primary navigation", () => {
 
     const billingButton = screen.getByRole("button", { name: "Billing" });
     expect(billingButton).toHaveAttribute("data-active", "true");
-    expect(screen.getByRole("button", { name: "Privacy" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Privacy" })).toBeNull();
     expect(screen.getByRole("button", { name: "Shortcuts" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Permissions" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Privacy" }));
-    expect(onSettingsTabChange).toHaveBeenCalledWith("privacy");
     await user.click(screen.getByRole("button", { name: "Shortcuts" }));
     expect(onSettingsTabChange).toHaveBeenCalledWith("shortcuts");
 

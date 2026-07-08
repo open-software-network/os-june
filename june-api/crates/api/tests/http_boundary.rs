@@ -13,15 +13,16 @@ use june_domain::{
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
     GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageEditRequest, ImageEditor,
     ImageGenerationRequest, ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
-    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
+    P3aReport, P3aSink, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+    WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
+    WebSearchResults, WebSearcher,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
     ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
     NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService, NoteGenerateServiceDeps,
-    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, WebAugmentService,
-    WebAugmentServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, P3aReportService, P3aReportServiceDeps,
+    PricingTable, WebAugmentService, WebAugmentServiceDeps,
 };
 use pretty_assertions::assert_eq;
 use std::{
@@ -80,6 +81,71 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
     assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
     assert_eq!(body["data"]["creditsCharged"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
+-> Result<(), Box<dyn Error>> {
+    let sink = Arc::new(RecordingP3aSink::default());
+    let app = router(test_state_with_p3a_sink(sink.clone()));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/p3a/reports",
+            &serde_json::json!({
+                "schema": 1,
+                "questionId": "dictation.sessions",
+                "epoch": "2026-W28",
+                "platform": "macos",
+                "versionSeries": "0.0.x",
+                "bucket": 1,
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["accepted"], true);
+    assert_eq!(
+        sink.reports(),
+        vec![P3aReport {
+            product_slug: "june".to_string(),
+            question_id: "dictation.sessions".to_string(),
+            epoch: "2026-W28".to_string(),
+            platform: "macos".to_string(),
+            version_series: "0.0.x".to_string(),
+            bucket: 1,
+        }]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_p3a_report_requires_user_auth() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/p3a/reports",
+        &serde_json::json!({
+            "schema": 1,
+            "questionId": "dictation.sessions",
+            "epoch": "2026-W28",
+            "platform": "macos",
+            "versionSeries": "0.0.x",
+            "bucket": 1,
+        }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "missing_bearer_token");
     Ok(())
 }
 
@@ -829,6 +895,29 @@ fn test_state_with_sinks_and_transcriber(
     attestation: AttestationInfo,
     transcriber: Arc<dyn Transcriber>,
 ) -> ApiState {
+    test_state_with_all_sinks(
+        issue_reports,
+        attestation,
+        transcriber,
+        Arc::new(RecordingP3aSink::default()),
+    )
+}
+
+fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
+    test_state_with_all_sinks(
+        test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        test_attestation(),
+        Arc::new(FakeTranscriber),
+        p3a_sink,
+    )
+}
+
+fn test_state_with_all_sinks(
+    issue_reports: Arc<IssueReportService>,
+    attestation: AttestationInfo,
+    transcriber: Arc<dyn Transcriber>,
+    p3a_sink: Arc<dyn P3aSink>,
+) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
     let os_accounts = Arc::new(FakeOsAccounts);
     let generator = Arc::new(FakeGenerator);
@@ -894,6 +983,9 @@ fn test_state_with_sinks_and_transcriber(
         })),
         image,
         issue_reports,
+        p3a_reports: Arc::new(P3aReportService::new(P3aReportServiceDeps {
+            sink: p3a_sink,
+        })),
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
@@ -1144,6 +1236,28 @@ impl IssueReportSink for RecordingIssueReportSink {
         self.reports
             .lock()
             .map_err(|_| DomainError::UpstreamProvider)?
+            .push(report);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingP3aSink {
+    reports: Mutex<Vec<P3aReport>>,
+}
+
+impl RecordingP3aSink {
+    fn reports(&self) -> Vec<P3aReport> {
+        self.reports.lock().expect("reports lock").clone()
+    }
+}
+
+#[async_trait]
+impl P3aSink for RecordingP3aSink {
+    async fn submit(&self, report: P3aReport) -> Result<(), DomainError> {
+        self.reports
+            .lock()
+            .map_err(|_| DomainError::MeteringProvider)?
             .push(report);
         Ok(())
     }

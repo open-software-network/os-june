@@ -556,7 +556,7 @@ describe("AppSettings", () => {
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("max");
   });
 
-  it("shows and saves anonymous usage statistics in Privacy settings", async () => {
+  it("shows and saves anonymous usage statistics in General settings", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -568,17 +568,19 @@ describe("AppSettings", () => {
         onAccountRefresh={vi.fn()}
         onSourceModeChange={vi.fn()}
         onEnableSystemAudio={vi.fn()}
-        activeTab="privacy"
+        activeTab="general"
         onTabChange={vi.fn()}
       />,
     );
 
-    await screen.findByRole("heading", { name: "Privacy" });
+    await screen.findByRole("heading", { name: "General" });
     expect(screen.getByText(/Only anonymous counts that help us understand/)).toBeInTheDocument();
+    expect(screen.queryByText("How usage statistics work")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
       "href",
       TELEMETRY_INFO_URL,
     );
+    expect(screen.queryByText("Consent week")).not.toBeInTheDocument();
     const toggle = screen.getByRole("switch", { name: "Share anonymous usage statistics" });
     expect(toggle).toHaveAttribute("aria-checked", "false");
 
@@ -588,7 +590,7 @@ describe("AppSettings", () => {
     expect(
       await screen.findByText("Anonymous usage statistics are on for this device."),
     ).toBeInTheDocument();
-    expect(screen.getByText("2026-W28")).toBeInTheDocument();
+    expect(screen.queryByText("2026-W28")).not.toBeInTheDocument();
   });
 
   it("shows usage remaining as a percentage instead of dollars", async () => {

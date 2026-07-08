@@ -229,7 +229,6 @@ export type SettingsTab =
   | "general"
   | "billing"
   | "shortcuts"
-  | "privacy"
   | "dictation"
   | "audio"
   | "models"
@@ -254,7 +253,6 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "billing", label: "Billing" },
   { id: "shortcuts", label: "Shortcuts" },
-  { id: "privacy", label: "Privacy" },
   { id: "dictation", label: "Dictation" },
   { id: "audio", label: "Audio" },
   { id: "models", label: "Models" },
@@ -1343,6 +1341,8 @@ export function AppSettings({
               onRefresh={onAccountRefresh}
             />
 
+            <PrivacySettingsSection />
+
             <section className="settings-group" aria-labelledby="appearance-heading">
               <h2 id="appearance-heading" className="settings-group-heading">
                 Appearance
@@ -1488,8 +1488,6 @@ export function AppSettings({
             </div>
           </section>
         ) : null}
-
-        {activeTab === "privacy" ? <PrivacySettingsSection /> : null}
 
         {activeTab === "dictation" ? (
           <>

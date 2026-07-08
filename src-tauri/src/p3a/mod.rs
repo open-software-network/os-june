@@ -1,7 +1,9 @@
 pub mod questions;
 
 use crate::{
+    db::repositories::{P3aCounterState, P3aPendingReport, Repositories},
     domain::types::AppError,
+    june_api::{submit_p3a_report, P3aReportRequest as JuneP3aReportRequest},
     p3a::questions::{Question, ALL_QUESTIONS},
 };
 use chrono::{Datelike, Utc};
@@ -10,6 +12,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager, State};
 
 const CONSENT_VERSION: u32 = 1;
+const P3A_SCHEMA_VERSION: u32 = 1;
 
 pub struct P3aSettingsState {
     path: PathBuf,
@@ -118,13 +121,27 @@ pub async fn set_p3a_enabled(
 }
 
 #[tauri::command]
-pub async fn p3a_record(
-    app: AppHandle,
-    state: State<'_, P3aSettingsState>,
-    request: P3aRecordRequest,
-) -> Result<(), AppError> {
+pub async fn p3a_record(app: AppHandle, request: P3aRecordRequest) -> Result<(), AppError> {
     let question = Question::from_id(request.question_id.trim())
         .ok_or_else(|| AppError::new("p3a_unknown_question", "Unknown telemetry question."))?;
+    record_question(&app, question).await
+}
+
+pub fn record_question_best_effort(app: AppHandle, question: Question) {
+    tokio::spawn(async move {
+        if let Err(error) = record_question(&app, question).await {
+            tracing::warn!(
+                question_id = question.id(),
+                error_code = %error.code,
+                error_message = %error.message,
+                "P3A counter record failed"
+            );
+        }
+    });
+}
+
+pub async fn record_question(app: &AppHandle, question: Question) -> Result<(), AppError> {
+    let state = app.state::<P3aSettingsState>();
     let enabled = state
         .settings
         .lock()
@@ -133,12 +150,90 @@ pub async fn p3a_record(
     if !enabled {
         return Ok(());
     }
-    let repos = crate::commands::repositories(&app).await?;
-    repos
-        .increment_p3a_counter(question.id(), &current_iso_week(), 1)
+    let repos = crate::commands::repositories(app).await?;
+    let epoch = current_iso_week();
+    let counter = repos
+        .increment_p3a_counter(question.id(), &epoch, 1)
         .await
         .map_err(|error| AppError::new("p3a_counter_failed", error.to_string()))?;
+    flush_completed_reports(&repos, &epoch).await;
+    if question == Question::OnboardingCompleted {
+        submit_counter_report(&repos, question, &epoch, counter).await;
+    }
     Ok(())
+}
+
+async fn flush_completed_reports(repos: &Repositories, current_epoch: &str) {
+    let pending = match repos.unreported_p3a_counters_before(current_epoch).await {
+        Ok(pending) => pending,
+        Err(error) => {
+            tracing::warn!(%error, "P3A completed report query failed");
+            return;
+        }
+    };
+    for report in pending {
+        submit_pending_report(repos, report).await;
+    }
+}
+
+async fn submit_pending_report(repos: &Repositories, report: P3aPendingReport) {
+    let Some(question) = Question::from_id(&report.question_id) else {
+        tracing::warn!(question_id = %report.question_id, "Skipping unknown P3A counter");
+        return;
+    };
+    submit_counter_report(
+        repos,
+        question,
+        &report.epoch,
+        P3aCounterState {
+            raw_value: report.raw_value,
+            reported_bucket: report.reported_bucket,
+        },
+    )
+    .await;
+}
+
+async fn submit_counter_report(
+    repos: &Repositories,
+    question: Question,
+    epoch: &str,
+    counter: P3aCounterState,
+) {
+    let bucket = question.bucket(counter.raw_value);
+    if counter.reported_bucket == Some(bucket) {
+        return;
+    }
+
+    if let Err(error) = submit_p3a_report(JuneP3aReportRequest {
+        schema: P3A_SCHEMA_VERSION,
+        question_id: question.id().to_string(),
+        epoch: epoch.to_string(),
+        platform: current_platform().to_string(),
+        version_series: current_version_series(),
+        bucket,
+    })
+    .await
+    {
+        tracing::warn!(
+            question_id = question.id(),
+            %epoch,
+            bucket,
+            error_code = %error.code,
+            error_message = %error.message,
+            "P3A report upload failed"
+        );
+        return;
+    }
+
+    if let Err(error) = repos.mark_p3a_reported(question.id(), epoch, bucket).await {
+        tracing::warn!(
+            question_id = question.id(),
+            %epoch,
+            bucket,
+            %error,
+            "P3A report mark failed"
+        );
+    }
 }
 
 async fn clear_local_counters(app: &AppHandle) -> Result<(), AppError> {
@@ -205,6 +300,45 @@ fn current_iso_week() -> String {
     iso_week_for(Utc::now())
 }
 
+fn current_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    }
+}
+
+fn current_version_series() -> String {
+    version_series(env!("CARGO_PKG_VERSION"))
+}
+
+fn version_series(version: &str) -> String {
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(version_number_prefix);
+    let minor = parts.next().and_then(version_number_prefix);
+    match (major, minor) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}.x"),
+        _ => version
+            .chars()
+            .filter(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '-')
+            })
+            .take(32)
+            .collect::<String>(),
+    }
+}
+
+fn version_number_prefix(part: &str) -> Option<&str> {
+    let len = part
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .map(char::len_utf8)
+        .sum();
+    (len > 0).then_some(&part[..len])
+}
+
 fn iso_week_for(time: chrono::DateTime<Utc>) -> String {
     let week = time.iso_week();
     format!("{}-W{:02}", week.year(), week.week())
@@ -224,7 +358,7 @@ fn is_valid_iso_week(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_iso_week, iso_week_for, sanitize_settings, P3aSettings};
+    use super::{is_valid_iso_week, iso_week_for, sanitize_settings, version_series, P3aSettings};
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -233,6 +367,12 @@ mod tests {
             iso_week_for(Utc.with_ymd_and_hms(2026, 7, 7, 12, 0, 0).unwrap()),
             "2026-W28"
         );
+    }
+
+    #[test]
+    fn formats_version_series() {
+        assert_eq!(version_series("0.0.30"), "0.0.x");
+        assert_eq!(version_series("1.2.3-beta.1"), "1.2.x");
     }
 
     #[test]

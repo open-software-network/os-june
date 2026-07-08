@@ -5,19 +5,20 @@ which parts of June are used, without collecting recordings, notes, transcripts,
 prompts, responses, or user identifiers.
 
 Telemetry is off by default. You can turn it on during onboarding or later in
-Settings > Privacy. You can turn it off at any time.
+Settings > General. You can turn it off at any time.
 
 ## Current status
 
-This release only adds consent, local settings, and local counters. No telemetry
-reports are sent by this release.
+When telemetry is enabled, June increments counters on your device for the
+public questions in [`telemetry-questions.md`](./telemetry-questions.md). June
+reports a finalized weekly bucket once per question after the week completes.
+The onboarding completion question is reported immediately because it is a
+one-time yes/no answer. Turning telemetry off deletes the local counters and
+reporting state.
 
-When telemetry is enabled today, June can increment counters on your device for
-the public questions in [`telemetry-questions.md`](./telemetry-questions.md).
-Those counters stay local. Turning telemetry off deletes the local counters.
-
-Network reporting requires a future June API ingestion release and will keep
-the policies below.
+The team can see aggregate counts only. Raw device counters stay local, and OS
+Accounts stores only aggregate cells after June API validates and forwards a
+report.
 
 ## What June never collects through telemetry
 
@@ -45,25 +46,30 @@ The current catalog and buckets are documented in
 check the Rust question catalog against that document, so code and docs have to
 change together.
 
-## How reporting will work
+## How reporting works
 
-When network reporting ships, each report will contain one question answer:
+Each report contains one question answer:
 
 - `schema`: telemetry schema version.
-- `question`: one public question id.
+- `question_id`: one public question id.
 - `bucket`: a small integer bucket index.
 - `platform`: macOS, Windows, or Linux.
 - `version_series`: app version series, such as `0.0.x`.
 - `epoch`: ISO reporting week, such as `2026-W28`.
 
-Reports will not use OS Accounts authentication, cookies, user ids, device ids,
-or install ids. Each question answer is sent separately so the server does not
-receive a full per-install profile in one request.
+The desktop request to June API uses the existing OS Accounts user token so the
+public June API route can reject unauthenticated writes. That token is not part
+of the telemetry report, is not forwarded to OS Accounts, and is not stored as
+telemetry data. Reports do not include cookies, user ids, device ids, install
+ids, account balance, subscription state, or billing activity.
 
-June API validates each report against the public catalog. The ingestion path is
-designed to increment aggregate counters and discard the raw report. Published
-or shared aggregate views must suppress small cells so tiny cohorts are not
-exposed.
+June API on Phala does not own telemetry storage. It validates each report
+against the public catalog, discards the authenticated user identity, and
+forwards valid aggregate reports to OS Accounts using a June API service token.
+OS Accounts increments aggregate counters in its database and does not attach
+reports to OS Accounts users, emails, wallets, balances, subscriptions, OAuth
+clients, or app records. Published or shared aggregate views must suppress small
+cells so tiny cohorts are not exposed.
 
 ## Change policy
 

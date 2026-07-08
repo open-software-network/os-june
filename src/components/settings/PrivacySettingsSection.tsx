@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { dispatchP3aSettingsChanged, TELEMETRY_INFO_URL } from "../../lib/p3a";
 import { p3aSettings, setP3aEnabled, type P3aSettingsDto } from "../../lib/tauri";
 import { Switch } from "../ui/Switch";
-import { SettingsPageHeader } from "./AppSettings";
 
 const DEFAULT_P3A_SETTINGS: P3aSettingsDto = {
   enabled: false,
@@ -49,77 +48,47 @@ export function PrivacySettingsSection() {
   }
 
   return (
-    <>
-      <SettingsPageHeader
-        title="Privacy"
-        blurb="Control optional data sharing and review exactly what June can report."
-      />
-      <section className="settings-group" aria-labelledby="privacy-usage-heading">
-        <h2 id="privacy-usage-heading" className="settings-group-heading">
-          Anonymous usage statistics
-        </h2>
-        <p className="settings-group-description">
-          Opt in to coarse product counts that help prioritize June work.
-        </p>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">Share anonymous usage statistics</h3>
-                <p className="settings-row-description">
-                  Never your recordings, notes, or written content. Only anonymous counts that help
-                  us understand feature usage.
-                </p>
-              </div>
-              <div className="settings-row-control">
-                <Switch
-                  checked={settings.enabled}
-                  disabled={saving}
-                  aria-label="Share anonymous usage statistics"
-                  onCheckedChange={(enabled) => void toggleUsageStatistics(enabled)}
-                />
-              </div>
-            </div>
-
-            <div className="settings-row settings-row-meta">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title settings-meta-label">Consent week</h3>
-              </div>
-              <div className="settings-row-control">
-                <span className="settings-meta-value">
-                  {settings.enabled && settings.consentedAtWeek
-                    ? settings.consentedAtWeek
-                    : "Not enabled"}
-                </span>
-              </div>
-            </div>
-
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">How usage statistics work</h3>
-                <p className="settings-row-description">
-                  Read the policy, current local-only behavior, and public question catalog.
-                </p>
-              </div>
-              <div className="settings-row-control">
+    <section className="settings-group" aria-labelledby="general-usage-statistics-heading">
+      <h2 id="general-usage-statistics-heading" className="settings-group-heading">
+        Anonymous usage statistics
+      </h2>
+      <p className="settings-group-description">
+        Opt in to anonymous product usage counts that help prioritize June work.
+      </p>
+      <div className="settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">Share anonymous usage statistics</h3>
+              <p className="settings-row-description">
+                Never your recordings, notes, or written content. Only anonymous counts that help us
+                understand feature usage.{" "}
                 <a
-                  className="btn btn-secondary"
+                  className="settings-inline-link"
                   href={TELEMETRY_INFO_URL}
                   target="_blank"
                   rel="noreferrer"
                 >
                   Learn how it works
                 </a>
-              </div>
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <Switch
+                checked={settings.enabled}
+                disabled={saving}
+                aria-label="Share anonymous usage statistics"
+                onCheckedChange={(enabled) => void toggleUsageStatistics(enabled)}
+              />
             </div>
           </div>
         </div>
-        {status ? (
-          <p className="settings-status" role="status">
-            {status}
-          </p>
-        ) : null}
-      </section>
-    </>
+      </div>
+      {status ? (
+        <p className="settings-status" role="status">
+          {status}
+        </p>
+      ) : null}
+    </section>
   );
 }

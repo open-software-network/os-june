@@ -14,15 +14,15 @@
 │   local counters (sqlite, never leaves device)    │
 │                    │ weekly epoch rollover        │
 │                    ▼                              │
-│   bucketize ──► one POST per question, jittered,  │
-│                 NO auth header, no cookies        │
+│   bucketize ──► one POST per question             │
+│                 user-authenticated to June API    │
 └────────────────────┬──────────────────────────────┘
                      ▼
         June API  POST /v1/p3a/reports   (TEE, attested)
-          validate against catalog, reject unknown/extra
-                     │ forward, never persist
+          validate against catalog, discard user id
+                     │ forward to OS Accounts with service token
                      ▼
-        os-platform  p3a_aggregates (Postgres)
+        OS Accounts  p3a_aggregates (Postgres)
           UPSERT counter++, raw report discarded
           k>=50 suppression at read; 12-month prune
                      ▼
@@ -36,13 +36,14 @@ Three properties fall out of this shape:
   string matched against `^\d+\.\d+\.x$`, and an ISO-week string. There is
   no field a transcript could travel in. `#[serde(deny_unknown_fields)]`
   on the server closes the other direction.
-- **Unlinkability by transport.** One question per request, randomized
-  send times across the epoch, no auth, no cookies. The server cannot
-  reassemble an install's answer set. (This mirrors Brave, which submits
-  each answer separately for exactly this reason.)
+- **Identity stripped at ingestion.** The desktop uses the existing user
+  token only so June API can reject unauthenticated writes. The token is not
+  part of the report schema, is not forwarded to OS Accounts telemetry
+  storage, and is not stored as telemetry data.
 - **Nothing durable exists but aggregates.** June API is already a
-  stateless proxy; os-platform stores only `(question, epoch, platform,
-  version, bucket) -> count`.
+  stateless proxy; OS Accounts stores only `(question, epoch, platform,
+  version, bucket) -> count` in telemetry aggregate tables that are not
+  joined to OS Accounts users, wallets, balances, or subscriptions.
 
 ### Why this trust model and not client-side crypto (STAR/Constellation)
 
@@ -50,14 +51,17 @@ Brave layers STAR/Constellation threshold encryption on top so that even
 their server can't read an answer unless >= 50 identical answers exist.
 That is the right end state, but it needs a randomness server, threshold
 aggregator, and epoch key infrastructure — disproportionate at June's
-scale. Our interim equivalent: ingestion runs inside the same Intel TDX
-TEE as June API, so "validate, aggregate, discard" is part of the attested
-image users can already verify via `/verify`. Constellation-style
-encryption is Phase 4, gated on volume that makes k >= 50 routine.
+scale. Our interim equivalent: validation and forwarding run inside the
+same Intel TDX TEE as June API, so "validate, forward, discard" is part of
+the attested image users can already verify via `/verify`. Durable aggregate
+counters live in OS Accounts, where the telemetry schema stores only
+aggregate cells. Constellation-style encryption is Phase 4, gated on volume
+that makes k >= 50 routine.
 
-## Phase 0 — consent + catalog (no network)
+## Phase 0 — consent + catalog
 
-Ships the PRD's "Release N". Nothing is sent; everything is inspectable.
+This established the consent flag, public catalog, and UI before network
+reporting. Everything remains inspectable in code and docs.
 
 ### Desktop: consent flag (Rust-side, durable)
 
@@ -87,10 +91,10 @@ Copy the `providers/mod.rs` persisted-settings pattern exactly:
 
 ### Desktop: UI
 
-- `src/components/settings/PrivacySettingsSection.tsx`, new `privacy` tab
-  in `SETTINGS_TABS` (`AppSettings.tsx:172`). Toggle + explanation + link.
-  Model the section on `AgentSettingsSection.tsx` (rampart toggle is the
-  house precedent for a privacy control).
+- `src/components/settings/PrivacySettingsSection.tsx`, rendered inside the
+  General settings panel. Toggle + explanation + link. Model the section on
+  `AgentSettingsSection.tsx` (rampart toggle is the house precedent for a
+  privacy control).
 - Onboarding: one new step in `src/components/onboarding/`, unchecked by
   default, per PRD copy rules.
 
@@ -128,22 +132,20 @@ catalog CI test green.
 
 ### Desktop: scheduler + transport
 
-- Background task (tokio, spawned in `setup`): on launch and every ~4h,
-  compute current ISO week; for any completed epoch with counters, build
-  reports, then send each with an independent random delay spread over
-  the following hours. Send-once bookkeeping per (question, epoch);
-  failures retry next wake with cap, then drop (data loss is acceptable,
-  linkability is not).
-- Dedicated `reqwest::Client` in `p3a/transport.rs`, **separate from
-  `june_api.rs`'s client**: no auth header, no cookie store, no custom
-  UA beyond the default. Keeping it a different module makes "telemetry
-  must never borrow the authenticated client" reviewable at a glance.
+- The current implementation reports finalized weekly counters once the app is
+  in a later ISO week. `p3a_counters.reported_bucket` prevents repeat sends for
+  the same question and week. Failures leave the bucket unmarked so the next
+  event retries. `onboarding.completed` is the only immediate report because
+  it is a one-time yes/no answer that cannot migrate to a higher bucket later.
+- Transport uses `june_api.rs`'s authenticated JSON helper. This protects the
+  public June API route from unauthenticated writes while keeping user identity
+  out of the telemetry report and out of the OS Accounts aggregate write.
 - Wire format:
 
 ```json
 POST {JUNE_API_URL}/v1/p3a/reports
-{ "schema": 1, "question": "dictation.sessions", "bucket": 2,
-  "platform": "macos", "version_series": "0.0.x", "epoch": "2026-W28" }
+{ "schema": 1, "questionId": "dictation.sessions", "bucket": 2,
+  "platform": "macos", "versionSeries": "0.0.x", "epoch": "2026-W28" }
 ```
 
 - Kill switches: HTTP 410 per question → mark retired locally; global
@@ -155,39 +157,33 @@ POST {JUNE_API_URL}/v1/p3a/reports
 Per house style (seven-crate split, `ApiResponse<T>` envelope, figment
 config, no breaking `/v1/*` changes — additive only):
 
-- `crates/domain`: `P3aReport`, `P3aQuestionDef`, catalog with bucket
-  arity per question (shared source of truth for validation).
+- `crates/domain`: `P3aReport` and `P3aSink`. The domain report contains
+  only product slug, question id, epoch, platform, version series, and bucket.
 - `crates/api/src/handlers/p3a.rs`: `POST /v1/p3a/reports`, wired in
-  `crates/api/src/lib.rs` `router()`. **Unauthenticated** (an OS Accounts
-  bearer would deanonymize the report — the absence of `authenticated_user`
-  here is load-bearing; comment it). `#[serde(deny_unknown_fields)]`,
-  1 KiB body limit, reject unknown question / out-of-range bucket with
-  422. Returns 202 with empty body.
-- Rate limiting by IP in-memory (tower layer), and the tracing layer for
-  this route configured to log **no IP and no body** — audit
-  `tracing-subscriber` setup in `crates/app`.
-- `crates/services`: `P3aSink` trait; `crates/providers/src/p3a.rs`:
-  `OsPlatformP3aSink` forwarding to os-platform with the app key,
-  best-effort with drop-on-failure (copy `issue_reports.rs` shape,
-  including the structured-log fallback).
-- `crates/config`: `[p3a]` figment section (`enabled`, `sink_url`,
-  killed question ids) in `config.toml`, env-overridable via `JUNE__P3A__*`
-  so kill switches need no rebuild (config is part of the attested chain —
-  a privacy plus).
+  `crates/api/src/lib.rs` `router()`. It verifies the user token with
+  `authenticated_user`, drops the identity, rejects unknown question ids or
+  out-of-range buckets with 422, and returns the standard `ApiResponse<T>`
+  envelope.
+- `crates/services`: `P3aReportService` owns the June-side question catalog
+  and validation.
+- `crates/providers`: `OsAccountsP3aSink` forwards to OS Accounts with
+  `JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN`. The sink must not forward an OS
+  Accounts user token. Local dev uses `LogP3aSink`.
 
-### os-platform: storage + dashboards
+### OS Accounts: storage + dashboards
 
 - Migration: `p3a_aggregates (question_id TEXT, epoch TEXT, platform TEXT,
   version_series TEXT, bucket SMALLINT, count BIGINT, PRIMARY KEY (...))`
   with snake_case + CHECK constraints per house style.
-- Ingest endpoint (app-key auth, June API is the only caller):
+- Ingest endpoint (service credential auth, June API is the only caller):
   `INSERT ... ON CONFLICT ... SET count = count + 1`. The request is the
-  entire retention of the raw report.
+  entire retention of the raw report. This endpoint must not resolve,
+  create, or join an OS Accounts user, wallet, balance, or subscription.
 - Read API / Grafana datasource applies `HAVING count >= 50` (published
   views) and a nightly prune of epochs older than 12 months.
 
 **Exit criteria:** end-to-end rstest + wiremock integration tests (house
-style: real Postgres for os-platform, wiremock for June API's sink);
+style: real Postgres for OS Accounts, wiremock for June API's sink);
 manual verification that a consenting debug build produces exactly one
 request per question per epoch and a non-consenting build produces zero.
 
@@ -209,7 +205,7 @@ local defaults at boot):
 ## Phase 3 — publish aggregates
 
 Quarterly public roll-up (PRD success metric): a small generator in
-os-platform exporting suppressed aggregates to a public JSON/markdown
+OS Accounts exporting suppressed aggregates to a public JSON/markdown
 artifact. No new collection.
 
 ## Phase 4 (deferred) — cryptographic aggregation
@@ -227,17 +223,17 @@ now; the wire format's `schema` field exists so this can version cleanly.
 | Consent gating | wiremock: zero requests when disabled; counters wiped on disable |
 | Content firewall | type-level (struct has no string content fields) + serde reject tests for extra fields |
 | Catalog/doc parity | CI test: enum ⇄ `telemetry-questions.md` |
-| June API handler | rstest: 202 happy path; 422 unknown question, bad bucket, extra field; 410 for killed ids; body-limit |
-| Sink | wiremock os-platform: forward shape, drop-on-failure, no retry storm |
-| os-platform | real-Postgres repo tests: upsert increment, prune job, k-suppression view |
-| Release gate | debug-build manual run: observe requests with mitmproxy; confirm no auth header, no cookies, one request per question |
+| June API handler | HTTP boundary test: 200 happy path; 401 missing user auth; 422 unknown question or bad bucket; body-limit |
+| Sink | wiremock OS Accounts: forward shape, drop-on-failure, no retry storm |
+| OS Accounts | real-Postgres repo tests: upsert increment, prune job, k-suppression view |
+| Release gate | debug-build manual run: observe requests with mitmproxy; confirm user auth appears only on the Desktop to June API hop and is not forwarded to OS Accounts telemetry storage |
 
 ## Sequencing and estimate
 
 | Phase | Scope | Estimate |
 |---|---|---|
 | 0 | consent flag + UI + catalog + docs | ~3-4 days |
-| 1 | client pipeline + June API endpoint + os-platform aggregates + dashboards | ~1.5-2 weeks |
+| 1 | client pipeline + June API endpoint + OS Accounts aggregates + dashboards | ~1.5-2 weeks |
 | 2 | remote catalog | ~2-3 days |
 | 3 | public roll-up | ~2 days, quarterly thereafter |
 

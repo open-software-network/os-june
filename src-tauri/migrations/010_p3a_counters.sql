@@ -2,6 +2,8 @@ CREATE TABLE IF NOT EXISTS p3a_counters (
   question_id TEXT NOT NULL,
   epoch TEXT NOT NULL,
   raw_value INTEGER NOT NULL DEFAULT 0 CHECK (raw_value >= 0),
+  reported_bucket INTEGER CHECK (reported_bucket IS NULL OR reported_bucket >= 0),
+  reported_at TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (question_id, epoch)
 );

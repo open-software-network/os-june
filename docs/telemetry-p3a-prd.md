@@ -51,15 +51,16 @@ Brave's P3A.
    ("0", "1-2", "3-5", "6+"), never an exact count, never a string. The
    wire format has no free-text field, so user content *cannot* be encoded
    even by a bug.
-3. **Anonymous by construction.** Reports carry no user ID, device ID,
-   install ID, or OS Accounts token. Each question's answer is sent in its
-   own HTTP request at a jittered time, so the server cannot join one
-   install's answers into a profile. The ingestion server aggregates into
-   counters and discards the raw report.
+3. **Anonymous by construction.** Reports carry no user ID, device ID, or
+   install ID. The desktop request may use the existing OS Accounts user
+   token to reach June API, but that token is not part of the report schema,
+   is not forwarded to OS Accounts telemetry storage, and is not stored as
+   telemetry data. The ingestion server aggregates into counters and
+   discards the raw report.
 4. **Opt-in, default off.** Telemetry is presented once during onboarding
    as an unchecked choice, and lives permanently as a toggle in Settings
-   under a Privacy section. Turning it off stops sending immediately and
-   deletes any locally queued answers.
+   under General. Turning it off stops sending immediately and deletes any
+   locally queued answers.
 5. **Radically transparent.** The full question catalog, bucket definitions,
    and wire schema are published in this repo
    ([`telemetry-questions.md`](./telemetry-questions.md), created with the
@@ -76,8 +77,9 @@ Under no circumstances, in any version of this system, will June P3A carry:
 - Transcripts, notes, note titles, audio, or derived text of any kind.
 - File names, file paths, URLs visited or fetched, or search queries.
 - User ID, email, OS Accounts identifiers, device ID, install ID, or any
-  durable identifier. No cookies. IP addresses are used only transiently
-  for rate limiting at ingestion and are never written to storage or logs.
+  durable identifier in the telemetry report or aggregate storage. No
+  cookies. User auth is used only transiently at the June API boundary and
+  is stripped before forwarding to OS Accounts telemetry storage.
 - Free-form strings of any kind. The schema is enums and small integers.
 - Fine-grained timestamps. Time resolution is the reporting week.
 
@@ -102,10 +104,9 @@ to weaken it requires a new PRD, not a code review.
 1. As a **first-time June user**, I want onboarding to ask me plainly
    whether to share anonymous usage statistics, defaulting to off, so that
    nothing is sent unless I chose it.
-2. As a **June user**, I want a Privacy section in Settings that shows
-   exactly what is shared (with a link to the full question list) and a
-   single toggle to stop it, so that consent is inspectable and revocable
-   at any time.
+2. As a **June user**, I want a Settings toggle that shows what is shared
+   with a link to the public telemetry policy and question list, so that
+   consent is inspectable and revocable at any time.
 3. As a **privacy-conscious user**, I want turning the toggle off to take
    effect immediately and delete anything queued locally, so that "off"
    means off.
@@ -166,10 +167,10 @@ only if retention analysis becomes critical and k >= 50 holds).
   Only anonymous counts that help us understand feature usage.") with a
   "Learn how it works" link. Declining is one click and visually equal to
   accepting.
-- **Settings > Privacy** (new section in `AppSettings`): the toggle, the
-  same one-sentence explanation, the link to the question list, and the
-  date consent was given. The existing agent privacy guard control should
-  eventually co-locate here.
+- **Settings > General**: the toggle, the same one-sentence explanation,
+  and the link to the telemetry policy. The existing agent privacy guard
+  control should remain with agent settings until a broader privacy surface
+  exists.
 - Copy follows repo rules: sentence case, no en/em dashes in UI strings.
 
 ## Non-goals

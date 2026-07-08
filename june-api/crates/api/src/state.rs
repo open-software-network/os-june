@@ -1,7 +1,7 @@
 use june_domain::TokenVerifier;
 use june_services::{
     AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
-    NoteTranscribeService, PricingTable, WebAugmentService,
+    NoteTranscribeService, P3aReportService, PricingTable, WebAugmentService,
 };
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ struct ApiStateInner {
     // provider.
     image: Arc<ImageService>,
     issue_reports: Arc<IssueReportService>,
+    p3a_reports: Arc<P3aReportService>,
     limits: ApiLimits,
     attestation: AttestationInfo,
 }
@@ -56,6 +57,7 @@ pub struct ApiStateParams {
     pub web: Arc<WebAugmentService>,
     pub image: Arc<ImageService>,
     pub issue_reports: Arc<IssueReportService>,
+    pub p3a_reports: Arc<P3aReportService>,
     pub limits: ApiLimits,
     pub attestation: AttestationInfo,
 }
@@ -73,6 +75,7 @@ impl ApiState {
                 web: params.web,
                 image: params.image,
                 issue_reports: params.issue_reports,
+                p3a_reports: params.p3a_reports,
                 limits: params.limits,
                 attestation: params.attestation,
             }),
@@ -113,6 +116,10 @@ impl ApiState {
 
     pub(crate) fn issue_reports(&self) -> &IssueReportService {
         &self.inner.issue_reports
+    }
+
+    pub(crate) fn p3a_reports(&self) -> &P3aReportService {
+        &self.inner.p3a_reports
     }
 
     pub(crate) fn limits(&self) -> ApiLimits {

@@ -8,6 +8,7 @@ pub mod local_dev;
 pub mod m4a_probe;
 pub mod openai;
 pub mod os_accounts;
+pub mod p3a;
 pub mod routing;
 pub mod venice;
 pub mod venice_augment;
@@ -25,7 +26,8 @@ pub use jwks::{JwksTokenVerifier, JwksTokenVerifierParams};
 pub use local_dev::{LocalDevOsAccountsClient, LocalDevTokenVerifier};
 pub use m4a_probe::{M4aDurationProbe, M4aProbeError};
 pub use openai::OpenAiTranscriber;
-pub use os_accounts::OsAccountsHttpClient;
+pub use os_accounts::{OsAccountsHttpClient, OsAccountsP3aSink};
+pub use p3a::LogP3aSink;
 pub use routing::RoutingTranscriber;
 pub use venice::{
     VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, VeniceTranscriber,

@@ -10617,6 +10617,13 @@ input:focus-visible,
   line-height: 1.5;
 }
 
+.settings-inline-link {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--foreground) 28%, transparent);
+  text-underline-offset: 3px;
+}
+
 /* A row title with a trailing info affordance: the caveats that used to bloat
  * the description live in a HoverTip on this small muted glyph. */
 .settings-row-title-with-info {
