@@ -22,7 +22,7 @@ use june_services::{
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, time::Duration};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub(crate) async fn transcribe(
     State(state): State<ApiState>,
@@ -118,7 +118,12 @@ pub(crate) async fn generate(
 }
 
 fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
-    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(16);
+    // Unbounded + non-blocking sends: a client that stops reading must not
+    // suspend this loop mid-send, or the generation timeout below would stop
+    // being polled and holds/upstream work could outlive request_timeout_secs.
+    // Keep-alives are tiny and the terminal event is a single frame, so the
+    // queue cannot grow meaningfully.
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();
     let request_timeout = Duration::from_secs(state.limits().request_timeout_secs);
     tokio::spawn(async move {
         let generation =
@@ -132,16 +137,28 @@ fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
             tokio::select! {
                 result = &mut generation => {
                     let event = match result {
-                        Ok(Ok(output)) => result_event(output)
-                            .unwrap_or_else(|_| error_event(ApiError::Internal.response_parts())),
-                        Ok(Err(error)) => error_event(ApiError::from(error).response_parts()),
-                        Err(_elapsed) => error_event(envelope::timeout_response_parts()),
+                        Ok(Ok(output)) => result_event(output).unwrap_or_else(|_| {
+                            error_event(ApiError::Internal.response_parts(), None)
+                        }),
+                        Ok(Err(error)) => {
+                            let error = ApiError::from(error);
+                            let retry_after = error.retry_after_secs();
+                            error_event(error.response_parts(), retry_after)
+                        }
+                        Err(_elapsed) => error_event(envelope::timeout_response_parts(), None),
                     };
-                    let _ = tx.send(Ok(Bytes::from(event))).await;
+                    let _ = tx.send(Ok(Bytes::from(event)));
                     break;
                 }
                 _ = keep_alive.tick() => {
-                    if tx.send(Ok(Bytes::from_static(b": keep-alive\n\n"))).await.is_err() {
+                    // A failed send means the client is gone (unbounded sends
+                    // never fail on backpressure). Generation is all-or-nothing
+                    // delivery: dropping the future cancels the upstream call
+                    // and no charge settles — the same semantics a buffered
+                    // request has when the connection drops. This deliberately
+                    // differs from agent chat's drain-and-settle, where content
+                    // was already streamed to the user.
+                    if tx.send(Ok(Bytes::from_static(b": keep-alive\n\n"))).is_err() {
                         break;
                     }
                 }
@@ -152,7 +169,7 @@ fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
     (
         StatusCode::OK,
         [(CONTENT_TYPE, "text/event-stream")],
-        Body::from_stream(ReceiverStream::new(rx)),
+        Body::from_stream(UnboundedReceiverStream::new(rx)),
     )
         .into_response()
 }
@@ -165,14 +182,20 @@ fn result_event(output: NoteGenerateOutput) -> Result<String, serde_json::Error>
     ))
 }
 
-fn error_event((status, body): (StatusCode, serde_json::Value)) -> String {
-    format!(
-        "event: error\ndata: {}\n\n",
-        serde_json::json!({
-            "status": status.as_u16(),
-            "body": body,
-        })
-    )
+fn error_event(
+    (status, body): (StatusCode, serde_json::Value),
+    retry_after_secs: Option<u64>,
+) -> String {
+    // retry_after_secs carries the buffered path's Retry-After header — an
+    // SSE body cannot set response headers, so the hint rides the payload.
+    let mut data = serde_json::json!({
+        "status": status.as_u16(),
+        "body": body,
+    });
+    if let (Some(secs), Some(object)) = (retry_after_secs, data.as_object_mut()) {
+        object.insert("retry_after_secs".to_string(), serde_json::json!(secs));
+    }
+    format!("event: error\ndata: {data}\n\n")
 }
 
 impl GenerateRequest {

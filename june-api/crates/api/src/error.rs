@@ -110,14 +110,25 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    /// The transient-denial retry hint. Buffered responses carry it as a
+    /// `Retry-After` header; streamed error events embed it in the payload
+    /// (an SSE body cannot set response headers).
+    pub(crate) fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            Self::AuthorizationDenied => Some(TRANSIENT_RETRY_AFTER_SECS),
+            _ => None,
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        let set_retry_after = matches!(self, Self::AuthorizationDenied);
+        let retry_after = self.retry_after_secs();
         let (status, body) = self.response_parts();
         let mut response = (status, Json(body)).into_response();
-        if set_retry_after
-            && let Ok(value) =
-                axum::http::HeaderValue::from_str(&TRANSIENT_RETRY_AFTER_SECS.to_string())
+        if let Some(secs) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string())
         {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
