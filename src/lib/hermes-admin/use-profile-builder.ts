@@ -18,13 +18,22 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { hermesBridgeStatus, listVeniceModels, type HermesBridgeStatus } from "../tauri";
+import {
+  hermesBridgeStatus,
+  listVeniceModels,
+  providerModelSettings,
+  setProfileModelOverrides,
+  type HermesBridgeStatus,
+  type ProviderModelSettingsDto,
+  type VeniceModelDto,
+} from "../tauri";
 import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import {
   buildCreatePayload,
+  buildProfileModelOverrides,
   canAdvance,
   canCreateProfile,
   emptyProfileForm,
@@ -61,6 +70,11 @@ export type ProfileBuilderEngine = {
   loadModels: LoadProfileBuilderModels;
 };
 
+export type ProfileBuilderEffectiveModelSettings = Pick<
+  ProviderModelSettingsDto,
+  "transcriptionProvider" | "transcriptionModel" | "imageModel"
+>;
+
 export type ProfileBuilderStatus = "unavailable" | "loading" | "ready" | "error";
 
 /** Where the create flow is. `creating` runs the create + soul + session calls;
@@ -95,6 +109,9 @@ export type ProfileBuilderState = {
   /** Loaded inputs for the steps. */
   existingProfiles: readonly HermesProfileSummary[];
   models: readonly ProfileBuilderModel[];
+  voiceModels: readonly VeniceModelDto[];
+  imageModels: readonly VeniceModelDto[];
+  effectiveModelSettings?: ProfileBuilderEffectiveModelSettings;
   skills: readonly HermesSkillInfo[];
   mcpServers: readonly HermesMcpServerInfo[];
   mcpCatalog: readonly HermesMcpCatalogEntry[];
@@ -129,6 +146,11 @@ export class ProfileBuilderController {
   private form: ProfileBuilderForm = emptyProfileForm();
   private existingProfiles: readonly HermesProfileSummary[] = [];
   private models: readonly ProfileBuilderModel[] = [];
+  private voiceModels: readonly VeniceModelDto[] = [];
+  private imageModels: readonly VeniceModelDto[] = [];
+  private effectiveModelSettings?: ProfileBuilderEffectiveModelSettings;
+  private modelStepInputsLoading = false;
+  private modelStepInputsLoaded = false;
   private skills: readonly HermesSkillInfo[] = [];
   private mcpServers: readonly HermesMcpServerInfo[] = [];
   private mcpCatalog: readonly HermesMcpCatalogEntry[] = [];
@@ -263,6 +285,7 @@ export class ProfileBuilderController {
   setStep(step: ProfileBuilderStep): void {
     this.step = step;
     this.recompute();
+    if (step === "model") void this.ensureModelStepInputs();
   }
 
   update(patch: Partial<ProfileBuilderForm>): void {
@@ -277,6 +300,34 @@ export class ProfileBuilderController {
     this.step = "identity";
     this.create = { phase: "idle" };
     this.recompute();
+  }
+
+  private async ensureModelStepInputs(): Promise<void> {
+    if (this.modelStepInputsLoaded || this.modelStepInputsLoading) return;
+    this.modelStepInputsLoading = true;
+    this.recompute();
+    try {
+      const [settings, voice, image] = await Promise.all([
+        providerModelSettings(),
+        listVeniceModels("transcription"),
+        listVeniceModels("image"),
+      ]);
+      if (this.disposed) return;
+      this.effectiveModelSettings = {
+        transcriptionProvider: settings.effectiveSettings.transcriptionProvider,
+        transcriptionModel: settings.effectiveSettings.transcriptionModel,
+        imageModel: settings.effectiveSettings.imageModel,
+      };
+      this.voiceModels = voice.models;
+      this.imageModels = image.models;
+      this.modelStepInputsLoaded = true;
+    } catch {
+      // Keep the wizard usable. Empty catalogs still allow the text model gate
+      // to work, and default labels fall back to ids when settings are present.
+    } finally {
+      this.modelStepInputsLoading = false;
+      if (!this.disposed) this.recompute();
+    }
   }
 
   /**
@@ -343,6 +394,26 @@ export class ProfileBuilderController {
       }
     }
 
+    const overrides = buildProfileModelOverrides(this.form);
+    if (overrides) {
+      this.create = { phase: "creating", message: "Saving model overrides..." };
+      this.recompute();
+      try {
+        await setProfileModelOverrides(slug, overrides);
+      } catch (error) {
+        if (this.disposed) return;
+        const adminError = HermesAdminError.from("set_profile_model_overrides", error);
+        this.create = {
+          phase: "created",
+          createdSlug: slug,
+          testSessionStarted: false,
+          message: `Created "${slug}". Model overrides were not saved: ${adminError.safeMessage}`,
+        };
+        this.recompute();
+        return;
+      }
+    }
+
     // Step 3: optional test session. Same post-create semantics on failure.
     let testSessionStarted = false;
     if (options.startTestSession) {
@@ -390,6 +461,9 @@ export class ProfileBuilderController {
       form: this.form,
       existingProfiles: this.existingProfiles,
       models: this.models,
+      voiceModels: this.voiceModels,
+      imageModels: this.imageModels,
+      effectiveModelSettings: this.effectiveModelSettings,
       skills: this.skills,
       mcpServers: this.mcpServers,
       mcpCatalog: this.mcpCatalog,
@@ -484,6 +558,8 @@ const UNAVAILABLE_STATE: ProfileBuilderState = Object.freeze({
   form: emptyProfileForm(),
   existingProfiles: [],
   models: [],
+  voiceModels: [],
+  imageModels: [],
   skills: [],
   mcpServers: [],
   mcpCatalog: [],
@@ -530,10 +606,6 @@ export function useProfileBuilderEngine(
     () => (bridge ? adminTargetForMode(bridge, mode, profile) : undefined),
     [bridge, mode, profile],
   );
-  const identity = target
-    ? `${target.mode}:${target.profile}:${target.baseUrl}:${target.token}`
-    : null;
-
   return useMemo(() => {
     if (!target) return null;
     const client = createHermesAdminClient(target, {
@@ -548,8 +620,7 @@ export function useProfileBuilderEngine(
       lifecycle,
       loadModels: loadGenerationModels,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by identity
-  }, [identity]);
+  }, [target]);
 }
 
 /** The all-in-one production hook: fetch bridge status, derive the engine for

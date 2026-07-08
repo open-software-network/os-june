@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useMemo, useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createHermesAdminClient,
   emptyProfileForm,
@@ -16,6 +16,22 @@ import {
 import { ProfilesSurfaceView } from "../components/settings/ProfileBuilderSection";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
+const mocks = vi.hoisted(() => ({
+  deleteProfileModelOverrides: vi.fn(),
+  hermesBridgeStatus: vi.fn(),
+  listVeniceModels: vi.fn(),
+  providerModelSettings: vi.fn(),
+  setProfileModelOverrides: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", () => ({
+  deleteProfileModelOverrides: mocks.deleteProfileModelOverrides,
+  hermesBridgeStatus: mocks.hermesBridgeStatus,
+  listVeniceModels: mocks.listVeniceModels,
+  providerModelSettings: mocks.providerModelSettings,
+  setProfileModelOverrides: mocks.setProfileModelOverrides,
+}));
+
 function stubBuilder(overrides: Partial<ProfileBuilderState> = {}): ProfileBuilderState {
   return {
     status: "ready",
@@ -26,6 +42,8 @@ function stubBuilder(overrides: Partial<ProfileBuilderState> = {}): ProfileBuild
     form: emptyProfileForm(),
     existingProfiles: [],
     models: [],
+    voiceModels: [],
+    imageModels: [],
     skills: [],
     mcpServers: [],
     mcpCatalog: [],
@@ -129,6 +147,10 @@ function StatefulBuilderHarness() {
 }
 
 describe("profiles settings surface", () => {
+  beforeEach(() => {
+    mocks.deleteProfileModelOverrides.mockResolvedValue(undefined);
+  });
+
   it("renders profiles with the active badge from activeName", async () => {
     const harness = makeAdminHarness({
       profiles: [
@@ -189,6 +211,7 @@ describe("profiles settings surface", () => {
 
     await user.click(screen.getByRole("button", { name: "Delete profile" }));
     expect(remove).toHaveBeenCalledWith("writing");
+    expect(mocks.deleteProfileModelOverrides).toHaveBeenCalledWith("writing");
   });
 
   it("opens the wizard from New profile and returns to the refreshed list after create", async () => {

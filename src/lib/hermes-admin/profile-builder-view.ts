@@ -38,6 +38,14 @@ export type ProfileBuilderModel = {
   capabilities: string[];
 };
 
+export type ProfileModelSlot = "voice" | "image";
+
+export type ProfileBuilderModelCatalog = {
+  generation: readonly ProfileBuilderModel[];
+  transcription: readonly ProfileBuilderModel[];
+  image: readonly ProfileBuilderModel[];
+};
+
 /** The ordered wizard steps. */
 export const PROFILE_BUILDER_STEPS = [
   "identity",
@@ -100,6 +108,12 @@ export type ProfileBuilderForm = {
   provider: string;
   /** Model id of the chosen model, empty until picked. */
   model: string;
+  /** Explicit per-profile transcription model override. Empty keeps June's default. */
+  voiceModel: string;
+  /** Provider for the explicit transcription override. Empty keeps June's default. */
+  voiceProvider: string;
+  /** Explicit per-profile image model override. Empty keeps June's default. */
+  imageModel: string;
   sandbox: ProfileSandboxPolicy;
   /** Keep June's bundled skills (clones them from default). */
   keepBundledSkills: boolean;
@@ -124,6 +138,9 @@ export function emptyProfileForm(): ProfileBuilderForm {
     identity: "june-default",
     provider: "",
     model: "",
+    voiceModel: "",
+    voiceProvider: "",
+    imageModel: "",
     sandbox: "sandboxed",
     keepBundledSkills: true,
     keepSkills: [],
@@ -349,12 +366,54 @@ export type PlannedChange = {
   risk: ChangeRisk;
 };
 
+export type ProfileModelOverrides = {
+  transcriptionProvider?: string;
+  transcriptionModel?: string;
+  imageModel?: string;
+};
+
+export function buildProfileModelOverrides(form: ProfileBuilderForm): ProfileModelOverrides | null {
+  const overrides: ProfileModelOverrides = {};
+  if (form.voiceModel) {
+    overrides.transcriptionProvider = form.voiceProvider || "venice";
+    overrides.transcriptionModel = form.voiceModel;
+  }
+  if (form.imageModel) {
+    overrides.imageModel = form.imageModel;
+  }
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+export function resetProfileModelSlot(
+  form: ProfileBuilderForm,
+  slot: ProfileModelSlot,
+): ProfileBuilderForm {
+  if (slot === "voice") return { ...form, voiceProvider: "", voiceModel: "" };
+  return { ...form, imageModel: "" };
+}
+
+export function selectedProfileModelOverride(
+  form: ProfileBuilderForm,
+  slot: ProfileModelSlot,
+  catalog: readonly ProfileBuilderModel[],
+): ProfileBuilderModel | undefined {
+  const id = slot === "voice" ? form.voiceModel : form.imageModel;
+  const provider = slot === "voice" ? form.voiceProvider : undefined;
+  if (!id) return undefined;
+  return catalog.find(
+    (model) => model.id === id && (slot !== "voice" || !provider || model.provider === provider),
+  );
+}
+
 /** Builds the review step's plan: exactly what files/config June will create or
  * change, each with a risk label. The targets are descriptive (June does not
  * literally write these files itself — Hermes does via the create endpoint), but
  * they make the blast radius explicit, satisfying the spec's "show exactly what
  * will be created or changed". */
-export function buildCreatePlan(form: ProfileBuilderForm): PlannedChange[] {
+export function buildCreatePlan(
+  form: ProfileBuilderForm,
+  catalogs?: Partial<ProfileBuilderModelCatalog>,
+): PlannedChange[] {
   const slug = slugifyProfileName(form.name) || "<profile>";
   const root = `~/.hermes/profiles/${slug}`;
   const changes: PlannedChange[] = [];
@@ -378,6 +437,24 @@ export function buildCreatePlan(form: ProfileBuilderForm): PlannedChange[] {
     changes.push({
       target: `${root}/SOUL.md`,
       detail: "Custom instructions you wrote for this profile.",
+      risk: "caution",
+    });
+  }
+
+  const voiceOverride = selectedProfileModelOverride(form, "voice", catalogs?.transcription ?? []);
+  if (form.voiceModel) {
+    changes.push({
+      target: "June profile model overrides",
+      detail: `Voice model: ${voiceOverride?.name ?? form.voiceModel}.`,
+      risk: "caution",
+    });
+  }
+
+  const imageOverride = selectedProfileModelOverride(form, "image", catalogs?.image ?? []);
+  if (form.imageModel) {
+    changes.push({
+      target: "June profile model overrides",
+      detail: `Image model: ${imageOverride?.name ?? form.imageModel}.`,
       risk: "caution",
     });
   }
