@@ -6,6 +6,7 @@ import { IconEyeSlash } from "central-icons/IconEyeSlash";
 import { IconLock } from "central-icons/IconLock";
 import { useEffect, useId, useRef, useState } from "react";
 import {
+  buildSkillSetupModel,
   timingLabel,
   useSkillSetup,
   validateConfigValue,
@@ -15,8 +16,8 @@ import {
   type SkillSetupBadge as SkillSetupBadgeModel,
   type SkillSetupState,
 } from "../../lib/hermes-admin";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
 import { AdminNotifications } from "./AdminNotifications";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 /**
  * The skill config and required-secret setup surface (spec 09). For one skill it
@@ -46,9 +47,63 @@ export function SkillSetupSection({
    * separate setup-status badge (the Installed skills list) can refresh it. */
   onSaved?: () => void;
 }) {
-  const profile = useActiveHermesProfileName();
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return <SkillSetupView state={pendingSkillSetupState(skill)} onClose={onClose} />;
+  }
+  return (
+    <SkillSetupSectionReady
+      skill={skill}
+      skillRaw={skillRaw}
+      mode={mode}
+      profile={activeProfile.name}
+      onClose={onClose}
+      onSaved={onSaved}
+    />
+  );
+}
+
+function SkillSetupSectionReady({
+  skill,
+  skillRaw,
+  mode,
+  profile,
+  onClose,
+  onSaved,
+}: {
+  skill: string;
+  skillRaw: unknown;
+  mode: HermesAdminMode;
+  profile: string;
+  onClose?: () => void;
+  onSaved?: () => void;
+}) {
   const state = useSkillSetup(skill, skillRaw, mode, profile, onSaved);
   return <SkillSetupView state={state} onClose={onClose} />;
+}
+
+function pendingSkillSetupState(skill: string): SkillSetupState {
+  return {
+    status: "loading",
+    skill,
+    model: buildSkillSetupModel({ env: [], config: [] }, new Map(), new Map()),
+    pending: new Set<string>(),
+    retryable: false,
+    lifecycle: {
+      state: "clean",
+      label: "Up to date",
+      detail: "No pending changes.",
+      canRestart: false,
+    },
+    notifications: [],
+    refresh: () => {},
+    setSecret: () => {},
+    deleteSecret: () => {},
+    revealSecret: async () => undefined,
+    setConfig: () => {},
+    deleteConfig: () => {},
+    dismissNotification: () => {},
+  };
 }
 
 /** The render-only view, split out so component tests drive it with a stubbed

@@ -3,10 +3,12 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 import {
   getActiveHermesProfileName,
+  isActiveHermesProfileConfirmed,
   refreshActiveHermesProfile,
   resetActiveHermesProfileForTests,
   setActiveHermesProfileName,
   subscribe,
+  useActiveHermesProfile,
   useActiveHermesProfileName,
 } from "../lib/active-hermes-profile";
 
@@ -47,6 +49,7 @@ describe("active Hermes profile store", () => {
 
   it("defaults to the default profile", () => {
     expect(getActiveHermesProfileName()).toBe("default");
+    expect(isActiveHermesProfileConfirmed()).toBe(false);
   });
 
   it("refreshes the active profile through the Hermes admin client", async () => {
@@ -55,6 +58,7 @@ describe("active Hermes profile store", () => {
     await expect(refreshActiveHermesProfile()).resolves.toBe("research");
 
     expect(getActiveHermesProfileName()).toBe("research");
+    expect(isActiveHermesProfileConfirmed()).toBe(true);
     expect(mocks.invoke).toHaveBeenCalledWith("hermes_admin_request", {
       mode: "sandboxed",
       method: "GET",
@@ -78,9 +82,24 @@ describe("active Hermes profile store", () => {
     await expect(refreshActiveHermesProfile()).resolves.toBe("default");
 
     expect(getActiveHermesProfileName()).toBe("default");
+    expect(isActiveHermesProfileConfirmed()).toBe(false);
+  });
+
+  it("confirms and notifies when setting the same default name", () => {
+    const listener = vi.fn();
+    setActiveHermesProfileName("default");
+    expect(isActiveHermesProfileConfirmed()).toBe(true);
+
+    resetActiveHermesProfileForTests();
+    const unsubscribe = subscribe(listener);
+    setActiveHermesProfileName("default");
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 
   it("notifies subscribers when the cached profile changes", () => {
+    setActiveHermesProfileName("default");
     const listener = vi.fn();
     const unsubscribe = subscribe(listener);
 
@@ -93,6 +112,18 @@ describe("active Hermes profile store", () => {
   });
 
   it("exposes a React hook over the shared active profile subscription", () => {
+    const { result } = renderHook(() => useActiveHermesProfile());
+
+    expect(result.current).toEqual({ name: "default", confirmed: false });
+
+    act(() => {
+      setActiveHermesProfileName("research");
+    });
+
+    expect(result.current).toEqual({ name: "research", confirmed: true });
+  });
+
+  it("keeps the name-only hook working", () => {
     const { result } = renderHook(() => useActiveHermesProfileName());
 
     expect(result.current).toBe("default");
@@ -116,5 +147,53 @@ describe("active Hermes profile store", () => {
       path: "/api/profiles/active",
       body: undefined,
     });
+  });
+
+  it("retries hydration on a later subscribe while unconfirmed", async () => {
+    mocks.invoke
+      .mockRejectedValueOnce(new Error("bridge unavailable"))
+      .mockResolvedValueOnce({ active: "research", current: "default" });
+
+    const first = renderHook(() => useActiveHermesProfile());
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+    expect(first.result.current).toEqual({ name: "default", confirmed: false });
+    first.unmount();
+
+    const second = renderHook(() => useActiveHermesProfile());
+
+    await waitFor(() =>
+      expect(second.result.current).toEqual({ name: "research", confirmed: true }),
+    );
+    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not hydrate on subscribe after the active profile is confirmed", async () => {
+    setActiveHermesProfileName("research");
+
+    renderHook(() => useActiveHermesProfile());
+
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("coalesces subscribe-triggered refreshes while one is in flight", async () => {
+    let resolveActive: (value: { active: string; current: string }) => void = () => {};
+    mocks.invoke.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveActive = resolve;
+        }),
+    );
+
+    const first = renderHook(() => useActiveHermesProfile());
+    const second = renderHook(() => useActiveHermesProfile());
+
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      resolveActive({ active: "research", current: "default" });
+    });
+
+    await waitFor(() => expect(first.result.current.confirmed).toBe(true));
+    expect(second.result.current).toEqual({ name: "research", confirmed: true });
   });
 });

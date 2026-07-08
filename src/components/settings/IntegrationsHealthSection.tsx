@@ -15,7 +15,7 @@ import {
   type IntegrationsHealth,
 } from "../../lib/hermes-admin";
 import type { HermesAdminMode } from "../../lib/hermes-admin";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 /** The Settings tab a health issue links to. The {@link HealthTarget} union is a
  * subset of the AppSettings `SettingsTab` ids, so the mapping is the identity;
@@ -45,10 +45,56 @@ export function IntegrationsHealthSection({
   mode = "sandboxed",
   onNavigate,
 }: IntegrationsHealthSectionProps) {
-  const profile = useActiveHermesProfileName();
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return (
+      <IntegrationsHealthView
+        health={PENDING_INTEGRATIONS_HEALTH}
+        mode={mode}
+        onNavigate={onNavigate}
+      />
+    );
+  }
+  return (
+    <IntegrationsHealthSectionReady
+      mode={mode}
+      profile={activeProfile.name}
+      onNavigate={onNavigate}
+    />
+  );
+}
+
+function IntegrationsHealthSectionReady({
+  mode,
+  profile,
+  onNavigate,
+}: IntegrationsHealthSectionProps & { mode: HermesAdminMode; profile: string }) {
   const health = useIntegrationsHealth(mode, profile);
   return <IntegrationsHealthView health={health} mode={mode} onNavigate={onNavigate} />;
 }
+
+const PENDING_INTEGRATIONS_HEALTH: IntegrationsHealth = {
+  status: "unknown",
+  statusLabel: "Unknown",
+  tone: "neutral",
+  unavailable: false,
+  issues: [],
+  summary: {
+    skills: { total: 0, enabled: 0, needingSetup: 0 },
+    toolsets: { total: 0, enabled: 0, needingSetup: 0 },
+    mcp: { total: 0, enabled: 0, disabled: 0, failing: 0, authNeeded: 0, restartPending: false },
+    secrets: { configured: 0, missing: 0 },
+    pendingSkillWrites: 0,
+    externalDirs: { total: 0, missing: 0, unreadable: 0 },
+    highRiskMcp: 0,
+  },
+  lifecycle: {
+    state: "clean",
+    label: "Up to date",
+    detail: "No pending changes.",
+    canRestart: false,
+  },
+};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

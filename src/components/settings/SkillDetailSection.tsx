@@ -11,17 +11,21 @@ import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   hasSupportingFiles,
+  diffSkillContent,
   lifecycleClassMeta,
   platformRestrictions,
   skillActivation,
+  skillEditPolicy,
   skillLifecyclePolicy,
   skillPath,
+  skillSupportingFiles,
   skillTags,
   sourceMeta,
   timingLabel,
   useInstalledSkills,
   useSkillDetail,
   useSkillLifecycle,
+  validateSkillContent,
   type HermesAdminMode,
   type HermesSkillInfo,
   type SkillContentIssue,
@@ -30,12 +34,12 @@ import {
   type SkillLifecycleState,
   type SkillSupportingFiles,
 } from "../../lib/hermes-admin";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
 import { AdminNotifications } from "./AdminNotifications";
 import { SkillLifecycleActions } from "./SkillLifecycleActions";
 import { SkillSetupSection } from "./SkillSetupSection";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { Switch } from "../ui/Switch";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 /**
  * The skill detail viewer and safe editor (spec 05). Opened as a sub-view off
@@ -69,7 +73,34 @@ export function SkillDetailSection({
   /** Returns to the installed skills list. */
   onBack?: () => void;
 }) {
-  const profile = useActiveHermesProfileName();
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return <SkillDetailView state={pendingSkillDetailState(skill, info)} onBack={onBack} />;
+  }
+  return (
+    <SkillDetailSectionReady
+      skill={skill}
+      info={info}
+      mode={mode}
+      profile={activeProfile.name}
+      onBack={onBack}
+    />
+  );
+}
+
+function SkillDetailSectionReady({
+  skill,
+  info,
+  mode,
+  profile,
+  onBack,
+}: {
+  skill: string;
+  info?: HermesSkillInfo;
+  mode: HermesAdminMode;
+  profile: string;
+  onBack?: () => void;
+}) {
   const state = useSkillDetail(skill, info, mode, profile);
   // Lifecycle actions refresh the skill's content on a successful mutation so the
   // detail view reflects a reset / update.
@@ -96,6 +127,56 @@ export function SkillDetailSection({
       onToggleEnabled={(next) => inventory.toggle(skill, next)}
     />
   );
+}
+
+function pendingSkillDetailState(skill: string, info?: HermesSkillInfo): SkillDetailState {
+  const policy = skillEditPolicy({
+    source: info?.source ?? "unknown",
+    readOnly: Boolean(info?.readOnly),
+  });
+  return {
+    status: "loading",
+    skill,
+    info,
+    original: "",
+    draft: "",
+    parts: {
+      body: "",
+      hasFrontmatter: false,
+    },
+    supportingFiles: info
+      ? skillSupportingFiles(info)
+      : {
+          references: [],
+          templates: [],
+          scripts: [],
+          assets: [],
+          other: [],
+        },
+    policy,
+    validation: validateSkillContent("", {
+      requireName: false,
+      requireDescription: false,
+    }),
+    diff: diffSkillContent("", ""),
+    dirty: false,
+    saving: false,
+    mode: "sandboxed",
+    profile: "default",
+    retryable: false,
+    lifecycle: {
+      state: "clean",
+      label: "Up to date",
+      detail: "No pending changes.",
+      canRestart: false,
+    },
+    notifications: [],
+    refresh: () => {},
+    setDraft: () => {},
+    revert: () => {},
+    save: () => {},
+    dismissNotification: () => {},
+  };
 }
 
 /** The render-only view, split out so component tests drive it with a stubbed

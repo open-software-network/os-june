@@ -10,6 +10,10 @@ import {
 import { hermesBridgeStatus, type HermesBridgeStatus } from "./tauri";
 
 type Listener = () => void;
+export type ActiveHermesProfile = {
+  name: string;
+  confirmed: boolean;
+};
 
 export type ActiveHermesProfileRefreshOptions = {
   status?: HermesBridgeStatus;
@@ -22,11 +26,23 @@ export type ActiveHermesProfileRefreshOptions = {
  * silently rebind new sessions to `default` when the sticky active profile is
  * known to be something else. */
 let activeProfileName = DEFAULT_HERMES_PROFILE;
-let hydrationStarted = false;
+let activeProfileConfirmed = false;
+let activeProfileSnapshot: ActiveHermesProfile = {
+  name: activeProfileName,
+  confirmed: activeProfileConfirmed,
+};
+let refreshInFlight: Promise<string> | null = null;
 const listeners = new Set<Listener>();
 
 function emit(): void {
   for (const listener of listeners) listener();
+}
+
+function updateActiveProfileSnapshot(): void {
+  activeProfileSnapshot = {
+    name: activeProfileName,
+    confirmed: activeProfileConfirmed,
+  };
 }
 
 function normalizeProfileName(name: string | null | undefined): string {
@@ -38,27 +54,44 @@ export function getActiveHermesProfileName(): string {
   return activeProfileName;
 }
 
+export function isActiveHermesProfileConfirmed(): boolean {
+  return activeProfileConfirmed;
+}
+
+export function getActiveHermesProfile(): ActiveHermesProfile {
+  return activeProfileSnapshot;
+}
+
+export function useActiveHermesProfile(): ActiveHermesProfile {
+  return useSyncExternalStore(subscribe, getActiveHermesProfile, getActiveHermesProfile);
+}
+
 export function useActiveHermesProfileName(): string {
-  return useSyncExternalStore(subscribe, getActiveHermesProfileName, getActiveHermesProfileName);
+  return useActiveHermesProfile().name;
 }
 
 export function setActiveHermesProfileName(name: string): void {
   const next = normalizeProfileName(name);
-  if (activeProfileName === next) return;
+  const changed = activeProfileName !== next;
+  const confirmedChanged = !activeProfileConfirmed;
+  if (!changed && !confirmedChanged) return;
   activeProfileName = next;
+  activeProfileConfirmed = true;
+  updateActiveProfileSnapshot();
   emit();
 }
 
 /** Test-only: resets the store to default so cases stay isolated. */
 export function resetActiveHermesProfileForTests(): void {
   activeProfileName = DEFAULT_HERMES_PROFILE;
-  hydrationStarted = false;
+  activeProfileConfirmed = false;
+  refreshInFlight = null;
+  updateActiveProfileSnapshot();
 }
 
 export function subscribe(listener: Listener): () => void {
   listeners.add(listener);
-  if (!hydrationStarted) {
-    hydrationStarted = true;
+  if (!activeProfileConfirmed && refreshInFlight === null) {
     void refreshActiveHermesProfile();
   }
   return () => {
@@ -68,6 +101,18 @@ export function subscribe(listener: Listener): () => void {
 
 export async function refreshActiveHermesProfile(
   options: ActiveHermesProfileRefreshOptions = {},
+): Promise<string> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshActiveHermesProfileOnce(options);
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+  }
+}
+
+async function refreshActiveHermesProfileOnce(
+  options: ActiveHermesProfileRefreshOptions,
 ): Promise<string> {
   try {
     const status = options.status ?? (await hermesBridgeStatus());

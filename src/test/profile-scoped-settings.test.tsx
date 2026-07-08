@@ -165,6 +165,45 @@ describe("profile-scoped settings sections", () => {
   });
 
   describe("InstalledSkillsSection", () => {
+    it("waits for a confirmed active profile before loading installed skills", async () => {
+      const servers = {
+        default: new FakeHermesServer({
+          ...scenarioFor("default"),
+          profileActiveError: { status: 503, error: "active profile read failed" },
+        }),
+        work: new FakeHermesServer(scenarioFor("work")),
+      };
+      const paths = routeAdminRequests(servers);
+
+      const { container, unmount } = render(<InstalledSkillsSection />);
+
+      await waitFor(() => expect(paths).toContain("/api/profiles/active"));
+      expect(paths).not.toContain("/api/skills?profile=default");
+      expect(container.querySelector(".installed-skill-skeleton")).toBeTruthy();
+
+      unmount();
+      servers.default.setProfileActiveError(undefined);
+      Object.assign(servers.default, { activeProfile: "work" });
+
+      render(<InstalledSkillsSection />);
+
+      expect(await screen.findByText("work-skill")).toBeInTheDocument();
+      expect(paths).not.toContain("/api/skills?profile=default");
+      expect(paths).toContain("/api/skills?profile=work");
+    });
+
+    it("keeps the Hermes-not-running surface while the active profile is unconfirmed", async () => {
+      mocks.hermesBridgeStatus.mockResolvedValue({
+        running: false,
+        connections: [],
+      });
+
+      render(<InstalledSkillsSection />);
+
+      expect(await screen.findByText("Hermes is not running")).toBeInTheDocument();
+      expect(mocks.invoke).not.toHaveBeenCalled();
+    });
+
     it("requests installed skills for the active profile", async () => {
       const servers = makeServers();
       const paths = routeAdminRequests(servers);
