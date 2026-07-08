@@ -198,8 +198,11 @@
   --muted-foreground: oklch(55.8% 0.0015 84.59);
   --accent: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --accent-foreground: oklch(20.44% 0 none);
-  --destructive: oklch(57% 0.22 27);
-  --destructive-soft: oklch(95% 0.025 27);
+  /* An earthy brick red: chroma pulled down from 0.22 to 0.15 (into the same
+   * register as --brand ~0.13 and --success 0.12) and hue nudged 27 to 30 so it
+   * reads as danger without the neon pop that fought the low-chroma palette. */
+  --destructive: oklch(57% 0.15 30);
+  --destructive-soft: oklch(95% 0.025 30);
   --success: oklch(48% 0.12 150);
   --border: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
   --input: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
@@ -357,8 +360,10 @@
   --muted-foreground: oklch(0.709 0.0015 84.59);
   --accent: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --accent-foreground: oklch(0.985 0.0015 84.59);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-soft: oklch(0.3 0.08 22 / 40%);
+  /* Earthy brick red, matching the light theme's dechromatized destructive:
+   * chroma 0.191 to 0.14, hue aligned to 30. */
+  --destructive: oklch(0.704 0.14 30);
+  --destructive-soft: oklch(0.3 0.08 30 / 40%);
   --success: oklch(0.72 0.14 150);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);

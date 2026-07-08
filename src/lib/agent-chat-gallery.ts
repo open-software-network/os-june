@@ -301,7 +301,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: "Approval: pending",
       description:
-        "Approval request awaiting a choice. Buttons: Explain first / Approve once / This session / Always / Deny.",
+        "Approval request awaiting a choice. Compact by default: header (title + waiting), the prose description clamped to two lines, a quiet Details disclosure for the full command, and the footer. Footer: split Approve (caret opens once / this session / always), Deny, and a right-aligned Explain first.",
       turns: [
         assistantTurn("approval-pending", [
           {
@@ -317,7 +317,8 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Approval: pending (no “Always”)",
-      description: "When allowPermanent is false the “Always” button is hidden.",
+      description:
+        "When allowPermanent is false the “Always approve” item is hidden from the Approve scope menu.",
       turns: [
         assistantTurn("approval-no-permanent", [
           {
@@ -333,14 +334,15 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Approval: resolved",
-      description: "Each resolved outcome: approved once / session / always / denied.",
+      description:
+        "Each resolved outcome collapses to a quiet one-line receipt row (outcome label + the command, truncated); expand to see the full description and command. Approved once / session / always / denied.",
       turns: [
         assistantTurn("approval-once", [
           {
             type: "approval",
             id: "approval-once",
             command: "git status",
-            description: "Approved once.",
+            description: "The agent wants to check the working tree status.",
             allowPermanent: true,
             choice: "once",
             status: "resolved",
@@ -351,7 +353,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
             type: "approval",
             id: "approval-session",
             command: "ls -la",
-            description: "Approved for this session.",
+            description: "The agent wants to list the project directory.",
             allowPermanent: true,
             choice: "session",
             status: "resolved",
@@ -362,7 +364,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
             type: "approval",
             id: "approval-always",
             command: "cat package.json",
-            description: "Always approved.",
+            description: "The agent wants to read package.json.",
             allowPermanent: true,
             choice: "always",
             status: "resolved",
@@ -373,7 +375,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
             type: "approval",
             id: "approval-deny",
             command: "rm -rf /",
-            description: "Denied.",
+            description: "The agent wants to delete the entire filesystem.",
             allowPermanent: true,
             choice: "deny",
             status: "resolved",
@@ -413,7 +415,8 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Clarify: answered",
-      description: "Resolved clarify showing the chosen answer.",
+      description:
+        'Resolved clarify collapses to a quiet one-line row ("Answered" + the question); expand to see the question and chosen answer.',
       turns: [
         assistantTurn("clarify-answered", [
           {
@@ -429,7 +432,8 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Clarify: skipped",
-      description: "Resolved clarify where the person skipped without answering.",
+      description:
+        'Resolved clarify where the person skipped without answering: collapses to a quiet one-line "Skipped" row, expandable to the question.',
       turns: [
         assistantTurn("clarify-skipped", [
           {
@@ -462,7 +466,8 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Sudo: approved",
-      description: "Resolved sudo request showing the granted decision.",
+      description:
+        'Resolved sudo request collapses to a quiet one-line row ("Approved"/"Denied" + the command); expand to see the reason, command, and execution mode.',
       turns: [
         assistantTurn("sudo-approved", [
           {
@@ -495,7 +500,8 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
     {
       label: "Secret: provided",
-      description: "Resolved secret request. No value is ever shown.",
+      description:
+        'Resolved secret request collapses to a quiet one-line "Secret provided" row (with the redacted key name); expand to see the reason and key. No value is ever shown.',
       turns: [
         assistantTurn("secret-provided", [
           {

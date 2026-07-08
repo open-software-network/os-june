@@ -3157,8 +3157,10 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(await screen.findByText("Agent CLI access requested")).toBeInTheDocument();
+    // Already granted resolves to the quiet collapsed receipt row — the full
+    // "requested" prompt title is not shown, only the enabled outcome.
     expect(await screen.findByText("Agent CLI access enabled")).toBeInTheDocument();
+    expect(screen.queryByText("Agent CLI access requested")).toBeNull();
     expect(screen.queryByRole("button", { name: "Enable Agent CLI access" })).toBeNull();
   });
 
@@ -4901,8 +4903,12 @@ describe("AgentWorkspace", () => {
       screen.getByText(/Always allows matching requests in future sessions/),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide explanation" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve once" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Always" })).toBeEnabled();
+    // The top-level Approve (approves once) and the scope menu's permanent
+    // option are both live while the explanation is open.
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /approve options/i }));
+    expect(screen.getByRole("menuitem", { name: "Always approve" })).toBeEnabled();
+    await user.keyboard("{Escape}");
     // Asking for an explanation never answers the approval.
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
 
@@ -4964,7 +4970,7 @@ describe("AgentWorkspace", () => {
     expect(projection.waitingSessionIds.has("session-2")).toBe(true);
     expect(projection.waitingSessionIds.has("runtime-session-2")).toBe(false);
 
-    await user.click(screen.getByRole("button", { name: "Approve once" }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
@@ -5193,7 +5199,7 @@ describe("AgentWorkspace", () => {
       pendingActionStore.openRecords().some((record) => record.requestId === "approval-gone"),
     ).toBe(true);
 
-    await user.click(screen.getByRole("button", { name: "Approve once" }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
 
     // The request can never be answered now, so June retires the dead-end card
     // (the "Needs you" row and the inline prompt) instead of leaving a "Respond"
