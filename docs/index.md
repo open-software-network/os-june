@@ -63,6 +63,8 @@ Per-repo config the engineering skills read before acting (see the
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — June P3A: opt-in, privacy-preserving product telemetry
 - [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for June P3A phases
 - [telemetry-questions.md](telemetry-questions.md) — public P3A question catalog and buckets
+- [reflections-prd.md](reflections-prd.md) — June Reflections: opt-in ambient screen awareness with periodic feedback (proposed)
+- [reflections-implementation-plan.md](reflections-implementation-plan.md) — implementation plan for June Reflections phases (proposed)
 - [configuration.md](configuration.md) — env + config reference (desktop client + June API)
 - [development.md](development.md) — local development: quick start, local data, permissions, agent skills, verification commands
 - [os-accounts-login.md](os-accounts-login.md) — Login with Open Software: PKCE, keychain, account gates
