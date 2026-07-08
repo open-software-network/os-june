@@ -14,6 +14,7 @@ import {
   platformRestrictions,
   skillActivation,
   skillCategory,
+  skillLifecyclePolicy,
   skillPath,
   sourceMeta,
   useInstalledSkills,
@@ -26,7 +27,6 @@ import {
   type SkillSetupBadge as SkillSetupBadgeModel,
   type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
 import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
 import { InlineNotice } from "../ui/InlineNotice";
 import { Select } from "../ui/Select";
@@ -36,6 +36,7 @@ import { SettingsPageHeader } from "./AppSettings";
 import { SkillDetailSection } from "./SkillDetailSection";
 import { SkillLifecycleActions } from "./SkillLifecycleActions";
 import { SetupStatusBadge, SkillSetupSection } from "./SkillSetupSection";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 /** Sentinel for the "all categories" filter chip. */
 const ALL_CATEGORIES = "__all__";
@@ -68,7 +69,32 @@ export function InstalledSkillsSection({
   mode = "sandboxed",
   onOpenSkill,
 }: InstalledSkillsSectionProps) {
-  const profile = useActiveHermesProfileName();
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return (
+      <InstalledSkillsView
+        state={PENDING_INSTALLED_SKILLS_STATE}
+        mode={mode}
+        onOpenSkill={onOpenSkill}
+        setup={PENDING_SKILLS_SETUP_OVERVIEW}
+        lifecycle={PENDING_SKILL_LIFECYCLE}
+      />
+    );
+  }
+  return (
+    <InstalledSkillsSectionReady
+      mode={mode}
+      profile={activeProfile.name}
+      onOpenSkill={onOpenSkill}
+    />
+  );
+}
+
+function InstalledSkillsSectionReady({
+  mode,
+  profile,
+  onOpenSkill,
+}: InstalledSkillsSectionProps & { mode: HermesAdminMode; profile: string }) {
   const state = useInstalledSkills(mode, profile);
   const setup = useSkillsSetupOverview(mode, profile);
   // Lifecycle actions (update / audit / uninstall / reset) run on their own
@@ -104,6 +130,43 @@ export function InstalledSkillsSection({
     />
   );
 }
+
+const CLEAN_LIFECYCLE = {
+  state: "clean",
+  label: "Up to date",
+  detail: "No pending changes.",
+  canRestart: false,
+} as const;
+
+const PENDING_INSTALLED_SKILLS_STATE: InstalledSkillsState = {
+  status: "loading",
+  skills: [],
+  pending: new Set<string>(),
+  retryable: false,
+  lifecycle: CLEAN_LIFECYCLE,
+  notifications: [],
+  refresh: () => {},
+  toggle: () => {},
+  dismissNotification: () => {},
+};
+
+const PENDING_SKILLS_SETUP_OVERVIEW: SkillsSetupOverview = {
+  loaded: false,
+  badgeFor: () => undefined,
+  refresh: () => {},
+};
+
+const PENDING_SKILL_LIFECYCLE: SkillLifecycleState = {
+  mode: "sandboxed",
+  profile: "default",
+  actions: new Map(),
+  sweeping: false,
+  policyFor: skillLifecyclePolicy,
+  run: () => {},
+  checkForUpdates: () => {},
+  updateAll: () => {},
+  clearAction: () => {},
+};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

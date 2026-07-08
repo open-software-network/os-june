@@ -51,7 +51,6 @@ import {
   type McpTestState,
   type ToolPolicyDraft,
 } from "../../lib/hermes-admin";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
 import {
   hermesBridgeStatus,
   startHermesBridge,
@@ -67,6 +66,7 @@ import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { SettingsPageHeader } from "./AppSettings";
 import { Switch } from "../ui/Switch";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type McpServersSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the safe
@@ -88,7 +88,23 @@ type McpServersSectionProps = {
  * surfaced; this component is presentation + local filter / dialog state.
  */
 export function McpServersSection({ mode = "sandboxed" }: McpServersSectionProps) {
-  const profile = useActiveHermesProfileName();
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return (
+      <McpServersView
+        state={PENDING_MCP_SERVERS_STATE}
+        oauth={PENDING_MCP_OAUTH_STATE}
+        mode={mode}
+      />
+    );
+  }
+  return <McpServersSectionReady mode={mode} profile={activeProfile.name} />;
+}
+
+function McpServersSectionReady({
+  mode,
+  profile,
+}: McpServersSectionProps & { mode: HermesAdminMode; profile: string }) {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
   // The native runtime restart. June owns the Hermes process, so applying MCP
@@ -186,6 +202,36 @@ export function McpServersSection({ mode = "sandboxed" }: McpServersSectionProps
 
   return <McpServersView state={withRestart} oauth={oauthState} mode={mode} />;
 }
+
+const PENDING_MCP_SERVERS_STATE: McpServersState = {
+  status: "loading",
+  servers: [],
+  pending: new Set<string>(),
+  tests: new Map<string, McpTestState>(),
+  adding: false,
+  retryable: false,
+  lifecycle: {
+    state: "clean",
+    label: "Up to date",
+    detail: "No pending changes.",
+    canRestart: false,
+  },
+  notifications: [],
+  refresh: () => {},
+  setEnabled: () => {},
+  test: async () => ({ pending: false }),
+  add: async () => false,
+  remove: async () => false,
+  restartGateway: () => {},
+  dismissNotification: () => {},
+};
+
+const PENDING_MCP_OAUTH_STATE: McpOauthState = {
+  logins: new Map(),
+  signIn: () => {},
+  busy: false,
+  clear: () => {},
+};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

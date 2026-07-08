@@ -17,8 +17,8 @@ import {
   type SetupSnapshotState,
   type SnapshotRequiredSecret,
 } from "../../lib/hermes-admin";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
 import { hermesBridgeStatus, type HermesBridgeStatus } from "../../lib/tauri";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type SetupSnapshotSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the safe
@@ -39,7 +39,17 @@ type SetupSnapshotSectionProps = {
  * never read into the export and never imported from a file.
  */
 export function SetupSnapshotSection({ mode = "sandboxed" }: SetupSnapshotSectionProps) {
-  const profile = useActiveHermesProfileName();
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return <SetupSnapshotView state={PENDING_SETUP_SNAPSHOT_STATE} mode={mode} />;
+  }
+  return <SetupSnapshotSectionReady mode={mode} profile={activeProfile.name} />;
+}
+
+function SetupSnapshotSectionReady({
+  mode,
+  profile,
+}: SetupSnapshotSectionProps & { mode: HermesAdminMode; profile: string }) {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
 
@@ -68,6 +78,43 @@ export function SetupSnapshotSection({ mode = "sandboxed" }: SetupSnapshotSectio
 
   return <SetupSnapshotView state={state} mode={mode} />;
 }
+
+const PENDING_SETUP_SNAPSHOT_STATE: SetupSnapshotState = {
+  status: "loading",
+  retryable: false,
+  lifecycle: {
+    state: "clean",
+    label: "Up to date",
+    detail: "No pending changes.",
+    canRestart: false,
+  },
+  canExport: false,
+  includeSkillConfig: false,
+  setIncludeSkillConfig: () => {},
+  refresh: () => {},
+  buildExport: () => ({
+    snapshot: {
+      schemaVersion: 1,
+      generatedAt: new Date(0).toISOString(),
+      profile: "default",
+      mode: "sandboxed",
+      notes: [],
+      profiles: [],
+      skills: [],
+      mcpServers: [],
+      catalogInstalls: [],
+      toolFilters: [],
+      requiredInputs: [],
+      readiness: { toolsets: [] },
+    },
+    text: "{}",
+    filename: "june-setup.json",
+  }),
+  importPhase: "idle",
+  preview: () => {},
+  apply: async () => {},
+  resetImport: () => {},
+};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed
