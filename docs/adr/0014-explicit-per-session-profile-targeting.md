@@ -66,3 +66,25 @@ inside the single gateway per mode.
   cost per profile, breaks the one-gateway-per-mode invariant June's
   sandboxing model relies on, and the runtime already supports per-session
   profile binding inside one process.
+
+## Addendum (2026-07-08): per-profile voice and image models
+
+A profile's text (agent) model is Hermes state (`ProfileCreate.model`,
+`PUT /api/profiles/{name}/model`). Hermes has no concept of June's
+transcription (voice) or image models, so those are June-side per-profile
+overrides: `profile_overrides` in `provider-settings.json`, written through
+the `set_profile_model_overrides` Tauri command and resolved by the model
+accessor functions (`transcription_model()`, `image_model()`) that every
+real call already goes through.
+
+Resolution is **call-time against the sticky active profile** (the
+`active_profile` file June's switcher writes), not per-session: transcription
+is not session-bound at all, and the image tool's requests do not carry a
+session's profile. A profile with no override follows June's global model
+settings. The `default` profile never carries overrides. Deleting a profile
+best-effort removes its overrides.
+
+The wizard's "Create and start test session" flow (which opened a terminal
+via `POST /api/profiles/{name}/open-terminal`) was replaced by
+"Create and make active": activation plus June's own chat is the in-app way
+to try a profile, and no June UI path opens a terminal.
