@@ -16,6 +16,7 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { AgentChatPart, AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { messageFromError } from "../../lib/errors";
 import { attachmentStateFrom } from "../../lib/hermes-image-attach";
+import { useScrollFade } from "../../lib/use-scroll-fade";
 import {
   dictationHelperCommand,
   importHermesBridgeFile,
@@ -314,28 +315,7 @@ export function NoteChatPanel({
   // Edge fades on the thread (same trick as the files panel): the bar has no
   // divider, so the top fade is what signals content scrolled up behind it.
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const [fade, setFade] = useState({ top: false, bottom: false });
-  const updateFade = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    const canScroll = el.scrollHeight - el.clientHeight > 1;
-    const atTop = el.scrollTop <= 1;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    setFade({ top: canScroll && !atTop, bottom: canScroll && !atBottom });
-  }, []);
-  useEffect(() => {
-    const id = requestAnimationFrame(updateFade);
-    const el = scrollerRef.current;
-    if (el && typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(updateFade);
-      observer.observe(el);
-      return () => {
-        cancelAnimationFrame(id);
-        observer.disconnect();
-      };
-    }
-    return () => cancelAnimationFrame(id);
-  }, [updateFade]);
+  const fade = useScrollFade(scrollerRef);
 
   // Keep the newest turn in view as the conversation grows or streams.
   const lastTurn = turns.at(-1);
@@ -346,8 +326,8 @@ export function NoteChatPanel({
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
-    updateFade();
-  }, [turns.length, lastTurnSize, working, updateFade]);
+    fade.update();
+  }, [turns.length, lastTurnSize, working, fade.update]);
 
   async function handleSend(text: string) {
     if (working || importing) return;
@@ -422,13 +402,7 @@ export function NoteChatPanel({
             <IconCrossMedium size={15} />
           </button>
         </header>
-        <div
-          ref={scrollerRef}
-          className="note-chat-scroll"
-          data-fade-top={fade.top || undefined}
-          data-fade-bottom={fade.bottom || undefined}
-          onScroll={updateFade}
-        >
+        <div ref={scrollerRef} className="note-chat-scroll scroll-fade-mask" {...fade.props}>
           {turns.length === 0 && !loading ? (
             <div className="note-chat-empty">
               <p className="note-chat-empty-lead">

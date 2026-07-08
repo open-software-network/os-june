@@ -13,6 +13,7 @@ import { IconFileText } from "central-icons/IconFileText";
 
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import type { BuiltinComposerSlashCommandDef } from "../../../lib/agent-composer-slash-commands";
+import { useScrollFade } from "../../../lib/use-scroll-fade";
 
 const SKILL_DETAIL_HOVER_INTENT_MS = 150;
 
@@ -44,8 +45,8 @@ export const CategorySuggestionList = forwardRef<
     top: number;
     side: "left" | "right";
   } | null>(null);
-  const [fade, setFade] = useState({ top: false, bottom: false });
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const fade = useScrollFade(menuRef);
   const rowRefs = useRef(new Map<number, HTMLButtonElement>());
   const hoverTimerRef = useRef<number | null>(null);
   const cancelHoverIntent = useCallback(() => {
@@ -61,19 +62,6 @@ export const CategorySuggestionList = forwardRef<
     },
     [cancelHoverIntent],
   );
-  const updateFade = useCallback(() => {
-    const el = menuRef.current;
-    if (!el) return;
-    const canScroll = el.scrollHeight - el.clientHeight > 1;
-    const atTop = el.scrollTop <= 1;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    setFade((prev) => {
-      const top = canScroll && !atTop;
-      const bottom = canScroll && !atBottom;
-      return prev.top === top && prev.bottom === bottom ? prev : { top, bottom };
-    });
-  }, []);
-
   // Snap the highlight back to the top whenever the filtered set changes so a
   // press of Enter never targets a row that just scrolled out of the results.
   useEffect(() => {
@@ -85,19 +73,10 @@ export const CategorySuggestionList = forwardRef<
 
   useEffect(() => cancelHoverIntent, [cancelHoverIntent]);
 
+  // Re-measure the fades when filtering changes the list's content.
   useLayoutEffect(() => {
-    updateFade();
-    const frame = window.requestAnimationFrame(updateFade);
-    return () => window.cancelAnimationFrame(frame);
-  }, [items, updateFade]);
-
-  useEffect(() => {
-    const el = menuRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(updateFade);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [updateFade]);
+    fade.update();
+  }, [items, fade.update]);
 
   const choose = useCallback(
     (index: number) => {
@@ -201,18 +180,14 @@ export const CategorySuggestionList = forwardRef<
         setDetail(null);
       }}
     >
-      <div
-        className="agent-category-menu-scroll-wrap"
-        data-fade-top={fade.top || undefined}
-        data-fade-bottom={fade.bottom || undefined}
-      >
+      <div className="agent-category-menu-scroll-wrap scroll-fade" {...fade.props}>
         <div
           ref={menuRef}
           className="agent-category-menu"
           role="listbox"
           aria-label="Slash commands"
           onScroll={() => {
-            updateFade();
+            fade.update();
             setDetail(null);
           }}
         >

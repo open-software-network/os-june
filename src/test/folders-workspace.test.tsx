@@ -146,7 +146,7 @@ describe("Sidebar primary navigation", () => {
     expect(onChangeView).toHaveBeenCalledWith("agent-sessions");
   });
 
-  it("opens the command palette with Command-K", async () => {
+  it("opens the command prompt with Command-K", async () => {
     render(
       <Sidebar
         notes={notes}
@@ -166,23 +166,53 @@ describe("Sidebar primary navigation", () => {
 
     fireEvent.keyDown(window, { key: "k", metaKey: true });
 
-    const palette = screen.getByRole("dialog", { name: "Search" });
-    const search = within(palette).getByRole("searchbox", { name: "Search" });
+    const prompt = screen.getByRole("dialog", { name: "Search" });
+    const search = within(prompt).getByRole("textbox", { name: "Search" });
     await waitFor(() => expect(search).toHaveFocus());
     expect(
-      within(palette).getByPlaceholderText("Search meeting notes, sessions, or jump to..."),
+      within(prompt).getByPlaceholderText("Search meeting notes, sessions, or jump to..."),
     ).toBeInTheDocument();
-    expect(within(palette).getByText("Recents")).toBeInTheDocument();
-    expect(within(palette).getByText("Roadmap")).toBeInTheDocument();
-    expect(within(palette).getByText("Quick actions")).toBeInTheDocument();
-    expect(within(palette).getByText("New session")).toBeInTheDocument();
+    expect(within(prompt).getByText("Recents")).toBeInTheDocument();
+    expect(within(prompt).getByText("Roadmap")).toBeInTheDocument();
+    expect(within(prompt).getByText("Quick actions")).toBeInTheDocument();
+    expect(within(prompt).getByText("New session")).toBeInTheDocument();
 
     fireEvent.keyDown(search, { key: "Escape" });
 
     expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
   });
 
-  it("shows and accepts the Windows command palette shortcut", async () => {
+  it("closes the command prompt on Escape even when a result row is focused", async () => {
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const prompt = screen.getByRole("dialog", { name: "Search" });
+
+    // Move focus off the input onto a result row (the prompt has no focus trap,
+    // so Esc must still close from here — the "can't get stuck" guarantee).
+    const row = within(prompt).getByRole("button", { name: /Roadmap/ });
+    row.focus();
+    expect(row).toHaveFocus();
+
+    fireEvent.keyDown(row, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
+  });
+
+  it("shows and accepts the Windows command prompt shortcut", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -207,15 +237,15 @@ describe("Sidebar primary navigation", () => {
 
       fireEvent.keyDown(window, { key: "k", ctrlKey: true });
 
-      const palette = screen.getByRole("dialog", { name: "Search" });
-      const search = within(palette).getByRole("searchbox", { name: "Search" });
+      const prompt = screen.getByRole("dialog", { name: "Search" });
+      const search = within(prompt).getByRole("textbox", { name: "Search" });
       await waitFor(() => expect(search).toHaveFocus());
     } finally {
       restoreNavigator();
     }
   });
 
-  it("opens the command palette when clicking the sidebar search", async () => {
+  it("opens the command prompt when clicking the sidebar search", async () => {
     const user = userEvent.setup();
     render(
       <Sidebar
@@ -234,9 +264,9 @@ describe("Sidebar primary navigation", () => {
 
     await user.click(screen.getByRole("searchbox", { name: "Search" }));
 
-    const palette = screen.getByRole("dialog", { name: "Search" });
+    const prompt = screen.getByRole("dialog", { name: "Search" });
     await waitFor(() =>
-      expect(within(palette).getByRole("searchbox", { name: "Search" })).toHaveFocus(),
+      expect(within(prompt).getByRole("textbox", { name: "Search" })).toHaveFocus(),
     );
   });
 
@@ -427,7 +457,7 @@ describe("Sidebar primary navigation", () => {
     expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull();
   });
 
-  it("omits the billing settings jump from the palette in local dev mode", async () => {
+  it("omits the billing settings jump from the prompt in local dev mode", async () => {
     const user = userEvent.setup();
     const renderSidebar = (account: AccountStatus) =>
       render(
@@ -447,12 +477,12 @@ describe("Sidebar primary navigation", () => {
         />,
       );
 
-    const openPaletteAndSearch = async () => {
+    const openPromptAndSearch = async () => {
       await user.click(screen.getByRole("searchbox", { name: "Search" }));
-      const palette = screen.getByRole("dialog", { name: "Search" });
-      const search = within(palette).getByRole("searchbox", { name: "Search" });
+      const prompt = screen.getByRole("dialog", { name: "Search" });
+      const search = within(prompt).getByRole("textbox", { name: "Search" });
       await user.type(search, "billing");
-      return palette;
+      return prompt;
     };
 
     // A regular account surfaces the billing jump once a query is typed.
@@ -461,19 +491,19 @@ describe("Sidebar primary navigation", () => {
       configured: true,
       user: { id: "usr_regular", handle: "regular" },
     });
-    const regularPalette = await openPaletteAndSearch();
-    expect(within(regularPalette).getByText("Settings -> Billing")).toBeInTheDocument();
+    const regularPrompt = await openPromptAndSearch();
+    expect(within(regularPrompt).getByText("Settings -> Billing")).toBeInTheDocument();
     regular.unmount();
 
-    // Local dev hides billing everywhere, including the palette jump.
+    // Local dev hides billing everywhere, including the prompt jump.
     renderSidebar({
       signedIn: true,
       configured: true,
       localDev: true,
       user: { id: "usr_local_dev", handle: "local-dev" },
     });
-    const localDevPalette = await openPaletteAndSearch();
-    expect(within(localDevPalette).queryByText("Settings -> Billing")).toBeNull();
+    const localDevPrompt = await openPromptAndSearch();
+    expect(within(localDevPrompt).queryByText("Settings -> Billing")).toBeNull();
   });
 
   it("opens the referral dialog and copies the invite link", async () => {
