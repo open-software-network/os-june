@@ -753,6 +753,8 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
     let mut accumulated = Vec::new();
     let mut forwarding = true;
     let is_sse = pump.content_type.contains("text/event-stream");
+    // The stream opens at a line boundary by definition.
+    let mut at_line_start = true;
     let mut heartbeat = tokio::time::interval_at(
         tokio::time::Instant::now() + STREAM_HEARTBEAT_INTERVAL,
         STREAM_HEARTBEAT_INTERVAL,
@@ -763,6 +765,11 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                 match chunk {
                     Ok(Some(chunk)) => {
                         accumulated.extend_from_slice(&chunk);
+                        // Chunk boundaries are arbitrary bytes, not SSE event
+                        // boundaries — a heartbeat is only legal at a line
+                        // start, or it would splice into a partial `data:`
+                        // line and corrupt the frame.
+                        at_line_start = chunk.last() == Some(&b'\n');
                         // Unbounded send: draining to the usage frame must not
                         // block on a slow client, or settlement stalls with it.
                         if forwarding && pump.chunks_tx.send(Ok(chunk)).is_err() {
@@ -807,7 +814,11 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                     }
                 }
             }
-            _ = heartbeat.tick(), if forwarding && is_sse => {
+            // A stall after a PARTIAL line keeps heartbeats suppressed until
+            // the line completes: a proxy may then time the response out, but
+            // that beats corrupting the frame — and upstreams flush whole
+            // events in practice, so the suppressed window is rare and short.
+            _ = heartbeat.tick(), if forwarding && is_sse && at_line_start => {
                 if pump.chunks_tx
                     .send(Ok(bytes::Bytes::from_static(b": keep-alive\n\n")))
                     .is_err()
@@ -2109,6 +2120,47 @@ mod tests {
                 base_url: base_url.to_string(),
             },
         )
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_heartbeat_never_splices_into_a_partial_line() {
+        // The upstream stalls past the heartbeat interval in the MIDDLE of a
+        // data line. A heartbeat injected there would corrupt the frame; the
+        // pump must suppress it until the line completes.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (b"data: {\"choices\":[{\"delta\":{\"content\":\"he".to_vec(), Duration::ZERO),
+                (
+                    b"llo\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n".to_vec(),
+                    STREAM_HEARTBEAT_INTERVAL + Duration::from_millis(30),
+                ),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.chunks.recv().await {
+            body.extend_from_slice(&chunk.expect("chunk succeeds"));
+        }
+        let body = String::from_utf8(body).expect("client bytes are utf-8");
+
+        assert!(
+            body.contains("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n"),
+            "the split data line must reach the client intact, got: {body:?}"
+        );
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+        let AgentChatStreamOutcome::Usage(usage) = outcome else {
+            panic!("expected usage outcome, got {outcome:?}");
+        };
+        assert_eq!(usage.prompt_tokens, 1);
     }
 
     fn short_timeout_agent(base_url: &str) -> VeniceAgentChat {
