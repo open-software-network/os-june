@@ -47,6 +47,31 @@ const notes: NoteListItemDto[] = [
   },
 ];
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) {
+      Object.defineProperty(navigator, "platform", ownPlatform);
+    } else {
+      Reflect.deleteProperty(navigator, "platform");
+    }
+    if (ownUserAgent) {
+      Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    } else {
+      Reflect.deleteProperty(navigator, "userAgent");
+    }
+  };
+}
+
 describe("folders UI", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -678,20 +703,63 @@ describe("folders UI", () => {
   });
 
   it("shows empty state with create action", () => {
-    render(
-      <NotesList
-        notes={[]}
-        onSelectNote={vi.fn()}
-        onCreateNote={vi.fn()}
-        onOpenMoveDialog={vi.fn()}
-        onOpenMoveNotes={vi.fn()}
-        onDeleteNote={vi.fn()}
-        onDeleteNotes={vi.fn()}
-      />,
-    );
+    const restorePlatform = stubNavigatorPlatform("MacIntel", "Mozilla/5.0 (Macintosh)");
+    try {
+      render(
+        <NotesList
+          notes={[]}
+          onSelectNote={vi.fn()}
+          onCreateNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onOpenMoveNotes={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onDeleteNotes={vi.fn()}
+        />,
+      );
 
-    expect(screen.getByText("Capture your first meeting")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create your first note" })).toBeInTheDocument();
+      expect(screen.getByText("Record your first conversation")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "June prompts when supported meeting apps use your microphone. You can also start a note manually.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Start recording from June when a meeting, call, or thought begins. June transcribes it and writes the note for you.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Create your first note" })).toBeInTheDocument();
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it("uses manual note copy on non-Mac platforms", () => {
+    const restorePlatform = stubNavigatorPlatform("Win32", "Mozilla/5.0 (Windows NT 10.0)");
+    try {
+      render(
+        <NotesList
+          notes={[]}
+          onSelectNote={vi.fn()}
+          onCreateNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onOpenMoveNotes={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onDeleteNotes={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.getByText("Start a note manually when a meeting, call, or thought begins."),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(
+          "June prompts when supported meeting apps use your microphone. You can also start a note manually.",
+        ),
+      ).toBeNull();
+    } finally {
+      restorePlatform();
+    }
   });
 
   it("bulk deletes selected meetings from the main list", async () => {

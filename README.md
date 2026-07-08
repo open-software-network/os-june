@@ -61,11 +61,13 @@ verifiable.
 - **Dictation.** Hold a key, talk, release. June turns your voice into clean,
   polished writing and pastes it into whatever app you were using, with
   push-to-talk and hands-free modes and selectable writing styles.
-- **Meeting notes.** June detects supported meetings and offers to take notes,
-  without a bot joining the call. It records microphone or microphone plus
-  system audio, orders the transcript into conversation turns, and generates
-  editable notes. Saved audio is kept so failed steps can be retried without
-  recording again.
+- **Meeting notes.** On macOS, June watches for supported meeting and browser
+  apps using the microphone, such as Zoom, Teams, Chrome, Safari, and Arc, then
+  offers to take notes. Recording starts only after the user approves the prompt
+  or starts a note manually. June never joins the call. It records microphone or
+  microphone plus system audio, orders the transcript into conversation turns,
+  and generates editable notes. Saved audio is kept so failed steps can be
+  retried without recording again.
 - **Agent.** A local agent, built on the open source Hermes framework, that
   helps with files, research, drafts, and scheduled routines. Sessions are
   sandboxed by default and risky actions wait for your approval. Extend it

@@ -348,7 +348,9 @@ describe("notes recording reliability", () => {
     expect(
       screen.getByRole("button", { name: "Meeting notes", current: "page" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Capture your first meeting" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Record your first conversation" }),
+    ).toBeInTheDocument();
   });
 
   it("stays on meeting notes after bulk deleting every note", async () => {
@@ -367,7 +369,9 @@ describe("notes recording reliability", () => {
     expect(
       screen.getByRole("button", { name: "Meeting notes", current: "page" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Capture your first meeting" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Record your first conversation" }),
+    ).toBeInTheDocument();
   });
 
   it("does not mark a different note transcribing when finishing a recording started elsewhere", async () => {

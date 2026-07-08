@@ -525,6 +525,7 @@ export function NoteEditor({
                         <span id="record-options-system" className="record-options-label">
                           Capture system audio
                         </span>
+                        <span className="record-options-hint">Adds app audio after Record.</span>
                         {systemDenied ? (
                           <button
                             type="button"

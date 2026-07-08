@@ -415,6 +415,23 @@ describe("OnboardingFlow", () => {
     expect(mocks.juneOpenCommunityPage).toHaveBeenCalledOnce();
   });
 
+  it("explains macOS meeting detection on the welcome step", async () => {
+    const restoreNavigator = stubMacNavigatorPlatform();
+    try {
+      render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
+
+      await screen.findByRole("heading", { name: "Welcome to June" });
+      expect(screen.getByText("Meeting prompts you approve")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "June notices supported meeting apps using your microphone, asks to take notes, and never joins the call.",
+        ),
+      ).toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
   it("shows Windows-accurate welcome copy", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
@@ -433,7 +450,7 @@ describe("OnboardingFlow", () => {
       expect(
         screen.queryByText(/June turns your voice into polished writing/),
       ).not.toBeInTheDocument();
-      expect(screen.queryByText("Effortlessly capture meetings")).not.toBeInTheDocument();
+      expect(screen.queryByText("Meeting prompts you approve")).not.toBeInTheDocument();
       expect(screen.queryByText("Chat and work with June")).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
