@@ -826,6 +826,16 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
                     }
                 }
             }
+            // BYOK only: with no settlement to protect, a dropped downstream
+            // aborts the upstream immediately. The send-failure paths cannot
+            // stand in for this — heartbeats are suppressed mid-line and
+            // non-SSE bodies never heartbeat, so a disconnect during an
+            // upstream stall would otherwise keep spending the user's own
+            // account until the next chunk or the client timeout.
+            () = pump.chunks_tx.closed(), if !pump.drain_for_settlement => {
+                let _ = pump.outcome_tx.send(AgentChatStreamOutcome::Failed);
+                return;
+            }
             // A stall after a PARTIAL line keeps heartbeats suppressed until
             // the line completes: a proxy may then time the response out, but
             // that beats corrupting the frame — and upstreams flush whole
@@ -2187,8 +2197,8 @@ mod tests {
     async fn agent_chat_stream_unmetered_aborts_instead_of_draining_after_disconnect() {
         // BYOK: no June charge to protect, so a client disconnect must drop
         // the upstream connection instead of draining it on the user's own
-        // upstream account. Detection here rides the (test-shortened)
-        // heartbeat tick; the second stub chunk arrives far later.
+        // upstream account. The closed() watch notices the drop immediately;
+        // the second stub chunk arrives far later.
         let (base_url, _server) = stream_stub(
             200,
             "text/event-stream",
@@ -2203,6 +2213,44 @@ mod tests {
         request.unmetered = true;
 
         let stream = agent.complete_stream(request).await.expect("stream starts");
+        drop(stream.chunks);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), stream.outcome)
+            .await
+            .expect("outcome must resolve long before the delayed upstream chunk")
+            .expect("outcome sender resolves");
+        assert_eq!(outcome, AgentChatStreamOutcome::Failed);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_unmetered_aborts_on_disconnect_during_partial_line_stall() {
+        // BYOK disconnect while the upstream is stalled MID-LINE: heartbeats
+        // are suppressed off a line boundary, so no send can fail — only the
+        // closed() watch can notice the drop. Without it the pump would sit
+        // in chunk() spending the user's own account until the next upstream
+        // byte or the client timeout.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"he".to_vec(),
+                    Duration::ZERO,
+                ),
+                (
+                    b"llo\"}}]}\n\ndata: [DONE]\n\n".to_vec(),
+                    Duration::from_secs(5),
+                ),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+        let mut request = stream_request();
+        request.unmetered = true;
+
+        let mut stream = agent.complete_stream(request).await.expect("stream starts");
+        let first = stream.chunks.recv().await.expect("partial chunk arrives");
+        assert!(first.is_ok(), "partial chunk forwards before the drop");
         drop(stream.chunks);
 
         let outcome = tokio::time::timeout(Duration::from_secs(2), stream.outcome)
