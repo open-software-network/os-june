@@ -34,8 +34,8 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
         <div className="onboarding-privacy-copy">
           <h2>Share anonymous usage statistics</h2>
           <p>
-            Never your recordings, notes, or anything you or the AI writes. Just coarse feature
-            counts, listed publicly.
+            Never your recordings, notes, or written content. Only anonymous counts that help us
+            understand feature usage.
           </p>
         </div>
         <Switch
