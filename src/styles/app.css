@@ -4513,10 +4513,26 @@ input:focus-visible,
   justify-content: center;
 }
 
+.agent-composer-notice-message {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.agent-composer-notice-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-composer-notice-button {
   appearance: none;
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: var(--sp-1);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);

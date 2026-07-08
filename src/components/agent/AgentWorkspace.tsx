@@ -7633,17 +7633,27 @@ export function AgentWorkspace({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.22, ease: "easeOut" }}
+              aria-label={
+                downloadNotice.mode === "browser"
+                  ? `Download started: ${downloadNotice.fileName}`
+                  : `Downloaded ${downloadNotice.fileName}`
+              }
             >
-              <span>
-                {downloadNotice.mode === "browser"
-                  ? `Download started for ${downloadNotice.fileName}`
-                  : `Downloaded ${downloadNotice.fileName} to Downloads`}
+              <span className="agent-composer-notice-message" aria-hidden="true">
+                <span>{downloadNotice.mode === "browser" ? "Download started:" : "Downloaded"}</span>
+                <span className="agent-composer-notice-file" title={downloadNotice.fileName}>
+                  {downloadNotice.fileName}
+                </span>
               </span>
               {downloadNotice.destination ? (
                 <button
                   type="button"
                   className="agent-composer-notice-button"
-                  onClick={() => void revealPath(downloadNotice.destination!)}
+                  onClick={() => {
+                    if (downloadNotice.destination) {
+                      void revealPath(downloadNotice.destination);
+                    }
+                  }}
                 >
                   Show file
                 </button>
