@@ -974,7 +974,23 @@ export async function hermesBridgeFilesystemSnapshot() {
 }
 
 export async function downloadHermesBridgeFile(path: string) {
-  return invoke<string>("download_hermes_bridge_file", { request: { path } });
+  console.info("[artifact-download] invoke:start", { path });
+  try {
+    const destination = await invoke<string>("download_hermes_bridge_file", {
+      request: { path },
+    });
+    console.info("[artifact-download] invoke:success", {
+      path,
+      destination,
+    });
+    return destination;
+  } catch (error) {
+    console.warn("[artifact-download] invoke:failed", {
+      path,
+      error,
+    });
+    throw error;
+  }
 }
 
 export async function hermesBridgeFilePreview(path: string) {

@@ -1796,6 +1796,12 @@ export function AgentWorkspace({
     sessionId: string;
     sourceTitle: string;
   } | null>(null);
+  const [downloadNotice, setDownloadNotice] = useState<{
+    fileName: string;
+    destination?: string;
+    mode: "downloads" | "browser";
+  } | null>(null);
+  const downloadNoticeTimeoutRef = useRef<number | undefined>(undefined);
   const branchedNoticeRef = useRef(branchedNotice);
   const [branchingNotice, setBranchingNotice] = useState<{ sourceTitle: string } | null>(null);
   // Which message a branch is currently in flight for, so its action shows a
@@ -2048,6 +2054,42 @@ export function AgentWorkspace({
   // the stored value loads, so a card never flashes the wrong state.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean>();
   const [cliAccessSubmitting, setCliAccessSubmitting] = useState(false);
+
+  const showDownloadNotice = useCallback(
+    (fileName: string, options: { destination?: string; mode: "downloads" | "browser" }) => {
+      if (downloadNoticeTimeoutRef.current !== undefined) {
+        window.clearTimeout(downloadNoticeTimeoutRef.current);
+      }
+      setDownloadNotice({
+        fileName,
+        destination: options.destination,
+        mode: options.mode,
+      });
+      downloadNoticeTimeoutRef.current = window.setTimeout(() => {
+        setDownloadNotice((current) =>
+          current?.fileName === fileName && current?.mode === options.mode ? null : current,
+        );
+        downloadNoticeTimeoutRef.current = undefined;
+      }, 5000);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (downloadNoticeTimeoutRef.current !== undefined) {
+        window.clearTimeout(downloadNoticeTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setDownloadNotice(null);
+    if (downloadNoticeTimeoutRef.current !== undefined) {
+      window.clearTimeout(downloadNoticeTimeoutRef.current);
+      downloadNoticeTimeoutRef.current = undefined;
+    }
+  }, [selectedHermesSessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -7149,10 +7191,38 @@ export function AgentWorkspace({
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
   const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
-  const downloadArtifact = (artifact: AgentArtifact) =>
-    void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+  const downloadArtifact = (artifact: AgentArtifact) => {
+    const requestSessionId = selectedHermesSessionIdRef.current;
+    console.info("[artifact-download] ui:start", {
+      sessionId: requestSessionId,
+      artifactName: artifact.name,
+      artifactPath: artifact.path,
+      source: "artifact-card",
+    });
+    void downloadHermesBridgeFile(artifact.path)
+      .then((destination) => {
+        console.info("[artifact-download] ui:success", {
+          sessionId: requestSessionId,
+          artifactName: artifact.name,
+          artifactPath: artifact.path,
+          destination,
+          source: "artifact-card",
+        });
+        if (selectedHermesSessionIdRef.current === requestSessionId) {
+          showDownloadNotice(artifact.name, { destination, mode: "downloads" });
+        }
+      })
+      .catch((err: unknown) => {
+        console.warn("[artifact-download] ui:failed", {
+          sessionId: selectedHermesSessionId,
+          artifactName: artifact.name,
+          artifactPath: artifact.path,
+          source: "artifact-card",
+          error: err,
+        });
+        setError(messageFromError(err));
+      });
+  };
   const openArtifact = (artifact: AgentArtifact) => setArtifactPanel({ view: "file", artifact });
 
   // A `/image` result reuses the artifact view/download flow: download saves the
@@ -7165,18 +7235,66 @@ export function AgentWorkspace({
     // no June-workspace path — its bytes live only in the inline data url, so
     // save those directly via an anchor download.
     if (part.path) {
-      void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-        setError(messageFromError(err)),
-      );
+      const requestSessionId = selectedHermesSessionIdRef.current;
+      console.info("[artifact-download] ui:start", {
+        sessionId: requestSessionId,
+        artifactName: part.name?.trim() || "Generated image",
+        artifactPath: part.path,
+        source: "generated-image-path",
+      });
+      void downloadHermesBridgeFile(part.path)
+        .then((destination) => {
+          console.info("[artifact-download] ui:success", {
+            sessionId: requestSessionId,
+            artifactName: part.name?.trim() || "Generated image",
+            artifactPath: part.path,
+            destination,
+            source: "generated-image-path",
+          });
+          if (selectedHermesSessionIdRef.current === requestSessionId) {
+            showDownloadNotice(part.name?.trim() || "Generated image", {
+              destination,
+              mode: "downloads",
+            });
+          }
+        })
+        .catch((err: unknown) => {
+          console.warn("[artifact-download] ui:failed", {
+            sessionId: selectedHermesSessionId,
+            artifactName: part.name?.trim() || "Generated image",
+            artifactPath: part.path,
+            source: "generated-image-path",
+            error: err,
+          });
+          setError(messageFromError(err));
+        });
       return;
     }
     if (part.dataUrl) {
+      const requestSessionId = selectedHermesSessionIdRef.current;
+      const fileName = ensureDownloadFileExtension(
+        part.name?.trim() || "generated-image.png",
+        "png",
+      );
+      console.info("[artifact-download] ui:start", {
+        sessionId: requestSessionId,
+        artifactName: fileName,
+        source: "generated-image-data-url",
+      });
       const link = document.createElement("a");
       link.href = part.dataUrl;
-      link.download = part.name?.trim() || "generated-image.png";
+      link.download = fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
+      console.info("[artifact-download] ui:success", {
+        sessionId: requestSessionId,
+        artifactName: fileName,
+        source: "generated-image-data-url",
+      });
+      if (selectedHermesSessionIdRef.current === requestSessionId) {
+        showDownloadNotice(fileName, { mode: "browser" });
+      }
     }
   };
   const openGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
@@ -7507,7 +7625,39 @@ export function AgentWorkspace({
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
         <AnimatePresence>
-          {busyNotice || galleryErrors ? (
+          {downloadNotice ? (
+            <motion.div
+              className="agent-composer-notice agent-composer-notice-action"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span>
+                {downloadNotice.mode === "browser"
+                  ? `Download started for ${downloadNotice.fileName}`
+                  : `Downloaded ${downloadNotice.fileName} to Downloads`}
+              </span>
+              {downloadNotice.destination ? (
+                <button
+                  type="button"
+                  className="agent-composer-notice-button"
+                  onClick={() => void revealPath(downloadNotice.destination!)}
+                >
+                  Show file
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="agent-composer-notice-button"
+                aria-label="Dismiss"
+                onClick={() => setDownloadNotice(null)}
+              >
+                <IconCrossMedium size={14} />
+              </button>
+            </motion.div>
+          ) : busyNotice || galleryErrors ? (
             // Same fade as the recording-consent note, so the pill dissolves
             // when the turn finishes instead of vanishing.
             <motion.p
@@ -12607,6 +12757,13 @@ function taskActivitySummary(task: AgentTaskDto) {
     default:
       return "";
   }
+}
+
+function ensureDownloadFileExtension(fileName: string, fallbackExtension: string) {
+  const trimmed = fileName.trim();
+  if (!trimmed) return `download.${fallbackExtension}`;
+  if (/\.[^./\\]+$/.test(trimmed)) return trimmed;
+  return `${trimmed}.${fallbackExtension}`;
 }
 
 function relativeDate(value: string) {
