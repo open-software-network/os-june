@@ -2808,7 +2808,7 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
         ));
     }
     if is_hidden_secret_path(&requested) {
-        tracing::warn!(requested_path = %path, resolved_path = %requested.display(), "validate_hermes_file_path rejected hidden or sensitive path");
+        tracing::warn!("validate_hermes_file_path rejected hidden or sensitive path");
         return Err(AppError::new(
             "hermes_file_download_denied",
             "This June file is hidden or sensitive.",

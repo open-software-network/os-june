@@ -7214,13 +7214,13 @@ export function AgentWorkspace({
       })
       .catch((err: unknown) => {
         console.warn("[artifact-download] ui:failed", {
-          sessionId: selectedHermesSessionId,
+          sessionId: requestSessionId,
           artifactName: artifact.name,
           artifactPath: artifact.path,
           source: "artifact-card",
           error: err,
         });
-        setError(messageFromError(err));
+        setError(messageFromError(err), { sessionId: requestSessionId ?? null });
       });
   };
   const openArtifact = (artifact: AgentArtifact) => setArtifactPanel({ view: "file", artifact });
@@ -7260,13 +7260,13 @@ export function AgentWorkspace({
         })
         .catch((err: unknown) => {
           console.warn("[artifact-download] ui:failed", {
-            sessionId: selectedHermesSessionId,
+            sessionId: requestSessionId,
             artifactName: part.name?.trim() || "Generated image",
             artifactPath: part.path,
             source: "generated-image-path",
             error: err,
           });
-          setError(messageFromError(err));
+          setError(messageFromError(err), { sessionId: requestSessionId ?? null });
         });
       return;
     }
@@ -7625,7 +7625,22 @@ export function AgentWorkspace({
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
         <AnimatePresence>
-          {downloadNotice ? (
+          {busyNotice || galleryErrors ? (
+            // Same fade as the recording-consent note, so the pill dissolves
+            // when the turn finishes instead of vanishing.
+            <motion.p
+              key="busy-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <DotSpinner />
+              {busyNotice ?? SESSION_BUSY_NOTICE}
+            </motion.p>
+          ) : downloadNotice ? (
             <motion.div
               className="agent-composer-notice agent-composer-notice-action"
               role="status"
@@ -7669,21 +7684,6 @@ export function AgentWorkspace({
                 <IconCrossMedium size={14} />
               </button>
             </motion.div>
-          ) : busyNotice || galleryErrors ? (
-            // Same fade as the recording-consent note, so the pill dissolves
-            // when the turn finishes instead of vanishing.
-            <motion.p
-              key="busy-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              <DotSpinner />
-              {busyNotice ?? SESSION_BUSY_NOTICE}
-            </motion.p>
           ) : visibleIssueReportReview ? (
             <motion.div
               key="issue-report-review"
