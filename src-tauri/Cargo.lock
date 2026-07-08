@@ -2930,6 +2930,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "window-vibrancy",
+ "windows 0.54.0",
  "zeroize",
 ]
 

@@ -9,8 +9,22 @@ Windows assets to the existing `open-software-network/os-june-releases` release.
 
 The Windows installer supports the app shell, OS Accounts sign-in, microphone
 recording, note generation, folders, and settings backed by the production June
-API. Global dictation shortcuts, dictation paste, macOS system-audio capture, and
-Seatbelt sandbox features are macOS-only.
+API. Global dictation (shortcut listening, microphone capture, transcription,
+and clipboard paste) also runs on Windows through an in-process helper, the
+platform twin of the macOS dictation helper. macOS system-audio capture and
+Seatbelt sandbox features remain macOS-only.
+
+Windows dictation ships with a few known gaps relative to macOS, all documented
+in the Windows dictation PR:
+
+- The HUD uses the shared web HUD window without the macOS native slide,
+  vibrancy, and non-activating panel behavior.
+- Clipboard restore after a paste covers plain text only, so a prior image or
+  rich-text clipboard is not preserved.
+- Bringing the target window to the foreground before paste is best effort
+  under the Windows foreground-window rules.
+- The keyboard hook is torn down by process exit rather than an explicit
+  unhook, and double-tap shortcut chords are not yet supported.
 
 Production Windows builds bundle the pinned Hermes runtime under `native/hermes`,
 so June can start the agent on a clean machine without Python, GitHub downloads,
@@ -109,10 +123,12 @@ The installed app is branded as June, but the current Windows binary on disk is
 `os-june.exe` under `$env:LOCALAPPDATA\June`.
 
 Confirm the signature status is `Valid`, the publisher is Open Software Network,
-the app launches as June, the sign-in copy mentions recording and notes without
+the app launches as June, the sign-in copy mentions recording, notes, and
 dictation, and the bundled agent starts on a clean VM with no Python installed.
 Record from the microphone and generate a note against production June API
-before linking the installer publicly.
+before linking the installer publicly. To smoke-test dictation, place the cursor
+in another app, press the toggle shortcut (Ctrl+Alt+T) or hold push to talk
+(Ctrl+Alt+D), speak, and confirm the transcript pastes at the cursor.
 
 For updater validation after a second Windows release, install an older
 updater-capable Windows build, run **June -> Check for updates...**, confirm the

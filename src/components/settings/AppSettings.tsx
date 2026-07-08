@@ -75,7 +75,11 @@ import {
   setReleaseChannel,
   type ReleaseChannel,
 } from "../../lib/updater";
-import { isMacLikePlatform } from "../../lib/platform";
+import {
+  displayShortcutLabel,
+  isDictationSupportedPlatform,
+  isMacLikePlatform,
+} from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import {
@@ -455,6 +459,7 @@ export function AppSettings({
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
   const macLikePlatform = isMacLikePlatform();
+  const dictationShortcutsSupported = isDictationSupportedPlatform();
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -1441,7 +1446,7 @@ export function AppSettings({
             ) : null}
             <div className="settings-card">
               <div className="settings-rows">
-                {macLikePlatform ? (
+                {dictationShortcutsSupported ? (
                   <>
                     <ShortcutRow
                       title="Push to talk"
@@ -1476,7 +1481,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Dictation shortcuts unavailable</h3>
                       <p className="settings-row-description">
-                        Global dictation shortcuts are only supported on macOS.
+                        Global dictation shortcuts are available on macOS and Windows.
                       </p>
                     </div>
                   </div>
@@ -2530,7 +2535,7 @@ function ShortcutRow({
         {error ? <p className="settings-row-error">{error}</p> : null}
       </div>
       <div className="settings-row-control">
-        <KeycapShortcut label={shortcut.label} capturing={capturing} />
+        <KeycapShortcut label={displayShortcutLabel(shortcut.label)} capturing={capturing} />
         <button
           type="button"
           className="btn btn-secondary"
