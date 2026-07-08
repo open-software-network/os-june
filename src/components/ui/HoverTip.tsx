@@ -353,14 +353,22 @@ export function HoverTip({
   useEffect(() => {
     if (!mounted) return;
     // Scroll/resize would drift the tip off its anchor; cut it immediately
-    // rather than fading in place.
-    window.addEventListener("scroll", unmount, true);
+    // rather than fading in place. An interactive tip can itself hold a scroll
+    // region (e.g. a capped description), so a scroll that originates inside the
+    // tip must not dismiss it — only outside scrolls do.
+    const onScroll = (event: Event) => {
+      if (interactive && event.target instanceof Node && tipRef.current?.contains(event.target)) {
+        return;
+      }
+      unmount();
+    };
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", unmount);
     return () => {
-      window.removeEventListener("scroll", unmount, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", unmount);
     };
-  }, [mounted, unmount]);
+  }, [mounted, unmount, interactive]);
 
   return (
     <span

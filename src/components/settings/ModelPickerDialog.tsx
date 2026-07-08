@@ -326,18 +326,19 @@ function trimNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-// The hover card's spec list: the same pricing/context facts as the label
-// strings, split into label/value pairs so the card renders a compact spec
-// table instead of a prose sentence. Falls back to a single "Pricing" row when
-// the pricing shape has no clean input/output split.
+// The hover card's spec list: the pricing/context facts split into label/value
+// pairs so the card renders a compact spec table instead of a prose sentence.
+// Falls back to a single "Pricing" row when there is no clean input/output
+// credit split.
 export function modelSpecEntries(model: VeniceModelDto): { label: string; value: string }[] {
   const entries: { label: string; value: string }[] = [];
-  const input = priceForPath(model.pricing, ["input", "usd"]);
-  const output = priceForPath(model.pricing, ["output", "usd"]);
-  if (input !== undefined && output !== undefined) {
-    entries.push({ label: "Input", value: `$${formatUsd(input)} /1M` });
-    entries.push({ label: "Output", value: `$${formatUsd(output)} /1M` });
-  } else if (
+  // Use June's billed credit price (with margin) for the input/output split.
+  // The raw `pricing.*.usd` on the DTO is upstream provider metadata the backend
+  // keeps for reference only — the user-facing price must come from the credit
+  // price (see june-api handlers/models.rs), so it is never shown as the price
+  // here. Anything without the credit split defers to `pricingLabel`, which
+  // resolves the price the same way the rest of the app does.
+  if (
     model.priceUnit === "tokens" &&
     typeof model.inputCreditsPerMillionTokens === "number" &&
     typeof model.outputCreditsPerMillionTokens === "number"
