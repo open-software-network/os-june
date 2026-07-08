@@ -7,8 +7,8 @@
  *
  * The builder talks to Hermes through the existing admin REST surface only:
  * `POST /api/profiles` (create), `PUT /api/profiles/{name}/soul` (custom SOUL),
- * `POST /api/profiles/active` + `/open-terminal` (test session). It reuses the
- * already-landed data sources for its step inputs (the model catalog, installed
+ * and `POST /api/profiles/active` when the new profile should become active. It
+ * reuses the already-landed data sources for its step inputs (the model catalog, installed
  * skills, the Skills Hub, MCP servers and the MCP catalog) rather than inventing
  * its own. Profile creation is a documented endpoint, so June never copies
  * directories by hand — no Tauri bridge command is added.
@@ -20,6 +20,7 @@
  */
 
 import type { HermesCreateProfilePayload } from "./client";
+import { isInternalMcpServerName, userManagedMcpServers } from "./mcp-servers-view";
 import type {
   HermesMcpCatalogEntry,
   HermesMcpServerInfo,
@@ -485,13 +486,23 @@ export function buildCreatePlan(
   }
 
   if (form.mcpServers.length > 0 || form.mcpCatalogInstalls.length > 0) {
-    const total = form.mcpServers.length + form.mcpCatalogInstalls.length;
-    changes.push({
-      target: `${root}/config.yaml (mcp)`,
-      detail: `Attaches ${total} MCP server(s). MCP servers may run local subprocesses and need a gateway restart to expose their tools.`,
-      risk: "caution",
-    });
+    const total =
+      form.mcpServers.filter((name) => !isInternalMcpServerName(name)).length +
+      form.mcpCatalogInstalls.filter((name) => !isInternalMcpServerName(name)).length;
+    if (total > 0) {
+      changes.push({
+        target: `${root}/config.yaml (mcp)`,
+        detail: `Attaches ${total} MCP server(s). MCP servers may run local subprocesses and need a gateway restart to expose their tools.`,
+        risk: "caution",
+      });
+    }
   }
+
+  changes.push({
+    target: `${root}/config.yaml (mcp)`,
+    detail: "June's built-in tools are always included.",
+    risk: "info",
+  });
 
   if (form.sandbox === "unrestricted") {
     changes.push({
@@ -531,10 +542,9 @@ export function buildCreatePayload(form: ProfileBuilderForm): HermesCreateProfil
     payload.keep_skills = [...form.keepSkills];
   }
   if (form.hubSkills.length > 0) payload.hub_skills = [...form.hubSkills];
-  const mcpServers = [
-    ...form.mcpServers.map((name) => ({ name })),
-    ...form.mcpCatalogInstalls.map((name) => ({ name })),
-  ];
+  const mcpServers = [...form.mcpServers, ...form.mcpCatalogInstalls]
+    .filter((name) => !isInternalMcpServerName(name))
+    .map((name) => ({ name }));
   if (mcpServers.length > 0) payload.mcp_servers = mcpServers;
   return payload;
 }
@@ -549,12 +559,11 @@ export function bundledSkillOptions(skills: readonly HermesSkillInfo[]): HermesS
   return skills.filter((skill) => skill.source === "bundled");
 }
 
-/** The MCP servers that can be attached — every server in the inventory by
- * name. */
+/** The MCP servers that can be attached, excluding June-owned internal tools. */
 export function attachableMcpServers(
   servers: readonly HermesMcpServerInfo[],
 ): HermesMcpServerInfo[] {
-  return [...servers];
+  return userManagedMcpServers(servers);
 }
 
 /** The catalog entries that can be installed during create (not already

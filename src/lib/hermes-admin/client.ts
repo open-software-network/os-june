@@ -256,13 +256,8 @@ export type HermesAdminClient = {
      * with `ProfileSoulUpdate` (`{ content }`). Called after create when the
      * builder collected a custom SOUL. */
     setSoul(name: string, content: string): Promise<MutationOutcome<{ ok: boolean }>>;
-    /** Lists live/recent profile sessions. `GET /api/profiles/sessions`. The
-     * builder polls this to confirm a started test session is running. */
+    /** Lists live/recent profile sessions. `GET /api/profiles/sessions`. */
     sessions(): Promise<HermesProfileSession[]>;
-    /** Starts a test session for a profile by making it active and opening a
-     * terminal. `POST /api/profiles/active` then
-     * `POST /api/profiles/{name}/open-terminal`. */
-    startTestSession(name: string): Promise<MutationOutcome<{ ok: boolean }>>;
   };
 
   readonly gateway: {
@@ -671,29 +666,6 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
         },
         parseProfileSessionList,
       );
-    },
-    async startTestSession(name) {
-      // Make the new profile active, then open a terminal session under it. Both
-      // are global profile operations, so neither is profile-query-scoped.
-      const activated = await activateProfile(name);
-      // Stop if the switch failed (a body-level { ok: false } on a 2xx):
-      // opening a terminal would run under the wrong profile and falsely report
-      // success. Surface the failure through the same outcome, matching create.
-      if (!activated.ok) {
-        return outcome("profile.create", activated);
-      }
-      const result = await send(
-        {
-          method: "POST",
-          path: `/api/profiles/${encodeURIComponent(name)}/open-terminal`,
-          scopeToProfile: false,
-        },
-        (raw) => ({ ok: okFrom(raw) }),
-      );
-      // Reuse the create timing/notification surface — starting a session is the
-      // immediate consequence of a create, so the caller treats it as part of
-      // the create flow rather than a distinct durable mutation.
-      return outcome("profile.create", result);
     },
   };
 }

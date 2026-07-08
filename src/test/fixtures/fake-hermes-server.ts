@@ -318,7 +318,6 @@ export class FakeHermesServer {
     error?: string;
   };
   private readonly profileActivateNotOk: boolean;
-  private profileSessionSeq = 0;
   private env: Record<string, string>;
   private config: Record<string, unknown>;
   private readonly backgroundActions: boolean;
@@ -567,8 +566,7 @@ export class FakeHermesServer {
 
     // Profiles. GET lists, POST creates, PUT /{name}/soul writes the SOUL,
     // GET /sessions lists sessions, GET/POST /active reads/sets active,
-    // DELETE /{name} removes a profile,
-    // POST /{name}/open-terminal starts a session.
+    // DELETE /{name} removes a profile.
     if (method === "GET" && path === "/api/profiles") {
       return json(200, { profiles: this.profiles });
     }
@@ -628,16 +626,6 @@ export class FakeHermesServer {
         });
       }
       return json(200, { ok: true, name: soulMatch.name });
-    }
-    const terminalMatch = matchPath(path, "/api/profiles/:name/open-terminal");
-    if (method === "POST" && terminalMatch) {
-      const id = `session-${++this.profileSessionSeq}`;
-      this.profileSessions.push({
-        id,
-        profile: terminalMatch.name,
-        status: "running",
-      });
-      return json(200, { ok: true, session_id: id });
     }
     const profileRemoveMatch = matchPath(path, "/api/profiles/:name");
     if (method === "DELETE" && profileRemoveMatch) {

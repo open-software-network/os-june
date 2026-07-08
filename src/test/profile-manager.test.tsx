@@ -281,21 +281,4 @@ describe("profile manager - hook flows", () => {
     controller.dispose();
     resetActiveHermesProfileForTests();
   });
-
-  it("startTestSession still activates the profile and opens a terminal", async () => {
-    const harness = makeAdminHarness({
-      profiles: [
-        { name: "default", active: true },
-        { name: "research", active: false },
-      ],
-    });
-
-    const outcome = await harness.client.profiles.startTestSession("research");
-
-    expect(outcome.result.ok).toBe(true);
-    expect(await harness.client.profiles.active()).toMatchObject({ active: "research" });
-    expect(harness.server.requestLog.map((entry) => `${entry.method} ${entry.path}`)).toContain(
-      "POST /api/profiles/research/open-terminal",
-    );
-  });
 });

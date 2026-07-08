@@ -1502,8 +1502,7 @@ export function parseActiveProfile(raw: unknown): HermesActiveProfile {
   };
 }
 
-/** A live/recent session row from `GET /api/profiles/sessions`. June reads it to
- * confirm a freshly-created profile's test session actually started. */
+/** A live/recent session row from `GET /api/profiles/sessions`. */
 export type HermesProfileSession = {
   /** Session id, when reported. */
   id?: string;
