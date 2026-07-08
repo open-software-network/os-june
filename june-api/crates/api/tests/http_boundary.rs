@@ -167,9 +167,7 @@ async fn integration_note_generate_stream_sends_keep_alive_before_result()
 -> Result<(), Box<dyn Error>> {
     let app = router(test_state_with_generator_and_timeout(
         Arc::new(SlowGenerator),
-        // 12s effective window: past the 210s budgets, long enough for the
-        // 11s SlowGenerator to finish after the 10s keep-alive tick.
-        222,
+        30,
     ));
     let response = match app
         .oneshot(json_request(
@@ -993,9 +991,7 @@ fn test_state_with_sinks_and_transcriber(
         attestation,
         transcriber,
         generator: Arc::new(FakeGenerator),
-        // 215 = 5s effective metered-inference window past the 210s
-        // authorize + settlement budgets (image_client_timeout_secs).
-        request_timeout_secs: 215,
+        request_timeout_secs: 5,
     })
 }
 
