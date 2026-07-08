@@ -7640,7 +7640,9 @@ export function AgentWorkspace({
               }
             >
               <span className="agent-composer-notice-message" aria-hidden="true">
-                <span>{downloadNotice.mode === "browser" ? "Download started:" : "Downloaded"}</span>
+                <span>
+                  {downloadNotice.mode === "browser" ? "Download started:" : "Downloaded"}
+                </span>
                 <span className="agent-composer-notice-file" title={downloadNotice.fileName}>
                   {downloadNotice.fileName}
                 </span>
