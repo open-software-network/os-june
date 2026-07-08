@@ -13,6 +13,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_API_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=JUNE_API_URL");
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("macos") {
+        println!("cargo:rustc-link-lib=framework=AVFoundation");
+    }
     clean_legacy_helper_bundles();
     build_system_audio_helper();
     build_dictation_helper();

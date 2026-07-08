@@ -53,10 +53,13 @@ pub struct SourceTranscriptInput {
     pub text: String,
     pub valid: bool,
     pub warning: Option<String>,
+    pub recorded_silence: bool,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
     pub turn_index: Option<i64>,
 }
+
+pub type SourceAudioForProcessing = (String, String, PathBuf, bool);
 
 pub fn valid_sources_for_processing(
     sources: Vec<SourceTranscriptInput>,
@@ -76,6 +79,7 @@ fn source_transcript_input_from_row(row: &TranscriptDto) -> SourceTranscriptInpu
         text: row.text.clone(),
         valid: row.status == "succeeded" && !row.text.trim().is_empty(),
         warning: row.last_error.clone(),
+        recorded_silence: row.recorded_silence,
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         turn_index: row.turn_index,
@@ -274,6 +278,7 @@ pub async fn process_saved_audio(
     title: String,
     existing_generated_note: Option<String>,
     manual_notes: Option<String>,
+    recorded_silence: bool,
 ) -> Result<NoteDto, AppError> {
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
@@ -289,7 +294,7 @@ pub async fn process_saved_audio(
     let transcription_provider = crate::providers::configured_transcription_provider();
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
-    let transcript = match transcribe_prepared_audio(
+    let transcription = match transcribe_prepared_audio(
         default_turn_transcriber(),
         TranscribePreparedAudioRequest {
             provider: transcription_provider.clone(),
@@ -307,22 +312,42 @@ pub async fn process_saved_audio(
     )
     .await
     {
-        Ok(transcript) => transcript,
+        Ok(transcription) => transcription,
         Err(error) => {
+            let user_message = user_facing_transcription_failure_message(
+                &error.code,
+                &error.message,
+                recorded_silence,
+                "microphone",
+            );
+            // A no-speech outcome is a coverage decision, not just a failure:
+            // persist the zero-detected-speech checkpoint so the call is
+            // documented the same way a chunked pass would document it.
+            if is_no_speech_error(&error) {
+                persist_microphone_only_transcript_coverage(repos, session_id, "microphone", &[])
+                    .await;
+            }
             repos
                 .set_note_status(
                     note_id,
                     ProcessingStatus::Failed,
-                    Some(error.message.clone()),
+                    Some(user_message.clone()),
                 )
                 .await?;
-            return Err(error);
+            return Err(AppError::new(&error.code, user_message));
         }
     };
+    persist_microphone_only_transcript_coverage(
+        repos,
+        session_id,
+        "microphone",
+        &transcription.chunk_outcomes,
+    )
+    .await;
     let _ = std::fs::remove_dir_all(&temp_dir);
     let transcript = maybe_post_process_note_transcript(
         &transcription_provider,
-        transcript,
+        transcription.transcript,
         dictionary_context.as_deref(),
     )
     .await;
@@ -391,7 +416,7 @@ pub async fn process_saved_source_audio(
     note_id: &str,
     session_id: &str,
     source_mode: RecordingSourceMode,
-    sources: Vec<(String, String, PathBuf)>,
+    sources: Vec<SourceAudioForProcessing>,
     title: String,
     existing_generated_note: Option<String>,
     manual_notes: Option<String>,
@@ -427,11 +452,13 @@ pub async fn process_saved_source_audio(
     }
     let detection_sources = sources
         .iter()
-        .map(|(artifact_id, source, audio_path)| DetectionSource {
-            artifact_id: artifact_id.clone(),
-            source: source.clone(),
-            path: audio_path.clone(),
-        })
+        .map(
+            |(artifact_id, source, audio_path, _recorded_silence)| DetectionSource {
+                artifact_id: artifact_id.clone(),
+                source: source.clone(),
+                path: audio_path.clone(),
+            },
+        )
         .collect::<Vec<_>>();
     // Detection now carries real DSP (GCC-PHAT probes, adaptive
     // cancellation passes over full recordings) — CPU-bound for minutes on
@@ -532,6 +559,7 @@ pub async fn process_saved_source_audio(
                         text: existing.text.clone(),
                         valid: existing.status == "succeeded" && !existing.text.trim().is_empty(),
                         warning: None,
+                        recorded_silence: existing.recorded_silence,
                         start_ms: existing.start_ms.or(Some(turn.start_ms)),
                         end_ms: existing.end_ms.or(Some(turn.end_ms)),
                         turn_index: existing.turn_index.or(Some(turn.turn_index)),
@@ -565,6 +593,7 @@ pub async fn process_saved_source_audio(
                 turn.turn_index, turn.source, turn.start_ms, turn.end_ms
             )),
         )?;
+        let recorded_silence = source_recorded_silence(&sources, &turn.artifact_id);
         transcription_jobs.push(TurnTranscriptionJob {
             echo_trimmed: echo_rejection
                 .trimmed_artifact_ids
@@ -574,6 +603,7 @@ pub async fn process_saved_source_audio(
             audio_path,
             temp_dir: segment_dir.clone(),
             source_path: source_audio_path,
+            recorded_silence,
             covers_full_source,
             source_fallback: false,
             start_ms: turn.start_ms,
@@ -858,15 +888,92 @@ struct TranscriptCoverageSource {
     failed_turns: i64,
 }
 
+fn compute_chunk_transcript_coverage(
+    source: &str,
+    chunk_outcomes: &[TranscriptionChunkOutcome],
+) -> TranscriptCoverageCheckpoint {
+    let detected_speech_ms = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent)
+        .map(|chunk| span_ms(chunk.start_ms, chunk.end_ms))
+        .sum();
+    let transcribed_ms = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent && chunk.provider_returned_text)
+        .map(|chunk| span_ms(chunk.start_ms, chunk.end_ms))
+        .sum();
+    let detected_turns = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent)
+        .count() as i64;
+    let transcribed_turns = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent && chunk.provider_returned_text)
+        .count() as i64;
+    let failed_turns = chunk_outcomes
+        .iter()
+        .filter(|chunk| !chunk.locally_silent && !chunk.provider_returned_text)
+        .count() as i64;
+    let warning = transcript_coverage_warning(detected_speech_ms, transcribed_ms);
+    TranscriptCoverageCheckpoint {
+        sources: vec![TranscriptCoverageSource {
+            source: source.to_string(),
+            detected_speech_ms,
+            transcribed_ms,
+            detected_turns,
+            transcribed_turns,
+            failed_turns,
+        }],
+        total_detected_speech_ms: detected_speech_ms,
+        total_transcribed_ms: transcribed_ms,
+        total_detected_turns: detected_turns,
+        total_transcribed_turns: transcribed_turns,
+        total_failed_turns: failed_turns,
+        warning,
+    }
+}
+
+// Coverage is diagnostic only and must never fail note processing: a
+// checkpoint that cannot be serialized or persisted is logged and skipped.
+async fn persist_microphone_only_transcript_coverage(
+    repos: &Repositories,
+    session_id: &str,
+    source: &str,
+    chunk_outcomes: &[TranscriptionChunkOutcome],
+) {
+    let coverage = compute_chunk_transcript_coverage(source, chunk_outcomes);
+    match serde_json::to_string(&coverage) {
+        Ok(payload) => {
+            if let Err(error) = repos
+                .add_checkpoint(session_id, "transcript_coverage", Some(payload))
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    session_id = %session_id,
+                    "failed to persist transcript_coverage checkpoint"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                session_id = %session_id,
+                "failed to serialize transcript_coverage checkpoint"
+            );
+        }
+    }
+}
+
 fn compute_transcript_coverage(
-    sources: &[(String, String, PathBuf)],
+    sources: &[SourceAudioForProcessing],
     detected_turns: &[AudioTurn],
     persisted_transcripts: &[TranscriptDto],
     failed_transcripts: &[FailedTranscriptCandidate],
 ) -> TranscriptCoverageCheckpoint {
     let mut source_entries = sources
         .iter()
-        .map(|(_artifact_id, source, source_path)| {
+        .map(|(_artifact_id, source, source_path, _recorded_silence)| {
             let source_detected_turns = detected_turns
                 .iter()
                 .filter(|turn| turn.source == *source)
@@ -1046,6 +1153,7 @@ struct TurnTranscriptionJob {
     audio_path: PathBuf,
     temp_dir: PathBuf,
     source_path: PathBuf,
+    recorded_silence: bool,
     covers_full_source: bool,
     source_fallback: bool,
     /// The source lost audio to echo trimming; full-source fallbacks must
@@ -1080,6 +1188,21 @@ struct TranscribePreparedAudioRequest {
     turn_index: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TranscriptionChunkOutcome {
+    start_ms: i64,
+    end_ms: i64,
+    locally_silent: bool,
+    provider_returned_text: bool,
+    provider_no_speech: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TranscribePreparedAudioResult {
+    transcript: TranscriptionProviderResult,
+    chunk_outcomes: Vec<TranscriptionChunkOutcome>,
+}
+
 /// Full-source normalized audio, prepared once per source. The per-turn job
 /// loop used to normalize the WHOLE source recording again for every turn —
 /// the output name carried the turn index, so nothing was ever reused — and
@@ -1109,7 +1232,7 @@ fn normalized_full_source(
 async fn transcribe_prepared_audio(
     transcriber: TurnTranscriber,
     request: TranscribePreparedAudioRequest,
-) -> Result<TranscriptionProviderResult, AppError> {
+) -> Result<TranscribePreparedAudioResult, AppError> {
     let request_language = crate::dictation::configured_transcription_language();
     let chunk_dir = request.temp_dir.join("chunks");
     let audio_paths = if request.audio_path.exists() {
@@ -1118,11 +1241,16 @@ async fn transcribe_prepared_audio(
         vec![request.audio_path.clone()]
     };
     if audio_paths.len() == 1 {
-        return transcribe_with_transient_retries(
+        let audio_path = audio_paths.into_iter().next().unwrap_or(request.audio_path);
+        let duration_ms = source_wav_duration_ms(&audio_path).unwrap_or_default();
+        if crate::audio::turns::source_is_effectively_silent(&audio_path) {
+            return Err(AppError::new("no_speech", "no_speech"));
+        }
+        let transcript = transcribe_with_transient_retries(
             &transcriber,
             TranscriptionRequest {
                 provider: request.provider,
-                audio_path: audio_paths.into_iter().next().unwrap_or(request.audio_path),
+                audio_path,
                 title: request.title,
                 context: request.base_context,
                 language: request_language,
@@ -1130,20 +1258,42 @@ async fn transcribe_prepared_audio(
                 preview: false,
             },
         )
-        .await;
+        .await?;
+        return Ok(TranscribePreparedAudioResult {
+            chunk_outcomes: vec![TranscriptionChunkOutcome {
+                start_ms: 0,
+                end_ms: duration_ms,
+                locally_silent: false,
+                provider_returned_text: !transcript.text.trim().is_empty(),
+                provider_no_speech: false,
+            }],
+            transcript,
+        });
     }
 
     let mut previous = Vec::new();
     let mut text_parts = Vec::new();
     let mut language = None;
     let mut provider_name = request.provider.clone();
+    let mut chunk_outcomes = Vec::new();
+    let mut chunk_start_ms = 0_i64;
     for (index, audio_path) in audio_paths.into_iter().enumerate() {
+        let duration_ms = source_wav_duration_ms(&audio_path).unwrap_or_default();
+        let chunk_end_ms = chunk_start_ms.saturating_add(duration_ms);
         // Skip clearly-silent chunks before any API call. Fixed-size splitting of
         // a long (or fully silent) source leaves quiet boundary chunks, and each
         // request authorizes a credit hold that a no-speech response never
         // settles — so sending every silent chunk of a silent source would strand
         // holds until TTL and can trip `authorization_denied` on later work.
         if crate::audio::turns::source_is_effectively_silent(&audio_path) {
+            chunk_outcomes.push(TranscriptionChunkOutcome {
+                start_ms: chunk_start_ms,
+                end_ms: chunk_end_ms,
+                locally_silent: true,
+                provider_returned_text: false,
+                provider_no_speech: false,
+            });
+            chunk_start_ms = chunk_end_ms;
             continue;
         }
         let context = merge_transcription_context(
@@ -1168,7 +1318,17 @@ async fn transcribe_prepared_audio(
             // Backstop for a chunk the local silence check judged audible but the
             // provider still reports as no-speech: skip it so earlier chunks' text
             // survives, rather than aborting and dropping the whole turn.
-            Err(error) if is_no_speech_error(&error) => continue,
+            Err(error) if is_no_speech_error(&error) => {
+                chunk_outcomes.push(TranscriptionChunkOutcome {
+                    start_ms: chunk_start_ms,
+                    end_ms: chunk_end_ms,
+                    locally_silent: false,
+                    provider_returned_text: false,
+                    provider_no_speech: true,
+                });
+                chunk_start_ms = chunk_end_ms;
+                continue;
+            }
             Err(error) => return Err(error),
         };
         if language.is_none() {
@@ -1176,11 +1336,20 @@ async fn transcribe_prepared_audio(
         }
         provider_name = transcript.provider.clone();
         let text = transcript.text.trim().to_string();
+        chunk_outcomes.push(TranscriptionChunkOutcome {
+            start_ms: chunk_start_ms,
+            end_ms: chunk_end_ms,
+            locally_silent: false,
+            provider_returned_text: !text.is_empty(),
+            provider_no_speech: false,
+        });
+        chunk_start_ms = chunk_end_ms;
         previous.push(SourceTranscriptInput {
             source: request.source.clone(),
             text: text.clone(),
             valid: !text.is_empty(),
             warning: None,
+            recorded_silence: false,
             start_ms: request.start_ms,
             end_ms: request.end_ms,
             turn_index: request.turn_index,
@@ -1196,10 +1365,13 @@ async fn transcribe_prepared_audio(
         // generic error that would fail the whole note.
         return Err(AppError::new("no_speech", "no_speech"));
     }
-    Ok(TranscriptionProviderResult {
-        text: text_parts.join("\n"),
-        language,
-        provider: provider_name,
+    Ok(TranscribePreparedAudioResult {
+        transcript: TranscriptionProviderResult {
+            text: text_parts.join("\n"),
+            language,
+            provider: provider_name,
+        },
+        chunk_outcomes,
     })
 }
 
@@ -1472,7 +1644,7 @@ async fn transcribe_one_turn_job(
     } else {
         turn_operation_id(&job)
     };
-    let transcript = match transcribe_prepared_audio(
+    let transcription = match transcribe_prepared_audio(
         Arc::clone(&transcriber),
         TranscribePreparedAudioRequest {
             provider: provider.clone(),
@@ -1490,14 +1662,20 @@ async fn transcribe_one_turn_job(
     )
     .await
     {
-        Ok(transcript) => transcript,
+        Ok(transcription) => transcription,
         Err(error) => {
-            let warning = user_facing_transcription_failure_message(&error.code, &error.message);
+            let warning = user_facing_transcription_failure_message(
+                &error.code,
+                &error.message,
+                job.recorded_silence,
+                job.source.as_str(),
+            );
             let input = SourceTranscriptInput {
                 source: job.source,
                 text: String::new(),
                 valid: false,
                 warning: Some(warning),
+                recorded_silence: job.recorded_silence,
                 start_ms: Some(job.start_ms),
                 end_ms: Some(job.end_ms),
                 turn_index: Some(job.turn_index),
@@ -1512,12 +1690,14 @@ async fn transcribe_one_turn_job(
         }
     };
     let transcript =
-        maybe_post_process_note_transcript(&provider, transcript, context.as_deref()).await;
+        maybe_post_process_note_transcript(&provider, transcription.transcript, context.as_deref())
+            .await;
     let input = SourceTranscriptInput {
         source: job.source,
         text: transcript.text,
         valid: true,
         warning: None,
+        recorded_silence: false,
         start_ms: Some(job.start_ms),
         end_ms: Some(job.end_ms),
         turn_index: Some(job.turn_index),
@@ -1642,6 +1822,7 @@ fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscr
         audio_path: first.source_path.clone(),
         temp_dir: first.temp_dir.clone(),
         source_path: first.source_path.clone(),
+        recorded_silence: first.recorded_silence,
         covers_full_source: true,
         source_fallback: true,
         start_ms: 0,
@@ -1751,14 +1932,14 @@ struct DroppedSource {
 }
 
 struct SilentSystemDropOutcome {
-    kept: Vec<(String, String, PathBuf)>,
+    kept: Vec<SourceAudioForProcessing>,
     dropped: Vec<DroppedSource>,
 }
 
 #[cfg(test)]
 fn drop_silent_system_sources(
-    sources: Vec<(String, String, PathBuf)>,
-) -> Vec<(String, String, PathBuf)> {
+    sources: Vec<SourceAudioForProcessing>,
+) -> Vec<SourceAudioForProcessing> {
     partition_silent_system_sources(sources).kept
 }
 
@@ -1771,11 +1952,11 @@ fn drop_silent_system_sources(
 /// would strand quiet-but-real tracks before the full-source fallback ever runs,
 /// transcribing mic-only.
 fn partition_silent_system_sources(
-    sources: Vec<(String, String, PathBuf)>,
+    sources: Vec<SourceAudioForProcessing>,
 ) -> SilentSystemDropOutcome {
     let has_other_source = sources
         .iter()
-        .any(|(_, source, _)| source.as_str() != "system");
+        .any(|(_, source, _, _)| source.as_str() != "system");
     if !has_other_source {
         return SilentSystemDropOutcome {
             kept: sources,
@@ -1784,7 +1965,7 @@ fn partition_silent_system_sources(
     }
     let mut kept = Vec::new();
     let mut dropped = Vec::new();
-    for (artifact_id, source, path) in sources {
+    for (artifact_id, source, path, recorded_silence) in sources {
         // Decode once: `source_max_rms` is `None` when the file can't be read,
         // which must mean "keep" (matching the old read-failure semantics).
         let max_rms = if source.as_str() == "system" {
@@ -1807,18 +1988,18 @@ fn partition_silent_system_sources(
                 max_rms,
             });
         } else {
-            kept.push((artifact_id, source, path));
+            kept.push((artifact_id, source, path, recorded_silence));
         }
     }
     SilentSystemDropOutcome { kept, dropped }
 }
 
 fn add_full_source_turns_for_missing_sources(
-    sources: &[(String, String, PathBuf)],
+    sources: &[SourceAudioForProcessing],
     mut turns: Vec<AudioTurn>,
     echo_rejection: &EchoRejectionReport,
 ) -> Vec<AudioTurn> {
-    for (artifact_id, source, audio_path) in sources {
+    for (artifact_id, source, audio_path, _recorded_silence) in sources {
         let has_source_turn = turns
             .iter()
             .any(|turn| turn.artifact_id == *artifact_id && turn.source == *source);
@@ -1850,6 +2031,14 @@ fn add_full_source_turns_for_missing_sources(
     turns
 }
 
+fn source_recorded_silence(sources: &[SourceAudioForProcessing], artifact_id: &str) -> bool {
+    sources
+        .iter()
+        .find(|(source_artifact_id, _, _, _)| source_artifact_id == artifact_id)
+        .map(|(_, _, _, recorded_silence)| *recorded_silence)
+        .unwrap_or(false)
+}
+
 /// Whether a failed source should be persisted as a visible per-source error.
 /// A silent system-audio track (no_speech) is expected when the user only
 /// speaks into the mic, so we drop it once any source produced a usable
@@ -1874,13 +2063,24 @@ fn is_no_speech_error(error: &AppError) -> bool {
     is_no_speech_message(&error.code) || is_no_speech_message(&error.message)
 }
 
-fn user_facing_transcription_failure_message(code: &str, message: &str) -> String {
+fn user_facing_transcription_failure_message(
+    code: &str,
+    message: &str,
+    recorded_silence: bool,
+    source: &str,
+) -> String {
     let normalized_code = code.trim().to_ascii_lowercase();
     let normalized_message = message.trim().to_ascii_lowercase();
     if normalized_code == "no_speech"
         || normalized_message == "no_speech"
         || normalized_message.contains("no speech")
     {
+        if recorded_silence {
+            if source == "system" {
+                return "The system audio recorded silence for the whole session. Check that audio was playing and that system audio capture is enabled.".to_string();
+            }
+            return "The microphone recorded silence for the whole session. Check that the right microphone is selected in Settings and that macOS input volume is up.".to_string();
+        }
         return "No speech detected. Try speaking louder or moving closer to the microphone."
             .to_string();
     }
@@ -2088,11 +2288,13 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             ),
             (
                 "system-artifact".to_string(),
                 "system".to_string(),
                 system_path.clone(),
+                false,
             ),
         ];
         let detected_mic_turn = AudioTurn {
@@ -2134,11 +2336,13 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             ),
             (
                 "system-artifact".to_string(),
                 "system".to_string(),
                 system_path.clone(),
+                false,
             ),
         ];
         let turns = vec![
@@ -2185,6 +2389,7 @@ mod tests {
             "mic-artifact".to_string(),
             "microphone".to_string(),
             mic_path,
+            false,
         )];
         let report = EchoRejectionReport {
             detected_turn_artifact_ids: vec!["mic-artifact".to_string()],
@@ -2238,11 +2443,13 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             ),
             (
                 "system-artifact".to_string(),
                 "system".to_string(),
                 system_path.clone(),
+                false,
             ),
         ];
 
@@ -2710,20 +2917,38 @@ mod tests {
     #[test]
     fn transcription_failure_messages_hide_provider_codes() {
         assert_eq!(
-            user_facing_transcription_failure_message("june_request_failed", "no_speech"),
+            user_facing_transcription_failure_message(
+                "june_request_failed",
+                "no_speech",
+                false,
+                "microphone"
+            ),
             "No speech detected. Try speaking louder or moving closer to the microphone."
         );
         assert_eq!(
             user_facing_transcription_failure_message(
                 "june_request_failed",
-                "upstream_provider_failed"
+                "no_speech",
+                true,
+                "microphone",
+            ),
+            "The microphone recorded silence for the whole session. Check that the right microphone is selected in Settings and that macOS input volume is up."
+        );
+        assert_eq!(
+            user_facing_transcription_failure_message(
+                "june_request_failed",
+                "upstream_provider_failed",
+                true,
+                "microphone",
             ),
             "The transcription provider could not process this audio."
         );
         assert_eq!(
             user_facing_transcription_failure_message(
                 "june_request_failed",
-                "metering_provider_failed"
+                "metering_provider_failed",
+                true,
+                "microphone",
             ),
             "Billing is temporarily unavailable. Please try again in a moment."
         );
@@ -2737,6 +2962,7 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             )],
             &[
                 test_audio_turn("mic-artifact", "microphone", mic_path.clone(), 0, 0, 50_000),
@@ -2765,6 +2991,7 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             )],
             &[test_audio_turn(
                 "mic-artifact",
@@ -2796,6 +3023,7 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             )],
             &[test_audio_turn(
                 "mic-artifact",
@@ -2837,6 +3065,7 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             )],
             &[test_audio_turn(
                 "mic-artifact",
@@ -2876,6 +3105,7 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             )],
             &[test_audio_turn(
                 "mic-artifact",
@@ -2904,6 +3134,7 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 missing_path.clone(),
+                false,
             )],
             &[test_audio_turn(
                 "mic-artifact",
@@ -2930,6 +3161,7 @@ mod tests {
                 "mic-artifact".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             )],
             &[test_audio_turn(
                 "mic-artifact",
@@ -2956,6 +3188,123 @@ mod tests {
         assert!(transcript_coverage_warning(100_000, 40_000));
     }
 
+    #[tokio::test]
+    async fn microphone_only_coverage_persists_provider_no_speech_gap() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        persist_microphone_only_transcript_coverage(
+            &repos,
+            &session_id,
+            "microphone",
+            &[
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 120_000,
+                    locally_silent: false,
+                    provider_returned_text: false,
+                    provider_no_speech: true,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 120_000,
+                    end_ms: 150_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+            ],
+        )
+        .await;
+
+        let note = repos.get_note(&note.id).await.expect("note with coverage");
+        let coverage = note.transcript_coverage.expect("coverage dto");
+        assert_eq!(coverage.detected_speech_ms, 150_000);
+        assert_eq!(coverage.transcribed_ms, 60_000);
+        assert!(coverage.warning);
+
+        let details: String = sqlx::query_scalar::query_scalar(
+            "SELECT details FROM recording_checkpoints WHERE recording_session_id = ? AND kind = 'transcript_coverage'",
+        )
+        .bind(&session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("checkpoint details");
+        let checkpoint: serde_json::Value =
+            serde_json::from_str(&details).expect("checkpoint json");
+        assert_eq!(checkpoint["totalFailedTurns"], 1);
+        assert_eq!(checkpoint["sources"][0]["failedTurns"], 1);
+    }
+
+    #[test]
+    fn microphone_only_coverage_with_no_chunks_documents_zero_detected_speech() {
+        let coverage = compute_chunk_transcript_coverage("microphone", &[]);
+        assert_eq!(coverage.total_detected_speech_ms, 0);
+        assert_eq!(coverage.total_transcribed_ms, 0);
+        assert!(!coverage.warning);
+    }
+
+    #[test]
+    fn microphone_only_coverage_ignores_locally_silent_chunks() {
+        let coverage = compute_chunk_transcript_coverage(
+            "microphone",
+            &[
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 120_000,
+                    locally_silent: true,
+                    provider_returned_text: false,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 120_000,
+                    end_ms: 150_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+            ],
+        );
+
+        assert_eq!(coverage.total_detected_speech_ms, 60_000);
+        assert_eq!(coverage.total_transcribed_ms, 60_000);
+        assert_eq!(coverage.total_failed_turns, 0);
+        assert!(!coverage.warning);
+    }
+
     #[test]
     fn source_failure_summary_suppresses_silent_system_when_microphone_failed() {
         let summary = source_failure_summary(&[
@@ -2968,6 +3317,7 @@ mod tests {
                     warning: Some(
                         "The transcription provider could not process this audio.".to_string(),
                     ),
+                    recorded_silence: false,
                     start_ms: Some(0),
                     end_ms: Some(0),
                     turn_index: Some(0),
@@ -2983,6 +3333,7 @@ mod tests {
                         "No speech detected. Try speaking louder or moving closer to the microphone."
                             .to_string(),
                     ),
+                    recorded_silence: false,
                     start_ms: Some(0),
                     end_ms: Some(0),
                     turn_index: Some(1),
@@ -3184,7 +3535,26 @@ mod tests {
         .await
         .expect("a trailing no-speech chunk must not fail the whole turn");
 
-        assert_eq!(result.text, "first chunk speech");
+        assert_eq!(result.transcript.text, "first chunk speech");
+        assert_eq!(
+            result.chunk_outcomes,
+            vec![
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 31_000,
+                    locally_silent: false,
+                    provider_returned_text: false,
+                    provider_no_speech: true,
+                },
+            ]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3228,6 +3598,56 @@ mod tests {
             error.code,
             error.message
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn single_chunk_silent_audio_is_skipped_before_reaching_the_transcriber() {
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-single-chunk-silentskip-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio_path = dir.join("turn.wav");
+        write_segmented_wav(&audio_path, 16_000, &[(16_000, 0)]);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_request: TranscriptionRequest| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(TranscriptionProviderResult {
+                        text: "should not be called".to_string(),
+                        language: None,
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let error = transcribe_prepared_audio(
+            transcriber,
+            TranscribePreparedAudioRequest {
+                provider: "test".to_string(),
+                audio_path,
+                temp_dir: dir.clone(),
+                chunk_stem: "turn-0".to_string(),
+                title: "Meeting".to_string(),
+                base_context: None,
+                operation_id: "turn-0".to_string(),
+                source: "microphone".to_string(),
+                start_ms: Some(0),
+                end_ms: Some(1_000),
+                turn_index: Some(0),
+            },
+        )
+        .await
+        .expect_err("silent single-chunk audio should report no speech");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(is_no_speech_error(&error));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3287,7 +3707,33 @@ mod tests {
 
         // Only the two audible chunks reach the API; the silent middle is skipped.
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(result.text, "chunk text 0\nchunk text 1");
+        assert_eq!(result.transcript.text, "chunk text 0\nchunk text 1");
+        assert_eq!(
+            result.chunk_outcomes,
+            vec![
+                TranscriptionChunkOutcome {
+                    start_ms: 0,
+                    end_ms: 30_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 30_000,
+                    end_ms: 60_000,
+                    locally_silent: true,
+                    provider_returned_text: false,
+                    provider_no_speech: false,
+                },
+                TranscriptionChunkOutcome {
+                    start_ms: 60_000,
+                    end_ms: 62_000,
+                    locally_silent: false,
+                    provider_returned_text: true,
+                    provider_no_speech: false,
+                },
+            ]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3306,8 +3752,9 @@ mod tests {
                 "mic".to_string(),
                 "microphone".to_string(),
                 mic_path.clone(),
+                false,
             ),
-            ("sys".to_string(), "system".to_string(), system_path),
+            ("sys".to_string(), "system".to_string(), system_path, true),
         ]);
 
         assert_eq!(kept.len(), 1);
@@ -3328,6 +3775,7 @@ mod tests {
             "sys".to_string(),
             "system".to_string(),
             system_path,
+            true,
         )]);
 
         // System-only capture of silence must survive so its "no speech"
@@ -3353,8 +3801,13 @@ mod tests {
         write_test_wav(&system_path, &quiet);
 
         let kept = drop_silent_system_sources(vec![
-            ("mic".to_string(), "microphone".to_string(), mic_path),
-            ("sys".to_string(), "system".to_string(), system_path.clone()),
+            ("mic".to_string(), "microphone".to_string(), mic_path, false),
+            (
+                "sys".to_string(),
+                "system".to_string(),
+                system_path.clone(),
+                false,
+            ),
         ]);
 
         assert_eq!(kept.len(), 2);
@@ -3378,8 +3831,8 @@ mod tests {
         write_test_wav(&system_path, &[15_000, -16_000, 14_000]);
 
         let kept = drop_silent_system_sources(vec![
-            ("mic".to_string(), "microphone".to_string(), mic_path),
-            ("sys".to_string(), "system".to_string(), system_path),
+            ("mic".to_string(), "microphone".to_string(), mic_path, false),
+            ("sys".to_string(), "system".to_string(), system_path, false),
         ]);
 
         assert_eq!(kept.len(), 2);
@@ -3394,6 +3847,7 @@ mod tests {
             audio_path: PathBuf::from(path),
             temp_dir: std::env::temp_dir(),
             source_path: PathBuf::from(path),
+            recorded_silence: false,
             covers_full_source: true,
             source_fallback: false,
             echo_trimmed: false,
@@ -3464,6 +3918,7 @@ mod tests {
             language: None,
             status: "succeeded".to_string(),
             last_error: None,
+            recorded_silence: false,
         }
     }
 
@@ -3475,6 +3930,7 @@ mod tests {
                 text: String::new(),
                 valid: false,
                 warning: Some(warning.to_string()),
+                recorded_silence: false,
                 start_ms: Some(turn_index * 1_000),
                 end_ms: Some(turn_index * 1_000 + 500),
                 turn_index: Some(turn_index),

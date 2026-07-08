@@ -2896,6 +2896,7 @@ version = "0.0.30"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "block2",
  "chrono",
  "cpal",
  "dotenvy",

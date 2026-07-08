@@ -240,6 +240,29 @@ describe("RoutinesView list", () => {
     renderView();
     expect(await screen.findByText("gateway down")).toBeInTheDocument();
   });
+
+  it("wraps a Hermes server load error and retries the list", async () => {
+    const rawError = "Hermes API returned 500: Internal Server Error";
+    mocks.listRoutines.mockRejectedValueOnce(new Error(rawError)).mockResolvedValueOnce([job()]);
+    renderView();
+
+    expect(
+      await screen.findByText("June ran into a problem with that request."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(rawError, { exact: false })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(mocks.listRoutines).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Morning summary")).toBeInTheDocument();
+  });
+
+  it("keeps non-Hermes load errors unchanged", async () => {
+    mocks.listRoutines.mockRejectedValue(new Error("gateway down"));
+    renderView();
+
+    expect(await screen.findByText("gateway down")).toBeInTheDocument();
+  });
 });
 
 describe("RoutinesView templates and creation", () => {
@@ -547,6 +570,28 @@ describe("RoutinesView detail", () => {
     expect(screen.getByText(/Model quota exhausted/)).toBeInTheDocument();
   });
 
+  it("wraps a detail reload Hermes server error and retries the detail", async () => {
+    const rawError = "Hermes API returned 500: Internal Server Error";
+    mocks.listRoutines.mockResolvedValueOnce([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    mocks.listRoutines
+      .mockRejectedValueOnce(new Error(rawError))
+      .mockResolvedValueOnce([job({ state: "paused" })]);
+    await userEvent.click(screen.getByRole("switch", { name: "Morning summary active" }));
+
+    expect(
+      await screen.findByText("June ran into a problem with that request."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(rawError, { exact: false })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(mocks.listRoutines).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Paused")).toBeInTheDocument();
+  });
+
   it("deletes a routine after confirmation and returns to the list", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     renderView();
@@ -574,6 +619,7 @@ describe("RoutinesView detail", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     expect(await screen.findByText("remove failed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue("Morning summary");
   });
 });

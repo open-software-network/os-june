@@ -60,6 +60,68 @@ describe("RecorderBar", () => {
     expect(onDone).toHaveBeenCalledWith("session-1");
   });
 
+  it("shows the mic silence warning when the microphone source reports it", () => {
+    render(
+      <RecorderBar
+        status={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 15_000,
+          level: { peak: 0, rms: 0, recentPeaks: [] },
+          silenceWarning: false,
+          sources: [
+            {
+              source: "microphone",
+              state: "recording",
+              elapsedMs: 15_000,
+              bytesWritten: 4096,
+              level: { peak: 0, rms: 0, recentPeaks: [] },
+              silenceWarning: true,
+              pathFinalized: false,
+            },
+          ],
+          bytesWritten: 4096,
+        }}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Mic looks silent")).toBeInTheDocument();
+  });
+
+  it("does not show the mic silence warning while the mic has signal", () => {
+    render(
+      <RecorderBar
+        status={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 15_000,
+          level: { peak: 0.7, rms: 0.3, recentPeaks: [0.4] },
+          silenceWarning: false,
+          sources: [
+            {
+              source: "microphone",
+              state: "recording",
+              elapsedMs: 15_000,
+              bytesWritten: 4096,
+              level: { peak: 0.7, rms: 0.3, recentPeaks: [0.4] },
+              silenceWarning: false,
+              pathFinalized: false,
+            },
+          ],
+          bytesWritten: 4096,
+        }}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Mic looks silent")).not.toBeInTheDocument();
+  });
+
   it("uses resume action when paused", async () => {
     const user = userEvent.setup();
     const onResume = vi.fn();
