@@ -41,6 +41,11 @@ for free.
   takes the wash.
 - **Earthy over electric.** The preset family (rose, clay, sage, ocean, plum)
   is dusty and warm; a new accent should feel like it belongs at that table.
+- **Semantic colors stay in the earthy chroma register.** Danger/success/
+  warning live near the palette's saturation (`--brand` ~0.13, `--success`
+  0.12), not above it. `--destructive` was dechromatized from 0.22 to a brick
+  0.15 because a neon red was the one element that fought the low-chroma
+  surfaces around it; keep new status colors in that band.
 
 ## Motion and feedback
 

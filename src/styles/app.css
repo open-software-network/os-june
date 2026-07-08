@@ -1588,9 +1588,7 @@ input:focus-visible,
  * border, soft shadow. */
 .agent-safety-panel,
 .agent-tool-event,
-.agent-hermes-event,
-.agent-approval-card,
-.agent-clarify-card {
+.agent-hermes-event {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--sp-3);
@@ -1601,31 +1599,40 @@ input:focus-visible,
   box-shadow: var(--shadow-sm);
 }
 
-.agent-approval-card > .agent-tool-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--warm-strong);
-}
-
-.agent-approval-card > div {
+/* A pending action card (approval / clarify / sudo / secret / CLI access) is
+ * single-column: no icon tile and no inline title glyph. The title text stands
+ * alone; structure comes from spacing, not decoration. No shadow: the redesign
+ * is quieter, so the border + card surface carry the elevation on their own. */
+.agent-approval-card,
+.agent-clarify-card {
+  display: block;
   min-width: 0;
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
 }
 
-.agent-approval-card .agent-tool-title > span:first-child {
+/* Card title: the shared row-title treatment across all five card types, so
+ * approval / clarify / sudo / secret / CLI titles land on one scale.
+ * `.agent-action-card-title` is the condensed approval/sudo header title. */
+.agent-approval-card .agent-tool-title > span:first-child,
+.agent-clarify-card .agent-tool-title > span:first-child,
+.agent-action-card-title {
   color: var(--foreground);
+  font-size: var(--fs-lg);
   font-weight: var(--fw-medium);
 }
 
+/* Card body/description prose across all five card types (approval, clarify,
+ * sudo, secret, CLI access). One coherent body tier at --fs-md — the meta,
+ * status, note, and mono tiers stay put; the resolved-receipt rows live under
+ * .agent-tool-disclosure, not here, so they're unaffected. */
 .agent-approval-card p,
 .agent-clarify-card p {
   margin: var(--sp-2) 0 0;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   line-height: 1.45;
   white-space: pre-wrap;
 }
@@ -1637,6 +1644,10 @@ input:focus-visible,
 .agent-clarify-card {
   width: min(760px, 100%);
 }
+
+/* The question reads at the shared card body tier (--fs-md / --muted-foreground
+ * via .agent-clarify-card p), matching the approval/sudo description text — no
+ * override needed. */
 
 .agent-clarify-answer {
   border-left: 2px solid var(--border-subtle);
@@ -1650,19 +1661,21 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
-/* Choice rows stay quiet: hairline outline, transparent fill, soft tint on
- * hover. The numeral is a bare muted digit — no keycap chip. */
+/* Choice rows stay quiet: a light neutral fill (no border, so they don't read as
+ * a second border inside the already-bordered card), firming one step on hover.
+ * The numeral is a bare muted digit — no keycap chip. */
 .agent-clarify-choices button {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   min-height: var(--control-sm);
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--r-sm);
   padding: 0 var(--sp-3);
-  background: transparent;
+  background: var(--surface-subtle);
   color: var(--foreground);
   font: inherit;
+  font-size: var(--fs-md);
   text-align: left;
   transition: background-color var(--t-fast) var(--ease-out);
 }
@@ -1677,7 +1690,7 @@ input:focus-visible,
 }
 
 .agent-clarify-choices button:hover:not(:disabled) {
-  background: var(--surface-subtle);
+  background: var(--muted);
 }
 
 .agent-clarify-choices button:disabled,
@@ -1693,28 +1706,22 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
-.agent-clarify-form textarea {
-  width: 100%;
+/* The field itself is the canonical dialog-textarea treatment (border + focus
+ * ring); this only adds the clarify deltas: a taller default and vertical
+ * resize. Scoped under .agent-clarify-form so it outranks the later
+ * .dialog-textarea rule that would otherwise reset resize/min-height. */
+.agent-clarify-form .agent-clarify-textarea {
   min-height: 84px;
   resize: vertical;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-3);
-  background: var(--surface);
-  color: var(--foreground);
-  font: inherit;
-  line-height: 1.45;
 }
 
-.agent-clarify-form textarea:focus {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
+/* A little extra air above the actions row so the buttons don't crowd the
+ * textarea (additive to the form's --sp-2 gap). */
 .agent-clarify-form div {
   display: flex;
   justify-content: flex-end;
   gap: var(--sp-2);
+  margin-top: var(--sp-1);
 }
 
 .agent-approval-card pre {
@@ -1731,6 +1738,102 @@ input:focus-visible,
   max-width: 100%;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* The condensed pending card (approval / sudo). Compact by default: a plain
+ * header row (title + optional mode tag + waiting status), the prose description
+ * (clamped to two lines while collapsed), a quiet "Details" disclosure for the
+ * full command / notice, and the always-visible actions row. Tighter padding
+ * than the fuller cards, with a touch of extra room below so the always-visible
+ * actions row never crowds the card's bottom edge. */
+.agent-action-card {
+  padding: var(--sp-5);
+  padding-bottom: var(--sp-6);
+}
+
+/* The header is a plain row: the title stands alone; the mode tag and the
+ * waiting status pin to its right. */
+.agent-action-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+}
+
+.agent-action-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The description reads at all times; collapsed it clamps to two lines so a long
+ * reason never pushes the actions down. Expanding (via Details) restores the
+ * full prose. */
+.agent-action-card-description[data-clamped] {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* A quiet text-level disclosure under the description: reveals the full command
+ * pre (and, for sudo, the mode notice). Color-only hover; the chevron rotates
+ * when open. */
+.agent-action-card-details {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-top: var(--sp-3);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.agent-action-card-details:hover {
+  color: var(--foreground);
+}
+
+.agent-action-card-details .agent-disclosure-chevron {
+  flex: 0 0 auto;
+  transition: transform var(--t-fast) var(--ease-out);
+}
+
+.agent-action-card-details[aria-expanded="true"] .agent-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+/* Collapsed unrestricted signal: only the unrestricted (elevated blast radius)
+ * mode earns a header badge so the wider access registers at the decision point
+ * before the card is expanded. Sandboxed is the safe default and shows no
+ * collapsed badge (the full mode line still lives in Details for both).
+ * Unrestricted is a CAUTION, not an error, so it wears the system warning
+ * treatment (the warm palette — the same recipe as .status-pill[data-tone=
+ * "warning"] and InlineNotice's warning tone: --warm-soft bg + --warm-strong
+ * text) rather than the error-reserved destructive red. A leading warning glyph,
+ * --fs-xs, --r-sm. Weight matches the sibling "Waiting" status pill (400) — the
+ * warm caution color carries the emphasis, not the weight. */
+.agent-sudo-mode-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  /* Quiet neutral pill; the leading caution glyph + "Unrestricted" label carry
+   * the meaning without a pop of color. */
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .agent-approval-explanation {
@@ -1753,30 +1856,189 @@ input:focus-visible,
   gap: var(--sp-2);
 }
 
-/* Buttons come from the .btn system (secondary fills, ghost deny) — this
- * block only lays them out and adds the deny accent. */
+/* Buttons come from the .btn system, but at the small control height and
+ * smaller type so the row reads quiet. On the approval card, a split "Approve"
+ * (with a scope caret) and a quiet "Deny" anchor the row, and "Explain first"
+ * demotes to a plain text button pushed to the right edge. */
 .agent-approval-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--sp-2);
   margin-top: var(--sp-4);
+}
+
+.agent-approval-actions .btn {
+  height: var(--control-md);
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-md);
 }
 
 .agent-approval-actions button:disabled {
   opacity: 0.55;
 }
 
-.agent-approval-explain[aria-expanded="true"] {
-  color: var(--warm-strong);
+/* "Explain first" and "Deny" are plain neutral ghost buttons: only Approve
+ * carries color (green). The system .btn-ghost:hover fills --muted (a mid grey)
+ * which jumps starkly from transparent on the near-white card, so the footer's
+ * ghost buttons rest on the softer --surface-subtle instead. Denying is the
+ * safe choice, so it wears no alarm color — red stays reserved for genuinely
+ * destructive states. */
+.agent-approval-actions .btn-ghost:hover:not(:disabled) {
+  background: var(--surface-subtle);
 }
 
+/* Explain sits at the right edge of the footer, past the anchor actions. `auto`
+ * still wraps cleanly when the row runs out of room. */
+.agent-approval-actions .agent-approval-explain {
+  margin-left: auto;
+}
+
+/* Deny is quieter than the Approve/Explain labels at rest (it is the secondary
+ * choice), firming to the shared subtle-gray hover. */
 .agent-approval-deny {
   color: var(--muted-foreground);
 }
 
-.agent-approval-deny:hover:not(:disabled) {
-  background: var(--destructive-soft);
-  color: var(--destructive);
+/* Approve is a split button in the Cursor mold: a compact secondary rail
+ * (--surface-subtle) holds two distinct inset segments with a 2px gutter on
+ * every side and between them, so the rail reads as the tray and each segment as
+ * its own button. "Approve" is the primary segment — transparent until hovered,
+ * when it fills a contained rounded shape (never edge-to-edge). The scope caret
+ * is a square segment on a darker fill, deepening on hover (background only). */
+/* Outlined split button: a hairline border reads as a clear affordance on the
+ * near-white card (a filled --surface-subtle pill did not). Approve and the
+ * caret sit inset with a 2px gutter, so a strip of negative space divides them
+ * (no seam line). No overflow:hidden — the scope menu is positioned outside the
+ * rail and must not be clipped. */
+.agent-approval-split {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--control-md);
+  padding: 2px;
+  /* The container is just a hairline outline that binds Approve + caret into
+   * one control; the gray fill lives on the segments themselves. */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+
+/* Both segments disable together; dim the whole control so it reads inert. */
+.agent-approval-split:has(:disabled) {
+  opacity: 0.55;
+}
+
+.agent-approval-approve {
+  height: 100%;
+  padding: 0 var(--sp-3);
+  border: 0;
+  /* Concentric with the rail: inset by the 1px border + 2px gutter. */
+  border-radius: calc(var(--r-md) - 3px);
+  /* Solid gray fill (the system secondary surface); firms to --muted on hover.
+   * Approve reads as primary by being filled, against the ghost Deny/Explain. */
+  background: var(--surface-subtle);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Approve is the confirm action, so its hover reveals an explicit green wash
+ * (--success, a fixed hue-150 green — the same recipe as the "ok" status pill,
+ * theme-stable, not the brand accent) — the universal go signal opposite Deny's
+ * red. */
+.agent-approval-approve:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+/* The caret sits inset in the rail with a 2px gutter from Approve — the strip
+ * of negative space divides them, no seam line. A subtle resting fill marks it
+ * as the secondary; its corners are concentric with the rail. */
+.agent-approval-scope {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--control-md) - 4px);
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: calc(var(--r-md) - 3px);
+  /* Same gray fill as Approve so the split reads as one control; the 2px gap
+   * (not a seam line) divides them. Firms to --muted on hover. */
+  background: var(--surface-subtle);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* On hover the caret joins Approve's green wash so the whole control reads as
+ * one confirm affordance on interaction, transparent at rest. */
+.agent-approval-scope:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+/* The scope menu opens upward from the caret (the actions sit near the card
+ * floor). Popover tokens + one ambient shadow, per the popover conventions. */
+.agent-approval-scope-menu {
+  position: absolute;
+  bottom: calc(100% + var(--sp-1));
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 208px;
+  padding: var(--sp-1);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-approval-scope-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Focus mirrors hover exactly: the menu autofocuses its first item on open and
+ * moves focus with the arrow keys, so the focused item just wears the hover
+ * background. */
+.agent-approval-scope-item:hover:not(:disabled),
+.agent-approval-scope-item:focus:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+/* Focus is always visible via that background, so drop the default ring (which
+ * otherwise reads as an ugly outline the moment the menu autofocuses). */
+.agent-approval-scope-item:focus {
+  outline: none;
+}
+
+/* Prevent a double highlight: once the mouse is in the menu, only the hovered
+ * item stays lit — the keyboard-focused-but-not-hovered item drops its
+ * background so hover and focus never light two rows at once. With the mouse
+ * outside the menu (keyboard only), the focused item keeps its background. */
+.agent-approval-scope-menu:hover .agent-approval-scope-item:focus:not(:hover) {
+  background: transparent;
+}
+
+.agent-approval-scope-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 /* The resolved record is a quiet line of text, not a chip. */
@@ -1794,20 +2056,21 @@ input:focus-visible,
   color: var(--destructive) !important;
 }
 
-/* Sudo execution-mode line: a quiet inline note under the command, tinted by
- * blast radius. Sandboxed stays neutral; unrestricted picks up the warm accent
- * so the wider access reads at a glance. */
-.agent-sudo-mode {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  width: fit-content;
+/* Pending sudo shows the blast radius as an InlineNotice under the command. */
+.agent-sudo-mode-notice {
+  margin-top: var(--sp-3);
+}
+
+/* Receipt sudo shows the same mode line as quiet plain text — no notice chrome
+ * in a receipt. Unrestricted picks up the warm accent so the wider access
+ * reads at a glance. */
+.agent-sudo-mode-receipt {
   margin-top: var(--sp-3) !important;
   color: var(--muted-foreground) !important;
   font-size: var(--fs-xs) !important;
 }
 
-.agent-sudo-mode[data-mode="unrestricted"] {
+.agent-sudo-mode-receipt[data-mode="unrestricted"] {
   color: var(--warm-strong) !important;
 }
 
@@ -1838,27 +2101,29 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
+/* Matches the system field-label recipe (.dialog-field-label), the canonical
+ * partner of the .dialog-input the secret field already uses: --fs-md,
+ * full-strength foreground, weight 400. The reassurance .agent-secret-note stays
+ * quieter (--fs-sm muted) so the label reads as the field's title above it. */
 .agent-secret-label {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
-.agent-secret-input {
-  width: 100%;
-  min-height: var(--control-md, 36px);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: 0 var(--sp-3);
-  background: var(--surface);
   color: var(--foreground);
-  font: inherit;
-  /* Mono so the (masked) length reads consistently. */
-  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 400;
 }
 
-.agent-secret-input:focus {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+/* The field itself is the canonical dialog-input treatment (border + focus
+ * ring); this adds the secret deltas, all scoped under .agent-secret-form (0,2,0)
+ * so they outrank the later single-class .dialog-input base (0,1,0) regardless
+ * of order: mono so the (masked) length reads consistently, and a tighter fit so
+ * the field sits proportionate to the --control-sm footer buttons rather than
+ * looming over them. Down from the dialog default (--control-lg / --sp-3 pad /
+ * --fs-md): --control-md height, --sp-2 vertical padding, --fs-sm mono so the
+ * masked dots don't read chunky. Border + focus ring stay from the base. */
+.agent-secret-form .agent-secret-input {
+  min-height: var(--control-md);
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
 }
 
 .agent-secret-input:disabled {
@@ -1866,11 +2131,13 @@ input:focus-visible,
   opacity: 0.55;
 }
 
-/* The reassurance line under the input — smaller and quieter than the body. */
+/* The reassurance line under the input — quieter than the body, but not the
+ * micro --fs-xs (which read tiny once the body prose moved up to --fs-md). One
+ * step down at --fs-sm, still muted so the label above it reads as the title. */
 .agent-secret-note {
   margin-top: 0 !important;
   color: var(--muted-foreground) !important;
-  font-size: var(--fs-xs) !important;
+  font-size: var(--fs-sm) !important;
 }
 
 .agent-safety-panel h3 {
@@ -1979,6 +2246,18 @@ input:focus-visible,
 
 .agent-assistant-turn-body {
   position: relative;
+}
+
+/* An action card (approval / clarify / sudo / secret / CLI access) sits flush at
+ * the turn's bottom edge, and the timestamp/actions row is absolutely positioned
+ * at the turn body's floor (inset-block-start: 100%) with only 1px of padding —
+ * so under a bordered card the timestamp nearly touches the card's bottom border.
+ * Reserve clearance below a card-bearing turn (padding grows the padding box, so
+ * the 100%-anchored row drops clear of the border). Scoped via :has() so text
+ * turns keep their tight 1px timestamp spacing. */
+.agent-assistant-turn-body:has(.agent-approval-card),
+.agent-assistant-turn-body:has(.agent-clarify-card) {
+  padding-bottom: var(--sp-2);
 }
 
 .agent-user-turn:hover .agent-turn-actions,
@@ -2255,13 +2534,6 @@ input:focus-visible,
   font-weight: 400;
 }
 
-/* Timestamp pins to the right edge and matches the row's body size. */
-.agent-context-summary time {
-  margin-left: auto;
-  color: var(--muted-foreground);
-  font-size: var(--fs-lg);
-}
-
 /* Feature 06: the "Steering" system item recording a mid-run instruction. Quiet
  * one-line row in the same muted register as the context-compaction summary, so
  * a redirect reads as a beat in the transcript rather than a message bubble —
@@ -2298,13 +2570,6 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-steering-item time {
-  margin-left: auto;
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-  font-size: var(--fs-lg);
-}
-
 /* Expanded summary reads at body size, same as the row above it. */
 .agent-context-summary > .agent-markdown {
   overflow: auto;
@@ -2316,6 +2581,86 @@ input:focus-visible,
 
 .agent-context-summary:not([open]) > .agent-markdown {
   display: none;
+}
+
+/* Resolved action card (approval / clarify / sudo / secret / CLI access) — a
+ * quiet one-line receipt row. It reuses the .agent-tool-disclosure row treatment
+ * VERBATIM (body size, 15px flat icon cell, gap, padding, hover firms to
+ * --foreground, instant opacity glyph→+/− swap) so a receipt is exactly the
+ * same size as the "Run Command"/"Fetch Url" tool rows above it in a turn — one
+ * source of truth. This modifier only carries the receipt-specific bits: the
+ * denied tint and the collapsed-body layout. No card border/shadow; it's a
+ * receipt, not a prompt. */
+
+/* The outcome label anchors the row and never shrinks; the detail truncates.
+ * Color is inherited from the row so it firms to --foreground on hover exactly
+ * like the tool-row name. A denied outcome stays quiet too — it reads via its
+ * cross glyph and "Denied" label, not a color, since denying is a safe choice
+ * (not destructive). */
+.agent-resolved-label {
+  flex: 0 0 auto;
+}
+
+/* One-line detail: truncated with an ellipsis so the receipt stays a single
+ * quiet line no matter how long the command or question is. */
+.agent-resolved-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-resolved-detail .agent-resolved-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* Expanded body reads quiet, indented under the row to line up under the 15px
+ * icon cell, like the context summary. */
+.agent-resolved-body {
+  margin: var(--sp-2) 0 0 calc(15px + var(--sp-2));
+  color: var(--muted-foreground);
+}
+
+.agent-resolved-row:not([open]) > .agent-resolved-body {
+  display: none;
+}
+
+.agent-resolved-body p {
+  margin: var(--sp-2) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.agent-resolved-body p:first-child {
+  margin-top: 0;
+}
+
+/* Reuse the approval card's pre/mode/key treatments inside the expanded body. */
+.agent-resolved-body pre {
+  overflow: auto;
+  max-height: 220px;
+  margin: var(--sp-3) 0 0;
+  border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-4);
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.agent-resolved-body .agent-clarify-answer {
+  margin-top: var(--sp-3);
+  border-left: 2px solid var(--border-subtle);
+  padding-left: var(--sp-3);
+  color: var(--foreground);
 }
 
 /* Context-compaction dialog (feature 08). Confirmation copy, then a success or
@@ -10255,6 +10600,15 @@ input:focus-visible,
  * pieces out as wrapping flex items, so long text drops wholesale onto its
  * own line the moment it can't fit — inline flow wraps mid-sentence like a
  * paragraph instead. */
+/* Single-line body + action: vertically center the icon/content in the row
+ * rather than top-aligning against a one-line message. The base inline-notice
+ * rule (align-items flex-start) sits LATER in this flat stylesheet, so at equal
+ * specificity it would win and re-impose flex-start; pairing the base class
+ * here bumps specificity (two classes) so the center override holds. */
+.inline-notice.agent-credits-notice {
+  align-items: center;
+}
+
 .agent-credits-notice .inline-notice-message {
   display: block;
 }

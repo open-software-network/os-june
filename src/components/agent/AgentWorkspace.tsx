@@ -11,7 +11,7 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
-import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
@@ -19,6 +19,7 @@ import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
 import { IconFinder } from "central-icons/IconFinder";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconFolders } from "central-icons/IconFolders";
+import { IconLightBulbSimple } from "central-icons/IconLightBulbSimple";
 import { IconConsole } from "central-icons/IconConsole";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStopCircle } from "central-icons/IconStopCircle";
@@ -33,7 +34,6 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
-import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconCheckCircle2 } from "central-icons/IconCheckCircle2";
 import { IconConcise } from "central-icons/IconConcise";
@@ -44,7 +44,6 @@ import { IconFileText } from "central-icons/IconFileText";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
 import { IconGauge } from "central-icons/IconGauge";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
-import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconNoteText } from "central-icons/IconNoteText";
@@ -61,6 +60,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
@@ -9829,6 +9829,7 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "context" }> => part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const concreteResponse = turnIsConcreteResponse(turn);
   const copyText = copyableTextForTurn(turn);
 
   async function copyTurn() {
@@ -9906,7 +9907,7 @@ function AgentChatTurnRow({
     </HoverTip>
   ) : null;
   const turnActions =
-    copyAction || branchAction || timestampAction ? (
+    concreteResponse && (copyAction || branchAction || timestampAction) ? (
       <div className="agent-turn-actions" data-branching={branchSubmitting ? "true" : undefined}>
         <div className="agent-turn-actions-inner">
           {/* The timestamp sits on the outer/far side of the row: before the
@@ -9924,11 +9925,7 @@ function AgentChatTurnRow({
     return (
       <>
         {contextParts.map((part, index) => (
-          <ContextCompactionPart
-            key={`${turn.id}:context:${index}`}
-            createdAt={turn.createdAt}
-            part={part}
-          />
+          <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
         ))}
       </>
     );
@@ -9997,11 +9994,7 @@ function AgentChatTurnRow({
               </div>
             )
           ) : part.type === "context" ? (
-            <ContextCompactionPart
-              key={`${turn.id}:context:${index}`}
-              createdAt={turn.createdAt}
-              part={part}
-            />
+            <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
           ) : part.type === "approval" ? (
             <ApprovalPart
               key={`${turn.id}:approval:${part.id}`}
@@ -10041,11 +10034,7 @@ function AgentChatTurnRow({
               />
             )
           ) : part.type === "steering" ? (
-            <SteeringPart
-              key={`${turn.id}:steering:${index}`}
-              createdAt={turn.createdAt}
-              part={part}
-            />
+            <SteeringPart key={`${turn.id}:steering:${index}`} part={part} />
           ) : part.type === "image" ? (
             <AgentGeneratedImage
               key={`${turn.id}:image:${index}`}
@@ -10095,26 +10084,20 @@ function userPromptTextForTurn(turn: AgentChatTurn): string {
     .trim();
 }
 
-function ContextCompactionPart({
-  createdAt,
-  part,
-}: {
-  createdAt: string;
-  part: Extract<AgentChatPart, { type: "context" }>;
-}) {
+function ContextCompactionPart({ part }: { part: Extract<AgentChatPart, { type: "context" }> }) {
   return (
     <details className="agent-context-summary">
       <summary>
         {/* Same hover affordance as the tool rows: the glyph cross-fades to a
          * plain-text "+"/"−" so the row reads as one quiet, expandable line.
-         * IconConcise (thinned via CSS) marks the squeeze of compaction. */}
+         * IconConcise (thinned via CSS) marks the squeeze of compaction. No
+         * timestamp: this is a system marker, not a concrete message. */}
         <span className="agent-tool-icon">
           <IconConcise size={15} className="agent-context-icon-glyph" />
           <span className="agent-tool-icon-expand">+</span>
           <span className="agent-tool-icon-minimize">−</span>
         </span>
         <span className="agent-context-label">Context compacted</span>
-        <time>{relativeDate(createdAt)}</time>
       </summary>
       <MarkdownContent markdown={part.text} />
     </details>
@@ -10348,7 +10331,7 @@ function CreditsNoticePart({
       className="agent-credits-notice"
       tone="destructive"
       role="alert"
-      icon={<IconWallet3 size={14} aria-hidden />}
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
       body="June stopped because your balance ran out."
       actions={
         onTopUp ? (
@@ -10383,13 +10366,7 @@ function ContextOverflowNoticePart() {
  * June toward mid-run, recorded quietly in the transcript so the conversation
  * shows what changed course. Mirrors {@link ContextCompactionPart}'s quiet,
  * timestamped system-row styling. */
-function SteeringPart({
-  createdAt,
-  part,
-}: {
-  createdAt: string;
-  part: Extract<AgentChatPart, { type: "steering" }>;
-}) {
+function SteeringPart({ part }: { part: Extract<AgentChatPart, { type: "steering" }> }) {
   return (
     <div className="agent-steering-item">
       <span className="agent-steering-icon" aria-hidden>
@@ -10397,7 +10374,6 @@ function SteeringPart({
       </span>
       <span className="agent-steering-label">Steering</span>
       <span className="agent-steering-text">{part.text}</span>
-      <time>{relativeDate(createdAt)}</time>
     </div>
   );
 }
@@ -10507,7 +10483,263 @@ function AgentGeneratedImage({
   );
 }
 
-function ClarifyPart({
+/** A resolved action card renders as a quiet, expandable one-line row instead
+ * of a full card — a receipt in the transcript rather than a prompt. The row
+ * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross)
+ * that cross-fades to a plain-text "+"/"−" on hover (pure opacity — no layout
+ * shift, a WKWebView compositing constraint), a short outcome label, and a
+ * truncated one-line detail. Expanding reveals the full detail body (the
+ * `children`) minus the action buttons. */
+function ResolvedActionRow({
+  denied = false,
+  label,
+  detail,
+  children,
+}: {
+  /** Renders the cross glyph and destructive tint instead of the checkmark. */
+  denied?: boolean;
+  /** Short outcome word(s), e.g. "Approved once" / "Answered" / "Denied". */
+  label: string;
+  /** One-line truncated detail shown inline on the collapsed row. */
+  detail?: ReactNode;
+  /** The full detail body revealed on expand. */
+  children?: ReactNode;
+}) {
+  return (
+    <details
+      className="agent-tool-disclosure agent-resolved-row"
+      data-choice={denied ? "deny" : "done"}
+    >
+      <summary>
+        <span className="agent-tool-icon">
+          {denied ? (
+            <IconCrossSmall size={15} className="agent-tool-icon-glyph agent-resolved-icon-glyph" />
+          ) : (
+            <IconCheckmark2Small
+              size={15}
+              className="agent-tool-icon-glyph agent-resolved-icon-glyph"
+            />
+          )}
+          <span className="agent-tool-icon-expand">+</span>
+          <span className="agent-tool-icon-minimize">−</span>
+        </span>
+        <span className="agent-tool-name agent-resolved-label">{label}</span>
+        {detail !== undefined ? <span className="agent-resolved-detail">{detail}</span> : null}
+      </summary>
+      {children !== undefined ? <div className="agent-resolved-body">{children}</div> : null}
+    </details>
+  );
+}
+
+/** The condensed chrome shared by the pending approval and sudo cards. The
+ * header is a plain row (title + optional inline mode tag + waiting status) —
+ * not a toggle. Below it the prose `description` reads at all times, clamped to
+ * two lines while collapsed. When there is more to show (`hasDetails` — a
+ * command, or the sudo mode notice) a quiet "Details" disclosure sits under the
+ * description and reveals the full body (`children`: the full command `pre` and
+ * any extra detail). The actions row (`footer`) is always visible. Collapsed by
+ * default so a long command never dominates the card before a decision. */
+function CollapsibleActionCard({
+  title,
+  description,
+  headerMeta,
+  command,
+  hasDetails,
+  expanded,
+  onToggleExpanded,
+  footer,
+  children,
+}: {
+  title: string;
+  /** The prose description (part.description / sudo reason), always visible. */
+  description: ReactNode;
+  /** A short signal pinned to the header row that must stay visible while
+   * collapsed (e.g. the sudo blast-radius mode tag). */
+  headerMeta?: ReactNode;
+  /** SECURITY: the concrete command being authorized. Rendered ALWAYS (never
+   * behind the disclosure) so the exact command is visible at the decision
+   * point — the Approve button is live while the card is collapsed, so a user
+   * must be able to see what they are approving without expanding anything. */
+  command?: ReactNode;
+  /** Whether there is supplementary body content worth a "Details" disclosure
+   * (e.g. the sudo mode notice). The command is NOT gated on this. */
+  hasDetails: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  /** The actions row (or the in-flight result line), always visible. */
+  footer: ReactNode;
+  /** Supplementary body revealed on expand (never the command). */
+  children: ReactNode;
+}) {
+  return (
+    <article
+      className="agent-approval-card agent-action-card"
+      data-status="pending"
+      data-expanded={expanded || undefined}
+    >
+      <div className="agent-action-card-header">
+        <span className="agent-action-card-title">{title}</span>
+        {headerMeta}
+      </div>
+      {/* Only clamp when a Details expander exists to reveal the rest; otherwise
+       * a long description-only request would be truncated with no way to read
+       * it before choosing. */}
+      <p
+        className="agent-action-card-description"
+        data-clamped={(hasDetails && !expanded) || undefined}
+      >
+        {description}
+      </p>
+      {command}
+      {hasDetails ? (
+        <button
+          type="button"
+          className="agent-action-card-details"
+          aria-expanded={expanded}
+          onClick={onToggleExpanded}
+        >
+          Details
+          <IconChevronDownSmall size={14} className="agent-disclosure-chevron" aria-hidden />
+        </button>
+      ) : null}
+      {expanded ? <div className="agent-action-card-body">{children}</div> : null}
+      {footer}
+    </article>
+  );
+}
+
+/** The approval footer's primary control: a split button. "Approve" approves
+ * "once"; the attached caret opens a small scope menu ("Approve once" /
+ * "Approve for this session" / "Always approve", the last hidden when
+ * `allowPermanent` is false). Dismisses on outside click or Escape and supports
+ * arrow-key navigation, mirroring the repo's other hand-rolled menus. */
+function ApproveSplitButton({
+  disabled,
+  allowPermanent,
+  onChoice,
+}: {
+  disabled: boolean;
+  allowPermanent?: boolean;
+  onChoice: (choice: AgentApprovalChoice) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const scopeRef = useRef<HTMLButtonElement | null>(null);
+
+  // Close on a click outside the split wrapper or on Escape.
+  useEffect(() => {
+    if (!open) return;
+    function onPointer(event: MouseEvent) {
+      if (wrapRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        // Escape is a keyboard dismissal — return focus to the caret trigger so
+        // it doesn't drop to <body> when the focused menu item unmounts.
+        scopeRef.current?.focus();
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // Move focus into the menu when it opens so arrow keys land immediately.
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }, [open]);
+
+  const items: { choice: AgentApprovalChoice; label: string }[] = [
+    { choice: "once", label: "Approve once" },
+    { choice: "session", label: "Approve for this session" },
+    ...(allowPermanent
+      ? [{ choice: "always" as AgentApprovalChoice, label: "Always approve" }]
+      : []),
+  ];
+
+  function choose(choice: AgentApprovalChoice) {
+    setOpen(false);
+    onChoice(choice);
+  }
+
+  function onMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [],
+    );
+    if (!buttons.length) return;
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      buttons[(current + 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      buttons[(current - 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      buttons[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      buttons[buttons.length - 1]?.focus();
+    }
+  }
+
+  return (
+    <div className="agent-approval-split" ref={wrapRef}>
+      <button
+        type="button"
+        className="agent-approval-approve"
+        disabled={disabled}
+        onClick={() => onChoice("once")}
+      >
+        Approve
+      </button>
+      <button
+        ref={scopeRef}
+        type="button"
+        className="agent-approval-scope"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Approve options"
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <IconChevronDownSmall size={14} aria-hidden />
+      </button>
+      {open ? (
+        <div
+          ref={menuRef}
+          className="agent-approval-scope-menu"
+          role="menu"
+          aria-label="Approve scope"
+          onKeyDown={onMenuKeyDown}
+        >
+          {items.map((item) => (
+            <button
+              key={item.choice}
+              type="button"
+              role="menuitem"
+              className="agent-approval-scope-item"
+              disabled={disabled}
+              onClick={() => choose(item.choice)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function ClarifyPart({
   onClarify,
   part,
   submitting,
@@ -10520,25 +10752,25 @@ function ClarifyPart({
   const [draft, setDraft] = useState("");
   const disabled = part.status !== "pending" || submitting !== undefined;
 
+  // Resolved clarify collapses to a quiet receipt row: "Answered" (or "Skipped")
+  // plus the question, expandable to the full question and answer.
+  if (part.status !== "pending") {
+    const answered = Boolean(part.answer?.trim());
+    return (
+      <ResolvedActionRow label={answered ? "Answered" : "Skipped"} detail={part.question}>
+        <p>{part.question}</p>
+        {answered ? <p className="agent-clarify-answer">{part.answer}</p> : null}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
     <article className="agent-clarify-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconBubbleWide size={14} />
-      </span>
       <div>
         <div className="agent-tool-title">
           <span>Clarify</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Answered"}
-          </span>
         </div>
-        <p>{part.question}</p>
-        {part.answer !== undefined ? (
-          <p className="agent-clarify-answer">{part.answer.trim() ? part.answer : "Skipped"}</p>
-        ) : null}
+        <p className="agent-clarify-question">{part.question}</p>
         {part.status === "pending" ? (
           <>
             {!typing && part.choices.length ? (
@@ -10574,6 +10806,7 @@ function ClarifyPart({
                 }}
               >
                 <textarea
+                  className="dialog-textarea agent-clarify-textarea"
                   value={draft}
                   disabled={disabled}
                   rows={3}
@@ -10633,60 +10866,61 @@ type AgentCliAccessCardProps = {
  * live setting rather than stored per message: a revisited transcript shows
  * "Enabled" once the grant is on, and re-offers the choice while it is off.
  * Mirrors the approval card chrome. */
-function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
+export function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
   const [dismissed, setDismissed] = useState(false);
   const enabled = cliAccess?.enabled === true;
   const resolved = enabled || dismissed;
   const busy = Boolean(cliAccess?.submitting);
+
+  const description = (
+    <p>
+      June wants write access to the state folders of your coding CLIs (Claude Code, Codex, Gemini,
+      opencode) so they stay logged in and can save their work in sandboxed sessions. Those folders
+      configure software that also runs outside June's sandbox. Enabling turns on "Agent CLI access"
+      in Settings and restarts the sandboxed runtime.
+    </p>
+  );
+
+  // Resolved collapses to a quiet receipt row, expandable to the description.
+  if (resolved) {
+    return (
+      <ResolvedActionRow denied={!enabled} label={enabled ? "Agent CLI access enabled" : "Not now"}>
+        {description}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
-    <article className="agent-approval-card" data-status={resolved ? "resolved" : "pending"}>
-      <span className="agent-tool-icon">
-        <IconConsole size={14} />
-      </span>
+    <article className="agent-approval-card" data-status="pending">
       <div>
         <div className="agent-tool-title">
           <span>Agent CLI access requested</span>
-          <span className="agent-tool-live-status" data-status={resolved ? "complete" : "running"}>
-            {resolved ? "Resolved" : "Waiting"}
-          </span>
         </div>
-        <p>
-          June wants write access to the state folders of your coding CLIs (Claude Code, Codex,
-          Gemini, opencode) so they stay logged in and can save their work in sandboxed sessions.
-          Those folders configure software that also runs outside June's sandbox. Enabling turns on
-          "Agent CLI access" in Settings and restarts the sandboxed runtime.
-        </p>
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={enabled ? "once" : "deny"}>
-            {enabled ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
-            {enabled ? "Agent CLI access enabled" : "Not now"}
-          </p>
-        ) : (
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy || !cliAccess || cliAccess.enabled === undefined}
-              onClick={() => cliAccess?.onEnable()}
-            >
-              {busy ? "Enabling…" : "Enable Agent CLI access"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={busy}
-              onClick={() => setDismissed(true)}
-            >
-              Not now
-            </button>
-          </div>
-        )}
+        {description}
+        <div className="agent-approval-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy || !cliAccess || cliAccess.enabled === undefined}
+            onClick={() => cliAccess?.onEnable()}
+          >
+            {busy ? "Enabling…" : "Enable Agent CLI access"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost agent-approval-deny"
+            disabled={busy}
+            onClick={() => setDismissed(true)}
+          >
+            Not now
+          </button>
+        </div>
       </div>
     </article>
   );
 }
 
-function ApprovalPart({
+export function ApprovalPart({
   onApproval,
   part,
   submitting,
@@ -10700,7 +10934,13 @@ function ApprovalPart({
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
   const activeChoice = part.choice ?? submitting;
-  const resolved = part.status !== "pending" || activeChoice !== undefined;
+  // A card that has actually resolved collapses to a receipt row. A submission
+  // still in flight (submitting set, status pending) keeps the card so the
+  // in-progress line ("Approving once") stays visible until it resolves.
+  const resolved = part.status !== "pending";
+  const showResult = resolved || activeChoice !== undefined;
+  // The whole card is compact by default; expanding reveals the full body.
+  const [expanded, setExpanded] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   // "Explain first" asks the generation model what this specific request
   // would do — the request stays parked, nothing is approved by asking.
@@ -10713,6 +10953,8 @@ function ApprovalPart({
   function toggleExplain() {
     const nextOpen = !explainOpen;
     setExplainOpen(nextOpen);
+    // Opening the explanation auto-expands the card so the panel has room.
+    if (nextOpen) setExpanded(true);
     if (!nextOpen || explainState === "loading" || explainState === "ready") {
       return;
     }
@@ -10730,117 +10972,115 @@ function ApprovalPart({
       });
   }
 
-  return (
-    <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconShieldCheck size={14} />
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>Approval required</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Resolved"}
-          </span>
-        </div>
+  // Resolved collapses to a quiet receipt row: the outcome label plus the
+  // command (or description) truncated to one line, expandable to the full
+  // description and command — no action buttons.
+  if (resolved) {
+    return (
+      <ResolvedActionRow
+        denied={activeChoice === "deny"}
+        label={approvalChoiceLabel(activeChoice)}
+        detail={
+          part.command ? (
+            <span className="agent-resolved-mono">{part.command}</span>
+          ) : (
+            part.description
+          )
+        }
+      >
         <p>{part.description}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        {!resolved && explainOpen ? (
-          <div className="agent-approval-explanation" id={explanationId}>
-            {explainState === "loading" ? (
-              <p className="agent-approval-explanation-loading" role="status" aria-live="polite">
-                <Spinner aria-hidden />
-                <span>Working out what this request does…</span>
-              </p>
-            ) : explainState === "ready" && explanation ? (
-              explanation
-                .split(/\n{2,}/)
-                .map((paragraph) => paragraph.trim())
-                .filter(Boolean)
-                .map((paragraph, index) => <p key={index}>{paragraph}</p>)
-            ) : (
-              // Generation unavailable (offline, signed out): keep the
-              // static framing rather than an empty panel.
-              <p>
-                June is paused because this request needs your explicit permission before it can
-                continue.
-              </p>
-            )}
-            <p>
-              Approve once allows only this request. This session allows matching requests until the
-              session ends.{" "}
-              {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
-              Deny blocks the request.
+      </ResolvedActionRow>
+    );
+  }
+
+  const footer = showResult ? (
+    // Submission in flight (status still pending): the in-progress line stays
+    // in the card until the request actually resolves.
+    <p className="agent-approval-result" data-choice={activeChoice}>
+      {activeChoice === "deny" ? <IconCrossMedium size={14} /> : <IconCheckmark1Small size={14} />}
+      {approvalChoiceLabel(activeChoice, submitting !== undefined)}
+    </p>
+  ) : (
+    // Compact footer: a split "Approve" (approves once, caret opens the scope
+    // menu) and a quiet "Deny" anchor the row; "Explain first" demotes to a
+    // plain text-level button pushed to the right edge.
+    <div className="agent-approval-actions">
+      <ApproveSplitButton
+        disabled={disabled}
+        allowPermanent={part.allowPermanent}
+        onChoice={(choice) => onApproval(part, choice)}
+      />
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-deny"
+        disabled={disabled}
+        onClick={() => onApproval(part, "deny")}
+      >
+        Deny
+      </button>
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-explain"
+        aria-expanded={explainOpen}
+        // Only advertise the panel while it's actually in the DOM (the body
+        // renders only when the card is expanded and the explanation is open).
+        aria-controls={explainOpen ? explanationId : undefined}
+        disabled={disabled}
+        onClick={toggleExplain}
+      >
+        <IconLightBulbSimple size={14} aria-hidden />
+        {explainOpen ? "Hide explanation" : "Explain first"}
+      </button>
+    </div>
+  );
+
+  return (
+    <CollapsibleActionCard
+      title="Approval required"
+      description={part.description}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // The command is always shown; the only expandable body is the optional
+      // explanation, which its own "Explain first" button toggles.
+      hasDetails={false}
+      expanded={expanded}
+      onToggleExpanded={() => {
+        const next = !expanded;
+        setExpanded(next);
+        if (!next) setExplainOpen(false);
+      }}
+      footer={footer}
+    >
+      {explainOpen ? (
+        <div className="agent-approval-explanation" id={explanationId}>
+          {explainState === "loading" ? (
+            <p className="agent-approval-explanation-loading" role="status" aria-live="polite">
+              <Spinner aria-hidden />
+              <span>Working out what this request does…</span>
             </p>
-          </div>
-        ) : null}
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={activeChoice}>
-            {activeChoice === "deny" ? (
-              <IconCrossMedium size={14} />
-            ) : (
-              <IconCheckmark1Small size={14} />
-            )}
-            {approvalChoiceLabel(
-              activeChoice,
-              part.status === "pending" && submitting !== undefined,
-            )}
+          ) : explainState === "ready" && explanation ? (
+            explanation
+              .split(/\n{2,}/)
+              .map((paragraph) => paragraph.trim())
+              .filter(Boolean)
+              .map((paragraph, index) => <p key={index}>{paragraph}</p>)
+          ) : (
+            // Generation unavailable (offline, signed out): keep the
+            // static framing rather than an empty panel.
+            <p>
+              June is paused because this request needs your explicit permission before it can
+              continue.
+            </p>
+          )}
+          <p>
+            Approve once allows only this request. This session allows matching requests until the
+            session ends.{" "}
+            {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
+            Deny blocks the request.
           </p>
-        ) : (
-          // System buttons (.btn) — quiet soft-fill choices, ghost deny. The
-          // repeated per-button icons read as noise, so labels stand alone.
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary agent-approval-explain"
-              aria-expanded={explainOpen}
-              aria-controls={explanationId}
-              disabled={disabled}
-              onClick={toggleExplain}
-            >
-              <IconCircleQuestionmark size={14} />
-              {explainOpen ? "Hide explanation" : "Explain first"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onApproval(part, "once")}
-            >
-              Approve once
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onApproval(part, "session")}
-            >
-              This session
-            </button>
-            {part.allowPermanent ? (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={disabled}
-                onClick={() => onApproval(part, "always")}
-              >
-                Always
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={disabled}
-              onClick={() => onApproval(part, "deny")}
-            >
-              Deny
-            </button>
-          </div>
-        )}
-      </div>
-    </article>
+        </div>
+      ) : null}
+    </CollapsibleActionCard>
   );
 }
 
@@ -10860,6 +11100,22 @@ export function branchSourceSessionIdForTurn(turn: Pick<AgentChatTurn, "parts">)
     if (sessionId) return sessionId;
   }
   return undefined;
+}
+
+/** Whether a turn is a concrete message — the only kind that carries per-turn
+ * affordances (copy / branch / timestamp). A user message always qualifies; an
+ * assistant turn qualifies once it has produced a real answer: non-empty text
+ * or a finished image. Everything else is process or interaction — thinking in
+ * progress, tool calls, approval/clarify/sudo/secret cards, context summaries,
+ * in-flight/empty turns — and gets nothing below it. An allowlist (not a
+ * per-type blocklist) so new process/card part types stay quiet by default. */
+export function turnIsConcreteResponse(turn: Pick<AgentChatTurn, "role" | "parts">) {
+  if (turn.role === "user") return true;
+  return turn.parts.some(
+    (part) =>
+      (part.type === "text" && part.text.trim().length > 0) ||
+      (part.type === "image" && part.status === "complete"),
+  );
 }
 
 function previousBranchableMessageIndex(messages: HermesSessionMessage[], beforeIndex: number) {
@@ -10982,75 +11238,121 @@ export function SudoPart({
   submitting?: "approve" | "deny";
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
-  const resolved = part.status !== "pending" || submitting !== undefined;
+  // A card that has actually resolved collapses to a receipt row. A submission
+  // still in flight (submitting set, status pending) keeps the card.
+  const resolved = part.status !== "pending";
+  const showResult = resolved || submitting !== undefined;
+  // The whole card is compact by default; expanding reveals the full body.
+  const [expanded, setExpanded] = useState(false);
   // Absent mode defaults to the safe direction (sandboxed) so the card never
   // implies more access than is being granted.
   const mode: HermesMode = part.mode ?? "sandboxed";
   const unrestricted = mode === "unrestricted";
   const decided = part.approved ?? (submitting ? submitting === "approve" : undefined);
 
-  return (
-    <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        {unrestricted ? <IconShieldCrossed size={14} /> : <IconShieldCheck size={14} />}
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>Privilege escalation requested</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Resolved"}
-          </span>
-        </div>
+  const modeCopy = unrestricted
+    ? "Will run unrestricted (full write access)"
+    : "Will run sandboxed (limited write access)";
+
+  // Pending: the blast radius shows as an InlineNotice — warning chrome for
+  // unrestricted, neutral for sandboxed.
+  const modeNotice = (
+    <InlineNotice
+      className="agent-sudo-mode-notice"
+      tone={unrestricted ? "warning" : "info"}
+      icon={
+        unrestricted ? (
+          <IconShieldCrossed size={14} aria-hidden />
+        ) : (
+          <IconShieldCheck size={14} aria-hidden />
+        )
+      }
+      body={modeCopy}
+    />
+  );
+
+  // Receipt: the same mode line, but as quiet plain text — receipts carry no
+  // notice chrome.
+  const modeReceiptLine = (
+    <p className="agent-sudo-mode-receipt" data-mode={mode}>
+      {modeCopy}
+    </p>
+  );
+
+  // Collapsed pending: the full InlineNotice lives behind Details, so the header
+  // still has to carry the blast radius at the moment of decision — but only for
+  // the unrestricted (elevated) case. A small warning badge pinned in the header
+  // row does it. Sandboxed is the safe default and shows no collapsed badge (the
+  // full mode line still appears in Details for both).
+  const modeBadge = unrestricted ? (
+    <span className="agent-sudo-mode-badge">
+      <IconExclamationTriangle size={12} aria-hidden />
+      Unrestricted
+    </span>
+  ) : null;
+
+  // Resolved collapses to a quiet receipt row: "Approved"/"Denied" plus the
+  // command, expandable to the reason, command, and execution mode.
+  if (resolved) {
+    return (
+      <ResolvedActionRow
+        denied={!decided}
+        label={decided ? "Approved" : "Denied"}
+        detail={
+          part.command ? <span className="agent-resolved-mono">{part.command}</span> : undefined
+        }
+      >
         <p>{part.reason ?? "June needs elevated permissions before it can continue."}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        <p
-          className="agent-sudo-mode"
-          data-mode={mode}
-          title={
-            unrestricted
-              ? "Runs with full write access, outside June's sandbox."
-              : "Runs inside June's write sandbox."
-          }
-        >
-          {unrestricted ? (
-            <IconShieldCrossed size={12} aria-hidden />
-          ) : (
-            <IconShieldCheck size={12} aria-hidden />
-          )}
-          {unrestricted
-            ? "Will run unrestricted (full write access)"
-            : "Will run sandboxed (limited write access)"}
-        </p>
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
-            {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
-            {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
-          </p>
-        ) : (
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onSudo(part, true)}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={disabled}
-              onClick={() => onSudo(part, false)}
-            >
-              Deny
-            </button>
-          </div>
-        )}
-      </div>
-    </article>
+        {modeReceiptLine}
+      </ResolvedActionRow>
+    );
+  }
+
+  const reason = part.reason ?? "June needs elevated permissions before it can continue.";
+
+  const footer = showResult ? (
+    <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
+      {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
+      {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
+    </p>
+  ) : (
+    // Sudo keeps a simple Approve/Deny pair.
+    <div className="agent-approval-actions">
+      <button
+        type="button"
+        className="btn btn-secondary"
+        disabled={disabled}
+        onClick={() => onSudo(part, true)}
+      >
+        Approve
+      </button>
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-deny"
+        disabled={disabled}
+        onClick={() => onSudo(part, false)}
+      >
+        Deny
+      </button>
+    </div>
+  );
+
+  return (
+    <CollapsibleActionCard
+      title="Privilege escalation requested"
+      description={reason}
+      headerMeta={modeBadge}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // Command is always visible; Details reveals the fuller mode notice (the
+      // blast-radius badge already shows collapsed).
+      hasDetails={true}
+      expanded={expanded}
+      onToggleExpanded={() => setExpanded((value) => !value)}
+      footer={footer}
+    >
+      {modeNotice}
+    </CollapsibleActionCard>
   );
 }
 
@@ -11096,78 +11398,80 @@ export function SecretPart({
     onCancel?.(part);
   }
 
+  const keyLine = label ? (
+    <p className="agent-secret-key">
+      <span>Key</span>
+      <code>{label}</code>
+    </p>
+  ) : null;
+
+  // Resolved collapses to a quiet receipt row: "Secret provided" plus the
+  // redacted key name (never the value), expandable to the reason and key.
+  // SECURITY: no secret value is ever rendered here — only the reason and the
+  // already-redacted key label.
+  if (part.status !== "pending") {
+    return (
+      <ResolvedActionRow
+        label="Secret provided"
+        detail={label ? <span className="agent-resolved-mono">{label}</span> : undefined}
+      >
+        <p>{part.reason ?? "June needs a secret value before it can continue."}</p>
+        {keyLine}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
     <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconLock size={14} />
-      </span>
       <div>
         <div className="agent-tool-title">
           <span>Secret requested</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Provided"}
-          </span>
         </div>
         <p>{part.reason ?? "June needs a secret value before it can continue."}</p>
-        {label ? (
-          <p className="agent-secret-key">
-            <span>Key</span>
-            <code>{label}</code>
+        {keyLine}
+        <form
+          className="agent-secret-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+        >
+          <label htmlFor={inputId} className="agent-secret-label">
+            Secret value
+          </label>
+          <input
+            id={inputId}
+            type="password"
+            className="dialog-input agent-secret-input"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            // The browser must never store or suggest this value.
+            data-1p-ignore
+            data-lpignore="true"
+            disabled={disabled}
+            value={value}
+            placeholder="Paste the value"
+            onChange={(event) => setValue(event.currentTarget.value)}
+          />
+          <p className="agent-secret-note">
+            Sent straight to the agent and never saved, logged, or shown.
           </p>
-        ) : null}
-        {part.status === "pending" ? (
-          <form
-            className="agent-secret-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submit();
-            }}
-          >
-            <label htmlFor={inputId} className="agent-secret-label">
-              Secret value
-            </label>
-            <input
-              id={inputId}
-              type="password"
-              className="agent-secret-input"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              // The browser must never store or suggest this value.
-              data-1p-ignore
-              data-lpignore="true"
-              disabled={disabled}
-              value={value}
-              placeholder="Paste the value"
-              onChange={(event) => setValue(event.currentTarget.value)}
-            />
-            <p className="agent-secret-note">
-              Sent straight to the agent and never saved, logged, or shown.
-            </p>
-            <div className="agent-approval-actions">
-              <button type="submit" className="btn btn-secondary" disabled={disabled || !value}>
-                {submitting ? "Submitting" : "Submit"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost agent-approval-deny"
-                disabled={submitting !== undefined}
-                onClick={cancel}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        ) : (
-          <p className="agent-approval-result" data-choice="once">
-            <IconCheckmark1Small size={14} />
-            Secret provided
-          </p>
-        )}
+          <div className="agent-approval-actions">
+            <button type="submit" className="btn btn-secondary" disabled={disabled || !value}>
+              {submitting ? "Submitting" : "Submit"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost agent-approval-deny"
+              disabled={submitting !== undefined}
+              onClick={cancel}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       </div>
     </article>
   );
