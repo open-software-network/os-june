@@ -103,38 +103,42 @@ describe("HermesAdminClient — requests, auth, profile targeting", () => {
     expect(outcome.result).toBeUndefined();
   });
 
-  it("rejects activation when the 2xx body does not confirm the requested profile", async () => {
-    // Mismatch: Hermes reports a DIFFERENT sticky active value. Trusting the
-    // request would desync June's store from the on-disk pointer.
-    const fetchMismatch = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ ok: true, active: "default" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
+  it("accepts a bodyless 2xx activation once the authoritative read confirms it", async () => {
+    // A bare {ok:true} (or empty) 2xx is a legitimate success shape elsewhere
+    // in this client; activation reconciles it against GET /api/profiles/active
+    // instead of trusting the requested name OR failing a switch that landed.
+    const responses: Array<() => Response> = [
+      () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      () =>
+        new Response(JSON.stringify({ active: "research", current: "default" }), { status: 200 }),
+    ];
+    const fetchBareOk = vi.fn(
+      async () => responses.shift()?.() ?? new Response("{}", { status: 200 }),
     );
     const server = new FakeHermesServer();
-    const mismatchClient = createHermesAdminClient(targetForFake(server), {
-      fetch: fetchMismatch,
-    });
-    await expect(mismatchClient.profiles.activate("research")).rejects.toMatchObject({
-      safeMessage: "Hermes could not activate that profile.",
-    });
+    const client = createHermesAdminClient(targetForFake(server), { fetch: fetchBareOk });
+    await expect(client.profiles.activate("research")).resolves.toBeUndefined();
+    expect(fetchBareOk).toHaveBeenCalledTimes(2);
+  });
 
-    // Malformed: an empty 2xx body names no active profile at all.
-    const fetchEmptyBody = vi.fn(
-      async () =>
-        new Response("{}", {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
+  it("rejects activation when the authoritative read reports a different profile", async () => {
+    // Neither the echo nor the follow-up sticky read names the requested
+    // profile: the switch did not land, and the error carries what Hermes
+    // actually reports so the UI stays honest.
+    const responses: Array<() => Response> = [
+      () => new Response(JSON.stringify({ ok: true, active: "default" }), { status: 200 }),
+      () =>
+        new Response(JSON.stringify({ active: "default", current: "default" }), { status: 200 }),
+    ];
+    const fetchMismatch = vi.fn(
+      async () => responses.shift()?.() ?? new Response("{}", { status: 200 }),
     );
-    const emptyClient = createHermesAdminClient(targetForFake(server), {
-      fetch: fetchEmptyBody,
+    const server = new FakeHermesServer();
+    const client = createHermesAdminClient(targetForFake(server), { fetch: fetchMismatch });
+    await expect(client.profiles.activate("research")).rejects.toMatchObject({
+      safeMessage: 'Hermes reports "default" as the active profile.',
     });
-    await expect(emptyClient.profiles.activate("research")).rejects.toMatchObject({
-      safeMessage: "Hermes could not activate that profile.",
-    });
+    expect(fetchMismatch).toHaveBeenCalledTimes(2);
   });
 
   it("accepts activation when the response confirms the requested profile", async () => {
