@@ -134,9 +134,9 @@ function StatefulBuilderHarness() {
           setCreate({
             phase: "created",
             createdSlug: "research-assistant",
-            testSessionStarted: false,
+            activated: false,
             message:
-              'Created "research-assistant". The test session did not start: Something went wrong.',
+              'Created "research-assistant". Could not make it active: Something went wrong.',
           });
         },
       }),
@@ -214,9 +214,15 @@ describe("profiles settings surface", () => {
     expect(mocks.deleteProfileModelOverrides).toHaveBeenCalledWith("writing");
   });
 
-  it("opens the wizard from New profile and returns to the refreshed list after create", async () => {
+  it("opens the wizard from New profile and returns to the refreshed list after clean create", async () => {
     const user = userEvent.setup();
-    const managerState = stubManager();
+    const managerState = stubManager({
+      profiles: [
+        { name: "default", description: "June default", raw: {} },
+        { name: "research-assistant", description: "Research assistant", raw: {} },
+      ],
+      activeName: "research-assistant",
+    });
     const builderState = stubBuilder();
     const { rerender } = render(
       <ProfilesSurfaceView managerState={managerState} builderState={builderState} />,
@@ -228,15 +234,25 @@ describe("profiles settings surface", () => {
     rerender(
       <ProfilesSurfaceView
         managerState={managerState}
-        builderState={stubBuilder({ create: { phase: "created", createdSlug: "research" } })}
+        builderState={stubBuilder({
+          create: {
+            phase: "created",
+            createdSlug: "research-assistant",
+            activated: true,
+            message: 'Created "research-assistant".',
+          },
+        })}
       />,
     );
 
     await waitFor(() => expect(managerState.refresh).toHaveBeenCalled());
     expect(screen.getByRole("list", { name: "Profiles" })).toBeInTheDocument();
+    const createdRow = screen.getByText("research-assistant").closest("li");
+    expect(createdRow).not.toBeNull();
+    expect(within(createdRow as HTMLElement).getByText("Active")).toBeInTheDocument();
   });
 
-  it("stays on the created panel when a profile is created but the test session fails", async () => {
+  it("stays on the created panel when a profile is created but activation fails", async () => {
     const user = userEvent.setup();
     render(<StatefulBuilderHarness />);
 
@@ -247,11 +263,9 @@ describe("profiles settings surface", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Create and start test session" }));
+    await user.click(screen.getByRole("button", { name: "Create and make active" }));
 
-    expect(
-      screen.getByText(/the test session did not start: something went wrong/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/could not make it active: something went wrong/i)).toBeInTheDocument();
     expect(screen.getByText("Profile created")).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Profiles" })).not.toBeInTheDocument();
   });

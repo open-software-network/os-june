@@ -21,6 +21,7 @@ import {
 import {
   PROFILE_BUILDER_STEPS,
   STEP_META,
+  attachableMcpServers,
   buildCreatePlan,
   bundledSkillOptions,
   canActivateProfile,
@@ -69,7 +70,7 @@ type ProfileBuilderSectionProps = {
 /**
  * June's native guided Profile Builder (spec 20). A six-step wizard that creates
  * an isolated Hermes profile with identity/SOUL, model/provider, sandbox policy,
- * skills, and MCP servers, then optionally starts a test session. It validates
+ * skills, and MCP servers, then optionally makes it active. It validates
  * the model's tool-calling capability before allowing creation, shows exactly
  * what files/config will change (with risk labels) on the review step, and
  * surfaces success/failure with rollback messaging.
@@ -682,9 +683,9 @@ function Footer({
             type="button"
             className="profile-builder-create"
             disabled={!canCreate || creating}
-            onClick={() => state.createProfile({ startTestSession: true })}
+            onClick={() => state.createProfile({ makeActive: true })}
           >
-            {creating ? (state.create.message ?? "Creating...") : "Create and start test session"}
+            {creating ? (state.create.message ?? "Creating...") : "Create and make active"}
           </button>
         </div>
       ) : (
@@ -1165,17 +1166,22 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
 
 function McpStep({ state }: { state: ProfileBuilderState }) {
   const { form } = state;
+  const attachableServers = useMemo(
+    () => attachableMcpServers(state.mcpServers),
+    [state.mcpServers],
+  );
   const installable = installableCatalogEntries(state.mcpCatalog);
   return (
     <div className="profile-builder-fields">
       <span className="profile-builder-field-label">Attach MCP servers</span>
-      {state.mcpServers.length === 0 ? (
+      <p className="profile-builder-field-meta">June's built-in tools are always included.</p>
+      {attachableServers.length === 0 ? (
         <p className="profile-builder-field-meta">
           No MCP servers configured yet. Add servers from the MCP servers tab.
         </p>
       ) : (
         <div className="profile-builder-mcp-list" role="group" aria-label="MCP servers">
-          {state.mcpServers.map((server) => {
+          {attachableServers.map((server) => {
             const checked = form.mcpServers.includes(server.name);
             return (
               <label key={server.name} className="profile-builder-checkbox">
@@ -1279,8 +1285,8 @@ function CreatedPanel({ state }: { state: ProfileBuilderState }) {
       <h3 className="profile-builder-created-title">Profile created</h3>
       <p className="profile-builder-created-detail">
         {state.create.message ?? `Created "${slug}".`}{" "}
-        {state.create.testSessionStarted
-          ? "A test session is running under it."
+        {state.create.activated
+          ? "It is now active for new sessions."
           : "Start a session under it to use it."}
       </p>
       <button type="button" className="profile-builder-create" onClick={state.reset}>

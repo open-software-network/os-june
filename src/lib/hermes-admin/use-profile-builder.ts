@@ -3,7 +3,7 @@
  * It owns the wizard's input loading (existing profiles, the generation model
  * catalog, installed skills, MCP servers, the MCP catalog), the create
  * orchestration (`POST /api/profiles` then optional SOUL write then optional
- * test session), and the success/failure-with-rollback messaging.
+ * activation), and the success/failure-with-rollback messaging.
  *
  * Everything user-facing and rule-based lives in the framework-free
  * {@link ProfileBuilderController}, so back/next/validation, the model
@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { setActiveHermesProfileName } from "../active-hermes-profile";
 import {
   hermesBridgeStatus,
   listVeniceModels,
@@ -89,8 +90,8 @@ export type CreateState = {
   error?: string;
   /** The created profile's slug, set on success. */
   createdSlug?: string;
-  /** True once a test session was started for the created profile. */
-  testSessionStarted?: boolean;
+  /** True once the created profile was made active. */
+  activated?: boolean;
 };
 
 /** Everything the Profile Builder component renders, plus the actions it
@@ -127,9 +128,9 @@ export type ProfileBuilderState = {
   update: (patch: Partial<ProfileBuilderForm>) => void;
   reset: () => void;
   refresh: () => void;
-  /** Runs the create orchestration. `startTestSession` opts into starting a
-   * session under the new profile after a successful create. */
-  createProfile: (options?: { startTestSession?: boolean }) => void;
+  /** Runs the create orchestration. `makeActive` opts into making the new
+   * profile active after a successful create. */
+  createProfile: (options?: { makeActive?: boolean }) => void;
   dismissNotification: (id: string) => void;
 };
 
@@ -334,7 +335,7 @@ export class ProfileBuilderController {
    * Runs the create orchestration:
    *   1. POST /api/profiles (create the isolated profile)
    *   2. PUT /api/profiles/{slug}/soul when a custom SOUL was written
-   *   3. POST /api/profiles/active + /open-terminal when a test session is asked
+   *   3. POST /api/profiles/active when activation is asked
    *
    * On a step-1 failure nothing was created, so the message is a plain failure.
    * On a step-2/3 failure the profile DID get created, so the message says the
@@ -342,7 +343,7 @@ export class ProfileBuilderController {
    * it from the profile's settings, rather than implying a clean rollback that
    * did not happen.
    */
-  async createProfile(options: { startTestSession?: boolean } = {}): Promise<void> {
+  async createProfile(options: { makeActive?: boolean } = {}): Promise<void> {
     if (this.create.phase === "creating") return;
     if (!canCreateProfile(this.form, this.context())) {
       this.create = {
@@ -406,7 +407,7 @@ export class ProfileBuilderController {
         this.create = {
           phase: "created",
           createdSlug: slug,
-          testSessionStarted: false,
+          activated: false,
           message: `Created "${slug}". Model overrides were not saved: ${adminError.safeMessage}`,
         };
         this.recompute();
@@ -414,22 +415,23 @@ export class ProfileBuilderController {
       }
     }
 
-    // Step 3: optional test session. Same post-create semantics on failure.
-    let testSessionStarted = false;
-    if (options.startTestSession) {
-      this.create = { phase: "creating", message: "Starting test session..." };
+    // Step 3: optional activation. Same post-create semantics on failure.
+    let activated = false;
+    if (options.makeActive) {
+      this.create = { phase: "creating", message: "Making profile active..." };
       this.recompute();
       try {
-        await this.engine.client.profiles.startTestSession(slug);
-        testSessionStarted = true;
+        await this.engine.client.profiles.activate(slug);
+        setActiveHermesProfileName(slug);
+        activated = true;
       } catch (error) {
         if (this.disposed) return;
-        const adminError = HermesAdminError.from(`POST /api/profiles/${slug}/open-terminal`, error);
+        const adminError = HermesAdminError.from("POST /api/profiles/active", error);
         this.create = {
           phase: "created",
           createdSlug: slug,
-          testSessionStarted: false,
-          message: `Created "${slug}". The test session did not start: ${adminError.safeMessage}`,
+          activated: false,
+          message: `Created "${slug}". Could not make it active: ${adminError.safeMessage}`,
         };
         this.recompute();
         return;
@@ -440,7 +442,7 @@ export class ProfileBuilderController {
     this.create = {
       phase: "created",
       createdSlug: slug,
-      testSessionStarted,
+      activated,
       message: `Created "${slug}".`,
     };
     this.recompute();
@@ -511,7 +513,7 @@ export class ProfileBuilderController {
   private readonly refreshAction = (): void => {
     void this.load();
   };
-  private readonly createProfileAction = (options?: { startTestSession?: boolean }): void => {
+  private readonly createProfileAction = (options?: { makeActive?: boolean }): void => {
     void this.createProfile(options);
   };
   private readonly dismissNotificationAction = (id: string): void => {
