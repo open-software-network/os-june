@@ -355,7 +355,7 @@ describe("external dirs — view", () => {
     expect(screen.getByText(/sandboxed runtime blocks writes/)).toBeTruthy();
   });
 
-  it("renders a row with resolved path, status labels, and read-only note", () => {
+  it("renders a healthy row with resolved path and skill count, and no badge", () => {
     const rows = buildExternalDirRows(
       ["~/team"],
       [
@@ -371,17 +371,26 @@ describe("external dirs — view", () => {
     );
     render(<ExternalDirsView state={viewState({ rows, rawDirs: ["~/team"] })} />);
     const list = screen.getByRole("list");
+    // A healthy directory carries no status badge (only problem states are badged).
+    expect(within(list).queryByText("Found")).toBeNull();
+    // The discovered-skill count reads as a muted badge next to the directory
+    // name in the collapsed summary row.
+    expect(within(list).getByText("(2)")).toBeTruthy();
+    // Details live behind the row's disclosure; expand it first.
+    fireEvent.click(within(list).getByRole("button", { expanded: false }));
     expect(within(list).getByText(/Resolves to \/Users\/me\/team/)).toBeTruthy();
-    expect(within(list).getByText("Writable on disk")).toBeTruthy();
-    expect(within(list).getByText("Read only in June")).toBeTruthy();
-    expect(within(list).getByText("2 skills found")).toBeTruthy();
+    // The per-row writability pill and "Read only in June" note are gone; the
+    // read-only fact is stated once in the page blurb instead.
+    expect(within(list).queryByText("Writable on disk")).toBeNull();
+    expect(within(list).queryByText("Read only in June")).toBeNull();
   });
 
   it("calls remove with the raw configured path", () => {
     const onRemove = vi.fn();
     const rows = buildExternalDirRows(["~/team"], [status({ rawPath: "~/team" })], []);
     render(<ExternalDirsView state={viewState({ rows, rawDirs: ["~/team"], remove: onRemove })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Remove ~/team" }));
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove directory" }));
     expect(onRemove).toHaveBeenCalledWith("~/team");
   });
 });

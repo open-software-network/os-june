@@ -800,29 +800,72 @@ input:focus-visible,
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
+/* The search caps at the same width as the Installed skills filter (240px) so
+ * the two settings searches read identically, with the refresh pinned right
+ * (the second column is a 1fr spacer that pushes it to the edge). */
 .agent-management-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
   gap: var(--sp-3);
   padding: var(--sp-4) var(--sp-5);
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* The files toolbar sits bare (its panel has no card), so it drops the divider.
+ * A small inset keeps the search field's focus ring off the panel's clipping
+ * (overflow: hidden) edge rather than flush at 0. */
+#agent-panel-files .agent-management-toolbar {
+  padding: var(--sp-1) var(--sp-1) var(--sp-3);
+  border-bottom: 0;
+}
+
+/* Aligns with the shared .settings-search treatment: a borderless card-filled
+ * field with a layered inset ring and the same two-step focus ring — no gray
+ * background. */
+.agent-management-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 none / 60%),
+    0 1px 2px 0 oklch(0% 0 none / 4%),
+    0 0 0 1px oklch(0% 0 none / 6%);
+  transition: box-shadow var(--t-fast) var(--ease-out);
+}
+
+.agent-management-search:focus-within {
+  box-shadow:
+    0 0 0 1px var(--ring),
+    0 0 0 4px var(--focus-ring);
+}
+
+.agent-management-search-icon {
+  position: absolute;
+  left: var(--sp-3);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
 .agent-management-toolbar input {
-  min-height: var(--control-md);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: 0 var(--sp-3);
-  background: var(--background);
+  width: 100%;
+  min-height: var(--control-lg);
+  border: 0;
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
+  background: transparent;
   color: var(--foreground);
+  font-size: var(--fs-md);
   outline: none;
 }
 
 .agent-management-toolbar input:focus {
-  border-color: var(--ring-focus);
+  outline: none;
 }
 
-.agent-management-toolbar button {
+.agent-management-toolbar button:not(.icon-button) {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -836,6 +879,15 @@ input:focus-visible,
 
 .agent-management-toolbar button:disabled {
   opacity: 0.55;
+}
+
+/* The refresh control matches the search field height (--control-lg) so the two
+ * toolbar controls line up, not a shorter icon button beside a taller field. */
+.agent-management-refresh {
+  justify-self: end;
+  align-self: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
 }
 
 .agent-management-scroll {
@@ -859,19 +911,42 @@ input:focus-visible,
   letter-spacing: 0.08em;
 }
 
+/* The count reads as a separate, quieter figure beside the title (matching the
+ * muted-count pattern other list headers use). */
 .agent-capability-group h3 span {
+  color: var(--muted-foreground);
+  font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
 }
 
 .agent-capability-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
   align-items: center;
-  min-height: 68px;
-  padding: var(--sp-3) 0;
+  margin: 0 calc(var(--sp-3) * -1);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
   border-bottom: 1px solid var(--border-subtle);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Stretched click target: the main button's overlay covers the whole row so a
+ * click anywhere drills in, while the switch/chevron (raised below) stay
+ * independently interactive. */
+.agent-capability-row[data-clickable="true"] > button:first-child::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+/* Neutral background-only hover on the list rows (settings surface). Never a
+ * brand tint, and no border transition. The selected row keeps its own wash. */
+.agent-capability-row:hover:not([data-selected="true"]) {
+  background: var(--secondary);
 }
 
 .agent-capability-row > button:first-child {
@@ -903,19 +978,54 @@ input:focus-visible,
   border-bottom: 0;
 }
 
+/* The trailing controls: the toggle (its own target, never triggers the
+ * drill-in) plus a chevron that echoes the whole-row click affordance, matching
+ * the installed-skill rows. */
+.agent-capability-actions {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.agent-capability-chevron {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  /* The chevron sits in the raised actions column but is decorative: let clicks
+   * pass through to the row's stretched drill-in target beneath it. */
+  pointer-events: none;
+}
+
+/* The "Not configured" status pill sits just left of the switch in the row's
+ * trailing actions; keep it on one line so it never wraps against the toggle. */
+.agent-capability-status {
+  white-space: nowrap;
+}
+
+/* All the row info on one line: name, a quiet count badge, and the muted
+ * status, with the controls pinned right by the row grid. Center-aligned so the
+ * count pill sits level with the name rather than riding its baseline. */
 .agent-capability-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--sp-2);
   min-width: 0;
 }
 
-.agent-capability-title span {
+.agent-capability-title span:first-child {
+  min-width: 0;
   overflow: hidden;
   color: var(--foreground);
   font-weight: var(--fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The required-fields count badge beside the name — the same muted number-badge
+ * treatment as the group "Platforms 31" count (a bare .status-pill). */
+.agent-capability-count {
+  flex-shrink: 0;
 }
 
 .agent-capability-title em {
@@ -991,25 +1101,42 @@ input:focus-visible,
   box-shadow: inset 0 0 0 1px var(--ring-focus);
 }
 
-.agent-files-root {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-  overflow: hidden;
-}
-
+/* Each root (Workspace, Memory) reads as its own titled settings sub-section:
+ * a quiet group header above a bordered card that wraps the file tree, matching
+ * the settings-group + settings-card language used across the AI pages. */
 .agent-files-root + .agent-files-root {
-  margin-top: var(--sp-4);
+  margin-top: var(--sp-6);
 }
 
 .agent-files-root > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  padding: var(--sp-4);
-  border-bottom: 1px solid var(--border-subtle);
+  /* A clean, quiet section header (settings language): the label sits inline
+   * with a muted mono path to its right on one baseline, the description flows
+   * full-width beneath. No box, no stray borders — just the group label and
+   * its context. The header's own div wraps title + description. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-3);
+  padding: 0 var(--sp-1) var(--sp-3);
+}
+
+/* The wrapping container for the root's file tree — a quiet bordered card so
+ * each sub-section is visually grouped, consistent with the settings cards. */
+.agent-files-body {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
   background: var(--card);
+  padding: var(--sp-2);
+}
+
+.agent-files-body .agent-capability-empty {
+  margin: var(--sp-1) var(--sp-2);
+}
+
+/* The label + description column spans the first grid cell; the path chip sits
+ * in the trailing cell, aligned to the heading's baseline. */
+.agent-files-root > header > div {
+  min-width: 0;
 }
 
 .agent-files-root h3 {
@@ -1034,17 +1161,12 @@ input:focus-visible,
 .agent-files-root p {
   margin: var(--sp-1) 0 0;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   line-height: 1.35;
 }
 
 .agent-files-root code {
-  max-width: 44%;
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
-  padding: 2px var(--sp-2);
-  background: var(--background);
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -1052,24 +1174,69 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* The path is a quiet button that reveals the folder in Finder; right-aligned
+ * in the header, with a neutral hover so it reads as clickable. */
+.agent-files-root-path {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  max-width: 44%;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.agent-files-root-path:hover {
+  background: var(--secondary);
+}
+
 .agent-files-tree {
-  padding: var(--sp-2) 0;
+  padding: 0;
 }
 
 .agent-files-entry {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 30px;
-  padding: 0 var(--sp-3);
-  padding-left: calc(var(--sp-3) + var(--agent-file-depth, 0) * 18px);
+  min-height: 32px;
+  margin: 0 calc(var(--sp-1) * -1);
+  padding: 0 var(--sp-2);
+  padding-left: calc(var(--sp-2) + var(--agent-file-depth, 0) * 18px);
+  border-radius: var(--r-sm);
   color: var(--foreground);
   font-size: var(--fs-sm);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .agent-files-entry:hover {
-  background: var(--card);
+  background: var(--secondary);
+}
+
+/* The reveal-in-Finder icon-button sits at the row's trailing edge and fades in
+ * on row hover or when it takes keyboard focus, echoing the drill-in affordances
+ * on the other settings rows. Clicking it opens the entry's path in Finder. */
+.agent-files-entry-reveal {
+  /* Keep the full icon-button hit area (--control-md square) so the neutral
+   * hover fill has breathing room around the glyph rather than hugging it.
+   * A small negative inline margin lets that square sit flush at the row's
+   * trailing edge without widening the trailing column. */
+  width: var(--control-md);
+  height: var(--control-md);
+  margin-right: calc(var(--sp-1) * -1);
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-files-entry:hover .agent-files-entry-reveal,
+.agent-files-entry-reveal:focus-visible {
+  opacity: 1;
 }
 
 .agent-files-entry-icon {
@@ -1140,17 +1307,36 @@ input:focus-visible,
   background: var(--primary-foreground);
 }
 
-.agent-messaging-layout {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.4fr);
-  min-height: 0;
-}
-
 .agent-messaging-list {
   min-height: 0;
+  /* Cap the platform list so a long roster scrolls within the card beneath the
+   * pinned search toolbar rather than growing the whole settings page. A
+   * max-height on a scroll container is allowed by spec/control-sizes. */
+  max-height: 440px;
   overflow: auto;
   padding: var(--sp-5);
-  border-right: 1px solid var(--border-subtle);
+}
+
+/* The drilled-in platform header: back button + platform name, reading like
+ * the card's header row above the configuration fields. */
+.agent-platform-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-platform-topbar-title {
+  overflow: hidden;
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-messaging-list .agent-capability-row {
+  border-bottom: 0;
 }
 
 .agent-messaging-detail {
@@ -1160,37 +1346,70 @@ input:focus-visible,
   overflow: hidden;
 }
 
+/* In the pinned drill-in shell the detail flows inside the shared skill-detail
+ * scroll region rather than owning a fixed-height card, so the inner scroller
+ * and overflow clipping are released and the content flows naturally. The
+ * Save / enable actions live in the pinned breadcrumb bar, so there is no
+ * footer here. Reuses the shared shell; only the flow is retargeted. */
+.agent-messaging-detail-page .agent-messaging-detail {
+  display: block;
+  overflow: visible;
+}
+
+.agent-messaging-detail-page .agent-messaging-detail-scroll {
+  overflow: visible;
+  padding: 0;
+}
+
 .agent-messaging-detail-scroll {
   min-height: 0;
   overflow: auto;
   padding: var(--sp-6);
 }
 
-.agent-messaging-detail-header {
+/* Clean first-load skeleton for the pinned platform drill-in: a few quiet
+ * placeholder bars so the shell (breadcrumb + scroll region) mounts without
+ * flashing the platform list before the roster resolves. */
+.agent-messaging-detail-skeleton {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
   gap: var(--sp-3);
-  align-items: start;
 }
 
-.agent-platform-avatar {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
+.agent-messaging-detail-skeleton span {
+  display: block;
+  height: var(--sp-3);
   border-radius: var(--r-sm);
   background: var(--surface-subtle);
-  color: var(--foreground);
-  font-weight: var(--fw-medium);
+}
+
+.agent-messaging-detail-skeleton-title {
+  height: var(--sp-5);
+  width: 40%;
+}
+
+.agent-messaging-detail-skeleton-line {
+  width: 70%;
+}
+
+.agent-messaging-detail-skeleton-line:last-child {
+  width: 55%;
+}
+
+.agent-messaging-detail-header {
+  display: grid;
+  gap: var(--sp-1);
+  align-items: start;
 }
 
 .agent-messaging-detail-header h3 {
   margin: 0;
+  color: var(--foreground);
   font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
 }
 
 .agent-messaging-detail-header p {
-  margin: var(--sp-1) 0 0;
+  margin: 0;
   color: var(--muted-foreground);
   line-height: 1.45;
 }
@@ -1199,7 +1418,7 @@ input:focus-visible,
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
-  margin-top: var(--sp-3);
+  margin-top: var(--sp-2);
 }
 
 .agent-platform-pills span {
@@ -1220,31 +1439,61 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
+/* Quiet inline "Setup guide" link, sitting directly under the platform
+ * description rather than as a floating block. Muted by default, foreground on
+ * hover, with the external-link arrow trailing the label. */
 .agent-platform-docs {
   display: inline-flex;
-  margin-top: var(--sp-4);
-  color: var(--primary);
+  align-items: center;
+  gap: var(--sp-1);
+  width: fit-content;
+  margin-top: var(--sp-1);
+  color: var(--muted-foreground);
   font-size: var(--fs-sm);
   text-decoration: none;
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.agent-platform-docs:hover {
+  color: var(--foreground);
+}
+
+.agent-platform-docs svg {
+  color: var(--muted-foreground);
 }
 
 .agent-messaging-fields {
   margin-top: var(--sp-6);
 }
 
+/* Small muted in-card group header (matches the other in-card group headers):
+ * medium weight, normal letter-spacing, quiet color. Extra top space so it
+ * doesn't hug the field group above it. */
 .agent-messaging-fields h4,
 .agent-advanced-toggle {
-  margin: 0 0 var(--sp-3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 var(--sp-3);
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
+}
+
+.agent-advanced-toggle-chevron {
+  transition: transform var(--t-fast) var(--ease-out);
+}
+
+.agent-advanced-toggle-chevron[data-open] {
+  transform: rotate(180deg);
 }
 
 .agent-advanced-toggle {
   border: 0;
   padding: 0;
   background: transparent;
+  cursor: pointer;
 }
 
 .agent-messaging-field {
@@ -1267,20 +1516,34 @@ input:focus-visible,
   font-weight: var(--fw-medium);
 }
 
+/* The canonical text-field recipe (dialog-input): border on the card surface,
+ * --r-md corners, hover lifts to --ring, focus to --ring-focus with the 3px
+ * outer ring — matching every other AI-page field. */
 .agent-messaging-field input {
   width: 100%;
-  min-height: var(--control-md);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: 0 var(--sp-3);
-  background: var(--background);
+  min-width: 0;
+  min-height: var(--control-lg);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
   color: var(--foreground);
-  font-family: var(--font-mono);
-  outline: none;
+  font: inherit;
+  font-size: var(--fs-md);
+  outline: 0;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
 }
 
-.agent-messaging-field input:focus {
+.agent-messaging-field input:hover {
+  border-color: var(--ring);
+}
+
+.agent-messaging-field input:focus,
+.agent-messaging-field input:focus-visible {
   border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .agent-messaging-field small {
@@ -4668,8 +4931,8 @@ input:focus-visible,
   z-index: 130;
   display: flex;
   flex-direction: column;
-  width: 200px;
-  padding: var(--sp-1);
+  width: 232px;
+  padding: var(--sp-2);
   border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
   background: var(--popover);
@@ -4680,17 +4943,20 @@ input:focus-visible,
 
 .agent-composer-model-title {
   margin: 0;
-  padding: var(--sp-1) var(--sp-2);
+  /* A touch more top padding so the label sits centered in its strip rather
+   * than crammed against the popover's top edge. */
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1.35;
 }
 
 .agent-composer-model-menu {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding-bottom: var(--sp-1);
-  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--sp-px);
+  padding-bottom: 0;
 }
 
 .agent-composer-model-row {
@@ -4698,25 +4964,50 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  min-height: var(--control-md);
-  padding: 0 var(--sp-2);
+  min-height: var(--control-lg);
+  padding: var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--popover-foreground);
   font: inherit;
   font-size: var(--fs-md);
+  line-height: 1.3;
   text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .agent-composer-model-row:hover,
 .agent-composer-model-row[data-active="true"] {
-  background: color-mix(in oklch, var(--muted) 45%, transparent);
+  background: var(--secondary);
+}
+
+.agent-composer-model-row[aria-selected="true"] {
+  color: var(--foreground);
+}
+
+.agent-composer-model-row-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.agent-composer-model-row-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--foreground);
 }
 
 .agent-composer-model-row-name {
   min-width: 0;
   overflow: hidden;
+  font-weight: 400;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4725,12 +5016,19 @@ input:focus-visible,
 .agent-composer-model-row-chevron {
   flex: 0 0 auto;
   margin-left: auto;
+}
+
+.agent-composer-model-row-check {
+  width: 16px;
+  color: var(--foreground);
+}
+
+.agent-composer-model-row-chevron {
   color: var(--muted-foreground);
 }
 
-/* Sits below the menu's divider with the same breathing room as the rows
- * above it, so its hover pill matches theirs instead of bleeding into the
- * separator. */
+/* Sits below the suggested rows with the same breathing room, so its hover
+ * pill matches theirs without needing a divider. */
 .agent-composer-model-all {
   margin-top: var(--sp-1);
 }
@@ -4790,8 +5088,8 @@ input:focus-visible,
 
 .agent-composer-model-detail .agent-composer-model-surface {
   gap: var(--sp-1);
-  width: 220px;
-  padding: var(--sp-2) var(--sp-3);
+  width: 232px;
+  padding: var(--sp-3);
 }
 
 .agent-composer-model-detail-name {
@@ -4864,15 +5162,22 @@ input:focus-visible,
 }
 
 .agent-composer-model-all-panel {
-  width: min(260px, calc(100vw - 48px));
+  width: min(280px, calc(100vw - 48px));
 }
 
 .agent-composer-model-all-panel .agent-composer-model-surface {
   /* Tight: rows fade out right under the search field, no blank band. */
-  gap: 2px;
-  width: min(260px, calc(100vw - 48px));
+  gap: var(--sp-2);
+  width: min(280px, calc(100vw - 48px));
   max-height: inherit;
   padding: var(--sp-1);
+}
+
+.agent-composer-model-direct {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
 }
 
 .agent-composer-model-search {
@@ -4881,11 +5186,27 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   flex: 0 0 auto;
-  height: var(--control-md);
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
+  height: var(--control-lg);
+  /* Inset the field from the popover edges so the focus ring has breathing
+   * room (sp-2 margin clears the 4px ring off the edge), and keep the
+   * icon+placeholder gutter aligned with the row names below (row content
+   * starts at the row's own sp-2 padding). */
+  margin: var(--sp-1) var(--sp-2) 0;
+  padding: 0 calc(var(--sp-2) - 2px);
+  border-radius: var(--r-md);
+  background: var(--card);
   color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--popover-border);
+  transition:
+    box-shadow var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-model-search:focus-within {
+  background: var(--popover);
+  box-shadow:
+    0 0 0 1px var(--ring),
+    0 0 0 4px var(--focus-ring);
 }
 
 .agent-composer-model-search input {
@@ -4919,7 +5240,7 @@ input:focus-visible,
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--sp-px);
   min-height: 0;
   overflow-y: auto;
 }
@@ -7911,7 +8232,8 @@ input:focus-visible,
 /* Wrapper gives the editor a real viewport-height box inside the card. Long
  * note content contributes to the card scroller while the recorder is fixed
  * to the card bottom. */
-.note-shell {
+.note-shell,
+.skill-detail-shell {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -7919,7 +8241,8 @@ input:focus-visible,
   height: 100%;
 }
 
-.note-detail-scroll {
+.note-detail-scroll,
+.skill-detail-scroll {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -7933,16 +8256,19 @@ input:focus-visible,
   scrollbar-color: auto;
 }
 
-.note-detail-scroll[data-has-detail-bar="true"] {
+.note-detail-scroll[data-has-detail-bar="true"],
+.skill-detail-scroll[data-has-detail-bar="true"] {
   margin-top: calc(-1 * var(--detail-bar-h));
   padding-top: var(--detail-bar-h);
 }
 
-.note-detail-scroll::-webkit-scrollbar-track {
+.note-detail-scroll::-webkit-scrollbar-track,
+.skill-detail-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.note-detail-scroll[data-has-detail-bar="true"]::-webkit-scrollbar-track {
+.note-detail-scroll[data-has-detail-bar="true"]::-webkit-scrollbar-track,
+.skill-detail-scroll[data-has-detail-bar="true"]::-webkit-scrollbar-track {
   margin-top: var(--detail-bar-h);
 }
 
@@ -9850,23 +10176,43 @@ input:focus-visible,
  * consumer class passed through via the InlineNotice `className` prop. */
 .inline-notice {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-5);
-  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+  /* Top-align so the leading icon lines up with the first line of the content,
+   * not the vertical middle of a multi-line body. */
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   background: var(--card);
   color: var(--foreground);
 }
 
+/* The tone icon is a fixed leading element (never inside the text flow), so a
+ * long body wraps as its own block beside it rather than orphaning the icon on
+ * its own line. Sized to the first text line so it centers against it. */
+.inline-notice-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: calc(var(--fs-md) * 1.5);
+  color: var(--muted-foreground);
+}
+
+.inline-notice[data-tone="warning"] .inline-notice-icon {
+  color: var(--warm-strong);
+}
+
+.inline-notice[data-tone="destructive"] .inline-notice-icon {
+  color: var(--destructive);
+}
+
 .inline-notice-message {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-2) var(--sp-3);
+  flex-direction: column;
+  gap: var(--sp-1);
   margin: 0;
   min-width: 0;
+  flex: 1;
   font-size: var(--fs-md);
 }
 
@@ -9874,7 +10220,8 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  font-weight: 400;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   white-space: nowrap;
 }
 
@@ -9888,6 +10235,8 @@ input:focus-visible,
 
 .inline-notice-body {
   color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
 }
 
 .inline-notice-actions {
@@ -10112,6 +10461,46 @@ input:focus-visible,
   letter-spacing: 0;
 }
 
+/* The platforms group heading carries a quiet muted count beside it (the count
+ * that used to live on the in-list h3). */
+.agent-messaging-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Renders as a quiet .status-pill number badge next to the "Platforms" heading
+ * (see the .status-pill class) so the count reads as a badge, not heavy body
+ * text. Layout comes from the heading's flex gap; the pill needs no extra
+ * spacing of its own. */
+
+/* The shared settings page header (Codex-app style): a large serif page title
+ * with a single muted one-line blurb beneath and generous space before the
+ * content. Used at the top of every settings panel so each page announces what
+ * it is. Distinct from the small `.settings-group-heading` which now reads as a
+ * sub-group label below the header. */
+.settings-page-header {
+  padding-left: var(--sp-3);
+  margin-bottom: var(--sp-10);
+}
+
+.settings-page-title {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-2xl);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.settings-page-blurb {
+  margin: var(--sp-1) 0 0;
+  max-width: 60ch;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
 .settings-group-description {
   margin: 0 0 var(--sp-1);
   padding-left: var(--sp-3);
@@ -10144,6 +10533,19 @@ input:focus-visible,
   overflow: hidden;
 }
 
+/* The messaging list card hugs its content: with only a handful of platforms
+ * the tall min-height reserved dead space below the rows. Drop the min-height
+ * and let the panel's list row size to its content; the list keeps its own
+ * max-height cap so a long roster still scrolls in place. */
+.settings-agent-card-hug {
+  min-height: 0;
+}
+
+.settings-agent-card-hug .agent-management-panel {
+  grid-template-rows: auto minmax(0, auto);
+  height: auto;
+}
+
 .settings-agent-card .settings-row-error {
   margin: var(--sp-4) var(--sp-5) 0;
 }
@@ -10167,32 +10569,8 @@ input:focus-visible,
   );
 }
 
-.settings-agent-card .agent-messaging-layout {
-  min-height: 540px;
-}
-
-.settings-section-tabs {
-  display: flex;
-  gap: var(--sp-1);
-  padding: var(--sp-2);
-  border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in oklch, var(--muted) 22%, transparent);
-}
-
-.settings-section-tabs button {
-  min-height: var(--control-sm);
-  padding: 0 var(--sp-3);
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-.settings-section-tabs button[aria-selected="true"] {
-  background: var(--card);
-  color: var(--foreground);
-  box-shadow: 0 0 0 1px var(--border-subtle);
+.settings-agent-card .agent-messaging-detail {
+  min-height: 420px;
 }
 
 .settings-rows {
@@ -10239,6 +10617,28 @@ input:focus-visible,
   line-height: 1.5;
 }
 
+/* A row title with a trailing info affordance: the caveats that used to bloat
+ * the description live in a HoverTip on this small muted glyph. */
+.settings-row-title-with-info {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.settings-row-info-affordance {
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  color: var(--muted-foreground);
+  cursor: help;
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.settings-row-info-affordance:hover,
+.settings-row-info-affordance:focus-visible {
+  color: var(--foreground);
+}
+
 .settings-row-control {
   position: relative;
   display: inline-flex;
@@ -10264,14 +10664,17 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
+/* The canonical text-field recipe (dialog-input): shared border on the card
+ * surface, --r-md corners, hover to --ring, focus to --ring-focus with the 3px
+ * outer ring. Matches every other AI-page field. */
 .settings-field input {
   width: 100%;
   min-width: 0;
-  height: var(--control-lg);
-  padding: 0 var(--sp-3);
+  min-height: var(--control-lg);
+  padding: var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  background: var(--background);
+  background: var(--card);
   color: var(--foreground);
   font: inherit;
   font-size: var(--fs-md);
@@ -10281,14 +10684,26 @@ input:focus-visible,
     box-shadow var(--t-fast) var(--ease-out);
 }
 
-.settings-field input:focus {
+.settings-field input:hover {
   border-color: var(--ring);
-  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+.settings-field input:focus,
+.settings-field input:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .settings-local-model-warning {
   margin: 0;
   color: color-mix(in oklch, var(--warm-strong) 82%, var(--foreground));
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.settings-local-model-status {
+  margin: 0;
+  color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.4;
 }
@@ -10553,36 +10968,59 @@ input:focus-visible,
   display: block;
 }
 
+.settings-models-group {
+  margin-bottom: var(--sp-7);
+}
+
+.settings-models-card {
+  padding-block: var(--sp-4);
+}
+
+.settings-model-row {
+  padding-block: var(--sp-4);
+}
+
+.settings-model-row .settings-row-description,
+.settings-row-venice-key .settings-row-description,
+.settings-local-model-toggle-row .settings-row-description,
+.settings-local-model-fields-row .settings-row-description {
+  display: block;
+  overflow: visible;
+  white-space: normal;
+}
+
 .settings-model-control {
-  width: min(420px, 44vw);
+  width: min(380px, 44vw);
   justify-content: flex-end;
 }
 
 .settings-secret-control {
-  width: min(520px, 50vw);
+  width: min(440px, 46vw);
+  /* Bottom-align the Save / Remove buttons with the input: the field carries an
+   * "API key" label above its input, so aligning to the end lines the buttons
+   * up with the input's baseline row rather than floating at the label's top. */
+  align-items: flex-end;
   justify-content: flex-end;
 }
 
-.settings-secret-input {
-  width: min(260px, 100%);
-  min-height: var(--control-lg);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-mono);
-  font-size: var(--fs-md);
-  outline: none;
+.settings-secret-field {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
-.settings-secret-input::placeholder {
-  color: var(--muted-foreground);
+/* Match the inline Save / Remove buttons (control-md) so the field and buttons
+ * are the same height in this row, rather than the taller default field. */
+.settings-secret-field .dialog-input {
+  min-height: var(--control-md);
+  height: var(--control-md);
 }
 
-.settings-secret-input:focus {
-  border-color: var(--ring-focus);
-  box-shadow: 0 0 0 2px var(--focus-ring);
+.settings-row-venice-key {
+  align-items: start;
+}
+
+.settings-row-venice-key .settings-row-info {
+  max-width: 58ch;
 }
 
 .settings-row-substatus {
@@ -10591,29 +11029,35 @@ input:focus-visible,
 
 /* Quiet "More options" disclosure row: looks like a settings row but acts as
  * a toggle, keeping advanced controls out of the default view. */
+/* The whole row is one clickable expander: a contained rounded rectangle whose
+ * neutral hover fill sits inset from the card edges (like sidebar nav items /
+ * the external-dir summary hover), not a full-bleed edge-to-edge band. Content
+ * stays left-aligned; the bottom border is dropped so the rounded fill reads as
+ * a single rectangle. */
+.settings-rows .settings-more-options-trigger,
 .settings-more-options-trigger {
-  width: 100%;
-  border-left: 0;
-  border-right: 0;
-  border-top: 0;
+  width: auto;
+  /* Top inset so the rounded hover fill has clear separation from the row/border
+   * directly above it. */
+  margin: var(--sp-3) calc(var(--sp-3) * -1) 0;
+  padding: var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
   background: transparent;
   font: inherit;
   text-align: left;
   cursor: pointer;
   color: inherit;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.settings-more-options-trigger:hover .settings-row-title {
-  color: var(--foreground);
+.settings-more-options-trigger:hover {
+  background: var(--secondary);
 }
 
 .settings-more-options-chevron {
   color: var(--muted-foreground);
   transition: transform var(--t-fast) var(--ease-out);
-}
-
-.settings-more-options-trigger:hover .settings-more-options-chevron {
-  color: var(--foreground);
 }
 
 .settings-more-options-trigger[aria-expanded="true"] .settings-more-options-chevron {
@@ -10637,9 +11081,8 @@ input:focus-visible,
     flex-wrap: wrap;
   }
 
-  .settings-secret-input {
-    flex: 1 1 180px;
-    min-width: 0;
+  .settings-secret-field {
+    flex-basis: 100%;
   }
 }
 
@@ -10697,86 +11140,144 @@ input:focus-visible,
 }
 
 .installed-skills-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-4) var(--sp-5);
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.installed-skills-search {
+/* A shortened search on the left; the category filter and the trailing controls
+ * float to the right of the toolbar. */
+.installed-skills-toolbar .installed-skills-search {
+  flex: 0 1 240px;
+}
+
+/* The category filter floats right (search left, filter right). Everything after
+ * it — update-all, refresh — follows to the trailing edge. */
+.installed-skills-toolbar .installed-skills-category-select {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* When there is no category select, the trailing controls still float right. */
+.installed-skills-toolbar .installed-skills-update-all,
+.installed-skills-toolbar .installed-skills-refresh {
+  margin-left: auto;
+}
+
+.installed-skills-toolbar .installed-skills-category-select ~ .installed-skills-update-all,
+.installed-skills-toolbar .installed-skills-category-select ~ .installed-skills-refresh,
+.installed-skills-toolbar .installed-skills-update-all ~ .installed-skills-refresh {
+  margin-left: 0;
+}
+
+/* A quieter, lighter category trigger for this settings filter: ghost by default
+ * (no resting border), a soft neutral hover fill, tighter minimum width. */
+.installed-skills-category-select .select-trigger {
+  min-width: 0;
+  border-color: transparent;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.installed-skills-category-select .select-trigger:hover,
+.installed-skills-category-select .select-trigger[aria-expanded="true"] {
+  border-color: transparent;
+  background: var(--secondary);
+}
+
+/* The shared settings search field: a quiet input with a leading magnifier
+ * icon. One implementation, reused by every settings list filter (installed
+ * skills, MCP servers, messaging platforms) so they read identically. */
+.settings-search,
+.installed-skills-search,
+.mcp-servers-search {
   position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
 }
 
-.installed-skills-search-icon {
+.settings-search-icon,
+.installed-skills-search-icon,
+.mcp-servers-search-icon {
   position: absolute;
   left: var(--sp-3);
   color: var(--muted-foreground);
   pointer-events: none;
 }
 
-.installed-skills-search input {
+/* Match the model picker dialog search (.model-picker-search): comfortable
+ * height, borderless card fill with a layered inset shadow ring, and the same
+ * two-step focus ring — never a cramped border-color swap. The wrapper carries
+ * the surface + ring so the icon and input sit inside one field. */
+.settings-search {
+  min-height: var(--control-lg);
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 none / 60%),
+    0 1px 2px 0 oklch(0% 0 none / 4%),
+    0 0 0 1px oklch(0% 0 none / 6%);
+  transition: box-shadow var(--t-fast) var(--ease-out);
+}
+
+.settings-search:focus-within {
+  box-shadow:
+    0 0 0 1px var(--ring),
+    0 0 0 4px var(--focus-ring);
+}
+
+.settings-search input,
+.installed-skills-search input,
+.mcp-servers-search input {
   width: 100%;
-  min-height: var(--control-md);
+  min-height: var(--control-lg);
   padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--background);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
   color: var(--foreground);
   font-size: var(--fs-md);
   outline: none;
 }
 
-.installed-skills-search input:focus {
-  border-color: var(--ring-focus);
+.settings-search input:focus,
+.installed-skills-search input:focus,
+.mcp-servers-search input:focus {
+  outline: none;
 }
 
-.installed-skills-refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-
-.installed-skills-refresh:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.installed-skills-check,
 .installed-skills-update-all {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--control-md);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: var(--surface-subtle);
+  color: var(--foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.installed-skills-update-all {
-  border-color: var(--primary);
-  color: var(--primary);
+.installed-skills-refresh:hover:not(:disabled) {
+  background: var(--sidebar-accent);
+  color: var(--foreground);
 }
 
-.installed-skills-check:disabled,
+.installed-skills-refresh:disabled,
 .installed-skills-update-all:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+.installed-skills-update-all:hover:not(:disabled) {
+  background: var(--secondary);
 }
 
 /* Skill lifecycle actions (spec 08): update / audit / uninstall / reset. */
@@ -10805,17 +11306,21 @@ input:focus-visible,
   gap: var(--sp-2);
   min-height: var(--control-sm, var(--control-md));
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: var(--surface-subtle);
+  color: var(--foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .skill-lifecycle-action-button[data-destructive="true"] {
-  border-color: var(--destructive, var(--border-subtle));
   color: var(--destructive, var(--secondary-foreground));
+}
+
+.skill-lifecycle-action-button:hover:not(:disabled) {
+  background: var(--secondary);
 }
 
 .skill-lifecycle-action-button:disabled {
@@ -10922,43 +11427,6 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.installed-skills-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-5);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.installed-skills-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-px) var(--sp-3);
-  min-height: var(--control-sm);
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-
-.installed-skills-chip[aria-pressed="true"] {
-  background: var(--secondary);
-  color: var(--foreground);
-  border-color: transparent;
-  box-shadow: 0 0 0 1px var(--border-subtle);
-}
-
-.installed-skills-chip-count {
-  color: var(--muted-foreground);
-}
-
-.installed-skills-chip[aria-pressed="true"] .installed-skills-chip-count {
-  color: var(--foreground);
-}
-
 .installed-skills-inline-error {
   display: flex;
   align-items: center;
@@ -10968,32 +11436,79 @@ input:focus-visible,
 }
 
 .installed-skills-body {
-  padding: 0 var(--sp-5);
+  /* A little bottom room so the last row doesn't sit flush against the card
+   * edge / under the scroll veil, without leaving a large dead gap. */
+  padding: var(--sp-1) var(--sp-3) var(--sp-4);
 }
 
 .installed-skills-list {
-  list-style: none;
+  display: grid;
+  gap: var(--sp-1);
   margin: 0;
   padding: 0;
+  list-style: none;
 }
 
 .installed-skill-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--sp-4);
-  align-items: start;
-  padding: var(--sp-4) 0;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--sp-3);
+  align-items: center;
+  min-height: 58px;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: transparent;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.installed-skill-row:last-child {
-  border-bottom: 0;
+.installed-skill-row:hover,
+.installed-skill-row:focus-within {
+  background: var(--secondary);
+}
+
+.installed-skill-main-wrap {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
 }
 
 .installed-skill-main {
+  width: 100%;
   min-width: 0;
   display: grid;
-  gap: var(--sp-2);
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.installed-skill-main-button {
+  cursor: pointer;
+}
+
+/* Stretched click target so a click anywhere in the row drills in; the actions
+ * column and the setup panel (raised below) stay independently interactive. */
+.installed-skill-main-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-md);
+}
+
+.installed-skill-actions,
+.installed-skill-setup-panel,
+.installed-skill-main-wrap .skill-lifecycle {
+  position: relative;
+  z-index: 1;
+}
+
+.installed-skill-main-button:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
 }
 
 .installed-skill-headline {
@@ -11052,26 +11567,10 @@ input:focus-visible,
 
 .installed-skill-description {
   margin: 0;
+  overflow: hidden;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
-}
-
-.installed-skill-description-muted {
-  font-style: italic;
-}
-
-.installed-skill-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2) var(--sp-3);
-}
-
-.installed-skill-meta-item {
-  overflow: hidden;
-  max-width: 100%;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -11084,13 +11583,6 @@ input:focus-visible,
   font-size: var(--fs-xs);
 }
 
-.installed-skill-note {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.4;
-}
-
 .installed-skill-actions {
   display: inline-flex;
   align-items: center;
@@ -11098,21 +11590,19 @@ input:focus-visible,
   padding-top: 1px;
 }
 
-.installed-skill-open {
-  display: inline-grid;
-  place-items: center;
-  width: var(--control-sm);
-  height: var(--control-sm);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: transparent;
+/* A trailing drill-in chevron: muted always, fully lit on row hover/focus so
+ * the row reads as openable, matching the affordance on the other list rows. */
+.installed-skill-chevron {
+  flex-shrink: 0;
   color: var(--muted-foreground);
-  cursor: pointer;
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.installed-skill-open:hover {
-  color: var(--foreground);
-  background: var(--surface-subtle);
+.installed-skill-row:hover .installed-skill-chevron,
+.installed-skill-row:focus-within .installed-skill-chevron {
+  opacity: 1;
 }
 
 .installed-skill-toggle {
@@ -11128,44 +11618,9 @@ input:focus-visible,
   letter-spacing: 0.02em;
 }
 
-/* Lifecycle banner + durable notifications. Three tones from existing tokens. */
-.installed-skills-lifecycle {
-  display: grid;
-  gap: var(--sp-px);
-  padding: var(--sp-3) var(--sp-4);
-  margin-bottom: var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-}
-
-.installed-skills-lifecycle[data-tone="warning"] {
-  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
-  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
-}
-
-.installed-skills-lifecycle[data-tone="destructive"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-  background: var(--destructive-soft);
-}
-
-.installed-skills-lifecycle-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  color: var(--foreground);
-  font-weight: 400;
-  font-size: var(--fs-sm);
-}
-
-.installed-skills-lifecycle[data-tone="warning"] .installed-skills-lifecycle-eyebrow {
-  color: var(--warm-strong);
-}
-
-.installed-skills-lifecycle-body {
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.45;
+.installed-skills-lifecycle + .admin-notifications,
+.installed-skills-lifecycle + .installed-skills-card {
+  margin-top: var(--sp-3);
 }
 
 /* Skill bundles manager (admin surfaces spec 11). Reuses the settings-card
@@ -11513,23 +11968,31 @@ input:focus-visible,
 /* The one shared admin change-notice surface (AdminNotifications). Every admin
  * section renders its change notices through these classes, so the look is
  * identical across surfaces. */
+/* The shared admin change-notice stack. Each notice is an .inline-notice so it
+ * matches the design system's message treatment; this wrapper only owns the
+ * stacking gap and the spacing before the content below. */
 .admin-notifications {
-  list-style: none;
   display: grid;
   gap: var(--sp-2);
   margin: 0 0 var(--sp-3);
   padding: 0;
 }
 
-.admin-notification {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
+/* Admin change notices are the SAME shared InlineNotice as every page-level
+ * message — identical padding, size, and body type — so a message reads the
+ * same everywhere across the AI pages. Only the trailing dismiss control and
+ * the destructive tone are specific to these. */
+.admin-notification .inline-notice-body {
+  color: var(--foreground);
+}
+
+/* The dismiss control must not drive the notice height: at the default
+ * icon-button size (control-md) it's taller than the text line, so an admin
+ * notice rendered taller than a page notice with no dismiss. Sized down so the
+ * notice height is text-driven and matches a page notice. */
+.admin-notification-dismiss {
+  width: var(--control-xs);
+  height: var(--control-xs);
 }
 
 .admin-notification[data-tone="destructive"] {
@@ -11537,26 +12000,8 @@ input:focus-visible,
   background: var(--destructive-soft);
 }
 
-.admin-notification-text {
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-}
-
-.admin-notification-dismiss {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: var(--control-xs);
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.admin-notification-dismiss:hover {
-  color: var(--foreground);
-  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+.admin-notification[data-tone="destructive"] .inline-notice-body {
+  color: var(--destructive);
 }
 
 /* Empty / error / loading states. */
@@ -11594,12 +12039,17 @@ input:focus-visible,
   margin-top: var(--sp-2);
   min-height: var(--control-sm);
   padding: 0 var(--sp-4);
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: var(--surface-subtle);
+  color: var(--foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.installed-skills-retry:hover {
+  background: var(--secondary);
 }
 
 .installed-skill-skeleton {
@@ -11635,196 +12085,202 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.external-dirs-warning {
+/* The lifecycle banner renders through the shared InlineNotice so it matches
+ * the shared-directory warning stacked beneath it. The stacked notices sit in a
+ * tight group; the class stays as a scoping hook only. */
+.external-dirs-lifecycle + .inline-notice {
+  margin-top: var(--sp-2);
+}
+
+/* The action row above the list card: Add directory (opens a dialog) + refresh,
+ * right-aligned. Extra top gap gives the stacked notices above it breathing
+ * room. The raw path input lives in the dialog, not inline in a toolbar. */
+.external-dirs-actions {
   display: flex;
-  align-items: flex-start;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  margin-bottom: var(--sp-3);
-  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.45;
-}
-
-.external-dirs-warning > :first-child {
-  flex: none;
-  margin-top: 2px;
-  color: var(--warm-strong);
-}
-
-.external-dirs-lifecycle {
-  display: grid;
-  gap: var(--sp-px);
-  padding: var(--sp-3) var(--sp-4);
-  margin-bottom: var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-}
-
-.external-dirs-lifecycle[data-tone="warning"] {
-  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
-  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
-}
-
-.external-dirs-lifecycle[data-tone="destructive"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-  background: var(--destructive-soft);
-}
-
-.external-dirs-lifecycle-eyebrow {
-  display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  color: var(--foreground);
-  font-weight: 400;
-  font-size: var(--fs-sm);
-}
-
-.external-dirs-lifecycle-body {
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.45;
-}
-
-.external-dirs-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  justify-content: flex-end;
   gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5);
-  border-bottom: 1px solid var(--border-subtle);
+  margin-top: var(--sp-5);
+  margin-bottom: var(--sp-3);
+  padding: 0 var(--sp-3);
 }
 
 .external-dirs-add {
-  display: flex;
-  gap: var(--sp-2);
-  min-width: 0;
-}
-
-.external-dirs-add input {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  outline: none;
-}
-
-.external-dirs-add input:focus {
-  border-color: var(--ring-focus);
-}
-
-.external-dirs-add-button,
-.external-dirs-refresh {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
 }
 
-.external-dirs-add-button:disabled,
 .external-dirs-refresh:disabled {
   opacity: 0.55;
-  cursor: not-allowed;
+  cursor: default;
 }
 
-.external-dirs-hint {
-  margin: 0;
-  padding: var(--sp-3) var(--sp-5) 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.45;
+/* The dialog path field: a text input with a native folder-picker affordance. */
+.external-dirs-path-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Visual chrome comes from the shared `dialog-input` recipe; this only owns the
+ * flex sizing so the field shares its row with the "Choose folder" button. */
+.external-dirs-path-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Uses the system .btn .btn-secondary for all chrome (border, fill, height);
+ * this only pins it from stretching in the flex row. */
+.external-dirs-choose {
+  flex: 0 0 auto;
+}
+
+.external-dirs-choose:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.external-dirs-dialog-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 0;
 }
 
 .external-dirs-inline-error {
-  padding: var(--sp-2) var(--sp-5) 0;
+  padding: var(--sp-4) var(--sp-5) 0;
 }
 
 .external-dirs-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--sp-2);
 }
 
-.external-dir-row {
+.external-dir-row + .external-dir-row {
+  margin-top: var(--sp-1);
+}
+
+/* The collapsed primary view: the whole row is the disclosure trigger. Name
+ * first, the raw path muted beneath, presence pill and chevron on the right;
+ * everything else lives in the expanded details. The hover is an inset rounded
+ * rectangle (like sidebar nav items), not full-bleed edge-to-edge. */
+.external-dir-summary {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  padding: var(--sp-4) var(--sp-5);
-  border-top: 1px solid var(--border-subtle);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.external-dir-main {
+.external-dir-summary:hover {
+  background: var(--secondary);
+}
+
+.external-dir-copy {
   display: grid;
-  gap: var(--sp-2);
+  flex: 1;
+  gap: 2px;
   min-width: 0;
 }
 
-.external-dir-headline {
+.external-dir-name-row {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
+  align-items: baseline;
+  gap: var(--sp-1);
+  min-width: 0;
 }
 
-.external-dir-icon {
-  display: inline-grid;
-  place-items: center;
-  color: var(--muted-foreground);
-}
-
-.external-dir-path {
+.external-dir-name {
   overflow: hidden;
-  max-width: 100%;
   color: var(--foreground);
-  font-weight: 400;
+  font-weight: var(--fw-medium);
   font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* The discovered-skill count reads as a quiet muted figure beside the name,
+ * matching the count-badge pattern other list headers use. */
+.external-dir-count {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-weight: 400;
+  font-size: var(--fs-sm);
+}
+
+.external-dir-path {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--muted-foreground);
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-dir-chevron {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  transition: transform 140ms ease;
+}
+
+.external-dir-row[data-open] .external-dir-chevron {
+  transform: rotate(90deg);
+}
+
+/* The expanded details, indented to the copy column (icon 16px + sp-3 gap). */
+.external-dir-details {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3) var(--sp-3);
+}
+
+/* Status chips follow the established .agent-status-pill pattern: a neutral
+ * wash with a subtle border, and the status carried by a leading dot + text
+ * color only. Never a brand/terracotta wash behind the label. */
+/* The app's shared status pill: a neutral surface-subtle capsule with a subtle
+ * border and a small leading status dot in the tone color. Reused wherever a
+ * settings surface shows a compact status (external-dir rows, skill setup
+ * status), so status reads the same everywhere instead of each surface minting
+ * its own badge. */
+/* The house badge recipe (same as .routines-item-badge): a soft muted wash,
+ * small radius, tone carried by a matched wash + text color pair. Never a
+ * mismatched wash behind a tone color. */
+.status-pill,
 .external-dir-status {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   padding: 1px var(--sp-2);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
   font-size: var(--fs-xs);
   font-weight: 400;
+  line-height: 1.4;
 }
 
+.status-pill[data-tone="ok"],
 .external-dir-status[data-tone="ok"] {
-  background: color-mix(in oklch, var(--success, var(--primary)) 14%, var(--card));
-  color: var(--success, var(--primary));
+  background: color-mix(in oklch, var(--success) 14%, transparent);
+  color: var(--success);
 }
 
-.external-dir-status[data-tone="info"] {
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
-}
-
+.status-pill[data-tone="warning"],
 .external-dir-status[data-tone="warning"] {
-  background: color-mix(in oklch, var(--warm-strong) 14%, var(--card));
+  background: var(--warm-soft);
   color: var(--warm-strong);
-}
-
-.external-dir-status[data-tone="muted"] {
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
 }
 
 .external-dir-resolved {
@@ -11848,15 +12304,6 @@ input:focus-visible,
   font-size: var(--fs-xs);
 }
 
-.external-dir-readonly {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-weight: 400;
-}
-
 .external-dir-note {
   margin: 0;
   color: var(--muted-foreground);
@@ -11872,21 +12319,29 @@ input:focus-visible,
   flex: none;
 }
 
+/* The standard quiet secondary button (same recipe as .skill-detail-revert):
+ * a soft surface-subtle fill, no border, neutral hover — no bespoke one-off. */
 .external-dir-remove {
-  display: inline-grid;
-  place-items: center;
-  width: var(--control-sm);
-  height: var(--control-sm);
-  border: 1px solid var(--border-subtle);
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 0;
   border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.external-dir-remove:hover:not(:disabled) {
+  background: var(--secondary);
 }
 
 .external-dir-remove:disabled {
   opacity: 0.55;
-  cursor: not-allowed;
+  cursor: default;
 }
 
 .external-dirs-empty,
@@ -12371,42 +12826,21 @@ input:focus-visible,
 /* Skill config + required-secret setup (Hermes admin surface, spec 09). The
  * setup status badge sits inline in a skill row; the per-skill setup panel
  * expands inline below the row and spans both grid columns. Tokens only. */
-.skill-setup-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px var(--sp-2);
-  border-radius: 999px;
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-weight: 400;
-}
-
-.skill-setup-badge[data-tone="ready"] {
-  background: color-mix(in oklch, var(--success) 16%, transparent);
-  color: var(--success);
-}
-
-.skill-setup-badge[data-tone="attention"] {
-  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
-  color: var(--warm-strong);
-}
-
 .installed-skill-setup-toggle {
   align-self: center;
   padding: var(--sp-1) var(--sp-3);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--r-sm);
-  background: transparent;
+  background: var(--surface-subtle);
   color: var(--foreground);
   font-size: var(--fs-xs);
   font-weight: 400;
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .installed-skill-setup-toggle:hover {
-  background: var(--surface-subtle);
+  background: var(--secondary);
 }
 
 .installed-skill-setup-panel {
@@ -12420,7 +12854,7 @@ input:focus-visible,
   padding: var(--sp-5);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
-  background: var(--surface-subtle);
+  background: var(--secondary);
 }
 
 .skill-setup-header {
@@ -12653,33 +13087,9 @@ input:focus-visible,
  * Tokens only; sentence case; no dashes in copy. */
 .skill-detail {
   display: grid;
-  gap: var(--sp-4);
-}
-
-.skill-detail-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-}
-
-.skill-detail-back,
-.skill-detail-refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px var(--sp-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  cursor: pointer;
-}
-
-.skill-detail-back:hover,
-.skill-detail-refresh:hover:not(:disabled) {
-  color: var(--foreground);
+  /* Generous separation between the detail blocks (Details, Manage, Supporting
+   * files, Setup) so each section reads as its own group with breathing room. */
+  gap: var(--sp-10);
 }
 
 .skill-detail-refresh:disabled {
@@ -12687,8 +13097,34 @@ input:focus-visible,
   cursor: default;
 }
 
-.skill-detail-name {
+.skill-detail-header {
+  display: grid;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.skill-detail-title-row {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* Reads as a page title, matching the SettingsPageHeader treatment: the serif
+ * face at weight 400. */
+.skill-detail-title {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-2xl);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.skill-detail-badges {
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
@@ -12734,8 +13170,12 @@ input:focus-visible,
   font-weight: 400;
 }
 
-.skill-detail-mode-note {
+.skill-detail-description,
+.skill-detail-context {
+  margin: 0;
   color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
 }
 
 .skill-detail-error {
@@ -12763,54 +13203,95 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.skill-detail-meta-card,
+.skill-detail-block {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-detail-section-heading {
+  margin: 0;
+  padding-left: var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+}
+
 .skill-detail-files-card,
 .skill-detail-setup-card,
 .skill-detail-doc-card {
   display: grid;
   gap: var(--sp-3);
-  padding: var(--sp-5);
+  padding: var(--sp-4);
 }
 
-.skill-detail-card-heading {
-  display: flex;
+/* The metadata facts read as a quiet reference column, not another boxed card:
+ * no border/background/card chrome, just the labeled rows aligned to the
+ * content gutter. */
+.skill-detail-meta {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.skill-detail-meta-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.skill-detail-info-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, auto);
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-4);
+  min-height: 42px;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-detail-info-row:last-child {
+  border-bottom: 0;
+}
+
+.skill-detail-info-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill-detail-info-title {
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
 }
 
-.skill-detail-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: var(--sp-3);
+.skill-detail-info-description {
   margin: 0;
-}
-
-.skill-detail-meta-item {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.skill-detail-meta-label {
+  overflow: hidden;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.skill-detail-meta-value {
+.skill-detail-info-value {
   overflow: hidden;
+  max-width: min(320px, 44vw);
+  margin: 0;
   color: var(--foreground);
   font-size: var(--fs-sm);
+  text-align: right;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.skill-detail-meta-mono {
+.skill-detail-info-mono {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   word-break: break-all;
+  white-space: normal;
 }
 
 .skill-detail-tags {
@@ -12886,6 +13367,16 @@ input:focus-visible,
   gap: var(--sp-2);
 }
 
+.skill-detail-doc-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
 .skill-detail-doc-readonly {
   display: inline-flex;
   align-items: center;
@@ -12897,6 +13388,14 @@ input:focus-visible,
 .skill-detail-doc-timing {
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
+}
+
+/* The editor actions (Revert / Save) live in the block header row, title left,
+ * actions right — not in a card footer. */
+.skill-detail-doc-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
 }
 
 .skill-detail-doc-subheading {
@@ -12942,18 +13441,32 @@ input:focus-visible,
   font-size: var(--fs-xs);
 }
 
+/* Match the app's other textareas (e.g. .agent-clarify-form textarea): a
+ * subtle border, small radius, comfortable padding, and the standard focus
+ * ring. Keeps monospace because it edits SKILL.md. */
 .skill-detail-editor {
   width: 100%;
   min-height: 260px;
   padding: var(--sp-3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
-  background: var(--background);
+  background: var(--surface);
   color: var(--foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   line-height: 1.5;
   resize: vertical;
+}
+
+/* The same two-step focus ring as the settings inputs/searches
+ * (.settings-search:focus-within), so the editor focuses like every other field
+ * in the system. Keeps monospace. */
+.skill-detail-editor:focus {
+  outline: none;
+  border-color: transparent;
+  box-shadow:
+    0 0 0 1px var(--ring),
+    0 0 0 4px var(--focus-ring);
 }
 
 .skill-detail-editor[aria-invalid="true"] {
@@ -12984,7 +13497,6 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
-.skill-detail-editor-actions,
 .skill-detail-confirm-actions {
   display: flex;
   align-items: center;
@@ -12995,12 +13507,18 @@ input:focus-visible,
 .skill-detail-revert,
 .skill-detail-confirm-cancel {
   padding: 5px var(--sp-3);
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--r-sm);
-  background: transparent;
+  background: var(--surface-subtle);
   color: var(--foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.skill-detail-revert:hover:not(:disabled),
+.skill-detail-confirm-cancel:hover {
+  background: var(--secondary);
 }
 
 .skill-detail-revert:disabled {
@@ -13016,11 +13534,17 @@ input:focus-visible,
   padding: 5px var(--sp-3);
   border: 0;
   border-radius: var(--r-sm);
-  background: var(--foreground);
-  color: var(--background);
+  background: var(--surface-subtle);
+  color: var(--foreground);
   font-size: var(--fs-sm);
   font-weight: 400;
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.skill-detail-save:hover:not(:disabled),
+.skill-detail-confirm-save:hover:not(:disabled) {
+  background: var(--secondary);
 }
 
 .skill-detail-save:disabled,
@@ -13083,61 +13607,23 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.mcp-servers-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.mcp-servers-search {
-  position: relative;
+/* The action row above the list card (Codex "Servers" + Add pattern): a compact
+ * search, the refresh icon-button, and the add-server button. The search is
+ * kept narrow (~220px) so it doesn't sprawl across the row. */
+.mcp-servers-actions {
   display: flex;
   align-items: center;
-  min-width: 0;
-}
-
-.mcp-servers-search-icon {
-  position: absolute;
-  left: var(--sp-3);
-  color: var(--muted-foreground);
-  pointer-events: none;
-}
-
-.mcp-servers-search input {
-  width: 100%;
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  outline: none;
-}
-
-.mcp-servers-search input:focus {
-  border-color: var(--ring-focus);
-}
-
-.mcp-servers-refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
 }
 
-.mcp-servers-refresh:disabled {
-  opacity: 0.55;
-  cursor: default;
+.mcp-servers-actions .mcp-servers-search {
+  flex: 0 1 220px;
+}
+
+.mcp-servers-actions .mcp-servers-add {
+  margin-left: auto;
 }
 
 .mcp-servers-add {
@@ -13156,10 +13642,14 @@ input:focus-visible,
 }
 
 .mcp-servers-body {
-  padding: 0 var(--sp-5);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
 }
 
+/* No own top/bottom padding — the body owns the single tight top inset so the
+ * first row sits near the card top instead of stacking two paddings. */
 .mcp-servers-list {
+  display: grid;
+  gap: var(--sp-1);
   list-style: none;
   margin: 0;
   padding: 0;
@@ -13167,42 +13657,55 @@ input:focus-visible,
 
 .mcp-server-row {
   display: grid;
-  gap: var(--sp-3);
-  padding: var(--sp-4) 0;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-/* The main details + actions columns; the OAuth sign-in panel renders BELOW
- * this row so it spans the card's full width. */
-.mcp-server-top {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  align-items: center;
   gap: var(--sp-4);
-  align-items: start;
+  /* No fixed min-height: a short row (a server with a one-line subtitle) centered
+   * in a tall fixed row reserved ~20px of dead space at the top, which read as a
+   * large blank gap at the top of the list card. Let the row size to its content;
+   * the padding gives every row the same comfortable height. */
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.mcp-server-row:last-child {
-  border-bottom: 0;
+.mcp-server-row:hover {
+  background: var(--secondary);
+}
+
+.mcp-server-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
 }
 
 .mcp-server-main {
   min-width: 0;
   display: grid;
-  gap: var(--sp-2);
-}
-
-.mcp-server-headline {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
+  gap: 2px;
 }
 
 .mcp-server-name {
+  overflow: hidden;
   color: var(--foreground);
   font-weight: var(--fw-medium);
   font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-subtitle {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcp-server-transport,
@@ -13247,23 +13750,6 @@ input:focus-visible,
 
 .mcp-server-auth[data-tone="ok"] {
   color: var(--foreground);
-}
-
-.mcp-server-target {
-  margin: 0;
-  overflow: hidden;
-  color: var(--foreground);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: var(--fs-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mcp-server-blurb {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.45;
 }
 
 /* Security / sandbox-boundary labels (spec 19). */
@@ -13438,7 +13924,9 @@ input:focus-visible,
 .mcp-server-status {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 3px;
+  min-width: 88px;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   font-weight: 400;
@@ -13611,21 +14099,27 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
-  padding-top: 1px;
+  min-width: max-content;
 }
 
-.mcp-server-test {
-  min-height: var(--control-sm);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
+.mcp-server-manage {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border: 0;
   border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: var(--fs-sm);
+  background: transparent;
+  color: var(--muted-foreground);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.mcp-server-test:disabled {
+.mcp-server-manage:hover {
+  background: var(--sidebar-accent);
+}
+
+.mcp-server-manage:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -13643,8 +14137,7 @@ input:focus-visible,
 }
 
 .mcp-server-delete:hover {
-  color: var(--destructive);
-  background: var(--surface-subtle);
+  background: var(--sidebar-accent);
 }
 
 .mcp-server-delete:disabled {
@@ -13654,15 +14147,8 @@ input:focus-visible,
 
 .mcp-server-toggle {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-}
-
-.mcp-server-timing {
-  color: var(--muted-foreground);
-  font-size: var(--fs-2xs);
-  letter-spacing: 0.02em;
+  align-items: center;
+  padding-left: var(--sp-1);
 }
 
 /* Lifecycle banner + durable notifications (same tones as installed skills). */
@@ -13673,9 +14159,8 @@ input:focus-visible,
   gap: var(--sp-4);
   padding: var(--sp-3) var(--sp-4);
   margin-bottom: var(--sp-3);
-  border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
-  background: var(--card);
+  background: var(--surface-subtle);
 }
 
 .mcp-servers-lifecycle-main {
@@ -13686,28 +14171,14 @@ input:focus-visible,
 
 .mcp-servers-lifecycle-restart {
   flex-shrink: 0;
-  min-height: var(--control-sm);
-  padding: 0 var(--sp-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--primary);
-  color: var(--primary-foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-
-.mcp-servers-lifecycle-restart:hover {
-  opacity: 0.9;
 }
 
 .mcp-servers-lifecycle[data-tone="warning"] {
-  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
-  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--surface-subtle));
 }
 
 .mcp-servers-lifecycle[data-tone="destructive"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-  background: var(--destructive-soft);
+  background: color-mix(in oklch, var(--destructive-soft) 70%, var(--surface-subtle));
 }
 
 .mcp-servers-lifecycle-eyebrow {
@@ -13729,35 +14200,13 @@ input:focus-visible,
   line-height: 1.45;
 }
 
-/* Empty / error / loading states. */
-.mcp-servers-empty,
+/* Error / loading states (the empty state is the shared .empty-state surface). */
 .mcp-servers-error {
   display: grid;
   justify-items: center;
   gap: var(--sp-2);
   padding: var(--sp-10) var(--sp-6);
   text-align: center;
-}
-
-.mcp-servers-empty-icon {
-  display: inline-grid;
-  place-items: center;
-  color: var(--muted-foreground);
-}
-
-.mcp-servers-empty-title {
-  margin: 0;
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  font-weight: 400;
-}
-
-.mcp-servers-empty-description {
-  margin: 0;
-  max-width: 380px;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
 }
 
 .mcp-servers-retry {
@@ -13798,6 +14247,39 @@ input:focus-visible,
   gap: var(--sp-4);
 }
 
+.mcp-add-section-group {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-add-section-head {
+  display: grid;
+  gap: var(--sp-px);
+}
+
+.mcp-add-section {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+
+.mcp-add-section-title {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-add-section-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
 .mcp-add-field {
   display: grid;
   gap: var(--sp-2);
@@ -13812,20 +14294,33 @@ input:focus-visible,
   font-weight: 400;
 }
 
+/* The canonical text-field recipe (dialog-input): a real 1px border on the
+ * card surface, --r-md corners, hover lifts the border to --ring, focus lifts
+ * to --ring-focus with the 3px outer focus ring. One look for every AI-page
+ * field. Also applied to the HTTP auth <select>. */
 .mcp-add-input {
   width: 100%;
-  min-height: var(--control-md);
+  min-height: var(--control-lg);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
   color: var(--foreground);
   font-size: var(--fs-md);
   outline: none;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
 }
 
-.mcp-add-input:focus {
+.mcp-add-input:hover {
+  border-color: var(--ring);
+}
+
+.mcp-add-input:focus,
+.mcp-add-input:focus-visible {
   border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .mcp-add-input[aria-invalid="true"] {
@@ -13845,55 +14340,60 @@ input:focus-visible,
   margin: 0;
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
-  background: var(--surface-subtle);
+  background: var(--card);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   line-height: 1.45;
 }
 
-.mcp-add-transport {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+/* Transport uses the shared segmented control; only the disabled state is
+ * section-specific (editing an existing server locks the transport). */
+.mcp-add-transport-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.mcp-add-list-editor {
   gap: var(--sp-2);
 }
 
-.mcp-add-transport-option {
+.mcp-add-list-head,
+.mcp-add-pair-head {
   display: grid;
-  gap: 2px;
-  padding: var(--sp-3);
-  text-align: left;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: transparent;
-  cursor: pointer;
-}
-
-.mcp-add-transport-option[data-active="true"] {
-  border-color: var(--ring-focus);
-  background: var(--surface-subtle);
-}
-
-.mcp-add-transport-label {
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  font-weight: 400;
-}
-
-.mcp-add-transport-hint {
+  gap: var(--sp-2);
+  align-items: center;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
+}
+
+.mcp-add-list-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mcp-add-pair-head {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.mcp-add-list-head span:last-child,
+.mcp-add-pair-head span:last-child {
+  width: var(--control-lg);
+}
+
+.mcp-add-list-rows {
+  display: grid;
+  gap: var(--sp-2);
 }
 
 .mcp-add-row,
 .mcp-add-pair {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) var(--control-lg);
   gap: var(--sp-2);
   align-items: center;
 }
 
 .mcp-add-pair {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--control-lg);
 }
 
 .mcp-add-row .mcp-add-error,
@@ -13904,18 +14404,18 @@ input:focus-visible,
 .mcp-add-row-remove {
   display: inline-grid;
   place-items: center;
-  width: var(--control-md);
-  height: var(--control-md);
-  border: 1px solid var(--border-subtle);
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .mcp-add-row-remove:hover {
-  color: var(--destructive);
-  background: var(--surface-subtle);
+  background: var(--sidebar-accent);
 }
 
 .mcp-add-row-add {
@@ -13924,55 +14424,147 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--control-sm);
-  padding: 0 var(--sp-3);
-  border: 1px dashed var(--border-subtle);
+  padding: 0 var(--sp-2);
+  border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .mcp-add-row-add:hover {
+  background: var(--secondary);
+}
+
+.mcp-server-detail-form {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.mcp-server-detail-section {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-subtle);
+}
+
+.mcp-server-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.mcp-server-detail-heading {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-server-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3) var(--sp-5);
+  margin: 0;
+}
+
+.mcp-server-detail-item {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-server-detail-item dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.mcp-server-detail-item dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
   color: var(--foreground);
-  border-color: var(--border);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.mcp-server-detail-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.mcp-server-detail-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.mcp-detail-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.mcp-detail-action:hover:not(:disabled) {
+  background: var(--secondary);
+}
+
+.mcp-detail-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mcp-detail-action-danger {
+  color: var(--destructive);
+}
+
+.mcp-add-dialog .primary-action,
+.mcp-tools-dialog .primary-action {
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.mcp-add-dialog .primary-action:hover,
+.mcp-tools-dialog .primary-action:hover {
+  background: var(--secondary);
+}
+
+.mcp-add-dialog .primary-action.primary-solid:hover,
+.mcp-tools-dialog .primary-action.primary-solid:hover {
+  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
+}
+
+.mcp-add-dialog .dialog-footer,
+.mcp-tools-actions {
+  align-items: center;
+  gap: var(--sp-2);
 }
 
 /* MCP tool selection + filtering (spec 16). The per-server "Tools" panel: the
  * compare counts, the mode selector, the discovered-tool list, the utility
  * toggles, and the saved/restart notice. */
-.mcp-server-tools,
-.mcp-server-edit {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: var(--control-sm);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-
-.mcp-server-tools:hover,
-.mcp-server-edit:hover {
-  border-color: var(--border);
-  color: var(--foreground);
-}
-
-.mcp-server-edit:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
 .mcp-tools-form {
   display: grid;
   gap: var(--sp-4);
 }
 
 .mcp-tools-legend {
+  margin: 0;
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   color: var(--foreground);
@@ -13981,17 +14573,14 @@ input:focus-visible,
 .mcp-tools-compare {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   margin: 0;
 }
 
 .mcp-tools-compare-item {
   display: grid;
   gap: 2px;
-  padding: var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
+  padding: var(--sp-2) 0;
 }
 
 .mcp-tools-compare-item dt {
@@ -14043,7 +14632,6 @@ input:focus-visible,
 
 .mcp-tools-mode,
 .mcp-tools-utilities,
-.mcp-tools-advanced,
 .mcp-tools-namelist {
   display: grid;
   gap: var(--sp-2);
@@ -14062,15 +14650,25 @@ input:focus-visible,
   display: grid;
   gap: 2px;
   padding: var(--sp-3);
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--r-md);
-  background: var(--card);
+  background: var(--surface-subtle);
   text-align: left;
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .mcp-tools-mode-option[data-active="true"] {
-  border-color: var(--foreground);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.mcp-tools-mode-option:hover {
+  background: var(--secondary);
+}
+
+.mcp-tools-mode-option[data-active="true"]:hover {
+  background: var(--card);
 }
 
 .mcp-tools-mode-label {
@@ -14084,56 +14682,108 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.mcp-tools-section {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-tools-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.mcp-tools-search {
+  position: relative;
+  width: min(220px, 45%);
+  min-width: 160px;
+}
+
+.mcp-tools-search-icon {
+  position: absolute;
+  top: 50%;
+  left: var(--sp-3);
+  color: var(--muted-foreground);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.mcp-tools-search input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 14px);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--border-subtle);
+  transition: box-shadow var(--t-fast) var(--ease-out);
+}
+
+.mcp-tools-search input:focus {
+  box-shadow:
+    0 0 0 1px var(--ring-focus),
+    0 0 0 4px var(--focus-ring);
+}
+
 .mcp-tools-list {
   display: grid;
-  gap: 4px;
+  gap: var(--sp-1);
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 240px;
+  max-height: 260px;
   overflow-y: auto;
 }
 
 .mcp-tools-row {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--card);
-}
-
-.mcp-tools-row[data-allowed="false"] {
-  opacity: 0.7;
-}
-
-.mcp-tools-row[data-destructive="true"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-}
-
-.mcp-tools-row-toggle {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: var(--sp-2);
-  width: 100%;
+  gap: var(--sp-3);
+  min-height: 50px;
   padding: var(--sp-2) var(--sp-3);
-  border: none;
-  background: none;
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  text-align: left;
-  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.mcp-tools-row-state {
-  display: inline-grid;
-  place-items: center;
-  color: var(--muted-foreground);
+.mcp-tools-list[data-can-toggle="false"] .mcp-tools-row {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.mcp-tools-row[data-allowed="true"] .mcp-tools-row-state {
-  color: var(--success);
+.mcp-tools-row:hover {
+  background: var(--secondary);
+}
+
+.mcp-tools-row[data-allowed="false"] .mcp-tools-row-copy {
+  opacity: 0.72;
+}
+
+.mcp-tools-row-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .mcp-tools-row-name {
-  flex: 1;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-tools-row-desc {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcp-tools-row-destructive {
@@ -14144,11 +14794,36 @@ input:focus-visible,
   color: var(--destructive);
 }
 
-.mcp-tools-row-desc {
-  margin: 0;
-  padding: 0 var(--sp-3) var(--sp-2) calc(var(--sp-3) + var(--sp-4));
-  font-size: var(--fs-xs);
+.mcp-tools-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-8) var(--sp-5);
+  text-align: center;
+}
+
+.mcp-tools-empty-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
   color: var(--muted-foreground);
+}
+
+.mcp-tools-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-tools-empty-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
 }
 
 .mcp-tools-namelist[data-inert="true"] {
@@ -14158,12 +14833,24 @@ input:focus-visible,
 .mcp-tools-textarea,
 .mcp-tools-select,
 .mcp-tools-number {
-  border: 1px solid var(--border-subtle);
+  min-height: var(--control-lg);
+  border: 0;
   border-radius: var(--r-sm);
   background: var(--card);
   color: var(--foreground);
   font-size: var(--fs-sm);
   padding: var(--sp-2);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--border-subtle);
+  transition: box-shadow var(--t-fast) var(--ease-out);
+}
+
+.mcp-tools-textarea:focus,
+.mcp-tools-select:focus,
+.mcp-tools-number:focus {
+  box-shadow:
+    0 0 0 1px var(--ring-focus),
+    0 0 0 4px var(--focus-ring);
 }
 
 .mcp-tools-utility-row,
@@ -14191,31 +14878,46 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.mcp-tools-advanced {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-tools-advanced summary {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.mcp-tools-advanced summary:hover {
+  background: var(--secondary);
+}
+
+.mcp-tools-advanced-title {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-tools-advanced-description {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-tools-advanced-fields {
+  display: grid;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+}
+
 .mcp-tools-actions {
   display: flex;
   justify-content: flex-end;
-  gap: var(--sp-3);
-}
-
-.mcp-tools-preview {
-  font-size: var(--fs-xs);
-  color: var(--muted-foreground);
-}
-
-.mcp-tools-preview-path {
-  margin: var(--sp-2) 0 4px;
-  font-family: var(--font-mono, monospace);
-  color: var(--foreground);
-}
-
-.mcp-tools-preview-block {
-  margin: 0;
-  padding: var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-  overflow-x: auto;
-  font-size: var(--fs-xs);
+  padding-top: var(--sp-2);
 }
 
 /* MCP catalog — reuses the MCP servers + skills-hub structure, with a few
@@ -14455,6 +15157,10 @@ input:focus-visible,
   position: relative;
   display: inline-flex;
   align-items: center;
+  /* Same label-to-count spacing as the popover option rows (select-label) so
+   * the count badge sits at a consistent distance in both places. The chevron
+   * is absolutely positioned, so this only spaces the label from the count. */
+  gap: var(--sp-2);
   min-width: 220px;
   height: var(--control-lg);
   padding: 0 32px 0 var(--sp-3);
@@ -14503,14 +15209,20 @@ input:focus-visible,
  * selected option lines up with the trigger's position. The vertical
  * offset is set inline via `style.top` based on the selected index.
  *
- * Anchored to BOTH `left: 0` and `right: 0` so the popover width matches
- * the trigger exactly. Wider items would otherwise spill past the right
- * edge and reveal the trigger underneath on the left. */
+ * Anchored to `left: 0` and sized to its widest option: it is at least as
+ * wide as the trigger (min-width: 100%) with a comfortable floor (260px) so a
+ * long label like "All categories" never wraps or ellipsizes, and it grows
+ * rightward (width: max-content) up to a max so it can outrun a narrow trigger.
+ * The left anchor keeps the aligned-selected overlay lined up with the trigger. */
 .select-popover {
   position: absolute;
   left: 0;
-  right: 0;
   z-index: 60;
+  /* At least the trigger width, growing to fit the widest option, but capped so
+   * a long category name doesn't sprawl the menu across the card. */
+  min-width: 100%;
+  width: max-content;
+  max-width: min(260px, 90vw);
   margin: 0;
   /* sp-1 horizontal + sp-1 vertical padding gives the same inset feel as
    * the context menu, so item hover wash has a rounded border-radius
@@ -14572,6 +15284,31 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* A label + optional trailing count badge, sharing column 1 of the option grid
+ * so the check column stays fixed. The label and the count sit on one line
+ * (never wrapping) with the count pushed to the trailing edge and breathing
+ * room between them, so a long "All categories 72" reads cleanly. */
+.select-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.select-label > :first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The count reads as the same quiet number badge used on the Agent page
+ * (a bare .status-pill), sitting right next to the label. */
+.select-count {
+  flex-shrink: 0;
+}
+
 /* Leading color chip for color selects (Appearance accent). A slightly rounded
  * square that fits inside the row; text selects (Language, Microphone) pass no
  * color and render nothing. */
@@ -14607,18 +15344,30 @@ input:focus-visible,
   min-width: 128px;
 }
 
-/* Trigger button mirrors a picker row: stacked name/meta with a subtle
- * border so it reads as the "current selection" card. */
+/* Quiet select-like trigger for model rows: current model name, flush with the
+ * row control column. Model details live in the hover callout. */
+.model-summary-tip-anchor {
+  display: block;
+  /* Hug the button so the flex-end control column right-aligns the (now
+   * content-width) summary button instead of stranding it left in a
+   * full-width anchor. */
+  width: fit-content;
+  max-width: 100%;
+}
+
 .model-summary-button {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 14px;
-  grid-template-areas:
-    "logo name chev"
-    "logo meta chev";
-  row-gap: 2px;
-  column-gap: var(--sp-3);
-  width: 100%;
-  min-width: 300px;
+  grid-template-columns: 22px minmax(0, auto) 16px;
+  grid-template-areas: "logo name chev";
+  align-items: center;
+  column-gap: var(--sp-2);
+  /* Hug the logo + name + chevron rather than stretching the control column;
+   * the name still ellipsizes past the cap so a long model name can't run
+   * away. */
+  width: fit-content;
+  max-width: 240px;
+  min-width: 0;
+  min-height: var(--control-lg);
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -14628,15 +15377,23 @@ input:focus-visible,
   cursor: pointer;
   transition:
     background-color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
 }
 
 .model-summary-button:hover {
-  background: color-mix(in oklch, var(--muted) 35%, transparent);
+  background: var(--secondary);
 }
 
 .model-summary-button[aria-expanded="true"] {
+  background: var(--secondary);
   border-color: color-mix(in oklch, var(--foreground) 22%, transparent);
+}
+
+.model-summary-button:focus-visible {
+  outline: 0;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 4px var(--focus-ring);
 }
 
 .model-summary-button > svg {
@@ -14646,36 +15403,37 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.settings-model-popover {
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  bottom: auto;
+}
+
 .model-summary-logo {
   grid-area: logo;
   display: inline-grid;
   place-items: center;
   align-self: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--r-sm);
+  width: 22px;
+  height: 22px;
+  /* Concentric with the button: the tile sits inset from the button edge by the
+   * vertical padding, so its radius is the button radius minus that inset (same
+   * nested-radius math as the accent color square on the General tab). */
+  border-radius: calc(var(--r-md) - var(--sp-1));
   background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
 }
 
 .model-summary-name {
   grid-area: name;
-  align-self: end;
+  align-self: center;
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-md);
   font-weight: 400;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.model-summary-meta {
-  grid-area: meta;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
 }
 
 .model-meta-items,
@@ -14699,6 +15457,18 @@ input:focus-visible,
   display: inline-flex;
   margin-right: var(--sp-2);
   color: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
+}
+
+/* The model summary tip reuses the popover's model hovercard content
+ * (ModelPickerCardContent): name line + muted metadata line + description. The
+ * .hover-tip host already supplies the popover surface, so this only lays the
+ * content out as a column. */
+.model-summary-hovercard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  width: 232px;
+  max-width: 100%;
 }
 
 /* Hover callout card (HoverTip) — the Venice-style explainer behind privacy
@@ -14917,13 +15687,11 @@ input:focus-visible,
   color: var(--foreground);
   text-align: left;
   cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .model-picker-option:hover {
-  background: color-mix(in oklch, var(--muted) 35%, transparent);
+  background: var(--secondary);
 }
 
 /* "Why we recommend it" line on Suggested rows. */
@@ -14942,34 +15710,7 @@ input:focus-visible,
 }
 
 .model-picker-option[data-selected="true"]:hover {
-  background: color-mix(in oklch, var(--muted) 80%, transparent);
-}
-
-/* A text model that can't use tools can't power June's agent: shown so the
- * lineup stays explainable, but visibly inert and unselectable. */
-.model-picker-option[data-no-tools="true"] {
-  cursor: default;
-}
-
-.model-picker-option[data-no-tools="true"]:hover {
-  background: transparent;
-}
-
-.model-picker-option[data-no-tools="true"] .model-picker-name,
-.model-picker-option[data-no-tools="true"] .model-picker-logo,
-.model-picker-option[data-no-tools="true"] .model-meta-items {
-  opacity: 0.45;
-}
-
-.model-picker-no-tools {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px var(--sp-2);
-  border-radius: var(--r-sm);
-  background: color-mix(in oklch, var(--muted-foreground) 14%, transparent);
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
+  background: var(--secondary);
 }
 
 .model-picker-tools-caveat {
@@ -15944,7 +16685,8 @@ input:focus-visible,
   line-height: 1.45;
 }
 
-.routine-detail-tabs {
+.routine-detail-tabs,
+.settings-agent-tabs {
   --routine-tabs-indicator-x: 0px;
   --routine-tabs-indicator-w: 0px;
   position: relative;
@@ -15957,7 +16699,8 @@ input:focus-visible,
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.routine-detail-tabs::after {
+.routine-detail-tabs::after,
+.settings-agent-tabs::after {
   content: "";
   position: absolute;
   bottom: -1px;
@@ -15971,7 +16714,8 @@ input:focus-visible,
     width var(--t-med) var(--ease-out);
 }
 
-.routine-detail-tabs button {
+.routine-detail-tabs button,
+.settings-agent-tabs button {
   position: relative;
   min-height: 34px;
   padding: 0 0 var(--sp-2);
@@ -15987,15 +16731,18 @@ input:focus-visible,
     opacity var(--t-fast) var(--ease-out);
 }
 
-.routine-detail-tabs button:hover {
+.routine-detail-tabs button:hover,
+.settings-agent-tabs button:hover {
   color: var(--foreground);
 }
 
-.routine-detail-tabs button[aria-selected="true"] {
+.routine-detail-tabs button[aria-selected="true"],
+.settings-agent-tabs button[aria-selected="true"] {
   color: var(--foreground);
 }
 
-.routine-detail-tabs button:focus-visible {
+.routine-detail-tabs button:focus-visible,
+.settings-agent-tabs button:focus-visible {
   outline: none;
   color: var(--foreground);
 }
@@ -17837,6 +18584,14 @@ input:focus-visible,
 /* Trim the bottom padding when a footer follows so the two don't double up. */
 .empty-state:has(.empty-state-footer) .empty-state-content {
   padding-bottom: var(--sp-10);
+}
+
+/* Compact variant for an empty state that already sits inside a boxed card
+ * (e.g. the MCP servers card): the card supplies the surface, so the empty
+ * state hugs its content with tight padding instead of reserving a tall dead
+ * band. */
+.empty-state-compact .empty-state-content {
+  padding: var(--sp-6) var(--sp-6);
 }
 
 /* Borderless, muted glyph — no tile. It should whisper. The icon set ships

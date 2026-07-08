@@ -3,7 +3,11 @@ import { IconFire1 } from "central-icons/IconFire1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { modelPrivacyBadge, modelPrivacyFlags, modelSupportsTools } from "../../lib/model-privacy";
+import {
+  modelAvailableForMode,
+  modelPrivacyBadge,
+  modelPrivacyFlags,
+} from "../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
@@ -66,9 +70,6 @@ export function ModelMeta({ model }: { model: VeniceModelDto }) {
   );
 }
 
-const NO_TOOLS_MODEL_EXPLANATION =
-  "This model can't use tools, so June's agent can't work with it. Pick a tool-capable model to use June.";
-
 export function ModelPickerDialog({
   open,
   mode,
@@ -97,7 +98,14 @@ export function ModelPickerDialog({
   useEffect(() => {
     if (open) setTab("suggested");
   }, [open, mode]);
-  const suggested = useMemo(() => suggestedModelsForMode(mode, options), [mode, options]);
+  const availableOptions = useMemo(
+    () => options.filter((model) => modelAvailableForMode(mode, model)),
+    [mode, options],
+  );
+  const suggested = useMemo(
+    () => suggestedModelsForMode(mode, availableOptions),
+    [mode, availableOptions],
+  );
   const query = search.trim().toLowerCase();
   const searching = query.length > 0;
   const reasonsById = useMemo(
@@ -106,7 +114,7 @@ export function ModelPickerDialog({
   );
   const filteredOptions = useMemo(() => {
     if (searching) {
-      return options.filter((model) =>
+      return availableOptions.filter((model) =>
         [model.name, model.id, model.description, model.privacy, ...model.traits]
           .filter(Boolean)
           .join(" ")
@@ -119,8 +127,8 @@ export function ModelPickerDialog({
     if (tab === "suggested" && suggested.length > 0) {
       return suggested.map((item) => item.model);
     }
-    return options;
-  }, [options, query, searching, suggested, tab]);
+    return availableOptions;
+  }, [availableOptions, query, searching, suggested, tab]);
   const showReasons = !searching && tab === "suggested" && suggested.length > 0;
   const title =
     mode === "transcription"
@@ -172,13 +180,6 @@ export function ModelPickerDialog({
         {filteredOptions.map((model) => {
           const selected = model.id === value;
           const reason = showReasons ? reasonsById.get(model.id) : undefined;
-          // The text model powers June's agent, which works through tool
-          // calls — a model that can't use tools (Venice's E2EE models)
-          // bricks the agent, so it can't be picked. Only catalog entries
-          // are judged: the synthesized placeholder for a selection the
-          // catalog hasn't loaded yet has no capability data to judge by.
-          const noTools =
-            mode === "generation" && Boolean(model.provider) && !modelSupportsTools(model);
           // A local (bring-your-own) endpoint is selectable, but its tool
           // support can't be verified from here, so it carries a non-blocking
           // caveat rather than the disabling no-tools treatment.
@@ -190,13 +191,8 @@ export function ModelPickerDialog({
               className="model-picker-option"
               role="option"
               aria-selected={selected}
-              aria-disabled={noTools || undefined}
               data-selected={selected}
-              data-no-tools={noTools || undefined}
-              title={noTools ? NO_TOOLS_MODEL_EXPLANATION : undefined}
-              onClick={() => {
-                if (!noTools) onSelect(model.id);
-              }}
+              onClick={() => onSelect(model.id)}
             >
               <span className="model-picker-logo" aria-hidden>
                 <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
@@ -208,7 +204,6 @@ export function ModelPickerDialog({
                 {selected ? <IconCheckmark2Small size={14} /> : null}
               </span>
               <span className="model-picker-meta">
-                {noTools ? <span className="model-picker-no-tools">No tools</span> : null}
                 {localCaveat ? (
                   <HoverTip
                     tip="Tool support depends on your local model."

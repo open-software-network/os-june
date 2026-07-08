@@ -835,6 +835,54 @@ fn open_non_macos_privacy_settings(request: OpenPrivacySettingsRequest) -> Resul
     ))
 }
 
+/// Reveals an absolute path in the platform file manager: on macOS it opens
+/// Finder with the item selected (`open -R`), on Windows it selects the item
+/// in Explorer (`explorer /select,`), and elsewhere it opens the containing
+/// directory with `xdg-open`. The path is validated to be absolute and to
+/// exist, then passed as a distinct argument (never through a shell) so it
+/// cannot be interpolated. The child is spawned without blocking.
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    let target = Path::new(&path);
+    if !target.is_absolute() {
+        return Err(format!("Path must be absolute: {path}"));
+    }
+    if !target.exists() {
+        return Err(format!("Path does not exist: {path}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .arg("-R")
+            .arg(target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Failed to reveal path in Finder: {error}"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // `explorer` wants the selection flag and path in a single `/select,<path>`
+        // token; pass it as one argument so nothing is shell-interpolated.
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(target);
+        std::process::Command::new("explorer")
+            .arg(arg)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Failed to reveal path in Explorer: {error}"))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let dir = target.parent().unwrap_or(target);
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Failed to open containing directory: {error}"))
+    }
+}
+
 #[tauri::command]
 pub async fn start_recording(
     app: AppHandle,

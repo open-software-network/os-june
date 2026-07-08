@@ -3,6 +3,7 @@ import type { Editor as TiptapEditor } from "@tiptap/react";
 import { IconArrowDown } from "central-icons/IconArrowDown";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBolt } from "central-icons/IconBolt";
 import { IconBranchSimple } from "central-icons/IconBranchSimple";
@@ -15,6 +16,7 @@ import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
+import { IconFinder } from "central-icons/IconFinder";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconFolders } from "central-icons/IconFolders";
 import { IconConsole } from "central-icons/IconConsole";
@@ -29,6 +31,7 @@ import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
@@ -78,6 +81,7 @@ import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
+import { Switch } from "../ui/Switch";
 import {
   cancelAgentTask,
   dictationHelperCommand,
@@ -106,6 +110,7 @@ import {
   providerModelSettings,
   retryAgentTask,
   imagePromptMayBeExplicit,
+  revealPath,
   setHermesAgentCliAccess,
   setImageSafeMode,
   setImageSafeModePromptDismissed,
@@ -209,11 +214,9 @@ import { HermesTracePanel } from "./HermesTracePanel";
 import { MarkdownContent, highlightText } from "./MarkdownContent";
 import {
   ComposerModelPicker,
-  ComposerModelPopover,
   PrivacyModeBadge,
   UnrestrictedBadge,
   heroPrivacyFootnote,
-  type ComposerModelFlyout,
 } from "./composer/ModelPicker";
 import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
@@ -234,6 +237,7 @@ import {
 } from "../../lib/local-generation";
 import { preferredVisionFallbackModel } from "../../lib/suggested-models";
 import { modelOptions, selectedModel as selectedModelOption } from "../settings/ModelPickerDialog";
+import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import {
   isHermesServerError,
   isHermesSessionsStartupRequestError,
@@ -1994,11 +1998,11 @@ export function AgentWorkspace({
   // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
   const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
-  const [composerModelFlyout, setComposerModelFlyout] = useState<ComposerModelFlyout>(null);
+  const [composerModelFlyout, setComposerModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
-  const composerModelTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const composerModelPopoverRef = useRef<HTMLDivElement | null>(null);
-  const composerModelSearchRef = useRef<HTMLInputElement | null>(null);
+  const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
+  const composerModelPopoverRef = useRef<HTMLDivElement>(null);
+  const composerModelSearchRef = useRef<HTMLInputElement>(null);
   // Attestation walkthrough URL served by the backend (same page as Settings
   // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
@@ -7892,7 +7896,8 @@ export function AgentWorkspace({
           />
         ) : null}
         {composerModelOpen ? (
-          <ComposerModelPopover
+          <ModelPickerPopover
+            mode="generation"
             flyout={composerModelFlyout}
             model={generationModel}
             options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
@@ -9092,6 +9097,7 @@ export function MessagingPanel({
   onRefresh,
   onSaveEnv,
   onSelectPlatform,
+  onBack,
   onToggle,
 }: {
   envEdits: Record<string, string>;
@@ -9105,16 +9111,45 @@ export function MessagingPanel({
   onRefresh: () => void;
   onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
   onSelectPlatform: (platform: HermesMessagingPlatformInfo) => void;
+  /** Returns from a platform's configuration to the platform list. */
+  onBack?: () => void;
   onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
 }) {
   const q = query.trim().toLowerCase();
   const visible = (platforms ?? [])
     .filter((platform) => capabilityMatches(platform, q))
     .sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
-  const selected =
-    visible.find((platform) => platform.id === selectedPlatformId) ?? visible[0] ?? null;
+  // Selection is a drill-in: no platform is open until the user picks one.
+  const selected = (platforms ?? []).find((platform) => platform.id === selectedPlatformId) ?? null;
+
+  if (selected) {
+    return (
+      <section className="agent-management-panel" aria-label="Messaging platforms">
+        <div className="agent-platform-topbar">
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Back to messaging platforms"
+            onClick={onBack}
+          >
+            <IconChevronLeftSmall size={14} ariaHidden />
+          </button>
+          <span className="agent-platform-topbar-title">{selected.name}</span>
+        </div>
+        <MessagingPlatformDetail
+          envEdits={envEdits}
+          platform={selected}
+          saving={saving}
+          onEditEnv={onEditEnv}
+          onSaveEnv={onSaveEnv}
+          onToggle={onToggle}
+        />
+      </section>
+    );
+  }
+
   return (
-    <section className="agent-management-panel" aria-label="Messaging">
+    <section className="agent-management-panel" aria-label="Messaging platforms">
       <ManagementToolbar
         loading={loading}
         placeholder="Search messaging platforms"
@@ -9127,48 +9162,44 @@ export function MessagingPanel({
           <Spinner />
         </div>
       ) : (
-        <div className="agent-messaging-layout">
-          <div className="agent-messaging-list" aria-label="Messaging channels">
-            <CapabilityGroup title="Messaging" count={visible.length} empty="No matching platforms">
-              {visible.map((platform) => {
-                const envVars = platform.envVars ?? platform.env_vars ?? [];
-                const requiredSet = envVars.filter(
-                  (field) => field.required && envFieldSet(field),
-                ).length;
-                const requiredTotal = envVars.filter((field) => field.required).length;
-                const state = platform.state ?? "unknown";
-                const configured =
-                  platform.configured || (requiredTotal > 0 && requiredSet === requiredTotal);
-                return (
-                  <CapabilityRow
-                    key={platform.id}
-                    title={platform.name}
-                    description={platform.description}
-                    meta={`${stateLabel(state)}${
-                      requiredTotal
-                        ? ` · ${requiredSet}/${requiredTotal} required set`
-                        : configured
-                          ? " · configured"
-                          : ""
-                    }`}
-                    enabled={Boolean(platform.enabled)}
-                    selected={platform.id === selected?.id}
-                    saving={saving === `messaging:${platform.id}`}
-                    onSelect={() => onSelectPlatform(platform)}
-                    onToggle={(enabled) => onToggle(platform, enabled)}
-                  />
-                );
-              })}
-            </CapabilityGroup>
-          </div>
-          <MessagingPlatformDetail
-            envEdits={envEdits}
-            platform={selected}
-            saving={saving}
-            onEditEnv={onEditEnv}
-            onSaveEnv={onSaveEnv}
-            onToggle={onToggle}
-          />
+        <div className="agent-messaging-list" aria-label="Messaging channels">
+          <CapabilityGroup
+            title="Platforms"
+            count={visible.length}
+            empty="No matching platforms"
+            hideTitle
+          >
+            {visible.map((platform) => {
+              const envVars = platform.envVars ?? platform.env_vars ?? [];
+              const requiredSet = envVars.filter(
+                (field) => field.required && envFieldSet(field),
+              ).length;
+              const requiredTotal = envVars.filter((field) => field.required).length;
+              const state = platform.state ?? "unknown";
+              const enabled = Boolean(platform.enabled);
+              const configured =
+                platform.configured || (requiredTotal > 0 && requiredSet === requiredTotal);
+              // The switch already conveys enabled/disabled and the count badge
+              // by the name owns the required-field progress, so the meta line
+              // keeps only meaningful status (e.g. Connected). The "Not
+              // configured" pill by the switch shows only for an enabled but
+              // unconfigured platform.
+              return (
+                <CapabilityRow
+                  key={platform.id}
+                  title={platform.name}
+                  description={platform.description}
+                  count={requiredTotal ? `${requiredSet}/${requiredTotal}` : undefined}
+                  enabled={enabled}
+                  notConfigured={enabled && !configured}
+                  selected={false}
+                  saving={saving === `messaging:${platform.id}`}
+                  onSelect={() => onSelectPlatform(platform)}
+                  onToggle={(enabled) => onToggle(platform, enabled)}
+                />
+              );
+            })}
+          </CapabilityGroup>
         </div>
       )}
     </section>
@@ -9221,23 +9252,29 @@ export function FilesystemPanel({
             <section key={root.id} className="agent-files-root">
               <header>
                 <div>
-                  <h3 className="agent-files-root-title">
-                    <IconBubble3 size={14} />
-                    {root.label}
-                  </h3>
+                  <h3 className="agent-files-root-title">{root.label}</h3>
                   <p>{root.description}</p>
                 </div>
-                <code>{compactPath(root.path)}</code>
+                <button
+                  type="button"
+                  className="agent-files-root-path"
+                  title={`Reveal ${root.label} in Finder`}
+                  onClick={() => void revealPath(root.path)}
+                >
+                  <code>{compactPath(root.path)}</code>
+                </button>
               </header>
-              {root.entries.length ? (
-                <div className="agent-files-tree">
-                  {root.entries.map((entry) => (
-                    <FilesystemEntryRow key={entry.path} entry={entry} level={0} />
-                  ))}
-                </div>
-              ) : (
-                <p className="agent-capability-empty">No visible entries</p>
-              )}
+              <div className="agent-files-body">
+                {root.entries.length ? (
+                  <div className="agent-files-tree">
+                    {root.entries.map((entry) => (
+                      <FilesystemEntryRow key={entry.path} entry={entry} level={0} />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="agent-capability-empty">No visible entries</p>
+                )}
+              </div>
             </section>
           ))}
         </div>
@@ -9268,6 +9305,20 @@ function FilesystemEntryRow({ entry, level }: { entry: HermesFilesystemEntry; le
           {isDirectory ? "Folder" : formatBytes(entry.size)}
           {entry.modifiedAt ? ` · ${relativeDate(entry.modifiedAt)}` : ""}
         </span>
+        {/* Reveal-in-Finder: an interactive icon-button shown on row hover/focus
+         * that opens the entry's absolute path in the OS file manager. Hidden
+         * for any entry the snapshot reports without an absolute path. */}
+        {isAbsolutePath(entry.path) ? (
+          <button
+            type="button"
+            className="icon-button agent-files-entry-reveal"
+            title="Reveal in Finder"
+            aria-label={`Reveal ${entry.name} in Finder`}
+            onClick={() => void revealPath(entry.path)}
+          >
+            <IconFinder size={13} ariaHidden />
+          </button>
+        ) : null}
       </div>
       {children.length ? (
         <div className="agent-files-children">
@@ -9280,10 +9331,11 @@ function FilesystemEntryRow({ entry, level }: { entry: HermesFilesystemEntry; le
   );
 }
 
-function MessagingPlatformDetail({
+export function MessagingPlatformDetail({
   envEdits,
   platform,
   saving,
+  hideFooter,
   onEditEnv,
   onSaveEnv,
   onToggle,
@@ -9291,6 +9343,10 @@ function MessagingPlatformDetail({
   envEdits: Record<string, string>;
   platform: HermesMessagingPlatformInfo | null;
   saving: string | null;
+  /** When the host renders the Save / enable actions itself (e.g. in the pinned
+   * breadcrumb bar of the settings drill-in), suppress this component's own
+   * footer so the actions aren't duplicated. */
+  hideFooter?: boolean;
   onEditEnv: (key: string, value: string) => void;
   onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
   onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
@@ -9319,30 +9375,26 @@ function MessagingPlatformDetail({
     <div className="agent-messaging-detail">
       <div className="agent-messaging-detail-scroll">
         <header className="agent-messaging-detail-header">
-          <div className="agent-platform-avatar" aria-hidden="true">
-            {platform.name.charAt(0).toUpperCase()}
-          </div>
-          <div>
-            <h3>{platform.name}</h3>
-            <p>{platform.description}</p>
-            <div className="agent-platform-pills">
-              <span>{stateLabel(platform.state ?? "unknown")}</span>
-              <span>{platform.configured ? "Credentials set" : "Needs setup"}</span>
-              {platform.gatewayRunning || platform.gateway_running ? null : (
-                <span>Messaging gateway stopped</span>
-              )}
-            </div>
+          <h3>{platform.name}</h3>
+          <p>{platform.description}</p>
+          {docsUrl ? (
+            <a className="agent-platform-docs" href={docsUrl} rel="noreferrer" target="_blank">
+              Setup guide
+              <IconArrowUpRight size={12} ariaHidden />
+            </a>
+          ) : null}
+          <div className="agent-platform-pills">
+            <span>{stateLabel(platform.state ?? "unknown")}</span>
+            <span>{platform.configured ? "Credentials set" : "Needs setup"}</span>
+            {platform.gatewayRunning || platform.gateway_running ? null : (
+              <span>Messaging gateway stopped</span>
+            )}
           </div>
         </header>
         {platform.errorMessage || platform.error_message ? (
           <div className="agent-platform-error">
             {platform.errorMessage ?? platform.error_message}
           </div>
-        ) : null}
-        {docsUrl ? (
-          <a className="agent-platform-docs" href={docsUrl} rel="noreferrer" target="_blank">
-            Open setup guide
-          </a>
         ) : null}
         <MessagingFieldGroup
           title="Required"
@@ -9363,9 +9415,17 @@ function MessagingPlatformDetail({
             <button
               type="button"
               className="agent-advanced-toggle"
+              aria-expanded={showAdvanced}
               onClick={() => setShowAdvanced((value) => !value)}
             >
-              Advanced ({advanced.length})
+              <span>Advanced</span>
+              <span className="status-pill">{advanced.length}</span>
+              <IconChevronDownSmall
+                size={14}
+                aria-hidden
+                className="agent-advanced-toggle-chevron"
+                data-open={showAdvanced || undefined}
+              />
             </button>
             {showAdvanced ? (
               <MessagingFieldGroup
@@ -9379,28 +9439,30 @@ function MessagingPlatformDetail({
           </section>
         ) : null}
       </div>
-      <footer className="agent-messaging-footer">
-        <button
-          type="button"
-          className="agent-messaging-enable"
-          disabled={saving === `messaging:${platform.id}`}
-          onClick={() => onToggle(platform, !platform.enabled)}
-        >
-          {platform.enabled ? "Enabled" : "Disabled"}
-        </button>
-        <button
-          type="button"
-          disabled={!hasEdits || isSavingEnv}
-          onClick={() => onSaveEnv(platform)}
-        >
-          {isSavingEnv ? "Saving..." : "Save changes"}
-        </button>
-      </footer>
+      {hideFooter ? null : (
+        <footer className="agent-messaging-footer">
+          <button
+            type="button"
+            className="agent-messaging-enable"
+            disabled={saving === `messaging:${platform.id}`}
+            onClick={() => onToggle(platform, !platform.enabled)}
+          >
+            {platform.enabled ? "Enabled" : "Disabled"}
+          </button>
+          <button
+            type="button"
+            disabled={!hasEdits || isSavingEnv}
+            onClick={() => onSaveEnv(platform)}
+          >
+            {isSavingEnv ? "Saving..." : "Save changes"}
+          </button>
+        </footer>
+      )}
     </div>
   );
 }
 
-function MessagingFieldGroup({
+export function MessagingFieldGroup({
   edits,
   fields,
   saving,
@@ -9456,16 +9518,36 @@ function ManagementToolbar({
   onQueryChange: (query: string) => void;
   onRefresh: () => void;
 }) {
+  const [refreshSpins, setRefreshSpins] = useState(0);
   return (
     <div className="agent-management-toolbar">
-      <input
-        value={query}
-        onChange={(event) => onQueryChange(event.currentTarget.value)}
-        placeholder={placeholder}
-      />
-      <button type="button" disabled={loading} onClick={onRefresh}>
-        <IconArrowRotateClockwise size={14} />
-        Refresh
+      <label className="agent-management-search">
+        <IconMagnifyingGlass size={15} aria-hidden className="agent-management-search-icon" />
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => onQueryChange(event.currentTarget.value)}
+          placeholder={placeholder}
+          aria-label={placeholder}
+        />
+      </label>
+      <button
+        type="button"
+        className="icon-button agent-management-refresh"
+        aria-label="Refresh"
+        aria-busy={loading}
+        title="Refresh"
+        disabled={loading}
+        onClick={() => {
+          setRefreshSpins((spins) => spins + 1);
+          onRefresh();
+        }}
+      >
+        <IconArrowRotateClockwise
+          size={14}
+          className="balance-refresh-icon"
+          style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+        />
       </button>
     </div>
   );
@@ -9476,17 +9558,23 @@ function CapabilityGroup({
   count,
   empty,
   title,
+  hideTitle = false,
 }: {
   children: ReactNode;
   count: number;
   empty: string;
   title: string;
+  /** Hides the in-list heading when the group's title lives above the card as
+   * the group heading (the messaging platforms group). */
+  hideTitle?: boolean;
 }) {
   return (
     <section className="agent-capability-group">
-      <h3>
-        {title} <span>{count}</span>
-      </h3>
+      {hideTitle ? null : (
+        <h3>
+          {title} <span>{count}</span>
+        </h3>
+      )}
       {count ? children : <p className="agent-capability-empty">{empty}</p>}
     </section>
   );
@@ -9494,9 +9582,11 @@ function CapabilityGroup({
 
 function CapabilityRow({
   children,
+  count,
   description,
   enabled,
   meta,
+  notConfigured = false,
   saving,
   selected = false,
   title,
@@ -9504,9 +9594,15 @@ function CapabilityRow({
   onToggle,
 }: {
   children?: ReactNode;
+  /** A quiet count badge beside the name (e.g. "0/2" required fields set),
+   * using the same muted number-badge treatment as the group count. */
+  count?: string;
   description?: string;
   enabled: boolean;
   meta?: string;
+  /** When true a quiet "Not configured" status pill sits to the left of the
+   * switch, flagging that the platform still needs its credentials. */
+  notConfigured?: boolean;
   saving: boolean;
   selected?: boolean;
   title: string;
@@ -9514,24 +9610,30 @@ function CapabilityRow({
   onToggle: (enabled: boolean) => void;
 }) {
   return (
-    <article className="agent-capability-row" data-selected={selected}>
+    <article className="agent-capability-row" data-selected={selected} data-clickable={!!onSelect}>
       <button type="button" disabled={!onSelect} onClick={onSelect}>
         <div className="agent-capability-title">
           <span>{title}</span>
+          {count ? <span className="status-pill agent-capability-count">{count}</span> : null}
           {meta ? <em>{meta}</em> : null}
         </div>
         {description ? <p>{description}</p> : null}
         {children}
       </button>
-      <button
-        type="button"
-        className="agent-switch"
-        aria-pressed={enabled}
-        disabled={saving}
-        onClick={() => onToggle(!enabled)}
-      >
-        <span />
-      </button>
+      <div className="agent-capability-actions">
+        {notConfigured ? (
+          <span className="status-pill agent-capability-status">Not configured</span>
+        ) : null}
+        <Switch
+          checked={enabled}
+          disabled={saving}
+          onCheckedChange={onToggle}
+          aria-label={`${enabled ? "Disable" : "Enable"} ${title}`}
+        />
+        {onSelect ? (
+          <IconChevronRightSmall size={14} aria-hidden className="agent-capability-chevron" />
+        ) : null}
+      </div>
     </article>
   );
 }
@@ -12385,6 +12487,13 @@ function compactPath(path: string) {
   return path.replace(/^\/Users\/[^/]+/, "~");
 }
 
+/** Whether a snapshot entry carries an absolute path we can reveal in Finder
+ * (posix "/…" or a Windows drive/UNC path). Reveal is hidden otherwise. */
+function isAbsolutePath(path: string | undefined | null): path is string {
+  if (!path) return false;
+  return path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
 function formatBytes(value: number | null | undefined) {
   if (!value) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -12405,11 +12514,24 @@ function toolNames(toolset: HermesToolsetInfo) {
   return Array.isArray(toolset.tools) ? toolset.tools : [];
 }
 
-function stateLabel(value: string) {
+export function stateLabel(value: string) {
   return value.replaceAll("_", " ");
 }
 
-function envFieldSet(field: HermesMessagingEnvVarInfo) {
+/** A meaningful capability status word for the list meta line, or undefined.
+ * The row's switch already conveys enabled/disabled, so those (and the neutral
+ * "unknown"/"configured" placeholders) are dropped to avoid a redundant word;
+ * only states that carry real information (e.g. connected, needs setup, error)
+ * survive, sentence-cased. */
+export function meaningfulCapabilityStatus(state: string): string | undefined {
+  const normalized = state.trim().toLowerCase();
+  const redundant = new Set(["enabled", "disabled", "unknown", "configured", ""]);
+  if (redundant.has(normalized)) return undefined;
+  const label = stateLabel(normalized);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+export function envFieldSet(field: HermesMessagingEnvVarInfo) {
   return Boolean(field.isSet ?? field.is_set);
 }
 
@@ -12417,7 +12539,7 @@ function fieldLabel(field: HermesMessagingEnvVarInfo) {
   return field.prompt || field.key.replaceAll("_", " ").toLowerCase();
 }
 
-function messagingTrimEdits(edits: Record<string, string>) {
+export function messagingTrimEdits(edits: Record<string, string>) {
   return Object.fromEntries(
     Object.entries(edits)
       .map(([key, value]) => [key, value.trim()])

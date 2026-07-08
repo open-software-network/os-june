@@ -986,6 +986,11 @@ export async function hermesBridgeImageDataUrl(path: string) {
   });
 }
 
+/** Reveals an absolute path in the OS file manager (Finder on macOS). */
+export async function revealPath(path: string) {
+  return invoke<void>("reveal_path", { path });
+}
+
 // Null when the file can't be shown as text (too large or binary) — the
 // caller falls back to a download affordance instead of erroring.
 export async function hermesBridgeFileText(path: string) {
