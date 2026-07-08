@@ -1671,6 +1671,42 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("strips a streamed MEDIA reference from the completed live turn text", () => {
+    // Regression: prose + MEDIA arrive as streamed deltas, then a complete
+    // event with the full text. The streamed parts hold the raw MEDIA line, and
+    // completeAssistantTextPart would keep them as a prefix of the stripped
+    // complete text — leaving the reference visible. The image must render and
+    // the MEDIA line must be gone.
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_stream.png";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-06-04T10:00:00.000Z", delta: "Here you go:" }),
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          delta: `\n\nMEDIA:${mediaPath}`,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          delta: `Here you go:\n\nMEDIA:${mediaPath}`,
+          complete: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: "Here you go:", status: "complete" },
+      {
+        type: "image",
+        status: "complete",
+        prompt: "Generated image",
+        path: mediaPath,
+        name: "img_stream.png",
+      },
+    ]);
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],

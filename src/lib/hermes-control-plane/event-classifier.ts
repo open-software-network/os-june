@@ -180,8 +180,11 @@ function classifyTool(
 function toolImageContent(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined || depth > 4) return undefined;
   if (typeof value === "string") {
-    const parsed = parseJsonObject(value);
-    return parsed ? toolImageContent(parsed, depth + 1) : undefined;
+    // Content may arrive as a JSON string of the MCP content-block ARRAY, not
+    // just an object — parse either and recurse so a stringified array of image
+    // blocks still yields the inline image.
+    const parsed = parseJsonValue(value);
+    return parsed !== undefined ? toolImageContent(parsed, depth + 1) : undefined;
   }
   if (Array.isArray(value)) {
     const items = value
@@ -225,6 +228,17 @@ function parseJsonObject(value: string): Record<string, unknown> | undefined {
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Parses a JSON string to its object OR array value (both recurse in
+ * `toolImageContent`); `undefined` for scalars, null, or invalid JSON. */
+function parseJsonValue(value: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : undefined;
   } catch {
     return undefined;
   }

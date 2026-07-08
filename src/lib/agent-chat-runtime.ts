@@ -511,10 +511,17 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
           currentAssistant.parts = currentAssistant.parts.filter((part) => part.type !== "text");
           currentAssistant.parts.push(notice);
         } else if (text) {
-          if (displayText.trim()) {
-            completeAssistantTextPart(currentAssistant.parts, displayText);
-          } else if (imageParts.length) {
+          if (imageParts.length) {
+            // The streamed deltas still hold the raw `MEDIA:` line, and
+            // completeAssistantTextPart would keep them as a prefix of the
+            // stripped complete text. Replace the text wholesale with the
+            // stripped prose (or drop it) so the reference never stays visible.
             removeAssistantTextParts(currentAssistant.parts);
+            if (displayText) {
+              currentAssistant.parts.push({ type: "text", text: displayText, status: "complete" });
+            }
+          } else if (displayText) {
+            completeAssistantTextPart(currentAssistant.parts, displayText);
           }
           appendImageParts(currentAssistant.parts, imageParts);
         }

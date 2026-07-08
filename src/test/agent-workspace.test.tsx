@@ -8565,7 +8565,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
-        text: `Previous /image request: a red bicycle\n\n${followUp}`,
+        text: `${followUp}\n\n--- Attached Context ---\nPrevious /image request: a red bicycle`,
       }),
     );
     expect(mocks.generateImage).not.toHaveBeenCalled();
@@ -8610,7 +8610,7 @@ describe("AgentWorkspace", () => {
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
       session_id: "runtime-session-1",
-      text: "Previous /image request: june the assistant\n\nmake it feel calmer",
+      text: "make it feel calmer\n\n--- Attached Context ---\nPrevious /image request: june the assistant",
     });
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "image.attach_bytes",
@@ -8767,7 +8767,7 @@ describe("AgentWorkspace", () => {
     ).toHaveLength(1);
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
       session_id: "runtime-session-1",
-      text: "Previous /image request: a red bicycle\n\nwhat do you think",
+      text: "what do you think\n\n--- Attached Context ---\nPrevious /image request: a red bicycle",
     });
   });
 

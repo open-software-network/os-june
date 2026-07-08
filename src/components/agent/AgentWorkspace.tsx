@@ -1168,14 +1168,15 @@ function promptSubmitContentWithFastPathImageContext(
     ),
   ];
   if (!prompts.length) return content;
-  const context =
+  // Tuck the prompt(s) under the "--- Attached Context ---" marker (same
+  // convention as unsupportedImageInputPrompt) so the model reads it but
+  // displayContentForHermesMessage strips it on reload — otherwise the
+  // "Previous /image request: ..." line shows as user-authored text.
+  const contextLines =
     prompts.length === 1
-      ? `Previous /image request: ${prompts[0]}`
-      : [
-          "Previous /image requests:",
-          ...prompts.map((prompt, index) => `${index + 1}. ${prompt}`),
-        ].join("\n");
-  return `${context}\n\n${content}`;
+      ? [`Previous /image request: ${prompts[0]}`]
+      : ["Previous /image requests:", ...prompts.map((prompt, index) => `${index + 1}. ${prompt}`)];
+  return [content, "", "--- Attached Context ---", ...contextLines].join("\n");
 }
 
 /** Thrown when a structured image attach fails so the prompt is NOT sent with a
