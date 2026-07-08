@@ -2646,21 +2646,22 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
 
-    // Our dedicated Image generation section (kept over main's inline row).
-    const imageSection = screen
-      .getByRole("heading", { name: "Image generation" })
-      .closest("section");
-    expect(imageSection).not.toBeNull();
+    // #640 placement (restored, JUN-209): the image model lives inside the
+    // shared "AI models" card, not a standalone "Image generation" section.
+    expect(screen.queryByRole("heading", { name: "Image generation" })).toBeNull();
+    const modelsSection = screen.getByRole("heading", { name: "AI models" }).closest("section");
+    expect(modelsSection).not.toBeNull();
     expect(
-      within(imageSection as HTMLElement).getByRole("button", { name: "Change image model" }),
+      within(modelsSection as HTMLElement).getByRole("button", { name: "Change image model" }),
     ).toBeInTheDocument();
-    expect(within(imageSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
-    // Safe mode lives in the image section and defaults on (JUN-209).
+    expect(within(modelsSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
+    // Safe mode moved into the advanced "More options" disclosure (collapsed by
+    // default) and still defaults on (JUN-209).
     expect(
-      within(imageSection as HTMLElement).getByRole("switch", {
-        name: "Blur adult content in images",
-      }),
-    ).toBeInTheDocument();
+      screen.queryByRole("switch", { name: "Blur adult content in images" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /More options/ }));
+    expect(screen.getByRole("switch", { name: "Blur adult content in images" })).toBeChecked();
 
     // The picker opens with the curated image options (no backend fetch).
     await user.click(screen.getByRole("button", { name: "Change image model" }));
