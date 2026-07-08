@@ -34,7 +34,10 @@ import {
 } from "../../lib/hermes-admin";
 import { ProviderLogo } from "./ProviderLogo";
 import { AdminNotifications } from "./AdminNotifications";
+import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
+import { SettingsPageHeader } from "./AppSettings";
 
 type ProfileBuilderSectionProps = {
   /** The write-access mode whose runtime profiles are created in. Defaults to
@@ -136,7 +139,7 @@ export function ProfileBuilderView({
 
   if (isUnavailable) {
     return (
-      <BuilderShell mode={state.mode ?? mode} profile={state.profile} show={false}>
+      <BuilderShell mode={state.mode ?? mode} profile={state.profile} showModeNote={false}>
         <EmptyState
           title="Hermes is not running"
           description="Start Hermes to create a profile. A profile gives a task its own model, skills, MCP servers, and instructions."
@@ -147,7 +150,7 @@ export function ProfileBuilderView({
 
   if (isErrored) {
     return (
-      <BuilderShell mode={state.mode ?? mode} profile={state.profile} show={false}>
+      <BuilderShell mode={state.mode ?? mode} profile={state.profile} showModeNote={false}>
         <ErrorState
           message={state.error ?? "Could not load profiles from Hermes."}
           retryable={state.retryable}
@@ -160,12 +163,15 @@ export function ProfileBuilderView({
   const created = state.create.phase === "created";
 
   return (
-    <BuilderShell mode={state.mode ?? mode} profile={state.profile} show>
+    <BuilderShell mode={state.mode ?? mode} profile={state.profile} showModeNote>
       {onBackToProfiles ? (
-        <button type="button" className="profile-builder-list-back" onClick={onBackToProfiles}>
-          <IconArrowLeft size={14} ariaHidden />
-          Back to profiles
-        </button>
+        <div className="profile-builder-list-back">
+          <BreadcrumbBar
+            backLabel="Back to profiles"
+            onBack={onBackToProfiles}
+            items={[{ label: "Profiles", onClick: onBackToProfiles }, { label: "Profile builder" }]}
+          />
+        </div>
       ) : null}
       <AdminNotifications
         notifications={state.notifications}
@@ -219,30 +225,32 @@ export function ProfileBuilderView({
 function BuilderShell({
   mode,
   profile,
-  show,
+  showModeNote,
   children,
 }: {
   mode: HermesAdminMode;
   profile?: string;
-  show: boolean;
+  showModeNote: boolean;
   children: ReactNode;
 }) {
-  const modeLabel = mode === "unrestricted" ? "Full mode" : "Sandboxed";
   return (
     <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
-      <h2 id="profile-builder-heading" className="settings-group-heading">
-        Profiles
-      </h2>
-      <p className="settings-group-description">
-        Create a specialized profile with its own model, skills, MCP servers, and instructions. A
-        profile keeps June's identity unless you give it its own.{" "}
-        {show ? (
-          <span className="profile-builder-mode-note">
-            New profiles target the {modeLabel} runtime
-            {profile ? ` (profile ${profile})` : ""}.
-          </span>
-        ) : null}
-      </p>
+      <SettingsPageHeader
+        id="profile-builder-heading"
+        title="Profiles"
+        blurb={
+          <>
+            Create a specialized profile with its own model, skills, MCP servers, and instructions.
+            A profile keeps June's identity unless you give it its own.{" "}
+            <ModeNote
+              mode={mode}
+              profile={profile}
+              show={showModeNote}
+              prefix="New profiles target"
+            />
+          </>
+        }
+      />
       {children}
     </section>
   );
@@ -268,6 +276,7 @@ function ProfilesListView({
   const isLoadingFirst = state.status === "loading";
   const hasProfiles = state.profiles.length > 0;
   const onlyDefault = state.profiles.length === 1 && state.profiles[0]?.name === "default";
+  const [refreshSpins, setRefreshSpins] = useState(0);
 
   useEffect(() => {
     if (!toDelete) return;
@@ -290,7 +299,7 @@ function ProfilesListView({
 
   if (isUnavailable) {
     return (
-      <ProfilesShell mode={mode} profile={undefined} show={false}>
+      <ProfilesShell mode={mode} profile={undefined} showModeNote={false}>
         <EmptyState
           title="Hermes is not running"
           description="Start Hermes to create a profile. A profile gives a task its own model, skills, MCP servers, and instructions."
@@ -300,24 +309,33 @@ function ProfilesListView({
   }
 
   return (
-    <ProfilesShell mode={mode} profile={undefined} show>
+    <ProfilesShell mode={mode} profile={undefined} showModeNote>
+      <div className="profiles-actions">
+        <button
+          type="button"
+          className="icon-button profiles-refresh"
+          aria-label="Refresh profiles"
+          aria-busy={isLoadingFirst}
+          disabled={isLoadingFirst}
+          title="Refresh profiles"
+          onClick={() => {
+            setRefreshSpins((spins) => spins + 1);
+            state.refresh();
+          }}
+        >
+          <IconArrowRotateClockwise
+            size={14}
+            ariaHidden
+            className="balance-refresh-icon"
+            style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+          />
+        </button>
+        <button type="button" className="btn btn-secondary profiles-add" onClick={onNewProfile}>
+          <IconPlusMedium size={14} ariaHidden />
+          New profile
+        </button>
+      </div>
       <div className="settings-card profiles-card">
-        <div className="profiles-toolbar">
-          <button
-            type="button"
-            className="profiles-refresh"
-            disabled={isLoadingFirst}
-            onClick={state.refresh}
-          >
-            <IconArrowRotateClockwise size={14} ariaHidden />
-            Refresh
-          </button>
-          <button type="button" className="profile-builder-create" onClick={onNewProfile}>
-            <IconPlusMedium size={14} ariaHidden />
-            New profile
-          </button>
-        </div>
-
         {state.error && hasProfiles ? (
           <p className="settings-row-error profiles-inline-error">
             <IconExclamationCircle size={14} ariaHidden />
@@ -393,33 +411,47 @@ function ProfilesListView({
 function ProfilesShell({
   mode,
   profile,
-  show,
+  showModeNote,
   children,
 }: {
   mode: HermesAdminMode;
   profile?: string;
-  show: boolean;
+  showModeNote: boolean;
   children: ReactNode;
 }) {
   return (
     <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
-      <h2 id="profile-builder-heading" className="settings-group-heading">
-        Profiles
-      </h2>
-      <p className="settings-group-description">
-        Manage profiles with their own model, skills, MCP servers, and instructions.{" "}
-        {show ? <ModeNote mode={mode} profile={profile} /> : null}
-      </p>
+      <SettingsPageHeader
+        id="profile-builder-heading"
+        title="Profiles"
+        blurb={
+          <>
+            Manage profiles with their own model, skills, MCP servers, and instructions.{" "}
+            <ModeNote mode={mode} profile={profile} show={showModeNote} prefix="Showing" />
+          </>
+        }
+      />
       {children}
     </section>
   );
 }
 
-function ModeNote({ mode, profile }: { mode: HermesAdminMode; profile?: string }) {
+function ModeNote({
+  mode,
+  profile,
+  show,
+  prefix,
+}: {
+  mode: HermesAdminMode;
+  profile?: string;
+  show: boolean;
+  prefix: "Showing" | "New profiles target";
+}) {
+  if (!show) return null;
   const modeLabel = mode === "unrestricted" ? "Full mode" : "Sandboxed";
   return (
     <span className="profile-builder-mode-note">
-      Showing the {modeLabel} runtime
+      {prefix} the {modeLabel} runtime
       {profile ? ` (profile ${profile})` : ""}.
     </span>
   );
@@ -1018,13 +1050,12 @@ function CreatedPanel({ state }: { state: ProfileBuilderState }) {
 
 function EmptyState({ title, description }: { title: string; description: string }) {
   return (
-    <div className="settings-card profile-builder-empty" role="status">
-      <span className="profile-builder-empty-icon" aria-hidden>
-        <IconRobot2 size={22} />
-      </span>
-      <p className="profile-builder-empty-title">{title}</p>
-      <p className="profile-builder-empty-description">{description}</p>
-    </div>
+    <EmptyStateSurface
+      className="empty-state-compact"
+      icon={<IconRobot2 size={22} />}
+      title={title}
+      description={description}
+    />
   );
 }
 

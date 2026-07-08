@@ -22498,49 +22498,58 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.profiles-card {
-  display: grid;
-  gap: var(--sp-4);
-  padding: var(--sp-6);
-}
-
-.profiles-toolbar {
+.profiles-actions {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--sp-2);
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  padding: 0 var(--sp-3);
 }
 
-.profiles-refresh,
-.profile-builder-list-back {
+.profiles-actions .profiles-add {
+  margin-left: auto;
+}
+
+.profiles-add {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--card);
+}
+
+.profiles-card {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  overflow: hidden;
+}
+
+.profiles-refresh:hover:not(:disabled) {
+  background: var(--sidebar-accent);
   color: var(--foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
 }
 
 .profiles-refresh:disabled {
-  cursor: not-allowed;
   opacity: 0.55;
+  cursor: default;
 }
 
 .profile-builder-list-back {
-  width: fit-content;
   margin-bottom: var(--sp-4);
+}
+
+.profile-builder-list-back .detail-bar {
+  position: static;
 }
 
 .profiles-inline-error {
   margin: 0;
+  padding: var(--sp-3);
 }
 
 .profiles-list {
+  display: grid;
+  gap: var(--sp-1);
   list-style: none;
   margin: 0;
   padding: 0;
@@ -22550,12 +22559,16 @@ input:focus-visible,
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
-  padding: var(--sp-4) 0;
-  border-bottom: 1px solid var(--border-subtle);
+  align-items: center;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: transparent;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.profile-row:last-child {
-  border-bottom: 0;
+.profile-row:hover,
+.profile-row:focus-within {
+  background: var(--secondary);
 }
 
 .profile-row-main {
@@ -22621,6 +22634,10 @@ input:focus-visible,
 .profile-row-delete {
   color: var(--destructive);
   background: transparent;
+}
+
+.profile-row-delete:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--destructive) 14%, transparent);
 }
 
 .profile-row-activate:disabled,
