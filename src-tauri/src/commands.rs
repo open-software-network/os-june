@@ -2,9 +2,11 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            capture_status_for_recovery, finish_active_capture, finish_capture, is_capture_active,
-            microphone_permission_state, pause_capture, resume_capture, start_capture,
-            CaptureRecoverySnapshot,
+            capture_start_timeout_error, capture_status_for_recovery, finish_active_capture,
+            finish_capture, is_capture_active, microphone_device_available, microphone_device_hint,
+            microphone_permission_state, pause_capture, resume_capture, start_capture_with_cancel,
+            CaptureRecoverySnapshot, CaptureStartHandshake, CaptureStartState, StartedRecording,
+            CAPTURE_START_TIMEOUT,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -47,7 +49,7 @@ use sqlx_sqlite::SqlitePool;
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -426,7 +428,9 @@ pub async fn save_agent_hermes_session(
 pub async fn suggest_agent_session_title(
     request: SuggestAgentSessionTitleRequest,
 ) -> Result<SuggestAgentSessionTitleResponse, AppError> {
-    let title = crate::june_api::suggest_agent_session_title(&request.prompt).await?;
+    let title =
+        crate::june_api::suggest_agent_session_title(&request.prompt, request.response.as_deref())
+            .await?;
     Ok(SuggestAgentSessionTitleResponse { title })
 }
 
@@ -904,14 +908,35 @@ pub async fn start_recording(
             .unwrap_or_else(|| "The selected recording sources are not ready.".to_string());
         return Err(AppError::new("source_not_ready", message));
     }
+    // First capture on a fresh install: the main app must own its TCC mic
+    // prompt (the dictation helper's grant is a different bundle). Resolve
+    // `not_determined` here, before the stream opens, so a denial is a clear
+    // error instead of a recording full of zeros.
+    #[cfg(target_os = "macos")]
+    {
+        let (permission_state, permission_hint) = tokio::task::spawn_blocking(
+            crate::audio::capture::request_microphone_permission_blocking,
+        )
+        .await
+        .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))?;
+        if matches!(
+            permission_state.as_str(),
+            "denied" | "restricted" | "not_determined"
+        ) {
+            return Err(AppError::new(
+                "microphone_permission_missing",
+                permission_hint
+                    .unwrap_or_else(|| "Microphone permission is required to record.".to_string()),
+            ));
+        }
+    }
     finish_active_capture_before_start(&repos).await?;
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
-    let started = tokio::task::spawn_blocking(move || {
-        start_capture(app, &capture_paths, capture_note_id, source_mode)
+    let started = start_capture_with_timeout(move |abandoned| {
+        start_capture_with_cancel(app, &capture_paths, capture_note_id, source_mode, abandoned)
     })
-    .await
-    .map_err(|error| AppError::new("recording_start_failed", error.to_string()))??;
+    .await?;
     repos
         .create_recording_session(
             &note.id,
@@ -946,6 +971,95 @@ pub async fn start_recording(
         sources: started.status.sources,
         warnings: Vec::new(),
     })
+}
+
+async fn start_capture_with_timeout<F>(start_capture: F) -> Result<StartedRecording, AppError>
+where
+    F: FnOnce(Arc<CaptureStartHandshake>) -> Result<StartedRecording, AppError> + Send + 'static,
+{
+    start_capture_with_timeout_and_cleanup(
+        start_capture,
+        |started| {
+            if let Err(error) = finish_capture(&started.session_id) {
+                eprintln!(
+                    "failed to tear down abandoned recording {} after start timeout: {}",
+                    started.session_id, error.message
+                );
+            }
+        },
+        CAPTURE_START_TIMEOUT,
+    )
+    .await
+}
+
+async fn start_capture_with_timeout_and_cleanup<F, C>(
+    start_capture: F,
+    cleanup_late_success: C,
+    timeout: Duration,
+) -> Result<StartedRecording, AppError>
+where
+    F: FnOnce(Arc<CaptureStartHandshake>) -> Result<StartedRecording, AppError> + Send + 'static,
+    C: FnOnce(&StartedRecording) + Send + 'static,
+{
+    let handshake = Arc::new(Mutex::new(CaptureStartState::Pending));
+    let worker_handshake = Arc::clone(&handshake);
+    let (sender, receiver) = mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name("capture-start".to_string())
+        .spawn(move || {
+            let result = start_capture(worker_handshake);
+            match result {
+                Ok(started) => {
+                    if let Err(mpsc::SendError(Ok(started))) = sender.send(Ok(started)) {
+                        cleanup_late_success(&started);
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                }
+            }
+        })
+        .map_err(|error| AppError::new("recording_start_failed", error.to_string()))?;
+    drop(thread);
+
+    tokio::task::spawn_blocking(move || {
+        match receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Abandon only a build that has not committed. If the builder
+                // already published (it won the race by a hair), its capture
+                // is live: take the in-flight result as success instead of
+                // stranding an active recording behind a timeout error.
+                let published = handshake
+                    .lock()
+                    .map(|mut state| {
+                        if *state == CaptureStartState::Published {
+                            true
+                        } else {
+                            *state = CaptureStartState::Abandoned;
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if published {
+                    receiver.recv().unwrap_or_else(|_| {
+                        Err(AppError::new(
+                            "recording_start_failed",
+                            "Recording start failed before reporting a result.",
+                        ))
+                    })
+                } else {
+                    Err(capture_start_timeout_error())
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AppError::new(
+                "recording_start_failed",
+                "Recording start failed before reporting a result.",
+            )),
+        }
+    })
+    .await
+    .map_err(|error| AppError::new("recording_start_failed", error.to_string()))?
 }
 
 #[tauri::command]
@@ -1132,6 +1246,7 @@ async fn finish_recording_session(
                     artifact.id.clone(),
                     source.source.as_db().to_string(),
                     source.final_path.clone(),
+                    validation.recorded_silence,
                 ));
             }
         }
@@ -1155,6 +1270,7 @@ async fn finish_recording_session(
             actual_duration_ms: Some(validation.actual_duration_ms),
             duration_within_tolerance: validation.duration_within_tolerance,
             non_silent_signal: validation.non_silent_signal,
+            recorded_silence: validation.recorded_silence,
             peak_amplitude: Some(validation.peak_amplitude),
             rms_amplitude: Some(validation.rms_amplitude),
             warnings: validation.warnings.clone(),
@@ -1174,6 +1290,7 @@ async fn finish_recording_session(
             actual_duration_ms: 0,
             duration_within_tolerance: false,
             non_silent_signal: false,
+            recorded_silence: false,
             peak_amplitude: 0.0,
             rms_amplitude: 0.0,
             warnings: vec!["No microphone validation was available.".to_string()],
@@ -1278,7 +1395,7 @@ async fn finish_recording_session(
         let result = if valid_sources.len() == 1
             && task_source_mode == RecordingSourceMode::MicrophoneOnly
         {
-            let (artifact_id, _source, path) = valid_sources
+            let (artifact_id, _source, path, recorded_silence) = valid_sources
                 .into_iter()
                 .next()
                 .expect("valid source was checked before starting processing");
@@ -1291,6 +1408,7 @@ async fn finish_recording_session(
                 title,
                 existing_generated_note,
                 manual_notes,
+                recorded_silence,
             )
             .await
         } else {
@@ -1329,18 +1447,32 @@ async fn finish_recording_session(
 
 fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
     let (microphone_state, microphone_hint) = microphone_permission_state();
-    let microphone_ready = microphone_state == "granted";
+    // TCC grants are bundle-scoped, so the dictation helper's grant never
+    // covers the main app. `not_determined` (and the defensive `unknown`)
+    // must stay startable: the start path triggers the main app's own TCC
+    // prompt, and blocking here would leave a fresh install with no way to
+    // ever produce that prompt.
+    let microphone_permission_blocked =
+        matches!(microphone_state.as_str(), "denied" | "restricted");
+    let microphone_device_available = microphone_device_available();
+    let microphone_ready = !microphone_permission_blocked && microphone_device_available;
+    let microphone_message = if microphone_permission_blocked {
+        microphone_hint.clone()
+    } else if !microphone_device_available {
+        Some(microphone_device_hint())
+    } else {
+        None
+    };
     let mut sources = vec![SourceReadinessDto {
         source: RecordingSource::Microphone,
         required: true,
         ready: microphone_ready,
         permission_state: microphone_state.clone(),
-        device_available: microphone_ready,
+        device_available: microphone_device_available,
         capture_available: microphone_ready,
-        recovery_action: microphone_hint
-            .as_ref()
-            .map(|_| "openMicrophoneSettings".to_string()),
-        message: microphone_hint,
+        recovery_action: microphone_permission_blocked
+            .then(|| "openMicrophoneSettings".to_string()),
+        message: microphone_message,
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
         let mut system = crate::audio::system_macos::system_audio_readiness();
@@ -1432,7 +1564,7 @@ pub async fn retry_processing(
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
         let result = if sources.len() == 1 {
-            let (audio_artifact_id, _source, audio_path, session_id) = sources
+            let (audio_artifact_id, _source, audio_path, session_id, recorded_silence) = sources
                 .into_iter()
                 .next()
                 .expect("retry sources were checked before starting processing");
@@ -1445,12 +1577,13 @@ pub async fn retry_processing(
                 title,
                 existing_generated_note,
                 manual_notes,
+                recorded_silence,
             )
             .await
         } else {
             let session_id = sources
                 .first()
-                .map(|(_id, _source, _path, session_id)| session_id.clone())
+                .map(|(_id, _source, _path, session_id, _recorded_silence)| session_id.clone())
                 .unwrap_or_default();
             process_saved_source_audio(
                 &task_repos,
@@ -1459,7 +1592,9 @@ pub async fn retry_processing(
                 RecordingSourceMode::MicrophonePlusSystem,
                 sources
                     .into_iter()
-                    .map(|(id, source, path, _session_id)| (id, source, path))
+                    .map(|(id, source, path, _session_id, recorded_silence)| {
+                        (id, source, path, recorded_silence)
+                    })
                     .collect(),
                 title,
                 existing_generated_note,
@@ -1481,16 +1616,16 @@ async fn retry_audio_sources(
     repos: &Repositories,
     paths: &AppPaths,
     note_id: &str,
-) -> Result<Vec<(String, String, PathBuf, String)>, AppError> {
+) -> Result<Vec<(String, String, PathBuf, String, bool)>, AppError> {
     let sources = repos
         .latest_valid_audio_artifact_paths(note_id)
         .await?
         .into_iter()
-        .filter_map(|(id, source, path, session_id)| {
+        .filter_map(|(id, source, path, session_id, recorded_silence)| {
             paths
                 .contained_recording_file(path)
                 .ok()
-                .map(|path| (id, source, path, session_id))
+                .map(|path| (id, source, path, session_id, recorded_silence))
         })
         .collect::<Vec<_>>();
     if sources.is_empty() {
@@ -1583,7 +1718,12 @@ pub async fn recover_recording(
                 )
                 .await?;
             if valid {
-                valid_sources.push((artifact.id, artifact.source, path));
+                valid_sources.push((
+                    artifact.id,
+                    artifact.source,
+                    path,
+                    validation.recorded_silence,
+                ));
             }
         }
         if valid_sources.is_empty() {
@@ -1683,6 +1823,7 @@ pub async fn recover_recording(
         note.title,
         existing_generated_note,
         manual_notes,
+        validation.recorded_silence,
     )
     .await
 }
@@ -2038,10 +2179,25 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_system_audio_permission_probe_result, recovery_validation_expected_duration_ms,
-        should_probe_system_audio_permission,
+        apply_system_audio_permission_probe_result, capture_start_timeout_error,
+        recovery_validation_expected_duration_ms, should_probe_system_audio_permission,
+        start_capture_with_timeout_and_cleanup,
     };
-    use crate::domain::types::{AppError, RecordingSource, SourceReadinessDto};
+    use crate::{
+        audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
+        domain::types::{
+            AppError, AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState,
+            RecordingStatusDto, SourceReadinessDto,
+        },
+    };
+    use std::{
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
+        time::Duration,
+    };
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {
@@ -2097,6 +2253,111 @@ mod tests {
             readiness.message.as_deref(),
             Some("Failed to create audio format for system tap.")
         );
+    }
+
+    #[tokio::test]
+    async fn capture_published_just_before_timeout_is_returned_as_success() {
+        let result = start_capture_with_timeout_and_cleanup(
+            move |handshake| {
+                // Commit the publish (as the real builder does under the
+                // ACTIVE_RECORDING lock), then outlive the watchdog timeout
+                // before reporting: the watchdog must accept this capture as
+                // success rather than strand a live recording behind a
+                // timeout error.
+                *handshake.lock().expect("handshake lock") = CaptureStartState::Published;
+                std::thread::sleep(Duration::from_millis(60));
+                Ok(fake_started_recording("published-session"))
+            },
+            move |_| panic!("published capture must not be torn down as late success"),
+            Duration::from_millis(20),
+        )
+        .await;
+
+        let started = result.expect("published capture is a success, not a timeout");
+        assert_eq!(started.session_id, "published-session");
+    }
+
+    #[tokio::test]
+    async fn capture_start_timeout_returns_timeout_without_registering_active_capture() {
+        let builder_saw_abandoned = Arc::new(AtomicBool::new(false));
+        let registered = Arc::new(AtomicBool::new(false));
+        let cleanup_called = Arc::new(AtomicBool::new(false));
+        let builder_saw_abandoned_for_thread = Arc::clone(&builder_saw_abandoned);
+        let registered_for_thread = Arc::clone(&registered);
+        let cleanup_called_for_thread = Arc::clone(&cleanup_called);
+
+        let result = start_capture_with_timeout_and_cleanup(
+            move |abandoned| {
+                while *abandoned.lock().expect("handshake lock") != CaptureStartState::Abandoned {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                builder_saw_abandoned_for_thread.store(true, Ordering::Release);
+                if *abandoned.lock().expect("handshake lock") != CaptureStartState::Abandoned {
+                    registered_for_thread.store(true, Ordering::Release);
+                    return Ok(fake_started_recording("late-session"));
+                }
+                Err(capture_start_timeout_error())
+            },
+            move |_| {
+                cleanup_called_for_thread.store(true, Ordering::Release);
+            },
+            Duration::from_millis(20),
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("start should time out"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "capture_start_timeout");
+        wait_until(|| builder_saw_abandoned.load(Ordering::Acquire));
+        assert!(!registered.load(Ordering::Acquire));
+        assert!(!cleanup_called.load(Ordering::Acquire));
+        assert!(!is_capture_active());
+    }
+
+    #[tokio::test]
+    async fn late_capture_start_success_is_cleaned_up_after_timeout() {
+        let active_session = Arc::new(Mutex::new(None::<String>));
+        let cleanup_called = Arc::new(AtomicBool::new(false));
+        let active_session_for_builder = Arc::clone(&active_session);
+        let active_session_for_cleanup = Arc::clone(&active_session);
+        let cleanup_called_for_thread = Arc::clone(&cleanup_called);
+
+        let result = start_capture_with_timeout_and_cleanup(
+            move |abandoned| {
+                // Return only after the timeout has demonstrably fired; a
+                // fixed sleep races the timeout under machine load.
+                while *abandoned.lock().expect("handshake lock") != CaptureStartState::Abandoned {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let started = fake_started_recording("late-session");
+                *active_session_for_builder
+                    .lock()
+                    .expect("active session lock") = Some(started.session_id.clone());
+                Ok(started)
+            },
+            move |started| {
+                let mut active = active_session_for_cleanup
+                    .lock()
+                    .expect("active session lock");
+                if active.as_deref() == Some(started.session_id.as_str()) {
+                    *active = None;
+                }
+                cleanup_called_for_thread.store(true, Ordering::Release);
+            },
+            Duration::from_millis(20),
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("start should time out"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "capture_start_timeout");
+        wait_until(|| cleanup_called.load(Ordering::Acquire));
+        assert_eq!(*active_session.lock().expect("active session lock"), None);
+        assert!(!is_capture_active());
     }
 
     #[test]
@@ -2223,5 +2484,44 @@ mod tests {
         writer.flush().expect("flush");
         std::mem::forget(writer);
         (dir, path)
+    }
+
+    fn fake_started_recording(session_id: &str) -> StartedRecording {
+        StartedRecording {
+            session_id: session_id.to_string(),
+            note_id: "note-1".to_string(),
+            source_mode: RecordingSourceMode::MicrophoneOnly,
+            partial_path: PathBuf::from("microphone.partial.wav"),
+            final_path: PathBuf::from("microphone.wav"),
+            sources: vec![StartedSource {
+                source: RecordingSource::Microphone,
+                partial_path: PathBuf::from("microphone.partial.wav"),
+                final_path: PathBuf::from("microphone.wav"),
+            }],
+            device_label: Some("Test microphone".to_string()),
+            status: RecordingStatusDto {
+                session_id: session_id.to_string(),
+                note_id: Some("note-1".to_string()),
+                source_mode: RecordingSourceMode::MicrophoneOnly,
+                state: RecordingState::Recording,
+                elapsed_ms: 0,
+                level: AudioLevelDto::default(),
+                silence_warning: false,
+                bytes_written: 0,
+                live_preview_enabled: false,
+                sources: Vec::new(),
+                warnings: Vec::new(),
+            },
+        }
+    }
+
+    fn wait_until(condition: impl Fn() -> bool) {
+        for _ in 0..50 {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(condition());
     }
 }

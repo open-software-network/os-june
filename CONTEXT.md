@@ -232,7 +232,7 @@ is UI; the reference is the token).
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, and `june_image`).
+`june_web`, `june_image`, and `june_recorder`).
 _Avoid_: using "tool" for all three.
 
 **Admin surface**:
@@ -384,10 +384,13 @@ _Avoid_: pet (legacy name — survives only in an old storage key), overlay
 
 **Permission**:
 A macOS TCC grant June needs — microphone, accessibility, or screen/system
-audio recording. System-audio permission is probe-driven (there is no
-query-only macOS API); the dictation helper is the authoritative source for
-mic + accessibility state.
-_Avoid_: entitlement (that is the code-signing sense).
+audio recording. TCC grants are bundle-scoped, so the authoritative source is
+the bundle that captures: the dictation helper for dictation mic +
+accessibility state, the main app's own `AVCaptureDevice` authorization for
+note-recording mic state (the helper's grant never covers the main app).
+System-audio permission is probe-driven (there is no query-only macOS API).
+_Avoid_: entitlement (that is the code-signing sense), treating one bundle's
+mic grant as covering the other.
 
 ## Flagged ambiguities
 

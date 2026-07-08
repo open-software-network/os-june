@@ -101,6 +101,26 @@ const JUNE_WORKSPACE_UPLOADS_DIR_NAME: &str = "uploads";
 /// Environment variable the `june_image` MCP reads its loopback proxy token
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_IMAGE_MCP_TOKEN_ENV: &str = "JUNE_IMAGE_PROXY_TOKEN";
+const JUNE_RECORDER_MCP_SERVER_NAME: &str = "june_recorder";
+const JUNE_RECORDER_MCP_SCRIPT_NAME: &str = "june_recorder_mcp.py";
+const JUNE_RECORDER_MCP_SCRIPT: &str = include_str!("hermes/june_recorder_mcp.py");
+/// Environment variable the `june_recorder` MCP reads its loopback proxy token
+/// from. Kept out of argv so it does not appear in process listings.
+const JUNE_RECORDER_MCP_TOKEN_ENV: &str = "JUNE_RECORDER_PROXY_TOKEN";
+/// Hermes-side per-tool-call timeout for `june_recorder`; the top of the
+/// timeout stack (proxy lease < python client < this), pinned by
+/// `recorder_timeout_stack_ordering_holds`.
+const JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS: u64 = 620;
+const AGENT_RECORDER_REQUEST_EVENT: &str = "june://agent-recorder-request";
+// The frontend start path can legitimately take minutes: readiness runs
+// twice (React probes before startRecording, then the command re-probes) and
+// each pass can wait the full system-audio permission probe, a fresh install
+// then blocks on the macOS microphone prompt, and capture start has its own
+// watchdog. The lease must outlive that worst honest case, or the tool
+// reports failure for a recording that then visibly starts —
+// `agent_recorder_lease_outlives_the_worst_honest_start_path` pins the
+// budget against the real constants.
+const AGENT_RECORDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(420);
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -153,10 +173,19 @@ Web tools: you have a `june_web` MCP toolset with `web_search` and `web_fetch`. 
 /// capability.
 const JUNE_SOUL_IMAGE_MD: &str = r#"
 Image tools: you have a `june_image` MCP toolset with `generate_image` and `edit_image`. Use `generate_image` when the user asks you to draw, create, make, or generate an image, picture, illustration, or logo; the result is shown to the user in the conversation and the tool returns a `filename`.
+To display a generated or edited image in your reply, put its reference on its own line as `MEDIA:<filename>`, using the exact `filename` string the tool returned (for example `MEDIA:img_ae9ed1ffc669.png`); the June app replaces that line with the inline image. Use the plain returned filename verbatim — do not expand it to a full path, wrap it in Markdown image or link syntax, or invent a name.
 Use this toolset instead of any generic image, media, or vision-analysis tool for image creation or edits, so June can display the returned image and keep the returned filename in context.
 Do not add a separate content refusal layer before calling these tools. The user's selected image model and image safe-mode setting are authoritative for what the image provider should attempt. If the selected model and setting may support the request, call the image tool with the user's prompt instead of substituting a clothed or sanitized alternative. If the image provider rejects the request, briefly report that provider rejection.
 Set `may_be_explicit` honestly on every `generate_image` or `edit_image` call, judging whether the requested image could contain adult, sexual, or otherwise explicit content from the request itself rather than only its wording.
 When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, or an image the user attached or pasted into the conversation, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact source image as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced or the user attached, even if you cannot see it. Pass exactly one of two `source_filename` values: the edit-safe filename from a prior `june_image` tool result, or the plain filename of an image the user attached to the conversation as shown in its context, such as `upload_20260707_113453_1.png`. Never pass a full path or an invented name.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The `june_recorder` MCP server can
+/// start and stop local recording, but only by routing through the frontend so
+/// the recorder bar and HUD stay visible to the user.
+const JUNE_SOUL_RECORDER_MD: &str = r#"
+Recording tools: you have a `june_recorder` MCP toolset with `start_recording`, `stop_recording`, and `recording_status`. Only call `start_recording` when the user explicitly asks you to start recording, record a meeting, or begin capture now. Never start recording proactively or because recording might be useful. If the user asks you to stop the current recording, call `stop_recording`.
+When the user asks how to record a meeting, explain the normal UI path accurately: open or create a note, press the Record button in the note editor, and use Recording options if they want to choose microphone-only or meeting mode. While recording is active, June shows the recorder bar on the note and a recorder presence in the sidebar or floating recorder pill when they browse away.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -314,6 +343,10 @@ pub struct HermesBridge {
     /// per-process proxy would rewrite the file under the other process.
     /// Started lazily on the first spawn, lives until app shutdown.
     provider_proxy: Mutex<Option<SharedProviderProxy>>,
+    recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
+    /// Recently delivered recorder request ids (see
+    /// `recorder_request_recently_completed`).
+    recorder_completed: Mutex<std::collections::VecDeque<String>>,
 }
 
 struct HermesProcess {
@@ -325,18 +358,24 @@ struct HermesProcess {
 struct SharedProviderProxy {
     port: u16,
     token: String,
+    recorder_token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
 #[derive(Clone)]
 struct ProviderProxyState {
     token: String,
+    /// Recorder routes require this dedicated secret, handed only to the
+    /// `june_recorder` MCP: microphone control must not be reachable with the
+    /// general provider token every model call carries.
+    recorder_token: String,
     image_sources: ImageSourceCapabilities,
     app: Option<AppHandle>,
     /// Safe-mode values already injected, keyed by requestId, so an MCP retry
     /// of the same request replays the same shape even if the user flipped
     /// the toggle in between (June API bills a changed shape as a new call).
     image_safe_mode_pins: Arc<Mutex<VecDeque<(String, bool)>>>,
+    recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -821,6 +860,74 @@ pub async fn ensure_hermes_bridge_gateway(bridge: State<'_, HermesBridge>) -> Re
     ensure_hermes_gateway_running(connection).await
 }
 
+#[tauri::command]
+pub fn resolve_agent_recorder_request(
+    bridge: State<'_, HermesBridge>,
+    request: ResolveAgentRecorderRequest,
+) -> Result<(), AppError> {
+    let request_id = request.request_id.clone();
+    let sender = {
+        let mut pending = bridge.recorder_requests.lock().map_err(|_| {
+            AppError::new(
+                "agent_recorder_unavailable",
+                "Recorder request lock failed.",
+            )
+        })?;
+        let Some(sender) = pending.remove(&request_id) else {
+            // Distinguish "you already delivered this" (a retried resolve
+            // whose first attempt landed despite a transport error) from
+            // "the lease expired": rolling back a delivered success stops a
+            // healthy recording.
+            return if recorder_request_recently_completed(&bridge.recorder_completed, &request_id) {
+                Ok(())
+            } else {
+                Err(AppError::new(
+                    "agent_recorder_request_not_found",
+                    "Recorder request was not found or has already timed out.",
+                ))
+            };
+        };
+        sender
+    };
+    // A dead receiver means the lease just expired: the proxy has already
+    // answered failure, so the frontend must see not_found and roll back.
+    sender.send(request).map_err(|_| {
+        AppError::new(
+            "agent_recorder_request_not_found",
+            "Recorder request was not found or has already timed out.",
+        )
+    })?;
+    record_completed_recorder_request(&bridge.recorder_completed, &request_id);
+    Ok(())
+}
+
+/// Recently delivered recorder request ids, so an ambiguous resolve retry is
+/// answered idempotently instead of being mistaken for a lease expiry. Small
+/// FIFO cap: entries only need to survive one retry round-trip.
+const RECORDER_COMPLETED_CAP: usize = 32;
+
+fn record_completed_recorder_request(
+    completed: &Mutex<std::collections::VecDeque<String>>,
+    request_id: &str,
+) {
+    if let Ok(mut completed) = completed.lock() {
+        completed.push_back(request_id.to_string());
+        while completed.len() > RECORDER_COMPLETED_CAP {
+            completed.pop_front();
+        }
+    }
+}
+
+fn recorder_request_recently_completed(
+    completed: &Mutex<std::collections::VecDeque<String>>,
+    request_id: &str,
+) -> bool {
+    completed
+        .lock()
+        .map(|completed| completed.iter().any(|id| id == request_id))
+        .unwrap_or(false)
+}
+
 async fn start_hermes_bridge_inner(
     app: &AppHandle,
     bridge: &HermesBridge,
@@ -871,14 +978,17 @@ async fn start_hermes_bridge_inner(
     let june_context_mcp = sync_june_context_mcp(app, &command)?;
     let june_web_mcp = sync_june_web_mcp(app, &command)?;
     let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
+    let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
     sync_hermes_config(
         app,
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
+        &provider_proxy.recorder_token,
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
+        &june_recorder_mcp,
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -1025,18 +1135,26 @@ async fn ensure_provider_proxy(
             return Ok(SharedProviderProxyInfo {
                 port: proxy.port,
                 token: proxy.token.clone(),
+                recorder_token: proxy.recorder_token.clone(),
             });
         }
     }
     let token = random_token();
+    let recorder_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let image_sources = ImageSourceCapabilities {
         images_dir: hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME),
         secret: load_or_create_image_source_capability_secret(&app_data_dir)?,
     };
-    let started =
-        start_june_provider_proxy(token.clone(), image_sources, Some(app.clone())).await?;
+    let started = start_june_provider_proxy(
+        token.clone(),
+        recorder_token.clone(),
+        image_sources,
+        Some(app.clone()),
+        Arc::clone(&bridge.recorder_requests),
+    )
+    .await?;
     let mut guard = bridge
         .provider_proxy
         .lock()
@@ -1046,17 +1164,20 @@ async fn ensure_provider_proxy(
     *guard = Some(SharedProviderProxy {
         port: started.port,
         token: token.clone(),
+        recorder_token: recorder_token.clone(),
         shutdown: Some(started.shutdown),
     });
     Ok(SharedProviderProxyInfo {
         port: started.port,
         token,
+        recorder_token,
     })
 }
 
 struct SharedProviderProxyInfo {
     port: u16,
     token: String,
+    recorder_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1078,6 +1199,45 @@ struct JuneImageMcpConfig {
     script_path: PathBuf,
     images_dir: PathBuf,
 }
+
+#[derive(Debug, Clone)]
+struct JuneRecorderMcpConfig {
+    command: String,
+    script_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRecorderRequestPayload {
+    request_id: String,
+    action: AgentRecorderAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_mode: Option<crate::domain::types::RecordingSourceMode>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum AgentRecorderAction {
+    Start,
+    Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveAgentRecorderRequest {
+    pub request_id: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub note_id: Option<String>,
+    #[serde(default)]
+    pub note_title: Option<String>,
+    #[serde(default)]
+    pub error_code: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+type AgentRecorderResolution = ResolveAgentRecorderRequest;
 
 #[tauri::command]
 pub async fn stop_hermes_bridge(
@@ -2615,7 +2775,15 @@ fn validate_dropped_file_name(raw: &str) -> Result<String, AppError> {
 
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
     let hermes_home = resolve_june_hermes_home(app)?;
-    let requested = PathBuf::from(path)
+    // The assistant often references a generated image by its bare filename
+    // (`MEDIA:img_ae9ed1ffc669.png`) rather than its absolute path: the
+    // june_image tool returns a `filename`, and the model echoes that. Resolve a
+    // bare name against the generated-image roots so those references load; a
+    // path with directory components falls through unchanged and the allow-list
+    // check below still gates whatever we end up with.
+    let resolved =
+        resolve_bare_image_filename(&hermes_home, path).unwrap_or_else(|| PathBuf::from(path));
+    let requested = resolved
         .canonicalize()
         .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
     if !requested.is_file() {
@@ -6333,6 +6501,25 @@ fn sync_june_image_mcp(
     })
 }
 
+fn sync_june_recorder_mcp(
+    app: &AppHandle,
+    hermes_command: &str,
+) -> Result<JuneRecorderMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_RECORDER_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_RECORDER_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
+
+    Ok(JuneRecorderMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+    })
+}
+
 fn remove_legacy_image_source_secret(hermes_home: &Path) -> Result<(), AppError> {
     let path = hermes_home.join(LEGACY_IMAGE_SOURCE_SECRET_FILE);
     match fs::remove_file(&path) {
@@ -6374,33 +6561,41 @@ fn default_python_command() -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_hermes_config(
     app: &AppHandle,
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    recorder_proxy_token: &str,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
+    june_recorder_mcp: &JuneRecorderMcpConfig,
 ) -> Result<(), AppError> {
     sync_hermes_config_with_external_dirs(
         hermes_home,
         provider_proxy_port,
         provider_proxy_token,
+        recorder_proxy_token,
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
+        june_recorder_mcp,
         &builtin_external_skill_dirs(app),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_hermes_config_with_external_dirs(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    recorder_proxy_token: &str,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
+    june_recorder_mcp: &JuneRecorderMcpConfig,
     default_external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
@@ -6412,11 +6607,13 @@ fn sync_hermes_config_with_external_dirs(
         &model,
         &base_url,
         provider_proxy_token,
+        recorder_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs,
         Some(june_context_mcp),
         Some(june_web_mcp),
         Some(june_image_mcp),
+        Some(june_recorder_mcp),
     );
     // MERGE over the existing config, never replace it: the jailed dashboard
     // persists admin changes (user-added MCP servers, tool filters, OAuth
@@ -6580,15 +6777,18 @@ fn external_skill_dir_identity(dir: &Path, relative_base: Option<&Path>) -> Path
 /// rendered YAML (including the `skills.external_dirs` block) can be asserted in
 /// tests. Hermes deep-merges these keys over its own defaults, so June only
 /// writes the values it controls.
+#[allow(clippy::too_many_arguments)]
 fn render_hermes_config(
     model: &str,
     base_url: &str,
     provider_proxy_token: &str,
+    recorder_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
     june_context_mcp: Option<&JuneContextMcpConfig>,
     june_web_mcp: Option<&JuneWebMcpConfig>,
     june_image_mcp: Option<&JuneImageMcpConfig>,
+    june_recorder_mcp: Option<&JuneRecorderMcpConfig>,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
         "  external_dirs: []\n".to_string()
@@ -6603,8 +6803,10 @@ fn render_hermes_config(
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
+        june_recorder_mcp,
         base_url,
         provider_proxy_token,
+        recorder_proxy_token,
     );
     format!(
         r#"model:
@@ -6630,12 +6832,15 @@ skills:
 /// Renders the `mcp_servers:` block listing every built-in MCP server June
 /// registers. Both entries live under one key so Hermes deep-merges a single
 /// map; an empty map is emitted when neither is configured.
+#[allow(clippy::too_many_arguments)]
 fn render_mcp_servers_config(
     context: Option<&JuneContextMcpConfig>,
     web: Option<&JuneWebMcpConfig>,
     image: Option<&JuneImageMcpConfig>,
+    recorder: Option<&JuneRecorderMcpConfig>,
     base_url: &str,
     proxy_token: &str,
+    recorder_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
     if let Some(config) = context {
@@ -6646,6 +6851,13 @@ fn render_mcp_servers_config(
     }
     if let Some(config) = image {
         entries.push_str(&render_image_mcp_entry(config, base_url, proxy_token));
+    }
+    if let Some(config) = recorder {
+        entries.push_str(&render_recorder_mcp_entry(
+            config,
+            base_url,
+            recorder_proxy_token,
+        ));
     }
     if entries.is_empty() {
         return "mcp_servers: {}\n".to_string();
@@ -6729,6 +6941,34 @@ fn render_image_mcp_entry(
         base_url = yaml_string(base_url),
         images_dir = yaml_string(&config.images_dir.to_string_lossy()),
         token_env = JUNE_IMAGE_MCP_TOKEN_ENV,
+        token = yaml_string(proxy_token),
+    )
+}
+
+fn render_recorder_mcp_entry(
+    config: &JuneRecorderMcpConfig,
+    base_url: &str,
+    proxy_token: &str,
+) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: {tool_timeout}
+    connect_timeout: 10
+"#,
+        server_name = JUNE_RECORDER_MCP_SERVER_NAME,
+        tool_timeout = JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        token_env = JUNE_RECORDER_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
     )
 }
@@ -6844,10 +7084,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_RECORDER_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_RECORDER_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -6858,6 +7098,29 @@ struct FilesystemRootCandidate {
     label: String,
     path: PathBuf,
     description: String,
+}
+
+/// A bare image filename (no directory component) as it appears in an assistant
+/// `MEDIA:<filename>` reference, resolved to an absolute path under the
+/// generated-image roots. Returns `None` for a path, an absolute, a `.`/`..`
+/// component (all rejected by `bare_filename`), or a name absent from those
+/// roots — the caller then treats the input as a literal path, and
+/// `validate_hermes_file_path`'s allow-list still gates access either way.
+///
+/// An edit-safe reference carries a `.june-source-<signature>` marker that is
+/// NOT part of the stored filename: the real file is the stem + extension (see
+/// `parse_image_source_reference`, e.g. `generated-image-<hash>.june-source-<sig>.png`
+/// → `generated-image-<hash>.png`). Strip that marker before the on-disk lookup;
+/// a plain name (no marker, like `img_<hash>.png`) is used as-is.
+fn resolve_bare_image_filename(hermes_home: &Path, path: &str) -> Option<PathBuf> {
+    let name = bare_filename(path.trim())?;
+    let storage_name = parse_image_source_reference(name)
+        .map(|(_signature, expected_name)| expected_name)
+        .unwrap_or_else(|| name.to_string());
+    ["image_cache", "images"]
+        .into_iter()
+        .map(|relative| hermes_home.join(relative).join(&storage_name))
+        .find(|candidate| candidate.is_file())
 }
 
 fn filesystem_roots(hermes_home: &Path) -> Result<Vec<FilesystemRootCandidate>, AppError> {
@@ -7004,8 +7267,10 @@ fn yaml_string(value: &str) -> String {
 
 async fn start_june_provider_proxy(
     token: String,
+    recorder_token: String,
     image_sources: ImageSourceCapabilities,
     app: Option<AppHandle>,
+    recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
 ) -> Result<RunningJuneProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
@@ -7023,9 +7288,11 @@ async fn start_june_provider_proxy(
         listener,
         Arc::new(ProviderProxyState {
             token,
+            recorder_token,
             image_sources,
             app,
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            recorder_requests,
         }),
         shutdown_rx,
     ));
@@ -7083,7 +7350,9 @@ async fn handle_june_provider_connection(
             return Ok(());
         }
     };
-    if !provider_proxy_authorized(&request, &state.token) {
+    let required_token =
+        provider_proxy_required_token(&request.path, &state.token, &state.recorder_token);
+    if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
             &mut stream,
             401,
@@ -7198,6 +7467,23 @@ async fn handle_june_provider_connection(
             }
             forward_image_tool(&mut stream, "/v1/image/edit", &body, &state.image_sources).await?;
         }
+        ("POST", "/v1/recorder/start") => {
+            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            handle_recorder_action(&mut stream, state, AgentRecorderAction::Start, &body).await?;
+        }
+        ("POST", "/v1/recorder/stop") => {
+            handle_recorder_action(
+                &mut stream,
+                state,
+                AgentRecorderAction::Stop,
+                &serde_json::json!({}),
+            )
+            .await?;
+        }
+        ("GET", "/v1/recorder/status") => {
+            write_json_response(&mut stream, 200, recorder_status_body()).await?;
+        }
         _ => {
             write_json_response(
                 &mut stream,
@@ -7208,6 +7494,198 @@ async fn handle_june_provider_connection(
         }
     }
     Ok(())
+}
+
+async fn handle_recorder_action(
+    stream: &mut tokio::net::TcpStream,
+    state: Arc<ProviderProxyState>,
+    action: AgentRecorderAction,
+    body: &serde_json::Value,
+) -> io::Result<()> {
+    let source_mode = match action {
+        AgentRecorderAction::Start => match recorder_source_mode_from_body(body) {
+            Ok(source_mode) => Some(source_mode),
+            Err(message) => {
+                write_json_response(
+                    stream,
+                    400,
+                    serde_json::json!({ "success": false, "message": message }),
+                )
+                .await?;
+                return Ok(());
+            }
+        },
+        AgentRecorderAction::Stop => None,
+    };
+
+    if action == AgentRecorderAction::Start {
+        if let Some(status) = crate::audio::capture::current_status() {
+            let note = status.note_id.unwrap_or_else(|| status.session_id.clone());
+            write_json_response(
+                stream,
+                409,
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("A recording is already running for note {note}."),
+                    "errorCode": "recording_already_running",
+                }),
+            )
+            .await?;
+            return Ok(());
+        }
+    }
+
+    if action == AgentRecorderAction::Stop && crate::audio::capture::current_status().is_none() {
+        write_json_response(
+            stream,
+            409,
+            serde_json::json!({
+                "success": false,
+                "message": "No recording is currently running.",
+                "errorCode": "recording_not_found",
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (sender, receiver) = oneshot::channel();
+    {
+        let mut pending = state
+            .recorder_requests
+            .lock()
+            .map_err(|_| io::Error::other("Recorder request lock failed."))?;
+        pending.insert(request_id.clone(), sender);
+    }
+    let payload = AgentRecorderRequestPayload {
+        request_id: request_id.clone(),
+        action,
+        source_mode,
+    };
+    let emit_result = state
+        .app
+        .as_ref()
+        .and_then(|app| app.get_webview_window("main"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Main window is unavailable."))
+        .and_then(|window| {
+            window
+                .emit(AGENT_RECORDER_REQUEST_EVENT, payload)
+                .map_err(io::Error::other)
+        });
+    if let Err(error) = emit_result {
+        remove_pending_recorder_request(&state.recorder_requests, &request_id);
+        write_json_response(
+            stream,
+            503,
+            serde_json::json!({
+                "success": false,
+                "message": format!("Recorder request could not reach the June window: {error}"),
+                "errorCode": "agent_recorder_window_unavailable",
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    match tokio::time::timeout(AGENT_RECORDER_REQUEST_TIMEOUT, receiver).await {
+        Ok(Ok(resolution)) => {
+            let status = if resolution.ok { 200 } else { 409 };
+            write_json_response(stream, status, recorder_resolution_body(resolution)).await?;
+        }
+        Ok(Err(_)) => {
+            write_json_response(
+                stream,
+                500,
+                serde_json::json!({
+                    "success": false,
+                    "message": "Recorder request was cancelled before June answered.",
+                    "errorCode": "agent_recorder_cancelled",
+                }),
+            )
+            .await?;
+        }
+        Err(_) => {
+            remove_pending_recorder_request(&state.recorder_requests, &request_id);
+            write_json_response(
+                stream,
+                504,
+                serde_json::json!({
+                    "success": false,
+                    "message": "Recorder request timed out waiting for June.",
+                    "errorCode": "agent_recorder_timeout",
+                }),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_pending_recorder_request(
+    pending: &Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>,
+    request_id: &str,
+) {
+    if let Ok(mut pending) = pending.lock() {
+        pending.remove(request_id);
+    }
+}
+
+fn recorder_source_mode_from_body(
+    body: &serde_json::Value,
+) -> Result<crate::domain::types::RecordingSourceMode, String> {
+    let mode = body
+        .get("sourceMode")
+        .or_else(|| body.get("source_mode"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("microphone");
+    match mode {
+        "microphone" | "microphoneOnly" | "microphone_only" => {
+            Ok(crate::domain::types::RecordingSourceMode::MicrophoneOnly)
+        }
+        "meeting" | "microphonePlusSystem" | "microphone_plus_system" => {
+            Ok(crate::domain::types::RecordingSourceMode::MicrophonePlusSystem)
+        }
+        _ => Err("source_mode must be microphone or meeting.".to_string()),
+    }
+}
+
+fn recorder_resolution_body(resolution: AgentRecorderResolution) -> serde_json::Value {
+    if resolution.ok {
+        serde_json::json!({
+            "success": true,
+            "data": {
+                "noteId": resolution.note_id,
+                "noteTitle": resolution.note_title,
+            }
+        })
+    } else {
+        serde_json::json!({
+            "success": false,
+            "message": resolution.error_message.unwrap_or_else(|| "Recorder request failed.".to_string()),
+            "errorCode": resolution.error_code.unwrap_or_else(|| "agent_recorder_failed".to_string()),
+        })
+    }
+}
+
+fn recorder_status_body() -> serde_json::Value {
+    match crate::audio::capture::current_status() {
+        Some(status) => serde_json::json!({
+            "success": true,
+            "data": {
+                "state": "recording",
+                "noteId": status.note_id,
+                "elapsed": status.elapsed_ms,
+                "sourceMode": status.source_mode,
+            }
+        }),
+        None => serde_json::json!({
+            "success": true,
+            "data": {
+                "state": "none",
+            }
+        }),
+    }
 }
 
 struct HttpRequest {
@@ -7382,6 +7860,21 @@ fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_jso
         entry["context_length"] = serde_json::json!(context_tokens);
     }
     serde_json::json!({ "object": "list", "data": [entry] })
+}
+
+/// Recorder mutations require the recorder-scoped secret; every other route
+/// keeps the general provider token. Distinct secrets, so neither authorizes
+/// the other's surface.
+fn provider_proxy_required_token<'a>(
+    path: &str,
+    provider_token: &'a str,
+    recorder_token: &'a str,
+) -> &'a str {
+    if path.starts_with("/v1/recorder/") {
+        recorder_token
+    } else {
+        provider_token
+    }
 }
 
 fn provider_proxy_authorized(request: &HttpRequest, token: &str) -> bool {
@@ -8571,6 +9064,96 @@ mod tests {
     }
 
     #[test]
+    fn recorder_timeout_stack_ordering_holds() {
+        // Parse the python client's timeout out of the embedded script so a
+        // bump of any leg fails a test instead of drifting by comment.
+        let python_timeout: u64 = JUNE_RECORDER_MCP_SCRIPT
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("REQUEST_TIMEOUT_SECONDS = "))
+            .expect("script declares REQUEST_TIMEOUT_SECONDS")
+            .trim()
+            .parse()
+            .expect("timeout is an integer");
+        let lease = AGENT_RECORDER_REQUEST_TIMEOUT.as_secs();
+        assert!(
+            lease + 30 <= python_timeout,
+            "python client ({python_timeout}s) must outlive the proxy lease ({lease}s) with slack"
+        );
+        assert!(
+            python_timeout + 30 <= JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS,
+            "hermes tool timeout ({JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS}s) must outlive the python client ({python_timeout}s) with slack"
+        );
+    }
+
+    #[test]
+    fn agent_recorder_lease_outlives_the_worst_honest_start_path() {
+        // Readiness runs twice on the agent start path (React probes before
+        // startRecording, the command re-probes), each pass can wait the full
+        // system-audio permission probe, then the first-run microphone prompt
+        // and the capture watchdog run in sequence.
+        let worst_case = crate::audio::system_macos::SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT * 2
+            + crate::audio::capture::MICROPHONE_PROMPT_TIMEOUT
+            + crate::audio::capture::CAPTURE_START_TIMEOUT;
+        assert!(
+            AGENT_RECORDER_REQUEST_TIMEOUT > worst_case + Duration::from_secs(30),
+            "lease {}s must exceed worst honest start path {}s plus slack",
+            AGENT_RECORDER_REQUEST_TIMEOUT.as_secs(),
+            worst_case.as_secs()
+        );
+    }
+
+    #[test]
+    fn recorder_routes_require_the_recorder_scoped_token_and_vice_versa() {
+        // The general provider token every model call carries must never
+        // authorize microphone control, and the recorder secret must not
+        // open the provider surface.
+        for path in [
+            "/v1/recorder/start",
+            "/v1/recorder/stop",
+            "/v1/recorder/status",
+        ] {
+            assert_eq!(
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                "recorder-tok"
+            );
+        }
+        for path in [
+            "/v1/models",
+            "/v1/chat/completions",
+            "/v1/image/generate",
+            "/v1/recorder",
+        ] {
+            assert_eq!(
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                "provider-tok"
+            );
+        }
+
+        let provider_bearer = request_with_authorization("Bearer provider-tok");
+        let recorder_bearer = request_with_authorization("Bearer recorder-tok");
+        let recorder_required =
+            provider_proxy_required_token("/v1/recorder/start", "provider-tok", "recorder-tok");
+        let provider_required =
+            provider_proxy_required_token("/v1/models", "provider-tok", "recorder-tok");
+        assert!(!provider_proxy_authorized(
+            &provider_bearer,
+            recorder_required
+        ));
+        assert!(provider_proxy_authorized(
+            &recorder_bearer,
+            recorder_required
+        ));
+        assert!(!provider_proxy_authorized(
+            &recorder_bearer,
+            provider_required
+        ));
+        assert!(provider_proxy_authorized(
+            &provider_bearer,
+            provider_required
+        ));
+    }
+
+    #[test]
     fn provider_proxy_rejects_missing_or_malformed_authorization() {
         let missing = HttpRequest {
             method: "GET".to_string(),
@@ -8800,6 +9383,51 @@ mod tests {
         assert_eq!(pins.back().map(|(id, _)| id.as_str()), Some("req-new"));
     }
 
+    #[test]
+    fn recorder_source_mode_accepts_tool_and_wire_values() {
+        assert_eq!(
+            recorder_source_mode_from_body(&serde_json::json!({ "sourceMode": "microphone" }))
+                .expect("microphone mode"),
+            crate::domain::types::RecordingSourceMode::MicrophoneOnly
+        );
+        assert_eq!(
+            recorder_source_mode_from_body(&serde_json::json!({ "source_mode": "meeting" }))
+                .expect("meeting mode"),
+            crate::domain::types::RecordingSourceMode::MicrophonePlusSystem
+        );
+        assert!(recorder_source_mode_from_body(&serde_json::json!({
+            "sourceMode": "desktop"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn recorder_resolution_body_keeps_structured_success_and_error() {
+        let success = recorder_resolution_body(ResolveAgentRecorderRequest {
+            request_id: "req-1".to_string(),
+            ok: true,
+            note_id: Some("note-1".to_string()),
+            note_title: Some("Planning".to_string()),
+            error_code: None,
+            error_message: None,
+        });
+        assert_eq!(success["success"], true);
+        assert_eq!(success["data"]["noteId"], "note-1");
+        assert_eq!(success["data"]["noteTitle"], "Planning");
+
+        let failure = recorder_resolution_body(ResolveAgentRecorderRequest {
+            request_id: "req-2".to_string(),
+            ok: false,
+            note_id: None,
+            note_title: None,
+            error_code: Some("recording_not_found".to_string()),
+            error_message: Some("No recording is currently running.".to_string()),
+        });
+        assert_eq!(failure["success"], false);
+        assert_eq!(failure["errorCode"], "recording_not_found");
+        assert_eq!(failure["message"], "No recording is currently running.");
+    }
+
     fn test_png_bytes(label: &[u8]) -> Vec<u8> {
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.extend_from_slice(label);
@@ -8838,6 +9466,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn resolve_bare_image_filename_maps_names_to_generated_image_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hermes_home = temp.path();
+        // A Hermes-copied tool result in image_cache, referenced by plain name.
+        write_test_png(
+            &hermes_home.join("image_cache").join("img_ae9ed1ffc669.png"),
+            b"cache",
+        );
+        // A generated image in the images dir. The model references it by its
+        // edit-safe name (`.june-source-<sig>`), but the file on disk is the
+        // stem + extension — the signature is never part of the filename.
+        write_test_png(
+            &hermes_home.join("images").join("generated-image-a.png"),
+            b"images",
+        );
+        let signature = "0".repeat(IMAGE_SOURCE_SIGNATURE_HEX_LEN);
+        let signed_reference = format!("generated-image-a.june-source-{signature}.png");
+
+        // A plain bare filename resolves directly.
+        assert_eq!(
+            resolve_bare_image_filename(hermes_home, "img_ae9ed1ffc669.png"),
+            Some(hermes_home.join("image_cache").join("img_ae9ed1ffc669.png")),
+        );
+        // The edit-safe reference resolves to the real stored file, not the
+        // literal reference name (which never exists on disk).
+        assert_eq!(
+            resolve_bare_image_filename(hermes_home, &signed_reference),
+            Some(hermes_home.join("images").join("generated-image-a.png")),
+        );
+
+        // A missing name, a name with directory components, and traversal
+        // attempts all decline: the caller keeps the input literal and the
+        // downstream allow-list still gates it.
+        assert_eq!(
+            resolve_bare_image_filename(hermes_home, "missing.png"),
+            None
+        );
+        assert_eq!(
+            resolve_bare_image_filename(hermes_home, "image_cache/img_ae9ed1ffc669.png"),
+            None,
+        );
+        assert_eq!(
+            resolve_bare_image_filename(hermes_home, "../secrets.png"),
+            None
+        );
     }
 
     #[test]
@@ -9145,9 +9821,11 @@ mcp_servers:
             "new-model",
             "http://127.0.0.1:9/v1",
             "new-token",
+            "recorder-token",
             "web",
             &[],
             Some(&test_june_context_mcp_config()),
+            None,
             None,
             None,
         );
@@ -9375,9 +10053,11 @@ mcp_servers:
             home.path(),
             4242,
             "proxy-token",
+            "recorder-proxy-token",
             &test_june_context_mcp_config(),
             &test_june_web_mcp_config(),
             &test_june_image_mcp_config(),
+            &test_june_recorder_mcp_config(),
             std::slice::from_ref(&default_dir),
         )
         .expect("sync config");
@@ -9419,8 +10099,10 @@ mcp_servers:
             "glm",
             "http://127.0.0.1:9/v1",
             "tok",
+            "recorder-tok",
             "web, memory",
             &dirs,
+            None,
             None,
             None,
             None,
@@ -9449,8 +10131,10 @@ mcp_servers:
             "glm",
             "http://127.0.0.1:9/v1",
             "tok",
+            "recorder-tok",
             "web",
             &[],
+            None,
             None,
             None,
             None,
@@ -9475,25 +10159,36 @@ mcp_servers:
         }
     }
 
+    fn test_june_recorder_mcp_config() -> JuneRecorderMcpConfig {
+        JuneRecorderMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_recorder_mcp.py"),
+        }
+    }
+
     #[test]
     fn render_hermes_config_registers_june_context_mcp_server() {
         let context = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
         let image = test_june_image_mcp_config();
+        let recorder = test_june_recorder_mcp_config();
         let config = render_hermes_config(
             "glm",
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "recorder-proxy-tok",
             "web",
             &[],
             Some(&context),
             Some(&web),
             Some(&image),
+            Some(&recorder),
         );
 
-        // All three built-in servers live under one mcp_servers map.
+        // All four built-in servers live under one mcp_servers map.
         assert!(config.contains("mcp_servers:\n  june_context:\n"));
         assert!(config.contains("  june_web:\n"));
+        assert!(config.contains("  june_recorder:\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
@@ -9511,6 +10206,18 @@ mcp_servers:
         assert!(!config.contains("workspace/uploads"));
         assert!(config.contains("      JUNE_IMAGE_PROXY_TOKEN: \"proxy-tok\"\n"));
         assert!(config.contains("    timeout: 660\n"));
+        assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_recorder_mcp.py\"\n"));
+        // The recorder MCP must get the recorder-scoped secret, never the
+        // general provider token.
+        assert!(config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"recorder-proxy-tok\"\n"));
+        assert!(!config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"proxy-tok\"\n"));
+        // The Hermes-side tool timeout must sit at the top of the stack
+        // (proxy lease < python client < hermes), or Hermes reports failure
+        // while June is still honestly waiting on the permission prompt;
+        // `recorder_timeout_stack_ordering_holds` pins the full ordering.
+        assert!(config.contains(&format!(
+            "    timeout: {JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS}\n"
+        )));
     }
 
     #[test]
@@ -9519,8 +10226,10 @@ mcp_servers:
             "glm",
             "http://127.0.0.1:9/v1",
             "tok",
+            "recorder-tok",
             "web",
             &[],
+            None,
             None,
             None,
             None,
@@ -9816,13 +10525,16 @@ mcp_servers:
         let mcp = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
         let image = test_june_image_mcp_config();
+        let recorder = test_june_recorder_mcp_config();
         sync_hermes_config_with_external_dirs(
             home.path(),
             4242,
             "proxy-token",
+            "recorder-proxy-token",
             &mcp,
             &web,
             &image,
+            &recorder,
             &[],
         )
         .expect("sync config");
@@ -9957,6 +10669,20 @@ mcp_servers:
         assert!(
             !soul.contains("Only pass a `source_filename` from a prior `june_image` tool result")
         );
+    }
+
+    #[test]
+    fn june_soul_describes_recorder_tools() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_recorder"));
+        assert!(soul.contains("Only call `start_recording` when the user explicitly asks"));
+        assert!(soul.contains("press the Record button"));
+        assert!(soul.contains("Recording options"));
+        assert!(soul.contains("recorder bar"));
     }
 
     #[test]

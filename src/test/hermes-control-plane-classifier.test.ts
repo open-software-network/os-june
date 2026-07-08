@@ -224,6 +224,29 @@ describe("classifyHermesEvent — tools", () => {
     });
   });
 
+  it("extracts inline image content even when it arrives as a stringified array", () => {
+    // Regression: content can be a JSON string of the MCP content-block ARRAY,
+    // not just an array/object. A stringified array must still yield the image.
+    const textBlock = JSON.stringify({ filename: "generated-image-abc.png" });
+    const result = classifyHermesEvent(
+      event("tool.complete", {
+        tool_call_id: "img1",
+        name: "edit_image",
+        content: JSON.stringify([
+          { type: "image", data: "ZWRpdGVk", mimeType: "image/png" },
+          { type: "text", text: textBlock },
+        ]),
+      }),
+    );
+    expect(result.kind).toBe("tool");
+    if (result.kind === "tool") {
+      expect(result.content).toEqual([
+        { type: "image", data: "ZWRpdGVk", mimeType: "image/png" },
+        { type: "text", text: textBlock },
+      ]);
+    }
+  });
+
   it("falls back across tool_name / tool field aliases", () => {
     const byToolName = classifyHermesEvent(event("tool.start", { tool_name: "shell" }));
     if (byToolName.kind === "tool") expect(byToolName.name).toBe("shell");

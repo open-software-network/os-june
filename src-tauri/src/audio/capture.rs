@@ -28,6 +28,32 @@ use std::{
 use uuid::Uuid;
 
 pub const DEFAULT_SILENCE_THRESHOLD: f32 = 0.012;
+// Healthy devices open quickly; this bounds CPAL/CoreAudio hangs during device handoff.
+pub const CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a first-run start waits on the macOS microphone prompt; the
+/// agent recorder lease budgets against it.
+pub const MICROPHONE_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Start handshake between the capture builder and its timeout watchdog.
+/// The builder commits `Published` in the same critical section that
+/// publishes `ACTIVE_RECORDING`, so the watchdog can never declare a timeout
+/// for a capture that is (or is about to be) active — it either abandons a
+/// still-pending build or accepts a published one as success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureStartState {
+    Pending,
+    Published,
+    Abandoned,
+}
+
+pub type CaptureStartHandshake = Mutex<CaptureStartState>;
+
+fn capture_start_abandoned(handshake: &CaptureStartHandshake) -> bool {
+    handshake
+        .lock()
+        .map(|state| *state == CaptureStartState::Abandoned)
+        .unwrap_or(false)
+}
 const RECOVERY_SNAPSHOT_INTERVAL_MS: i64 = 500;
 const MICROPHONE_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 const MICROPHONE_STREAM_WARNING_MESSAGE: &str =
@@ -130,12 +156,118 @@ struct CaptureStats {
 }
 
 pub fn microphone_permission_state() -> (String, Option<String>) {
+    microphone_permission_state_from_authorization(microphone_authorization_status())
+}
+
+fn microphone_permission_state_from_authorization(
+    status: MicrophoneAuthorizationStatus,
+) -> (String, Option<String>) {
+    match status {
+        MicrophoneAuthorizationStatus::Granted => ("granted".to_string(), None),
+        MicrophoneAuthorizationStatus::Denied => {
+            ("denied".to_string(), Some(microphone_permission_hint()))
+        }
+        MicrophoneAuthorizationStatus::Restricted => {
+            ("restricted".to_string(), Some(microphone_permission_hint()))
+        }
+        MicrophoneAuthorizationStatus::NotDetermined => (
+            "not_determined".to_string(),
+            Some(microphone_permission_hint()),
+        ),
+        MicrophoneAuthorizationStatus::Unknown => {
+            ("unknown".to_string(), Some(microphone_permission_hint()))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MicrophoneAuthorizationStatus {
+    Granted,
+    Denied,
+    Restricted,
+    NotDetermined,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_authorization_status() -> MicrophoneAuthorizationStatus {
+    macos_microphone_authorization_status().unwrap_or(MicrophoneAuthorizationStatus::Unknown)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_microphone_authorization_status() -> Option<MicrophoneAuthorizationStatus> {
+    use objc2::{msg_send, runtime::AnyClass};
+    use objc2_foundation::NSString;
+
+    let device_class = AnyClass::get(c"AVCaptureDevice")?;
+    // AVMediaTypeAudio's raw value is "soun"; this matches
+    // AVCaptureDevice.authorizationStatus(for: .audio) in the dictation helper.
+    let media_type = NSString::from_str("soun");
+    let raw_status: isize =
+        unsafe { msg_send![device_class, authorizationStatusForMediaType: &*media_type] };
+    Some(match raw_status {
+        0 => MicrophoneAuthorizationStatus::NotDetermined,
+        1 => MicrophoneAuthorizationStatus::Restricted,
+        2 => MicrophoneAuthorizationStatus::Denied,
+        3 => MicrophoneAuthorizationStatus::Granted,
+        _ => MicrophoneAuthorizationStatus::Unknown,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn microphone_authorization_status() -> MicrophoneAuthorizationStatus {
     let host = cpal::default_host();
     if host.default_input_device().is_some() {
-        ("granted".to_string(), None)
+        MicrophoneAuthorizationStatus::Granted
     } else {
-        ("denied".to_string(), Some(microphone_permission_hint()))
+        MicrophoneAuthorizationStatus::Denied
     }
+}
+
+/// TCC microphone grants are bundle-scoped: onboarding prompts through the
+/// dictation helper (`co.opensoftware.june.dictation-helper`), whose grant
+/// never covers the main app bundle. The main app must trigger its own TCC
+/// prompt before capture, or a fresh install records only zeros.
+#[cfg(target_os = "macos")]
+pub fn request_microphone_permission_blocking() -> (String, Option<String>) {
+    use objc2::{msg_send, runtime::AnyClass};
+    use objc2_foundation::NSString;
+
+    if microphone_authorization_status() != MicrophoneAuthorizationStatus::NotDetermined {
+        return microphone_permission_state();
+    }
+    let Some(device_class) = AnyClass::get(c"AVCaptureDevice") else {
+        return microphone_permission_state();
+    };
+    let (sender, receiver) = std::sync::mpsc::channel::<bool>();
+    let handler = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
+        let _ = sender.send(granted.as_bool());
+    });
+    let media_type = NSString::from_str("soun");
+    let _: () = unsafe {
+        msg_send![
+            device_class,
+            requestAccessForMediaType: &*media_type,
+            completionHandler: &*handler
+        ]
+    };
+    // The prompt has no OS-side timeout; a user who walks away must not hang
+    // the start command forever.
+    match receiver.recv_timeout(MICROPHONE_PROMPT_TIMEOUT) {
+        Ok(_) => microphone_permission_state(),
+        Err(_) => (
+            "not_determined".to_string(),
+            Some("Approve the macOS microphone prompt, then try again.".to_string()),
+        ),
+    }
+}
+
+pub fn microphone_device_available() -> bool {
+    cpal::default_host().default_input_device().is_some()
+}
+
+pub fn microphone_device_hint() -> String {
+    "No microphone input device is available.".to_string()
 }
 
 fn microphone_permission_hint() -> String {
@@ -159,14 +291,29 @@ pub fn start_capture(
     note_id: String,
     source_mode: RecordingSourceMode,
 ) -> Result<StartedRecording, AppError> {
-    let mut active = ACTIVE_RECORDING
-        .lock()
-        .map_err(|_| AppError::new("recording_lock_failed", "Recording state is unavailable."))?;
-    if active.is_some() {
-        return Err(AppError::new(
-            "recording_already_active",
-            "A previous recording is still active. June attempted to save it locally; please try again.",
-        ));
+    start_capture_with_cancel(
+        app,
+        paths,
+        note_id,
+        source_mode,
+        Arc::new(Mutex::new(CaptureStartState::Pending)),
+    )
+}
+
+pub fn start_capture_with_cancel(
+    app: tauri::AppHandle,
+    paths: &AppPaths,
+    note_id: String,
+    source_mode: RecordingSourceMode,
+    handshake: Arc<CaptureStartHandshake>,
+) -> Result<StartedRecording, AppError> {
+    {
+        let active = ACTIVE_RECORDING.lock().map_err(|_| {
+            AppError::new("recording_lock_failed", "Recording state is unavailable.")
+        })?;
+        if active.is_some() {
+            return Err(recording_already_active_error());
+        }
     }
 
     let host = cpal::default_host();
@@ -353,9 +500,33 @@ pub fn start_capture(
         None
     };
     let live_preview_enabled = live_preview.is_some() || system_live_preview.is_some();
+    if capture_start_abandoned(&handshake) {
+        cleanup_abandoned_capture(
+            writer,
+            partial_path,
+            system_partial_path,
+            live_preview,
+            system_live_preview,
+            system_capture,
+            None,
+        );
+        return Err(capture_start_timeout_error());
+    }
     stream
         .play()
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
+    if capture_start_abandoned(&handshake) {
+        cleanup_abandoned_capture(
+            writer,
+            partial_path,
+            system_partial_path,
+            live_preview,
+            system_live_preview,
+            system_capture,
+            Some(stream),
+        );
+        return Err(capture_start_timeout_error());
+    }
     let started = Instant::now();
     let status = RecordingStatusDto {
         session_id: session_id.clone(),
@@ -383,6 +554,57 @@ pub fn start_capture(
         ),
         warnings: Vec::new(),
     };
+    let mut active = ACTIVE_RECORDING
+        .lock()
+        .map_err(|_| AppError::new("recording_lock_failed", "Recording state is unavailable."))?;
+    // Commit-or-abandon happens atomically with the publish below (lock
+    // order: ACTIVE_RECORDING, then the handshake; the watchdog only ever
+    // takes the handshake). Past this block the watchdog treats the build as
+    // successfully published and returns it as success.
+    {
+        let Ok(mut state) = handshake.lock() else {
+            cleanup_abandoned_capture(
+                writer,
+                partial_path,
+                system_partial_path,
+                live_preview,
+                system_live_preview,
+                system_capture,
+                Some(stream),
+            );
+            return Err(AppError::new(
+                "recording_lock_failed",
+                "Recording state is unavailable.",
+            ));
+        };
+        if *state == CaptureStartState::Abandoned {
+            drop(state);
+            cleanup_abandoned_capture(
+                writer,
+                partial_path,
+                system_partial_path,
+                live_preview,
+                system_live_preview,
+                system_capture,
+                Some(stream),
+            );
+            return Err(capture_start_timeout_error());
+        }
+        if active.is_some() {
+            drop(state);
+            cleanup_abandoned_capture(
+                writer,
+                partial_path,
+                system_partial_path,
+                live_preview,
+                system_live_preview,
+                system_capture,
+                Some(stream),
+            );
+            return Err(recording_already_active_error());
+        }
+        *state = CaptureStartState::Published;
+    }
 
     *active = Some(ActiveRecording {
         session_id: session_id.clone(),
@@ -420,6 +642,48 @@ pub fn start_capture(
         device_label,
         status,
     })
+}
+
+pub fn capture_start_timeout_error() -> AppError {
+    AppError::new(
+        "capture_start_timeout",
+        "Could not start the microphone. Try again, or check the selected input device.",
+    )
+}
+
+fn recording_already_active_error() -> AppError {
+    AppError::new(
+        "recording_already_active",
+        "A previous recording is still active. June attempted to save it locally; please try again.",
+    )
+}
+
+fn cleanup_abandoned_capture(
+    writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
+    partial_path: PathBuf,
+    system_partial_path: Option<PathBuf>,
+    live_preview: Option<LivePreviewController>,
+    system_live_preview: Option<SystemLivePreviewController>,
+    system_capture: Option<SystemAudioCapture>,
+    stream: Option<cpal::Stream>,
+) {
+    drop(stream);
+    if let Some(live_preview) = live_preview {
+        live_preview.cancel();
+    }
+    if let Some(system_live_preview) = system_live_preview {
+        system_live_preview.cancel();
+    }
+    if let Some(system_capture) = system_capture {
+        let _ = system_capture.stop();
+    }
+    if let Ok(mut writer_guard) = writer.lock() {
+        let _ = writer_guard.take();
+    }
+    let _ = std::fs::remove_file(partial_path);
+    if let Some(system_partial_path) = system_partial_path {
+        let _ = std::fs::remove_file(system_partial_path);
+    }
 }
 
 /// Ducks or restores the active recording's microphone channel. While ducked
@@ -970,6 +1234,48 @@ fn source_warnings(
 mod tests {
     use super::*;
 
+    #[test]
+    fn microphone_permission_mapping_reports_granted_only_for_authorized() {
+        let (state, hint) =
+            microphone_permission_state_from_authorization(MicrophoneAuthorizationStatus::Granted);
+
+        assert_eq!(state, "granted");
+        assert_eq!(hint, None);
+    }
+
+    #[test]
+    fn microphone_permission_mapping_reports_denied_or_restricted_as_not_granted() {
+        let (denied_state, denied_hint) =
+            microphone_permission_state_from_authorization(MicrophoneAuthorizationStatus::Denied);
+        let (restricted_state, restricted_hint) = microphone_permission_state_from_authorization(
+            MicrophoneAuthorizationStatus::Restricted,
+        );
+
+        assert_eq!(denied_state, "denied");
+        assert!(denied_hint.is_some());
+        assert_eq!(restricted_state, "restricted");
+        assert!(restricted_hint.is_some());
+    }
+
+    #[test]
+    fn microphone_permission_mapping_keeps_not_determined_not_ready() {
+        let (state, hint) = microphone_permission_state_from_authorization(
+            MicrophoneAuthorizationStatus::NotDetermined,
+        );
+
+        assert_eq!(state, "not_determined");
+        assert!(hint.is_some());
+    }
+
+    #[test]
+    fn microphone_permission_mapping_keeps_unknown_not_ready() {
+        let (state, hint) =
+            microphone_permission_state_from_authorization(MicrophoneAuthorizationStatus::Unknown);
+
+        assert_eq!(state, "unknown");
+        assert!(hint.is_some());
+    }
+
     fn test_writer(dir: &tempfile::TempDir) -> Arc<Mutex<Option<WavWriter<BufWriter<File>>>>> {
         let writer = WavWriter::create(
             dir.path().join("mic.wav"),
@@ -1188,5 +1494,16 @@ mod tests {
             issue_state(None, Some(stale_callback), RecordingState::Paused),
             None
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod avfoundation_link_tests {
+    // If AVFoundation stops being linked, AnyClass::get returns None and
+    // readiness silently degrades to "unknown" (never granted) — this probe
+    // turns that silent degradation into a test failure.
+    #[test]
+    fn avcapturedevice_class_resolves() {
+        assert!(super::macos_microphone_authorization_status().is_some());
     }
 }

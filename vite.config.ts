@@ -11,7 +11,10 @@ export default defineConfig({
   },
   server: {
     host: "127.0.0.1",
-    port: 1421,
+    // The port is chosen by scripts/tauri-dev.mjs (a free one per worktree) and
+    // handed down via VITE_PORT so Tauri's devUrl points at this exact server.
+    // Falls back to 1421 for a bare `pnpm dev`.
+    port: Number.parseInt(process.env.VITE_PORT ?? "", 10) || 1421,
     strictPort: true,
     // Vite's file watcher must not descend into the Rust build-output dirs.
     // On Windows, cargo locks `.exe`/pdb files in `target/` while linking, and
