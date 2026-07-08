@@ -113,7 +113,7 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["accepted"], true);
     assert_eq!(
-        sink.reports(),
+        sink.reports()?,
         vec![P3aReport {
             product_slug: "june".to_string(),
             question_id: "dictation.sessions".to_string(),
@@ -1247,8 +1247,12 @@ struct RecordingP3aSink {
 }
 
 impl RecordingP3aSink {
-    fn reports(&self) -> Vec<P3aReport> {
-        self.reports.lock().expect("reports lock").clone()
+    fn reports(&self) -> Result<Vec<P3aReport>, Box<dyn Error>> {
+        Ok(self
+            .reports
+            .lock()
+            .map_err(|_| "reports lock poisoned")?
+            .clone())
     }
 }
 
