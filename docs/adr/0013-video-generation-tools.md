@@ -308,3 +308,37 @@ event would notify about an unblurred video already being generated — the
 honest version needs its own UX (block the queue call on consent, or screen
 in the MCP before queueing). Deferred as a follow-up rather than shipping a
 misleading mirror.
+
+## Addendum (2026-07-08): curated text-to-video list expanded from Venice's live catalog
+
+The initial cut shipped one model (`wan-2.2-a14b-text-to-video`) because the
+delisted Seedance default had proven a hardcoded id drifts against a moving
+upstream. The picker now offers a curated 15-model list, selected by querying
+Venice's live `GET /models?type=video` and keeping **only** text-to-video models
+whose catalog `constraints` list all three of the fast-path's fixed injection
+values — `5s` duration, `720p` resolution, `16:9` aspect ratio
+(`JUNE_VIDEO_DEFAULT_*` in `hermes_bridge.rs`). A model missing any of the three
+would 400 at `/video/queue` on the fast path, so that filter is the selection
+rule, not a preference. Models constrained to higher-only resolutions (the Kling
+and Veo/Sora families, 1080p-min) or non-5s-only durations are deliberately
+excluded until per-model constraint resolution exists (still the open follow-up
+below).
+
+The list lives in **three places that must stay in sync**, enforced only by
+convention and a desktop sanitize test:
+- `src/lib/video-models.ts` (`VIDEO_MODELS`) — the picker snapshot;
+- `src-tauri/src/providers/mod.rs` (`KNOWN_VIDEO_MODELS`) — migrates a persisted
+  pick outside the set back to the default on load;
+- `june-api` `default_video_pricing()` — the markup map that doubles as the
+  allowlist (`model_not_priced` otherwise).
+
+Markup is a uniform **2.0x** on the live quote for every entry, matching the
+original wan-2.2 markup: video is quote-priced, so a pricier model already costs
+more without a per-model markup table, and `video_max_credits_per_request`
+(20,000) still caps any single hold. **This needs a June API deploy** to take
+effect — the new `video_pricing` keys are a backward-compatible addition (new
+map entries, no contract change), but until June API ships them every id beyond
+`wan-2.2-a14b` is rejected `model_not_priced`. This is exactly the "source the
+allowlist and per-model constraints from Venice's `/models` at build/deploy time
+rather than pinning ids by hand" follow-up, done manually for now; the durable
+fix (generating all three lists from one catalog fetch) remains open.

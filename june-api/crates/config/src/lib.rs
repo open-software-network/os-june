@@ -781,9 +781,32 @@ fn default_image_edit_model() -> String {
 /// accepts >=6s and >=1080p, so no global default serves it; per-model
 /// duration/resolution selection (which re-admits it) is a follow-up.
 fn default_video_pricing() -> BTreeMap<String, u32> {
-    // The original Seedance 2.0 default was delisted from Venice's live catalog
-    // (quote tolerated it, queue rejected it with a 400); dropped for wan-2.2.
-    BTreeMap::from([("wan-2.2-a14b-text-to-video".to_string(), 2000)])
+    // The curated text-to-video allowlist: every id June's picker offers must be
+    // here or it is rejected `model_not_priced` at `/video/generate`. Markup is a
+    // uniform 2.0x on the live Venice quote (ADR 0013 Decision 1) — the per-clip
+    // credit price still comes from the quote, so pricier models cost more
+    // without a per-model markup table. Mirrors `VIDEO_MODELS` in
+    // src/lib/video-models.ts and `KNOWN_VIDEO_MODELS` in the desktop providers
+    // module; keep the three in sync. The original Seedance 2.0 default was
+    // delisted from Venice's live catalog (quote tolerated it, queue rejected it
+    // with a 400), so it is deliberately absent.
+    BTreeMap::from([
+        ("wan-2.2-a14b-text-to-video".to_string(), 2000),
+        ("wan-2-7-text-to-video".to_string(), 2000),
+        ("wan-2.6-text-to-video".to_string(), 2000),
+        ("wan-2.5-preview-text-to-video".to_string(), 2000),
+        ("grok-imagine-text-to-video-private".to_string(), 2000),
+        ("ltx-2-19b-distilled-text-to-video".to_string(), 2000),
+        ("ltx-2-19b-full-text-to-video".to_string(), 2000),
+        ("longcat-text-to-video".to_string(), 2000),
+        ("longcat-distilled-text-to-video".to_string(), 2000),
+        ("vidu-q3-text-to-video".to_string(), 2000),
+        ("pixverse-v5.6-text-to-video".to_string(), 2000),
+        ("pixverse-c1-text-to-video".to_string(), 2000),
+        ("happyhorse-1-1-text-to-video".to_string(), 2000),
+        ("happyhorse-1-0-text-to-video".to_string(), 2000),
+        ("wan-2-7-uncensored-text-to-video".to_string(), 2000),
+    ])
 }
 
 /// Curated image-to-video (animate) allowlist — a separate Venice catalog from

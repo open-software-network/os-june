@@ -330,7 +330,10 @@ fn setup_video_asset_scope(app: &mut tauri::App) {
             return;
         }
     };
-    if let Err(error) = app.asset_protocol_scope().allow_directory(&videos_dir, false) {
+    if let Err(error) = app
+        .asset_protocol_scope()
+        .allow_directory(&videos_dir, false)
+    {
         tracing::warn!(%error, path = %videos_dir.display(), "video asset scope: allow_directory failed");
     }
 }
