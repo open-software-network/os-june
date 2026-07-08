@@ -359,6 +359,11 @@ const SESSION_NOT_AVAILABLE_MESSAGE =
 // stacking.
 const SESSION_BUSY_TOAST_ID = "agent-session-busy";
 
+// A stable id for the model control's notices (default-model changed,
+// model-locked on an existing session, off-device confirm), so they replace one
+// another in a single toast rather than stacking.
+const MODEL_SWITCH_TOAST_ID = "agent-model-switch";
+
 // Stable ids so the fork lifecycle (creating → branched) rides one
 // self-replacing toast, and repeat report deliveries reuse a single "sent"
 // confirmation rather than stacking.
@@ -1775,14 +1780,6 @@ export function AgentWorkspace({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
-  // The model-switch notice (feature 10) is keyed to the session it acted on so
-  // it survives background refreshes and disappears when the user moves to
-  // another conversation. A null sessionId means it reports a default-only
-  // change shown on the hero.
-  const [modelSwitchNotice, setModelSwitchNotice] = useState<{
-    message: string;
-    sessionId: string | null;
-  } | null>(null);
   const [submittingErrorIssueReport, setSubmittingErrorIssueReport] = useState(false);
   const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
     null,
@@ -2594,12 +2591,6 @@ export function AgentWorkspace({
   const visibleErrorRetryable =
     visibleError != null &&
     (GATEWAY_CONNECTION_ERROR.test(visibleError) || visibleError === HERMES_SERVER_ERROR_MESSAGE);
-  // The model-switch notice (feature 10) shows on the session it acted on; a
-  // null sessionId is the default-only notice, shown while no session is open.
-  const visibleModelSwitchNotice =
-    modelSwitchNotice && modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
-      ? modelSwitchNotice.message
-      : null;
   // Unsupported Hermes events for the selected session surface a generic,
   // recoverable notice (and sanitized dev details). Subscribing to the store's
   // version re-derives the notice whenever a new unsupported frame lands.
@@ -3075,10 +3066,7 @@ export function AgentWorkspace({
 
   function showComposerModelLockedNotice() {
     setComposerModelOpen(false);
-    setModelSwitchNotice({
-      message: MODEL_CHANGE_LOCKED_NOTICE,
-      sessionId: selectedHermesSessionIdRef.current ?? null,
-    });
+    toast(MODEL_CHANGE_LOCKED_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
   }
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
@@ -3115,11 +3103,10 @@ export function AgentWorkspace({
     if (!isLoopbackUrl(baseUrl)) {
       if (localEnableConfirmArmedForRef.current !== baseUrl) {
         localEnableConfirmArmedForRef.current = baseUrl;
-        setModelSwitchNotice({
-          message:
-            "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
-          sessionId: null,
-        });
+        toast.warning(
+          "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+          { id: MODEL_SWITCH_TOAST_ID },
+        );
         return false;
       }
       localEnableConfirmArmedForRef.current = null;
@@ -3139,10 +3126,7 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    setModelSwitchNotice({
-      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-      sessionId: null,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
@@ -3182,10 +3166,7 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    setModelSwitchNotice({
-      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-      sessionId: null,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
@@ -7453,18 +7434,6 @@ export function AgentWorkspace({
                       : "Send report"}
               </button>
             </motion.div>
-          ) : visibleModelSwitchNotice ? (
-            <motion.p
-              key="model-switch-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {visibleModelSwitchNotice}
-            </motion.p>
           ) : null}
         </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
