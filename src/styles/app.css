@@ -20078,6 +20078,15 @@ input:focus-visible,
   line-height: 1.5;
 }
 
+.onboarding-privacy-copy a {
+  width: max-content;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--foreground) 28%, transparent);
+  text-underline-offset: 3px;
+}
+
 .onboarding-card-privacy .welcome-providers,
 .onboarding-card-privacy .welcome-status {
   width: 100%;

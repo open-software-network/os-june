@@ -162,10 +162,10 @@ only if retention analysis becomes critical and k >= 50 holds).
 
 - **Onboarding step**: one screen, sentence-case copy, unchecked by
   default: "Share anonymous usage statistics". Subtext states the hard
-  line in one sentence ("Never your recordings, notes, or anything you or
-  the AI writes. Just coarse feature counts, listed publicly.") with a
-  "See exactly what is shared" link. Declining is one click and visually
-  equal to accepting.
+  line in one sentence ("Never your recordings, notes, or written content.
+  Only anonymous counts that help us understand feature usage.") with a
+  "Learn how it works" link. Declining is one click and visually equal to
+  accepting.
 - **Settings > Privacy** (new section in `AppSettings`): the toggle, the
   same one-sentence explanation, the link to the question list, and the
   date consent was given. The existing agent privacy guard control should

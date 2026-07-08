@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { dispatchP3aSettingsChanged } from "../../../lib/p3a";
+import { dispatchP3aSettingsChanged, TELEMETRY_INFO_URL } from "../../../lib/p3a";
 import { setP3aEnabled } from "../../../lib/tauri";
 import { Switch } from "../../ui/Switch";
 import { StepActions, StepCard } from "../StepChrome";
@@ -37,6 +37,9 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
             Never your recordings, notes, or written content. Only anonymous counts that help us
             understand feature usage.
           </p>
+          <a href={TELEMETRY_INFO_URL} target="_blank" rel="noreferrer">
+            Learn how it works
+          </a>
         </div>
         <Switch
           checked={enabled}

@@ -7,6 +7,7 @@ import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
+import { TELEMETRY_INFO_URL } from "../lib/p3a";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -573,6 +574,11 @@ describe("AppSettings", () => {
     );
 
     await screen.findByRole("heading", { name: "Privacy" });
+    expect(screen.getByText(/Only anonymous counts that help us understand/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
+      "href",
+      TELEMETRY_INFO_URL,
+    );
     const toggle = screen.getByRole("switch", { name: "Share anonymous usage statistics" });
     expect(toggle).toHaveAttribute("aria-checked", "false");
 

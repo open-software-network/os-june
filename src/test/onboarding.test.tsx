@@ -13,6 +13,7 @@ import {
   setOnboardingResumeStep,
   subscribeToOnboardingComplete,
 } from "../lib/onboarding";
+import { TELEMETRY_INFO_URL } from "../lib/p3a";
 import type { AccountStatus, RecordingSourceReadinessDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
@@ -251,6 +252,10 @@ describe("OnboardingFlow", () => {
 
     await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
     expect(screen.queryByText("See exactly what is shared")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
+      "href",
+      TELEMETRY_INFO_URL,
+    );
     expect(
       screen.getByRole("switch", { name: "Share anonymous usage statistics" }),
     ).toHaveAttribute("aria-checked", "false");

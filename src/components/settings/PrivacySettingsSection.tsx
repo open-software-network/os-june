@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { dispatchP3aSettingsChanged, TELEMETRY_QUESTIONS_URL } from "../../lib/p3a";
+import { dispatchP3aSettingsChanged, TELEMETRY_INFO_URL } from "../../lib/p3a";
 import { p3aSettings, setP3aEnabled, type P3aSettingsDto } from "../../lib/tauri";
 import { Switch } from "../ui/Switch";
 import { SettingsPageHeader } from "./AppSettings";
@@ -67,8 +67,8 @@ export function PrivacySettingsSection() {
               <div className="settings-row-info">
                 <h3 className="settings-row-title">Share anonymous usage statistics</h3>
                 <p className="settings-row-description">
-                  Never your recordings, notes, or anything you or the AI writes. Just coarse
-                  feature counts listed publicly.
+                  Never your recordings, notes, or written content. Only anonymous counts that help
+                  us understand feature usage.
                 </p>
               </div>
               <div className="settings-row-control">
@@ -96,19 +96,19 @@ export function PrivacySettingsSection() {
 
             <div className="settings-row">
               <div className="settings-row-info">
-                <h3 className="settings-row-title">Question list</h3>
+                <h3 className="settings-row-title">How usage statistics work</h3>
                 <p className="settings-row-description">
-                  The complete catalog and buckets are public and enforced by tests.
+                  Read the policy, current local-only behavior, and public question catalog.
                 </p>
               </div>
               <div className="settings-row-control">
                 <a
                   className="btn btn-secondary"
-                  href={TELEMETRY_QUESTIONS_URL}
+                  href={TELEMETRY_INFO_URL}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  See what is shared
+                  Learn how it works
                 </a>
               </div>
             </div>
