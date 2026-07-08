@@ -103,6 +103,50 @@ describe("HermesAdminClient — requests, auth, profile targeting", () => {
     expect(outcome.result).toBeUndefined();
   });
 
+  it("rejects activation when the 2xx body does not confirm the requested profile", async () => {
+    // Mismatch: Hermes reports a DIFFERENT sticky active value. Trusting the
+    // request would desync June's store from the on-disk pointer.
+    const fetchMismatch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, active: "default" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const server = new FakeHermesServer();
+    const mismatchClient = createHermesAdminClient(targetForFake(server), {
+      fetch: fetchMismatch,
+    });
+    await expect(mismatchClient.profiles.activate("research")).rejects.toMatchObject({
+      safeMessage: "Hermes could not activate that profile.",
+    });
+
+    // Malformed: an empty 2xx body names no active profile at all.
+    const fetchEmptyBody = vi.fn(
+      async () =>
+        new Response("{}", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const emptyClient = createHermesAdminClient(targetForFake(server), {
+      fetch: fetchEmptyBody,
+    });
+    await expect(emptyClient.profiles.activate("research")).rejects.toMatchObject({
+      safeMessage: "Hermes could not activate that profile.",
+    });
+  });
+
+  it("accepts activation when the response confirms the requested profile", async () => {
+    const { client } = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "research", active: false },
+      ],
+    });
+    await expect(client.profiles.activate("research")).resolves.toBeUndefined();
+  });
+
   it("returns MCP test results as a MutationOutcome with the discovered tools", async () => {
     const { client } = makeAdminHarness(mcpStdioWithToolsScenario());
     const outcome = await client.mcp.testServer("sqlite");

@@ -1554,18 +1554,20 @@ export function parseProfileCreateResult(
 /** Result of `POST /api/profiles/active`. */
 export type HermesProfileActivateResult = {
   ok: boolean;
-  active: string;
+  /** The profile Hermes reports as the sticky active value. Absent when the
+   * response body does not name one - callers must treat that as unconfirmed,
+   * never assume the requested name (a malformed 2xx or a mismatched `active`
+   * would silently desync June's store from the on-disk sticky pointer that
+   * Rust-side model overrides resolve against). */
+  active?: string;
   raw: unknown;
 };
 
-export function parseProfileActivateResult(
-  requestedName: string,
-  raw: unknown,
-): HermesProfileActivateResult {
+export function parseProfileActivateResult(raw: unknown): HermesProfileActivateResult {
   const record = asRecord(raw);
   return {
     ok: pickBool([record], ["ok", "success"]) ?? true,
-    active: pickString([record], ["active", "name", "profile"]) ?? requestedName,
+    active: pickString([record], ["active", "name", "profile"]),
     raw,
   };
 }

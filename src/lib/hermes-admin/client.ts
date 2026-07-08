@@ -583,8 +583,15 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
         body: { name },
         scopeToProfile: false,
       },
-      (raw) => parseProfileActivateResult(name, raw),
+      parseProfileActivateResult,
     );
+
+  /** True only when the response CONFIRMS the requested profile became the
+   * sticky active value. A missing or mismatched `active` is a failure even on
+   * a 2xx: trusting it would desync June's in-app active-profile store from
+   * the on-disk pointer that Rust-side model overrides resolve against. */
+  const activationConfirmed = (name: string, result: HermesProfileActivateResult): boolean =>
+    result.ok && result.active?.trim().toLowerCase() === name.trim().toLowerCase();
 
   return {
     list() {
@@ -602,7 +609,7 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
     },
     async activate(name) {
       const result = await activateProfile(name);
-      if (!result.ok) {
+      if (!activationConfirmed(name, result)) {
         throw new HermesAdminError({
           endpoint: "POST /api/profiles/active",
           kind: "parse",
