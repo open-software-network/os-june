@@ -30,6 +30,7 @@ import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import type { HermesAddMcpServerPayload } from "./client";
 import { HermesAdminError } from "./errors";
 import { createRustAdminFetch } from "./rust-transport";
+import type { AdminMutation } from "./application-timing";
 import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type { HermesMcpServerInfo, HermesMcpTestResult } from "./schemas";
 import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
@@ -118,6 +119,10 @@ export class McpServersController {
   private autoProbed = false;
   private unsubscribers: Array<() => void> = [];
   private snapshot: McpServersState;
+  private appliedEnabledByName = new Map<string, boolean>();
+  private toggleDirty = new Set<string>();
+  private restartOrigin: "none" | "toggle" | "other" = "none";
+  private suppressLifecycleAttribution = false;
 
   constructor(engine: McpServersEngine) {
     this.engine = engine;
@@ -134,6 +139,15 @@ export class McpServersController {
     this.unsubscribers.push(
       engine.lifecycle.subscribe((next) => {
         this.lifecycleSnapshot = next;
+        if (next.state === "clean") {
+          this.restartOrigin = "none";
+          this.setAppliedEnabledBaseline();
+        } else if (
+          next.state === "gateway-restart-required" &&
+          !this.suppressLifecycleAttribution
+        ) {
+          this.restartOrigin = "other";
+        }
         this.recompute();
       }),
     );
@@ -189,6 +203,7 @@ export class McpServersController {
       this.status = "ready";
       this.error = undefined;
       this.retryable = false;
+      this.syncToggleBaseline();
       this.recompute();
       this.maybeAutoProbe();
     } catch (error) {
@@ -219,10 +234,18 @@ export class McpServersController {
     try {
       const outcome = await this.engine.client.mcp.setEnabled(name, enabled);
       if (this.disposed) return;
-      this.engine.cache.afterMutation(outcome.mutation, name);
-      this.engine.lifecycle.noteMutation(outcome.mutation);
+      this.updateToggleDirty(name, enabled);
+      if (this.isNetZeroToggle()) {
+        this.engine.cache.invalidate(resourcesForMutation(outcome.mutation));
+        this.engine.cache.dismissNotificationsFor(outcome.mutation, name);
+        this.clearToggleRestartIfClean();
+      } else {
+        this.engine.cache.afterMutation(outcome.mutation, name);
+        this.noteRestartMutation(outcome.mutation, "toggle");
+      }
       this.pending.delete(name);
       await this.load();
+      this.clearToggleRestartIfClean();
     } catch (error) {
       if (this.disposed) return;
       this.applyOptimistic(name, current.enabled);
@@ -310,7 +333,7 @@ export class McpServersController {
       const outcome = await this.engine.client.mcp.addServer(payload);
       if (this.disposed) return true;
       this.engine.cache.afterMutation(outcome.mutation, payload.name);
-      this.engine.lifecycle.noteMutation(outcome.mutation);
+      this.noteRestartMutation(outcome.mutation, "other");
       this.adding = false;
       await this.load();
       return true;
@@ -337,7 +360,7 @@ export class McpServersController {
       const outcome = await this.engine.client.mcp.removeServer(name);
       if (this.disposed) return true;
       this.engine.cache.afterMutation(outcome.mutation, name);
-      this.engine.lifecycle.noteMutation(outcome.mutation);
+      this.noteRestartMutation(outcome.mutation, "other");
       this.pending.delete(name);
       this.tests.delete(name);
       await this.load();
@@ -360,6 +383,65 @@ export class McpServersController {
     this.servers = this.servers.map((server) =>
       server.name === name ? { ...server, enabled } : server,
     );
+    this.updateToggleDirty(name, enabled);
+  }
+
+  private setAppliedEnabledBaseline(): void {
+    this.appliedEnabledByName = new Map(
+      this.servers.map((server) => [server.name, server.enabled] as const),
+    );
+    this.toggleDirty.clear();
+  }
+
+  private syncToggleBaseline(): void {
+    if (this.lifecycleSnapshot.state === "clean") {
+      this.setAppliedEnabledBaseline();
+      return;
+    }
+    this.recomputeToggleDirty();
+  }
+
+  private recomputeToggleDirty(): void {
+    this.toggleDirty.clear();
+    for (const server of this.servers) {
+      const applied = this.appliedEnabledByName.get(server.name);
+      if (applied !== undefined && applied !== server.enabled) {
+        this.toggleDirty.add(server.name);
+      }
+    }
+  }
+
+  private updateToggleDirty(name: string, enabled: boolean): void {
+    const applied = this.appliedEnabledByName.get(name);
+    if (applied === undefined || applied !== enabled) {
+      this.toggleDirty.add(name);
+    } else {
+      this.toggleDirty.delete(name);
+    }
+  }
+
+  private isNetZeroToggle(): boolean {
+    return this.restartOrigin === "toggle" && this.toggleDirty.size === 0;
+  }
+
+  private noteRestartMutation(mutation: AdminMutation, origin: "toggle" | "other"): void {
+    if (origin === "other") {
+      this.restartOrigin = "other";
+    } else if (this.restartOrigin === "none") {
+      this.restartOrigin = "toggle";
+    }
+    this.suppressLifecycleAttribution = true;
+    try {
+      this.engine.lifecycle.noteMutation(mutation);
+    } finally {
+      this.suppressLifecycleAttribution = false;
+    }
+  }
+
+  private clearToggleRestartIfClean(): void {
+    if (this.isNetZeroToggle() && this.lifecycleSnapshot.state === "gateway-restart-required") {
+      this.engine.lifecycle.reset();
+    }
   }
 
   private setTest(name: string, state: McpTestState): void {

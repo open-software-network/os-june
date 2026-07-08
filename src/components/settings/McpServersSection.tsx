@@ -3,8 +3,6 @@ import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCircleX } from "central-icons/IconCircleX";
 import { IconCloud } from "central-icons/IconCloud";
-import { IconCrossSmall } from "central-icons/IconCrossSmall";
-import { IconEditSmall1 } from "central-icons/IconEditSmall1";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconFilter2 } from "central-icons/IconFilter2";
@@ -12,9 +10,10 @@ import { IconKey1 } from "central-icons/IconKey1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconServer1 } from "central-icons/IconServer1";
+import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconShield } from "central-icons/IconShield";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ALLOWLIST_RECOMMENDATION,
   authMeta,
@@ -25,7 +24,6 @@ import {
   filterServers,
   hasAvailableTools,
   inlineSecurityLabels,
-  isLocalSubprocess,
   oauthNeedFromMessage,
   oauthStateFor,
   oauthStatusMeta,
@@ -36,6 +34,7 @@ import {
   serverArgs,
   statusMeta,
   transportMeta,
+  userManagedMcpServers,
   useMcpFilteringController,
   useMcpOauthController,
   useMcpServersEngine,
@@ -61,8 +60,12 @@ import {
 } from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
 import { McpToolsDialog } from "./McpToolsDialog";
+import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
+import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
+import { SegmentedControl } from "../ui/SegmentedControl";
+import { SettingsPageHeader } from "./AppSettings";
 import { Switch } from "../ui/Switch";
 
 type McpServersSectionProps = {
@@ -218,6 +221,7 @@ export function McpServersView({
   mode?: HermesAdminMode;
 }) {
   const [query, setQuery] = useState("");
+  const [refreshSpins, setRefreshSpins] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [toDelete, setToDelete] = useState<HermesMcpServerInfo | undefined>();
   // The server whose connection-field edit dialog is open, or undefined.
@@ -229,7 +233,8 @@ export function McpServersView({
   // The server whose tool-filtering panel is open, or undefined.
   const [toolsFor, setToolsFor] = useState<HermesMcpServerInfo | undefined>();
 
-  const visible = useMemo(() => filterServers(state.servers, query), [state.servers, query]);
+  const userServers = useMemo(() => userManagedMcpServers(state.servers), [state.servers]);
+  const visible = useMemo(() => filterServers(userServers, query), [userServers, query]);
 
   /** Routes a toggle: disabling is never gated; enabling a high-risk server
    * opens a confirmation, while a standard enable applies immediately. The
@@ -249,18 +254,20 @@ export function McpServersView({
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
   const isLoadingFirst = state.status === "loading";
-  const hasServers = state.servers.length > 0;
+  const hasServers = userServers.length > 0;
 
   return (
     <section className="settings-group mcp-servers" aria-labelledby="mcp-servers-heading">
-      <h2 id="mcp-servers-heading" className="settings-group-heading">
-        MCP servers
-      </h2>
-      <p className="settings-group-description">
-        Connect Model Context Protocol servers so future sessions can use their tools. Changes apply
-        after a restart.{" "}
-        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
-      </p>
+      <SettingsPageHeader
+        id="mcp-servers-heading"
+        title="MCP servers"
+        blurb={
+          <>
+            Connect external tools and data sources. Changes apply after a restart.{" "}
+            <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
+          </>
+        }
+      />
 
       <LifecycleBanner state={state} />
       <AdminNotifications
@@ -268,39 +275,56 @@ export function McpServersView({
         onDismiss={state.dismissNotification}
       />
 
-      <div className="settings-card mcp-servers-card">
-        <div className="mcp-servers-toolbar">
-          <div className="mcp-servers-search">
-            <IconMagnifyingGlass size={15} ariaHidden className="mcp-servers-search-icon" />
-            <input
-              type="search"
-              value={query}
-              placeholder="Filter servers"
-              aria-label="Filter MCP servers"
-              disabled={isUnavailable}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-            />
-          </div>
-          <button
-            type="button"
-            className="mcp-servers-refresh"
-            disabled={isUnavailable || isLoadingFirst}
-            onClick={state.refresh}
-          >
-            <IconArrowRotateClockwise size={14} ariaHidden />
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary mcp-servers-add"
+      {/* The action row sits ABOVE the list card (Codex "Servers" + Add pattern):
+       * a compact search, refresh, and the add button, not stuffed into the
+       * card's top. */}
+      <div className="mcp-servers-actions">
+        <div className="settings-search mcp-servers-search">
+          <IconMagnifyingGlass
+            size={15}
+            ariaHidden
+            className="settings-search-icon mcp-servers-search-icon"
+          />
+          <input
+            type="search"
+            value={query}
+            placeholder="Filter servers"
+            aria-label="Filter MCP servers"
             disabled={isUnavailable}
-            onClick={() => setAddOpen(true)}
-          >
-            <IconPlusMedium size={14} ariaHidden />
-            Add server
-          </button>
+            onChange={(event) => setQuery(event.currentTarget.value)}
+          />
         </div>
+        <button
+          type="button"
+          className="icon-button mcp-servers-refresh"
+          aria-label="Refresh MCP servers"
+          aria-busy={isLoadingFirst}
+          title="Refresh MCP servers"
+          disabled={isUnavailable || isLoadingFirst}
+          onClick={() => {
+            setRefreshSpins((spins) => spins + 1);
+            state.refresh();
+          }}
+        >
+          <IconArrowRotateClockwise
+            size={14}
+            ariaHidden
+            className="balance-refresh-icon"
+            style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+          />
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary mcp-servers-add"
+          disabled={isUnavailable}
+          onClick={() => setAddOpen(true)}
+        >
+          <IconPlusMedium size={14} ariaHidden />
+          Add MCP server
+        </button>
+      </div>
 
+      <div className="settings-card mcp-servers-card">
         {state.error && hasServers ? (
           <p className="settings-row-error mcp-servers-inline-error">
             <IconExclamationCircle size={14} ariaHidden />
@@ -311,6 +335,7 @@ export function McpServersView({
         <div className="mcp-servers-body">
           {isUnavailable ? (
             <EmptyState
+              className="empty-state-compact"
               title="Hermes is not running"
               description="Start Hermes to see and manage the MCP servers your sessions can use."
             />
@@ -324,11 +349,13 @@ export function McpServersView({
             <ServersLoading />
           ) : !hasServers ? (
             <EmptyState
+              className="empty-state-compact"
               title="No MCP servers"
               description="Add a server to connect external tools. Local (stdio) servers run as subprocesses; remote servers connect over HTTP."
             />
           ) : visible.length === 0 ? (
             <EmptyState
+              className="empty-state-compact"
               title="No matching servers"
               description="No server matches your search. Try a different term."
             />
@@ -340,25 +367,13 @@ export function McpServersView({
                   server={server}
                   pending={state.pending.has(server.name)}
                   test={state.tests.get(server.name)}
-                  oauthLogin={oauth?.logins.get(server.name)}
-                  onSignIn={oauth ? () => oauth.signIn(server.name) : undefined}
                   onToggle={(enabled) => handleToggle(server, enabled)}
-                  onTest={() => void state.test(server.name)}
-                  onEdit={
-                    state.editServer && canEditServer(server)
-                      ? () => {
-                          // Never show another server's stale edit failure in
-                          // a freshly opened form.
-                          state.clearEditError?.();
-                          setToEdit(server);
-                        }
-                      : undefined
-                  }
-                  onTools={() => {
-                    state.clearSaveError?.();
-                    setToolsFor(server);
+                  onManage={() => {
+                    // Never show another server's stale edit failure in a
+                    // freshly opened detail form.
+                    state.clearEditError?.();
+                    setToEdit(server);
                   }}
-                  onDelete={() => setToDelete(server)}
                 />
               ))}
             </ul>
@@ -380,9 +395,31 @@ export function McpServersView({
 
       <EditServerDialog
         server={toEdit}
+        test={toEdit ? state.tests.get(toEdit.name) : undefined}
+        oauthLogin={toEdit ? oauth?.logins.get(toEdit.name) : undefined}
         saving={Boolean(toEdit) && state.editingServer === toEdit?.name}
         saveError={state.editError}
+        canEdit={Boolean(toEdit && state.editServer && canEditServer(toEdit))}
         onClose={() => setToEdit(undefined)}
+        onSignIn={toEdit && oauth ? () => oauth.signIn(toEdit.name) : undefined}
+        onTest={toEdit ? () => void state.test(toEdit.name) : undefined}
+        onTools={
+          toEdit
+            ? () => {
+                state.clearSaveError?.();
+                setToolsFor(toEdit);
+                setToEdit(undefined);
+              }
+            : undefined
+        }
+        onDelete={
+          toEdit
+            ? () => {
+                setToDelete(toEdit);
+                setToEdit(undefined);
+              }
+            : undefined
+        }
         onSave={async (writes) => {
           if (!toEdit || !state.editServer) return false;
           return state.editServer(toEdit.name, writes);
@@ -474,7 +511,7 @@ function LifecycleBanner({ state }: { state: McpServersState }) {
       {snapshot.canRestart ? (
         <button
           type="button"
-          className="mcp-servers-lifecycle-restart"
+          className="btn btn-secondary mcp-servers-lifecycle-restart"
           onClick={state.restartGateway}
         >
           {snapshot.state === "restart-failed" ? "Try again" : "Restart now"}
@@ -484,183 +521,64 @@ function LifecycleBanner({ state }: { state: McpServersState }) {
   );
 }
 
-/** One MCP server row: name + transport / risk pills, connection target
- * (command + args or URL), auth and last-test status, redacted secret fields,
- * discovered tools, a test button, the enable/disable toggle, and a delete
- * action. */
+/** One MCP server row: icon + name/subtitle on the left, with status, details,
+ * and enable toggle aligned on the right. Detailed metadata lives in the
+ * detail/edit surface so the list stays scannable. */
 function ServerRow({
   server,
   pending,
   test,
-  oauthLogin,
-  onSignIn,
   onToggle,
-  onTest,
-  onEdit,
-  onTools,
-  onDelete,
+  onManage,
 }: {
   server: HermesMcpServerInfo;
   pending: boolean;
   test?: McpTestState;
-  oauthLogin?: McpOauthLoginState;
-  onSignIn?: () => void;
   onToggle: (enabled: boolean) => void;
-  onTest: () => void;
-  /** Opens the connection-field edit dialog. Absent when the surface has no
-   * edit slice wired or the transport has nothing safe to edit. */
-  onEdit?: () => void;
-  onTools: () => void;
-  onDelete: () => void;
+  onManage: () => void;
 }) {
   const transport = transportMeta(server.transport);
-  const auth = authMeta(server.auth);
   const status = statusMeta(server.status);
-  const env = redactedEnv(server);
-  const headers = redactedHeaders(server);
-  const args = serverArgs(server);
-  const local = isLocalSubprocess(server);
   const labelId = `mcp-server-${cssId(server.name)}`;
-  const tools = test?.result?.tools ?? server.tools ?? [];
-  // OAuth applies when the server is oauth-shaped, or when the last connection
-  // probe said so (Hermes' "run `hermes mcp login <name>` interactively" error)
-  // — the sign-in panel below IS that interactive login, run via the browser.
-  const oauth = usesOauth(server) || oauthNeedFromMessage(test?.result?.message ?? test?.error);
-  const securityLabels = inlineSecurityLabels(securityLabelsFor(server));
-  const risk = classifyServerRisk(server);
-  // Recommend an allowlist only after the server has tested successfully, so the
-  // advice lands when the user can act on a real tool list (filtering is owned
-  // by the tool selection surface, spec 16).
-  const testedOk = test?.result?.ok === true || server.status === "connected";
+  const rowStatus = test?.pending ? { label: "Testing", tone: "neutral" as const } : status;
 
   return (
     <li className="mcp-server-row" data-enabled={server.enabled}>
-      <div className="mcp-server-top">
-        <div className="mcp-server-main">
-          <div className="mcp-server-headline">
-            <span className="mcp-server-name" id={labelId}>
-              {server.name}
-            </span>
-            <span className="mcp-server-transport" data-risk={transport.risk}>
-              {transport.label}
-            </span>
-            <span className="mcp-server-risk" data-risk={transport.risk}>
-              <IconShield size={12} ariaHidden />
-              {transport.riskLabel}
-            </span>
-            {/* An "Auth unknown" pill is noise once a probe has proven the
-             * connection; the sign-in panel below carries the real status. */}
-            {server.auth !== "not-required" && !(server.auth === "unknown" && testedOk) ? (
-              <span className="mcp-server-auth" data-tone={auth.tone}>
-                {auth.label}
-              </span>
-            ) : null}
-          </div>
-
-          <p className="mcp-server-target" title={server.command ?? server.url}>
-            {server.transport === "stdio"
-              ? formatCommand(server.command, args)
-              : (server.url ?? "No URL configured.")}
-          </p>
-
-          <p className="mcp-server-blurb">{transport.blurb}</p>
-
-          <SecurityLabels labels={securityLabels} />
-
-          {risk.tier === "high" ? (
-            <p className="mcp-server-risk-note" data-tier="high" role="note">
-              <IconExclamationCircle size={13} ariaHidden />
-              {risk.reasons[0]?.detail ?? "This server can take high-impact actions."}
-            </p>
-          ) : null}
-
-          {risk.tier === "high" && testedOk ? (
-            <p className="mcp-server-allowlist-note" role="note">
-              <IconShield size={13} ariaHidden />
-              {ALLOWLIST_RECOMMENDATION}
-            </p>
-          ) : null}
-
-          <div className="mcp-server-meta">
-            <span className="mcp-server-status" data-tone={status.tone}>
-              <StatusIcon tone={status.tone} />
-              {status.label}
-            </span>
-            {server.statusMessage ? (
-              <span className="mcp-server-status-detail">{server.statusMessage}</span>
-            ) : null}
-          </div>
-
-          {env.length > 0 || headers.length > 0 ? (
-            <div className="mcp-server-secrets">
-              {env.length > 0 ? <SecretSummary label="Environment" count={env.length} /> : null}
-              {headers.length > 0 ? <SecretSummary label="Headers" count={headers.length} /> : null}
-            </div>
-          ) : null}
-
-          <TestResult test={test} tools={tools} />
-        </div>
-
-        <div className="mcp-server-actions">
-          <button
-            type="button"
-            className="mcp-server-test"
-            disabled={test?.pending}
-            onClick={onTest}
-          >
-            {test?.pending ? "Testing" : "Test"}
-          </button>
-          {onEdit ? (
-            <button
-              type="button"
-              className="mcp-server-edit"
-              aria-label={`Edit ${server.name}`}
-              title="Edit connection"
-              disabled={pending}
-              onClick={onEdit}
-            >
-              <IconEditSmall1 size={14} ariaHidden />
-              Edit
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="mcp-server-tools"
-            aria-label={`Configure tools for ${server.name}`}
-            title="Configure tools"
-            onClick={onTools}
-          >
-            <IconFilter2 size={14} ariaHidden />
-            Tools
-          </button>
-          <button
-            type="button"
-            className="mcp-server-delete"
-            aria-label={`Delete ${server.name}`}
-            title="Delete server"
-            disabled={pending}
-            onClick={onDelete}
-          >
-            <IconTrashCan size={14} ariaHidden />
-          </button>
-          <span className="mcp-server-toggle">
-            <Switch
-              checked={server.enabled}
-              disabled={pending}
-              aria-labelledby={labelId}
-              onCheckedChange={onToggle}
-            />
-            <span className="mcp-server-timing" aria-hidden>
-              {pending ? "Saving" : "Restart to apply"}
-            </span>
-          </span>
-        </div>
+      <span className="mcp-server-icon" aria-hidden>
+        <IconServer1 size={16} />
+      </span>
+      <div className="mcp-server-main">
+        <span className="mcp-server-name" id={labelId}>
+          {server.name}
+        </span>
+        <p className="mcp-server-subtitle" title={transport.blurb}>
+          {transport.blurb}
+        </p>
       </div>
-
-      {/* Below the main/actions columns so the sign-in panel spans the row. */}
-      {oauth ? (
-        <OauthStatus server={server} login={oauthLogin} testedOk={testedOk} onSignIn={onSignIn} />
-      ) : null}
+      <div className="mcp-server-actions">
+        <span className="mcp-server-status" data-tone={rowStatus.tone}>
+          <StatusIcon tone={rowStatus.tone} />
+          {rowStatus.label}
+        </span>
+        <button
+          type="button"
+          className="mcp-server-manage"
+          aria-label={`Manage ${server.name}`}
+          title="Manage server"
+          disabled={pending}
+          onClick={onManage}
+        >
+          <IconSettingsGear4 size={14} ariaHidden />
+        </button>
+        <span className="mcp-server-toggle">
+          <Switch
+            checked={server.enabled}
+            disabled={pending}
+            aria-labelledby={labelId}
+            onCheckedChange={onToggle}
+          />
+        </span>
+      </div>
     </li>
   );
 }
@@ -686,16 +604,6 @@ function SecurityLabels({ labels }: { labels: ReturnType<typeof securityLabelsFo
         </li>
       ))}
     </ul>
-  );
-}
-
-/** A redacted summary of secret-bearing config: a count and a placeholder, never
- * the values. */
-function SecretSummary({ label, count }: { label: string; count: number }) {
-  return (
-    <span className="mcp-server-secret" title={`${count} hidden ${label.toLowerCase()}`}>
-      {label}: {count} hidden
-    </span>
   );
 }
 
@@ -942,7 +850,6 @@ function AddServerDialog({
 }) {
   const [draft, setDraft] = useState<EditableDraft>(() => emptyEditableDraft());
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const headingId = useId();
 
   function reset() {
     setDraft(emptyEditableDraft());
@@ -996,188 +903,209 @@ function AddServerDialog({
         </>
       }
     >
-      <div className="mcp-add-form" aria-labelledby={headingId}>
-        <fieldset className="mcp-add-field">
-          <label className="mcp-add-label" htmlFor="mcp-add-name">
-            Name
-          </label>
-          <input
-            id="mcp-add-name"
-            type="text"
-            className="mcp-add-input"
-            value={draft.name}
-            autoComplete="off"
-            spellCheck={false}
-            aria-invalid={Boolean(errors.name)}
-            onChange={(event) => {
-              // Read the value synchronously: React nulls event.currentTarget
-              // once the handler returns, and the setDraft updater runs later.
-              const value = event.currentTarget.value;
-              setDraft((d) => ({ ...d, name: value }));
-            }}
-          />
-          {errors.name ? <p className="mcp-add-error">{errors.name}</p> : null}
-        </fieldset>
-
-        <fieldset className="mcp-add-field">
-          <span className="mcp-add-label">Transport</span>
-          <div className="mcp-add-transport" role="radiogroup" aria-label="Transport">
-            <TransportOption
-              label="Local (stdio)"
-              hint="Runs a local subprocess"
-              active={draft.transport === "stdio"}
-              onSelect={() => setDraft((d) => ({ ...d, transport: "stdio" }))}
-            />
-            <TransportOption
-              label="Remote (HTTP)"
-              hint="Connects over HTTP"
-              active={draft.transport === "http"}
-              onSelect={() => setDraft((d) => ({ ...d, transport: "http" }))}
-            />
+      <div className="mcp-add-form">
+        <section className="mcp-add-section-group" aria-labelledby="mcp-add-server-title">
+          <div className="mcp-add-section-head">
+            <h3 id="mcp-add-server-title" className="mcp-add-section-title">
+              Server
+            </h3>
+            <p className="mcp-add-section-description">
+              Name this connection and choose how June reaches it.
+            </p>
           </div>
-        </fieldset>
 
-        {draft.transport === "stdio" ? (
-          <p className="mcp-add-note">
-            <IconShield size={13} ariaHidden />
-            Local servers run as subprocesses and inherit June and Hermes sandbox constraints. Enter
-            only the program path here; put arguments in their own rows.
-          </p>
-        ) : null}
-
-        {draft.transport === "stdio" ? (
-          <>
+          <div className="mcp-add-section">
             <fieldset className="mcp-add-field">
-              <label className="mcp-add-label" htmlFor="mcp-add-command">
-                Command
+              <label className="mcp-add-label" htmlFor="mcp-add-name">
+                Name
               </label>
               <input
-                id="mcp-add-command"
+                id="mcp-add-name"
                 type="text"
                 className="mcp-add-input"
-                value={draft.command}
-                placeholder="mcp-server-filesystem"
+                value={draft.name}
                 autoComplete="off"
                 spellCheck={false}
-                aria-invalid={Boolean(errors.command)}
+                aria-invalid={Boolean(errors.name)}
                 onChange={(event) => {
+                  // Read the value synchronously: React nulls event.currentTarget
+                  // once the handler returns, and the setDraft updater runs later.
                   const value = event.currentTarget.value;
-                  setDraft((d) => ({ ...d, command: value }));
+                  setDraft((d) => ({ ...d, name: value }));
                 }}
               />
-              {errors.command ? <p className="mcp-add-error">{errors.command}</p> : null}
-            </fieldset>
-
-            <ListEditor
-              legend="Arguments"
-              addLabel="Add argument"
-              values={draft.args}
-              errorPrefix="args"
-              errors={errors}
-              onChange={(args) => setDraft((d) => ({ ...d, args }))}
-            />
-
-            <PairEditor
-              legend="Environment variables"
-              addLabel="Add variable"
-              keyPlaceholder="VAR_NAME"
-              valuePlaceholder="Value (hidden)"
-              pairs={draft.env}
-              errorPrefix="env"
-              errors={errors}
-              onChange={(env) => setDraft((d) => ({ ...d, env }))}
-            />
-          </>
-        ) : (
-          <>
-            <fieldset className="mcp-add-field">
-              <label className="mcp-add-label" htmlFor="mcp-add-url">
-                URL
-              </label>
-              <input
-                id="mcp-add-url"
-                type="url"
-                className="mcp-add-input"
-                value={draft.url}
-                placeholder="https://example.com/mcp"
-                autoComplete="off"
-                spellCheck={false}
-                aria-invalid={Boolean(errors.url)}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setDraft((d) => ({ ...d, url: value }));
-                }}
-              />
-              {errors.url ? <p className="mcp-add-error">{errors.url}</p> : null}
+              {errors.name ? <p className="mcp-add-error">{errors.name}</p> : null}
             </fieldset>
 
             <fieldset className="mcp-add-field">
-              <label className="mcp-add-label" htmlFor="mcp-add-auth">
-                Auth
-              </label>
-              <select
-                id="mcp-add-auth"
-                className="mcp-add-input"
-                value={draft.auth}
-                onChange={(event) => {
-                  const value = event.currentTarget.value as McpServerDraft["auth"];
-                  setDraft((d) => ({ ...d, auth: value }));
-                }}
-              >
-                <option value="none">None</option>
-                <option value="bearer">Bearer token</option>
-                <option value="oauth">OAuth</option>
-              </select>
+              <span className="mcp-add-label">Transport</span>
+              <TransportSegmented
+                value={draft.transport}
+                onChange={(transport) => setDraft((d) => ({ ...d, transport }))}
+              />
             </fieldset>
+          </div>
+        </section>
 
-            {draft.auth === "oauth" ? (
-              <p className="mcp-add-note">
-                <IconCloud size={13} ariaHidden />
-                You will sign in to this server after it is added. The sign-in flow opens in your
-                browser.
+        {draft.transport === "stdio" ? (
+          <section className="mcp-add-section-group" aria-labelledby="mcp-add-connection-title">
+            <div className="mcp-add-section-head">
+              <h3 id="mcp-add-connection-title" className="mcp-add-section-title">
+                Connection
+              </h3>
+              <p className="mcp-add-section-description">
+                Enter the executable, arguments, and secret environment values.
               </p>
-            ) : null}
+            </div>
+            <div className="mcp-add-section">
+              <p className="mcp-add-note">
+                <IconShield size={13} ariaHidden />
+                Local servers run as subprocesses and inherit June and Hermes sandbox constraints.
+                Enter only the program path here; put arguments in their own rows.
+              </p>
+              <fieldset className="mcp-add-field">
+                <label className="mcp-add-label" htmlFor="mcp-add-command">
+                  Command
+                </label>
+                <input
+                  id="mcp-add-command"
+                  type="text"
+                  className="mcp-add-input"
+                  value={draft.command}
+                  placeholder="mcp-server-filesystem"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={Boolean(errors.command)}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setDraft((d) => ({ ...d, command: value }));
+                  }}
+                />
+                {errors.command ? <p className="mcp-add-error">{errors.command}</p> : null}
+              </fieldset>
 
-            <PairEditor
-              legend="Headers"
-              addLabel="Add header"
-              keyPlaceholder="Authorization"
-              valuePlaceholder="Value (hidden)"
-              pairs={draft.headers}
-              errorPrefix="headers"
-              errors={errors}
-              onChange={(headers) => setDraft((d) => ({ ...d, headers }))}
-            />
-          </>
+              <ListEditor
+                legend="Arguments"
+                addLabel="Add argument"
+                values={draft.args}
+                errorPrefix="args"
+                errors={errors}
+                onChange={(args) => setDraft((d) => ({ ...d, args }))}
+              />
+
+              <PairEditor
+                legend="Environment variables"
+                addLabel="Add variable"
+                keyPlaceholder="VAR_NAME"
+                valuePlaceholder="Value (hidden)"
+                pairs={draft.env}
+                errorPrefix="env"
+                errors={errors}
+                onChange={(env) => setDraft((d) => ({ ...d, env }))}
+              />
+            </div>
+          </section>
+        ) : (
+          <section className="mcp-add-section-group" aria-labelledby="mcp-add-connection-title">
+            <div className="mcp-add-section-head">
+              <h3 id="mcp-add-connection-title" className="mcp-add-section-title">
+                Connection
+              </h3>
+              <p className="mcp-add-section-description">
+                Enter the endpoint, auth mode, and any secret request headers.
+              </p>
+            </div>
+            <div className="mcp-add-section">
+              <fieldset className="mcp-add-field">
+                <label className="mcp-add-label" htmlFor="mcp-add-url">
+                  URL
+                </label>
+                <input
+                  id="mcp-add-url"
+                  type="url"
+                  className="mcp-add-input"
+                  value={draft.url}
+                  placeholder="https://example.com/mcp"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={Boolean(errors.url)}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setDraft((d) => ({ ...d, url: value }));
+                  }}
+                />
+                {errors.url ? <p className="mcp-add-error">{errors.url}</p> : null}
+              </fieldset>
+
+              <fieldset className="mcp-add-field">
+                <label className="mcp-add-label" htmlFor="mcp-add-auth">
+                  Auth
+                </label>
+                <select
+                  id="mcp-add-auth"
+                  className="mcp-add-input"
+                  value={draft.auth}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value as McpServerDraft["auth"];
+                    setDraft((d) => ({ ...d, auth: value }));
+                  }}
+                >
+                  <option value="none">None</option>
+                  <option value="bearer">Bearer token</option>
+                  <option value="oauth">OAuth</option>
+                </select>
+              </fieldset>
+
+              {draft.auth === "oauth" ? (
+                <p className="mcp-add-note">
+                  <IconCloud size={13} ariaHidden />
+                  You will sign in to this server after it is added. The sign-in flow opens in your
+                  browser.
+                </p>
+              ) : null}
+
+              <PairEditor
+                legend="Headers"
+                addLabel="Add header"
+                keyPlaceholder="Authorization"
+                valuePlaceholder="Value (hidden)"
+                pairs={draft.headers}
+                errorPrefix="headers"
+                errors={errors}
+                onChange={(headers) => setDraft((d) => ({ ...d, headers }))}
+              />
+            </div>
+          </section>
         )}
       </div>
     </Dialog>
   );
 }
 
-function TransportOption({
-  label,
-  hint,
-  active,
-  onSelect,
+function TransportSegmented({
+  value,
+  onChange,
+  disabled = false,
 }: {
-  label: string;
-  hint: string;
-  active: boolean;
-  onSelect: () => void;
+  value: McpServerDraft["transport"];
+  onChange: (transport: McpServerDraft["transport"]) => void;
+  disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={active}
-      className="mcp-add-transport-option"
-      data-active={active}
-      onClick={onSelect}
-    >
-      <span className="mcp-add-transport-label">{label}</span>
-      <span className="mcp-add-transport-hint">{hint}</span>
-    </button>
+    <SegmentedControl<McpServerDraft["transport"]>
+      aria-label="Transport"
+      className={["mcp-add-transport", disabled ? "mcp-add-transport-disabled" : undefined]
+        .filter(Boolean)
+        .join(" ")}
+      value={value}
+      onValueChange={(next) => {
+        if (!disabled) onChange(next);
+      }}
+      options={[
+        { value: "stdio", label: "Stdio" },
+        { value: "http", label: "Streamable HTTP" },
+      ]}
+    />
   );
 }
 
@@ -1198,40 +1126,48 @@ function ListEditor({
   onChange: (values: ArgRow[]) => void;
 }) {
   return (
-    <fieldset className="mcp-add-field">
+    <fieldset className="mcp-add-field mcp-add-list-editor">
       <span className="mcp-add-label">{legend}</span>
-      {values.map((row, index) => (
-        <div key={row.id} className="mcp-add-row">
-          <input
-            type="text"
-            className="mcp-add-input"
-            value={row.value}
-            aria-label={`${legend} ${index + 1}`}
-            autoComplete="off"
-            spellCheck={false}
-            aria-invalid={Boolean(errors[`${errorPrefix}.${index}`])}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              onChange(
-                values.map((existing) =>
-                  existing.id === row.id ? { ...existing, value } : existing,
-                ),
-              );
-            }}
-          />
-          <button
-            type="button"
-            className="mcp-add-row-remove"
-            aria-label={`Remove ${legend} ${index + 1}`}
-            onClick={() => onChange(values.filter((existing) => existing.id !== row.id))}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-          {errors[`${errorPrefix}.${index}`] ? (
-            <p className="mcp-add-error">{errors[`${errorPrefix}.${index}`]}</p>
-          ) : null}
+      {values.length > 0 ? (
+        <div className="mcp-add-list-head" aria-hidden>
+          <span>Value</span>
+          <span />
         </div>
-      ))}
+      ) : null}
+      <div className="mcp-add-list-rows">
+        {values.map((row, index) => (
+          <div key={row.id} className="mcp-add-row">
+            <input
+              type="text"
+              className="mcp-add-input"
+              value={row.value}
+              aria-label={`${legend} ${index + 1}`}
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={Boolean(errors[`${errorPrefix}.${index}`])}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                onChange(
+                  values.map((existing) =>
+                    existing.id === row.id ? { ...existing, value } : existing,
+                  ),
+                );
+              }}
+            />
+            <button
+              type="button"
+              className="mcp-add-row-remove"
+              aria-label={`Remove ${legend} ${index + 1}`}
+              onClick={() => onChange(values.filter((existing) => existing.id !== row.id))}
+            >
+              <IconTrashCan size={13} ariaHidden />
+            </button>
+            {errors[`${errorPrefix}.${index}`] ? (
+              <p className="mcp-add-error">{errors[`${errorPrefix}.${index}`]}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
       <button
         type="button"
         className="mcp-add-row-add"
@@ -1266,57 +1202,66 @@ function PairEditor({
   onChange: (pairs: PairRow[]) => void;
 }) {
   return (
-    <fieldset className="mcp-add-field">
+    <fieldset className="mcp-add-field mcp-add-list-editor">
       <span className="mcp-add-label">{legend}</span>
-      {pairs.map((pair, index) => (
-        <div key={pair.id} className="mcp-add-pair">
-          <input
-            type="text"
-            className="mcp-add-input mcp-add-pair-key"
-            value={pair.key}
-            placeholder={keyPlaceholder}
-            aria-label={`${legend} ${index + 1} name`}
-            autoComplete="off"
-            spellCheck={false}
-            aria-invalid={Boolean(errors[`${errorPrefix}.${index}`])}
-            onChange={(event) => {
-              const key = event.currentTarget.value;
-              onChange(
-                pairs.map((existing) =>
-                  existing.id === pair.id ? { ...existing, key } : existing,
-                ),
-              );
-            }}
-          />
-          <input
-            type="password"
-            className="mcp-add-input mcp-add-pair-value"
-            value={pair.value}
-            placeholder={valuePlaceholder}
-            aria-label={`${legend} ${index + 1} value`}
-            autoComplete="off"
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              onChange(
-                pairs.map((existing) =>
-                  existing.id === pair.id ? { ...existing, value } : existing,
-                ),
-              );
-            }}
-          />
-          <button
-            type="button"
-            className="mcp-add-row-remove"
-            aria-label={`Remove ${legend} ${index + 1}`}
-            onClick={() => onChange(pairs.filter((existing) => existing.id !== pair.id))}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-          {errors[`${errorPrefix}.${index}`] ? (
-            <p className="mcp-add-error">{errors[`${errorPrefix}.${index}`]}</p>
-          ) : null}
+      {pairs.length > 0 ? (
+        <div className="mcp-add-pair-head" aria-hidden>
+          <span>Name</span>
+          <span>Value</span>
+          <span />
         </div>
-      ))}
+      ) : null}
+      <div className="mcp-add-list-rows">
+        {pairs.map((pair, index) => (
+          <div key={pair.id} className="mcp-add-pair">
+            <input
+              type="text"
+              className="mcp-add-input mcp-add-pair-key"
+              value={pair.key}
+              placeholder={keyPlaceholder}
+              aria-label={`${legend} ${index + 1} name`}
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={Boolean(errors[`${errorPrefix}.${index}`])}
+              onChange={(event) => {
+                const key = event.currentTarget.value;
+                onChange(
+                  pairs.map((existing) =>
+                    existing.id === pair.id ? { ...existing, key } : existing,
+                  ),
+                );
+              }}
+            />
+            <input
+              type="password"
+              className="mcp-add-input mcp-add-pair-value"
+              value={pair.value}
+              placeholder={valuePlaceholder}
+              aria-label={`${legend} ${index + 1} value`}
+              autoComplete="off"
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                onChange(
+                  pairs.map((existing) =>
+                    existing.id === pair.id ? { ...existing, value } : existing,
+                  ),
+                );
+              }}
+            />
+            <button
+              type="button"
+              className="mcp-add-row-remove"
+              aria-label={`Remove ${legend} ${index + 1}`}
+              onClick={() => onChange(pairs.filter((existing) => existing.id !== pair.id))}
+            >
+              <IconTrashCan size={13} ariaHidden />
+            </button>
+            {errors[`${errorPrefix}.${index}`] ? (
+              <p className="mcp-add-error">{errors[`${errorPrefix}.${index}`]}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
       <button
         type="button"
         className="mcp-add-row-add"
@@ -1345,15 +1290,32 @@ function PairEditor({
  */
 function EditServerDialog({
   server,
+  test,
+  oauthLogin,
   saving,
   saveError,
+  canEdit,
+  presentation = "dialog",
   onClose,
+  onSignIn,
+  onTest,
+  onTools,
+  onDelete,
   onSave,
 }: {
   server?: HermesMcpServerInfo;
+  test?: McpTestState;
+  oauthLogin?: McpOauthLoginState;
   saving: boolean;
   saveError?: string;
+  canEdit: boolean;
+  /** "dialog" opens the modal (default); "page" renders the drill-in detail. */
+  presentation?: "dialog" | "page";
   onClose: () => void;
+  onSignIn?: () => void;
+  onTest?: () => void;
+  onTools?: () => void;
+  onDelete?: () => void;
   onSave: (writes: McpEditWrite[]) => Promise<boolean>;
 }) {
   const [command, setCommand] = useState("");
@@ -1372,9 +1334,23 @@ function EditServerDialog({
   }, [server]);
 
   const isStdio = server?.transport === "stdio";
+  const transport = server ? transportMeta(server.transport) : undefined;
+  const auth = server ? authMeta(server.auth) : undefined;
+  const status = server ? statusMeta(server.status) : undefined;
+  const argsForDisplay = server ? serverArgs(server) : [];
+  const env = server ? redactedEnv(server) : [];
+  const headers = server ? redactedHeaders(server) : [];
+  const tools = server ? (test?.result?.tools ?? server.tools ?? []) : [];
+  const securityLabels = server ? inlineSecurityLabels(securityLabelsFor(server)) : [];
+  const risk = server ? classifyServerRisk(server) : undefined;
+  const testedOk = test?.result?.ok === true || server?.status === "connected";
+  const oauth =
+    server && (usesOauth(server) || oauthNeedFromMessage(test?.result?.message ?? test?.error));
+  const editTransport: McpServerDraft["transport"] =
+    server?.transport === "stdio" ? "stdio" : "http";
 
   async function handleSubmit() {
-    if (!server) return;
+    if (!server || !canEdit) return;
     const plan = planServerEdit(server, {
       command,
       args: args.map((row) => row.value),
@@ -1389,104 +1365,265 @@ function EditServerDialog({
     if (ok) onClose();
   }
 
+  const footerButtons = (
+    <>
+      <button
+        type="button"
+        className="primary-action"
+        onClick={() => {
+          if (!saving) onClose();
+        }}
+        disabled={saving}
+      >
+        {canEdit ? "Cancel" : "Close"}
+      </button>
+      {canEdit ? (
+        <button
+          type="button"
+          className="primary-action primary-solid"
+          onClick={() => void handleSubmit()}
+          disabled={saving}
+        >
+          {saving ? "Saving" : "Save changes"}
+        </button>
+      ) : null}
+    </>
+  );
+
+  const detailBody = server ? (
+    <div className="mcp-server-detail-form">
+      <section className="mcp-server-detail-section" aria-label="Server overview">
+        <h3 className="mcp-server-detail-heading">Overview</h3>
+        <dl className="mcp-server-detail-grid">
+          <DetailItem label="Transport">{transport?.label}</DetailItem>
+          <DetailItem label="Status">
+            <span className="mcp-server-status" data-tone={status?.tone}>
+              {status ? <StatusIcon tone={status.tone} /> : null}
+              {status?.label}
+            </span>
+          </DetailItem>
+          <DetailItem label="Auth">{auth?.label}</DetailItem>
+          <DetailItem label="Tools">{toolCountText(tools.length)}</DetailItem>
+          <DetailItem label="Connection">
+            {server.transport === "stdio"
+              ? formatCommand(server.command, argsForDisplay)
+              : (server.url ?? "No URL configured.")}
+          </DetailItem>
+          <DetailItem label="Arguments">{listText(argsForDisplay, "None")}</DetailItem>
+          <DetailItem label="Environment variables">
+            {secretKeysText(env, "No environment variables")}
+          </DetailItem>
+          <DetailItem label="Headers">{secretKeysText(headers, "No headers")}</DetailItem>
+        </dl>
+        {server.statusMessage ? (
+          <p className="mcp-server-detail-note">{server.statusMessage}</p>
+        ) : null}
+        <SecurityLabels labels={securityLabels} />
+        {risk?.tier === "high" ? (
+          <p className="mcp-server-risk-note" data-tier="high" role="note">
+            <IconExclamationCircle size={13} ariaHidden />
+            {risk.reasons[0]?.detail ?? "This server can take high-impact actions."}
+          </p>
+        ) : null}
+        {risk?.tier === "high" && testedOk ? (
+          <p className="mcp-server-allowlist-note" role="note">
+            <IconShield size={13} ariaHidden />
+            {ALLOWLIST_RECOMMENDATION}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="mcp-server-detail-section" aria-label="Diagnostics">
+        <div className="mcp-server-detail-head">
+          <h3 className="mcp-server-detail-heading">Diagnostics</h3>
+          <div className="mcp-server-detail-actions">
+            {onTest ? (
+              <button
+                type="button"
+                className="mcp-detail-action"
+                disabled={test?.pending}
+                onClick={onTest}
+              >
+                {test?.pending ? "Testing" : "Test connection"}
+              </button>
+            ) : null}
+            {onTools ? (
+              <button type="button" className="mcp-detail-action" onClick={onTools}>
+                <IconFilter2 size={14} ariaHidden />
+                Tools
+              </button>
+            ) : null}
+            {onDelete ? (
+              <button
+                type="button"
+                className="mcp-detail-action mcp-detail-action-danger"
+                onClick={onDelete}
+              >
+                <IconTrashCan size={14} ariaHidden />
+                Delete server
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <TestResult test={test} tools={tools} />
+
+        {oauth ? (
+          <OauthStatus server={server} login={oauthLogin} testedOk={testedOk} onSignIn={onSignIn} />
+        ) : null}
+      </section>
+
+      <section className="mcp-server-detail-section" aria-label="Connection fields">
+        <h3 className="mcp-server-detail-heading">Connection</h3>
+        <fieldset className="mcp-add-field">
+          <span className="mcp-add-label">Transport</span>
+          <TransportSegmented value={editTransport} onChange={() => {}} disabled />
+        </fieldset>
+
+        <p className="mcp-add-note">
+          <IconShield size={13} ariaHidden />
+          To change a secret or the transport, delete this server and add it again.
+        </p>
+
+        {canEdit && isStdio ? (
+          <>
+            <fieldset className="mcp-add-field">
+              <label className="mcp-add-label" htmlFor="mcp-edit-command">
+                Command
+              </label>
+              <input
+                id="mcp-edit-command"
+                type="text"
+                className="mcp-add-input"
+                value={command}
+                placeholder="mcp-server-filesystem"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={Boolean(errors.command)}
+                onChange={(event) => setCommand(event.currentTarget.value)}
+              />
+              {errors.command ? <p className="mcp-add-error">{errors.command}</p> : null}
+            </fieldset>
+
+            <ListEditor
+              legend="Arguments"
+              addLabel="Add argument"
+              values={args}
+              errorPrefix="args"
+              errors={errors}
+              onChange={setArgs}
+            />
+          </>
+        ) : null}
+
+        {canEdit && !isStdio ? (
+          <fieldset className="mcp-add-field">
+            <label className="mcp-add-label" htmlFor="mcp-edit-url">
+              URL
+            </label>
+            <input
+              id="mcp-edit-url"
+              type="url"
+              className="mcp-add-input"
+              value={url}
+              placeholder="https://example.com/mcp"
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={Boolean(errors.url)}
+              onChange={(event) => setUrl(event.currentTarget.value)}
+            />
+            {errors.url ? <p className="mcp-add-error">{errors.url}</p> : null}
+          </fieldset>
+        ) : null}
+
+        {!canEdit ? (
+          <p className="mcp-server-detail-note">
+            This server's connection target cannot be edited from June.
+          </p>
+        ) : null}
+
+        {saveError ? (
+          <p className="mcp-add-error" role="alert">
+            {saveError}
+          </p>
+        ) : null}
+      </section>
+    </div>
+  ) : null;
+
+  // The manage surface can present either as a modal (the add flow, and any
+  // caller that still opens a dialog) or, in "page" mode, as a full drill-in
+  // detail that pins its breadcrumb like the skills / messaging detail — same
+  // shell classes, Save/Cancel carried into the bar actions.
+  if (presentation === "page") {
+    return (
+      <div className="skill-detail-shell">
+        <BreadcrumbBar
+          backLabel="Back to MCP servers"
+          onBack={() => {
+            if (!saving) onClose();
+          }}
+          items={[
+            {
+              label: "MCP servers",
+              onClick: () => {
+                if (!saving) onClose();
+              },
+            },
+            { label: server?.name ?? "" },
+          ]}
+          actions={footerButtons}
+        />
+        <div className="skill-detail-scroll" data-has-detail-bar="true">
+          <section
+            className="settings-page settings-group mcp-server-detail-page"
+            aria-label={server?.name ?? "MCP server"}
+          >
+            {detailBody}
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Dialog
       open={Boolean(server)}
       onClose={() => {
         if (!saving) onClose();
       }}
-      title={server ? `Edit ${server.name}` : "Edit server"}
-      description="Change the connection target. The server's secrets (environment variables, headers, and tokens) and tool filters are preserved. Changes apply after the Hermes gateway restarts."
-      width={560}
+      title={server ? `Manage ${server.name}` : "Manage server"}
+      description="Review diagnostics and edit the connection target. Changes apply after the Hermes gateway restarts."
+      width={640}
       className="mcp-add-dialog"
-      footer={
-        <>
-          <button
-            type="button"
-            className="primary-action"
-            onClick={() => {
-              if (!saving) onClose();
-            }}
-            disabled={saving}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="primary-action primary-solid"
-            onClick={() => void handleSubmit()}
-            disabled={saving}
-          >
-            {saving ? "Saving" : "Save changes"}
-          </button>
-        </>
-      }
+      footer={footerButtons}
     >
-      {server ? (
-        <div className="mcp-add-form">
-          <p className="mcp-add-note">
-            <IconShield size={13} ariaHidden />
-            To change a secret or the transport, delete this server and add it again.
-          </p>
-
-          {isStdio ? (
-            <>
-              <fieldset className="mcp-add-field">
-                <label className="mcp-add-label" htmlFor="mcp-edit-command">
-                  Command
-                </label>
-                <input
-                  id="mcp-edit-command"
-                  type="text"
-                  className="mcp-add-input"
-                  value={command}
-                  placeholder="mcp-server-filesystem"
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-invalid={Boolean(errors.command)}
-                  onChange={(event) => setCommand(event.currentTarget.value)}
-                />
-                {errors.command ? <p className="mcp-add-error">{errors.command}</p> : null}
-              </fieldset>
-
-              <ListEditor
-                legend="Arguments"
-                addLabel="Add argument"
-                values={args}
-                errorPrefix="args"
-                errors={errors}
-                onChange={setArgs}
-              />
-            </>
-          ) : (
-            <fieldset className="mcp-add-field">
-              <label className="mcp-add-label" htmlFor="mcp-edit-url">
-                URL
-              </label>
-              <input
-                id="mcp-edit-url"
-                type="url"
-                className="mcp-add-input"
-                value={url}
-                placeholder="https://example.com/mcp"
-                autoComplete="off"
-                spellCheck={false}
-                aria-invalid={Boolean(errors.url)}
-                onChange={(event) => setUrl(event.currentTarget.value)}
-              />
-              {errors.url ? <p className="mcp-add-error">{errors.url}</p> : null}
-            </fieldset>
-          )}
-
-          {saveError ? (
-            <p className="mcp-add-error" role="alert">
-              {saveError}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
+      {detailBody}
     </Dialog>
   );
+}
+
+function DetailItem({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="mcp-server-detail-item">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
+  );
+}
+
+function toolCountText(count: number): string {
+  if (count === 0) return "No tools";
+  return `${count} ${count === 1 ? "tool" : "tools"}`;
+}
+
+function listText(values: readonly string[], empty: string): string {
+  return values.length > 0 ? values.join(", ") : empty;
+}
+
+function secretKeysText(fields: readonly { key: string }[], empty: string): string {
+  if (fields.length === 0) return empty;
+  return fields.map((field) => field.key).join(", ");
 }
 
 // ---------------------------------------------------------------------------
@@ -1576,15 +1713,24 @@ function ServersLoading() {
   );
 }
 
-function EmptyState({ title, description }: { title: string; description: string }) {
+/** The shared empty-state surface, with this section's glyph, so MCP reads the
+ * same as Dictation/Routines/Agents when there is nothing to show. */
+function EmptyState({
+  title,
+  description,
+  className,
+}: {
+  title: string;
+  description: string;
+  className?: string;
+}) {
   return (
-    <div className="mcp-servers-empty" role="status">
-      <span className="mcp-servers-empty-icon" aria-hidden>
-        <IconServer1 size={22} />
-      </span>
-      <p className="mcp-servers-empty-title">{title}</p>
-      <p className="mcp-servers-empty-description">{description}</p>
-    </div>
+    <EmptyStateSurface
+      icon={<IconServer1 size={22} />}
+      title={title}
+      description={description}
+      className={className}
+    />
   );
 }
 

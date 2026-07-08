@@ -6,6 +6,7 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
+pub mod image_safety;
 pub mod june_api;
 pub mod macos_menu_icons;
 pub mod meeting_detection;
@@ -213,6 +214,7 @@ pub fn run() {
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
+            commands::reveal_path,
             commands::june_open_verify_page,
             commands::june_open_community_page,
             commands::start_recording,
@@ -255,6 +257,8 @@ pub fn run() {
             providers::set_venice_api_key,
             providers::clear_venice_api_key,
             providers::set_image_safe_mode,
+            providers::set_image_safe_mode_prompt_dismissed,
+            image_safety::image_prompt_may_be_explicit,
             providers::generate_image,
             providers::edit_image,
             providers::save_local_generation_settings,

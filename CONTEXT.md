@@ -79,6 +79,16 @@ Detection is energy-based (RMS windows + noise floor), never diarization.
 _Avoid_: segment (that is a live-preview chunk), utterance, speaker (no
 speaker identity is inferred).
 
+**Speaker bleed (echo)**:
+System audio re-captured by the microphone after playing through the
+loudspeakers — "speaker" is the device, never a person; no speaker identity
+is inferred. Echo rejection trims bleed spans out of Microphone turns on
+signal evidence (lag-aligned similarity, cancellation depth, level
+dominance); the speech stays attributed to the System source, and no
+downstream step may reintroduce trimmed audio.
+_Avoid_: crosstalk, feedback (that is the amplification loop), AEC as the
+concept name (it names the canceller mechanism, one evidence tier).
+
 **Coalescing**:
 Merging adjacent same-source turns before transcription when the gap is short
 and no other source intervenes. Distinct from `merge_close_turns` (intra-turn
@@ -269,6 +279,20 @@ Producing a new image by transforming an *existing* image plus an instruction
 a prior image (a generated one, by filename); never starts from a blank canvas.
 Distinct from **image generation**.
 _Avoid_: image-to-image jargon, regenerate (that's a fresh **image generation**).
+
+**Safe mode** (image):
+The per-device toggle that asks Venice to blur adult content on generated and
+edited images (`safe_mode`). On by default; the user turns it off in Settings
+or via the **safe-mode consent dialog** June shows before or during a
+potentially explicit generation. Enforcement is Venice's; the dialog gate
+only decides when to *offer* the dialog, never what gets generated. On the
+agent path the gate is free (on-device wordlist plus the model's own
+`may_be_explicit` self-report in the tool call); on the /image path the
+wordlist short-circuits and otherwise a small metered model check classifies
+the prompt (language-agnostic, added after the English-only wordlist missed
+non-English prompts).
+See [ADR 0008](docs/adr/0008-image-generation-and-editing-tools.md).
+_Avoid_: NSFW filter/toggle (say **safe mode**), censorship.
 
 **Credit price** (per upstream model):
 The number of OS Accounts credits June charges per unit of consumed work

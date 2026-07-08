@@ -1,16 +1,16 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
-import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
+import { IconFolderOpen } from "central-icons/IconFolderOpen";
 import { IconFolderShared } from "central-icons/IconFolderShared";
-import { IconLock } from "central-icons/IconLock";
-import { IconWarningSign } from "central-icons/IconWarningSign";
+import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { useState } from "react";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   presenceMeta,
   shadowingExplanation,
   useExternalDirs,
-  writabilityMeta,
   sharedDirWarning,
   type ExternalDirRow,
   type ExternalDirsState,
@@ -18,6 +18,9 @@ import {
 } from "../../lib/hermes-admin";
 import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
 import { AdminNotifications } from "./AdminNotifications";
+import { Dialog, DialogField } from "../ui/Dialog";
+import { InlineNotice } from "../ui/InlineNotice";
+import { SettingsPageHeader } from "./AppSettings";
 
 type ExternalDirsSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the
@@ -55,98 +58,88 @@ export function ExternalDirsView({
   state: ExternalDirsState;
   mode?: HermesAdminMode;
 }) {
-  const [draft, setDraft] = useState("");
-  const [formError, setFormError] = useState<string>();
+  const [addOpen, setAddOpen] = useState(false);
+  const [refreshSpins, setRefreshSpins] = useState(0);
+  // Which row is disclosed (one at a time). Keyed by the raw configured path,
+  // the row identity. Local to the view: the state layer owns no expansion.
+  const [openPath, setOpenPath] = useState<string>();
 
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
   const isLoadingFirst = state.status === "loading";
   const hasRows = state.rows.length > 0;
 
-  const submit = async () => {
-    setFormError(undefined);
-    const reason = await state.add(draft);
-    if (reason) {
-      setFormError(reason);
-      return;
-    }
-    setDraft("");
+  const handleRefresh = () => {
+    setRefreshSpins((spins) => spins + 1);
+    state.refresh();
   };
 
   return (
     <section className="settings-group external-dirs" aria-labelledby="external-dirs-heading">
-      <h2 id="external-dirs-heading" className="settings-group-heading">
-        External skill directories
-      </h2>
-      <p className="settings-group-description">
-        Shared folders Hermes scans for skills alongside your installed skills. Changes apply to new
-        sessions.{" "}
-        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
-      </p>
+      <SettingsPageHeader
+        id="external-dirs-heading"
+        title="External skill directories"
+        blurb={
+          <>
+            Shared folders Hermes scans for skills alongside your installed skills. June never edits
+            external skills; they are read only. Changes apply to new sessions.{" "}
+            <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
+          </>
+        }
+      />
 
       <LifecycleBanner state={state} />
 
-      <div className="external-dirs-warning" role="note">
-        <IconWarningSign size={15} ariaHidden />
-        <span>{sharedDirWarning(state.mode ?? mode)}</span>
-      </div>
+      <InlineNotice
+        tone="info"
+        icon={<IconCircleInfo size={15} ariaHidden />}
+        body={sharedDirWarning(state.mode ?? mode)}
+      />
 
       <AdminNotifications
         notifications={state.notifications}
         onDismiss={state.dismissNotification}
       />
 
+      {/* The action row above the card: add-directory (opens a dialog) + refresh,
+       * mirroring the other AI panels. The raw path input now lives in the
+       * dialog, not inline in the toolbar. */}
+      <div className="external-dirs-actions">
+        <button
+          type="button"
+          className="btn btn-secondary external-dirs-add"
+          disabled={isUnavailable || state.busy}
+          onClick={() => setAddOpen(true)}
+        >
+          <IconPlusMedium size={14} ariaHidden />
+          Add directory
+        </button>
+        <button
+          type="button"
+          className="icon-button external-dirs-refresh"
+          aria-label="Refresh external directories"
+          aria-busy={isLoadingFirst || state.busy}
+          title="Refresh external directories"
+          disabled={isUnavailable || isLoadingFirst || state.busy}
+          onClick={handleRefresh}
+        >
+          <IconArrowRotateClockwise
+            size={14}
+            ariaHidden
+            className="balance-refresh-icon"
+            style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+          />
+        </button>
+      </div>
+
+      <AddDirectoryDialog
+        open={addOpen}
+        busy={state.busy}
+        onClose={() => setAddOpen(false)}
+        onAdd={(path) => state.add(path)}
+      />
+
       <div className="settings-card external-dirs-card">
-        <div className="external-dirs-toolbar">
-          <div className="external-dirs-add">
-            <input
-              type="text"
-              value={draft}
-              placeholder="Add a directory path"
-              aria-label="External directory path"
-              disabled={isUnavailable || state.busy}
-              onChange={(event) => {
-                setDraft(event.currentTarget.value);
-                if (formError) setFormError(undefined);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void submit();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="external-dirs-add-button"
-              disabled={isUnavailable || state.busy || draft.trim().length === 0}
-              onClick={() => void submit()}
-            >
-              Add
-            </button>
-          </div>
-          <button
-            type="button"
-            className="external-dirs-refresh"
-            disabled={isUnavailable || isLoadingFirst || state.busy}
-            onClick={state.refresh}
-          >
-            <IconArrowRotateClockwise size={14} ariaHidden />
-            Refresh
-          </button>
-        </div>
-
-        <p className="external-dirs-hint">
-          Paths can use {"~"} for your home folder and {"${VAR}"} for environment variables. June
-          shows the resolved path below each entry.
-        </p>
-
-        {formError ? (
-          <p className="settings-row-error external-dirs-inline-error">
-            <IconExclamationCircle size={14} ariaHidden />
-            {formError}
-          </p>
-        ) : null}
         {state.error && hasRows ? (
           <p className="settings-row-error external-dirs-inline-error">
             <IconExclamationCircle size={14} ariaHidden />
@@ -154,39 +147,40 @@ export function ExternalDirsView({
           </p>
         ) : null}
 
-        <div className="external-dirs-body">
-          {isUnavailable ? (
-            <EmptyState
-              title="Hermes is not running"
-              description="Start Hermes to see and manage the external skill directories for your sessions."
-            />
-          ) : isErrored ? (
-            <ErrorState
-              message={state.error ?? "Could not load external directories."}
-              retryable={state.retryable}
-              onRetry={state.refresh}
-            />
-          ) : isLoadingFirst ? (
-            <Loading />
-          ) : !hasRows ? (
-            <EmptyState
-              title="No external directories"
-              description="Add a folder of shared skills to load them alongside your installed skills."
-            />
-          ) : (
-            <ul className="external-dirs-list">
-              {state.rows.map((row) => (
-                <DirRow
-                  key={row.rawPath}
-                  row={row}
-                  mode={state.mode ?? mode}
-                  busy={state.busy}
-                  onRemove={() => state.remove(row.rawPath)}
-                />
-              ))}
-            </ul>
-          )}
-        </div>
+        {isUnavailable ? (
+          <EmptyState
+            title="Hermes is not running"
+            description="Start Hermes to see and manage the external skill directories for your sessions."
+          />
+        ) : isErrored ? (
+          <ErrorState
+            message={state.error ?? "Could not load external directories."}
+            retryable={state.retryable}
+            onRetry={state.refresh}
+          />
+        ) : isLoadingFirst ? (
+          <Loading />
+        ) : !hasRows ? (
+          <EmptyState
+            title="No external directories"
+            description="Add a folder of shared skills to load them alongside your installed skills."
+          />
+        ) : (
+          <ul className="external-dirs-list">
+            {state.rows.map((row) => (
+              <DirRow
+                key={row.rawPath}
+                row={row}
+                busy={state.busy}
+                open={openPath === row.rawPath}
+                onToggle={() =>
+                  setOpenPath((current) => (current === row.rawPath ? undefined : row.rawPath))
+                }
+                onRemove={() => state.remove(row.rawPath)}
+              />
+            ))}
+          </ul>
+        )}
       </div>
     </section>
   );
@@ -219,6 +213,11 @@ function LifecycleBanner({ state }: { state: ExternalDirsState }) {
   if (state.status === "unavailable") return null;
   const snapshot = state.lifecycle;
   const clean = snapshot.state === "clean";
+  // The clean state carries no action — showing an always-on "Applies next
+  // session" info banner just stacks a second notice above the shared-dir
+  // warning. Only surface the lifecycle notice when there's an actual
+  // restart-required / failed state to act on.
+  if (clean) return null;
   const tone =
     snapshot.state === "restart-failed"
       ? "destructive"
@@ -226,99 +225,248 @@ function LifecycleBanner({ state }: { state: ExternalDirsState }) {
           snapshot.state === "active-session-should-restart"
         ? "warning"
         : "info";
-  const label = clean ? "Applies next session" : snapshot.label;
-  const detail = clean
-    ? "Your changes take effect in new sessions. Current sessions are unaffected."
-    : snapshot.detail;
+  // Render through the shared InlineNotice with the SAME shape as the advisory
+  // below it — a leading icon + one body line, no eyebrow — so the two notices
+  // on this page read as identical. The label is folded into the body sentence.
+  const noticeTone = tone === "info" ? "info" : tone === "destructive" ? "destructive" : "warning";
+  const body = snapshot.detail ? `${snapshot.label}. ${snapshot.detail}` : snapshot.label;
   return (
-    <div className="external-dirs-lifecycle" data-tone={tone} role="status">
-      <span className="external-dirs-lifecycle-eyebrow">
-        <IconCircleInfo size={15} ariaHidden />
-        {label}
-      </span>
-      <span className="external-dirs-lifecycle-body">{detail}</span>
-    </div>
+    <InlineNotice
+      className="external-dirs-lifecycle"
+      tone={noticeTone}
+      icon={<IconCircleInfo size={15} ariaHidden />}
+      body={body}
+    />
   );
 }
 
 /** One directory row: raw + resolved paths, presence/writability/skill-count
  * status, shadowing explanation, the read-only-in-June note, and a remove
  * action. */
+/** The last path segment, for the row's primary label; the full raw path stays
+ * in the muted secondary slot and the expanded view. */
+function dirBasename(rawPath: string): string {
+  const segments = rawPath.split("/").filter(Boolean);
+  return segments[segments.length - 1] ?? rawPath;
+}
+
+/** The badge for a directory: healthy (`ok`) rows carry NO badge; only problem
+ * states are flagged. Missing reads "Missing"; an unresolved variable reads
+ * "Needs variable"; the remaining problem states use their presence label. */
+function dirBadge(row: ExternalDirRow): { label: string; tone: "info" | "warning" } | null {
+  if (row.presence === "ok") return null;
+  if (row.presence === "missing") return { label: "Missing", tone: "warning" };
+  if (row.presence === "unresolved") return { label: "Needs variable", tone: "warning" };
+  return { label: presenceMeta(row.presence).label, tone: "warning" };
+}
+
 function DirRow({
   row,
-  mode,
   busy,
+  open,
+  onToggle,
   onRemove,
 }: {
   row: ExternalDirRow;
-  mode: HermesAdminMode;
   busy: boolean;
+  /** Whether this row's expanded details are showing (one at a time, host-owned). */
+  open: boolean;
+  onToggle: () => void;
   onRemove: () => void;
 }) {
-  const presence = presenceMeta(row.presence);
-  const writability = writabilityMeta(row.writability, mode);
   const shadowing = shadowingExplanation(row);
+  const name = dirBasename(row.rawPath);
+  const badge = dirBadge(row);
+  const showResolved = Boolean(row.resolvedPath && row.resolvedPath !== row.rawPath);
 
   return (
-    <li className="external-dir-row">
-      <div className="external-dir-main">
-        <div className="external-dir-headline">
-          <span className="external-dir-icon" aria-hidden>
-            <IconFolderShared size={16} />
+    <li className="external-dir-row" data-open={open || undefined}>
+      <button
+        type="button"
+        className="external-dir-summary"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <span className="external-dir-copy">
+          <span className="external-dir-name-row">
+            <span className="external-dir-name">{name}</span>
+            {typeof row.skillCount === "number" ? (
+              <span className="external-dir-count" aria-label={`${row.skillCount} skills`}>
+                ({row.skillCount})
+              </span>
+            ) : null}
           </span>
           <span className="external-dir-path" title={row.rawPath}>
             {row.rawPath}
           </span>
-          <span className="external-dir-status" data-tone={presence.tone}>
-            {presence.label}
+        </span>
+        {badge ? (
+          <span className="external-dir-status" data-tone={badge.tone}>
+            {badge.label}
           </span>
-          <span className="external-dir-status" data-tone={writability.tone}>
-            {writability.label}
-          </span>
-        </div>
-
-        {row.expanded && row.resolvedPath ? (
-          <p className="external-dir-resolved" title={row.resolvedPath}>
-            Resolves to {row.resolvedPath}
-          </p>
         ) : null}
+        <IconChevronRightSmall size={14} aria-hidden className="external-dir-chevron" />
+      </button>
 
-        {row.presence === "unresolved" && row.unresolvedVar ? (
-          <p className="external-dir-note external-dir-note-warning">
-            Set the {row.unresolvedVar} environment variable to resolve this path.
-          </p>
-        ) : null}
-
-        <div className="external-dir-meta">
-          {typeof row.skillCount === "number" ? (
-            <span className="external-dir-meta-item">
-              {row.skillCount === 1 ? "1 skill found" : `${row.skillCount} skills found`}
-            </span>
-          ) : row.presence === "missing" ? (
-            <span className="external-dir-meta-item">No skills loaded (directory not found)</span>
+      {open ? (
+        <div className="external-dir-details">
+          {showResolved ? (
+            <p className="external-dir-resolved" title={row.resolvedPath}>
+              Resolves to {row.resolvedPath}
+            </p>
           ) : null}
-          <span className="external-dir-readonly" title="June does not edit external skills.">
-            <IconLock size={12} ariaHidden />
-            Read only in June
-          </span>
+
+          {row.presence === "unresolved" && row.unresolvedVar ? (
+            <p className="external-dir-note external-dir-note-warning">
+              Set the {row.unresolvedVar} environment variable to resolve this path.
+            </p>
+          ) : null}
+
+          {row.presence === "missing" ? (
+            <div className="external-dir-meta">
+              <span className="external-dir-meta-item">No skills loaded (directory not found)</span>
+            </div>
+          ) : null}
+
+          {shadowing ? <p className="external-dir-note">{shadowing}</p> : null}
+
+          <div className="external-dir-actions">
+            <button
+              type="button"
+              className="external-dir-remove"
+              disabled={busy}
+              onClick={onRemove}
+            >
+              Remove directory
+            </button>
+          </div>
         </div>
-
-        {shadowing ? <p className="external-dir-note">{shadowing}</p> : null}
-      </div>
-
-      <div className="external-dir-actions">
-        <button
-          type="button"
-          className="external-dir-remove"
-          aria-label={`Remove ${row.rawPath}`}
-          title="Remove directory"
-          disabled={busy}
-          onClick={onRemove}
-        >
-          <IconCrossSmall size={14} ariaHidden />
-        </button>
-      </div>
+      ) : null}
     </li>
+  );
+}
+
+/** The add-directory dialog (spec 10 add flow surfaced as a modal): one path
+ * input with the ~ / ${VAR} hint as its description, a native folder picker
+ * affordance, and Cancel + Add. Validation failures render in the dialog. */
+function AddDirectoryDialog({
+  open,
+  busy,
+  onClose,
+  onAdd,
+}: {
+  open: boolean;
+  busy: boolean;
+  onClose: () => void;
+  /** Adds the path; resolves to a reason string on failure, or undefined on
+   * success. */
+  onAdd: (path: string) => Promise<string | undefined>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string>();
+
+  function handleClose() {
+    if (busy) return;
+    setDraft("");
+    setError(undefined);
+    onClose();
+  }
+
+  async function handleSubmit() {
+    const reason = await onAdd(draft);
+    if (reason) {
+      setError(reason);
+      return;
+    }
+    setDraft("");
+    setError(undefined);
+    onClose();
+  }
+
+  async function handleChooseFolder() {
+    try {
+      const picked = await openFileDialog({ directory: true, multiple: false });
+      if (typeof picked === "string") {
+        setDraft(picked);
+        setError(undefined);
+      }
+    } catch {
+      // The native picker failing (or being cancelled) is not an error the user
+      // needs to see; they can still type a path.
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={handleClose}
+      title="Add skill directory"
+      width={480}
+      footer={
+        <>
+          <button type="button" className="primary-action" onClick={handleClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-action primary-solid"
+            onClick={() => void handleSubmit()}
+            disabled={busy || draft.trim().length === 0}
+          >
+            {busy ? "Adding" : "Add"}
+          </button>
+        </>
+      }
+    >
+      <DialogField
+        label="Directory path"
+        htmlFor="external-dir-path"
+        hint={
+          <>
+            Use {"~"} for your home folder and {"${VAR}"} for environment variables.
+          </>
+        }
+      >
+        <div className="external-dirs-path-field">
+          <input
+            id="external-dir-path"
+            type="text"
+            className="dialog-input external-dirs-path-input"
+            value={draft}
+            placeholder="~/shared-skills"
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={Boolean(error)}
+            disabled={busy}
+            onChange={(event) => {
+              setDraft(event.currentTarget.value);
+              if (error) setError(undefined);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && draft.trim().length > 0) {
+                event.preventDefault();
+                void handleSubmit();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn-secondary external-dirs-choose"
+            disabled={busy}
+            onClick={() => void handleChooseFolder()}
+          >
+            <IconFolderOpen size={14} ariaHidden />
+            Choose folder
+          </button>
+        </div>
+      </DialogField>
+      {error ? (
+        <p className="settings-row-error external-dirs-dialog-error" role="alert">
+          <IconExclamationCircle size={14} ariaHidden />
+          {error}
+        </p>
+      ) : null}
+    </Dialog>
   );
 }
 

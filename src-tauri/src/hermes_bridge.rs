@@ -4,7 +4,7 @@ use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     net::TcpListener,
@@ -16,7 +16,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::oneshot,
@@ -71,6 +71,10 @@ const JUNE_PROVIDER_PROXY_IMAGE_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
 const JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES: usize =
     base64_encoded_len(HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES)
         + JUNE_PROVIDER_PROXY_IMAGE_JSON_OVERHEAD_BYTES;
+const IMAGE_SAFE_MODE_CONSENT_EVENT: &str = "image-safe-mode-consent";
+/// Bounds only the event payload shown in the consent dialog; the explicit-
+/// content check runs on the full prompt.
+const IMAGE_SAFE_MODE_CONSENT_PROMPT_MAX_CHARS: usize = 120;
 
 const fn base64_encoded_len(byte_count: usize) -> usize {
     byte_count.div_ceil(3) * 4
@@ -151,7 +155,8 @@ const JUNE_SOUL_IMAGE_MD: &str = r#"
 Image tools: you have a `june_image` MCP toolset with `generate_image` and `edit_image`. Use `generate_image` when the user asks you to draw, create, make, or generate an image, picture, illustration, or logo; the result is shown to the user in the conversation and the tool returns a `filename`.
 Use this toolset instead of any generic image, media, or vision-analysis tool for image creation or edits, so June can display the returned image and keep the returned filename in context.
 Do not add a separate content refusal layer before calling these tools. The user's selected image model and image safe-mode setting are authoritative for what the image provider should attempt. If the selected model and setting may support the request, call the image tool with the user's prompt instead of substituting a clothed or sanitized alternative. If the image provider rejects the request, briefly report that provider rejection.
-When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact edit-safe filename returned by the prior image tool result as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced, even if you cannot see it. Only pass a `source_filename` from a prior `june_image` tool result.
+Set `may_be_explicit` honestly on every `generate_image` or `edit_image` call, judging whether the requested image could contain adult, sexual, or otherwise explicit content from the request itself rather than only its wording.
+When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, or an image the user attached or pasted into the conversation, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact source image as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced or the user attached, even if you cannot see it. Pass exactly one of two `source_filename` values: the edit-safe filename from a prior `june_image` tool result, or the plain filename of an image the user attached to the conversation as shown in its context, such as `upload_20260707_113453_1.png`. Never pass a full path or an invented name.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -327,6 +332,18 @@ struct SharedProviderProxy {
 struct ProviderProxyState {
     token: String,
     image_sources: ImageSourceCapabilities,
+    app: Option<AppHandle>,
+    /// Safe-mode values already injected, keyed by requestId, so an MCP retry
+    /// of the same request replays the same shape even if the user flipped
+    /// the toggle in between (June API bills a changed shape as a new call).
+    image_safe_mode_pins: Arc<Mutex<VecDeque<(String, bool)>>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageSafeModeConsentPayload {
+    source: &'static str,
+    prompt: String,
 }
 
 #[derive(Clone)]
@@ -1018,7 +1035,8 @@ async fn ensure_provider_proxy(
         images_dir: hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME),
         secret: load_or_create_image_source_capability_secret(&app_data_dir)?,
     };
-    let started = start_june_provider_proxy(token.clone(), image_sources).await?;
+    let started =
+        start_june_provider_proxy(token.clone(), image_sources, Some(app.clone())).await?;
     let mut guard = bridge
         .provider_proxy
         .lock()
@@ -1153,16 +1171,19 @@ pub fn update_hermes_bridge_skill(
             "This skill is too large to edit in June.",
         ));
     }
-    let skills_root = resolve_june_hermes_home(&app)?.join("skills");
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    let skills_root = hermes_home.join("skills");
     let path = match resolve_hermes_skill_file_in_root(&skills_root, &request.name) {
         Ok(path) => path,
         Err(error) if error.code == "hermes_skill_not_found" => {
             // Skills loaded from external roots live outside the managed root
             // and are read-only in June: the agent loads them, but the editor
             // never writes them. Surface that instead of "not found".
-            let externals: Vec<(PathBuf, bool)> = external_skill_dirs(&app)
-                .into_iter()
-                .map(|dir| (dir, true))
+            let external_dirs = external_skill_dirs(&app);
+            let externals: Vec<(PathBuf, bool)> = external_dirs
+                .iter()
+                .filter_map(|dir| external_skill_root_from_dir(dir, Some(&hermes_home)))
+                .map(|path| (path, true))
                 .collect();
             if resolve_skill_in_roots(&externals, &request.name).is_ok() {
                 return Err(AppError::new(
@@ -1708,20 +1729,34 @@ fn json_str(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 }
 
 /// Ordered skill roots June searches when opening a skill: the managed
-/// `$HERMES_HOME/skills` first (editable), then any `external_skill_dirs()`
-/// (read-only). The bool is the read-only flag for skills found under that
-/// root. Non-existent roots are skipped so a missing managed dir still lets
-/// external skills resolve.
+/// `$HERMES_HOME/skills` first (editable), then the effective
+/// `skills.external_dirs` list (read-only). The bool is the read-only flag for
+/// skills found under that root. Non-existent roots are skipped so a missing
+/// managed dir still lets external skills resolve.
 fn skill_search_roots(app: &AppHandle) -> Result<Vec<(PathBuf, bool)>, AppError> {
+    let hermes_home = resolve_june_hermes_home(app)?;
+    let external_dirs = external_skill_dirs_for_home(app, &hermes_home);
+    Ok(skill_search_roots_for_hermes_home(
+        &hermes_home,
+        &external_dirs,
+    ))
+}
+
+fn skill_search_roots_for_hermes_home(
+    hermes_home: &Path,
+    external_skill_dirs: &[PathBuf],
+) -> Vec<(PathBuf, bool)> {
     let mut roots = Vec::new();
-    let managed = resolve_june_hermes_home(app)?.join("skills");
+    let managed = hermes_home.join("skills");
     if managed.is_dir() {
         roots.push((managed, false));
     }
-    for dir in external_skill_dirs(app) {
-        roots.push((dir, true));
+    for dir in external_skill_dirs {
+        if let Some(resolved) = external_skill_root_from_dir(dir, Some(hermes_home)) {
+            roots.push((resolved, true));
+        }
     }
-    Ok(roots)
+    roots
 }
 
 /// Resolves `name` against an ordered list of `(root, read_only)` pairs,
@@ -4659,7 +4694,19 @@ fn discover_external_skill_names(dir: &Path) -> Vec<String> {
 /// successful create, `Some(false)` on a permission error, and `None` when the
 /// outcome is ambiguous. The probe file is `.june-write-probe-<rand>` and is
 /// always cleaned up.
+///
+/// In a `pnpm tauri:dev` session the built-in external skill dir is
+/// `src-tauri/resources/hermes-skills`, which lives INSIDE the crate directory
+/// the Tauri dev file watcher observes. Creating (and deleting) a probe file
+/// there fires the watcher, which rebuilds and relaunches the whole app — so
+/// every add/refresh of an external dir made June quit and restart in dev (the
+/// bundled dir is surfaced to the inspector via `skills.external_dirs`). The
+/// dir is read-only to the app anyway, so debug builds skip the destructive
+/// probe for any path inside the dev crate tree and report it as not writable.
 fn probe_external_dir_writable(dir: &Path) -> Option<bool> {
+    if path_inside_dev_watch_root(dir) {
+        return Some(false);
+    }
     let suffix: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(12)
@@ -4681,6 +4728,32 @@ fn probe_external_dir_writable(dir: &Path) -> Option<bool> {
             // ambiguous error: do not claim a definite writability either way.
             _ => None,
         },
+    }
+}
+
+/// True when `dir` resolves inside the Tauri dev file-watch root — the crate
+/// directory (`src-tauri/`) that `pnpm tauri:dev` watches to rebuild and
+/// relaunch the app. Writing anything there (even a probe file that is
+/// immediately deleted) triggers a full app restart, so callers that create
+/// scratch files must avoid this tree in dev. Always `false` in release builds:
+/// there is no dev watcher, and the crate dir does not exist on an installed
+/// app.
+fn path_inside_dev_watch_root(dir: &Path) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        let watch_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // Compare canonical paths so a symlinked/`..`-laden configured dir still
+        // matches; fall back to the raw paths when either side cannot be
+        // canonicalized (e.g. the dir does not exist).
+        match (dir.canonicalize(), watch_root.canonicalize()) {
+            (Ok(dir), Ok(root)) => dir.starts_with(root),
+            _ => dir.starts_with(watch_root),
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = dir;
+        false
     }
 }
 
@@ -6317,7 +6390,7 @@ fn sync_hermes_config(
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
-        &external_skill_dirs(app),
+        &builtin_external_skill_dirs(app),
     )
 }
 
@@ -6328,21 +6401,23 @@ fn sync_hermes_config_with_external_dirs(
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
-    external_skill_dirs: &[PathBuf],
+    default_external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
+    let config_path = hermes_home.join("config.yaml");
+    let external_skill_dirs =
+        effective_external_skill_dirs_from_config(&config_path, default_external_skill_dirs);
     let config = render_hermes_config(
         &model,
         &base_url,
         provider_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
-        external_skill_dirs,
+        &external_skill_dirs,
         Some(june_context_mcp),
         Some(june_web_mcp),
         Some(june_image_mcp),
     );
-    let config_path = hermes_home.join("config.yaml");
     // MERGE over the existing config, never replace it: the jailed dashboard
     // persists admin changes (user-added MCP servers, tool filters, OAuth
     // client names, skill config) into this same file, and a plain overwrite
@@ -6391,6 +6466,114 @@ fn deep_merge_yaml(base: serde_yaml::Value, overlay: serde_yaml::Value) -> serde
         }
         (_, overlay) => overlay,
     }
+}
+
+fn effective_external_skill_dirs(hermes_home: &Path, default_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    effective_external_skill_dirs_from_config(&hermes_home.join("config.yaml"), default_dirs)
+}
+
+fn effective_external_skill_dirs_from_config(
+    config_path: &Path,
+    default_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let config_dir = config_path.parent();
+    for dir in default_dirs {
+        push_external_skill_dir(&mut dirs, dir.clone(), config_dir);
+    }
+    for dir in existing_external_skill_dirs(config_path) {
+        let dir = external_skill_dir_from_config_path(config_path, dir);
+        push_external_skill_dir(&mut dirs, dir, config_dir);
+    }
+    dirs
+}
+
+fn existing_external_skill_dirs(config_path: &Path) -> Vec<PathBuf> {
+    let Ok(existing_text) = fs::read_to_string(config_path) else {
+        return Vec::new();
+    };
+    let Ok(existing) = serde_yaml::from_str::<serde_yaml::Value>(&existing_text) else {
+        return Vec::new();
+    };
+    external_skill_dirs_from_config_value(&existing)
+}
+
+fn external_skill_dirs_from_config_value(config: &serde_yaml::Value) -> Vec<PathBuf> {
+    let Some(external_dirs) = yaml_mapping_get(config, "skills")
+        .and_then(|skills| yaml_mapping_get(skills, "external_dirs"))
+    else {
+        return Vec::new();
+    };
+    match external_dirs {
+        serde_yaml::Value::String(raw) => external_skill_dir_from_config_entry(raw)
+            .into_iter()
+            .collect(),
+        serde_yaml::Value::Sequence(entries) => entries
+            .iter()
+            .filter_map(|entry| match entry {
+                serde_yaml::Value::String(raw) => external_skill_dir_from_config_entry(raw),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn yaml_mapping_get<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
+    let serde_yaml::Value::Mapping(mapping) = value else {
+        return None;
+    };
+    let lookup = serde_yaml::Value::String(key.to_string());
+    mapping.get(&lookup)
+}
+
+fn external_skill_dir_from_config_entry(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn external_skill_dir_from_config_path(config_path: &Path, dir: PathBuf) -> PathBuf {
+    let Some(config_dir) = config_path.parent() else {
+        return dir;
+    };
+    if should_anchor_external_config_dir(&dir) {
+        normalize_path_lexically(config_dir.join(dir))
+    } else {
+        dir
+    }
+}
+
+fn should_anchor_external_config_dir(dir: &Path) -> bool {
+    if dir.is_absolute() {
+        return false;
+    }
+    let raw = dir.to_string_lossy();
+    !(raw == "~" || raw.starts_with("~/") || raw.contains('$'))
+}
+
+fn push_external_skill_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf, relative_base: Option<&Path>) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    let identity = external_skill_dir_identity(&dir, relative_base);
+    if dirs
+        .iter()
+        .any(|existing| external_skill_dir_identity(existing, relative_base) == identity)
+    {
+        return;
+    }
+    dirs.push(dir);
+}
+
+fn external_skill_dir_identity(dir: &Path, relative_base: Option<&Path>) -> PathBuf {
+    let path = external_skill_dir_scan_path_from_base(dir, relative_base)
+        .unwrap_or_else(|| dir.to_path_buf());
+    path.canonicalize()
+        .unwrap_or_else(|_| normalize_path_lexically(path))
 }
 
 /// Renders the `config.yaml` June owns for every Hermes spawn. Pure so the
@@ -6550,12 +6733,27 @@ fn render_image_mcp_entry(
     )
 }
 
-/// External skill directories Hermes loads in addition to its built-in
-/// `$HERMES_HOME/skills`. User-global `~/.agents/skills` entries stay first so
-/// user/team skills can shadow app-bundled skills when names collide. The
-/// bundled resource directory is read-only and ships June-owned skills that
-/// should be available without a Hermes runtime bump.
+/// Effective external skill directories Hermes loads in addition to its
+/// built-in `$HERMES_HOME/skills`. User-global `~/.agents/skills` entries stay
+/// first so user/team skills can shadow app-bundled skills when names collide.
+/// Existing `skills.external_dirs` entries from `config.yaml` are appended so
+/// dashboard-persisted directories survive and are scanned after the defaults.
 fn external_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let defaults = builtin_external_skill_dirs(app);
+    let Ok(hermes_home) = resolve_june_hermes_home(app) else {
+        return defaults;
+    };
+    effective_external_skill_dirs(&hermes_home, &defaults)
+}
+
+fn external_skill_dirs_for_home(app: &AppHandle, hermes_home: &Path) -> Vec<PathBuf> {
+    effective_external_skill_dirs(hermes_home, &builtin_external_skill_dirs(app))
+}
+
+/// Built-in external skill directories June controls. The bundled resource
+/// directory is read-only and ships June-owned skills that should be available
+/// without a Hermes runtime bump.
+fn builtin_external_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for home in home_dir_candidates() {
         let candidate = home.join(".agents").join("skills");
@@ -6569,6 +6767,43 @@ fn external_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+fn external_skill_dir_scan_path_from_base(
+    dir: &Path,
+    relative_base: Option<&Path>,
+) -> Option<PathBuf> {
+    match expand_external_dir_path(&dir.to_string_lossy()) {
+        ExpandedPath::Resolved(path) if path.is_relative() => relative_base
+            .map(|base| normalize_path_lexically(base.join(&path)))
+            .or(Some(path)),
+        ExpandedPath::Resolved(path) => Some(path),
+        ExpandedPath::UnresolvedVar(_) => None,
+    }
+}
+
+fn external_skill_root_from_dir(dir: &Path, relative_base: Option<&Path>) -> Option<PathBuf> {
+    external_skill_dir_scan_path_from_base(dir, relative_base).filter(|path| path.is_dir())
+}
+
+fn normalize_path_lexically(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() && !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
 }
 
 fn bundled_skill_dirs(app: &AppHandle) -> Vec<PathBuf> {
@@ -6770,6 +7005,7 @@ fn yaml_string(value: &str) -> String {
 async fn start_june_provider_proxy(
     token: String,
     image_sources: ImageSourceCapabilities,
+    app: Option<AppHandle>,
 ) -> Result<RunningJuneProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
@@ -6788,6 +7024,8 @@ async fn start_june_provider_proxy(
         Arc::new(ProviderProxyState {
             token,
             image_sources,
+            app,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
         }),
         shutdown_rx,
     ));
@@ -6912,8 +7150,16 @@ async fn handle_june_provider_connection(
             // safe_mode likewise comes from the on-device setting.
             let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
+            let image_self_report = strip_image_explicit_self_report(&mut body);
             ensure_image_generation_model(&mut body);
-            ensure_image_safe_mode(&mut body);
+            ensure_image_safe_mode(&mut body, &state.image_safe_mode_pins);
+            if should_offer_safe_mode_consent(
+                &body,
+                crate::providers::image_safe_mode_prompt_dismissed(),
+                image_self_report,
+            ) {
+                emit_image_safe_mode_consent(&state, &body);
+            }
             forward_image_tool(
                 &mut stream,
                 "/v1/image/generate",
@@ -6929,6 +7175,7 @@ async fn handle_june_provider_connection(
             // it here, where the signing key is outside Hermes home.
             let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
+            let image_self_report = strip_image_explicit_self_report(&mut body);
             if let Err(message) = prepare_image_edit_request(&mut body, &state.image_sources) {
                 write_json_response(
                     &mut stream,
@@ -6941,7 +7188,14 @@ async fn handle_june_provider_connection(
                 .await?;
                 return Ok(());
             }
-            ensure_image_safe_mode(&mut body);
+            ensure_image_safe_mode(&mut body, &state.image_safe_mode_pins);
+            if should_offer_safe_mode_consent(
+                &body,
+                crate::providers::image_safe_mode_prompt_dismissed(),
+                image_self_report,
+            ) {
+                emit_image_safe_mode_consent(&state, &body);
+            }
             forward_image_tool(&mut stream, "/v1/image/edit", &body, &state.image_sources).await?;
         }
         _ => {
@@ -7422,16 +7676,49 @@ fn validate_image_source_reference(
     image_sources: &ImageSourceCapabilities,
     source_filename: &str,
 ) -> Result<ValidatedImageSource, String> {
-    let (signature, expected_name) =
-        parse_image_source_reference(source_filename).ok_or_else(|| {
-            "source_filename must be an edit-safe filename from this tool.".to_string()
+    let Some((signature, expected_name)) = parse_image_source_reference(source_filename) else {
+        let expected_name = bare_image_source_filename(source_filename).ok_or_else(|| {
+            "source_filename must be an edit-safe filename from this tool or the name of an image in June's images directory.".to_string()
         })?;
+        return load_validated_image_source(image_sources, expected_name);
+    };
     let expected_mime = image_mime_type_for_filename(&expected_name).ok_or_else(|| {
         "source_filename must refer to a PNG, JPEG, WebP, or GIF image.".to_string()
     })?;
+    let data = read_validated_image_source_bytes(image_sources, &expected_name, expected_mime)?;
+    let expected_signature =
+        image_source_signature(&image_sources.secret, &expected_name, &sha256_bytes(&data));
+    if !constant_time_eq(&signature, &expected_signature) {
+        return Err("source_filename must match the image it was issued for.".to_string());
+    }
+    Ok(ValidatedImageSource {
+        image_base64: BASE64_STANDARD.encode(data),
+        mime_type: expected_mime,
+    })
+}
+
+fn load_validated_image_source(
+    image_sources: &ImageSourceCapabilities,
+    expected_name: &str,
+) -> Result<ValidatedImageSource, String> {
+    let expected_mime = image_mime_type_for_filename(expected_name).ok_or_else(|| {
+        "source_filename must refer to a PNG, JPEG, WebP, or GIF image.".to_string()
+    })?;
+    let data = read_validated_image_source_bytes(image_sources, expected_name, expected_mime)?;
+    Ok(ValidatedImageSource {
+        image_base64: BASE64_STANDARD.encode(data),
+        mime_type: expected_mime,
+    })
+}
+
+fn read_validated_image_source_bytes(
+    image_sources: &ImageSourceCapabilities,
+    expected_name: &str,
+    expected_mime: &'static str,
+) -> Result<Vec<u8>, String> {
     let images_root = fs::canonicalize(&image_sources.images_dir)
         .map_err(|_| "source_filename must refer to an available June image source.".to_string())?;
-    let candidate = image_sources.images_dir.join(&expected_name);
+    let candidate = image_sources.images_dir.join(expected_name);
     let canonical = fs::canonicalize(candidate)
         .map_err(|_| "source_filename must refer to an available June image source.".to_string())?;
     if !canonical.starts_with(&images_root) {
@@ -7473,15 +7760,7 @@ fn validate_image_source_reference(
             "source_filename must refer to a real PNG, JPEG, WebP, or GIF image.".to_string(),
         );
     }
-    let expected_signature =
-        image_source_signature(&image_sources.secret, &expected_name, &sha256_bytes(&data));
-    if !constant_time_eq(&signature, &expected_signature) {
-        return Err("source_filename must match the image it was issued for.".to_string());
-    }
-    Ok(ValidatedImageSource {
-        image_base64: BASE64_STANDARD.encode(data),
-        mime_type: expected_mime,
-    })
+    Ok(data)
 }
 
 fn mint_image_source_reference(
@@ -7553,6 +7832,21 @@ fn parse_image_source_reference(reference: &str) -> Option<(String, String)> {
     }
     let expected_name = format!("{stem}{extension}");
     Some((signature.to_ascii_lowercase(), expected_name))
+}
+
+/// Hermes saves conversation attachments into the images dir under this
+/// prefix. Bare (unsigned) edit sources are limited to it so tool-produced
+/// files keep the signed reference's content-hash binding.
+const IMAGE_ATTACHMENT_FILENAME_PREFIX: &str = "upload_";
+
+fn bare_image_source_filename(source_filename: &str) -> Option<&str> {
+    let name = bare_filename(source_filename.trim())?;
+    if !name.starts_with(IMAGE_ATTACHMENT_FILENAME_PREFIX)
+        || image_mime_type_for_filename(name).is_none()
+    {
+        return None;
+    }
+    Some(name)
 }
 
 fn generated_image_storage_filename(mime_type: &str) -> String {
@@ -7682,16 +7976,116 @@ fn ensure_image_generation_model(body: &mut serde_json::Value) {
 /// Injects the on-device image safe-mode setting when the request omits it, so
 /// MCP-driven generation/editing honors the user's Settings toggle (the MCP
 /// never sends `safeMode`). Uses the camelCase key June API expects.
-fn ensure_image_safe_mode(body: &mut serde_json::Value) {
+///
+/// The injected value is pinned per `requestId`: the MCP retries 429/503/504
+/// by re-posting the same `requestId`, and June API hashes `safe_mode` into
+/// the replay-ledger key - if the user flips the toggle between attempts (the
+/// consent dialog makes this race easy), an unpinned retry would change shape
+/// and settle as a second billable generation instead of a replay.
+fn ensure_image_safe_mode(body: &mut serde_json::Value, pins: &Mutex<VecDeque<(String, bool)>>) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
-    if !object.contains_key("safeMode") {
-        object.insert(
-            "safeMode".to_string(),
-            serde_json::Value::Bool(crate::providers::image_safe_mode()),
-        );
+    if object.contains_key("safeMode") {
+        return;
     }
+    let request_id = object
+        .get("requestId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let safe_mode = match (request_id, pins.lock()) {
+        (Some(id), Ok(mut pins)) => {
+            if let Some((_, pinned)) = pins.iter().find(|(pinned_id, _)| *pinned_id == id) {
+                *pinned
+            } else {
+                let current = crate::providers::image_safe_mode();
+                if pins.len() >= IMAGE_SAFE_MODE_PIN_CAP {
+                    pins.pop_front();
+                }
+                pins.push_back((id, current));
+                current
+            }
+        }
+        // No requestId to key on (or a poisoned lock): fall back to the live
+        // setting, matching the pre-pinning behavior.
+        _ => crate::providers::image_safe_mode(),
+    };
+    object.insert("safeMode".to_string(), serde_json::Value::Bool(safe_mode));
+}
+
+/// Retries arrive within seconds of the first attempt, so a small ring of
+/// recent request ids is enough to keep every plausible replay stable.
+const IMAGE_SAFE_MODE_PIN_CAP: usize = 64;
+
+/// Reads and removes the MCP-only explicit-content self-report before the
+/// request shape reaches June API. Accepts the snake_case schema field and a
+/// camelCase alias defensively; malformed values are stripped but ignored.
+fn strip_image_explicit_self_report(body: &mut serde_json::Value) -> bool {
+    let Some(object) = body.as_object_mut() else {
+        return false;
+    };
+    let snake_case = object
+        .remove("may_be_explicit")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let camel_case = object
+        .remove("mayBeExplicit")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    snake_case || camel_case
+}
+
+/// Consent event fires only when this generation runs with safe mode on,
+/// the user hasn't dismissed the prompt, and the text or MCP self-report
+/// indicates the request may be explicit.
+fn should_offer_safe_mode_consent(
+    body: &serde_json::Value,
+    prompt_dismissed: bool,
+    self_report: bool,
+) -> bool {
+    let safe_mode = body
+        .get("safeMode")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !safe_mode || prompt_dismissed {
+        return false;
+    }
+    let wordlist_report = image_safe_mode_consent_text(body)
+        .map(crate::image_safety::may_request_explicit_content)
+        .unwrap_or(false);
+    wordlist_report || self_report
+}
+
+fn image_safe_mode_consent_text(body: &serde_json::Value) -> Option<&str> {
+    body.get("prompt")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+}
+
+fn emit_image_safe_mode_consent(state: &ProviderProxyState, body: &serde_json::Value) {
+    let Some(app) = state.app.as_ref() else {
+        return;
+    };
+    let Some(prompt) = image_safe_mode_consent_text(body) else {
+        return;
+    };
+    let _ = app.emit(
+        IMAGE_SAFE_MODE_CONSENT_EVENT,
+        ImageSafeModeConsentPayload {
+            source: "agent",
+            prompt: truncate_image_safe_mode_consent_prompt(
+                prompt,
+                IMAGE_SAFE_MODE_CONSENT_PROMPT_MAX_CHARS,
+            ),
+        },
+    );
+}
+
+fn truncate_image_safe_mode_consent_prompt(prompt: &str, max_chars: usize) -> String {
+    prompt.chars().take(max_chars).collect()
 }
 
 async fn write_raw_response(
@@ -8233,6 +8627,179 @@ mod tests {
         assert!(!image_message.contains("maximum context length"));
     }
 
+    #[test]
+    fn offers_safe_mode_consent_for_self_reported_explicit_safe_mode_prompt() {
+        let body = serde_json::json!({
+            "safeMode": true,
+            "prompt": "portrait in soft window light",
+        });
+
+        assert!(should_offer_safe_mode_consent(&body, false, true));
+    }
+
+    #[test]
+    fn offers_safe_mode_consent_for_wordlist_flagged_prompt_when_model_under_reports() {
+        let body = serde_json::json!({
+            "safeMode": true,
+            "prompt": "portrait of a nude figure",
+        });
+
+        assert!(should_offer_safe_mode_consent(&body, false, false));
+    }
+
+    #[test]
+    fn skips_safe_mode_consent_when_wordlist_and_self_report_are_benign() {
+        let body = serde_json::json!({
+            "safeMode": true,
+            "prompt": "sunset over Sussex",
+        });
+
+        assert!(!should_offer_safe_mode_consent(&body, false, false));
+    }
+
+    #[test]
+    fn skips_safe_mode_consent_when_safe_mode_is_off_even_with_self_report() {
+        let body = serde_json::json!({
+            "safeMode": false,
+            "prompt": "portrait of a nude figure",
+        });
+
+        assert!(!should_offer_safe_mode_consent(&body, false, true));
+    }
+
+    #[test]
+    fn skips_safe_mode_consent_when_prompt_was_dismissed_even_with_self_report() {
+        let body = serde_json::json!({
+            "safeMode": true,
+            "prompt": "portrait of a nude figure",
+        });
+
+        assert!(!should_offer_safe_mode_consent(&body, true, true));
+    }
+
+    #[test]
+    fn skips_safe_mode_consent_when_prompt_is_missing() {
+        let body = serde_json::json!({
+            "safeMode": true,
+            "instruction": "portrait of a nude figure",
+        });
+
+        assert!(!should_offer_safe_mode_consent(&body, false, false));
+    }
+
+    #[test]
+    fn strips_image_explicit_self_report_fields_from_forwarded_body() {
+        let mut body = serde_json::json!({
+            "prompt": "sunset over Sussex",
+            "may_be_explicit": false,
+            "mayBeExplicit": true,
+        });
+
+        assert!(strip_image_explicit_self_report(&mut body));
+        assert_eq!(body.get("may_be_explicit"), None);
+        assert_eq!(body.get("mayBeExplicit"), None);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "prompt": "sunset over Sussex",
+            })
+        );
+    }
+
+    #[test]
+    fn strips_malformed_image_explicit_self_report_as_false() {
+        let mut body = serde_json::json!({
+            "prompt": "sunset over Sussex",
+            "may_be_explicit": "true",
+            "mayBeExplicit": "false",
+        });
+
+        assert!(!strip_image_explicit_self_report(&mut body));
+        assert_eq!(body.get("may_be_explicit"), None);
+        assert_eq!(body.get("mayBeExplicit"), None);
+    }
+
+    #[test]
+    fn truncates_safe_mode_consent_prompt_on_char_boundary() {
+        let prompt = "é".repeat(121);
+
+        assert_eq!(
+            truncate_image_safe_mode_consent_prompt(&prompt, 120),
+            "é".repeat(120)
+        );
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_replays_pinned_value_over_live_setting() {
+        // Default settings have safe mode ON; the pin says this request first
+        // ran with it OFF, so a retry must replay OFF or June API's replay
+        // ledger sees a new shape and bills a second generation.
+        let pins = Mutex::new(VecDeque::from([("req-1".to_string(), false)]));
+        let mut body = serde_json::json!({ "requestId": "req-1", "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        assert_eq!(body.get("safeMode"), Some(&serde_json::Value::Bool(false)));
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_pins_first_injection_for_request_id() {
+        let pins = Mutex::new(VecDeque::new());
+        let mut body = serde_json::json!({ "requestId": "req-2", "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        let injected = body
+            .get("safeMode")
+            .and_then(serde_json::Value::as_bool)
+            .expect("safeMode injected");
+        assert_eq!(
+            pins.lock().unwrap().back(),
+            Some(&("req-2".to_string(), injected))
+        );
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_respects_explicit_value_without_pinning() {
+        let pins = Mutex::new(VecDeque::new());
+        let mut body =
+            serde_json::json!({ "requestId": "req-3", "prompt": "a cat", "safeMode": false });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        assert_eq!(body.get("safeMode"), Some(&serde_json::Value::Bool(false)));
+        assert!(pins.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_without_request_id_skips_pinning() {
+        let pins = Mutex::new(VecDeque::new());
+        let mut body = serde_json::json!({ "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        assert!(body
+            .get("safeMode")
+            .and_then(serde_json::Value::as_bool)
+            .is_some());
+        assert!(pins.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ensure_image_safe_mode_pin_ring_evicts_oldest() {
+        let pins = Mutex::new(VecDeque::from_iter(
+            (0..IMAGE_SAFE_MODE_PIN_CAP).map(|index| (format!("req-{index}"), false)),
+        ));
+        let mut body = serde_json::json!({ "requestId": "req-new", "prompt": "a cat" });
+
+        ensure_image_safe_mode(&mut body, &pins);
+
+        let pins = pins.lock().unwrap();
+        assert_eq!(pins.len(), IMAGE_SAFE_MODE_PIN_CAP);
+        assert!(pins.iter().all(|(id, _)| id != "req-0"));
+        assert_eq!(pins.back().map(|(id, _)| id.as_str()), Some("req-new"));
+    }
+
     fn test_png_bytes(label: &[u8]) -> Vec<u8> {
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.extend_from_slice(label);
@@ -8292,6 +8859,75 @@ mod tests {
         let error = validate_image_source_reference(&image_sources, &source_ref)
             .expect_err("changed content must invalidate the ref");
         assert!(error.contains("must match"));
+    }
+
+    #[test]
+    fn bare_image_source_filename_validates_from_images_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let images_dir = temp.path().join("images");
+        let source_path = images_dir.join("upload_x.png");
+        let bytes = test_png_bytes(b"attachment");
+        write_test_png(&source_path, b"attachment");
+        let image_sources = test_image_sources(images_dir, [7u8; 32]);
+
+        let validated = validate_image_source_reference(&image_sources, "upload_x.png")
+            .expect("bare attachment filename validates");
+
+        assert_eq!(validated.mime_type, "image/png");
+        assert_eq!(
+            BASE64_STANDARD
+                .decode(validated.image_base64.as_bytes())
+                .expect("decode validated image"),
+            bytes
+        );
+    }
+
+    #[test]
+    fn bare_image_source_filename_rejects_unsafe_names() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let images_dir = temp.path().join("images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        write_test_png(&images_dir.join("upload_x.png"), b"attachment");
+        fs::write(images_dir.join("upload_x.txt"), b"not an image").expect("write txt");
+        fs::create_dir(images_dir.join("upload_dir.png")).expect("image directory");
+        // A real tool-output file: bare names must NOT reach it - tool results
+        // keep the signed reference's content-hash binding.
+        write_test_png(&images_dir.join("generated-image-x.png"), b"tool output");
+        let image_sources = test_image_sources(images_dir, [7u8; 32]);
+        let absolute = temp.path().join("upload_x.png");
+
+        for source_filename in [
+            "../upload_x.png",
+            "sub/upload_x.png",
+            absolute.to_str().expect("absolute path"),
+            "upload_x.txt",
+            "upload_missing.png",
+            "upload_dir.png",
+            "generated-image-x.png",
+        ] {
+            assert!(
+                validate_image_source_reference(&image_sources, source_filename).is_err(),
+                "{source_filename} must be rejected",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bare_image_source_filename_rejects_symlink_escape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let images_dir = temp.path().join("images");
+        fs::create_dir_all(&images_dir).expect("images dir");
+        let outside = temp.path().join("outside.png");
+        write_test_png(&outside, b"outside");
+        std::os::unix::fs::symlink(&outside, images_dir.join("upload_x.png"))
+            .expect("image symlink");
+        let image_sources = test_image_sources(images_dir, [7u8; 32]);
+
+        let error = validate_image_source_reference(&image_sources, "upload_x.png")
+            .expect_err("symlink escape must be rejected");
+
+        assert!(error.contains("available June image source"));
     }
 
     #[test]
@@ -8553,6 +9189,224 @@ mcp_servers:
 
         std::fs::write(&missing, ": not yaml : [").expect("seed corrupt");
         assert_eq!(merge_hermes_config(&missing, rendered), rendered);
+    }
+
+    #[test]
+    fn effective_external_skill_dirs_reads_existing_config_defensively() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let default = home.path().join("default-skills");
+        let custom = home.path().join("team-skills");
+        let string_config = home.path().join("string.yaml");
+        std::fs::write(
+            &string_config,
+            format!(
+                "skills:\n  external_dirs: {}\n",
+                yaml_string(&custom.to_string_lossy())
+            ),
+        )
+        .expect("seed string config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(
+                &string_config,
+                std::slice::from_ref(&default)
+            ),
+            vec![default.clone(), custom.clone()]
+        );
+
+        let list_config = home.path().join("list.yaml");
+        std::fs::write(
+            &list_config,
+            format!(
+                r#"skills:
+  external_dirs:
+    - {}
+    - 42
+    - ""
+    - {}
+    - {}
+"#,
+                yaml_string(&custom.to_string_lossy()),
+                yaml_string(&default.to_string_lossy()),
+                yaml_string(&home.path().join("more-skills").to_string_lossy()),
+            ),
+        )
+        .expect("seed list config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&list_config, std::slice::from_ref(&default)),
+            vec![default.clone(), custom, home.path().join("more-skills"),]
+        );
+
+        let bad_config = home.path().join("bad.yaml");
+        std::fs::write(&bad_config, ": not yaml : [").expect("seed bad config");
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&bad_config, std::slice::from_ref(&default)),
+            vec![default]
+        );
+    }
+
+    #[test]
+    fn effective_external_skill_dirs_anchors_relative_config_entries_to_config_dir() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let relative_skill_dir = home.path().join("team-skills");
+        let custom_skill = relative_skill_dir.join("custom-skill");
+        std::fs::create_dir_all(&custom_skill).expect("custom skill dir");
+        std::fs::write(custom_skill.join("SKILL.md"), "# Custom\n").expect("custom skill");
+        let config = home.path().join("config.yaml");
+        std::fs::write(&config, "skills:\n  external_dirs:\n    - ./team-skills\n")
+            .expect("seed config");
+
+        let effective = effective_external_skill_dirs_from_config(&config, &[]);
+        assert_eq!(effective, vec![relative_skill_dir.clone()]);
+
+        let roots = skill_search_roots_for_hermes_home(home.path(), &effective);
+        let (root, path, read_only) =
+            resolve_skill_in_roots(&roots, "custom-skill").expect("resolve custom skill");
+        assert_eq!(root, relative_skill_dir);
+        assert!(path.ends_with(Path::new("custom-skill").join("SKILL.md")));
+        assert!(read_only);
+    }
+
+    #[test]
+    fn skill_search_roots_skip_missing_external_roots() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let missing = home.path().join("missing-skills");
+        let external = home.path().join("team-skills");
+        let custom_skill = external.join("custom-skill");
+        std::fs::create_dir_all(&custom_skill).expect("custom skill dir");
+        std::fs::write(custom_skill.join("SKILL.md"), "# Custom\n").expect("custom skill");
+
+        let roots = skill_search_roots_for_hermes_home(home.path(), &[missing, external.clone()]);
+        assert_eq!(roots, vec![(external.clone(), true)]);
+
+        let (root, path, read_only) =
+            resolve_skill_in_roots(&roots, "custom-skill").expect("resolve custom skill");
+        assert_eq!(root, external);
+        assert!(path.ends_with(Path::new("custom-skill").join("SKILL.md")));
+        assert!(read_only);
+    }
+
+    #[test]
+    fn effective_external_skill_dirs_dedupes_equivalent_expanded_paths() {
+        let config_home = tempfile::tempdir().expect("tempdir");
+        let user_home = home_dir_candidates().into_iter().next().expect("home");
+        let default = user_home.join(".agents").join("skills");
+        let config = config_home.path().join("config.yaml");
+        std::fs::write(
+            &config,
+            "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+        )
+        .expect("seed config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&config, std::slice::from_ref(&default)),
+            vec![default]
+        );
+    }
+
+    #[test]
+    fn effective_external_skill_dirs_dedupes_canonical_root_identities() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let hermes_home = root.path().join("hermes-home");
+        let direct = root.path().join("team-skills");
+        std::fs::create_dir_all(&hermes_home).expect("hermes home");
+        std::fs::create_dir_all(&direct).expect("direct dir");
+        let config = hermes_home.join("config.yaml");
+        let equivalent = hermes_home.join("..").join("team-skills");
+        std::fs::write(
+            &config,
+            format!(
+                "skills:\n  external_dirs:\n    - {}\n",
+                yaml_string(&equivalent.to_string_lossy())
+            ),
+        )
+        .expect("seed config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&config, std::slice::from_ref(&direct)),
+            vec![direct]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn effective_external_skill_dirs_dedupes_symlinked_root_identities() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let direct = root.path().join("team-skills");
+        let symlink = root.path().join("team-skills-link");
+        std::fs::create_dir_all(&direct).expect("direct dir");
+        std::os::unix::fs::symlink(&direct, &symlink).expect("symlink dir");
+        let config = root.path().join("config.yaml");
+        std::fs::write(
+            &config,
+            format!(
+                "skills:\n  external_dirs:\n    - {}\n",
+                yaml_string(&symlink.to_string_lossy())
+            ),
+        )
+        .expect("seed config");
+
+        assert_eq!(
+            effective_external_skill_dirs_from_config(&config, std::slice::from_ref(&direct)),
+            vec![direct]
+        );
+    }
+
+    #[test]
+    fn sync_config_preserves_user_external_dirs_and_skill_roots_scan_them() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let default_dir = home.path().join("default-skills");
+        let custom_dir = home.path().join("team-skills");
+        let custom_skill = custom_dir.join("custom-skill");
+        std::fs::create_dir_all(&default_dir).expect("default dir");
+        std::fs::create_dir_all(&custom_skill).expect("custom skill dir");
+        std::fs::write(custom_skill.join("SKILL.md"), "# Custom\n").expect("custom skill");
+        std::fs::write(
+            home.path().join("config.yaml"),
+            format!(
+                "skills:\n  external_dirs:\n    - {}\n",
+                yaml_string(&custom_dir.to_string_lossy())
+            ),
+        )
+        .expect("seed config");
+
+        sync_hermes_config_with_external_dirs(
+            home.path(),
+            4242,
+            "proxy-token",
+            &test_june_context_mcp_config(),
+            &test_june_web_mcp_config(),
+            &test_june_image_mcp_config(),
+            std::slice::from_ref(&default_dir),
+        )
+        .expect("sync config");
+
+        let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
+        let value: serde_yaml::Value = serde_yaml::from_str(&config).expect("config parses");
+        let dirs = value["skills"]["external_dirs"]
+            .as_sequence()
+            .expect("external dirs sequence")
+            .iter()
+            .map(|value| value.as_str().expect("dir string").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            dirs,
+            vec![
+                default_dir.to_string_lossy().into_owned(),
+                custom_dir.to_string_lossy().into_owned(),
+            ]
+        );
+
+        let effective =
+            effective_external_skill_dirs(home.path(), std::slice::from_ref(&default_dir));
+        assert_eq!(effective, vec![default_dir, custom_dir.clone()]);
+        let roots = skill_search_roots_for_hermes_home(home.path(), &effective);
+        let (root, path, read_only) =
+            resolve_skill_in_roots(&roots, "custom-skill").expect("resolve custom skill");
+        assert_eq!(root, custom_dir);
+        assert!(path.ends_with(Path::new("custom-skill").join("SKILL.md")));
+        assert!(read_only);
     }
 
     #[test]
@@ -9090,7 +9944,19 @@ mcp_servers:
         assert!(soul.contains("Do not add a separate content refusal layer"));
         assert!(soul.contains("selected image model and image safe-mode setting are authoritative"));
         assert!(soul.contains("call the image tool with the user's prompt"));
+        assert!(soul.contains("Set `may_be_explicit` honestly"));
+        assert!(soul.contains("judging whether the requested image could contain adult"));
         assert!(soul.contains("provider rejects the request"));
+        assert!(soul.contains("an image the user attached or pasted into the conversation"));
+        assert!(soul.contains("the edit-safe filename from a prior `june_image` tool result"));
+        assert!(
+            soul.contains("the plain filename of an image the user attached to the conversation")
+        );
+        assert!(soul.contains("upload_20260707_113453_1.png"));
+        assert!(soul.contains("Never pass a full path or an invented name"));
+        assert!(
+            !soul.contains("Only pass a `source_filename` from a prior `june_image` tool result")
+        );
     }
 
     #[test]
@@ -9723,6 +10589,55 @@ mcp_servers:
                     .starts_with(".june-write-probe-")
             });
         assert!(!leftover, "write probe file should be removed");
+    }
+
+    #[test]
+    fn write_probe_never_writes_inside_the_dev_watch_root() {
+        // The built-in external skill dir `src-tauri/resources/hermes-skills`
+        // lives inside the crate dir the Tauri dev watcher observes. Probing it
+        // must NOT create a scratch file there, because that fires the watcher
+        // and relaunches the whole app (June "keeps quitting" on every external
+        // dir add/refresh in dev). Regression guard for that quit loop.
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let resources = crate_dir.join("resources").join("hermes-skills");
+        std::fs::create_dir_all(&resources).expect("resources dir");
+
+        assert!(
+            path_inside_dev_watch_root(&resources),
+            "the bundled resources dir must be recognized as inside the watch root"
+        );
+
+        let before = probe_scratch_file_count(&resources);
+        // The probe reports read-only (Some(false)) without touching the tree.
+        assert_eq!(probe_external_dir_writable(&resources), Some(false));
+        let after = probe_scratch_file_count(&resources);
+        assert_eq!(
+            before, after,
+            "no `.june-write-probe-*` file may be created inside the dev watch root"
+        );
+
+        // A dir OUTSIDE the crate tree still gets the real destructive probe.
+        let outside = tempfile::tempdir().expect("tempdir");
+        assert!(!path_inside_dev_watch_root(outside.path()));
+        assert_eq!(probe_external_dir_writable(outside.path()), Some(true));
+    }
+
+    /// Counts leftover `.june-write-probe-*` files directly under `dir` so a
+    /// stray probe write inside the watched tree is caught.
+    fn probe_scratch_file_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".june-write-probe-")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     #[test]
