@@ -274,7 +274,11 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage, newImageRequestId } from "../../lib/chat-image-generation";
-import { generateChatVideo, newVideoRequestId } from "../../lib/chat-video-generation";
+import {
+  generateChatVideo,
+  newVideoRequestId,
+  pollChatVideo,
+} from "../../lib/chat-video-generation";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { ImageSafeModeConsentDialog } from "./ImageSafeModeConsentDialog";
 import { VideoSafeModeConsentDialog } from "./VideoSafeModeConsentDialog";
@@ -4593,94 +4597,108 @@ export function AgentWorkspace({
     if (!input.jobId) {
       return { status: "error" as const, message: "Generation was interrupted." };
     }
-    const status = await videoStatus(input.jobId);
-    if (status.status === "completed") {
-      return {
-        status: "ok" as const,
-        jobId: input.jobId,
-        path: status.path,
-        mimeType: status.mimeType,
-        sizeBytes: status.sizeBytes,
-        model: status.model,
-      };
-    }
-    if (status.status === "failed") {
-      return { status: "error" as const, message: status.reason, jobId: input.jobId };
-    }
-    updateVideoSlashPart(input.sessionId, `${input.turnId}:assistant`, {
-      jobId: input.jobId,
-      averageExecutionMs: status.averageExecutionMs,
-      executionMs: status.executionMs,
+    // Poll the existing job with the full loop (not a single shot) so a retry
+    // follows it to completion, re-attaching to the same server-side job.
+    return pollChatVideo(input.jobId, {
+      pollStatus: videoStatus,
+      onProgress: (progress) => {
+        updateVideoSlashPart(input.sessionId, `${input.turnId}:assistant`, {
+          jobId: progress.jobId,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
+        });
+        upsertStoredVideoSlashTurn({
+          id: input.turnId,
+          sessionId: input.sessionId,
+          prompt: input.prompt,
+          path: "",
+          name: "",
+          createdAt: input.createdAt,
+          videoCreatedAt: input.videoCreatedAt,
+          pending: true,
+          requestId: input.requestId,
+          model: input.model,
+          jobId: input.jobId,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
+        });
+      },
     });
-    upsertStoredVideoSlashTurn({
-      id: input.turnId,
-      sessionId: input.sessionId,
-      prompt: input.prompt,
-      path: "",
-      name: "",
-      createdAt: input.createdAt,
-      videoCreatedAt: input.videoCreatedAt,
-      pending: true,
-      requestId: input.requestId,
-      model: input.model,
-      jobId: input.jobId,
-      averageExecutionMs: status.averageExecutionMs,
-      executionMs: status.executionMs,
-    });
-    return {
-      status: "error" as const,
-      message: "Video generation is still running. Try again later.",
-      jobId: input.jobId,
-    };
   }
 
+  // Resume a `/video` turn whose poll loop was lost (app crash, restart, or dev
+  // hot-reload). The server job keeps running, so re-attach with the SAME poll
+  // loop and follow it to completion instead of a single shot — the user gets
+  // the video without a new billable generation, and never has to hit "Try
+  // again" just because the app closed mid-render.
   async function resumePendingVideoSlashTurn(turn: PersistedVideoSlashTurn) {
     if (!turn.jobId) return;
+    const jobId = turn.jobId;
     const assistantTurnId = `${turn.id}:assistant`;
-    try {
-      const status = await videoStatus(turn.jobId);
-      if (status.status === "completed") {
-        const name = filenameFromWorkspacePath(status.path, "generated-video.mp4");
+    const result = await pollChatVideo(jobId, {
+      pollStatus: videoStatus,
+      onProgress: (progress) => {
         updateVideoSlashPart(turn.sessionId, assistantTurnId, {
-          status: "complete",
-          path: status.path,
-          name,
-          model: status.model,
+          status: "running",
+          jobId: progress.jobId,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
         });
         upsertStoredVideoSlashTurn({
           ...turn,
-          pending: false,
-          path: status.path,
-          name,
-          model: status.model,
+          pending: true,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
         });
-        return;
-      }
-      if (status.status === "failed") {
-        updateVideoSlashPart(turn.sessionId, assistantTurnId, {
-          status: "error",
-          error: status.reason,
-        });
-        return;
-      }
+      },
+    });
+    if (result.status === "ok") {
+      const name = filenameFromWorkspacePath(result.path, "generated-video.mp4");
       updateVideoSlashPart(turn.sessionId, assistantTurnId, {
-        status: "running",
-        jobId: turn.jobId,
-        averageExecutionMs: status.averageExecutionMs,
-        executionMs: status.executionMs,
+        status: "complete",
+        path: result.path,
+        name,
+        model: result.model ?? turn.model,
       });
       upsertStoredVideoSlashTurn({
         ...turn,
-        pending: true,
-        averageExecutionMs: status.averageExecutionMs,
-        executionMs: status.executionMs,
+        pending: false,
+        path: result.path,
+        name,
+        model: result.model ?? turn.model,
+        // Fold this turn's context into the next prompt, same as a live finish.
+        contextPending: true,
       });
-    } catch (err) {
-      updateVideoSlashPart(turn.sessionId, assistantTurnId, {
-        status: "error",
-        error: messageFromError(err),
-      });
+      hermesArtifactStore.recordArtifact(
+        {
+          sessionId: turn.sessionId,
+          kind: "file",
+          action: "created",
+          path: result.path,
+          displayName: name,
+          previewAvailable: false,
+        },
+        hermesModeFor(turn.sessionId),
+      );
+      void loadFilesystemSnapshot();
+      return;
     }
+    // Budget exhausted while the job was still processing: it lives on the
+    // server, so keep the turn pending (its stored jobId) and leave the loader
+    // up — the next app launch resumes this exact loop. Only a real Venice
+    // failure or a poll error is terminal and surfaces as retryable.
+    if (result.stillRunning) {
+      updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+        status: "running",
+        jobId,
+      });
+      return;
+    }
+    updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+      status: "error",
+      error: result.message,
+      jobId,
+    });
   }
 
   async function retryVideoSlashTurn(
