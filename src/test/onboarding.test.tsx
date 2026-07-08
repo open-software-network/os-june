@@ -511,7 +511,7 @@ describe("OnboardingFlow", () => {
     expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
     await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
     rerender(<OnboardingFlow {...flowProps({ account, onAccountChanged })} />);
-    await screen.findByRole("heading", { name: "Share anonymous usage statistics?" });
+    await screen.findByRole("heading", { name: "Help improve June" });
   });
 
   it("opens the June community from the welcome step", async () => {

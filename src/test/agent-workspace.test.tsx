@@ -9815,7 +9815,14 @@ describe("AgentWorkspace", () => {
       // …plus the forced chrome samples the turn gallery can't represent.
       expect(screen.getByText("Could not connect to Hermes gateway.")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
-      expect(screen.getByText(/June is still working on the previous message/)).toBeInTheDocument();
+      // Scope to the gallery's inline composer pill: the busy notice now also
+      // fires as a toast (.june-toast), so an unscoped text query can also match
+      // a busy toast lingering from an earlier test.
+      expect(
+        screen.getByText(/June is still working on the previous message/, {
+          selector: ".agent-composer-notice",
+        }),
+      ).toBeInTheDocument();
     } finally {
       // Always reset the module-level desired state — a failure here must not
       // leave the gallery on and cascade into later workspace mounts.

@@ -80,6 +80,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { toast } from "../ui/Toaster";
 import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
@@ -352,6 +353,22 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
 const SESSION_NOT_AVAILABLE_MESSAGE =
   "This session is no longer available. Open another conversation or start a new one.";
+
+// A stable id for the "June is still working" nudge (fired when a send is
+// rejected mid-turn), so repeated send attempts refresh one toast instead of
+// stacking.
+const SESSION_BUSY_TOAST_ID = "agent-session-busy";
+
+// A stable id for the model control's notices (default-model changed,
+// model-locked on an existing session, off-device confirm), so they replace one
+// another in a single toast rather than stacking.
+const MODEL_SWITCH_TOAST_ID = "agent-model-switch";
+
+// Stable ids so the fork lifecycle (creating → branched) rides one
+// self-replacing toast, and repeat report deliveries reuse a single "sent"
+// confirmation rather than stacking.
+const BRANCH_TOAST_ID = "agent-branch";
+const ISSUE_REPORT_SENT_TOAST_ID = "agent-issue-report-sent";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
@@ -813,11 +830,6 @@ type AgentWorkspaceError = {
 type AgentWorkspaceErrorOptions = {
   sessionId?: string | null;
   issueReport?: PendingIssueReport;
-};
-
-type AgentWorkspaceNotice = {
-  message: string;
-  sessionId: string | null;
 };
 
 type ImageSafeModeConsentChoice =
@@ -1768,13 +1780,6 @@ export function AgentWorkspace({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
-  // A rejected send into a still-running session, explained by the composer.
-  // Separate from `errorState` because background session refreshes clear that
-  // banner on success — this notice must survive until the turn finishes.
-  const [busyNotice, setBusyNotice] = useState<string | null>(null);
-  // Confirmation that a submitted issue report reached the June team; shown
-  // in the composer notice slot until dismissed by the next send.
-  const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
   const [submittingErrorIssueReport, setSubmittingErrorIssueReport] = useState(false);
   const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
     null,
@@ -1784,24 +1789,9 @@ export function AgentWorkspace({
   const imageSafeModeConsentRequestRef = useRef<ImageSafeModeConsentRequest | null>(null);
   const composerSizeProceedSignatureRef = useRef<string | null>(null);
   const composerSizeProceedInputSignatureRef = useRef<string | null>(null);
-  // Honest result of the last model switch (feature 10): scoped to the session
-  // it acted on so it survives background refreshes and disappears when the
-  // user moves to another conversation. A null sessionId means it reports a
-  // default-only change shown on the hero.
-  const [modelSwitchNotice, setModelSwitchNotice] = useState<{
-    message: string;
-    sessionId: string | null;
-  } | null>(null);
-  // Feature 07: after a successful fork, the banner that tells the user the
-  // freshly-opened session was branched from another. Keyed by the NEW
-  // session's id so it shows only while that session is selected, then clears
-  // itself once they navigate away.
-  const [branchedNotice, setBranchedNotice] = useState<{
-    sessionId: string;
-    sourceTitle: string;
-  } | null>(null);
-  const branchedNoticeRef = useRef(branchedNotice);
-  const [branchingNotice, setBranchingNotice] = useState<{ sourceTitle: string } | null>(null);
+  // Feature 07: the fork lifecycle (creating → branched) is surfaced as a
+  // toast — a loading toast while the branch is created, resolving into a
+  // "Branched from …" confirmation. See branchFromMessage.
   // Which message a branch is currently in flight for, so its action shows a
   // disabled/working state and double-clicks can't fork twice.
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null);
@@ -2601,16 +2591,6 @@ export function AgentWorkspace({
   const visibleErrorRetryable =
     visibleError != null &&
     (GATEWAY_CONNECTION_ERROR.test(visibleError) || visibleError === HERMES_SERVER_ERROR_MESSAGE);
-  const visibleIssueReportNotice =
-    issueReportNotice && issueReportNotice.sessionId === (selectedHermesSessionId ?? null)
-      ? issueReportNotice.message
-      : null;
-  // The model-switch notice (feature 10) shows on the session it acted on; a
-  // null sessionId is the default-only notice, shown while no session is open.
-  const visibleModelSwitchNotice =
-    modelSwitchNotice && modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
-      ? modelSwitchNotice.message
-      : null;
   // Unsupported Hermes events for the selected session surface a generic,
   // recoverable notice (and sanitized dev details). Subscribing to the store's
   // version re-derives the notice whenever a new unsupported frame lands.
@@ -3086,10 +3066,7 @@ export function AgentWorkspace({
 
   function showComposerModelLockedNotice() {
     setComposerModelOpen(false);
-    setModelSwitchNotice({
-      message: MODEL_CHANGE_LOCKED_NOTICE,
-      sessionId: selectedHermesSessionIdRef.current ?? null,
-    });
+    toast(MODEL_CHANGE_LOCKED_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
   }
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
@@ -3126,11 +3103,10 @@ export function AgentWorkspace({
     if (!isLoopbackUrl(baseUrl)) {
       if (localEnableConfirmArmedForRef.current !== baseUrl) {
         localEnableConfirmArmedForRef.current = baseUrl;
-        setModelSwitchNotice({
-          message:
-            "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
-          sessionId: null,
-        });
+        toast.warning(
+          "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+          { id: MODEL_SWITCH_TOAST_ID },
+        );
         return false;
       }
       localEnableConfirmArmedForRef.current = null;
@@ -3150,10 +3126,7 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    setModelSwitchNotice({
-      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-      sessionId: null,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
@@ -3193,10 +3166,7 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    setModelSwitchNotice({
-      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-      sessionId: null,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
@@ -3607,14 +3577,14 @@ export function AgentWorkspace({
     restoreComposerDraft(composerDraftKey);
   }, [activePanel, composerDraftKey]);
 
-  // The busy notice's advice ("wait for the reply") expires the moment the
-  // selected session stops working — including when the user switches to a
-  // session that isn't running.
+  // The busy toast's advice ("wait for the reply") goes stale the moment the
+  // selected session stops working — including when the user switches to an
+  // idle session — so dismiss it then rather than leaving it up for the full
+  // toast duration. Dismissing an absent toast is a no-op.
   useEffect(() => {
-    if (!busyNotice) return;
     if (selectedHermesSessionId && workingSessionIds.has(selectedHermesSessionId)) return;
-    setBusyNotice(null);
-  }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
+    toast.dismiss(SESSION_BUSY_TOAST_ID);
+  }, [selectedHermesSessionId, workingSessionIds]);
 
   async function prepareComposerSubmission(
     message: string,
@@ -4279,7 +4249,6 @@ export function AgentWorkspace({
             submittingIssueReportSessionIdsRef.current.has(reportFollowUpSessionId),
         };
       }
-      setIssueReportNotice(null);
       await submitHermesSession(runtimeContent, undefined, {
         displayContent: prepared.displayContent,
         titleContent: prepared.titleContent,
@@ -4290,7 +4259,7 @@ export function AgentWorkspace({
         deferredFailedIssueReportDeliverySessionIdsRef.current.delete(reportFollowUpSessionId);
       }
       setError(null);
-      setBusyNotice(null);
+      toast.dismiss(SESSION_BUSY_TOAST_ID);
     } catch (err) {
       // Restore the composer so a failed send doesn't eat the message, its
       // category chip, or its attachments — but only where the user hasn't
@@ -4334,9 +4303,9 @@ export function AgentWorkspace({
       }
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
-        // connection banner along with showing the notice.
+        // connection banner along with showing the nudge.
         setError(null);
-        setBusyNotice(SESSION_BUSY_NOTICE);
+        toast(SESSION_BUSY_NOTICE, { id: SESSION_BUSY_TOAST_ID });
       } else {
         setError(messageFromError(err));
       }
@@ -4546,16 +4515,6 @@ export function AgentWorkspace({
     }
   }
 
-  // A success notice about one report reads fine anywhere, but not stale on
-  // a conversation the user opened later.
-  useEffect(() => {
-    setIssueReportNotice(null);
-  }, [selectedHermesSessionId]);
-
-  useEffect(() => {
-    branchedNoticeRef.current = branchedNotice;
-  }, [branchedNotice]);
-
   /** Sends the captured report plus June's diagnostic reply (the last
    * assistant message of the turn) to the June team. The diagnosis fetch is
    * best-effort: a report without June's assessment still beats no report. */
@@ -4586,12 +4545,7 @@ export function AgentWorkspace({
         sessionId,
       });
       clearErrorForSession(sessionId);
-      if (selectedHermesSessionIdRef.current === sessionId) {
-        setIssueReportNotice({
-          message: ISSUE_REPORT_SENT_MESSAGE,
-          sessionId,
-        });
-      }
+      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
@@ -4640,19 +4594,10 @@ export function AgentWorkspace({
       });
       if (sessionId) {
         clearErrorForSession(sessionId);
-        if (selectedHermesSessionIdRef.current === sessionId) {
-          setIssueReportNotice({
-            message: ISSUE_REPORT_SENT_MESSAGE,
-            sessionId,
-          });
-        }
       } else {
         setError(null);
-        setIssueReportNotice({
-          message: ISSUE_REPORT_SENT_MESSAGE,
-          sessionId: null,
-        });
       }
+      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
     } catch (err) {
       setError(`The issue report could not be sent. ${messageFromError(err)}`, {
         sessionId: sessionId ?? null,
@@ -6067,7 +6012,14 @@ export function AgentWorkspace({
     const sourceTitle =
       hermesSessionItems.find((session) => session.id === sessionId || session.id === modeSessionId)
         ?.title ?? "this session";
-    setBranchingNotice({ sourceTitle });
+    // The fork lifecycle rides one self-replacing toast: a loading toast while
+    // the branch is created, upgraded in place to the "Branched from …"
+    // confirmation on success, or dismissed if the branch fails (the failure
+    // surfaces on the error banner instead).
+    const branchToastId = toast.loading(`Creating branch from ${sourceTitle}`, {
+      id: BRANCH_TOAST_ID,
+    });
+    let branched = false;
     const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
@@ -6235,9 +6187,8 @@ export function AgentWorkspace({
       selectedHermesSessionIdRef.current = result.sessionId;
       setSelectedHermesSessionId(result.sessionId);
       setActivePanel("chat");
-      const nextBranchedNotice = { sessionId: result.sessionId, sourceTitle };
-      branchedNoticeRef.current = nextBranchedNotice;
-      setBranchedNotice(nextBranchedNotice);
+      branched = true;
+      toast.success(`Branched from ${sourceTitle}`, { id: branchToastId });
       composerEditorRef.current?.setContent(branchComposerText, null);
       setError(null);
       await loadHermesSessions({ suppressSessionGoneError: true });
@@ -6257,7 +6208,9 @@ export function AgentWorkspace({
     } finally {
       branchingMessageIdRef.current = null;
       setBranchingMessageId(null);
-      setBranchingNotice(null);
+      // A failed or aborted branch never resolves the loading toast; drop it so
+      // the error banner is the only surface. Success already upgraded it.
+      if (!branched) toast.dismiss(branchToastId);
     }
   }
 
@@ -6459,7 +6412,6 @@ export function AgentWorkspace({
     setReportDialogAttachments([]);
     setReportDialogCategory(categoryToOpen);
     setReportDialogOpen(true);
-    setIssueReportNotice(null);
   }
 
   /** Drops appends from imports that were still in flight when the report
@@ -7438,9 +7390,10 @@ export function AgentWorkspace({
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
         <AnimatePresence>
-          {busyNotice || galleryErrors ? (
-            // Same fade as the recording-consent note, so the pill dissolves
-            // when the turn finishes instead of vanishing.
+          {galleryErrors ? (
+            // Dev gallery only: the busy nudge is a toast in real use (see
+            // SESSION_BUSY_TOAST_ID); this renders the old inline pill so
+            // __agentErrors can still screenshot that surface.
             <motion.p
               key="busy-notice"
               className="agent-composer-notice"
@@ -7451,7 +7404,7 @@ export function AgentWorkspace({
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
               <DotSpinner />
-              {busyNotice ?? SESSION_BUSY_NOTICE}
+              {SESSION_BUSY_NOTICE}
             </motion.p>
           ) : visibleIssueReportReview ? (
             <motion.div
@@ -7490,30 +7443,6 @@ export function AgentWorkspace({
                       : "Send report"}
               </button>
             </motion.div>
-          ) : visibleIssueReportNotice ? (
-            <motion.p
-              key="issue-report-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {visibleIssueReportNotice}
-            </motion.p>
-          ) : visibleModelSwitchNotice ? (
-            <motion.p
-              key="model-switch-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {visibleModelSwitchNotice}
-            </motion.p>
           ) : null}
         </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
@@ -8363,15 +8292,6 @@ export function AgentWorkspace({
                   reportBugSubmitting={submittingErrorIssueReport}
                   onDismiss={() => setError(null)}
                 />
-              ) : null}
-              {branchedNotice && branchedNotice.sessionId === selectedHermesSessionId ? (
-                <AgentBranchedBanner
-                  sourceTitle={branchedNotice.sourceTitle}
-                  onDismiss={() => setBranchedNotice(null)}
-                />
-              ) : null}
-              {branchingNotice ? (
-                <AgentBranchingBanner sourceTitle={branchingNotice.sourceTitle} />
               ) : null}
               {detailContent}
               {composer}
@@ -10399,36 +10319,6 @@ function AgentErrorBanner({
           <IconCrossMedium size={14} />
         </button>
       </div>
-    </div>
-  );
-}
-
-// Feature 07: confirms the freshly-opened session was forked from another, so
-// the user understands why they're suddenly in a new (but pre-populated)
-// thread. role="status" (not "alert") — this is reassurance, not an error.
-function AgentBranchedBanner({
-  sourceTitle,
-  onDismiss,
-}: {
-  sourceTitle: string;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="agent-branched-banner" role="status">
-      <IconBranchSimple size={14} aria-hidden />
-      <p>Branched from {sourceTitle}</p>
-      <button type="button" aria-label="Dismiss" onClick={onDismiss}>
-        <IconCrossMedium size={14} />
-      </button>
-    </div>
-  );
-}
-
-function AgentBranchingBanner({ sourceTitle }: { sourceTitle: string }) {
-  return (
-    <div className="agent-branching-banner" role="status" aria-live="polite">
-      <DotSpinner className="agent-branching-banner-spinner" />
-      <p>Creating branch from {sourceTitle}</p>
     </div>
   );
 }
