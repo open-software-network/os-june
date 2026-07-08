@@ -11,14 +11,15 @@ Settings > General. You can turn it off at any time.
 
 When telemetry is enabled, June increments counters on your device for the
 public questions in [`telemetry-questions.md`](./telemetry-questions.md). June
-reports a finalized weekly bucket once per question after the week completes.
-The onboarding completion question is reported immediately because it is a
-one-time yes/no answer. Turning telemetry off deletes the local counters and
-reporting state.
+uploads anonymous event increments as those actions happen. Reports are grouped
+by ISO reporting week, but the report does not include a precise event
+timestamp. Turning telemetry off deletes the local counters and reporting
+state.
 
 The team can see aggregate counts only. Raw device counters stay local, and OS
 Accounts stores only aggregate cells after June API validates and forwards a
-report.
+report. The local counter includes a retry cursor so failed uploads can be
+retried without sending successful increments again.
 
 ## What June never collects through telemetry
 
@@ -33,13 +34,14 @@ June telemetry must never collect:
   identifiers.
 - Free-form text fields, hashes of content, embeddings, excerpts, or other
   derived content.
-- Fine-grained timestamps. Telemetry is grouped by reporting week.
+- Fine-grained timestamps. Reports are grouped by reporting week.
 
 ## What June can count
 
-Telemetry answers only a small public catalog of product questions, such as
-whether onboarding completed or how many dictation sessions happened in a week.
-Each answer is a coarse bucket, not an exact value.
+Telemetry answers only a small public catalog of product questions. The current
+shipping questions count events such as onboarding completion, dictation
+sessions, agent sessions, and meeting recordings. Future state questions may use
+coarse buckets instead of exact values when a bucketed answer is enough.
 
 The current catalog and buckets are documented in
 [`telemetry-questions.md`](./telemetry-questions.md). The app has tests that
@@ -52,7 +54,8 @@ Each report contains one question answer:
 
 - `schema`: telemetry schema version.
 - `question_id`: one public question id.
-- `bucket`: a small integer bucket index.
+- `bucket`: a small integer bucket index. Current event-count questions use the
+  public event bucket.
 - `platform`: macOS, Windows, or Linux.
 - `version_series`: app version series, such as `0.0.x`.
 - `epoch`: ISO reporting week, such as `2026-W28`.

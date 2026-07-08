@@ -11,10 +11,10 @@
 │ feature code ──► p3a::record(Question::…)         │
 │                    │ (no-op unless consented)     │
 │                    ▼                              │
-│   local counters (sqlite, never leaves device)    │
-│                    │ weekly epoch rollover        │
+│   local counter + reported cursor (sqlite)        │
+│                    │ immediate retry-aware flush  │
 │                    ▼                              │
-│   bucketize ──► one POST per question             │
+│   event bucket ──► one POST per event increment   │
 │                 user-authenticated to June API    │
 └────────────────────┬──────────────────────────────┘
                      ▼
@@ -43,7 +43,8 @@ Three properties fall out of this shape:
 - **Nothing durable exists but aggregates.** June API is already a
   stateless proxy; OS Accounts stores only `(question, epoch, platform,
   version, bucket) -> count` in telemetry aggregate tables that are not
-  joined to OS Accounts users, wallets, balances, or subscriptions.
+  joined to OS Accounts users, wallets, balances, or subscriptions. Desktop
+  counters are local retry cursors, not the team-visible data source.
 
 ### Why this trust model and not client-side crypto (STAR/Constellation)
 
@@ -113,9 +114,10 @@ catalog CI test green.
 ### Desktop: local counters
 
 - sqlite migration `src-tauri/migrations/010_p3a_counters.sql`:
-  `p3a_counters (question_id TEXT, epoch TEXT, raw_value INTEGER, PRIMARY
-  KEY (question_id, epoch))` + repository in `src-tauri/src/db/repositories.rs`.
-  Raw values stay local forever; only bucket indexes go on the wire.
+  `p3a_counters (question_id TEXT, epoch TEXT, raw_value INTEGER,
+  reported_value INTEGER, PRIMARY KEY (question_id, epoch))` + repository in
+  `src-tauri/src/db/repositories.rs`. Raw values stay local; the team sees
+  only the aggregate increments that reach OS Accounts.
 - `p3a::record(question)` / `p3a::record_value(question, v)`: cheap, sync
   signature, internally fire-and-forget; **no-op before consent check**.
   Call sites (all Rust, where the events already flow):
@@ -130,13 +132,14 @@ catalog CI test green.
     the id against the enum and accepts **no value argument** — the
     webview can only tick predefined counters, never send content.
 
-### Desktop: scheduler + transport
+### Desktop: transport
 
-- The current implementation reports finalized weekly counters once the app is
-  in a later ISO week. `p3a_counters.reported_bucket` prevents repeat sends for
-  the same question and week. Failures leave the bucket unmarked so the next
-  event retries. `onboarding.completed` is the only immediate report because
-  it is a one-time yes/no answer that cannot migrate to a higher bucket later.
+- The current implementation uploads event-count questions immediately after
+  the local counter increments. `p3a_counters.reported_value` is a retry cursor:
+  if three events happened and two uploads succeeded, the next event or app
+  activity retries only the remaining unsent increment. Reports still include an
+  ISO week so OS Accounts can aggregate by reporting period, but no precise
+  event timestamp is sent.
 - Transport uses `june_api.rs`'s authenticated JSON helper. This protects the
   public June API route from unauthenticated writes while keeping user identity
   out of the telemetry report and out of the OS Accounts aggregate write.
@@ -144,7 +147,7 @@ catalog CI test green.
 
 ```json
 POST {JUNE_API_URL}/v1/p3a/reports
-{ "schema": 1, "questionId": "dictation.sessions", "bucket": 2,
+{ "schema": 1, "questionId": "dictation.sessions", "bucket": 0,
   "platform": "macos", "versionSeries": "0.0.x", "epoch": "2026-W28" }
 ```
 
@@ -184,8 +187,8 @@ config, no breaking `/v1/*` changes — additive only):
 
 **Exit criteria:** end-to-end rstest + wiremock integration tests (house
 style: real Postgres for OS Accounts, wiremock for June API's sink);
-manual verification that a consenting debug build produces exactly one
-request per question per epoch and a non-consenting build produces zero.
+manual verification that a consenting debug build produces one aggregate
+increment per recorded event and a non-consenting build produces zero.
 
 ## Phase 2 — remote question catalog
 

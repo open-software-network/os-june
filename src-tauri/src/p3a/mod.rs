@@ -1,7 +1,7 @@
 pub mod questions;
 
 use crate::{
-    db::repositories::{P3aCounterState, P3aPendingReport, Repositories},
+    db::repositories::{P3aPendingReport, Repositories},
     domain::types::AppError,
     june_api::{submit_p3a_report, P3aReportRequest as JuneP3aReportRequest},
     p3a::questions::{Question, ALL_QUESTIONS},
@@ -134,7 +134,7 @@ pub fn record_question_best_effort(app: AppHandle, question: Question) {
                 question_id = question.id(),
                 error_code = %error.code,
                 error_message = %error.message,
-                "P3A counter record failed"
+                "P3A event record failed"
             );
         }
     });
@@ -152,88 +152,83 @@ pub async fn record_question(app: &AppHandle, question: Question) -> Result<(), 
     }
     let repos = crate::commands::repositories(app).await?;
     let epoch = current_iso_week();
-    let counter = repos
+    repos
         .increment_p3a_counter(question.id(), &epoch, 1)
         .await
         .map_err(|error| AppError::new("p3a_counter_failed", error.to_string()))?;
-    flush_completed_reports(&repos, &epoch).await;
-    if question == Question::OnboardingCompleted {
-        submit_counter_report(&repos, question, &epoch, counter).await;
-    }
+    flush_pending_event_reports(&repos).await;
     Ok(())
 }
 
-async fn flush_completed_reports(repos: &Repositories, current_epoch: &str) {
-    let pending = match repos.unreported_p3a_counters_before(current_epoch).await {
+async fn flush_pending_event_reports(repos: &Repositories) {
+    let pending = match repos.unreported_p3a_counters().await {
         Ok(pending) => pending,
         Err(error) => {
-            tracing::warn!(%error, "P3A completed report query failed");
+            tracing::warn!(%error, "P3A pending event query failed");
             return;
         }
     };
     for report in pending {
-        submit_pending_report(repos, report).await;
+        submit_pending_event_report(repos, report).await;
     }
 }
 
-async fn submit_pending_report(repos: &Repositories, report: P3aPendingReport) {
+async fn submit_pending_event_report(repos: &Repositories, report: P3aPendingReport) {
     let Some(question) = Question::from_id(&report.question_id) else {
         tracing::warn!(question_id = %report.question_id, "Skipping unknown P3A counter");
         return;
     };
-    submit_counter_report(
-        repos,
-        question,
-        &report.epoch,
-        P3aCounterState {
-            raw_value: report.raw_value,
-            reported_bucket: report.reported_bucket,
-        },
-    )
-    .await;
-}
 
-async fn submit_counter_report(
-    repos: &Repositories,
-    question: Question,
-    epoch: &str,
-    counter: P3aCounterState,
-) {
-    let bucket = question.bucket(counter.raw_value);
-    if counter.reported_bucket == Some(bucket) {
+    let pending_events = report.raw_value.saturating_sub(report.reported_value);
+    if pending_events == 0 {
         return;
     }
 
-    if let Err(error) = submit_p3a_report(JuneP3aReportRequest {
+    let mut reported_value = report.reported_value;
+    let bucket = question.event_bucket();
+    for _ in 0..pending_events {
+        if let Err(error) = submit_event_report(question, &report.epoch, bucket).await {
+            tracing::warn!(
+                question_id = question.id(),
+                epoch = %report.epoch,
+                bucket,
+                error_code = %error.code,
+                error_message = %error.message,
+                "P3A event upload failed"
+            );
+            break;
+        }
+        reported_value = reported_value.saturating_add(1);
+    }
+
+    if reported_value == report.reported_value {
+        return;
+    }
+
+    if let Err(error) = repos
+        .mark_p3a_events_reported(question.id(), &report.epoch, reported_value)
+        .await
+    {
+        tracing::warn!(
+            question_id = question.id(),
+            epoch = %report.epoch,
+            reported_value,
+            %error,
+            "P3A reported event cursor update failed"
+        );
+    }
+}
+
+async fn submit_event_report(question: Question, epoch: &str, bucket: u8) -> Result<(), AppError> {
+    submit_p3a_report(JuneP3aReportRequest {
         schema: P3A_SCHEMA_VERSION,
         question_id: question.id().to_string(),
-        epoch: epoch.to_string(),
+        epoch: epoch.to_owned(),
         platform: current_platform().to_string(),
         version_series: current_version_series(),
         bucket,
     })
     .await
-    {
-        tracing::warn!(
-            question_id = question.id(),
-            %epoch,
-            bucket,
-            error_code = %error.code,
-            error_message = %error.message,
-            "P3A report upload failed"
-        );
-        return;
-    }
-
-    if let Err(error) = repos.mark_p3a_reported(question.id(), epoch, bucket).await {
-        tracing::warn!(
-            question_id = question.id(),
-            %epoch,
-            bucket,
-            %error,
-            "P3A report mark failed"
-        );
-    }
 }
 
 async fn clear_local_counters(app: &AppHandle) -> Result<(), AppError> {

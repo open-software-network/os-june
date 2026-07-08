@@ -484,7 +484,7 @@ mod tests {
                 "epoch": "2026-W28",
                 "platform": "macos",
                 "version_series": "0.0.x",
-                "bucket": 1,
+                "bucket": 0,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "success": true,
@@ -502,7 +502,7 @@ mod tests {
             epoch: "2026-W28".to_string(),
             platform: "macos".to_string(),
             version_series: "0.0.x".to_string(),
-            bucket: 1,
+            bucket: 0,
         })
         .await
         .expect("P3A submit succeeds");

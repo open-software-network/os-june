@@ -32,25 +32,26 @@ and an event firehose — would torch the product's reason to exist. A single
 "transcript_generated" event with a user ID attached is a betrayal of the
 README's privacy narrative, and our users are exactly the people who check.
 
-The bar: learn *aggregate* product truths ("what share of weekly-active
-installs used dictation at least once") while making it *structurally
-impossible* — not policy-impossible, structurally impossible — for prompts,
-responses, transcripts, notes, or any user-identifying data to leave the
-device through this channel.
+The bar: learn *aggregate* product truths ("how often do consenting users
+complete dictation sessions") while making it *structurally impossible* —
+not policy-impossible, structurally impossible — for prompts, responses,
+transcripts, notes, or any user-identifying data to leave the device
+through this channel.
 
 ## Solution
 
 Build **June P3A**: an opt-in, question-based telemetry system modeled on
 Brave's P3A.
 
-1. **Questions, not events.** June never streams events. The product team
-   defines a small, fixed, public catalog of questions ("How many days this
-   week was dictation used?"). The app answers each question at most once
-   per reporting period.
-2. **Buckets, not numbers.** Every answer is a coarse bucket index
-   ("0", "1-2", "3-5", "6+"), never an exact count, never a string. The
-   wire format has no free-text field, so user content *cannot* be encoded
-   even by a bug.
+1. **Questions, not arbitrary event streams.** The product team defines a
+   small, fixed, public catalog of questions. Current action questions are
+   anonymous event increments ("a dictation session completed") sent as the
+   action happens. Future state questions can still use coarse buckets when
+   a bucketed answer is enough.
+2. **Public buckets, not payloads.** Every answer is a public bucket index,
+   never an exact private value and never a string. Current event-count
+   questions use one public event bucket. The wire format has no free-text
+   field, so user content *cannot* be encoded even by a bug.
 3. **Anonymous by construction.** Reports carry no user ID, device ID, or
    install ID. The desktop request may use the existing OS Accounts user
    token to reach June API, but that token is not part of the report schema,
@@ -81,7 +82,7 @@ Under no circumstances, in any version of this system, will June P3A carry:
   cookies. User auth is used only transiently at the June API boundary and
   is stripped before forwarding to OS Accounts telemetry storage.
 - Free-form strings of any kind. The schema is enums and small integers.
-- Fine-grained timestamps. Time resolution is the reporting week.
+- Fine-grained timestamps. Reports are grouped by reporting week.
 
 This list is a product commitment, not an engineering detail. Any proposal
 to weaken it requires a new PRD, not a code review.
@@ -117,8 +118,8 @@ to weaken it requires a new PRD, not a code review.
 
 ### Product team — learning
 
-5. As a **PM**, I want weekly counts of installs per bucket for each
-   catalog question (split only by platform and app version series), so
+5. As a **PM**, I want aggregate counts per catalog question and bucket
+   (split only by reporting week, platform, and app version series), so
    that I can see feature adoption and platform mix.
 6. As a **PM**, I want to compare a question's distribution before and
    after a release, so that I can tell whether a change moved usage.
@@ -139,20 +140,20 @@ to weaken it requires a new PRD, not a code review.
 
 ## Initial question catalog (v1)
 
-Answered per ISO week unless noted. Metadata attached to every report:
+Grouped by ISO reporting week. Metadata attached to every report:
 platform (`macos` / `windows` / `linux`) and app version series (e.g.
 `0.0.x` minor series only). Nothing else.
 
 | ID | Question | Buckets | Decision it informs |
 |---|---|---|---|
 | `general.active-days` | Days June was opened this week | 0 / 1 / 2-3 / 4-5 / 6-7 | Engagement baseline for all other ratios |
-| `notes.meetings-recorded` | Meeting recordings completed this week | 0 / 1-2 / 3-5 / 6-10 / 11+ | Investment in meetings pipeline |
+| `notes.meetings-recorded` | Meeting recording completed | event | Investment in meetings pipeline |
 | `notes.audio-source` | Most-used audio source this week | none / mic only / mic + system | System-audio maintenance cost (Swift helpers) |
-| `dictation.sessions` | Dictation sessions this week | 0 / 1-5 / 6-20 / 21-50 / 51+ | Dictation as flagship vs. niche |
-| `agent.sessions` | Agent sessions started this week | 0 / 1-2 / 3-9 / 10+ | Hermes runtime investment |
+| `dictation.sessions` | Dictation session completed | event | Dictation as flagship vs. niche |
+| `agent.sessions` | Agent session started | event | Hermes runtime investment |
 | `agent.privacy-guard` | Agent privacy guard mode (sampled weekly) | off / structured | Rampart default-on decision |
 | `models.privacy-mode` | Most-selected model privacy mode this week | e2ee / private / anonymous | Model catalog and TEE roadmap |
-| `onboarding.completed` | Onboarding completed (asked once, first 31 days only) | yes / no | Onboarding funnel health |
+| `onboarding.completed` | Onboarding completed | completed | Onboarding funnel health |
 
 Explicitly rejected for v1: anything billing-related (balance, top-ups —
 too sensitive next to OS Accounts identity), country/region (population too
@@ -208,10 +209,10 @@ only if retention analysis becomes critical and k >= 50 holds).
 
 ## Rollout
 
-1. **Release N**: consent UI + local recording only, sending disabled by a
-   server-side flag. Publish `telemetry-questions.md` and launch note.
-2. **Release N+1**: enable sending for consenting users; dashboards
-   internal-only until k >= 50 holds across core cells.
+1. **Release N**: consent UI + immediate anonymous event increments for
+   consenting users. Publish `telemetry-questions.md` and launch note.
+2. **Release N+1**: dashboards internal-only until k >= 50 holds across core
+   cells.
 3. **Quarterly**: publish selected aggregates back to the community
    (Brave publishes its question list; we can go one better and share
    the answers).

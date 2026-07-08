@@ -30,8 +30,8 @@ pub const ALL_QUESTIONS: &[QuestionDef] = &[
     QuestionDef {
         question: Question::NotesMeetingsRecorded,
         id: "notes.meetings-recorded",
-        prompt: "Meeting recordings completed this week",
-        buckets: &["0", "1-2", "3-5", "6-10", "11+"],
+        prompt: "Meeting recording completed",
+        buckets: &["event"],
         decision: "Investment in meetings pipeline",
     },
     QuestionDef {
@@ -44,15 +44,15 @@ pub const ALL_QUESTIONS: &[QuestionDef] = &[
     QuestionDef {
         question: Question::DictationSessions,
         id: "dictation.sessions",
-        prompt: "Dictation sessions this week",
-        buckets: &["0", "1-5", "6-20", "21-50", "51+"],
+        prompt: "Dictation session completed",
+        buckets: &["event"],
         decision: "Dictation as flagship vs. niche",
     },
     QuestionDef {
         question: Question::AgentSessions,
         id: "agent.sessions",
-        prompt: "Agent sessions started this week",
-        buckets: &["0", "1-2", "3-9", "10+"],
+        prompt: "Agent session started",
+        buckets: &["event"],
         decision: "Hermes runtime investment",
     },
     QuestionDef {
@@ -73,7 +73,7 @@ pub const ALL_QUESTIONS: &[QuestionDef] = &[
         question: Question::OnboardingCompleted,
         id: "onboarding.completed",
         prompt: "Onboarding completed",
-        buckets: &["yes", "no"],
+        buckets: &["completed"],
         decision: "Onboarding funnel health",
     },
 ];
@@ -106,31 +106,14 @@ impl Question {
                 4..=5 => 3,
                 _ => 4,
             },
-            Self::NotesMeetingsRecorded => match raw {
-                0 => 0,
-                1..=2 => 1,
-                3..=5 => 2,
-                6..=10 => 3,
-                _ => 4,
-            },
+            Self::NotesMeetingsRecorded => 0,
             Self::NotesAudioSource => match raw {
                 0 => 0,
                 1 => 1,
                 _ => 2,
             },
-            Self::DictationSessions => match raw {
-                0 => 0,
-                1..=5 => 1,
-                6..=20 => 2,
-                21..=50 => 3,
-                _ => 4,
-            },
-            Self::AgentSessions => match raw {
-                0 => 0,
-                1..=2 => 1,
-                3..=9 => 2,
-                _ => 3,
-            },
+            Self::DictationSessions => 0,
+            Self::AgentSessions => 0,
             Self::AgentPrivacyGuard => {
                 if raw == 0 {
                     0
@@ -139,14 +122,12 @@ impl Question {
                 }
             }
             Self::ModelsPrivacyMode => raw.min(2) as u8,
-            Self::OnboardingCompleted => {
-                if raw == 0 {
-                    1
-                } else {
-                    0
-                }
-            }
+            Self::OnboardingCompleted => 0,
         }
+    }
+
+    pub fn event_bucket(self) -> u8 {
+        self.bucket(1)
     }
 }
 
@@ -159,11 +140,19 @@ mod tests {
         assert_eq!(Question::GeneralActiveDays.bucket(0), 0);
         assert_eq!(Question::GeneralActiveDays.bucket(3), 2);
         assert_eq!(Question::GeneralActiveDays.bucket(7), 4);
-        assert_eq!(Question::DictationSessions.bucket(5), 1);
-        assert_eq!(Question::DictationSessions.bucket(21), 3);
-        assert_eq!(Question::AgentSessions.bucket(10), 3);
-        assert_eq!(Question::OnboardingCompleted.bucket(0), 1);
+        assert_eq!(Question::DictationSessions.bucket(5), 0);
+        assert_eq!(Question::DictationSessions.bucket(21), 0);
+        assert_eq!(Question::AgentSessions.bucket(10), 0);
+        assert_eq!(Question::OnboardingCompleted.bucket(0), 0);
         assert_eq!(Question::OnboardingCompleted.bucket(1), 0);
+    }
+
+    #[test]
+    fn event_questions_use_single_event_bucket() {
+        assert_eq!(Question::NotesMeetingsRecorded.event_bucket(), 0);
+        assert_eq!(Question::DictationSessions.event_bucket(), 0);
+        assert_eq!(Question::AgentSessions.event_bucket(), 0);
+        assert_eq!(Question::OnboardingCompleted.event_bucket(), 0);
     }
 
     #[test]

@@ -98,7 +98,7 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
                 "epoch": "2026-W28",
                 "platform": "macos",
                 "versionSeries": "0.0.x",
-                "bucket": 1,
+                "bucket": 0,
             }),
             Some(AUTHORIZATION),
         )?)
@@ -120,7 +120,7 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
             epoch: "2026-W28".to_string(),
             platform: "macos".to_string(),
             version_series: "0.0.x".to_string(),
-            bucket: 1,
+            bucket: 0,
         }]
     );
     Ok(())
@@ -136,7 +136,7 @@ async fn integration_p3a_report_requires_user_auth() -> Result<(), Box<dyn Error
             "epoch": "2026-W28",
             "platform": "macos",
             "versionSeries": "0.0.x",
-            "bucket": 1,
+            "bucket": 0,
         }),
         None,
     )?)

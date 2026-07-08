@@ -36,7 +36,7 @@ const P3A_QUESTIONS: &[P3aQuestionDef] = &[
     },
     P3aQuestionDef {
         id: "notes.meetings-recorded",
-        bucket_count: 5,
+        bucket_count: 1,
     },
     P3aQuestionDef {
         id: "notes.audio-source",
@@ -44,11 +44,11 @@ const P3A_QUESTIONS: &[P3aQuestionDef] = &[
     },
     P3aQuestionDef {
         id: "dictation.sessions",
-        bucket_count: 5,
+        bucket_count: 1,
     },
     P3aQuestionDef {
         id: "agent.sessions",
-        bucket_count: 4,
+        bucket_count: 1,
     },
     P3aQuestionDef {
         id: "agent.privacy-guard",
@@ -60,7 +60,7 @@ const P3A_QUESTIONS: &[P3aQuestionDef] = &[
     },
     P3aQuestionDef {
         id: "onboarding.completed",
-        bucket_count: 2,
+        bucket_count: 1,
     },
 ];
 
@@ -181,7 +181,7 @@ mod tests {
                 epoch: "2026-W28".to_string(),
                 platform: "macos".to_string(),
                 version_series: "0.0.x".to_string(),
-                bucket: 1,
+                bucket: 0,
             })
             .await
             .expect("report accepted");
@@ -194,7 +194,7 @@ mod tests {
                 epoch: "2026-W28".to_string(),
                 platform: "macos".to_string(),
                 version_series: "0.0.x".to_string(),
-                bucket: 1,
+                bucket: 0,
             }]
         );
     }
@@ -212,7 +212,7 @@ mod tests {
                 epoch: "2026-W28".to_string(),
                 platform: "macos".to_string(),
                 version_series: "0.0.x".to_string(),
-                bucket: 2,
+                bucket: 1,
             })
             .await;
 
