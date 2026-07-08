@@ -1,9 +1,10 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ProfileBuilderController,
   buildCreatePayload,
   buildCreatePlan,
+  buildProfileModelOverrides,
   canAdvance,
   canCreateProfile,
   emptyProfileForm,
@@ -21,6 +22,22 @@ import {
 import { ProfileBuilderView } from "../components/settings/ProfileBuilderSection";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
+const mocks = vi.hoisted(() => ({
+  setProfileModelOverrides: vi.fn(),
+  deleteProfileModelOverrides: vi.fn(),
+  providerModelSettings: vi.fn(),
+  listVeniceModels: vi.fn(),
+  hermesBridgeStatus: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", () => ({
+  setProfileModelOverrides: mocks.setProfileModelOverrides,
+  deleteProfileModelOverrides: mocks.deleteProfileModelOverrides,
+  providerModelSettings: mocks.providerModelSettings,
+  listVeniceModels: mocks.listVeniceModels,
+  hermesBridgeStatus: mocks.hermesBridgeStatus,
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -37,6 +54,24 @@ const NO_TOOL_MODEL: ProfileBuilderModel = {
   id: "e2ee-model",
   name: "E2EE Model",
   capabilities: ["e2ee"],
+};
+
+const VOICE_MODEL = {
+  provider: "venice",
+  id: "voice-fast",
+  name: "Voice Fast",
+  modelType: "transcription",
+  traits: [],
+  capabilities: [],
+};
+
+const IMAGE_MODEL = {
+  provider: "venice",
+  id: "image-private",
+  name: "Image Private",
+  modelType: "image",
+  traits: [],
+  capabilities: [],
 };
 
 function ctx(overrides: Partial<ProfileBuilderContext> = {}): ProfileBuilderContext {
@@ -217,6 +252,42 @@ describe("profile builder — create plan + payload", () => {
     expect(payload).not.toHaveProperty("soul");
     expect(payload).not.toHaveProperty("content");
   });
+
+  it("does not build profile model overrides for default slots", () => {
+    expect(buildProfileModelOverrides(validForm())).toBeNull();
+  });
+
+  it("builds profile model overrides only for explicit voice and image picks", () => {
+    expect(
+      buildProfileModelOverrides(
+        validForm({
+          voiceProvider: "venice",
+          voiceModel: "voice-fast",
+          imageModel: "image-private",
+        }),
+      ),
+    ).toEqual({
+      transcriptionProvider: "venice",
+      transcriptionModel: "voice-fast",
+      imageModel: "image-private",
+    });
+  });
+
+  it("adds voice and image override rows to the review plan", () => {
+    const plan = buildCreatePlan(
+      validForm({
+        voiceProvider: "venice",
+        voiceModel: "voice-fast",
+        imageModel: "image-private",
+      }),
+      {
+        transcription: [VOICE_MODEL],
+        image: [IMAGE_MODEL],
+      },
+    );
+    expect(plan.some((change) => change.detail === "Voice model: Voice Fast.")).toBe(true);
+    expect(plan.some((change) => change.detail === "Image model: Image Private.")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -224,6 +295,10 @@ describe("profile builder — create plan + payload", () => {
 // ---------------------------------------------------------------------------
 
 describe("profile builder — create success/failure + rollback", () => {
+  beforeEach(() => {
+    mocks.setProfileModelOverrides.mockResolvedValue(undefined);
+  });
+
   it("creates a profile, writes its SOUL, and starts a test session", async () => {
     const engine = makeBuilderEngine();
     const controller = new ProfileBuilderController(engine);
@@ -325,6 +400,51 @@ describe("profile builder — create success/failure + rollback", () => {
 
     controller.dispose();
   });
+
+  it("writes explicit model overrides after the profile is created", async () => {
+    const engine = makeBuilderEngine();
+    const controller = new ProfileBuilderController(engine);
+    await controller.load();
+    await flush();
+
+    controller.update(
+      validForm({
+        voiceProvider: "venice",
+        voiceModel: "voice-fast",
+        imageModel: "image-private",
+      }),
+    );
+    await controller.createProfile();
+
+    expect(mocks.setProfileModelOverrides).toHaveBeenCalledWith("research-assistant", {
+      transcriptionProvider: "venice",
+      transcriptionModel: "voice-fast",
+      imageModel: "image-private",
+    });
+
+    controller.dispose();
+  });
+
+  it("keeps the profile and reports partial success when override save fails", async () => {
+    mocks.setProfileModelOverrides.mockRejectedValueOnce(new Error("disk full"));
+    const engine = makeBuilderEngine();
+    const controller = new ProfileBuilderController(engine);
+    await controller.load();
+    await flush();
+
+    controller.update(validForm({ imageModel: "image-private" }));
+    await controller.createProfile();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.create.phase).toBe("created");
+    expect(snapshot.create.createdSlug).toBe("research-assistant");
+    expect(snapshot.create.message).toMatch(/model overrides were not saved/i);
+
+    const profiles = await engine.client.profiles.list();
+    expect(profiles.some((p) => p.name === "research-assistant")).toBe(true);
+
+    controller.dispose();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -341,6 +461,13 @@ function stubState(overrides: Partial<ProfileBuilderState> = {}): ProfileBuilder
     form: validForm({ model: "e2ee-model" }),
     existingProfiles: [],
     models: [TOOL_MODEL, NO_TOOL_MODEL],
+    voiceModels: [VOICE_MODEL],
+    imageModels: [IMAGE_MODEL],
+    effectiveModelSettings: {
+      transcriptionProvider: "venice",
+      transcriptionModel: "voice-fast",
+      imageModel: "image-private",
+    },
     skills: [],
     mcpServers: [],
     mcpCatalog: [],

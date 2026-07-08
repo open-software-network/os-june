@@ -2,13 +2,22 @@ import { IconArrowLeft } from "central-icons/IconArrowLeft";
 import { IconArrowRight } from "central-icons/IconArrowRight";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
+import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconRobot2 } from "central-icons/IconRobot2";
 import { IconShield } from "central-icons/IconShield";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import {
   PROFILE_BUILDER_STEPS,
   STEP_META,
@@ -32,11 +41,23 @@ import {
   type ProfileBuilderStep,
   type ProfileManagerState,
 } from "../../lib/hermes-admin";
+import {
+  deleteProfileModelOverrides,
+  type ProviderModelMode,
+  type VeniceModelDto,
+} from "../../lib/tauri";
 import { ProviderLogo } from "./ProviderLogo";
+import { selectedModel } from "./ModelPickerDialog";
+import {
+  ModelPickerCardContent,
+  ModelPickerPopover,
+  type ModelPickerFlyout,
+} from "./ModelPickerPopover";
 import { AdminNotifications } from "./AdminNotifications";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
+import { HoverTip } from "../ui/HoverTip";
 import { SettingsPageHeader } from "./AppSettings";
 
 type ProfileBuilderSectionProps = {
@@ -113,6 +134,12 @@ export function ProfilesSurfaceView({
 function hasCreatedFailureMessage(create: ProfileBuilderState["create"]): boolean {
   if (create.phase !== "created" || !create.message || !create.createdSlug) return false;
   return create.message !== `Created "${create.createdSlug}".`;
+}
+
+function messageFromError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "Unknown error.";
 }
 
 export function ProfileBuilderView({
@@ -271,6 +298,7 @@ function ProfilesListView({
 }) {
   const [toDelete, setToDelete] = useState<string | undefined>();
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
   const isLoadingFirst = state.status === "loading";
@@ -336,10 +364,10 @@ function ProfilesListView({
         </button>
       </div>
       <div className="settings-card profiles-card">
-        {state.error && hasProfiles ? (
+        {(state.error || cleanupError) && hasProfiles ? (
           <p className="settings-row-error profiles-inline-error">
             <IconExclamationCircle size={14} ariaHidden />
-            {state.error}
+            {state.error ?? cleanupError}
           </p>
         ) : null}
 
@@ -402,6 +430,12 @@ function ProfilesListView({
             setDeleteError(state.error ?? "Could not delete the profile. Refresh and try again.");
             throw new Error("Profile removal failed.");
           }
+          setCleanupError(null);
+          deleteProfileModelOverrides(toDelete).catch((error: unknown) => {
+            setCleanupError(
+              `Deleted "${toDelete}", but its model override cleanup failed: ${messageFromError(error)}`,
+            );
+          });
         }}
       />
     </ProfilesShell>
@@ -768,59 +802,140 @@ function IdentityStep({ state }: { state: ProfileBuilderState }) {
 function ModelStep({ state }: { state: ProfileBuilderState }) {
   const { form, models } = state;
   const support = selectedModelToolSupport(form, models);
+  const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
+  const [modelPickerFlyout, setModelPickerFlyout] = useState<ModelPickerFlyout>(null);
+  const [modelSearch, setModelSearch] = useState("");
+  const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelPickerPopoverRef = useRef<HTMLDivElement>(null);
+  const modelPickerSearchRef = useRef<HTMLInputElement>(null);
+  const textOptions = useMemo(() => models.map(profileModelToVeniceModel), [models]);
+
+  const closeModelPicker = useCallback(() => {
+    setPickerMode(undefined);
+    setModelPickerFlyout(null);
+    setModelSearch("");
+  }, []);
+
+  function openModelPicker(mode: ProviderModelMode) {
+    setPickerMode(mode);
+    setModelPickerFlyout(null);
+    setModelSearch("");
+  }
+
+  function modelOptionsForMode(mode: ProviderModelMode): VeniceModelDto[] {
+    if (mode === "transcription") return [...state.voiceModels];
+    if (mode === "image") return [...state.imageModels];
+    return textOptions;
+  }
+
+  function selectModelFromPicker(mode: ProviderModelMode, modelId: string) {
+    const picked = modelOptionsForMode(mode).find((model) => model.id === modelId);
+    if (mode === "generation") {
+      state.update({ provider: picked?.provider ?? "venice", model: modelId });
+    } else if (mode === "transcription") {
+      state.update({ voiceProvider: picked?.provider ?? "venice", voiceModel: modelId });
+    } else {
+      state.update({ imageModel: modelId });
+    }
+    closeModelPicker();
+  }
+
+  useEffect(() => {
+    if (!pickerMode) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (modelPickerPopoverRef.current?.contains(target)) return;
+      if (modelPickerTriggerRef.current?.contains(target)) return;
+      closeModelPicker();
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (modelPickerFlyout?.kind === "all") {
+        setModelPickerFlyout(null);
+        setModelSearch("");
+      } else {
+        closeModelPicker();
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [pickerMode, modelPickerFlyout, closeModelPicker]);
+
   return (
-    <div className="profile-builder-fields">
+    <div className="profile-builder-fields profile-builder-model-slots">
       {models.length === 0 ? (
         <p className="profile-builder-field-meta">
           No models were reported. Check your provider key in the Models tab.
         </p>
       ) : (
-        <ul className="profile-builder-model-list" aria-label="Generation models">
-          {models.map((model) => {
-            const selected = model.id === form.model && model.provider === form.provider;
-            const supportsTools = model.capabilities.some((capability) => {
-              const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
-              return normalized.includes("functioncalling") || normalized.includes("toolcalling");
-            });
-            return (
-              <li key={`${model.provider}:${model.id}`}>
-                <button
-                  type="button"
-                  className="profile-builder-model-row"
-                  data-selected={selected || undefined}
-                  aria-pressed={selected}
-                  onClick={() => state.update({ provider: model.provider, model: model.id })}
-                >
-                  <ProviderLogo
-                    provider={model.provider}
-                    id={model.id}
-                    name={model.name}
-                    size={18}
-                  />
-                  <span className="profile-builder-model-name">{model.name}</span>
-                  {supportsTools ? (
-                    <span
-                      className="profile-builder-model-tag"
-                      data-tone="info"
-                      title="Supports tool calling"
-                    >
-                      Tools
-                    </span>
-                  ) : (
-                    <span
-                      className="profile-builder-model-tag"
-                      data-tone="destructive"
-                      title="No tool calling"
-                    >
-                      No tools
-                    </span>
-                  )}
-                  {selected ? <IconCheckmark2Small size={15} ariaHidden /> : null}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          <ProfileModelRow
+            mode="generation"
+            title="Text"
+            description="The agent model for this profile. It must support tool calling."
+            value={form.model}
+            options={textOptions}
+            open={pickerMode === "generation"}
+            flyout={modelPickerFlyout}
+            search={modelSearch}
+            triggerRef={modelPickerTriggerRef}
+            popoverRef={modelPickerPopoverRef}
+            searchRef={modelPickerSearchRef}
+            onToggle={() =>
+              pickerMode === "generation" ? closeModelPicker() : openModelPicker("generation")
+            }
+            onFlyoutChange={setModelPickerFlyout}
+            onSearchChange={setModelSearch}
+            onSelect={(modelId) => selectModelFromPicker("generation", modelId)}
+          />
+          <ProfileModelRow
+            mode="transcription"
+            title="Voice"
+            description="Speech-to-text for this profile. Leave it on June's default unless this profile needs its own choice."
+            value={form.voiceModel || state.effectiveModelSettings?.transcriptionModel || ""}
+            options={state.voiceModels}
+            open={pickerMode === "transcription"}
+            flyout={modelPickerFlyout}
+            search={modelSearch}
+            triggerRef={modelPickerTriggerRef}
+            popoverRef={modelPickerPopoverRef}
+            searchRef={modelPickerSearchRef}
+            defaulted={!form.voiceModel}
+            onReset={() => state.update({ voiceProvider: "", voiceModel: "" })}
+            onToggle={() =>
+              pickerMode === "transcription" ? closeModelPicker() : openModelPicker("transcription")
+            }
+            onFlyoutChange={setModelPickerFlyout}
+            onSearchChange={setModelSearch}
+            onSelect={(modelId) => selectModelFromPicker("transcription", modelId)}
+          />
+          <ProfileModelRow
+            mode="image"
+            title="Image"
+            description="Image generation for this profile. Leave it on June's default unless this profile needs its own choice."
+            value={form.imageModel || state.effectiveModelSettings?.imageModel || ""}
+            options={state.imageModels}
+            open={pickerMode === "image"}
+            flyout={modelPickerFlyout}
+            search={modelSearch}
+            triggerRef={modelPickerTriggerRef}
+            popoverRef={modelPickerPopoverRef}
+            searchRef={modelPickerSearchRef}
+            defaulted={!form.imageModel}
+            onReset={() => state.update({ imageModel: "" })}
+            onToggle={() =>
+              pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
+            }
+            onFlyoutChange={setModelPickerFlyout}
+            onSearchChange={setModelSearch}
+            onSelect={(modelId) => selectModelFromPicker("image", modelId)}
+          />
+        </>
       )}
       {support && !support.supportsTools ? (
         <p className="profile-builder-field-meta">
@@ -830,6 +945,129 @@ function ModelStep({ state }: { state: ProfileBuilderState }) {
       ) : null}
     </div>
   );
+}
+
+function ProfileModelRow({
+  mode,
+  title,
+  description,
+  value,
+  options,
+  open,
+  flyout,
+  search,
+  triggerRef,
+  popoverRef,
+  searchRef,
+  defaulted,
+  onReset,
+  onToggle,
+  onFlyoutChange,
+  onSearchChange,
+  onSelect,
+}: {
+  mode: ProviderModelMode;
+  title: string;
+  description: string;
+  value: string;
+  options: readonly VeniceModelDto[];
+  open: boolean;
+  flyout: ModelPickerFlyout;
+  search: string;
+  triggerRef: RefObject<HTMLButtonElement>;
+  popoverRef: RefObject<HTMLDivElement>;
+  searchRef: RefObject<HTMLInputElement>;
+  defaulted?: boolean;
+  onReset?: () => void;
+  onToggle: () => void;
+  onFlyoutChange: (flyout: ModelPickerFlyout) => void;
+  onSearchChange: (value: string) => void;
+  onSelect: (modelId: string) => void;
+}) {
+  const model = selectedModel([...options], value);
+  const modelLabel = `${title.toLowerCase()} model`;
+  return (
+    <div className="settings-row settings-model-row">
+      <div className="settings-row-info">
+        <h3 className="settings-row-title">{title}</h3>
+        <p className="settings-row-description">{description}</p>
+        {defaulted ? (
+          <p className="settings-row-description settings-row-substatus">June's default</p>
+        ) : null}
+      </div>
+      <div className="settings-row-control settings-model-control profile-builder-model-control">
+        <HoverTip
+          tip={<ModelSummaryHoverDetails model={model} />}
+          className="model-summary-tip-anchor"
+          width={280}
+          delay={280}
+          suppressed={open}
+        >
+          <button
+            ref={open ? triggerRef : undefined}
+            type="button"
+            className="model-summary-button"
+            onClick={onToggle}
+            aria-label={`Change ${modelLabel}`}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+          >
+            <span className="model-summary-logo" aria-hidden>
+              <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
+            </span>
+            <span className="model-summary-name">{model.name || "Choose model"}</span>
+            <IconChevronDownSmall size={14} aria-hidden />
+          </button>
+        </HoverTip>
+        {!defaulted && onReset ? (
+          <button
+            type="button"
+            className="profile-builder-model-reset"
+            onClick={onReset}
+            aria-label={`Reset ${modelLabel} to June's default`}
+          >
+            Reset
+          </button>
+        ) : null}
+        {open ? (
+          <ModelPickerPopover
+            mode={mode}
+            flyout={flyout}
+            model={model}
+            options={[...options]}
+            search={search}
+            popoverRef={popoverRef}
+            searchRef={searchRef}
+            className="settings-model-popover"
+            title={modelLabel[0].toUpperCase() + modelLabel.slice(1)}
+            ariaLabel={`Choose ${modelLabel}`}
+            onFlyoutChange={onFlyoutChange}
+            onSearchChange={onSearchChange}
+            onSelect={onSelect}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ModelSummaryHoverDetails({ model }: { model: VeniceModelDto }) {
+  return (
+    <span className="agent-composer-model-detail model-summary-hovercard">
+      <ModelPickerCardContent model={model} withDescription />
+    </span>
+  );
+}
+
+function profileModelToVeniceModel(model: ProfileBuilderState["models"][number]): VeniceModelDto {
+  return {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    modelType: "generation",
+    traits: [],
+    capabilities: [...model.capabilities],
+  };
 }
 
 function ToolsetsStep({ state }: { state: ProfileBuilderState }) {
@@ -892,7 +1130,7 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
       </label>
 
       {form.keepBundledSkills && bundled.length > 0 ? (
-        <div className="profile-builder-skill-list" aria-label="Bundled skills">
+        <div className="profile-builder-skill-list" role="group" aria-label="Bundled skills">
           {bundled.map((skill) => {
             const keptAll = form.keepSkills.length === 0;
             const checked = keptAll || form.keepSkills.includes(skill.name);
@@ -936,7 +1174,7 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
           No MCP servers configured yet. Add servers from the MCP servers tab.
         </p>
       ) : (
-        <div className="profile-builder-mcp-list" aria-label="MCP servers">
+        <div className="profile-builder-mcp-list" role="group" aria-label="MCP servers">
           {state.mcpServers.map((server) => {
             const checked = form.mcpServers.includes(server.name);
             return (
@@ -961,7 +1199,7 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
       {installable.length > 0 ? (
         <>
           <span className="profile-builder-field-label">Install from catalog</span>
-          <div className="profile-builder-mcp-list" aria-label="MCP catalog">
+          <div className="profile-builder-mcp-list" role="group" aria-label="MCP catalog">
             {installable.map((entry) => {
               const checked = form.mcpCatalogInstalls.includes(entry.installName);
               return (
@@ -988,16 +1226,24 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
 }
 
 function ReviewStep({ state }: { state: ProfileBuilderState }) {
-  const plan = useMemo(() => buildCreatePlan(state.form), [state.form]);
+  const plan = useMemo(
+    () =>
+      buildCreatePlan(state.form, {
+        generation: state.models,
+        transcription: state.voiceModels,
+        image: state.imageModels,
+      }),
+    [state.form, state.models, state.voiceModels, state.imageModels],
+  );
   return (
     <div className="profile-builder-review">
       <p className="profile-builder-field-meta">
         Creating this profile makes these changes. Nothing runs until you start a session under it.
       </p>
       <ul className="profile-builder-plan" aria-label="Planned changes">
-        {plan.map((change, index) => (
+        {plan.map((change) => (
           <li
-            key={`${change.target}-${index}`}
+            key={`${change.target}-${change.detail}`}
             className="profile-builder-plan-row"
             data-risk={change.risk}
           >
