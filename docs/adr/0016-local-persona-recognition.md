@@ -9,8 +9,8 @@ architecture and the turn model it established stand unchanged.
 
 ## Status
 
-proposed — design accepted (see [docs/personas-design.md](../personas-design.md)),
-implementation not started
+accepted — Phase 1 spike harness implemented; real-recording quality gate
+pending; production implementation not started
 
 ## Context
 

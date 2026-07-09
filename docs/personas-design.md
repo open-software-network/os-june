@@ -133,8 +133,8 @@ After note generation, a June agent pass updates the dossier of each participant
 ### 5. Preparation
 
 - **Triggers:** manual ("prep me for my 1:1 with James") and meeting-app
-  detection. Detection guesses attendees from recurring patterns (same app,
-  same time slot, same participants as last time) plus the roster. Calendar
+  detection. Detection guesses expected people from recurring patterns (same
+  app, same time slot, same participants as last time) plus the roster. Calendar
   is a later upgrade, adopted only after briefs prove they change behavior.
 - **The brief is a note June's agent writes** — reviewable, editable,
   dismissible. Not a popup, not a meeting entity. Content: who's expected,
@@ -250,8 +250,8 @@ analysis.
 
 - "Prep me for my 1:1 with James" produces a brief note citing last meeting,
   open commitments in both directions, and relationship-shaped asks.
-- Starting a detected meeting app offers a brief from recurring-pattern
-  attendee guesses; wrong guesses are correctable in the brief.
+- Starting a detected meeting app offers a brief based on recurring-pattern
+  guesses about who is expected; wrong guesses are correctable in the brief.
 
 ## Risks
 
