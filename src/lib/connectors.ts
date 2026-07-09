@@ -185,6 +185,28 @@ export type TrustModeMeta = {
   icon: typeof IconBolt;
 };
 
+/** Whether a trust save changed the rendered connector runtime enough to need a
+ * restart. Two cases: a provider was added or removed (auto server names
+ * differ), or an autonomous routine's granted tools changed within a provider.
+ * In the second case the server name is unchanged but `routine_trust_set`
+ * re-mints the grant token and rewrites `tools.include`, so the live MCP process
+ * would keep a stale token/filter (added tools missing, previously granted tools
+ * falling back to approval) until some later restart. */
+export function autonomyRuntimeNeedsRestart(input: {
+  previousServers: readonly string[];
+  nextServers: readonly string[];
+  trustMode: RoutineTrustMode;
+  previousTools: readonly string[];
+  nextTools: readonly string[];
+}): boolean {
+  const differ = (a: readonly string[], b: readonly string[]) =>
+    JSON.stringify([...a].sort()) !== JSON.stringify([...b].sort());
+  return (
+    differ(input.previousServers, input.nextServers) ||
+    (input.trustMode === "autonomous" && differ(input.previousTools, input.nextTools))
+  );
+}
+
 export const TRUST_MODE_META: Readonly<Record<RoutineTrustMode, TrustModeMeta>> = Object.freeze({
   read_only: {
     label: "Read only",

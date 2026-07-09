@@ -8,6 +8,7 @@ import { IconPause } from "central-icons/IconPause";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   TRIGGER_META,
+  autonomyRuntimeNeedsRestart,
   eventTriggerScheduleDraft,
   routineToolsetsFor,
   triggerConfigFromDraft,
@@ -241,6 +242,7 @@ export function RoutineDetail({
     if (trustChanged) {
       try {
         const previousServers = storedTrust?.autonomousServers ?? [];
+        const previousTools = storedTrust?.autonomousTools ?? [];
         const stored = await routineTrustSet({
           jobId: routine.job_id,
           trustMode,
@@ -251,9 +253,13 @@ export function RoutineDetail({
           unrestricted,
           autonomousServers: stored.autonomousServers,
         });
-        const nextServers = stored.autonomousServers ?? [];
-        autoServersChanged =
-          JSON.stringify([...previousServers].sort()) !== JSON.stringify([...nextServers].sort());
+        autoServersChanged = autonomyRuntimeNeedsRestart({
+          previousServers,
+          nextServers: stored.autonomousServers ?? [],
+          trustMode: stored.trustMode,
+          previousTools,
+          nextTools: stored.autonomousTools ?? [],
+        });
       } catch (err) {
         toast.error(messageFromError(err));
         return;

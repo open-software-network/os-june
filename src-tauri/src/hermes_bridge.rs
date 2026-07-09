@@ -7867,7 +7867,7 @@ pub fn biography_get(app: AppHandle) -> Result<Option<BiographyDto>, AppError> {
 /// the frontend invokes with. Returns the saved record so the caller can update
 /// its view without a follow-up read.
 #[tauri::command]
-pub fn biography_set(app: AppHandle, markdown: String) -> Result<BiographyDto, AppError> {
+pub async fn biography_set(app: AppHandle, markdown: String) -> Result<BiographyDto, AppError> {
     let path = biography_path(&app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -7879,6 +7879,7 @@ pub fn biography_set(app: AppHandle, markdown: String) -> Result<BiographyDto, A
         .and_then(|meta| meta.modified())
         .ok()
         .map(system_time_to_iso);
+    refresh_june_soul_best_effort(&app).await;
     Ok(BiographyDto {
         markdown,
         updated_at,
@@ -7886,12 +7887,57 @@ pub fn biography_set(app: AppHandle, markdown: String) -> Result<BiographyDto, A
 }
 
 #[tauri::command]
-pub fn biography_delete(app: AppHandle) -> Result<(), AppError> {
+pub async fn biography_delete(app: AppHandle) -> Result<(), AppError> {
     let path = biography_path(&app)?;
     match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AppError::new("biography_delete_failed", error.to_string())),
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::new("biography_delete_failed", error.to_string())),
+    }
+    refresh_june_soul_best_effort(&app).await;
+    Ok(())
+}
+
+/// Regenerate SOUL.md from the current biography and environment. Sessions read
+/// SOUL.md per session, so a biography change while Hermes is running takes
+/// effect on the next session once the file is refreshed, without a disruptive
+/// runtime restart. Only the biography section changes; the rest of the soul is
+/// recomputed from the same inputs the start-time write uses so the sandbox and
+/// connector sections stay accurate.
+async fn refresh_june_soul(app: &AppHandle) -> Result<(), AppError> {
+    let hermes_home = resolve_june_hermes_home(app)?;
+    // SOUL.md is shared across modes; describe the sandbox split by whether the
+    // jail would engage on this machine, matching the start-time write.
+    let sandbox_available = sandbox_would_engage(app, &hermes_home);
+    let agent_cli_access = agent_cli_access_enabled(app);
+    let connectors_registered = match crate::commands::repositories(app).await {
+        Ok(repos) => repos
+            .list_connector_accounts()
+            .await
+            .map(|accounts| {
+                accounts.iter().any(|account| {
+                    account.status == crate::connectors::ConnectorAccountStatus::Connected.as_str()
+                })
+            })
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    sync_june_soul(
+        &hermes_home,
+        sandbox_available,
+        agent_cli_access,
+        crate::feature_flags::VIDEO_GENERATION_ENABLED,
+        connectors_registered,
+        load_biography(app).as_deref(),
+    )
+}
+
+async fn refresh_june_soul_best_effort(app: &AppHandle) {
+    if let Err(error) = refresh_june_soul(app).await {
+        tracing::warn!(
+            error_code = %error.code,
+            "failed to refresh SOUL.md after a biography change"
+        );
     }
 }
 

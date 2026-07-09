@@ -3,6 +3,7 @@ import {
   ALL_SCOPE_BUNDLES,
   AUTONOMY_RUN_THRESHOLD,
   BUNDLE_META,
+  autonomyRuntimeNeedsRestart,
   CONNECTOR_ACTION_TOOLSETS,
   CONNECTOR_READ_TOOLSETS,
   SANDBOXED_ROUTINE_BASE_TOOLSETS,
@@ -90,6 +91,45 @@ describe("scope bundles", () => {
       // Sentence case: no shouting labels.
       expect(meta.label).not.toMatch(/^[A-Z\s]+$/);
     }
+  });
+});
+
+describe("autonomyRuntimeNeedsRestart", () => {
+  const base = {
+    previousServers: ["june_gmail_auto_abc"],
+    nextServers: ["june_gmail_auto_abc"],
+    trustMode: "autonomous" as const,
+    previousTools: ["create_draft"],
+    nextTools: ["create_draft"],
+  };
+
+  it("restarts when the auto server set changes", () => {
+    expect(autonomyRuntimeNeedsRestart({ ...base, nextServers: ["june_gcal_auto_abc"] })).toBe(
+      true,
+    );
+  });
+
+  it("restarts when an autonomous routine's tools change within a provider", () => {
+    // Same server name, but the grant token and tools.include were re-minted.
+    expect(
+      autonomyRuntimeNeedsRestart({ ...base, nextTools: ["create_draft", "send_email"] }),
+    ).toBe(true);
+  });
+
+  it("does not restart when nothing relevant changed", () => {
+    expect(autonomyRuntimeNeedsRestart(base)).toBe(false);
+  });
+
+  it("ignores tool changes when the routine is not autonomous", () => {
+    // Leaving autonomous already changes the server set; a non-autonomous mode
+    // never re-mints a same-named grant, so tool diffs alone do not restart.
+    expect(
+      autonomyRuntimeNeedsRestart({
+        ...base,
+        trustMode: "approval",
+        nextTools: ["create_draft", "send_email"],
+      }),
+    ).toBe(false);
   });
 });
 

@@ -164,15 +164,24 @@ async fn poll_email_account(
         Err(error) => return Err(error),
     };
     // Only INBOX messages count; history_list already filters to INBOX adds.
+    let mut all_fired = true;
     if !delta.added.is_empty() {
         for job_id in job_ids {
-            fire(app, job_id).await;
+            if !fire(app, job_id).await {
+                all_fired = false;
+            }
         }
     }
-    if let Some(history_id) = delta.history_id {
-        repos
-            .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
-            .await?;
+    // Advance the cursor only when every subscribed job was actually queued. A
+    // failed fire (bridge/gateway down) leaves the cursor so the next poll
+    // retries the mail rather than marking it handled; re-queuing a job that did
+    // fire is harmless since the routine re-reads state.
+    if all_fired {
+        if let Some(history_id) = delta.history_id {
+            repos
+                .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -275,9 +284,10 @@ async fn poll_event_trigger(
 
     let mut fired = load_fired(repos, account_id, &cursor_kind).await;
     let lead_cutoff = now + ChronoDuration::minutes(lead_minutes);
-    let mut should_fire = false;
-    let mut changed = false;
 
+    // Collect the events that should wake the routine this cycle; do not mark
+    // them fired yet, so a failed wake does not skip them.
+    let mut to_fire: Vec<(String, i64)> = Vec::new();
     for event in &events.items {
         if fired.contains_key(&event.id) {
             continue;
@@ -294,22 +304,25 @@ async fn poll_event_trigger(
         // fire too; otherwise a meeting needs at least one outside-domain guest.
         let passes_audience = !external_only || has_external;
         if starts_soon && passes_audience {
-            fired.insert(event.id.clone(), start.timestamp());
-            should_fire = true;
-            changed = true;
+            to_fire.push((event.id.clone(), start.timestamp()));
         }
     }
 
     // Prune events whose start time is in the past so the cursor stays small.
     let before = fired.len();
     fired.retain(|_, start_ts| *start_ts >= now.timestamp());
-    if fired.len() != before {
+    let mut changed = fired.len() != before;
+
+    // Wake the routine once for the batch, and record the events as fired only
+    // when the wake actually succeeded. A failed fire (bridge/gateway down)
+    // leaves them unrecorded so the next poll retries instead of skipping.
+    if !to_fire.is_empty() && fire(app, job_id).await {
+        for (event_id, start_ts) in to_fire {
+            fired.insert(event_id, start_ts);
+        }
         changed = true;
     }
 
-    if should_fire {
-        fire(app, job_id).await;
-    }
     if changed {
         let json = serde_json::to_string(&fired).unwrap_or_else(|_| "{}".to_string());
         repos
@@ -416,9 +429,16 @@ fn parse_event_start(start: &str) -> Option<DateTime<Utc>> {
 
 // --- Firing & battery ---------------------------------------------------------
 
-async fn fire(app: &AppHandle, job_id: &str) {
-    if let Err(error) = crate::hermes_bridge::trigger_cron_job(app, job_id).await {
-        tracing::warn!(error_code = %error.code, "connector trigger fire failed");
+/// Wake a routine, returning whether it was actually queued. A false result
+/// (bridge or gateway unavailable) must leave the trigger's cursor unadvanced so
+/// the event is retried, not skipped.
+async fn fire(app: &AppHandle, job_id: &str) -> bool {
+    match crate::hermes_bridge::trigger_cron_job(app, job_id).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(error_code = %error.code, "connector trigger fire failed");
+            false
+        }
     }
 }
 
