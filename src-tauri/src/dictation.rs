@@ -2359,10 +2359,11 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 
 async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
     // Resolve the paste target before the first await. Prefer the bundle id
-    // the helper captured with the recording: its FocusTargetController is
-    // the same authority that activateLastExternalApp() pastes into, so
-    // layout and paste share one source of truth. Fall back to the frontmost
-    // app for helper builds that predate the field.
+    // the helper captured with the recording: the helper pins that same app
+    // when the recording stops and pastes into it once we return, so layout
+    // and paste share one source of truth even though the awaits below can
+    // take many seconds. Fall back to the frontmost app for helper builds
+    // that predate the field.
     let app_context = recording
         .target_bundle_id
         .as_deref()
