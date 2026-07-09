@@ -6,6 +6,8 @@ import net from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+
 // A port is "free" when a connection is refused. Mirrors the probe in
 // tauri-before-dev.mjs so both scripts agree on which port to use.
 function portIsFree(port) {
@@ -97,8 +99,7 @@ function tauriCommand() {
   if (process.platform === "win32") {
     return process.execPath;
   }
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", "tauri");
+  const localBinary = resolve(SCRIPT_DIR, "..", "node_modules", ".bin", "tauri");
   return existsSync(localBinary) ? localBinary : "tauri";
 }
 
@@ -106,7 +107,13 @@ function tauriCommandArgs(args) {
   if (process.platform !== "win32") {
     return args;
   }
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const tauriJs = resolve(scriptDir, "..", "node_modules", "@tauri-apps", "cli", "tauri.js");
-  return [tauriJs, ...args];
+  return [tauriJsEntryPoint(), ...args];
+}
+
+function tauriJsEntryPoint() {
+  const tauriJs = resolve(SCRIPT_DIR, "..", "node_modules", "@tauri-apps", "cli", "tauri.js");
+  if (!existsSync(tauriJs)) {
+    throw new Error(`Tauri CLI entry point not found at "${tauriJs}". Run pnpm install first.`);
+  }
+  return tauriJs;
 }
