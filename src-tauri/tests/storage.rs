@@ -1,6 +1,7 @@
 use chrono::{SecondsFormat, Utc};
 use os_june_lib::db::{migrations::run_migrations, repositories::Repositories};
 use sqlx::query::query;
+use sqlx::row::Row;
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 use tempfile::tempdir;
@@ -13,6 +14,14 @@ async fn test_repositories() -> Repositories {
         .expect("in-memory sqlite should open");
     run_migrations(&pool).await.expect("migrations should run");
     Repositories::new(pool)
+}
+
+async fn count_rows(repos: &Repositories, statement: &str) -> i64 {
+    query(statement)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("count query should run")
+        .get("count")
 }
 
 #[tokio::test]
@@ -350,6 +359,414 @@ async fn dictation_history_is_partitioned_by_profile() {
             .map(|item| item.id.as_str())
             .collect::<Vec<_>>(),
         vec!["legacy-dictation"]
+    );
+}
+
+#[tokio::test]
+async fn profile_data_summary_counts_owned_profile_rows() {
+    let repos = test_repositories().await;
+
+    repos
+        .create_folder("x", "Profile X folder", None)
+        .await
+        .expect("profile x folder");
+    repos.create_note("x", None).await.expect("profile x note");
+    repos
+        .create_dictation_history_item("x", "Profile X dictation.", None, "openai")
+        .await
+        .expect("profile x dictation");
+    repos
+        .assign_session_to_profile("session-x", "x")
+        .await
+        .expect("profile x session");
+
+    repos
+        .create_folder("other", "Other folder", None)
+        .await
+        .expect("other folder");
+    repos.create_note("other", None).await.expect("other note");
+    repos
+        .create_dictation_history_item("other", "Other dictation.", None, "openai")
+        .await
+        .expect("other dictation");
+    repos
+        .assign_session_to_profile("session-other", "other")
+        .await
+        .expect("other session");
+
+    let summary = repos
+        .profile_data_summary("x")
+        .await
+        .expect("profile data summary");
+
+    assert_eq!(summary.notes, 1);
+    assert_eq!(summary.dictation, 1);
+    assert_eq!(summary.folders, 1);
+    assert_eq!(summary.sessions, 1);
+}
+
+#[tokio::test]
+async fn move_profile_data_to_default_retags_owned_rows_only() {
+    let repos = test_repositories().await;
+
+    let folder_x = repos
+        .create_folder("x", "Profile X folder", None)
+        .await
+        .expect("profile x folder");
+    let note_x = repos
+        .create_note("x", Some(folder_x.id.clone()))
+        .await
+        .expect("profile x note");
+    let dictation_x = repos
+        .create_dictation_history_item("x", "Profile X dictation.", None, "openai")
+        .await
+        .expect("profile x dictation")
+        .expect("profile x dictation item");
+    repos
+        .assign_session_to_profile("session-x", "x")
+        .await
+        .expect("profile x session");
+
+    let folder_default = repos
+        .create_folder("default", "Default folder", None)
+        .await
+        .expect("default folder");
+    let note_default = repos
+        .create_note("default", Some(folder_default.id.clone()))
+        .await
+        .expect("default note");
+    let dictation_default = repos
+        .create_dictation_history_item("default", "Default dictation.", None, "openai")
+        .await
+        .expect("default dictation")
+        .expect("default dictation item");
+    repos
+        .assign_session_to_profile("session-default", "default")
+        .await
+        .expect("default session");
+
+    let folder_other = repos
+        .create_folder("other", "Other folder", None)
+        .await
+        .expect("other folder");
+    let note_other = repos
+        .create_note("other", Some(folder_other.id.clone()))
+        .await
+        .expect("other note");
+    let dictation_other = repos
+        .create_dictation_history_item("other", "Other dictation.", None, "openai")
+        .await
+        .expect("other dictation")
+        .expect("other dictation item");
+    repos
+        .assign_session_to_profile("session-other", "other")
+        .await
+        .expect("other session");
+
+    repos
+        .move_profile_data_to_default("x")
+        .await
+        .expect("move profile data");
+
+    let summary_x = repos
+        .profile_data_summary("x")
+        .await
+        .expect("profile x summary after move");
+    assert_eq!(summary_x.notes, 0);
+    assert_eq!(summary_x.dictation, 0);
+    assert_eq!(summary_x.folders, 0);
+    assert_eq!(summary_x.sessions, 0);
+
+    let default_notes = repos
+        .list_notes("default", None, 50, None)
+        .await
+        .expect("default notes");
+    let default_note_ids = default_notes
+        .items
+        .iter()
+        .map(|note| note.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(default_note_ids.contains(&note_x.id.as_str()));
+    assert!(default_note_ids.contains(&note_default.id.as_str()));
+
+    let other_notes = repos
+        .list_notes("other", None, 50, None)
+        .await
+        .expect("other notes");
+    assert_eq!(
+        other_notes
+            .items
+            .iter()
+            .map(|note| note.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![note_other.id.as_str()]
+    );
+
+    let default_folders = repos
+        .list_folders("default")
+        .await
+        .expect("default folders");
+    let default_folder_ids = default_folders
+        .iter()
+        .map(|folder| folder.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(default_folder_ids.contains(&folder_x.id.as_str()));
+    assert!(default_folder_ids.contains(&folder_default.id.as_str()));
+
+    let other_folders = repos.list_folders("other").await.expect("other folders");
+    assert_eq!(
+        other_folders
+            .iter()
+            .map(|folder| folder.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![folder_other.id.as_str()]
+    );
+
+    let default_history = repos
+        .list_dictation_history("default", 50)
+        .await
+        .expect("default dictation");
+    let default_history_ids = default_history
+        .items
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(default_history_ids.contains(&dictation_x.id.as_str()));
+    assert!(default_history_ids.contains(&dictation_default.id.as_str()));
+
+    let other_history = repos
+        .list_dictation_history("other", 50)
+        .await
+        .expect("other dictation");
+    assert_eq!(
+        other_history
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![dictation_other.id.as_str()]
+    );
+
+    let mut session_profiles = repos
+        .list_session_profiles()
+        .await
+        .expect("session profiles after move");
+    session_profiles.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    assert_eq!(
+        session_profiles
+            .iter()
+            .map(|entry| (entry.session_id.as_str(), entry.profile.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("session-default", "default"),
+            ("session-other", "other"),
+            ("session-x", "default"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
+    let repos = test_repositories().await;
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+
+    let folder_x = repos
+        .create_folder("x", "Profile X folder", None)
+        .await
+        .expect("profile x folder");
+    let note_x = repos
+        .create_note("x", Some(folder_x.id.clone()))
+        .await
+        .expect("profile x note");
+    repos
+        .create_dictation_history_item("x", "Profile X dictation.", None, "openai")
+        .await
+        .expect("profile x dictation");
+    repos
+        .assign_session_to_profile("session-x", "x")
+        .await
+        .expect("profile x session profile");
+    repos
+        .assign_session_to_folder("session-x", &folder_x.id)
+        .await
+        .expect("profile x session folder");
+
+    let folder_default = repos
+        .create_folder("default", "Default folder", None)
+        .await
+        .expect("default folder");
+    let note_default = repos
+        .create_note("default", Some(folder_default.id))
+        .await
+        .expect("default note");
+    repos
+        .create_dictation_history_item("default", "Default dictation.", None, "openai")
+        .await
+        .expect("default dictation");
+    repos
+        .assign_session_to_profile("session-default", "default")
+        .await
+        .expect("default session profile");
+
+    query(
+        "INSERT INTO recording_sessions (id, note_id, status, started_at)
+         VALUES ('recording-x', ?, 'completed', ?)",
+    )
+    .bind(&note_x.id)
+    .bind(&now)
+    .execute(&repos.pool)
+    .await
+    .expect("recording session");
+    query(
+        "INSERT INTO recording_checkpoints (id, recording_session_id, kind, created_at)
+         VALUES ('checkpoint-x', 'recording-x', 'validated', ?)",
+    )
+    .bind(&now)
+    .execute(&repos.pool)
+    .await
+    .expect("recording checkpoint");
+    query(
+        "INSERT INTO audio_artifacts
+           (id, note_id, recording_session_id, path, format, duration_ms, size_bytes, checksum, created_at)
+         VALUES ('audio-x', ?, 'recording-x', '/tmp/audio-x.wav', 'wav', 1000, 10, 'checksum', ?)",
+    )
+    .bind(&note_x.id)
+    .bind(&now)
+    .execute(&repos.pool)
+    .await
+    .expect("audio artifact");
+    query(
+        "INSERT INTO transcripts
+           (id, note_id, audio_artifact_id, text, provider, status, created_at, updated_at)
+         VALUES ('transcript-x', ?, 'audio-x', 'hello', 'openai', 'succeeded', ?, ?)",
+    )
+    .bind(&note_x.id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&repos.pool)
+    .await
+    .expect("transcript");
+    query(
+        "INSERT INTO generation_results
+           (id, note_id, transcript_id, provider, prompt_version, status, created_at, updated_at)
+         VALUES ('generation-x', ?, 'transcript-x', 'venice', 'v1', 'succeeded', ?, ?)",
+    )
+    .bind(&note_x.id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&repos.pool)
+    .await
+    .expect("generation result");
+    query(
+        "INSERT INTO note_generation_blocks
+           (id, note_id, recording_session_id, generation_result_id, content, sort_order, created_at, updated_at)
+         VALUES ('block-x', ?, 'recording-x', 'generation-x', 'generated', 0, ?, ?)",
+    )
+    .bind(&note_x.id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&repos.pool)
+    .await
+    .expect("generation block");
+
+    repos
+        .delete_profile_data("x")
+        .await
+        .expect("delete profile data");
+
+    let summary_x = repos
+        .profile_data_summary("x")
+        .await
+        .expect("profile x summary after delete");
+    assert_eq!(summary_x.notes, 0);
+    assert_eq!(summary_x.dictation, 0);
+    assert_eq!(summary_x.folders, 0);
+    assert_eq!(summary_x.sessions, 0);
+
+    assert_eq!(
+        count_rows(&repos, "SELECT COUNT(*) AS count FROM note_folders").await,
+        1
+    );
+    assert_eq!(
+        count_rows(&repos, "SELECT COUNT(*) AS count FROM session_folders").await,
+        0
+    );
+    assert_eq!(
+        count_rows(&repos, "SELECT COUNT(*) AS count FROM recording_sessions").await,
+        0
+    );
+    assert_eq!(
+        count_rows(
+            &repos,
+            "SELECT COUNT(*) AS count FROM recording_checkpoints"
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        count_rows(&repos, "SELECT COUNT(*) AS count FROM audio_artifacts").await,
+        0
+    );
+    assert_eq!(
+        count_rows(&repos, "SELECT COUNT(*) AS count FROM transcripts").await,
+        0
+    );
+    assert_eq!(
+        count_rows(&repos, "SELECT COUNT(*) AS count FROM generation_results").await,
+        0
+    );
+    assert_eq!(
+        count_rows(
+            &repos,
+            "SELECT COUNT(*) AS count FROM note_generation_blocks"
+        )
+        .await,
+        0
+    );
+
+    let default_notes = repos
+        .list_notes("default", None, 50, None)
+        .await
+        .expect("default notes");
+    assert_eq!(
+        default_notes
+            .items
+            .iter()
+            .map(|note| note.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![note_default.id.as_str()]
+    );
+    assert_eq!(
+        repos
+            .list_dictation_history("default", 50)
+            .await
+            .expect("default dictation")
+            .items
+            .len(),
+        1
+    );
+    assert_eq!(
+        repos
+            .list_session_profiles()
+            .await
+            .expect("session profiles")
+            .iter()
+            .map(|entry| (entry.session_id.as_str(), entry.profile.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("session-default", "default")]
+    );
+
+    repos
+        .delete_profile_data("default")
+        .await
+        .expect("delete default profile data is a no-op");
+    assert_eq!(
+        repos
+            .profile_data_summary("default")
+            .await
+            .expect("default summary")
+            .notes,
+        1
     );
 }
 

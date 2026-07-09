@@ -3,8 +3,8 @@ use crate::domain::types::{
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     AudioValidationDto, DictationHistoryItemDto, DictionaryEntryDto, FolderDto,
     ListDictationHistoryResponse, ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus,
-    RecordingSourceMode, RecordingState, SessionFolderDto, SessionProfileDto,
-    TranscriptCoverageDto, TranscriptDto,
+    ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
+    SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
 };
 use chrono::{Duration, SecondsFormat, Utc};
 use sqlx::query::query;
@@ -488,6 +488,73 @@ impl Repositories {
         .bind(timestamp())
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn profile_data_summary(
+        &self,
+        profile: &str,
+    ) -> Result<ProfileDataSummaryDto, sqlx::error::Error> {
+        Ok(ProfileDataSummaryDto {
+            notes: count_profile_rows(&self.pool, "notes", profile).await?,
+            dictation: count_profile_rows(&self.pool, "dictation_history", profile).await?,
+            folders: count_profile_rows(&self.pool, "folders", profile).await?,
+            sessions: count_profile_rows(&self.pool, "session_profiles", profile).await?,
+        })
+    }
+
+    pub async fn move_profile_data_to_default(
+        &self,
+        profile: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        if profile == "default" {
+            return Ok(());
+        }
+
+        let mut transaction = self.pool.begin().await?;
+        query("UPDATE notes SET profile = 'default' WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        query("UPDATE dictation_history SET profile = 'default' WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        query("UPDATE folders SET profile = 'default' WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        query("UPDATE session_profiles SET profile = 'default' WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete_profile_data(&self, profile: &str) -> Result<(), sqlx::error::Error> {
+        if profile == "default" {
+            return Ok(());
+        }
+
+        let mut transaction = self.pool.begin().await?;
+        query("DELETE FROM notes WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        query("DELETE FROM dictation_history WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        query("DELETE FROM folders WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        query("DELETE FROM session_profiles WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -2861,6 +2928,22 @@ pub struct SourceArtifactPath {
 
 pub fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+async fn count_profile_rows(
+    pool: &SqlitePool,
+    table: &str,
+    profile: &str,
+) -> Result<u32, sqlx::error::Error> {
+    let statement = match table {
+        "notes" => "SELECT COUNT(*) AS count FROM notes WHERE profile = ?",
+        "dictation_history" => "SELECT COUNT(*) AS count FROM dictation_history WHERE profile = ?",
+        "folders" => "SELECT COUNT(*) AS count FROM folders WHERE profile = ?",
+        "session_profiles" => "SELECT COUNT(*) AS count FROM session_profiles WHERE profile = ?",
+        _ => return Err(sqlx::Error::RowNotFound),
+    };
+    let row = query(statement).bind(profile).fetch_one(pool).await?;
+    Ok(u32::try_from(row.get::<i64, _>("count")).unwrap_or(u32::MAX))
 }
 
 fn folder_from_row(row: sqlx_sqlite::SqliteRow) -> FolderDto {

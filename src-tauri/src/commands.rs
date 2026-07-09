@@ -32,10 +32,10 @@ use crate::{
             DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
             ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
             GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
-            NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto,
-            RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
             SessionProfileDto, SessionRequest, SourceReadinessDto, StartRecordingRequest,
             SubmitIssueReportRequest, SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
@@ -296,6 +296,33 @@ pub async fn assign_session_to_profile(
     Ok(repositories(&app)
         .await?
         .assign_session_to_profile(&request.session_id, &request.profile)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn profile_data_summary(
+    app: AppHandle,
+    profile: String,
+) -> Result<ProfileDataSummaryDto, AppError> {
+    Ok(repositories(&app)
+        .await?
+        .profile_data_summary(&profile)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn move_profile_data_to_default(app: AppHandle, profile: String) -> Result<(), AppError> {
+    Ok(repositories(&app)
+        .await?
+        .move_profile_data_to_default(&profile)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn delete_profile_data(app: AppHandle, profile: String) -> Result<(), AppError> {
+    Ok(repositories(&app)
+        .await?
+        .delete_profile_data(&profile)
         .await?)
 }
 

@@ -55,7 +55,7 @@ import {
 } from "./ModelPickerPopover";
 import { AdminNotifications } from "./AdminNotifications";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
-import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { Dialog } from "../ui/Dialog";
 import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
 import { SettingsPageHeader } from "./AppSettings";
@@ -296,8 +296,6 @@ function ProfilesListView({
   mode: HermesAdminMode;
   onNewProfile: () => void;
 }) {
-  const [toDelete, setToDelete] = useState<string | undefined>();
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const isUnavailable = state.status === "unavailable";
   const isErrored = state.status === "error";
@@ -307,23 +305,33 @@ function ProfilesListView({
   const [refreshSpins, setRefreshSpins] = useState(0);
 
   useEffect(() => {
-    if (!toDelete) return;
-    const profile = state.profiles.find((candidate) => candidate.name === toDelete);
+    const pendingName = state.pendingRemoval?.name;
+    if (!pendingName) return;
+    const profile = state.profiles.find((candidate) => candidate.name === pendingName);
     if (!profile) {
-      setToDelete(undefined);
-      setDeleteError(null);
+      state.cancelRemoval();
       return;
     }
-    const guard = canRemoveProfile(toDelete, state.activeName, state.activeConfirmed);
+    const guard = canRemoveProfile(pendingName, state.activeName, state.activeConfirmed);
     if (!guard.ok) {
-      setToDelete(undefined);
-      setDeleteError(null);
+      state.cancelRemoval();
     }
-  }, [state.activeConfirmed, state.activeName, state.profiles, toDelete]);
+  }, [
+    state.activeConfirmed,
+    state.activeName,
+    state.cancelRemoval,
+    state.pendingRemoval,
+    state.profiles,
+  ]);
 
-  useEffect(() => {
-    if (toDelete && state.error) setDeleteError(state.error);
-  }, [state.error, toDelete]);
+  const cleanupProfile = useCallback((name: string) => {
+    setCleanupError(null);
+    deleteProfileModelOverrides(name).catch((error: unknown) => {
+      setCleanupError(
+        `Deleted "${name}", but its model override cleanup failed: ${messageFromError(error)}`,
+      );
+    });
+  }, []);
 
   if (isUnavailable) {
     return (
@@ -392,10 +400,11 @@ function ProfilesListView({
                   activeName={state.activeName}
                   activeConfirmed={state.activeConfirmed}
                   pending={state.pendingAction}
+                  pendingRemoval={state.pendingRemoval}
                   onActivate={state.activate}
-                  onDelete={(name) => {
-                    setDeleteError(null);
-                    setToDelete(name);
+                  onDelete={async (name) => {
+                    const deleted = await state.beginRemove(name);
+                    if (deleted) cleanupProfile(name);
                   }}
                 />
               ))}
@@ -410,32 +419,27 @@ function ProfilesListView({
         )}
       </div>
 
-      <DeleteProfileDialog
-        name={toDelete}
-        error={deleteError}
-        onClose={() => {
-          setToDelete(undefined);
-          setDeleteError(null);
+      <ProfileDataRemovalDialog
+        pendingRemoval={state.pendingRemoval}
+        error={state.error}
+        busy={
+          state.pendingAction?.kind === "remove" &&
+          state.pendingAction.name === state.pendingRemoval?.name
+        }
+        onCancel={state.cancelRemoval}
+        onMove={async () => {
+          const name = state.pendingRemoval?.name;
+          if (!name) return false;
+          const deleted = await state.confirmRemoval("move");
+          if (deleted) cleanupProfile(name);
+          return deleted;
         }}
-        onConfirm={async () => {
-          if (!toDelete) throw new Error("No profile selected.");
-          const profile = state.profiles.find((candidate) => candidate.name === toDelete);
-          const guard = canRemoveProfile(toDelete, state.activeName, state.activeConfirmed);
-          if (!profile || !guard.ok) {
-            setDeleteError(guard.ok ? "That profile is no longer available." : guard.reason);
-            throw new Error("Profile removal is no longer available.");
-          }
-          const removed = await state.remove(toDelete);
-          if (!removed) {
-            setDeleteError(state.error ?? "Could not delete the profile. Refresh and try again.");
-            throw new Error("Profile removal failed.");
-          }
-          setCleanupError(null);
-          deleteProfileModelOverrides(toDelete).catch((error: unknown) => {
-            setCleanupError(
-              `Deleted "${toDelete}", but its model override cleanup failed: ${messageFromError(error)}`,
-            );
-          });
+        onDelete={async () => {
+          const name = state.pendingRemoval?.name;
+          if (!name) return false;
+          const deleted = await state.confirmRemoval("delete");
+          if (deleted) cleanupProfile(name);
+          return deleted;
         }}
       />
     </ProfilesShell>
@@ -496,6 +500,7 @@ function ProfileRow({
   activeName,
   activeConfirmed,
   pending,
+  pendingRemoval,
   onActivate,
   onDelete,
 }: {
@@ -503,13 +508,14 @@ function ProfileRow({
   activeName: string;
   activeConfirmed: boolean;
   pending: ProfileManagerState["pendingAction"];
+  pendingRemoval: ProfileManagerState["pendingRemoval"];
   onActivate: (name: string) => Promise<boolean>;
-  onDelete: (name: string) => void;
+  onDelete: (name: string) => Promise<void>;
 }) {
   const activateGuard = canActivateProfile(profile.name, activeName, activeConfirmed);
   const removeGuard = canRemoveProfile(profile.name, activeName, activeConfirmed);
   const isActive = profile.name === activeName;
-  const pendingThisRow = pending?.name === profile.name;
+  const pendingThisRow = pending?.name === profile.name || pendingRemoval?.name === profile.name;
   const activating = pendingThisRow && pending?.kind === "activate";
   const removing = pendingThisRow && pending?.kind === "remove";
   const description = describeProfile(profile) || "No description provided.";
@@ -539,7 +545,7 @@ function ProfileRow({
           aria-label={`Delete ${profile.name}`}
           disabled={!removeGuard.ok || pendingThisRow}
           title={!removeGuard.ok ? removeGuard.reason : "Delete profile"}
-          onClick={() => onDelete(profile.name)}
+          onClick={() => void onDelete(profile.name)}
         >
           <IconTrashCan size={14} ariaHidden />
           {removing ? "Deleting" : "Delete"}
@@ -550,44 +556,124 @@ function ProfileRow({
   );
 }
 
-function DeleteProfileDialog({
-  name,
+function ProfileDataRemovalDialog({
+  pendingRemoval,
   error,
-  onClose,
-  onConfirm,
+  busy,
+  onCancel,
+  onMove,
+  onDelete,
 }: {
-  name?: string;
+  pendingRemoval: ProfileManagerState["pendingRemoval"];
   error?: string | null;
-  onClose: () => void;
-  onConfirm: () => Promise<void>;
+  busy: boolean;
+  onCancel: () => void;
+  onMove: () => Promise<boolean>;
+  onDelete: () => Promise<boolean>;
 }) {
-  const description = name
-    ? `Remove ${name}? New sessions will no longer load it. This cannot be undone.`
-    : undefined;
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [submitting, setSubmitting] = useState<"move" | "delete" | null>(null);
+  const isBusy = busy || submitting !== null;
+  const name = pendingRemoval?.name;
+
+  useEffect(() => {
+    setConfirmingDelete(false);
+    setSubmitting(null);
+    if (!name) return;
+  }, [name]);
+
+  async function runMove() {
+    if (isBusy) return;
+    setSubmitting("move");
+    try {
+      await onMove();
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  async function runDelete() {
+    if (isBusy) return;
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
+    setSubmitting("delete");
+    try {
+      await onDelete();
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
   return (
-    <ConfirmDialog
-      open={Boolean(name)}
-      onClose={onClose}
-      onConfirm={onConfirm}
+    <Dialog
+      open={Boolean(pendingRemoval)}
+      onClose={() => {
+        if (!isBusy) onCancel();
+      }}
       title={name ? `Delete "${name}"?` : "Delete profile?"}
-      description={
-        description ? (
-          <>
-            <span>{description}</span>
-            {error ? (
-              <span className="settings-row-error profiles-inline-error" role="alert">
-                <IconExclamationCircle size={14} ariaHidden />
-                {error}
-              </span>
-            ) : null}
-          </>
-        ) : undefined
+      description={pendingRemoval ? profileDataSummaryText(pendingRemoval.summary) : undefined}
+      width={460}
+      footer={
+        <>
+          <button type="button" className="primary-action" onClick={onCancel} disabled={isBusy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-action primary-solid primary-destructive"
+            onClick={() => void runDelete()}
+            disabled={isBusy && submitting !== "delete"}
+            aria-busy={submitting === "delete" || undefined}
+          >
+            {submitting === "delete"
+              ? "Deleting"
+              : confirmingDelete
+                ? "Confirm delete"
+                : "Delete permanently"}
+          </button>
+          <button
+            type="button"
+            className="primary-action primary-solid"
+            onClick={() => void runMove()}
+            disabled={isBusy && submitting !== "move"}
+            aria-busy={submitting === "move" || undefined}
+          >
+            {submitting === "move" ? "Moving" : "Move to default"}
+          </button>
+        </>
       }
-      confirmLabel="Delete profile"
-      confirmBusyLabel="Deleting"
-      destructive
-    />
+    >
+      <div className="profile-data-removal-body">
+        <p>Choose what to do with the data before June deletes the profile.</p>
+        {confirmingDelete ? (
+          <p className="profile-data-removal-warning">
+            This can't be undone. Confirm delete to permanently remove this profile's data.
+          </p>
+        ) : null}
+        {error ? (
+          <p className="settings-row-error profiles-inline-error" role="alert">
+            <IconExclamationCircle size={14} ariaHidden />
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </Dialog>
   );
+}
+
+function profileDataSummaryText(
+  summary: NonNullable<ProfileManagerState["pendingRemoval"]>["summary"],
+) {
+  return `This profile has ${countLabel(summary.notes, "note")}, ${countLabel(
+    summary.sessions,
+    "chat",
+  )}, ${countLabel(summary.dictation, "dictation")}, ${countLabel(summary.folders, "project")}.`;
+}
+
+function countLabel(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
 }
 
 function Stepper({

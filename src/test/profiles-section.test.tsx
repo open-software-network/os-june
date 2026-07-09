@@ -17,20 +17,28 @@ import { ProfilesSurfaceView } from "../components/settings/ProfileBuilderSectio
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
 const mocks = vi.hoisted(() => ({
+  deleteProfileData: vi.fn(),
   deleteProfileModelOverrides: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   listVeniceModels: vi.fn(),
+  moveProfileDataToDefault: vi.fn(),
+  profileDataSummary: vi.fn(),
   providerModelSettings: vi.fn(),
   setProfileModelOverrides: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
+  deleteProfileData: mocks.deleteProfileData,
   deleteProfileModelOverrides: mocks.deleteProfileModelOverrides,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   listVeniceModels: mocks.listVeniceModels,
+  moveProfileDataToDefault: mocks.moveProfileDataToDefault,
+  profileDataSummary: mocks.profileDataSummary,
   providerModelSettings: mocks.providerModelSettings,
   setProfileModelOverrides: mocks.setProfileModelOverrides,
 }));
+
+const EMPTY_SUMMARY = { notes: 0, dictation: 0, folders: 0, sessions: 0 };
 
 function stubBuilder(overrides: Partial<ProfileBuilderState> = {}): ProfileBuilderState {
   return {
@@ -85,9 +93,12 @@ function stubManager(overrides: Partial<ProfileManagerState> = {}): ProfileManag
     activeName: "research",
     activeConfirmed: true,
     pendingAction: null,
+    pendingRemoval: null,
     error: null,
     activate: vi.fn().mockResolvedValue(true),
-    remove: vi.fn().mockResolvedValue(true),
+    beginRemove: vi.fn().mockResolvedValue(true),
+    confirmRemoval: vi.fn().mockResolvedValue(true),
+    cancelRemoval: vi.fn(),
     refresh: vi.fn(),
     dismissError: vi.fn(),
     ...overrides,
@@ -148,6 +159,10 @@ function StatefulBuilderHarness() {
 
 describe("profiles settings surface", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.profileDataSummary.mockResolvedValue(EMPTY_SUMMARY);
+    mocks.moveProfileDataToDefault.mockResolvedValue(undefined);
+    mocks.deleteProfileData.mockResolvedValue(undefined);
     mocks.deleteProfileModelOverrides.mockResolvedValue(undefined);
   });
 
@@ -192,11 +207,14 @@ describe("profiles settings surface", () => {
     });
   });
 
-  it("disables guarded delete rows and confirms before removal", async () => {
+  it("disables guarded delete rows and deletes empty profiles without a dialog", async () => {
     const user = userEvent.setup();
-    const remove = vi.fn().mockResolvedValue(true);
+    const beginRemove = vi.fn().mockResolvedValue(true);
     render(
-      <ProfilesSurfaceView managerState={stubManager({ remove })} builderState={stubBuilder()} />,
+      <ProfilesSurfaceView
+        managerState={stubManager({ beginRemove })}
+        builderState={stubBuilder()}
+      />,
     );
 
     expect(screen.getByRole("button", { name: "Delete default" })).toBeDisabled();
@@ -207,11 +225,151 @@ describe("profiles settings surface", () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Delete writing" }));
-    expect(screen.getByRole("dialog", { name: 'Delete "writing"?' })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Delete profile" }));
-    expect(remove).toHaveBeenCalledWith("writing");
+    expect(beginRemove).toHaveBeenCalledWith("writing");
+    expect(screen.queryByRole("dialog", { name: 'Delete "writing"?' })).not.toBeInTheDocument();
     expect(mocks.deleteProfileModelOverrides).toHaveBeenCalledWith("writing");
+  });
+
+  it("opens a profile data dialog with counts before deleting a data-owning profile", async () => {
+    const user = userEvent.setup();
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 2,
+      dictation: 3,
+      folders: 4,
+      sessions: 1,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "writing", active: false },
+      ],
+      activeProfile: "default",
+    });
+
+    render(<Harness engine={harness as ProfileManagerEngine} />);
+    await screen.findByText("writing");
+    await user.click(screen.getByRole("button", { name: "Delete writing" }));
+
+    const dialog = await screen.findByRole("dialog", { name: 'Delete "writing"?' });
+    expect(
+      within(dialog).getByText("This profile has 2 notes, 1 chat, 3 dictations, 4 projects."),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Move to default" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Delete permanently" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/writing",
+      ),
+    ).toBe(false);
+  });
+
+  it("move to default moves profile data before removing the profile", async () => {
+    const user = userEvent.setup();
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 1,
+      dictation: 0,
+      folders: 0,
+      sessions: 1,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "writing", active: false },
+      ],
+      activeProfile: "default",
+    });
+
+    render(<Harness engine={harness as ProfileManagerEngine} />);
+    await screen.findByText("writing");
+    await user.click(screen.getByRole("button", { name: "Delete writing" }));
+    const dialog = await screen.findByRole("dialog", { name: 'Delete "writing"?' });
+    await user.click(within(dialog).getByRole("button", { name: "Move to default" }));
+
+    await waitFor(() => expect(mocks.moveProfileDataToDefault).toHaveBeenCalledWith("writing"));
+    expect(mocks.deleteProfileData).not.toHaveBeenCalled();
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/writing",
+      ),
+    ).toBe(true);
+    expect(mocks.deleteProfileModelOverrides).toHaveBeenCalledWith("writing");
+  });
+
+  it("delete permanently requires a second confirm before deleting profile data", async () => {
+    const user = userEvent.setup();
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 0,
+      dictation: 1,
+      folders: 0,
+      sessions: 0,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "writing", active: false },
+      ],
+      activeProfile: "default",
+    });
+
+    render(<Harness engine={harness as ProfileManagerEngine} />);
+    await screen.findByText("writing");
+    await user.click(screen.getByRole("button", { name: "Delete writing" }));
+    const dialog = await screen.findByRole("dialog", { name: 'Delete "writing"?' });
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+    expect(mocks.deleteProfileData).not.toHaveBeenCalled();
+    expect(
+      within(dialog).getByText(
+        "This can't be undone. Confirm delete to permanently remove this profile's data.",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Confirm delete" }));
+
+    await waitFor(() => expect(mocks.deleteProfileData).toHaveBeenCalledWith("writing"));
+    expect(mocks.moveProfileDataToDefault).not.toHaveBeenCalled();
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/writing",
+      ),
+    ).toBe(true);
+    expect(mocks.deleteProfileModelOverrides).toHaveBeenCalledWith("writing");
+  });
+
+  it("cancel closes the data dialog without deleting profile data or profile", async () => {
+    const user = userEvent.setup();
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 1,
+      dictation: 1,
+      folders: 1,
+      sessions: 1,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "writing", active: false },
+      ],
+      activeProfile: "default",
+    });
+
+    render(<Harness engine={harness as ProfileManagerEngine} />);
+    await screen.findByText("writing");
+    await user.click(screen.getByRole("button", { name: "Delete writing" }));
+    const dialog = await screen.findByRole("dialog", { name: 'Delete "writing"?' });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: 'Delete "writing"?' })).not.toBeInTheDocument(),
+    );
+    expect(mocks.moveProfileDataToDefault).not.toHaveBeenCalled();
+    expect(mocks.deleteProfileData).not.toHaveBeenCalled();
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/writing",
+      ),
+    ).toBe(false);
+    expect(mocks.deleteProfileModelOverrides).not.toHaveBeenCalled();
   });
 
   it("opens the wizard from New profile and returns to the refreshed list after clean create", async () => {
@@ -271,6 +429,12 @@ describe("profiles settings surface", () => {
 
   it("keeps the delete dialog open with an error when removal fails", async () => {
     const user = userEvent.setup();
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 1,
+      dictation: 0,
+      folders: 0,
+      sessions: 0,
+    });
     const harness = makeAdminHarness({
       profiles: [
         { name: "default", active: true },
@@ -301,24 +465,30 @@ describe("profiles settings surface", () => {
 
     await screen.findByText("writing");
     await user.click(screen.getByRole("button", { name: "Delete writing" }));
-    await user.click(screen.getByRole("button", { name: "Delete profile" }));
+    const dialog = await screen.findByRole("dialog", { name: 'Delete "writing"?' });
+    await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+    await user.click(within(dialog).getByRole("button", { name: "Confirm delete" }));
 
-    const dialog = screen.getByRole("dialog", { name: 'Delete "writing"?' });
-    expect(dialog).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: 'Delete "writing"?' })).toBeInTheDocument();
     expect(
-      within(dialog).getByText("Could not delete the profile. Refresh and try again."),
+      await within(dialog).findByText("That Hermes resource was not found."),
     ).toBeInTheDocument();
     expect(deleteAttempts).toEqual(["/api/profiles/writing"]);
   });
 
-  it("closes a stale delete dialog when the selected profile disappears", async () => {
-    const user = userEvent.setup();
-    const remove = vi.fn().mockResolvedValue(true);
+  it("cancels a stale data dialog when the selected profile disappears", async () => {
+    const cancelRemoval = vi.fn();
+    const pendingRemoval = {
+      name: "writing",
+      summary: { notes: 1, dictation: 0, folders: 0, sessions: 0 },
+    };
     const { rerender } = render(
-      <ProfilesSurfaceView managerState={stubManager({ remove })} builderState={stubBuilder()} />,
+      <ProfilesSurfaceView
+        managerState={stubManager({ pendingRemoval, cancelRemoval })}
+        builderState={stubBuilder()}
+      />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Delete writing" }));
     expect(screen.getByRole("dialog", { name: 'Delete "writing"?' })).toBeInTheDocument();
 
     rerender(
@@ -328,16 +498,14 @@ describe("profiles settings surface", () => {
             { name: "default", description: "June default", raw: {} },
             { name: "research", description: "Research profile", raw: {} },
           ],
-          remove,
+          pendingRemoval,
+          cancelRemoval,
         })}
         builderState={stubBuilder()}
       />,
     );
 
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: 'Delete "writing"?' })).not.toBeInTheDocument(),
-    );
-    expect(remove).not.toHaveBeenCalled();
+    await waitFor(() => expect(cancelRemoval).toHaveBeenCalled());
   });
 
   it("keeps the Hermes-not-running empty state", () => {

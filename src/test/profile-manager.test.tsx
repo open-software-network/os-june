@@ -1,5 +1,20 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  deleteProfileData: vi.fn(),
+  hermesBridgeStatus: vi.fn(),
+  moveProfileDataToDefault: vi.fn(),
+  profileDataSummary: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", () => ({
+  deleteProfileData: mocks.deleteProfileData,
+  hermesBridgeStatus: mocks.hermesBridgeStatus,
+  moveProfileDataToDefault: mocks.moveProfileDataToDefault,
+  profileDataSummary: mocks.profileDataSummary,
+}));
+
 import {
   ProfileManagerController,
   canActivateProfile,
@@ -15,6 +30,8 @@ import {
   resetActiveHermesProfileForTests,
 } from "../lib/active-hermes-profile";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
+
+const EMPTY_SUMMARY = { notes: 0, dictation: 0, folders: 0, sessions: 0 };
 
 // ---------------------------------------------------------------------------
 // Schema parsing.
@@ -94,6 +111,13 @@ describe("profile manager - view helpers", () => {
 // ---------------------------------------------------------------------------
 
 describe("profile manager - hook flows", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.profileDataSummary.mockResolvedValue(EMPTY_SUMMARY);
+    mocks.moveProfileDataToDefault.mockResolvedValue(undefined);
+    mocks.deleteProfileData.mockResolvedValue(undefined);
+  });
+
   it("loads the list and active profile from separate endpoints", async () => {
     const harness = makeAdminHarness({
       profiles: [
@@ -167,10 +191,140 @@ describe("profile manager - hook flows", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     await act(async () => {
-      await result.current.remove("research");
+      await result.current.beginRemove("research");
     });
 
     expect(result.current.profiles.map((profile) => profile.name)).toEqual(["default", "writing"]);
+    expect(mocks.profileDataSummary).toHaveBeenCalledWith("research");
+    expect(mocks.moveProfileDataToDefault).not.toHaveBeenCalled();
+    expect(mocks.deleteProfileData).not.toHaveBeenCalled();
+  });
+
+  it("begin remove with owned data opens pending removal and does not delete Hermes profile", async () => {
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 2,
+      dictation: 3,
+      folders: 4,
+      sessions: 1,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "research", active: false },
+      ],
+      activeProfile: "default",
+    });
+    const controller = new ProfileManagerController(harness as ProfileManagerEngine);
+    await controller.load();
+
+    const ok = await controller.beginRemove("research");
+
+    expect(ok).toBe(false);
+    expect(controller.getSnapshot().pendingRemoval).toEqual({
+      name: "research",
+      summary: { notes: 2, dictation: 3, folders: 4, sessions: 1 },
+    });
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/research",
+      ),
+    ).toBe(false);
+    controller.dispose();
+  });
+
+  it("confirm removal with move retags data before deleting the Hermes profile", async () => {
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 1,
+      dictation: 0,
+      folders: 0,
+      sessions: 1,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "research", active: false },
+      ],
+      activeProfile: "default",
+    });
+    const controller = new ProfileManagerController(harness as ProfileManagerEngine);
+    await controller.load();
+    await controller.beginRemove("research");
+
+    const ok = await controller.confirmRemoval("move");
+
+    expect(ok).toBe(true);
+    expect(mocks.moveProfileDataToDefault).toHaveBeenCalledWith("research");
+    expect(mocks.deleteProfileData).not.toHaveBeenCalled();
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/research",
+      ),
+    ).toBe(true);
+    expect(controller.getSnapshot().pendingRemoval).toBeNull();
+    controller.dispose();
+  });
+
+  it("confirm removal with delete deletes data before deleting the Hermes profile", async () => {
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 0,
+      dictation: 1,
+      folders: 0,
+      sessions: 0,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "research", active: false },
+      ],
+      activeProfile: "default",
+    });
+    const controller = new ProfileManagerController(harness as ProfileManagerEngine);
+    await controller.load();
+    await controller.beginRemove("research");
+
+    const ok = await controller.confirmRemoval("delete");
+
+    expect(ok).toBe(true);
+    expect(mocks.deleteProfileData).toHaveBeenCalledWith("research");
+    expect(mocks.moveProfileDataToDefault).not.toHaveBeenCalled();
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/research",
+      ),
+    ).toBe(true);
+    expect(controller.getSnapshot().pendingRemoval).toBeNull();
+    controller.dispose();
+  });
+
+  it("cancel removal clears pending removal without deleting anything", async () => {
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 1,
+      dictation: 1,
+      folders: 1,
+      sessions: 1,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "research", active: false },
+      ],
+      activeProfile: "default",
+    });
+    const controller = new ProfileManagerController(harness as ProfileManagerEngine);
+    await controller.load();
+    await controller.beginRemove("research");
+
+    controller.cancelRemoval();
+
+    expect(controller.getSnapshot().pendingRemoval).toBeNull();
+    expect(mocks.moveProfileDataToDefault).not.toHaveBeenCalled();
+    expect(mocks.deleteProfileData).not.toHaveBeenCalled();
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/research",
+      ),
+    ).toBe(false);
+    controller.dispose();
   });
 
   it("remove guard for the active profile never issues the HTTP call", async () => {
@@ -183,7 +337,7 @@ describe("profile manager - hook flows", () => {
     const controller = new ProfileManagerController(harness as ProfileManagerEngine);
     await controller.load();
 
-    const ok = await controller.remove("research");
+    const ok = await controller.beginRemove("research");
 
     expect(ok).toBe(false);
     expect(controller.getSnapshot().error).toBe(
@@ -210,7 +364,7 @@ describe("profile manager - hook flows", () => {
     expect(controller.getSnapshot().activeName).toBe("default");
 
     Object.assign(harness.server, { activeProfile: "research" });
-    const ok = await controller.remove("research");
+    const ok = await controller.beginRemove("research");
 
     expect(ok).toBe(false);
     expect(controller.getSnapshot().activeName).toBe("research");
@@ -249,7 +403,7 @@ describe("profile manager - hook flows", () => {
     expect(controller.getSnapshot().activeName).toBe("default");
     expect(controller.getSnapshot().activeConfirmed).toBe(false);
 
-    const removed = await controller.remove("writing");
+    const removed = await controller.beginRemove("writing");
 
     expect(removed).toBe(false);
     expect(
@@ -279,7 +433,7 @@ describe("profile manager - hook flows", () => {
     expect(controller.getSnapshot().activeName).toBe("default");
     expect(controller.getSnapshot().activeConfirmed).toBe(false);
 
-    const ok = await controller.remove("research");
+    const ok = await controller.beginRemove("research");
 
     expect(ok).toBe(false);
     expect(controller.getSnapshot().error).toBe(

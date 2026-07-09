@@ -37,6 +37,13 @@ export type SessionProfileDto = {
   profile: string;
 };
 
+export type ProfileDataSummary = {
+  notes: number;
+  dictation: number;
+  folders: number;
+  sessions: number;
+};
+
 export type DictionaryEntryDto = {
   id: string;
   phrase: string;
@@ -788,6 +795,18 @@ export async function assignSessionToProfile(sessionId: string, profile: string)
   return invoke<void>("assign_session_to_profile", {
     request: { sessionId, profile },
   });
+}
+
+export async function profileDataSummary(profile: string) {
+  return invoke<ProfileDataSummary>("profile_data_summary", { profile });
+}
+
+export async function moveProfileDataToDefault(profile: string) {
+  return invoke<void>("move_profile_data_to_default", { profile });
+}
+
+export async function deleteProfileData(profile: string) {
+  return invoke<void>("delete_profile_data", { profile });
 }
 
 export async function removeSessionFromFolder(sessionId: string, folderId: string) {

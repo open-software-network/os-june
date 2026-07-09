@@ -17,7 +17,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { setActiveHermesProfileName } from "../active-hermes-profile";
-import { hermesBridgeStatus, type HermesBridgeStatus } from "../tauri";
+import { messageFromError } from "../errors";
+import {
+  deleteProfileData,
+  hermesBridgeStatus,
+  moveProfileDataToDefault,
+  profileDataSummary,
+  type HermesBridgeStatus,
+  type ProfileDataSummary,
+} from "../tauri";
 import { AdminStateCache } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
@@ -43,6 +51,13 @@ export type ProfileManagerPendingAction = {
   name: string;
 };
 
+export type ProfileRemovalDisposition = "move" | "delete";
+
+export type ProfileManagerPendingRemoval = {
+  name: string;
+  summary: ProfileDataSummary;
+};
+
 /** Everything the future profile-manager UI renders, plus actions it invokes. */
 export type ProfileManagerState = {
   status: ProfileManagerStatus;
@@ -50,9 +65,12 @@ export type ProfileManagerState = {
   activeName: string;
   activeConfirmed: boolean;
   pendingAction: ProfileManagerPendingAction | null;
+  pendingRemoval: ProfileManagerPendingRemoval | null;
   error: string | null;
   activate(name: string): Promise<boolean>;
-  remove(name: string): Promise<boolean>;
+  beginRemove(name: string): Promise<boolean>;
+  confirmRemoval(disposition: ProfileRemovalDisposition): Promise<boolean>;
+  cancelRemoval(): void;
   refresh(): void;
   dismissError(): void;
 };
@@ -69,6 +87,7 @@ export class ProfileManagerController {
   private activeConfirmed = false;
   private status: ProfileManagerStatus = "loading";
   private pendingAction: ProfileManagerPendingAction | null = null;
+  private pendingRemoval: ProfileManagerPendingRemoval | null = null;
   private error: string | null = null;
   private listeners = new Set<() => void>();
   private disposed = false;
@@ -189,7 +208,7 @@ export class ProfileManagerController {
     }
   }
 
-  async remove(name: string): Promise<boolean> {
+  async beginRemove(name: string): Promise<boolean> {
     const guard = canRemoveProfile(name, this.activeName, this.activeConfirmed);
     if (!guard.ok) {
       this.error = guard.reason;
@@ -198,6 +217,7 @@ export class ProfileManagerController {
     }
 
     this.pendingAction = { kind: "remove", name };
+    this.pendingRemoval = null;
     this.error = null;
     this.recompute();
     try {
@@ -221,10 +241,69 @@ export class ProfileManagerController {
       return false;
     }
 
+    let summary: ProfileDataSummary;
+    try {
+      summary = await profileDataSummary(name);
+    } catch (error) {
+      if (this.disposed) return false;
+      this.pendingAction = null;
+      this.error = messageFromError(error);
+      this.recompute();
+      return false;
+    }
+
+    if (profileHasData(summary)) {
+      if (this.disposed) return false;
+      this.pendingAction = null;
+      this.pendingRemoval = { name, summary };
+      this.recompute();
+      return false;
+    }
+
+    return this.deleteHermesProfile(name);
+  }
+
+  async confirmRemoval(disposition: ProfileRemovalDisposition): Promise<boolean> {
+    const pending = this.pendingRemoval;
+    if (!pending) {
+      this.error = "No profile is waiting to be deleted.";
+      this.recompute();
+      return false;
+    }
+
+    const { name } = pending;
+    this.pendingAction = { kind: "remove", name };
+    this.error = null;
+    this.recompute();
+    try {
+      if (disposition === "move") {
+        await moveProfileDataToDefault(name);
+      } else {
+        await deleteProfileData(name);
+      }
+    } catch (error) {
+      if (this.disposed) return false;
+      this.pendingAction = null;
+      this.error = messageFromError(error);
+      this.recompute();
+      return false;
+    }
+
+    return this.deleteHermesProfile(name);
+  }
+
+  cancelRemoval(): void {
+    this.pendingRemoval = null;
+    this.error = null;
+    this.recompute();
+  }
+
+  private async deleteHermesProfile(name: string): Promise<boolean> {
     try {
       await this.engine.client.profiles.remove(name);
       if (this.disposed) return true;
       this.pendingAction = null;
+      this.pendingRemoval = null;
       await this.load();
       return true;
     } catch (error) {
@@ -249,9 +328,12 @@ export class ProfileManagerController {
       activeName: this.activeName,
       activeConfirmed: this.activeConfirmed,
       pendingAction: this.pendingAction,
+      pendingRemoval: this.pendingRemoval,
       error: this.error,
       activate: this.activateAction,
-      remove: this.removeAction,
+      beginRemove: this.beginRemoveAction,
+      confirmRemoval: this.confirmRemovalAction,
+      cancelRemoval: this.cancelRemovalAction,
       refresh: this.refresh,
       dismissError: this.dismissErrorAction,
     };
@@ -264,7 +346,13 @@ export class ProfileManagerController {
   }
 
   private readonly activateAction = (name: string): Promise<boolean> => this.activate(name);
-  private readonly removeAction = (name: string): Promise<boolean> => this.remove(name);
+  private readonly beginRemoveAction = (name: string): Promise<boolean> => this.beginRemove(name);
+  private readonly confirmRemovalAction = (
+    disposition: ProfileRemovalDisposition,
+  ): Promise<boolean> => this.confirmRemoval(disposition);
+  private readonly cancelRemovalAction = (): void => {
+    this.cancelRemoval();
+  };
   private readonly refresh = (): void => {
     void this.load();
   };
@@ -312,9 +400,12 @@ const UNAVAILABLE_STATE: ProfileManagerState = Object.freeze({
   activeName: "default",
   activeConfirmed: false,
   pendingAction: null,
+  pendingRemoval: null,
   error: null,
   activate: () => Promise.resolve(false),
-  remove: () => Promise.resolve(false),
+  beginRemove: () => Promise.resolve(false),
+  confirmRemoval: () => Promise.resolve(false),
+  cancelRemoval: () => {},
   refresh: () => {},
   dismissError: () => {},
 }) as ProfileManagerState;
@@ -376,4 +467,8 @@ export function useProfileManager(
     return { ...state, status: "error", error: bridgeError };
   }
   return state;
+}
+
+function profileHasData(summary: ProfileDataSummary): boolean {
+  return summary.notes > 0 || summary.dictation > 0 || summary.folders > 0 || summary.sessions > 0;
 }

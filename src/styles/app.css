@@ -23361,6 +23361,26 @@ input:focus-visible,
   padding-top: var(--sp-2);
 }
 
+.profile-data-removal-body {
+  display: grid;
+  gap: var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.profile-data-removal-body p {
+  margin: 0;
+}
+
+.profile-data-removal-warning {
+  padding: var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--destructive) 30%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}
+
 .profile-builder-card {
   display: grid;
   gap: var(--sp-5);

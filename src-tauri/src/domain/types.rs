@@ -204,6 +204,15 @@ pub struct SessionProfileDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProfileDataSummaryDto {
+    pub notes: u32,
+    pub dictation: u32,
+    pub folders: u32,
+    pub sessions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AssignSessionToFolderRequest {
     pub session_id: String,
     pub folder_id: String,
