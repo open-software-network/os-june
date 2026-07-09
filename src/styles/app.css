@@ -11740,6 +11740,13 @@ input:focus-visible,
   margin: var(--sp-2) calc(var(--sp-3) * -1);
 }
 
+/* When "More options" is collapsed it sits last in the card, so its sp-2 bottom
+ * margin stacks on the card's own bottom padding and reads as a dead gap. Drop
+ * it there; when expanded the options panel follows, so the row isn't last. */
+.settings-more-options-row:last-child {
+  margin-block-end: 0;
+}
+
 .settings-row-divider {
   height: 1px;
   margin: 0;
