@@ -194,7 +194,8 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     useEffect(() => {
       if (selectedCount === 0 || confirmBulkDelete) return;
       function onKey(event: KeyboardEvent) {
-        if (event.key === "Escape") resetSelection();
+        const target = event.target instanceof Element ? event.target : null;
+        if (event.key === "Escape" && !target?.closest('[role="dialog"]')) resetSelection();
       }
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);

@@ -7,7 +7,7 @@ import {
 } from "../components/agent/AgentWorkspace";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import type { HermesSessionInfo, NoteListItemDto } from "../lib/tauri";
-import { setStoredDateFormat } from "../lib/date-format";
+import { DATE_FORMAT_CHANGED_EVENT, setStoredDateFormat } from "../lib/date-format";
 
 vi.mock("../lib/hermes-adapter", () => ({
   deleteHermesSession: vi.fn(),
@@ -128,7 +128,13 @@ describe("Sidebar agent session rename", () => {
     act(() => setStoredDateFormat("day-first"));
     expect(await screen.findAllByText("4 Jun")).toHaveLength(2);
 
-    act(() => setStoredDateFormat("month-first"));
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(DATE_FORMAT_CHANGED_EVENT, {
+          detail: { preference: "invalid" },
+        }),
+      );
+    });
     expect(await screen.findAllByText("Jun 4")).toHaveLength(2);
   });
 });

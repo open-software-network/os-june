@@ -98,6 +98,7 @@ import {
   DATE_FORMAT_CHANGED_EVENT,
   formatCalendarDate,
   getStoredDateFormat,
+  normalizeDateFormatPreference,
   type DateFormatChangedDetail,
   type DateFormatPreference,
 } from "../../lib/date-format";
@@ -439,7 +440,8 @@ export function Sidebar({
 
   useEffect(() => {
     const handleDateFormatChanged = (event: Event) => {
-      setDateFormat((event as CustomEvent<DateFormatChangedDetail>).detail.preference);
+      const detail = (event as CustomEvent<Partial<DateFormatChangedDetail>>).detail;
+      setDateFormat(normalizeDateFormatPreference(detail?.preference));
     };
     window.addEventListener(DATE_FORMAT_CHANGED_EVENT, handleDateFormatChanged);
     return () => window.removeEventListener(DATE_FORMAT_CHANGED_EVENT, handleDateFormatChanged);

@@ -10,7 +10,7 @@ export type DateFormatChangedDetail = {
 export function getStoredDateFormat(): DateFormatPreference {
   if (typeof window === "undefined") return "system";
   try {
-    return parseDateFormat(window.localStorage.getItem(DATE_FORMAT_STORAGE_KEY));
+    return normalizeDateFormatPreference(window.localStorage.getItem(DATE_FORMAT_STORAGE_KEY));
   } catch {
     return "system";
   }
@@ -34,20 +34,21 @@ export function formatCalendarDate(
   preference: DateFormatPreference,
   locales?: Intl.LocalesArgument,
 ) {
+  const normalizedPreference = normalizeDateFormatPreference(preference);
   const formatter = new Intl.DateTimeFormat(locales, {
     month: "short",
     day: "numeric",
   });
-  if (preference === "system") return formatter.format(date);
+  if (normalizedPreference === "system") return formatter.format(date);
 
   const parts = formatter.formatToParts(date);
   const month = parts.find((part) => part.type === "month")?.value;
   const day = parts.find((part) => part.type === "day")?.value;
   if (!month || !day) return formatter.format(date);
-  return preference === "month-first" ? `${month} ${day}` : `${day} ${month}`;
+  return normalizedPreference === "month-first" ? `${month} ${day}` : `${day} ${month}`;
 }
 
-function parseDateFormat(value: string | null): DateFormatPreference {
+export function normalizeDateFormatPreference(value: unknown): DateFormatPreference {
   if (value === "month-first" || value === "day-first") return value;
   return "system";
 }

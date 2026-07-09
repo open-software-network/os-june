@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DATE_FORMAT_STORAGE_KEY,
+  type DateFormatPreference,
   formatCalendarDate,
   getStoredDateFormat,
   setStoredDateFormat,
@@ -23,5 +24,10 @@ describe("date format preference", () => {
     const date = new Date("2026-07-09T12:00:00Z");
     expect(formatCalendarDate(date, "month-first", "en-US")).toBe("Jul 9");
     expect(formatCalendarDate(date, "day-first", "en-US")).toBe("9 Jul");
+  });
+
+  it("falls back to the system format for an invalid runtime preference", () => {
+    const date = new Date("2026-07-09T12:00:00Z");
+    expect(formatCalendarDate(date, "unknown" as DateFormatPreference, "en-US")).toBe("Jul 9");
   });
 });

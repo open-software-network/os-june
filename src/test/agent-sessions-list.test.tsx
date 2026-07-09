@@ -223,12 +223,14 @@ describe("AgentSessionsList", () => {
       />,
     );
 
+    await user.click(screen.getByLabelText("Select Idle session"));
     await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.type(screen.getByRole("textbox", { name: "Session name" }), "{Escape}");
 
     expect(onRenameSession).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog", { name: "Rename session" })).not.toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("1 selected");
     expect(screen.getByText("Idle session")).toBeInTheDocument();
   });
 
