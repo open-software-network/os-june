@@ -1471,7 +1471,7 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
     } else {
         None
     };
-    let mut sources = vec![SourceReadinessDto {
+    let microphone = SourceReadinessDto {
         source: RecordingSource::Microphone,
         required: true,
         ready: microphone_ready,
@@ -1481,15 +1481,26 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
         recovery_action: microphone_permission_blocked
             .then(|| "openMicrophoneSettings".to_string()),
         message: microphone_message,
-    }];
-    if source_mode == RecordingSourceMode::MicrophonePlusSystem {
-        let mut system = crate::audio::system_macos::system_audio_readiness();
-        if should_probe_system_audio_permission(system.ready, is_capture_active()) {
-            system = apply_system_audio_permission_probe_result(
-                system,
-                crate::audio::system_macos::helper_permission_check(),
-            );
-        }
+    };
+    let mut system = crate::audio::system_macos::system_audio_readiness();
+    if should_probe_system_audio_permission(source_mode, system.ready, is_capture_active()) {
+        system = apply_system_audio_permission_probe_result(
+            system,
+            crate::audio::system_macos::helper_permission_check(),
+        );
+    }
+
+    assemble_recording_source_readiness(microphone, Some(system), source_mode)
+}
+
+fn assemble_recording_source_readiness(
+    microphone: SourceReadinessDto,
+    system: Option<SourceReadinessDto>,
+    source_mode: RecordingSourceMode,
+) -> RecordingSourceReadinessDto {
+    let mut sources = vec![microphone];
+    if let Some(mut system) = system {
+        system.required = source_mode == RecordingSourceMode::MicrophonePlusSystem;
         sources.push(system);
     }
     let ready = sources
@@ -1503,8 +1514,12 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
     }
 }
 
-fn should_probe_system_audio_permission(system_ready: bool, capture_active: bool) -> bool {
-    system_ready && !capture_active
+fn should_probe_system_audio_permission(
+    source_mode: RecordingSourceMode,
+    system_ready: bool,
+    capture_active: bool,
+) -> bool {
+    source_mode == RecordingSourceMode::MicrophonePlusSystem && system_ready && !capture_active
 }
 
 fn apply_system_audio_permission_probe_result(
@@ -2187,9 +2202,9 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_system_audio_permission_probe_result, capture_start_timeout_error,
-        recovery_validation_expected_duration_ms, should_probe_system_audio_permission,
-        start_capture_with_timeout_and_cleanup,
+        apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
+        capture_start_timeout_error, recovery_validation_expected_duration_ms,
+        should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
     };
     use crate::{
         audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
@@ -2209,13 +2224,79 @@ mod tests {
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {
-        assert!(!should_probe_system_audio_permission(true, true));
+        assert!(!should_probe_system_audio_permission(
+            RecordingSourceMode::MicrophonePlusSystem,
+            true,
+            true
+        ));
     }
 
     #[test]
     fn probes_system_audio_permission_only_when_available_and_idle() {
-        assert!(should_probe_system_audio_permission(true, false));
-        assert!(!should_probe_system_audio_permission(false, false));
+        assert!(should_probe_system_audio_permission(
+            RecordingSourceMode::MicrophonePlusSystem,
+            true,
+            false
+        ));
+        assert!(!should_probe_system_audio_permission(
+            RecordingSourceMode::MicrophonePlusSystem,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn system_audio_permission_probe_is_skipped_for_microphone_only() {
+        assert!(!should_probe_system_audio_permission(
+            RecordingSourceMode::MicrophoneOnly,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn microphone_only_readiness_still_reports_the_system_source() {
+        let readiness = assemble_recording_source_readiness(
+            microphone_readiness(),
+            Some(unsupported_system_readiness()),
+            RecordingSourceMode::MicrophoneOnly,
+        );
+        let system = readiness
+            .sources
+            .iter()
+            .find(|source| source.source == RecordingSource::System)
+            .expect("system readiness");
+
+        assert_eq!(system.permission_state, "unsupported");
+        assert!(!system.required);
+    }
+
+    #[test]
+    fn microphone_only_readiness_stays_ready_when_system_is_unsupported() {
+        let readiness = assemble_recording_source_readiness(
+            microphone_readiness(),
+            Some(unsupported_system_readiness()),
+            RecordingSourceMode::MicrophoneOnly,
+        );
+
+        assert!(readiness.ready);
+    }
+
+    #[test]
+    fn microphone_plus_system_keeps_the_system_source_required() {
+        let readiness = assemble_recording_source_readiness(
+            microphone_readiness(),
+            Some(unsupported_system_readiness()),
+            RecordingSourceMode::MicrophonePlusSystem,
+        );
+        let system = readiness
+            .sources
+            .iter()
+            .find(|source| source.source == RecordingSource::System)
+            .expect("system readiness");
+
+        assert!(system.required);
+        assert!(!readiness.ready);
     }
 
     #[test]
@@ -2385,6 +2466,32 @@ mod tests {
             device_available: true,
             capture_available: true,
             recovery_action: Some("openSystemAudioSettings".to_string()),
+            message: None,
+        }
+    }
+
+    fn unsupported_system_readiness() -> SourceReadinessDto {
+        SourceReadinessDto {
+            source: RecordingSource::System,
+            required: true,
+            ready: false,
+            permission_state: "unsupported".to_string(),
+            device_available: false,
+            capture_available: false,
+            recovery_action: Some("upgradeMacos".to_string()),
+            message: Some("System audio capture requires macOS 14.2 or later.".to_string()),
+        }
+    }
+
+    fn microphone_readiness() -> SourceReadinessDto {
+        SourceReadinessDto {
+            source: RecordingSource::Microphone,
+            required: true,
+            ready: true,
+            permission_state: "granted".to_string(),
+            device_available: true,
+            capture_available: true,
+            recovery_action: None,
             message: None,
         }
     }

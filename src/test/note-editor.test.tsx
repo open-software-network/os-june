@@ -857,6 +857,49 @@ describe("NoteEditor", () => {
     expect(onEnableSystemAudio).toHaveBeenCalledOnce();
   });
 
+  it("treats a missing system readiness entry as unsupported in recording options", async () => {
+    const user = userEvent.setup();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        sourceMode="microphoneOnly"
+        sourceReadiness={{
+          sourceMode: "microphoneOnly",
+          ready: true,
+          checkedAt: now,
+          sources: [
+            {
+              source: "microphone",
+              required: true,
+              ready: true,
+              permissionState: "granted",
+              deviceAvailable: true,
+              captureAvailable: true,
+            },
+          ],
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Recording options" }));
+
+    expect(screen.getByText("System audio requires macOS 14.2 or later.")).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Capture system audio" })).not.toBeInTheDocument();
+  });
+
+  it("does not claim system audio is unsupported before readiness is known", async () => {
+    const user = userEvent.setup();
+    render(<NoteEditor {...props} note={note()} sourceMode="microphoneOnly" />);
+
+    await user.click(screen.getByRole("button", { name: "Recording options" }));
+
+    expect(
+      screen.queryByText("System audio requires macOS 14.2 or later."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Capture system audio" })).toBeInTheDocument();
+  });
+
   it("hides system audio recording options on Windows", () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",

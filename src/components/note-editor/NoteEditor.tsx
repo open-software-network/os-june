@@ -191,7 +191,10 @@ export function NoteEditor({
   const systemSource = sourceReadiness?.sources.find((source) => source.source === "system");
   const systemDenied =
     systemSource?.permissionState === "denied" || systemSource?.permissionState === "restricted";
-  const systemUnsupported = systemSource?.permissionState === "unsupported";
+  // A readiness payload that omits the system source means the backend could
+  // not offer it; an absent payload only means the probe has not answered yet.
+  const systemUnsupported =
+    !!sourceReadiness && (!systemSource || systemSource.permissionState === "unsupported");
   const showRecordingOptions = isMacLikePlatform();
   // Mic denial is sourced from App via the dictation helper, not from
   // sourceReadiness — the Rust cpal-based check can't see TCC denials.

@@ -472,7 +472,10 @@ export function AppSettings({
   );
   const systemState = systemReadiness?.permissionState;
   const systemDenied = systemState === "denied" || systemState === "restricted";
-  const systemUnavailable = !macLikePlatform || systemState === "unsupported";
+  // A readiness payload that omits the system source means the backend could
+  // not offer it; an absent payload only means the probe has not answered yet.
+  const systemUnavailable =
+    !macLikePlatform || (!!sourceReadiness && !systemReadiness) || systemState === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
