@@ -305,6 +305,43 @@ fn build_windows_dictation_helper() {
             destination.display()
         )
     });
+    sign_windows_helper_if_configured(&manifest_dir, &destination);
+}
+
+fn sign_windows_helper_if_configured(manifest_dir: &std::path::Path, helper: &std::path::Path) {
+    if std::env::var("WINDOWS_CERTIFICATE_PASSWORD")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return;
+    }
+    let Some(repo_dir) = manifest_dir.parent() else {
+        return;
+    };
+    let script = repo_dir.join("scripts").join("windows-sign.ps1");
+    if !script.exists() {
+        println!(
+            "cargo:warning=Windows signing requested but {} is missing",
+            script.display()
+        );
+        return;
+    }
+    let status = std::process::Command::new("powershell.exe")
+        .arg("-NoLogo")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&script)
+        .arg(helper)
+        .status();
+    if !matches!(status, Ok(status) if status.success()) {
+        println!(
+            "cargo:warning=Windows dictation helper {} could not be signed",
+            helper.display()
+        );
+    }
 }
 
 fn read_system_audio_min_macos_version(manifest_dir: &std::path::Path) -> Option<String> {
