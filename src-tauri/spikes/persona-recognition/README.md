@@ -35,18 +35,22 @@ It never contains embedding vectors or audio bytes. Input audio is never
 uploaded. The public smoke fixture proves mechanics only; the PRD gate requires
 real `system.wav` recordings from different meetings and devices.
 
-A quality PASS requires every evaluation cluster to be labeled, no cluster
-marked `mixed`, no identity split across multiple clusters in one recording,
-an embedding for every labeled cluster, and complete separation between the
-observed genuine and impostor scores. Mixed or fragmented diarization fails;
-unknown clusters or missing score pairs make the result inconclusive.
+A quality PASS requires distinct WAV contents, at least one labeled and
+embeddable cluster from every evaluation recording, every evaluation cluster
+to be labeled, no cluster marked `mixed`, no identity split across multiple
+clusters in one recording, an embedding for every labeled cluster, and complete
+separation between the observed genuine and impostor scores. Mixed or
+fragmented diarization fails; non-contributing recordings, unknown clusters,
+or missing score pairs make the result inconclusive.
 
 ## Runtime choice
 
 The spike uses `sherpa-onnx` 1.13.4 because its current Rust API exposes both
 offline speaker diarization and reusable speaker embeddings, and it publishes
 native artifacts for macOS arm64/x86_64 and Windows x86_64. The wrapper pins
-and verifies the selected native archive before Cargo can use it. The high-level
+and verifies the selected native archive before Cargo can use it. A build script
+rejects the native-library override, re-hashes the selected archive, and embeds
+that verified provenance into the binary's report. The high-level
 diarizer returns speaker segments, not embeddings, so this prototype
 re-extracts one normalized embedding from each cluster. The isolated lockfile
 pins `url` 2.5.2 and `zeroize` 1.8.1 so the graph remains compatible with

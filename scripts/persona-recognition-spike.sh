@@ -118,6 +118,7 @@ if [[ "$#" -lt 2 ]]; then
   exit 2
 fi
 
+unset SHERPA_ONNX_LIB_DIR
 SHERPA_ONNX_ARCHIVE_DIR="$NATIVE" \
 SHERPA_ONNX_ARCHIVE_NAME="$native_archive" \
 SHERPA_ONNX_ARCHIVE_SHA256="$native_checksum" \

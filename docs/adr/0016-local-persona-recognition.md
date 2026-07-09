@@ -57,8 +57,8 @@ Forces:
 
 - **Provider-side diarization** (a diarization-capable ASR upstream) —
   rejected: ships third-party biometric signal off-device, adds a provider
-  contract June API must carry forever, and breaks the "your colleagues'
-  voices never leave your machine" claim, which is the feature's moat.
+  contract June API must carry forever, and adds a new recognition-derived
+  biometric payload. Existing note-transcription audio flow is unchanged.
 - **No diarization — manual tagging only** — rejected: without automatic
   recognition the tag-once promise dies; per-meeting re-tagging is exactly the
   friction personas exist to remove.

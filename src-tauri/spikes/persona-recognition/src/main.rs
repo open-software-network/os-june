@@ -6,6 +6,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use sherpa_onnx::{
     FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
     OfflineSpeakerSegmentationModelConfig, OfflineSpeakerSegmentationPyannoteModelConfig,
@@ -15,7 +16,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     env,
     fs::{self, File},
-    io::{self, BufReader, BufWriter, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -101,6 +102,8 @@ struct ClusterReport {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClusterQualityReport {
+    total_recordings: usize,
+    contributing_recordings: usize,
     total_clusters: usize,
     labeled_clusters: usize,
     unknown_clusters: usize,
@@ -149,10 +152,9 @@ struct VerdictReport {
 
 fn main() -> Result<()> {
     let args = parse_args()?;
-    let native_archive = env::var("SHERPA_ONNX_ARCHIVE_NAME")
-        .context("run through scripts/persona-recognition-spike.sh so native code is pinned")?;
-    let native_archive_sha256 = env::var("SHERPA_ONNX_ARCHIVE_SHA256")
-        .context("run through scripts/persona-recognition-spike.sh so native code is pinned")?;
+    reject_duplicate_inputs(&args.wavs)?;
+    let native_archive = env!("PERSONA_SPIKE_NATIVE_ARCHIVE").to_string();
+    let native_archive_sha256 = env!("PERSONA_SPIKE_NATIVE_ARCHIVE_SHA256").to_string();
     let resampler_smoke = args.resampler_smoke.then(run_resampler_smoke).transpose()?;
     fs::create_dir_all(&args.output_dir)
         .with_context(|| format!("create output dir {}", args.output_dir.display()))?;
@@ -647,6 +649,8 @@ fn summarize(values: &[f32]) -> Distribution {
 }
 
 fn cluster_quality(recordings: &[RecordingReport]) -> ClusterQualityReport {
+    let total_recordings = recordings.len();
+    let mut contributing_recordings = 0;
     let mut total_clusters = 0;
     let mut labeled_clusters = 0;
     let mut unknown_clusters = 0;
@@ -654,6 +658,13 @@ fn cluster_quality(recordings: &[RecordingReport]) -> ClusterQualityReport {
     let mut missing_embeddings = 0;
     let mut fragmented_identities = 0;
     for recording in recordings {
+        if recording
+            .clusters
+            .iter()
+            .any(|cluster| !cluster.mixed && cluster.label.is_some() && cluster.embedding_available)
+        {
+            contributing_recordings += 1;
+        }
         let mut labels = HashMap::<&str, usize>::new();
         for cluster in &recording.clusters {
             total_clusters += 1;
@@ -672,6 +683,8 @@ fn cluster_quality(recordings: &[RecordingReport]) -> ClusterQualityReport {
         fragmented_identities += labels.values().filter(|count| **count > 1).count();
     }
     ClusterQualityReport {
+        total_recordings,
+        contributing_recordings,
         total_clusters,
         labeled_clusters,
         unknown_clusters,
@@ -706,6 +719,18 @@ fn verdict(genuine: &[f32], impostor: &[f32], quality: &ClusterQualityReport) ->
             reason: format!(
                 "{} identity/recording pair(s) were split across multiple clusters.",
                 quality.fragmented_identities
+            ),
+            suggest_threshold_ballpark: None,
+            auto_threshold_ballpark: None,
+            caveat,
+        };
+    }
+    if quality.contributing_recordings < quality.total_recordings {
+        return VerdictReport {
+            status: "INCONCLUSIVE",
+            reason: format!(
+                "Only {} of {} recordings produced a labeled, embeddable cluster.",
+                quality.contributing_recordings, quality.total_recordings
             ),
             suggest_threshold_ballpark: None,
             auto_threshold_ballpark: None,
@@ -781,4 +806,35 @@ fn file_len(path: &Path) -> Result<u64> {
     Ok(fs::metadata(path)
         .with_context(|| format!("read metadata for {}", path.display()))?
         .len())
+}
+
+fn reject_duplicate_inputs(paths: &[PathBuf]) -> Result<()> {
+    let mut seen = HashMap::<String, &Path>::new();
+    for path in paths {
+        let digest = sha256_file(path)?;
+        if let Some(first) = seen.insert(digest.clone(), path) {
+            bail!(
+                "duplicate recording content: {} and {} have SHA-256 {digest}",
+                first.display(),
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }

@@ -28,7 +28,10 @@ between meetings, and June does nothing to prepare them.
    meeting they appear in.
 3. **Preparation.** Before an expected meeting, June writes a prep brief:
    last time, open commitments, suggested asks shaped by relationship.
-4. **Fully local.** Voiceprints and dossiers never leave the device.
+4. **Local-owned memory.** Voiceprints and recognition stay on-device. Dossiers
+   have a local source of truth; when the user asks June's agent about a person,
+   the relevant dossier context may be sent to the user's configured agent model
+   just like note context in an ordinary chat.
 
 ## Non-goals
 
@@ -158,7 +161,7 @@ commitments, voiceprint count, last seen. Lifecycle:
 
 ```
 ┌────────────────────────────────────────────────────┐
-│ persona recognition + memory are local-only          │
+│ on-device recognition + local memory source of truth│
 │                                                      │
 │  saved meeting audio (both lanes)                    │
 │        │ diarize (bundled, pinned model)             │
@@ -175,7 +178,10 @@ commitments, voiceprint count, last seen. Lifecycle:
 │   • dossier update         (identity, relationship,  │
 │   • prep brief              dossier prose,           │
 │   • chat over people        commitments)             │
-└────────────────────────────────────────────────────┘
+│        │ selected note/dossier context             │
+└────────┼───────────────────────────────────────────┘
+         ▼
+  configured agent model (may be remote)
 ```
 
 - Diarization + embedding model: bundled and pinned like the Hermes runtime
@@ -195,8 +201,12 @@ Personas are the user's private memory aid — same category as their own notes.
 They organize what the user already lawfully records; no new capture. Three
 commitments, written down as product constraints:
 
-1. Voiceprints and dossiers never leave the device.
-2. They are excluded from any future sync/backup unless end-to-end encrypted.
+1. Voiceprints, recognition audio, and recognition embeddings never leave the
+   device. Dossiers are stored only on-device, but selected dossier context may
+   be sent to the configured agent model when June's agent uses persona tools
+   to answer the user's request.
+2. Voiceprints and dossiers are excluded from any future sync/backup unless
+   end-to-end encrypted.
 3. Delete-with-scrub is real erasure.
 
 No third-party notification or consent popups. Recording-consent law concerns
