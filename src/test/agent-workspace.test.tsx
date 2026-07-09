@@ -303,6 +303,19 @@ function mockVideoGenerationSuccess() {
   });
 }
 
+type StoredVideoSlashTurnForTest = {
+  id: string;
+  pending?: boolean;
+  jobId?: string;
+};
+
+function storedVideoSlashTurnsForTest(): StoredVideoSlashTurnForTest[] {
+  const raw = window.localStorage.getItem("june:agent:video-slash-turns");
+  if (!raw) return [];
+  const parsed = JSON.parse(raw) as Record<string, StoredVideoSlashTurnForTest[]>;
+  return Object.values(parsed).flat();
+}
+
 async function emitImageSafeModeConsent(prompt = "paint a nude portrait") {
   const handler = mocks.eventHandlers.get("image-safe-mode-consent");
   expect(handler).toBeDefined();
@@ -8253,6 +8266,89 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument();
     expect(mocks.imagePromptMayBeExplicit).toHaveBeenCalledWith("a red bicycle");
     expect(mocks.videoGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes the persisted /video pending turn after a terminal submit failure", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    mocks.videoGenerate.mockResolvedValueOnce({ jobId: "video-job-terminal" });
+    mocks.videoStatus.mockResolvedValueOnce({
+      status: "failed",
+      reason: "provider rejected the video",
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/video a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    expect(await screen.findByText("provider rejected the video")).toBeInTheDocument();
+    expect(storedVideoSlashTurnsForTest()).toEqual([]);
+  });
+
+  it("keeps the persisted /video pending turn when the submit poll budget expires", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    mocks.videoGenerate.mockResolvedValueOnce({ jobId: "video-job-slow" });
+    mocks.videoStatus.mockResolvedValue({
+      status: "processing",
+      averageExecutionMs: 920_000,
+      executionMs: 900_000,
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(await screen.findByRole("textbox"), "/video a slow render");
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(900_000);
+      });
+
+      expect(mocks.videoStatus).toHaveBeenCalledTimes(360);
+      expect(storedVideoSlashTurnsForTest()).toEqual([
+        expect.objectContaining({
+          pending: true,
+          jobId: "video-job-slow",
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("removes the persisted /video pending turn after a terminal resume failure", async () => {
+    window.localStorage.setItem(
+      "june:agent:video-slash-turns",
+      JSON.stringify({
+        "session-1": [
+          {
+            id: "video:session-1:1",
+            prompt: "a stale render",
+            path: "",
+            name: "",
+            createdAt: "2026-06-04T12:00:00.000Z",
+            videoCreatedAt: "2026-06-04T12:00:00.001Z",
+            pending: true,
+            requestId: "video-request-stale",
+            model: "wan-2.2-a14b-text-to-video",
+            jobId: "video-job-stale",
+          },
+        ],
+      }),
+    );
+    mocks.videoStatus.mockResolvedValueOnce({
+      status: "failed",
+      reason: "job expired",
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("job expired")).toBeInTheDocument();
+    expect(storedVideoSlashTurnsForTest()).toEqual([]);
   });
 
   it("skips the /video prompt screen entirely when safe mode is off", async () => {

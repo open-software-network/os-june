@@ -1410,6 +1410,22 @@ function upsertStoredVideoSlashTurn(turn: PersistedVideoSlashTurn) {
   writeStoredVideoSlashTurns(turns);
 }
 
+function removeStoredVideoSlashTurn(id: string) {
+  const turns = storedVideoSlashTurns();
+  let changed = false;
+  for (const [sessionId, sessionTurns] of Object.entries(turns)) {
+    const nextTurns = sessionTurns.filter((item) => item.id !== id);
+    if (nextTurns.length === sessionTurns.length) continue;
+    changed = true;
+    if (nextTurns.length) {
+      turns[sessionId] = nextTurns;
+    } else {
+      delete turns[sessionId];
+    }
+  }
+  if (changed) writeStoredVideoSlashTurns(turns);
+}
+
 function removeStoredVideoSlashSession(sessionId: string) {
   const turns = storedVideoSlashTurns();
   if (!turns[sessionId]) return;
@@ -4457,6 +4473,9 @@ export function AgentWorkspace({
           error: result.message,
           jobId: result.jobId,
         });
+        if (!result.stillRunning) {
+          removeStoredVideoSlashTurn(turnId);
+        }
         return;
       }
       const name = filenameFromWorkspacePath(result.path, "generated-video.mp4");
@@ -4619,6 +4638,7 @@ export function AgentWorkspace({
       error: result.message,
       jobId,
     });
+    removeStoredVideoSlashTurn(turn.id);
   }
 
   async function retryVideoSlashTurn(
