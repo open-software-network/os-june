@@ -1202,7 +1202,7 @@ fn profile_overrides_empty(overrides: &ProfileModelOverrides) -> bool {
         && overrides.image_model.is_none()
 }
 
-fn active_profile_for_hermes_home(hermes_home: &std::path::Path) -> String {
+pub(crate) fn active_profile_for_hermes_home(hermes_home: &std::path::Path) -> String {
     fs::read_to_string(hermes_home.join("active_profile"))
         .ok()
         .map(|profile| profile.trim().to_string())

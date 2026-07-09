@@ -158,10 +158,14 @@ impl Repositories {
             .collect())
     }
 
-    pub async fn list_folders(&self) -> Result<Vec<FolderDto>, sqlx::error::Error> {
+    pub async fn list_folders(&self, profile: &str) -> Result<Vec<FolderDto>, sqlx::error::Error> {
         let rows = query(
-            "SELECT id, name, description, created_at, updated_at FROM folders WHERE deleted_at IS NULL ORDER BY lower(name) ASC",
+            "SELECT id, name, description, created_at, updated_at
+             FROM folders
+             WHERE profile = ? AND deleted_at IS NULL
+             ORDER BY lower(name) ASC",
         )
+        .bind(profile)
         .fetch_all(&self.pool)
         .await?;
 
@@ -170,6 +174,7 @@ impl Repositories {
 
     pub async fn create_folder(
         &self,
+        profile: &str,
         name: impl AsRef<str>,
         description: Option<&str>,
     ) -> Result<FolderDto, sqlx::error::Error> {
@@ -186,11 +191,13 @@ impl Repositories {
         };
 
         query(
-            "INSERT INTO folders (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO folders (id, name, description, profile, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&folder.id)
         .bind(&folder.name)
         .bind(&folder.description)
+        .bind(profile)
         .bind(&folder.created_at)
         .bind(&folder.updated_at)
         .execute(&self.pool)
@@ -238,6 +245,7 @@ impl Repositories {
 
     pub async fn create_note(
         &self,
+        profile: &str,
         folder_id: Option<String>,
     ) -> Result<NoteDto, sqlx::error::Error> {
         let now = timestamp();
@@ -245,9 +253,11 @@ impl Repositories {
 
         let mut tx = self.pool.begin().await?;
         query(
-            "INSERT INTO notes (id, title, processing_status, created_at, updated_at) VALUES (?, '', 'draft', ?, ?)",
+            "INSERT INTO notes (id, title, processing_status, profile, created_at, updated_at)
+             VALUES (?, '', 'draft', ?, ?, ?)",
         )
         .bind(&id)
+        .bind(profile)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -312,6 +322,7 @@ impl Repositories {
 
     pub async fn list_notes(
         &self,
+        profile: &str,
         folder_id: Option<String>,
         limit: i64,
         _cursor: Option<String>,
@@ -321,11 +332,12 @@ impl Repositories {
                 "SELECT n.id, n.title, n.generated_content, n.edited_content, n.processing_status, n.created_at, n.updated_at
                  FROM notes n
                  INNER JOIN note_folders nf ON nf.note_id = n.id
-                 WHERE nf.folder_id = ?
+                 WHERE nf.folder_id = ? AND n.profile = ?
                  ORDER BY n.created_at DESC, n.rowid DESC
                  LIMIT ?",
             )
             .bind(folder_id)
+            .bind(profile)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -333,9 +345,11 @@ impl Repositories {
             query(
                 "SELECT id, title, generated_content, edited_content, processing_status, created_at, updated_at
                  FROM notes
+                 WHERE profile = ?
                  ORDER BY created_at DESC, rowid DESC
                  LIMIT ?",
             )
+            .bind(profile)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -466,6 +480,7 @@ impl Repositories {
 
     pub async fn create_dictation_history_item(
         &self,
+        profile: &str,
         text: &str,
         language: Option<String>,
         provider: &str,
@@ -482,13 +497,14 @@ impl Repositories {
             created_at: timestamp(),
         };
         query(
-            "INSERT INTO dictation_history (id, text, language, provider, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO dictation_history (id, text, language, provider, profile, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&item.id)
         .bind(&item.text)
         .bind(&item.language)
         .bind(&item.provider)
+        .bind(profile)
         .bind(&item.created_at)
         .execute(&self.pool)
         .await?;
@@ -498,16 +514,18 @@ impl Repositories {
 
     pub async fn list_dictation_history(
         &self,
+        profile: &str,
         limit: i64,
     ) -> Result<ListDictationHistoryResponse, sqlx::error::Error> {
         self.prune_old_dictation_history().await?;
         let rows = query(
             "SELECT id, text, language, provider, created_at
              FROM dictation_history
-             WHERE created_at >= ?
+             WHERE profile = ? AND created_at >= ?
              ORDER BY created_at DESC, rowid DESC
              LIMIT ?",
         )
+        .bind(profile)
         .bind(dictation_history_cutoff_timestamp())
         .bind(limit.clamp(1, 500))
         .fetch_all(&self.pool)

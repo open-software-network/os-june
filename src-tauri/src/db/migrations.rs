@@ -138,6 +138,29 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     )
     .await?;
     ensure_column(_pool, "p3a_counters", "reported_at", "TEXT").await?;
+    ensure_column(_pool, "notes", "profile", "TEXT NOT NULL DEFAULT 'default'").await?;
+    ensure_column(
+        _pool,
+        "dictation_history",
+        "profile",
+        "TEXT NOT NULL DEFAULT 'default'",
+    )
+    .await?;
+    ensure_column(
+        _pool,
+        "folders",
+        "profile",
+        "TEXT NOT NULL DEFAULT 'default'",
+    )
+    .await?;
+    if !index_exists(_pool, "idx_notes_profile_created_at").await? {
+        query(
+            "CREATE INDEX IF NOT EXISTS idx_notes_profile_created_at
+             ON notes (profile, created_at DESC)",
+        )
+        .execute(_pool)
+        .await?;
+    }
     Ok(())
 }
 

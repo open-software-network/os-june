@@ -1,3 +1,5 @@
+use crate::hermes_bridge::resolve_june_hermes_home;
+use crate::providers::active_profile_for_hermes_home;
 use crate::{
     app_paths::AppPaths,
     audio::{
@@ -60,6 +62,7 @@ use tokio::{sync::OnceCell, time::sleep};
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
+    let profile = active_profile(&app);
     // Complete stale tasks that already received their assistant reply
     // before pausing the rest: the repair only considers queued/running
     // tasks, so it must run before they are flipped to paused.
@@ -74,11 +77,11 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
             .await?;
     }
     let folders = repos
-        .list_folders()
+        .list_folders(&profile)
         .await
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
     let notes = repos
-        .list_notes(None, 100, None)
+        .list_notes(&profile, None, 100, None)
         .await
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
         .items;
@@ -92,9 +95,10 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
 
 #[tauri::command]
 pub async fn create_note(app: AppHandle, request: CreateNoteRequest) -> Result<NoteDto, AppError> {
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
-        .create_note(request.folder_id)
+        .create_note(&profile, request.folder_id)
         .await?)
 }
 
@@ -103,9 +107,11 @@ pub async fn list_notes(
     app: AppHandle,
     request: ListNotesRequest,
 ) -> Result<ListNotesResponse, AppError> {
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
         .list_notes(
+            &profile,
             request.folder_id,
             request.limit.unwrap_or(100),
             request.cursor,
@@ -197,9 +203,10 @@ pub async fn create_folder(
             "Folder name is required.",
         ));
     }
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
-        .create_folder(name, request.description.as_deref())
+        .create_folder(&profile, name, request.description.as_deref())
         .await?)
 }
 
@@ -207,7 +214,8 @@ pub async fn create_folder(
 pub async fn list_folders(
     app: AppHandle,
 ) -> Result<Vec<crate::domain::types::FolderDto>, AppError> {
-    Ok(repositories(&app).await?.list_folders().await?)
+    let profile = active_profile(&app);
+    Ok(repositories(&app).await?.list_folders(&profile).await?)
 }
 
 #[tauri::command]
@@ -2175,6 +2183,12 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
         })
         .await
         .cloned()
+}
+
+pub(crate) fn active_profile(app: &AppHandle) -> String {
+    resolve_june_hermes_home(app)
+        .map(|hermes_home| active_profile_for_hermes_home(&hermes_home))
+        .unwrap_or_else(|_| "default".to_string())
 }
 
 fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {

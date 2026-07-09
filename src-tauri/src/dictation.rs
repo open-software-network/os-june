@@ -738,9 +738,10 @@ pub fn dictation_settings(
 pub async fn list_dictation_history(
     app: AppHandle,
 ) -> Result<ListDictationHistoryResponse, AppError> {
+    let profile = crate::commands::active_profile(&app);
     crate::commands::repositories(&app)
         .await?
-        .list_dictation_history(200)
+        .list_dictation_history(&profile, 200)
         .await
         .map_err(AppError::from)
 }
@@ -3174,8 +3175,10 @@ fn skip_word_separators(value: &str) -> &str {
 async fn store_dictation_history_item(app: &AppHandle, transcript: &TranscriptionProviderResult) {
     match crate::commands::repositories(app).await {
         Ok(repos) => {
+            let profile = crate::commands::active_profile(app);
             if let Err(error) = repos
                 .create_dictation_history_item(
+                    &profile,
                     &transcript.text,
                     transcript.language.clone(),
                     &transcript.provider,

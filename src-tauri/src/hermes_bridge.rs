@@ -6408,7 +6408,7 @@ fn sbpl_regex_escape(value: &str) -> String {
     escaped
 }
 
-fn resolve_june_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
+pub(crate) fn resolve_june_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
     let path = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("hermes_bridge_home_failed", error.to_string()))?
         .join("hermes");
