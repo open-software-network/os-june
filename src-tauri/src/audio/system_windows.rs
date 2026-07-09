@@ -230,14 +230,35 @@ enum MixSampleFormat {
 
 #[cfg(target_os = "windows")]
 struct WasapiLoopbackBackend {
-    _com: ComApartment,
     audio_client: windows::Win32::Media::Audio::IAudioClient,
     capture_client: windows::Win32::Media::Audio::IAudioCaptureClient,
+    _com: ComApartment,
     channels: u16,
     sample_rate: u32,
     bytes_per_frame: usize,
     sample_format: MixSampleFormat,
     started: bool,
+}
+
+#[cfg(target_os = "windows")]
+struct MixFormatPtr(*mut windows::Win32::Media::Audio::WAVEFORMATEX);
+
+#[cfg(target_os = "windows")]
+impl MixFormatPtr {
+    fn new(ptr: *mut windows::Win32::Media::Audio::WAVEFORMATEX) -> Self {
+        Self(ptr)
+    }
+
+    fn as_ptr(&self) -> *mut windows::Win32::Media::Audio::WAVEFORMATEX {
+        self.0
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for MixFormatPtr {
+    fn drop(&mut self) {
+        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(self.0.cast())) };
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -253,54 +274,52 @@ impl WasapiLoopbackBackend {
             IAudioCaptureClient, IAudioClient, AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_LOOPBACK,
         };
-        use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL};
+        use windows::Win32::System::Com::CLSCTX_ALL;
 
         let com = ComApartment::new()?;
         let device = default_render_endpoint()?;
         let audio_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-        let mix_format = unsafe { audio_client.GetMixFormat() }
+        let mix_format = MixFormatPtr::new(
+            unsafe { audio_client.GetMixFormat() }
+                .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?,
+        );
+        let format = unsafe { *mix_format.as_ptr() };
+        let channels = format.nChannels;
+        let sample_rate = format.nSamplesPerSec;
+        let bytes_per_frame = format.nBlockAlign as usize;
+        let sample_format = mix_sample_format(mix_format.as_ptr())?;
+        if channels == 0 || sample_rate == 0 || bytes_per_frame == 0 {
+            return Err(AppError::new(
+                "system_audio_unavailable",
+                "Default output device reported an unusable audio format.",
+            ));
+        }
+        unsafe {
+            audio_client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                10_000_000,
+                0,
+                mix_format.as_ptr(),
+                None,
+            )
+        }
+        .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
+        let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
             .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-        let result = (|| {
-            let format = unsafe { *mix_format };
-            let channels = format.nChannels;
-            let sample_rate = format.nSamplesPerSec;
-            let bytes_per_frame = format.nBlockAlign as usize;
-            let sample_format = mix_sample_format(mix_format)?;
-            if channels == 0 || sample_rate == 0 || bytes_per_frame == 0 {
-                return Err(AppError::new(
-                    "system_audio_unavailable",
-                    "Default output device reported an unusable audio format.",
-                ));
-            }
-            unsafe {
-                audio_client.Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_LOOPBACK,
-                    10_000_000,
-                    0,
-                    mix_format,
-                    None,
-                )
-            }
+        unsafe { audio_client.Start() }
             .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-            let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
-                .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-            unsafe { audio_client.Start() }
-                .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-            Ok(Self {
-                _com: com,
-                audio_client,
-                capture_client,
-                channels,
-                sample_rate,
-                bytes_per_frame,
-                sample_format,
-                started: true,
-            })
-        })();
-        unsafe { CoTaskMemFree(Some(mix_format.cast())) };
-        result
+        Ok(Self {
+            audio_client,
+            capture_client,
+            _com: com,
+            channels,
+            sample_rate,
+            bytes_per_frame,
+            sample_format,
+            started: true,
+        })
     }
 
     fn write_next_packet(
