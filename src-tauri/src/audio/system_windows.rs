@@ -12,6 +12,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "windows")]
+use windows::core::GUID;
+
 pub const SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CAPTURE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -170,6 +173,16 @@ fn default_render_endpoint_available() -> Result<(), AppError> {
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MixSampleFormat {
+    PcmUnsigned8,
+    PcmSigned16,
+    PcmSigned24,
+    PcmSigned32,
+    Float32,
+}
+
+#[cfg(target_os = "windows")]
 struct WasapiLoopbackBackend {
     _com: ComApartment,
     audio_client: windows::Win32::Media::Audio::IAudioClient,
@@ -177,13 +190,14 @@ struct WasapiLoopbackBackend {
     channels: u16,
     sample_rate: u32,
     bytes_per_frame: usize,
+    sample_format: MixSampleFormat,
 }
 
 #[cfg(target_os = "windows")]
 impl WasapiLoopbackBackend {
     fn probe_default_endpoint() -> Result<(), AppError> {
-        let _com = ComApartment::new()?;
-        let _ = default_render_endpoint()?;
+        let backend = Self::new()?;
+        drop(backend);
         Ok(())
     }
 
@@ -200,42 +214,45 @@ impl WasapiLoopbackBackend {
             .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
         let mix_format = unsafe { audio_client.GetMixFormat() }
             .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-        let format = unsafe { *mix_format };
-        let channels = format.nChannels;
-        let sample_rate = format.nSamplesPerSec;
-        let bytes_per_frame = format.nBlockAlign as usize;
-        if channels == 0 || sample_rate == 0 || bytes_per_frame == 0 {
-            unsafe { CoTaskMemFree(Some(mix_format.cast())) };
-            return Err(AppError::new(
-                "system_audio_unavailable",
-                "Default output device reported an unusable audio format.",
-            ));
-        }
-        let initialize_result = unsafe {
-            audio_client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK,
-                10_000_000,
-                0,
-                mix_format,
-                None,
-            )
-        };
+        let result = (|| {
+            let format = unsafe { *mix_format };
+            let channels = format.nChannels;
+            let sample_rate = format.nSamplesPerSec;
+            let bytes_per_frame = format.nBlockAlign as usize;
+            let sample_format = mix_sample_format(mix_format)?;
+            if channels == 0 || sample_rate == 0 || bytes_per_frame == 0 {
+                return Err(AppError::new(
+                    "system_audio_unavailable",
+                    "Default output device reported an unusable audio format.",
+                ));
+            }
+            unsafe {
+                audio_client.Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_LOOPBACK,
+                    10_000_000,
+                    0,
+                    mix_format,
+                    None,
+                )
+            }
+            .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
+            let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
+                .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
+            unsafe { audio_client.Start() }
+                .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
+            Ok(Self {
+                _com: com,
+                audio_client,
+                capture_client,
+                channels,
+                sample_rate,
+                bytes_per_frame,
+                sample_format,
+            })
+        })();
         unsafe { CoTaskMemFree(Some(mix_format.cast())) };
-        initialize_result
-            .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-        let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
-            .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-        unsafe { audio_client.Start() }
-            .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
-        Ok(Self {
-            _com: com,
-            audio_client,
-            capture_client,
-            channels,
-            sample_rate,
-            bytes_per_frame,
-        })
+        result
     }
 
     fn write_next_packet(
@@ -265,7 +282,14 @@ impl WasapiLoopbackBackend {
         } else {
             let bytes = frames as usize * self.bytes_per_frame;
             let samples = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
-            write_pcm16_from_mix_format(writer, samples, self.channels, self.bytes_per_frame, stats)
+            write_pcm16_from_mix_format(
+                writer,
+                samples,
+                self.channels,
+                self.bytes_per_frame,
+                self.sample_format,
+                stats,
+            )
         };
         let release_result = unsafe { self.capture_client.ReleaseBuffer(frames) }
             .map_err(|error| AppError::new("system_audio_capture_unavailable", error.to_string()));
@@ -369,6 +393,7 @@ fn write_pcm16_from_mix_format(
     bytes: &[u8],
     channels: u16,
     bytes_per_frame: usize,
+    sample_format: MixSampleFormat,
     stats: &Arc<Mutex<WindowsSystemAudioStats>>,
 ) -> Result<(), AppError> {
     let channels = channels as usize;
@@ -390,7 +415,7 @@ fn write_pcm16_from_mix_format(
     let mut samples_written = 0_i64;
     for frame in bytes.chunks_exact(bytes_per_frame) {
         for sample in frame.chunks_exact(bytes_per_sample).take(channels) {
-            let normalized = sample_to_f32(sample);
+            let normalized = sample_to_f32(sample, sample_format);
             let pcm_sample = (normalized.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
             let magnitude = normalized.abs();
             peak = peak.max(magnitude);
@@ -410,17 +435,104 @@ fn write_pcm16_from_mix_format(
     Ok(())
 }
 
-fn sample_to_f32(sample: &[u8]) -> f32 {
-    match sample.len() {
-        4 => f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]),
-        3 => {
+fn sample_to_f32(sample: &[u8], sample_format: MixSampleFormat) -> f32 {
+    match sample_format {
+        MixSampleFormat::Float32 => {
+            f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]])
+        }
+        MixSampleFormat::PcmSigned32 => {
+            i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f32
+                / i32::MAX as f32
+        }
+        MixSampleFormat::PcmSigned24 => {
             let sign = if sample[2] & 0x80 == 0 { 0x00 } else { 0xff };
             i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0
         }
-        2 => i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32,
-        1 => (sample[0] as f32 - 128.0) / 128.0,
-        _ => 0.0,
+        MixSampleFormat::PcmSigned16 => {
+            i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32
+        }
+        MixSampleFormat::PcmUnsigned8 => (sample[0] as f32 - 128.0) / 128.0,
     }
+}
+
+#[cfg(target_os = "windows")]
+fn mix_sample_format(
+    format_ptr: *mut windows::Win32::Media::Audio::WAVEFORMATEX,
+) -> Result<MixSampleFormat, AppError> {
+    const WAVE_FORMAT_PCM: u16 = 0x0001;
+    const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
+    const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+
+    let format = unsafe { &*format_ptr };
+    match format.wFormatTag {
+        WAVE_FORMAT_PCM => pcm_sample_format(format.wBitsPerSample),
+        WAVE_FORMAT_IEEE_FLOAT => {
+            if format.wBitsPerSample == 32 {
+                Ok(MixSampleFormat::Float32)
+            } else {
+                Err(unusable_format_error())
+            }
+        }
+        WAVE_FORMAT_EXTENSIBLE => mix_sample_format_extensible(format_ptr),
+        _ => Err(unusable_format_error()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn mix_sample_format_extensible(
+    format_ptr: *mut windows::Win32::Media::Audio::WAVEFORMATEX,
+) -> Result<MixSampleFormat, AppError> {
+    use windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE;
+
+    let format = unsafe { &*(format_ptr as *const WAVEFORMATEXTENSIBLE) };
+    let sub_format = unsafe { std::ptr::addr_of!(format.SubFormat).read_unaligned() };
+    let bits_per_sample = format.Format.wBitsPerSample;
+    let valid_bits_per_sample = unsafe { format.Samples.wValidBitsPerSample };
+    if bits_per_sample == 32 && sub_format == ksdataformat_subtype_ieee_float() {
+        return Ok(MixSampleFormat::Float32);
+    }
+    if sub_format == ksdataformat_subtype_pcm() {
+        return pcm_sample_format(valid_bits_per_sample.max(bits_per_sample));
+    }
+    Err(unusable_format_error())
+}
+
+#[cfg(target_os = "windows")]
+fn pcm_sample_format(bits_per_sample: u16) -> Result<MixSampleFormat, AppError> {
+    match bits_per_sample {
+        8 => Ok(MixSampleFormat::PcmUnsigned8),
+        16 => Ok(MixSampleFormat::PcmSigned16),
+        24 => Ok(MixSampleFormat::PcmSigned24),
+        32 => Ok(MixSampleFormat::PcmSigned32),
+        _ => Err(unusable_format_error()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ksdataformat_subtype_pcm() -> GUID {
+    GUID::from_values(
+        0x00000001,
+        0x0000,
+        0x0010,
+        [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71],
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn ksdataformat_subtype_ieee_float() -> GUID {
+    GUID::from_values(
+        0x00000003,
+        0x0000,
+        0x0010,
+        [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71],
+    )
+}
+
+fn unusable_format_error() -> AppError {
+    AppError::new(
+        "system_audio_unavailable",
+        "Default output device reported an unusable audio format.",
+    )
 }
 
 fn update_stats(
@@ -449,8 +561,21 @@ mod tests {
 
     #[test]
     fn sample_conversion_handles_float_and_integer_mix_formats() {
-        assert!((sample_to_f32(&1.0_f32.to_le_bytes()) - 1.0).abs() < f32::EPSILON);
-        assert_eq!(sample_to_f32(&0_i16.to_le_bytes()), 0.0);
-        assert!((sample_to_f32(&i16::MAX.to_le_bytes()) - 1.0).abs() < 0.0001);
+        assert!(
+            (sample_to_f32(&1.0_f32.to_le_bytes(), MixSampleFormat::Float32) - 1.0).abs()
+                < f32::EPSILON
+        );
+        assert_eq!(
+            sample_to_f32(&0_i16.to_le_bytes(), MixSampleFormat::PcmSigned16),
+            0.0
+        );
+        assert!(
+            (sample_to_f32(&i16::MAX.to_le_bytes(), MixSampleFormat::PcmSigned16) - 1.0).abs()
+                < 0.0001
+        );
+        assert!(
+            (sample_to_f32(&i32::MAX.to_le_bytes(), MixSampleFormat::PcmSigned32) - 1.0).abs()
+                < 0.0001
+        );
     }
 }

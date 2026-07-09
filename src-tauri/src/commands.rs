@@ -948,7 +948,7 @@ pub async fn start_recording(
             started.device_label.clone(),
         )
         .await?;
-    repos
+    if let Err(error) = repos
         .add_checkpoint(
             &started.session_id,
             "source_readiness",
@@ -964,9 +964,15 @@ pub async fn start_recording(
                 .to_string(),
             ),
         )
-        .await?;
+        .await
+    {
+        eprintln!(
+            "failed to persist source_readiness checkpoint for {}: {}",
+            started.session_id, error
+        );
+    }
     for source in &readiness.sources {
-        repos
+        if let Err(error) = repos
             .add_source_checkpoint(
                 &started.session_id,
                 None,
@@ -987,7 +993,15 @@ pub async fn start_recording(
                     .to_string(),
                 ),
             )
-            .await?;
+            .await
+        {
+            eprintln!(
+                "failed to persist source_readiness checkpoint for {} source {}: {}",
+                started.session_id,
+                source.source.as_db(),
+                error
+            );
+        }
     }
     for source in &started.sources {
         repos
@@ -1239,7 +1253,7 @@ async fn finish_recording_session(
             .iter()
             .find(|artifact| artifact.source == source.source.as_db());
         if let Some(issue) = source.capture_issue.as_ref() {
-            repos
+            if let Err(error) = repos
                 .add_source_checkpoint(
                     &finished.session_id,
                     source_artifact.map(|artifact| artifact.id.as_str()),
@@ -1253,7 +1267,15 @@ async fn finish_recording_session(
                         .to_string(),
                     ),
                 )
-                .await?;
+                .await
+            {
+                eprintln!(
+                    "failed to persist capture_stream_error checkpoint for {} source {}: {}",
+                    finished.session_id,
+                    source.source.as_db(),
+                    error
+                );
+            }
         }
         let validation = validate_audio_artifact(
             &source.final_path,
@@ -1266,37 +1288,27 @@ async fn finish_recording_session(
             .map(|metadata| metadata.len() as i64)
             .unwrap_or_default();
         let valid = source_audio_passes_validation(source.source, &validation);
-        let validation_taxonomy_code = validation_taxonomy_code(&validation, valid);
-        repos
-            .add_source_checkpoint(
-                &finished.session_id,
-                source_artifact.map(|artifact| artifact.id.as_str()),
-                Some(source.source.as_db()),
-                "source_audio_validation",
-                Some(
-                    serde_json::json!({
-                        "path": source.final_path.to_string_lossy(),
-                        "elapsedMs": source.elapsed_ms,
-                        "fileSizeBytes": file_size,
-                        "checksum": checksum,
-                        "fileExists": validation.file_exists,
-                        "nonZeroSize": validation.non_zero_size,
-                        "readableAudio": validation.readable_audio,
-                        "expectedDurationMs": validation.expected_duration_ms,
-                        "actualDurationMs": validation.actual_duration_ms,
-                        "durationWithinTolerance": validation.duration_within_tolerance,
-                        "nonSilentSignal": validation.non_silent_signal,
-                        "recordedSilence": validation.recorded_silence,
-                        "peakAmplitude": validation.peak_amplitude,
-                        "rmsAmplitude": validation.rms_amplitude,
-                        "valid": valid,
-                        "taxonomyCode": validation_taxonomy_code,
-                        "warnings": validation.warnings,
-                    })
-                    .to_string(),
-                ),
-            )
-            .await?;
+        let validation_taxonomy = validation_taxonomy_code(&validation, valid);
+        let validation_checkpoint_details = serde_json::json!({
+            "path": source.final_path.to_string_lossy(),
+            "elapsedMs": source.elapsed_ms,
+            "fileSizeBytes": file_size,
+            "checksum": checksum,
+            "fileExists": validation.file_exists,
+            "nonZeroSize": validation.non_zero_size,
+            "readableAudio": validation.readable_audio,
+            "expectedDurationMs": validation.expected_duration_ms,
+            "actualDurationMs": validation.actual_duration_ms,
+            "durationWithinTolerance": validation.duration_within_tolerance,
+            "nonSilentSignal": validation.non_silent_signal,
+            "recordedSilence": validation.recorded_silence,
+            "peakAmplitude": validation.peak_amplitude,
+            "rmsAmplitude": validation.rms_amplitude,
+            "valid": valid,
+            "taxonomyCode": validation_taxonomy,
+            "warnings": validation.warnings,
+        })
+        .to_string();
         if source.source == RecordingSource::Microphone {
             primary_validation = Some(validation.clone());
             primary_checksum = checksum.clone();
@@ -1321,6 +1333,23 @@ async fn finish_recording_session(
                     },
                 )
                 .await?;
+            if let Err(error) = repos
+                .add_source_checkpoint(
+                    &finished.session_id,
+                    Some(artifact.id.as_str()),
+                    Some(source.source.as_db()),
+                    "source_audio_validation",
+                    Some(validation_checkpoint_details.clone()),
+                )
+                .await
+            {
+                eprintln!(
+                    "failed to persist source_audio_validation checkpoint for {} source {}: {}",
+                    finished.session_id,
+                    source.source.as_db(),
+                    error
+                );
+            }
             if valid {
                 valid_sources.push((
                     artifact.id.clone(),
@@ -1539,7 +1568,10 @@ fn readiness_taxonomy_code(source: &SourceReadinessDto) -> &'static str {
     }
 }
 
-fn validation_taxonomy_code(validation: &crate::domain::types::AudioValidationDto, valid: bool) -> &'static str {
+fn validation_taxonomy_code(
+    validation: &crate::domain::types::AudioValidationDto,
+    valid: bool,
+) -> &'static str {
     if valid {
         return "valid";
     }
