@@ -1497,6 +1497,64 @@ describe("AppSettings", () => {
     expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    {
+      name: "capable but never probed",
+      system: { ready: true, permissionState: "unknown" as const, captureAvailable: true },
+      status: "Unknown",
+    },
+    {
+      name: "granted but the capture is unavailable",
+      system: { ready: false, permissionState: "granted" as const, captureAvailable: false },
+      status: "Unavailable",
+    },
+  ])("does not label system audio allowed when it is $name", async ({ system, status }) => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        sourceReadiness={{
+          sourceMode: "microphonePlusSystem",
+          ready: false,
+          checkedAt: "2026-06-08T12:00:00Z",
+          sources: [
+            {
+              source: "microphone",
+              required: true,
+              ready: true,
+              permissionState: "granted",
+              deviceAvailable: true,
+              captureAvailable: true,
+            },
+            {
+              source: "system",
+              required: true,
+              deviceAvailable: true,
+              ...system,
+            },
+          ],
+        }}
+        checkingSourceReadiness={false}
+        microphonePermissionStatus="granted"
+        accessibilityPermissionStatus="granted"
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableMicrophone={vi.fn()}
+        onEnableAccessibility={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
+
+    expect(within(systemAudioRow as HTMLElement).getByLabelText(status)).toBeInTheDocument();
+    expect(
+      within(systemAudioRow as HTMLElement).queryByLabelText("Allowed"),
+    ).not.toBeInTheDocument();
+  });
+
   it("only lists microphone permissions on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
