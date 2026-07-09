@@ -952,6 +952,7 @@ final class FocusTargetController {
     static let shared = FocusTargetController()
 
     private var lastExternalApp: NSRunningApplication?
+    private var pinnedTarget: NSRunningApplication?
     private let ignoredBundleIdentifiers: Set<String> = [
         "co.opensoftware.june.dictation-helper",
     ]
@@ -971,11 +972,19 @@ final class FocusTargetController {
         }
     }
 
-    func activateLastExternalApp() -> Bool {
-        guard let app = lastExternalApp, !app.isTerminated else {
-            return false
+    func pinCurrentTarget() {
+        pinnedTarget = lastExternalApp
+    }
+
+    func clearPinnedTarget() {
+        pinnedTarget = nil
+    }
+
+    func pasteTarget() -> NSRunningApplication? {
+        guard let app = pinnedTarget, !app.isTerminated else {
+            return nil
         }
-        return app.activate(options: [])
+        return app
     }
 
     func targetDescription() -> String {
@@ -985,9 +994,22 @@ final class FocusTargetController {
         return app.localizedName ?? app.bundleIdentifier ?? "\(app.processIdentifier)"
     }
 
-    /// Bundle id of the app `activateLastExternalApp()` will paste into, so
-    /// the main process can shape cleanup for the same target it pastes to.
+    func pasteTargetDescription() -> String {
+        guard let app = pasteTarget() else {
+            return "unknown"
+        }
+        return app.localizedName ?? app.bundleIdentifier ?? "\(app.processIdentifier)"
+    }
+
+    /// Rust cleanup needs the same target that paste will use, so a pinned
+    /// dictation target must win over later activation drift.
     func targetBundleIdentifier() -> String? {
+        if let app = pinnedTarget {
+            guard !app.isTerminated else {
+                return nil
+            }
+            return app.bundleIdentifier
+        }
         guard let app = lastExternalApp, !app.isTerminated else {
             return nil
         }
@@ -1708,6 +1730,7 @@ final class DictationController {
             return
         }
 
+        FocusTargetController.shared.pinCurrentTarget()
         emit("recording_ready", [
             "path": recordingURL.path,
             "observedAudioLevel": String(format: "%.4f", maxObservedAudioLevel),
@@ -1909,6 +1932,7 @@ final class DictationController {
     }
 
     private func resetRecordingState(keepRecordingFile: Bool = false) {
+        FocusTargetController.shared.clearPinnedTarget()
         isListening = false
         isFinalizing = false
         startPending = false
@@ -1942,6 +1966,19 @@ struct PasteboardSnapshot {
 }
 
 enum PasteboardInserter {
+    /// The activation observer is cheap, and 20 ms keeps long dictation paste
+    /// handoff responsive without blocking the main run loop.
+    private static let activationPollInterval: TimeInterval = 0.02
+    /// Activation is asynchronous; after one second we still post Cmd+V so a
+    /// transient false or delayed state update does not silently drop text.
+    private static let activationTimeout: TimeInterval = 1.0
+    /// Frontmost app activation and key-window focus do not land at the same
+    /// instant, so a short settle delay protects the synthetic Cmd+V target.
+    private static let activationSettleDelay: TimeInterval = 0.18
+    /// Restore is measured from the keystroke so the target gets a full window
+    /// to read the transcript from the pasteboard.
+    private static let pasteboardRestoreDelay: TimeInterval = 0.7
+
     static func paste(_ text: String) {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
@@ -1971,21 +2008,54 @@ enum PasteboardInserter {
             return
         }
 
-        let targetActivated = FocusTargetController.shared.activateLastExternalApp()
+        guard let target = FocusTargetController.shared.pasteTarget() else {
+            emit("error", [
+                "code": "paste_target_unavailable",
+                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            ])
+            return
+        }
+
+        let targetActivated = target.isActive ? true : target.activate(options: [])
         emit("paste_target", [
-            "app": FocusTargetController.shared.targetDescription(),
+            "app": FocusTargetController.shared.pasteTargetDescription(),
             "activated": boolStatus(targetActivated),
         ])
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+        waitForActivation(
+            of: target,
+            deadline: DispatchTime.now() + activationTimeout
+        ) {
             postPasteShortcut()
             emit("paste_completed")
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + pasteboardRestoreDelay) {
+                if pasteboard.string(forType: .string) == text {
+                    restore(snapshot, to: pasteboard)
+                }
+            }
+        }
+    }
+
+    private static func waitForActivation(
+        of target: NSRunningApplication,
+        deadline: DispatchTime,
+        completion: @escaping () -> Void
+    ) {
+        if target.isActive {
+            DispatchQueue.main.asyncAfter(deadline: .now() + activationSettleDelay) {
+                completion()
+            }
+            return
         }
 
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.7) {
-            if pasteboard.string(forType: .string) == text {
-                restore(snapshot, to: pasteboard)
-            }
+        guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else {
+            completion()
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + activationPollInterval) {
+            waitForActivation(of: target, deadline: deadline, completion: completion)
         }
     }
 

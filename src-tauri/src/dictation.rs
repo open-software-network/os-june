@@ -5053,6 +5053,24 @@ mod tests {
     }
 
     #[test]
+    fn paste_target_unavailable_error_is_visible() {
+        // The dictation helper emits this when the app that was frontmost as
+        // the recording stopped has since quit, so there is nowhere safe to
+        // send the synthetic Cmd+V. Like the Accessibility case, the
+        // transcript is left on the clipboard and the user must be told.
+        let mut event = serde_json::json!({
+            "type": "error",
+            "payload": {
+                "code": "paste_target_unavailable",
+                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            }
+        });
+        assert!(!is_silent_transcription_error(&event));
+        annotate_silent_error(&mut event);
+        assert_eq!(event["payload"]["silent"], false);
+    }
+
+    #[test]
     fn dictation_event_log_redacts_transcript_text() {
         let event = serde_json::json!({
             "type": "final_transcript",
