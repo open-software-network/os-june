@@ -67,6 +67,13 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional Message-Id to thread this as a reply.",
                 },
+                "thread_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional Gmail thread id (as returned by the read "
+                        "tools) so a reply attaches to that conversation."
+                    ),
+                },
             },
             "required": ["to", "subject", "body"],
         },
@@ -90,6 +97,13 @@ TOOLS: list[dict[str, Any]] = [
                 "in_reply_to": {
                     "type": "string",
                     "description": "Optional Message-Id to thread this as a reply.",
+                },
+                "thread_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional Gmail thread id (as returned by the read "
+                        "tools) so a reply attaches to that conversation."
+                    ),
                 },
             },
             "required": ["to", "subject", "body"],
@@ -281,6 +295,9 @@ def build_payload(
         reply = str(arguments.get("in_reply_to") or "").strip()
         if reply:
             payload["in_reply_to"] = reply
+        thread_id = str(arguments.get("thread_id") or "").strip()
+        if thread_id:
+            payload["thread_id"] = thread_id
     elif name == "modify_labels":
         message_id = str(arguments.get("message_id") or "").strip()
         if not message_id:

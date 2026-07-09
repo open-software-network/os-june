@@ -37,6 +37,9 @@ pub enum GoogleApiError {
     /// Calendar returned 410 GONE for a sync token: the incremental cursor
     /// is dead and a full resync is required.
     SyncTokenExpired,
+    /// Gmail returned 404 for a `startHistoryId`: the history cursor fell out
+    /// of the mailbox's retention window and must be reseeded from the profile.
+    HistoryCursorExpired,
     /// The caller supplied invalid input (e.g. a header with line breaks).
     InvalidInput(String),
     Api {
@@ -56,6 +59,10 @@ impl From<GoogleApiError> for AppError {
             GoogleApiError::SyncTokenExpired => AppError::new(
                 "connector_sync_token_expired",
                 "The calendar sync token expired. A full resync is required.",
+            ),
+            GoogleApiError::HistoryCursorExpired => AppError::new(
+                "connector_history_cursor_expired",
+                "The Gmail history cursor expired. It must be reseeded from the profile.",
             ),
             GoogleApiError::InvalidInput(message) => {
                 AppError::new("connector_invalid_input", message)
@@ -636,7 +643,16 @@ pub async fn history_list(
     if let Some(token) = page_token {
         query.push(("pageToken", token.to_string()));
     }
-    let wire: HistoryListWire = send_request(gmail_get(access_token, "/history", &query)).await?;
+    let wire: HistoryListWire =
+        match send_request(gmail_get(access_token, "/history", &query)).await {
+            Ok(wire) => wire,
+            // A 404 here means the startHistoryId is too old; surface it distinctly
+            // so the caller reseeds the cursor instead of retrying the dead one.
+            Err(GoogleApiError::Api { status: 404, .. }) => {
+                return Err(GoogleApiError::HistoryCursorExpired)
+            }
+            Err(other) => return Err(other),
+        };
     let added = wire
         .history
         .into_iter()
@@ -1693,6 +1709,14 @@ mod tests {
         assert_eq!(added[0].id, "m1");
         assert!(added[0].unread);
         assert!(!added[1].unread);
+    }
+
+    #[test]
+    fn history_cursor_expired_maps_to_a_stable_code() {
+        // history_list turns a 404 into this variant; the trigger daemon keys
+        // its reseed on this exact code.
+        let error: AppError = GoogleApiError::HistoryCursorExpired.into();
+        assert_eq!(error.code, "connector_history_cursor_expired");
     }
 
     fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {

@@ -146,7 +146,23 @@ async fn poll_email_account(
         return Ok(());
     };
 
-    let delta = call_gmail_history(app, account_id, &token, &cursor).await?;
+    let delta = match call_gmail_history(app, account_id, &token, &cursor).await {
+        Ok(delta) => delta,
+        Err(error) if error.code == "connector_history_cursor_expired" => {
+            // The stored history id fell out of Gmail's retention window (e.g.
+            // the machine slept for a long stretch). Reseed the baseline from
+            // the current profile so the next poll starts from a live cursor
+            // instead of retrying the dead one forever.
+            let profile = call_gmail_profile(app, account_id, &token).await?;
+            if let Some(history_id) = profile.history_id {
+                repos
+                    .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
+                    .await?;
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     // Only INBOX messages count; history_list already filters to INBOX adds.
     if !delta.added.is_empty() {
         for job_id in job_ids {
@@ -229,6 +245,9 @@ async fn poll_event_trigger(
     let job_id = &trigger.job_id;
     let lead_minutes = lead_minutes_from_config(&trigger.config);
     let external_only = external_only_from_config(&trigger.config);
+    // The account id is the connected Google address, so its domain is the
+    // org/home domain an "external guest" is measured against.
+    let account_domain = email_domain(account_id);
     let cursor_kind = format!("{EVENT_KIND}:{job_id}");
 
     let token = crate::connectors::google_access_token(app, account_id).await?;
@@ -270,9 +289,9 @@ async fn poll_event_trigger(
         let has_external = event
             .attendees
             .iter()
-            .any(|attendee| !attendee.is_self && attendee.email.is_some());
+            .any(|attendee| attendee_is_external(attendee, account_domain));
         // When the routine opts out of external-only, internal and solo events
-        // fire too; otherwise a meeting needs at least one outside attendee.
+        // fire too; otherwise a meeting needs at least one outside-domain guest.
         let passes_audience = !external_only || has_external;
         if starts_soon && passes_audience {
             fired.insert(event.id.clone(), start.timestamp());
@@ -359,6 +378,34 @@ fn external_only_from_config(config: &str) -> bool {
         .unwrap_or(true)
 }
 
+fn email_domain(email: &str) -> Option<&str> {
+    email
+        .rsplit_once('@')
+        .map(|(_, domain)| domain)
+        .filter(|domain| !domain.is_empty())
+}
+
+/// An attendee counts as external when their email domain differs from the
+/// connected account's domain. A self attendee is never external, and an
+/// attendee with no email is not evidence of an outside guest. When either
+/// domain cannot be parsed, fall back to treating any addressed non-self
+/// attendee as external so an external-only routine errs toward firing rather
+/// than silently skipping a genuine outside guest.
+fn attendee_is_external(attendee: &google::EventAttendee, account_domain: Option<&str>) -> bool {
+    if attendee.is_self {
+        return false;
+    }
+    let Some(email) = attendee.email.as_deref() else {
+        return false;
+    };
+    match (email_domain(email), account_domain) {
+        (Some(attendee_domain), Some(account_domain)) => {
+            !attendee_domain.eq_ignore_ascii_case(account_domain)
+        }
+        _ => true,
+    }
+}
+
 fn parse_event_start(start: &str) -> Option<DateTime<Utc>> {
     // Timed events carry an RFC 3339 dateTime; all-day events are a bare date
     // with no meeting time, so they are skipped for lead-time firing.
@@ -437,6 +484,47 @@ mod tests {
     fn parses_timed_event_start_but_not_all_day() {
         assert!(parse_event_start("2026-07-10T09:00:00-07:00").is_some());
         assert!(parse_event_start("2026-07-11").is_none());
+    }
+
+    fn attendee(email: Option<&str>, is_self: bool) -> google::EventAttendee {
+        google::EventAttendee {
+            email: email.map(str::to_string),
+            response_status: None,
+            is_self,
+        }
+    }
+
+    #[test]
+    fn attendee_is_external_compares_domains_against_the_account() {
+        let domain = email_domain("alex@acme.com");
+        assert_eq!(domain, Some("acme.com"));
+
+        // Same domain coworker: internal.
+        assert!(!attendee_is_external(
+            &attendee(Some("dana@acme.com"), false),
+            domain
+        ));
+        // Different domain guest: external.
+        assert!(attendee_is_external(
+            &attendee(Some("guest@partner.com"), false),
+            domain
+        ));
+        // Case-insensitive domain match stays internal.
+        assert!(!attendee_is_external(
+            &attendee(Some("sam@ACME.com"), false),
+            domain
+        ));
+        // Self is never external; a missing email is not an outside guest.
+        assert!(!attendee_is_external(
+            &attendee(Some("alex@acme.com"), true),
+            domain
+        ));
+        assert!(!attendee_is_external(&attendee(None, false), domain));
+        // Unknown account domain falls back to "any addressed non-self guest".
+        assert!(attendee_is_external(
+            &attendee(Some("dana@acme.com"), false),
+            None
+        ));
     }
 
     #[test]
