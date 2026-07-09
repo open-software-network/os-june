@@ -1193,6 +1193,9 @@ export function AppSettings({
       const target = event.target as Node;
       if (modelPickerPopoverRef.current?.contains(target)) return;
       if (modelPickerTriggerRef.current?.contains(target)) return;
+      // The hover detail cards are portaled to document.body, so a click inside
+      // one (its "Show more" toggle) lands outside the popover — treat it as in.
+      if (target instanceof Element && target.closest(".agent-composer-model-hovercard")) return;
       closeModelPicker();
     }
     function onKey(event: KeyboardEvent) {
@@ -1718,6 +1721,7 @@ export function AppSettings({
                     onFlyoutChange={setModelPickerFlyout}
                     onSearchChange={setModelSearch}
                     onSelect={(modelId) => selectModelFromPicker("transcription", modelId)}
+                    summarySuppressed={pickerMode !== undefined}
                   />
                   <ModelRow
                     mode="generation"
@@ -1739,6 +1743,7 @@ export function AppSettings({
                     onFlyoutChange={setModelPickerFlyout}
                     onSearchChange={setModelSearch}
                     onSelect={(modelId) => selectModelFromPicker("generation", modelId)}
+                    summarySuppressed={pickerMode !== undefined}
                   />
                   {IMAGE_GENERATION_ENABLED ? (
                     <ModelRow
@@ -1759,6 +1764,7 @@ export function AppSettings({
                       onFlyoutChange={setModelPickerFlyout}
                       onSearchChange={setModelSearch}
                       onSelect={(modelId) => selectModelFromPicker("image", modelId)}
+                      summarySuppressed={pickerMode !== undefined}
                     />
                   ) : null}
                   <button
@@ -2375,6 +2381,7 @@ function ModelRow({
   onFlyoutChange,
   onSearchChange,
   onSelect,
+  summarySuppressed,
 }: {
   mode: ProviderModelMode;
   title: string;
@@ -2391,6 +2398,7 @@ function ModelRow({
   onFlyoutChange: (flyout: ModelPickerFlyout) => void;
   onSearchChange: (value: string) => void;
   onSelect: (modelId: string) => void;
+  summarySuppressed?: boolean;
 }) {
   const model = selectedModel(options, value);
   const modelLabel = `${title.toLowerCase()} model`;
@@ -2406,7 +2414,7 @@ function ModelRow({
           className="model-summary-tip-anchor"
           width={280}
           delay={280}
-          suppressed={open}
+          suppressed={summarySuppressed || open}
         >
           <button
             ref={open ? triggerRef : undefined}

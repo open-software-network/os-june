@@ -2789,6 +2789,9 @@ export function AgentWorkspace({
       const target = event.target as Node;
       if (composerModelPopoverRef.current?.contains(target)) return;
       if (composerModelTriggerRef.current?.contains(target)) return;
+      // The hover detail cards are portaled to document.body, so a click inside
+      // one (its "Show more" toggle) lands outside the popover — treat it as in.
+      if (target instanceof Element && target.closest(".agent-composer-model-hovercard")) return;
       setComposerModelOpen(false);
     }
     function onKey(event: KeyboardEvent) {
