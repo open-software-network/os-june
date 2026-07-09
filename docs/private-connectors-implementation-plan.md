@@ -48,6 +48,9 @@ June API (enclave, june-api/ workspace)
 └── metering (existing authorize→charge) + **new action slugs**
 
 OS Accounts — new action slugs, no schema changes expected
+  (June API side is not free: ActionSlug is a closed enum in june-domain
+  with per-action hold-TTL config in june-config — each new slug is a
+  June API change too, see §3.5)
 Marketing site — /verify expansion, threat-model docs page, comparison rows
 ```
 
@@ -116,13 +119,13 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 ### 3.1 Relay crate in `june-api/`
 
-- **Webhook ingress:** Gmail (Pub/Sub push subscription with OIDC token validation), Calendar (push channels + renewal cron), generic provider interface for Slack later. Endpoints live inside the enclave; TLS terminates inside (existing pattern).
+- **Webhook ingress:** Gmail (Pub/Sub push subscription with OIDC token validation — validation must bind the token to our expected audience, issuer, and the push subscription's service account, not merely verify the signature), Calendar (push channels + renewal cron; verify the channel token/id against the registered watch), generic provider interface for Slack later. Replay protection on all ingress paths (message-id dedupe within the queue TTL). Endpoints live inside the enclave; TLS terminates inside (existing pattern).
 - **Event pipeline:** notification → fetch *minimal* payload with the user's token (headers/metadata only where possible; never bodies unless the routine's scope requires it) → serialize → encrypt to device key → enqueue → discard plaintext. Plaintext lifetime = milliseconds inside enclave memory.
 - **Queue:** Postgres table of ciphertext rows `(user_id, device_key_id, ciphertext, created_at)`, TTL 72h sweep, hard-delete on acknowledged delivery. No content-derived columns, no plaintext indexes.
 
 ### 3.2 Device pairing & delivery
 
-- At away-mode enable, the app generates an X25519 device keypair (private key in Keychain/Secure Enclave-backed where available), registers the public key with the relay over an attested channel (client verifies the enclave's attestation before sending anything — reuse the `/verify` chain programmatically; this check ships in the app, not just the website).
+- At away-mode enable, the app generates an X25519 device keypair (private key in Keychain/Secure Enclave-backed where available), registers the public key with the relay over an attested channel (client verifies the enclave's attestation before sending anything — reuse the `/verify` chain programmatically; this check ships in the app, not just the website). Registration is authenticated with the user's OS Accounts token and the relay binds the device key to that `usr_` id; key rotation replaces the binding for that user only, and queued ciphertext for a replaced key is dropped, so one user can never register a key that receives another user's events.
 - Delivery v1: device long-poll/checkin on wake + periodic Power Nap checkins. (APNs wake arrives with the iOS companion, out of scope here.)
 - Multiple devices later; v1 is one Mac per account.
 
@@ -140,7 +143,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 ### 3.5 Metering
 
-- New slugs in OS Accounts: `connector_relay_event` (per delivered event, cheap — cover infra), and away-mode gated to **Pro** (clean plan differentiator; Hobby keeps local-only connectors). FundingGate behavior unchanged.
+- New slugs in OS Accounts: `connector_relay_event` (per delivered event, cheap — cover infra), and away-mode gated to **Pro** (clean plan differentiator; Hobby keeps local-only connectors). FundingGate behavior unchanged. Each new slug is also a June API change: a variant in the closed `ActionSlug` enum (june-domain) plus per-action hold-TTL and pricing entries in june-config — plan the two-repo rollout together (config first, additive).
 
 **Exit criteria:** external security review of relay + vault (scope: enclave boundary, KMS policy, queue lifecycle); chaos tests green (enclave reset mid-queue, KMS unavailable, poisoned webhook payloads); attestation check enforced client-side; threat-model page live.
 

@@ -66,7 +66,7 @@ Per-repo config the engineering skills read before acting (see the
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — June P3A: opt-in, privacy-preserving product telemetry
 - [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for June P3A phases
 - [telemetry-questions.md](telemetry-questions.md) — public P3A question catalog and buckets
-- [private-connectors-prd.md](private-connectors-prd.md) — private connectors & away-mode relay: Town-grade integrations without OpenSoftware readable data (proposed)
+- [private-connectors-prd.md](private-connectors-prd.md) — private connectors & away-mode relay: an assistant that acts in email and calendar without OpenSoftware readable data (proposed)
 - [private-connectors-implementation-plan.md](private-connectors-implementation-plan.md) — implementation plan for private connectors phases (proposed)
 - [configuration.md](configuration.md) — env + config reference (desktop client + June API)
 - [development.md](development.md) — local development: quick start, local data, permissions, agent skills, verification commands
