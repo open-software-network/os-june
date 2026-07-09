@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 // The command list is built at module load from the feature flags; pin them so
-// the expectations hold at either committed flag value (video ships dark).
+// the expectations hold regardless of the committed flag values.
 vi.mock("../lib/feature-flags", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/feature-flags")>()),
   IMAGE_GENERATION_ENABLED: true,

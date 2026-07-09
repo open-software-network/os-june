@@ -151,8 +151,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
 }));
 
-// Video generation ships dark (VIDEO_GENERATION_ENABLED is committed false);
-// force it on so the /video surfaces are testable regardless of the flag.
+// Pin VIDEO_GENERATION_ENABLED on so the /video surfaces stay testable
+// regardless of the committed flag value.
 vi.mock("../lib/feature-flags", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/feature-flags")>()),
   VIDEO_GENERATION_ENABLED: true,

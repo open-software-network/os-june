@@ -3,6 +3,7 @@
 // the model's context, and generation/editing work as LLM tools.
 export const IMAGE_GENERATION_ENABLED = true;
 
-// Kill switch for the /video fast path. Default off for the first ship,
-// mirroring IMAGE_GENERATION_ENABLED.
-export const VIDEO_GENERATION_ENABLED = false;
+// Kill switch for the /video fast path and the agent video tools. On now that
+// video generation launches; keep in lockstep with the Rust
+// VIDEO_GENERATION_ENABLED in src-tauri/src/feature_flags.rs.
+export const VIDEO_GENERATION_ENABLED = true;

@@ -1456,24 +1456,6 @@ mod tests {
         assert!(ensure_video_generation_enabled(true).is_ok());
     }
 
-    #[tokio::test]
-    async fn video_generate_returns_disabled_error_by_default() {
-        let error = video_generate(GenerateVideoRequest {
-            prompt: "make a clip".to_string(),
-            model: None,
-            request_id: None,
-            duration: None,
-            resolution: None,
-            aspect_ratio: None,
-            audio: None,
-        })
-        .await
-        .unwrap_err();
-
-        assert_eq!(error.code, "video_generation_disabled");
-        assert_eq!(error.message, "Video generation is not available.");
-    }
-
     #[test]
     fn video_status_returns_disabled_error_before_job_validation() {
         let error = video_status_job_id_with_enabled(

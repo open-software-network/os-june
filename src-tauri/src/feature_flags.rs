@@ -1,4 +1,3 @@
-/// Video kill switch. MUST be flipped to `true` together with the frontend
-/// `VIDEO_GENERATION_ENABLED` in src/lib/feature-flags.ts to launch; keep both
-/// in lockstep.
-pub const VIDEO_GENERATION_ENABLED: bool = false;
+/// Video kill switch. On now that video generation launches; keep in lockstep
+/// with the frontend `VIDEO_GENERATION_ENABLED` in src/lib/feature-flags.ts.
+pub const VIDEO_GENERATION_ENABLED: bool = true;
