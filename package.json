@@ -21,6 +21,7 @@
     "test:june-api:coverage": "cd june-api && cargo llvm-cov --workspace --all-features --html --output-dir target/llvm-cov/html",
     "test:hermes-smoke": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/hermes-smoke.ts",
     "hermes:upgrade-check": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/hermes-upgrade-check.ts",
+    "persona:spike": "bash scripts/persona-recognition-spike.sh",
     "version:bump": "node scripts/bump-version.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "check": "biome check .",
