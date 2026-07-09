@@ -952,6 +952,7 @@ final class FocusTargetController {
     static let shared = FocusTargetController()
 
     private var lastExternalApp: NSRunningApplication?
+    private var pinnedTarget: NSRunningApplication?
     private let ignoredBundleIdentifiers: Set<String> = [
         "co.opensoftware.june.dictation-helper",
     ]
@@ -971,11 +972,19 @@ final class FocusTargetController {
         }
     }
 
-    func activateLastExternalApp() -> Bool {
-        guard let app = lastExternalApp, !app.isTerminated else {
-            return false
+    func pinCurrentTarget() {
+        pinnedTarget = lastExternalApp
+    }
+
+    func clearPinnedTarget() {
+        pinnedTarget = nil
+    }
+
+    func pasteTarget() -> NSRunningApplication? {
+        guard let app = pinnedTarget, !app.isTerminated else {
+            return nil
         }
-        return app.activate(options: [])
+        return app
     }
 
     func targetDescription() -> String {
@@ -985,9 +994,22 @@ final class FocusTargetController {
         return app.localizedName ?? app.bundleIdentifier ?? "\(app.processIdentifier)"
     }
 
-    /// Bundle id of the app `activateLastExternalApp()` will paste into, so
-    /// the main process can shape cleanup for the same target it pastes to.
+    func pasteTargetDescription() -> String {
+        guard let app = pasteTarget() else {
+            return "unknown"
+        }
+        return app.localizedName ?? app.bundleIdentifier ?? "\(app.processIdentifier)"
+    }
+
+    /// Rust cleanup needs the same target that paste will use, so a pinned
+    /// dictation target must win over later activation drift.
     func targetBundleIdentifier() -> String? {
+        if let app = pinnedTarget {
+            guard !app.isTerminated else {
+                return nil
+            }
+            return app.bundleIdentifier
+        }
         guard let app = lastExternalApp, !app.isTerminated else {
             return nil
         }
@@ -1750,6 +1772,11 @@ final class DictationController {
 
     private func stopActiveRecording() {
         let purpose = recordingPurpose
+        if purpose == .dictation {
+            // Selected-device recorder teardown is asynchronous, so the paste
+            // target must be pinned before focus can drift during finalization.
+            FocusTargetController.shared.pinCurrentTarget()
+        }
         isListening = false
         isFinalizing = true
         micTestStopWorkItem?.cancel()
@@ -1909,6 +1936,7 @@ final class DictationController {
     }
 
     private func resetRecordingState(keepRecordingFile: Bool = false) {
+        FocusTargetController.shared.clearPinnedTarget()
         isListening = false
         isFinalizing = false
         startPending = false
@@ -1942,6 +1970,27 @@ struct PasteboardSnapshot {
 }
 
 enum PasteboardInserter {
+    /// The activation observer is cheap, and 20 ms keeps long dictation paste
+    /// handoff responsive without blocking the main run loop.
+    private static let activationPollInterval: TimeInterval = 0.02
+    /// Activation is asynchronous. If the pinned app has not come forward
+    /// within a second, abandon the automatic paste rather than post Cmd+V into
+    /// whichever app is frontmost instead.
+    private static let activationTimeout: TimeInterval = 1.0
+    /// Frontmost app activation and key-window focus do not land at the same
+    /// instant, so a short settle delay protects the synthetic Cmd+V target.
+    private static let activationSettleDelay: TimeInterval = 0.18
+    /// Restore is measured from the keystroke so the target gets a full window
+    /// to read the transcript from the pasteboard.
+    private static let pasteboardRestoreDelay: TimeInterval = 0.7
+
+    private static func emitPasteTargetUnavailable() {
+        emit("error", [
+            "code": "paste_target_unavailable",
+            "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+        ])
+    }
+
     static func paste(_ text: String) {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
@@ -1971,21 +2020,74 @@ enum PasteboardInserter {
             return
         }
 
-        let targetActivated = FocusTargetController.shared.activateLastExternalApp()
+        guard let target = FocusTargetController.shared.pasteTarget() else {
+            emitPasteTargetUnavailable()
+            return
+        }
+
+        let targetActivated = target.isActive ? true : target.activate(options: [])
         emit("paste_target", [
-            "app": FocusTargetController.shared.targetDescription(),
+            "app": FocusTargetController.shared.pasteTargetDescription(),
             "activated": boolStatus(targetActivated),
         ])
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+        waitForActivation(
+            of: target,
+            deadline: DispatchTime.now() + activationTimeout
+        ) { targetIsFrontmost in
+            // Cmd+V goes wherever the window server thinks focus is, so posting
+            // it while the pinned app is not frontmost types the transcript
+            // into somebody else's window. If the activation never landed,
+            // abandon the paste rather than guess: the transcript is already on
+            // the clipboard, and a manual Cmd+V beats text in the wrong app.
+            guard targetIsFrontmost else {
+                emitPasteTargetUnavailable()
+                return
+            }
+
             postPasteShortcut()
             emit("paste_completed")
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + pasteboardRestoreDelay) {
+                if pasteboard.string(forType: .string) == text {
+                    restore(snapshot, to: pasteboard)
+                }
+            }
+        }
+    }
+
+    /// Calls `completion(true)` only when `target` is alive and frontmost at
+    /// that moment. `NSRunningApplication.isActive` means "currently
+    /// frontmost", so a read taken right before the keystroke is the strongest
+    /// guarantee available: it shrinks the gap between deciding and typing to
+    /// the time it takes to post the event, rather than closing it outright.
+    private static func waitForActivation(
+        of target: NSRunningApplication,
+        deadline: DispatchTime,
+        completion: @escaping (_ targetIsFrontmost: Bool) -> Void
+    ) {
+        guard !target.isTerminated else {
+            completion(false)
+            return
         }
 
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.7) {
-            if pasteboard.string(forType: .string) == text {
-                restore(snapshot, to: pasteboard)
+        if target.isActive {
+            DispatchQueue.main.asyncAfter(deadline: .now() + activationSettleDelay) {
+                completion(!target.isTerminated && target.isActive)
             }
+            return
+        }
+
+        // The app never came forward. Activation is a request, not a command:
+        // a modal, a full-screen space, or a refused cooperative activation can
+        // all outlast the deadline.
+        guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else {
+            completion(false)
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + activationPollInterval) {
+            waitForActivation(of: target, deadline: deadline, completion: completion)
         }
     }
 

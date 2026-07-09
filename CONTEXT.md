@@ -123,9 +123,19 @@ _Avoid_: system driver, in-process capture.
 
 **Dictation helper**:
 The native macOS helper (`mac-dictation-helper`) that owns push-to-talk
-**dictation** capture and text insertion into the foreground app, and is the
+**dictation** capture and text insertion into the **paste target**, and is the
 authoritative source for microphone + accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
+
+**Paste target**:
+The app the dictation helper types a finished transcript into, pinned at the
+instant the recording stops and never re-resolved afterwards (see
+[ADR-0014](docs/adr/0014-pinned-dictation-paste-target.md)). Pinning matters
+because the dictation round trip (capture, then dictation transcription, then
+cleanup) can outlast the user's attention: the frontmost app at paste time is
+often no longer the one they dictated into.
+_Avoid_: foreground app, frontmost app (both name a live value, not the pin);
+focus target.
 
 ### Agent runtime (Hermes)
 
@@ -236,10 +246,12 @@ _Avoid_: admin panel, Hermes UI (June presents as June).
 ### AI work & billing
 
 **Dictation**:
-A latency-critical June mode where the user pushes-to-talk, speaks a short
-phrase, releases, and expects cleaned-up text inserted into the foreground
-app within a few hundred milliseconds. Distinct from **note transcription**.
-Goes through June API in v1, so the binary holds no upstream provider key.
+A latency-critical June mode where the user pushes-to-talk, speaks, releases,
+and expects cleaned-up text inserted into the **paste target**. A short phrase
+round-trips in a few hundred milliseconds; a sustained block of speech can take
+many seconds, and everything on the paste path must stay correct across that
+whole window. Distinct from **note transcription**. Goes through June API in
+v1, so the binary holds no upstream provider key.
 _Avoid_: speech-to-text (too generic — covers both dictation and note
 transcription).
 

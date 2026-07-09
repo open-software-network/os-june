@@ -40,6 +40,8 @@ Treat everything after `/repo-build-pr` (or `$repo-build-pr` in Codex) as the bu
 2. Read repo instructions before editing:
    - `AGENTS.md`
    - any referenced project plan or spec relevant to the task
+
+   A handoff doc, prior analysis, or the Issue's own "Agent diagnosis" is **evidence, not a conclusion.** Use its file:line citations to skip re-discovery; re-derive the root cause yourself. Ranked hypotheses in these documents are frequently wrong, and they are wrong in the direction of the mechanism nearest the symptom. Cheapest test: name the one observation the reported symptom forces to be true, then find the code path that produces it. PR #676 — the handoff ranked a clipboard-restore race first; the transcript's presence in the dictation tab proved the paste command had already been sent, so the bug lay past that point entirely (it was a focus-drift TOCTOU). PR #660 — the same shape, the symptom's obvious layer was not the cause.
 3. If the prompt names a tracker task (a `JUN-xxx` id or an os-platform issue reference — issues live on os-platform, org `june`, per `docs/agents/issue-tracker.md`): fetch it via the `os-platform` skill and validate it is actually implementable against the codebase (root cause, affected files, acceptance criteria — apply the `os-task-prep` diagnosis discipline if the issue is thin, and update the issue with what you learn). Then take it before writing code: assign it to the current user and set status to in-progress through the documented platform API (append-only, probe-then-verify). Include `Closes <TASK-ID>` in the eventual PR body.
 4. Inspect the current checkout with `git status -sb`. A dirty checkout is fine, but never implement in it: all work happens in a worktree branched from freshly fetched `origin/main` (see Worktree strategy).
 5. Fetch the target base branch. Use `origin/main` unless the user explicitly names another base.
@@ -173,6 +175,8 @@ Run the smallest checks that prove the change, then broaden based on blast radiu
 - **Docs or skill-only:** validate the skill's structure and that it is symlinked per `AGENTS.md`; skip expensive app builds unless touched files require them.
 
 Judge vitest by failure count, not exit code (`hud-meeting` teardown noise can exit non-zero at zero real failures — see `AGENTS.md`). If a check cannot run because of local tooling, missing services, or credentials, say exactly what blocked it and what evidence still supports the PR.
+
+Never read a gate's exit code through a pipe: `make verify 2>&1 | tail -40` reports **tail's** status, so a failed gate prints `exit=0`. Redirect to a log and echo `$?` (`make verify > verify.log 2>&1; echo $?`), or read the log's last target — `make` runs prerequisites in order and halts on the first failure, so the final target passing is itself the proof.
 
 ### Live app walkthroughs
 

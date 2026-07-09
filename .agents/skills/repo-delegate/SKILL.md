@@ -36,6 +36,24 @@ orchestrating model (see repo-build-pr's model orchestration rules).
    gate fail first: encode the bug as a failing regression check (test or
    fixture assertion) before dispatch and say so in the brief — the
    delegate's "gate passed" is then proof the defect died, not a claim.
+
+   **State invariants, not failure-path branches.** A brief that dictates what
+   to do when something goes wrong ships the orchestrator's unexamined premise
+   straight into the code, and the delegate will implement it faithfully. Say
+   "never type into an unintended app"; do not say "on timeout post the
+   keystroke anyway so text is not lost". Before writing any "or else X is
+   lost" rationale, verify X can actually be lost. In PR #676 it could not —
+   the transcript was already on the clipboard and in history — so the brief's
+   own safety clause recreated the exact bug the PR existed to fix, and only a
+   cross-harness adversarial run caught it.
+
+   **Mutation-check any fixture the delegate authored.** A test written by the
+   same agent that wrote the fix can pass for reasons unrelated to the fix.
+   Revert the fix, confirm the test goes red, restore. PR #676: a delegate's
+   "notice does not fire" test asserted the absence of a label in a state where
+   an unrelated guard already prevented it — green with the fix removed. PR #677
+   is the harder version: a delegate rewrote an existing test so its own
+   regression would pass.
 2. **Fill and dispatch** (`-t` is the brief file; gate defaults to
    `pnpm check && pnpm typecheck && pnpm test`):
 

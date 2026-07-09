@@ -2359,10 +2359,11 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 
 async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
     // Resolve the paste target before the first await. Prefer the bundle id
-    // the helper captured with the recording: its FocusTargetController is
-    // the same authority that activateLastExternalApp() pastes into, so
-    // layout and paste share one source of truth. Fall back to the frontmost
-    // app for helper builds that predate the field.
+    // the helper captured with the recording: the helper pins that same app
+    // when the recording stops and pastes into it once we return, so layout
+    // and paste share one source of truth even though the awaits below can
+    // take many seconds. Fall back to the frontmost app for helper builds
+    // that predate the field.
     let app_context = recording
         .target_bundle_id
         .as_deref()
@@ -2725,9 +2726,9 @@ struct DictationTranscriptionOutcome {
 struct RecordingReadyInfo {
     audio_path: PathBuf,
     observed_audio_level: Option<f32>,
-    /// Bundle id of the paste target as tracked by the helper's
-    /// FocusTargetController: the same app activateLastExternalApp() will
-    /// paste into. None with older helper builds that predate the field.
+    /// Bundle id of the paste target the helper pinned when the recording
+    /// stopped: the same app it will paste into once we hand back a
+    /// transcript. None with older helper builds that predate the field.
     target_bundle_id: Option<String>,
 }
 
@@ -5044,6 +5045,24 @@ mod tests {
             "type": "error",
             "payload": {
                 "code": "accessibility_permission_missing",
+                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            }
+        });
+        assert!(!is_silent_transcription_error(&event));
+        annotate_silent_error(&mut event);
+        assert_eq!(event["payload"]["silent"], false);
+    }
+
+    #[test]
+    fn paste_target_unavailable_error_is_visible() {
+        // The dictation helper emits this when the app that was frontmost as
+        // the recording stopped has since quit, so there is nowhere safe to
+        // send the synthetic Cmd+V. Like the Accessibility case, the
+        // transcript is left on the clipboard and the user must be told.
+        let mut event = serde_json::json!({
+            "type": "error",
+            "payload": {
+                "code": "paste_target_unavailable",
                 "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
             }
         });
