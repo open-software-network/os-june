@@ -21,6 +21,7 @@ fn main() {
     clean_legacy_helper_bundles();
     build_system_audio_helper();
     build_dictation_helper();
+    build_windows_dictation_helper();
     ensure_bundled_hermes_dir();
     tauri_build::build();
 }
@@ -225,6 +226,78 @@ fn build_system_audio_helper() {
     if should_sign || has_signing_identity() {
         sign_helper_app(&manifest_dir, &app_dir);
     }
+}
+
+fn build_windows_dictation_helper() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("windows") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let helper_manifest = manifest_dir
+        .join("native")
+        .join("windows-dictation-helper")
+        .join("Cargo.toml");
+    if !helper_manifest.exists() {
+        println!("cargo:warning=Windows dictation helper manifest is missing");
+        return;
+    }
+    println!("cargo:rerun-if-changed={}", helper_manifest.display());
+    for source in ["main.rs", "protocol.rs", "hotkeys.rs", "shortcut_capture.rs", "audio.rs", "clipboard.rs", "focus.rs", "permissions.rs"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir
+                .join("native")
+                .join("windows-dictation-helper")
+                .join("src")
+                .join(source)
+                .display()
+        );
+    }
+
+    let target = std::env::var("TARGET").ok();
+    let target_dir = manifest_dir.join("target").join("windows-dictation-helper");
+    let mut command = std::process::Command::new("cargo");
+    command
+        .arg("build")
+        .arg("--release")
+        .arg("--locked")
+        .arg("--manifest-path")
+        .arg(&helper_manifest)
+        .arg("--target-dir")
+        .arg(&target_dir);
+    if let Some(target) = target.as_deref() {
+        command.arg("--target").arg(target);
+    }
+    let status = command.status();
+    if !matches!(status, Ok(status) if status.success()) {
+        println!("cargo:warning=Windows dictation helper could not be built; dictation will report unavailable");
+        return;
+    }
+
+    let mut built = target_dir.join("release").join("june-dictation-helper.exe");
+    if let Some(target) = target.as_deref() {
+        built = target_dir
+            .join(target)
+            .join("release")
+            .join("june-dictation-helper.exe");
+    }
+    let destination = manifest_dir
+        .join("native")
+        .join("bin")
+        .join("june-dictation-helper.exe");
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .expect("Windows dictation helper destination should be created");
+    }
+    std::fs::copy(&built, &destination).unwrap_or_else(|error| {
+        panic!(
+            "Windows dictation helper {} should copy to {}: {error}",
+            built.display(),
+            destination.display()
+        )
+    });
 }
 
 fn read_system_audio_min_macos_version(manifest_dir: &std::path::Path) -> Option<String> {
