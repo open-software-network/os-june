@@ -16,10 +16,13 @@ pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
-/// OS Accounts rejects `/authorize` holds outside 1..=600 seconds as
-/// `invalid_ttl` (envelope code 4201). Keep in sync with
-/// `MAX_HOLD_TTL_SECONDS` in os-accounts `api/crates/services/src/grants.rs`.
-pub const OS_ACCOUNTS_MAX_HOLD_TTL_SECS: u64 = 600;
+/// OS Accounts rejects `/authorize` holds outside its deployed cap as
+/// `invalid_ttl` (envelope code 4201). This mirrors `MAX_HOLD_TTL_SECONDS`
+/// in the os-accounts repo (`api/crates/services/src/grants.rs`), which is
+/// being raised to 900 in a coordinated deploy alongside June API. Keep the
+/// two values in lockstep: a value above the deployed os-accounts cap is
+/// rejected at runtime as `invalid_ttl` (4201).
+pub const OS_ACCOUNTS_MAX_HOLD_TTL_SECS: u64 = 900;
 /// Budget reserved between the image client call ending and the hold
 /// expiring, sized to the WORST-CASE charge path, not a nominal grace:
 /// settling can spend `CHARGE_RETRY_ATTEMPTS` HTTP calls at the 60-second
@@ -45,9 +48,9 @@ pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS: u64 = 10;
 /// only bounds June-funded diagnosis calls, never report delivery.
 pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_MAX_PER_USER_PER_HOUR: u64 = 6;
 /// The hold is minted after authorize returns and must cover generation
-/// plus settlement: 390 + 150 = 540, inside the 600-second platform cap.
-/// Anchoring on the route timeout instead produced 630, past the cap, and
-/// every image authorize was rejected `invalid_ttl` (4201) in production.
+/// plus settlement: 390 + 150 = 540, inside the platform cap. Anchoring on the
+/// route timeout instead produced 630, past the former 600-second cap, and every
+/// image authorize was rejected `invalid_ttl` (4201) in production.
 pub const DEFAULT_IMAGE_HOLD_TTL_SECS: u64 =
     DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS + IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS;
 // The full route budget must fit its three legs.
@@ -69,14 +72,12 @@ pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
 // Video is an async job billed at completion: the hold is minted at
 // `/v1/video/generate` and must stay valid until the completing status poll
 // charges. Unlike image (a single synchronous request), the hold has to cover
-// the whole job lifetime — queue, the Venice run, then the settlement charge —
-// yet OS Accounts still rejects any hold above 600s (`invalid_ttl`). So the
-// per-job budget is CAPPED so `job budget + settlement margin <= 600`; the
-// first-cut supported models/durations are chosen to complete within that
-// budget (ADR 0015 Decision 2). Widening it needs durable job state (#613).
+// the whole job lifetime — queue, the Venice run, then the settlement charge.
+// The desktop polls for 900s, so video reserves 750s for the job and 150s for
+// settlement, matching that full client poll window (ADR 0015 Decision 2).
 /// Worst-case seconds a supported video job may take from queue to a completing
 /// poll. The first-cut allowlist/durations are picked to finish within this.
-pub const DEFAULT_VIDEO_JOB_MAX_SECS: u64 = 450;
+pub const DEFAULT_VIDEO_JOB_MAX_SECS: u64 = 750;
 /// Budget reserved after the job completes for the settlement charge path,
 /// sized like the image settlement margin (worst-case OS Accounts charge
 /// retries at the default HTTP timeout plus backoff).
@@ -85,6 +86,8 @@ pub const VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS: u64 = IMAGE_SETTLEMENT_TIMEOUT_M
 /// Accounts platform cap; the job budget is what gets capped to keep it there.
 pub const DEFAULT_VIDEO_HOLD_TTL_SECS: u64 =
     DEFAULT_VIDEO_JOB_MAX_SECS + VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS;
+/// Desktop `/video` polls for 360 attempts at 2.5s each.
+const VIDEO_CLIENT_POLL_WINDOW_SECS: u64 = 900;
 /// Defensive per-request credit ceiling: Venice caps a video at $10/request; at
 /// the 2.0x default markup that is 20000 credits (`$1 = 1000 credits`). A quote
 /// above this is rejected before authorize so a catalog change cannot authorize
@@ -94,6 +97,7 @@ pub const DEFAULT_VIDEO_MAX_CREDITS_PER_REQUEST: u64 = 20_000;
 pub const DEFAULT_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 // The hold must fit the platform cap; the job must fit inside the hold.
 const _: () = assert!(DEFAULT_VIDEO_HOLD_TTL_SECS <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
+const _: () = assert!(DEFAULT_VIDEO_HOLD_TTL_SECS >= VIDEO_CLIENT_POLL_WINDOW_SECS);
 const _: () = assert!(
     DEFAULT_VIDEO_JOB_MAX_SECS + VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS
         <= DEFAULT_VIDEO_HOLD_TTL_SECS
@@ -1237,7 +1241,7 @@ fn validate_hold_ttl_bounds(config: &AppConfig) -> Result<(), ConfigError> {
         if !(1..=OS_ACCOUNTS_MAX_HOLD_TTL_SECS).contains(&value) {
             return Err(ConfigError::InvalidRequired {
                 field,
-                reason: "must be within the OS Accounts hold TTL bounds (1..=600 seconds)",
+                reason: "must be within the OS Accounts hold TTL bounds (1..=900 seconds)",
             });
         }
     }
@@ -1384,8 +1388,8 @@ mod tests {
         IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
         OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
         OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
-        VENICE_API_KEY_PLACEHOLDERS, VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS,
-        image_client_timeout_secs, validate,
+        VENICE_API_KEY_PLACEHOLDERS, VIDEO_CLIENT_POLL_WINDOW_SECS,
+        VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS, image_client_timeout_secs, validate,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -1864,6 +1868,8 @@ mod tests {
             config.os_accounts.authorize_hold_ttl_video_secs
                 >= DEFAULT_VIDEO_JOB_MAX_SECS + VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS
         );
+        // ... and covers the full desktop polling window (360 x 2.5s).
+        assert!(config.os_accounts.authorize_hold_ttl_video_secs >= VIDEO_CLIENT_POLL_WINDOW_SECS);
         // ... and still fits inside the OS Accounts platform cap.
         assert!(config.os_accounts.authorize_hold_ttl_video_secs <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
         // The default ceiling is positive (a zero ceiling would reject every quote).
