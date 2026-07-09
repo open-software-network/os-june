@@ -74,6 +74,7 @@ vi.mock("../app/build-info", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  dictationCapabilities: vi.fn().mockResolvedValue({ capabilities: { available: true, platform: "macos", shortcuts: true, paste: true, microphoneSelection: true, accessibilityPermission: true, systemAudio: true } }),
   JUNE_COMMUNITY_URL: "https://t.me/osjune",
   dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   dictationSettings: mocks.dictationSettings,

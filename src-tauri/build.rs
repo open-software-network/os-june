@@ -242,7 +242,16 @@ fn build_windows_dictation_helper() {
         return;
     }
     println!("cargo:rerun-if-changed={}", helper_manifest.display());
-    for source in ["main.rs", "protocol.rs", "hotkeys.rs", "shortcut_capture.rs", "audio.rs", "clipboard.rs", "focus.rs", "permissions.rs"] {
+    for source in [
+        "main.rs",
+        "protocol.rs",
+        "hotkeys.rs",
+        "shortcut_capture.rs",
+        "audio.rs",
+        "clipboard.rs",
+        "focus.rs",
+        "permissions.rs",
+    ] {
         println!(
             "cargo:rerun-if-changed={}",
             manifest_dir

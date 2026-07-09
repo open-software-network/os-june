@@ -1,15 +1,12 @@
 use crate::protocol::{ShortcutCommand, ShortcutKind, ShortcutModifiers};
 use std::{collections::HashMap, sync::mpsc, thread};
-use windows_sys::Win32::{
-    UI::{
-        Input::KeyboardAndMouse::{
-            RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, VK_0,
-            VK_A,
-        },
-        WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW, TranslateMessage,
-            MSG, PM_NOREMOVE, WM_APP, WM_HOTKEY, WM_QUIT,
-        },
+use windows_sys::Win32::UI::{
+    Input::KeyboardAndMouse::{
+        RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, VK_0, VK_A,
+    },
+    WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW, TranslateMessage, MSG,
+        PM_NOREMOVE, WM_APP, WM_HOTKEY, WM_QUIT,
     },
 };
 
@@ -69,13 +66,7 @@ fn hotkey_thread(
     // the controller calls PostThreadMessageW to trigger registration.
     let mut initial_msg = MSG::default();
     unsafe {
-        PeekMessageW(
-            &mut initial_msg,
-            std::ptr::null_mut(),
-            0,
-            0,
-            PM_NOREMOVE,
-        );
+        PeekMessageW(&mut initial_msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
     }
     let _ = ready_tx.send(thread_id);
     let mut shortcuts: HashMap<ShortcutKind, ShortcutCommand> = HashMap::new();
@@ -167,12 +158,18 @@ fn modifiers_to_win32(modifiers: ShortcutModifiers) -> u32 {
 }
 
 fn virtual_key_for_code(code: &str) -> Option<u32> {
-    if let Some(letter) = code.strip_prefix("Key").and_then(|rest| rest.as_bytes().first()) {
+    if let Some(letter) = code
+        .strip_prefix("Key")
+        .and_then(|rest| rest.as_bytes().first())
+    {
         if letter.is_ascii_uppercase() {
             return Some(VK_A as u32 + u32::from(*letter - b'A'));
         }
     }
-    if let Some(digit) = code.strip_prefix("Digit").and_then(|rest| rest.as_bytes().first()) {
+    if let Some(digit) = code
+        .strip_prefix("Digit")
+        .and_then(|rest| rest.as_bytes().first())
+    {
         if digit.is_ascii_digit() {
             return Some(VK_0 as u32 + u32::from(*digit - b'0'));
         }

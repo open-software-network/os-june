@@ -5,7 +5,7 @@ import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconTextIndicator } from "central-icons/IconTextIndicator";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import { dictationHelperCommand, openPrivacySettings } from "../../../lib/tauri";
-import { isMacLikePlatform } from "../../../lib/platform";
+import { fallbackDictationCapabilities } from "../../../lib/platform";
 import { StepActions, StepCard } from "../StepChrome";
 import {
   isAccessibilityGranted,
@@ -80,7 +80,9 @@ export function PermissionsStep({
   // explains itself and stays out of the Continue gate.
   const systemAudioUnsupported = systemAudioStatus === "unsupported";
   const showPermissionRows = statuses.checked || showUnknownStatuses;
-  const macLikePlatform = isMacLikePlatform();
+  const capabilities = fallbackDictationCapabilities();
+  const macLikePlatform = capabilities.platform === "macos";
+  const windowsPlatform = capabilities.platform === "windows";
 
   // Fire the native TCC prompt as soon as the screen shows — the user just
   // read why we're asking, so the dialog lands in context. No-op when
@@ -121,7 +123,9 @@ export function PermissionsStep({
       subtitle={
         macLikePlatform
           ? "Dictation and meeting notes need three macOS permissions."
-          : "Dictation and meeting notes need microphone access."
+          : windowsPlatform
+            ? "Dictation and meeting notes need microphone access."
+            : "Meeting notes need microphone access."
       }
       wide
     >
@@ -136,7 +140,9 @@ export function PermissionsStep({
           title="Microphone"
           detail={
             micDenied
-              ? "Turned off in System Settings. Flip the toggle and June will notice."
+              ? macLikePlatform
+                ? "Turned off in System Settings. Flip the toggle and June will notice."
+                : "Turned off in Windows settings. Flip the toggle and June will notice."
               : "Hears you only when you ask June to listen."
           }
           onAllow={
