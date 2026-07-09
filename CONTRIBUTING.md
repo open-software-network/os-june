@@ -52,16 +52,10 @@ Or individually: `pnpm check`, `pnpm typecheck`, `pnpm test`,
 
 Frontend typecheck/tests and `src-tauri/` macOS Rust checks are local by default
 on PRs to avoid paying for repeated hosted runners while a branch is still
-changing. After pushing a clean branch, run:
+changing. After pushing a clean branch, run the path-aware local signoff:
 
 ```sh
-make signoff-frontend
-```
-
-For `src-tauri/` changes, also run this from macOS:
-
-```sh
-make signoff-rust-macos
+make signoff-pr
 ```
 
 See [docs/local-ci-signoff.md](docs/local-ci-signoff.md) for setup, the

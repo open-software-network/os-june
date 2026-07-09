@@ -24,17 +24,28 @@ gh extension install basecamp/gh-signoff
 
 ## Sign off on a PR commit
 
-From a clean branch:
+From a clean pushed branch:
 
 ```sh
 git push -u origin HEAD
-make signoff-frontend
+make signoff-pr
 ```
 
-From a clean branch on macOS:
+`make signoff-pr` compares the branch with the PR base, runs the tests needed
+for the changed paths, and posts both required statuses:
+
+- `signoff/frontend`
+- `signoff/rust-macos`
+
+If a status is not relevant to the changed paths, the command posts it as not
+applicable without running that test suite. This keeps docs-only PRs mergeable
+when repository rulesets require both statuses.
+
+The lower-level commands are available when you want to run one status
+explicitly:
 
 ```sh
-git push -u origin HEAD
+make signoff-frontend
 make signoff-rust-macos
 ```
 
@@ -55,9 +66,9 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-If they pass, the command posts the matching `signoff/*` status to the current
-pushed commit. If the branch changes later, run the command again for the new
-HEAD.
+If checks pass, the command posts the matching `signoff/*` status to the current
+pushed commit. If the branch changes later, run `make signoff-pr` again for the
+new HEAD.
 
 ## Force cloud macOS CI
 

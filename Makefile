@@ -8,7 +8,7 @@
 	tauri-fmt tauri-fmt-check tauri-lint tauri-test \
 	june-api-fmt june-api-fmt-check june-api-lint june-api-test \
 	fmt fmt-check lint test verify \
-	signoff-frontend signoff-rust-macos \
+	signoff-pr signoff-frontend signoff-rust-macos \
 	skills-update skills-restore skills-sync
 
 .DEFAULT_GOAL := help
@@ -93,6 +93,9 @@ lint: check tauri-lint june-api-lint  ## Lint everything (biome + both clippy)
 test: test-web tauri-test june-api-test  ## Run all test suites
 
 verify: check typecheck test-web tauri-fmt-check tauri-lint tauri-test june-api-fmt-check june-api-lint june-api-test  ## Full CI-parity gate
+
+signoff-pr:  ## Run path-aware local PR signoffs and post required signoff/* statuses
+	./scripts/signoff-pr.sh
 
 signoff-frontend:  ## Run local frontend typecheck/tests and post signoff/frontend
 	./scripts/signoff-frontend.sh
