@@ -180,6 +180,8 @@ mod tests {
     #[test]
     fn read_only_calendar_bundle_never_carries_write_scope() {
         assert_eq!(ScopeBundle::CalendarRead.scopes(), &[CALENDAR_READONLY]);
-        assert!(!ScopeBundle::CalendarRead.scopes().contains(&CALENDAR_EVENTS));
+        assert!(!ScopeBundle::CalendarRead
+            .scopes()
+            .contains(&CALENDAR_EVENTS));
     }
 }
