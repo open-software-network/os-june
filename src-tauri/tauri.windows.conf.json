@@ -2,6 +2,11 @@
   "bundle": {
     "publisher": "Open Software Network",
     "targets": ["nsis"],
+    "resources": {
+      "../.tauri-hermes/hermes": "native/hermes",
+      "resources/hermes-skills": "native/hermes-skills",
+      "native/bin/june-dictation-helper.exe": "native/bin/june-dictation-helper.exe"
+    },
     "windows": {
       "digestAlgorithm": "sha256",
       "timestampUrl": "http://timestamp.digicert.com",

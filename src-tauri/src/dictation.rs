@@ -755,7 +755,7 @@ pub async fn delete_dictation_history_item(app: AppHandle, id: String) -> Result
 }
 
 #[tauri::command]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn set_dictation_shortcut(
     app: AppHandle,
     state: State<'_, DictationSettingsState>,
@@ -796,7 +796,7 @@ pub fn set_dictation_shortcut(
 }
 
 #[tauri::command]
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn set_dictation_shortcut(
     kind: DictationShortcutKind,
     shortcut: DictationShortcutInput,
@@ -804,7 +804,7 @@ pub fn set_dictation_shortcut(
     let _ = (kind, shortcut);
     Err(AppError::new(
         "dictation_shortcut_unsupported",
-        "Dictation shortcuts are only supported on macOS.",
+        "Dictation shortcuts are not supported on this platform.",
     ))
 }
 
@@ -818,7 +818,7 @@ pub fn set_dictation_microphone(
     let settings = update_settings(&state, |settings| {
         settings.microphone = DictationMicrophoneSetting { id, name };
     })?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if helper_state
         .process
         .lock()
@@ -859,12 +859,12 @@ pub fn dictation_helper_command(
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if helper_command_resets_shortcut_activation(&command) {
         reset_shortcut_activation(&app);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if state
         .process
         .lock()
@@ -1469,7 +1469,7 @@ fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Resul
         .map_err(|error| AppError::new("dictation_helper_write_failed", error.to_string()))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn handle_missing_helper_command(
     app: &AppHandle,
     command: &serde_json::Value,
@@ -1504,12 +1504,12 @@ fn handle_missing_helper_command(
         ) => Ok(()),
         _ => Err(AppError::new(
             "dictation_helper_unavailable",
-            "Dictation recording is only supported on macOS.",
+            "Dictation recording is not supported on this platform.",
         )),
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn non_macos_permission_status_event() -> serde_json::Value {
     let (microphone, _) = crate::audio::capture::microphone_permission_state();
     serde_json::json!({
@@ -1902,6 +1902,7 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let manifest_dir = PathBuf::from(manifest_dir);
         if let Some(repo_dir) = manifest_dir.parent() {
+            #[cfg(target_os = "macos")]
             paths.push(
                 repo_dir
                     .join(".tauri-helper")
@@ -1910,34 +1911,74 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
                     .join("MacOS")
                     .join("june-dictation-helper"),
             );
+            #[cfg(target_os = "windows")]
+            paths.push(
+                manifest_dir
+                    .join("native")
+                    .join("bin")
+                    .join("june-dictation-helper.exe"),
+            );
         }
     }
 
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            paths.push(exe_dir.join("june-dictation-helper"));
-            paths.push(exe_dir.join("../Resources/june-dictation-helper"));
+            #[cfg(target_os = "windows")]
+            {
+                paths.push(exe_dir.join("june-dictation-helper.exe"));
+                paths.push(
+                    exe_dir
+                        .join("native")
+                        .join("bin")
+                        .join("june-dictation-helper.exe"),
+                );
+                paths.push(
+                    exe_dir
+                        .join("resources")
+                        .join("native")
+                        .join("bin")
+                        .join("june-dictation-helper.exe"),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            {
+                paths.push(exe_dir.join("june-dictation-helper"));
+                paths.push(exe_dir.join("../Resources/june-dictation-helper"));
+            }
         }
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        paths.push(resource_dir.join("june-dictation-helper"));
-        paths.push(
-            resource_dir
-                .join("native")
-                .join("bin")
-                .join("June Dictation Helper.app")
-                .join("Contents")
-                .join("MacOS")
-                .join("june-dictation-helper"),
-        );
-        paths.push(
-            resource_dir
-                .join("June Dictation Helper.app")
-                .join("Contents")
-                .join("MacOS")
-                .join("june-dictation-helper"),
-        );
+        #[cfg(target_os = "windows")]
+        {
+            paths.push(resource_dir.join("june-dictation-helper.exe"));
+            paths.push(
+                resource_dir
+                    .join("native")
+                    .join("bin")
+                    .join("june-dictation-helper.exe"),
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            paths.push(resource_dir.join("june-dictation-helper"));
+            paths.push(
+                resource_dir
+                    .join("native")
+                    .join("bin")
+                    .join("June Dictation Helper.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("june-dictation-helper"),
+            );
+            paths.push(
+                resource_dir
+                    .join("June Dictation Helper.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("june-dictation-helper"),
+            );
+        }
     }
 
     paths
@@ -2486,7 +2527,7 @@ fn frontmost_app_context() -> Option<String> {
     is_email_app_bundle(&bundle_id).then(|| APP_CONTEXT_EMAIL.to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn frontmost_app_context() -> Option<String> {
     None
 }
@@ -3697,18 +3738,18 @@ fn hotkey_ready_event(settings: &DictationSettings) -> serde_json::Value {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn initial_hotkey_event(settings: &DictationSettings) -> serde_json::Value {
     hotkey_ready_event(settings)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn initial_hotkey_event(_settings: &DictationSettings) -> serde_json::Value {
     serde_json::json!({
         "type": "hotkey_trigger_unavailable",
         "payload": {
             "reason": "unsupported",
-            "message": "Dictation shortcuts are only supported on macOS.",
+            "message": "Dictation shortcuts are not supported on this platform.",
         },
     })
 }
