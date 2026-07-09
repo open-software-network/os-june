@@ -1,4 +1,7 @@
-use crate::domain::types::{AppError, AudioLevelDto, RecordingSource, SourceReadinessDto};
+use crate::{
+    audio::system_audio::SystemAudioStopResult,
+    domain::types::{AppError, AudioLevelDto, RecordingSource, SourceReadinessDto},
+};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::{
     fs::File,
@@ -26,12 +29,6 @@ struct WindowsSystemAudioStats {
     last_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct SystemAudioFailure {
-    pub code: String,
-    pub message: String,
-}
-
 pub struct SystemAudioCapture {
     stop_requested: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
@@ -39,11 +36,6 @@ pub struct SystemAudioCapture {
     partial_path: PathBuf,
     final_path: PathBuf,
     worker: Option<JoinHandle<Result<(), AppError>>>,
-}
-
-pub enum SystemAudioStopResult {
-    Failed(SystemAudioFailure),
-    Stopped(PathBuf),
 }
 
 impl SystemAudioCapture {
@@ -108,17 +100,13 @@ impl SystemAudioCapture {
             )),
         };
         if let Err(error) = worker_result.and_then(|result| result) {
-            return SystemAudioStopResult::Failed(SystemAudioFailure {
-                code: error.code,
-                message: error.message,
-            });
+            return SystemAudioStopResult::Failed(error.into());
         }
         if self.partial_path.exists() {
             if let Err(error) = std::fs::rename(&self.partial_path, &self.final_path) {
-                return SystemAudioStopResult::Failed(SystemAudioFailure {
-                    code: "audio_finalization_failed".to_string(),
-                    message: error.to_string(),
-                });
+                return SystemAudioStopResult::Failed(
+                    AppError::new("audio_finalization_failed", error.to_string()).into(),
+                );
             }
         }
         SystemAudioStopResult::Stopped(self.final_path)

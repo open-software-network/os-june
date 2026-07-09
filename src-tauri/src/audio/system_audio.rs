@@ -1,3 +1,26 @@
+use crate::domain::types::AppError;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+pub struct SystemAudioFailure {
+    pub code: String,
+    pub message: String,
+}
+
+impl From<AppError> for SystemAudioFailure {
+    fn from(error: AppError) -> Self {
+        Self {
+            code: error.code,
+            message: error.message,
+        }
+    }
+}
+
+pub enum SystemAudioStopResult {
+    Failed(SystemAudioFailure),
+    Stopped(PathBuf),
+}
+
 #[cfg(target_os = "macos")]
 pub use crate::audio::system_macos::{
     helper_permission_check, system_audio_readiness, SystemAudioCapture,
@@ -6,8 +29,8 @@ pub use crate::audio::system_macos::{
 
 #[cfg(target_os = "windows")]
 pub use crate::audio::system_windows::{
-    helper_permission_check, system_audio_readiness, SystemAudioCapture, SystemAudioFailure,
-    SystemAudioStopResult, SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT,
+    helper_permission_check, system_audio_readiness, SystemAudioCapture,
+    SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT,
 };
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -42,8 +65,8 @@ mod unsupported {
             (AudioLevelDto::default(), 0, Some(unsupported_message()))
         }
 
-        pub fn stop(self) -> Result<PathBuf, AppError> {
-            Err(unsupported_error())
+        pub fn stop(self) -> SystemAudioStopResult {
+            SystemAudioStopResult::Failed(unsupported_error().into())
         }
     }
 
