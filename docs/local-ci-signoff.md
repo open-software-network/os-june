@@ -1,11 +1,17 @@
 # Local CI signoff
 
-June uses local signoff for the expensive macOS desktop Rust PR gate.
+June uses local signoff for PR checks that are either expensive or slow during
+agent iteration.
 
-The `desktop` workflow still runs cheap Linux checks on PRs and still runs the
-full macOS Rust clippy/test job after changes merge to `main`. On PRs, the
-macOS Rust job is replaced by a local commit status named
-`signoff/rust-macos`.
+The `desktop` workflow still runs cheap hosted checks on PRs and still runs the
+full suite after changes merge to `main`. On PRs, two hosted jobs are replaced
+by local commit statuses:
+
+- `Frontend lint and tests` is replaced by `signoff/frontend`.
+- `Tauri Rust clippy and tests` is replaced by `signoff/rust-macos`.
+
+`Biome check` stays in hosted PR CI because it is quick and catches formatting,
+lint, and banned-import mistakes before review.
 
 ## One-time setup
 
@@ -18,11 +24,26 @@ gh extension install basecamp/gh-signoff
 
 ## Sign off on a PR commit
 
+From a clean branch:
+
+```sh
+git push -u origin HEAD
+make signoff-frontend
+```
+
 From a clean branch on macOS:
 
 ```sh
 git push -u origin HEAD
 make signoff-rust-macos
+```
+
+`make signoff-frontend` runs the same frontend checks that the PR hosted job
+used to run:
+
+```sh
+pnpm typecheck
+pnpm test
 ```
 
 `make signoff-rust-macos` runs the same Tauri Rust checks that the PR macOS job
@@ -34,21 +55,26 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-If they pass, the command posts `signoff/rust-macos` to the current pushed
-commit. If the branch changes later, run the command again for the new HEAD.
+If they pass, the command posts the matching `signoff/*` status to the current
+pushed commit. If the branch changes later, run the command again for the new
+HEAD.
 
 ## Force cloud macOS CI
 
-Add the `run-macos-ci` label to a PR when a cloud-hosted macOS verification run
-is useful. The label reruns the `desktop` workflow and enables the
-`Tauri Rust clippy and tests` job for that PR.
+Add labels to a PR when a cloud-hosted verification run is useful:
+
+- `run-frontend-ci` enables hosted frontend typecheck and Vitest.
+- `run-macos-ci` enables hosted Tauri Rust clippy and tests on macOS.
 
 You can also run `desktop` manually from the Actions tab.
 
 ## Enforce the signoff
 
-To require local macOS signoff before merge, add required status check
-`signoff/rust-macos` to the existing `main protection` repository ruleset.
+To require local signoff before merge, add these required status checks to the
+existing `main protection` repository ruleset:
+
+- `signoff/frontend`
+- `signoff/rust-macos`
 
 Do not run `gh signoff install` in this repository. That command writes classic
 branch protection and can bypass the repo's existing ruleset-based protection.
