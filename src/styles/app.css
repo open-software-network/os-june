@@ -8281,10 +8281,7 @@ input:focus-visible,
 .agent-session-time {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  /* Ticking value: the sidebar re-renders on a 60s clock so this relative time
-   * advances (5m to 10m to 1h). Tabular figures keep the width stable across
-   * ticks per the spec/no-tabular-numerals.md live-value exception. */
-  font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -18872,27 +18869,6 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.folder-note-title-input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  border-radius: var(--r-xs);
-  padding: 0 var(--sp-1);
-  outline: 0;
-  background: var(--surface-subtle);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-size: var(--fs-md);
-  font-weight: 400;
-  line-height: 1.2;
-}
-
-.folder-note-title-input:focus,
-.folder-note-title-input:focus-visible {
-  outline: none;
-  box-shadow: none;
 }
 
 .folder-note-subtitle {

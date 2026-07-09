@@ -117,6 +117,11 @@ import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
 import { PrivacySettingsSection } from "./PrivacySettingsSection";
+import {
+  getStoredDateFormat,
+  setStoredDateFormat,
+  type DateFormatPreference,
+} from "../../lib/date-format";
 
 const THEME_OPTIONS: readonly {
   value: ThemePreference;
@@ -154,6 +159,12 @@ const THEME_OPTIONS: readonly {
     ariaLabel: "Use dark theme",
   },
 ];
+
+const DATE_FORMAT_OPTIONS = [
+  { value: "system", label: "System" },
+  { value: "month-first", label: "Jul 9" },
+  { value: "day-first", label: "9 Jul" },
+] satisfies { value: DateFormatPreference; label: string }[];
 
 const RELEASE_CHANNEL_OPTIONS: readonly {
   value: ReleaseChannel;
@@ -410,6 +421,7 @@ export function AppSettings({
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
+  const [dateFormat, setDateFormat] = useState<DateFormatPreference>(() => getStoredDateFormat());
   const [releaseChannel, setReleaseChannelValue] = useState<ReleaseChannel>("stable");
   // Set only when a leave-rc switch turns up an installable stable, so the
   // bespoke in-context confirm below the toggle can name the exact version.
@@ -1413,6 +1425,30 @@ export function AppSettings({
                         onChange={(id) => {
                           setBrand(id as BrandId);
                           setStoredBrand(id as BrandId);
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Date format</h3>
+                      <p className="settings-row-description">
+                        Choose how older session dates appear in the sidebar.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Select
+                        value={dateFormat}
+                        options={DATE_FORMAT_OPTIONS}
+                        placeholder="System"
+                        ariaLabel={`Date format: ${
+                          DATE_FORMAT_OPTIONS.find((option) => option.value === dateFormat)
+                            ?.label ?? "System"
+                        }`}
+                        onChange={(value) => {
+                          const next = value as DateFormatPreference;
+                          setDateFormat(next);
+                          setStoredDateFormat(next);
                         }}
                       />
                     </div>

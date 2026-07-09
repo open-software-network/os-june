@@ -8,6 +8,7 @@ import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
+import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -682,6 +683,28 @@ describe("AppSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("changes the sidebar date format through the appearance picker", () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Date format: System" });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("option", { name: "9 Jul" }));
+
+    expect(localStorage.getItem(DATE_FORMAT_STORAGE_KEY)).toBe("day-first");
+    expect(screen.getByRole("button", { name: "Date format: 9 Jul" })).toBeInTheDocument();
   });
 
   it("falls back to subscription plan credits when balance has no usage percentage", async () => {

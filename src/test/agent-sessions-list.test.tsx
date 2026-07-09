@@ -197,6 +197,7 @@ describe("AgentSessionsList", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    expect(screen.getByRole("dialog", { name: "Rename session" })).toBeInTheDocument();
     const input = screen.getByRole("textbox", { name: "Session name" });
 
     await user.clear(input);
@@ -227,6 +228,7 @@ describe("AgentSessionsList", () => {
     await user.type(screen.getByRole("textbox", { name: "Session name" }), "{Escape}");
 
     expect(onRenameSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Rename session" })).not.toBeInTheDocument();
     expect(screen.getByText("Idle session")).toBeInTheDocument();
   });
 
@@ -267,9 +269,11 @@ describe("AgentSessionsList", () => {
     await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.clear(screen.getByRole("textbox", { name: "Session name" }));
+    expect(screen.getByRole("button", { name: "Rename" })).toBeDisabled();
     await user.type(screen.getByRole("textbox", { name: "Session name" }), "{Enter}");
 
     expect(onRenameSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Rename session" })).toBeInTheDocument();
   });
 });
 
