@@ -290,8 +290,9 @@ impl ComApartment {
     fn new() -> Result<Self, AppError> {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
-            .map(|_| Self)
-            .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))
+            .ok()
+            .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
+        Ok(Self)
     }
 }
 

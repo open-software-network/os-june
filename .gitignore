@@ -5,6 +5,8 @@ build/
 .env*
 !.env.example
 
+src-tauri/.tauri.dev.generated.json
+
 target/
 june-api/target/
 debug/
