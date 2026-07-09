@@ -4934,6 +4934,87 @@ input:focus-visible,
   gap: var(--sp-1);
 }
 
+/* Steer cards — injected instructions tacked to the top of the composer while
+   June works, in the same region as attachment chips. Each is the live handle
+   on an in-flight steer: hover reveals edit (reopen in the composer) and remove
+   (cancel a still-pending one). Sending is automatic, so there is no send
+   action. */
+.agent-steer-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.agent-steer-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-lg);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-lg);
+  background: var(--secondary);
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+}
+
+.agent-steer-card-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-steer-card-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Revealed on hover/focus like the queued-message row it's modeled on, so a
+   resting card stays quiet. */
+.agent-steer-card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.agent-steer-card:hover .agent-steer-card-actions,
+.agent-steer-card:focus-within .agent-steer-card-actions {
+  opacity: 1;
+}
+
+.agent-steer-card-actions button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-steer-card-actions button:hover {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-steer-card-actions {
+    transition: none;
+  }
+}
+
 .agent-composer-actions {
   display: flex;
   align-items: center;
@@ -6154,6 +6235,42 @@ input:focus-visible,
   .agent-composer-send,
   .agent-composer-stop {
     animation: none;
+  }
+}
+
+/* Steer-send — while June works, stop holds the corner and this second send
+   sits directly beside it (both are plain flex children of the actions row, no
+   wrapper: a nested flex box inflated the row height and left dead space at the
+   composer's bottom edge). It reveals by BLURRING in, never by scaling its own
+   width. Hidden, a negative margin tucks it back over the stop button so it
+   takes no space and stop keeps the corner; revealing slides it out from behind
+   stop as it sharpens. */
+.agent-composer-send-steer {
+  margin-left: calc(-1 * (var(--control-lg) + var(--sp-1)));
+  opacity: 0;
+  filter: blur(6px);
+  pointer-events: none;
+  animation: none;
+  /* Slide + blur together: the position (margin) rides a slower spring so the
+     glide is the last thing to settle and clearly reads as a slide, while
+     opacity/blur resolve a beat sooner so the button is already visible mid-
+     travel — the blur is part of the motion, not a substitute for it. */
+  transition:
+    margin-left var(--t-slow) var(--ease-spring),
+    opacity var(--t-med) var(--ease-out),
+    filter var(--t-med) var(--ease-out);
+}
+
+.agent-composer-send-steer[data-visible="true"] {
+  margin-left: 0;
+  opacity: 1;
+  filter: blur(0);
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-send-steer {
+    transition: none;
   }
 }
 

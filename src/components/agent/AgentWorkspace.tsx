@@ -195,7 +195,7 @@ import {
   parseBranchSessionResult,
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
-import { normalizeSteerText, steeringLiveEvent } from "../../lib/hermes-session-steer";
+import { normalizeSteerText } from "../../lib/hermes-session-steer";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -390,6 +390,32 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
     return show
       ? "Agent error gallery shown. Run __agentErrors(false) to hide."
       : "Agent error gallery hidden.";
+  };
+}
+
+// Dev-tools composer state driver (window.__composerSteerDemo). Forces the open
+// session's composer into its "June is working" branch — stop takes the slot,
+// and typing reveals the steer-send sliding out from behind it — so that
+// interaction can be iterated on without an in-flight turn. Open any real
+// session first (the branch needs a non-provisional session id). The steer-send
+// click won't reach a running turn in this mode; it's a visual harness only.
+// Dev builds only — the handle never ships.
+const COMPOSER_STEER_DEMO_EVENT = "june:agent:composer-steer-demo";
+let composerSteerDemoDesired = false;
+
+function setComposerSteerDemoDesired(show: boolean) {
+  composerSteerDemoDesired = show;
+  window.dispatchEvent(
+    new CustomEvent<{ show: boolean }>(COMPOSER_STEER_DEMO_EVENT, { detail: { show } }),
+  );
+}
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__composerSteerDemo = (show: boolean = true) => {
+    setComposerSteerDemoDesired(show);
+    return show
+      ? "Composer parked in June-is-working state. Type to reveal the steer-send; run __composerSteerDemo(false) to release."
+      : "Composer steer demo released.";
   };
 }
 
@@ -1765,6 +1791,9 @@ export function AgentWorkspace({
   // Reuses the importingFiles busy-gating (set alongside it); this flag only
   // tailors the composer placeholder copy while an image is generating.
   const [generatingImage, setGeneratingImage] = useState(false);
+  // Dev-only: window.__composerSteerDemo() parks the composer in the working
+  // branch so the stop/steer-send interaction can be iterated without a turn.
+  const [composerSteerDemo, setComposerSteerDemo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
@@ -1963,8 +1992,17 @@ export function AgentWorkspace({
   // track the text and resend it as a follow-up on completion when no tool
   // consumed it (cleared on a tool.complete or a clean terminal).
   const pendingSteerBySessionIdRef = useRef<
-    Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
+    Record<string, { text: string; accepted: boolean; toolDrained: boolean; cardId: string }[]>
   >({});
+  // Steer cards: injected instructions tacked to the top of the composer while
+  // June works. Each card is the live handle on an in-flight (undelivered) steer
+  // — it mirrors an entry in pendingSteerBySessionIdRef by `id`, so editing or
+  // removing a card also cancels the pending re-delivery. Cleared when the turn
+  // ends (delivered or resent) or is stopped, matching the pending list.
+  const [steerCardsBySessionId, setSteerCardsBySessionId] = useState<
+    Record<string, { id: string; text: string }[]>
+  >({});
+  const steerCardSeqRef = useRef(0);
   const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<Record<string, string>>(
     () => continuity?.runtimeSessionIds ?? {},
@@ -4169,7 +4207,9 @@ export function AgentWorkspace({
       // clean completion resend anything still pending as a follow-up.
       // `registered` tracks whether Hermes accepted the steer, so a
       // tool.complete only clears ones a tool could actually have drained.
-      const steerEntry = { text: message, accepted: false, toolDrained: false };
+      steerCardSeqRef.current += 1;
+      const cardId = `steer-${steerCardSeqRef.current}`;
+      const steerEntry = { text: message, accepted: false, toolDrained: false, cardId };
       pendingSteerBySessionIdRef.current = {
         ...pendingSteerBySessionIdRef.current,
         [steerSessionId]: [
@@ -4177,6 +4217,13 @@ export function AgentWorkspace({
           steerEntry,
         ],
       };
+      // Tack the instruction onto the composer as an editable card. This is the
+      // sole in-flight representation (steerActiveSession no longer writes a
+      // transcript line) — it clears when the turn drains or ends.
+      setSteerCardsBySessionId((prev) => ({
+        ...prev,
+        [steerSessionId]: [...(prev[steerSessionId] ?? []), { id: cardId, text: message }],
+      }));
       void steerActiveSession(steerSessionId, message)
         .then(() => {
           steerEntry.accepted = true;
@@ -5037,6 +5084,7 @@ export function AgentWorkspace({
               )
             : undefined;
         delete pendingSteerBySessionIdRef.current[storedSessionId];
+        clearSteerCards(storedSessionId);
         if (unconsumedSteers?.length) {
           const followUpSession = hermesSessionItemsRef.current.find(
             (session) => session.id === storedSessionId,
@@ -6296,21 +6344,53 @@ export function AgentWorkspace({
   async function steerActiveSession(sessionId: string, text: string) {
     const instruction = normalizeSteerText(text);
     if (!instruction) return;
-    // Show the instruction in the transcript right away so the user sees it
-    // landed — the gateway ack can lag a beat behind a fast send, and we never
-    // want a sent message to silently vanish.
-    pushLiveEvent(
-      sessionId,
-      steeringLiveEvent({
-        sessionId,
-        text: instruction,
-        receivedAt: new Date().toISOString(),
-      }),
-    );
+    // The instruction is shown as an editable steer card tacked to the composer
+    // (see the submit path) rather than a transcript line, so the sender can
+    // still revise or cancel it while it's undelivered.
     const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
     await createHermesMethods(gateway).steerSession({
       sessionId,
       text: instruction,
+    });
+  }
+
+  // Remove a steer card and cancel its pending re-delivery. Called by the card's
+  // remove action and by Edit (which reopens the text in the composer first).
+  function removeSteerCard(sessionId: string, id: string) {
+    setSteerCardsBySessionId((prev) => {
+      const list = prev[sessionId];
+      if (!list) return prev;
+      const next = list.filter((card) => card.id !== id);
+      if (next.length === list.length) return prev;
+      const copy = { ...prev };
+      if (next.length) copy[sessionId] = next;
+      else delete copy[sessionId];
+      return copy;
+    });
+    const pending = pendingSteerBySessionIdRef.current[sessionId];
+    if (pending) {
+      const next = pending.filter((entry) => entry.cardId !== id);
+      pendingSteerBySessionIdRef.current = { ...pendingSteerBySessionIdRef.current };
+      if (next.length) pendingSteerBySessionIdRef.current[sessionId] = next;
+      else delete pendingSteerBySessionIdRef.current[sessionId];
+    }
+  }
+
+  // Reopen a still-pending steer in the composer to revise and re-send it. The
+  // original is cancelled; a fresh steer + card is created on the next submit.
+  function editSteerCard(sessionId: string, id: string, text: string) {
+    removeSteerCard(sessionId, id);
+    composerEditorRef.current?.setContent(text, null);
+  }
+
+  // Drop every steer card for a session — the turn ended (delivered or resent as
+  // a follow-up) or was stopped, so the live handles retire.
+  function clearSteerCards(sessionId: string) {
+    setSteerCardsBySessionId((prev) => {
+      if (!prev[sessionId]) return prev;
+      const copy = { ...prev };
+      delete copy[sessionId];
+      return copy;
     });
   }
 
@@ -6592,6 +6672,7 @@ export function AgentWorkspace({
     // too -- otherwise a steer typed-then-stopped lingers and could auto-submit
     // as a follow-up after a later run in the same session.
     delete pendingSteerBySessionIdRef.current[sessionId];
+    clearSteerCards(sessionId);
     const activityCounts = clearSessionActivity(sessionId, "cancelled");
     dispatchAgentSessionStatus({
       sessionId,
@@ -7031,6 +7112,41 @@ export function AgentWorkspace({
     window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
     return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
   }, []);
+
+  // Dev-only composer steer-state driver (window.__composerSteerDemo): pick up
+  // the desired state on mount and follow live toggles via the window event.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    setComposerSteerDemo(composerSteerDemoDesired);
+    const onDemo = (event: Event) => {
+      setComposerSteerDemo(Boolean((event as CustomEvent<{ show: boolean }>).detail?.show));
+    };
+    window.addEventListener(COMPOSER_STEER_DEMO_EVENT, onDemo);
+    return () => window.removeEventListener(COMPOSER_STEER_DEMO_EVENT, onDemo);
+  }, []);
+
+  // Dev-only: window.__steerSubmitDemo("text") tacks a steer card onto the open
+  // session's composer — the exact state a real steer submit produces — so the
+  // sent-steer card (and its edit/remove actions) can be seen without a turn.
+  useEffect(() => {
+    if (!import.meta.env.DEV || typeof window === "undefined") return;
+    const w = window as unknown as Record<string, unknown>;
+    w.__steerSubmitDemo = (text = "Focus on the mobile layout first") => {
+      if (!selectedHermesSessionId || selectedHermesSessionIsProvisional) {
+        return "Open a real session first, then run __steerSubmitDemo().";
+      }
+      steerCardSeqRef.current += 1;
+      const id = `steer-demo-${steerCardSeqRef.current}`;
+      setSteerCardsBySessionId((prev) => ({
+        ...prev,
+        [selectedHermesSessionId]: [...(prev[selectedHermesSessionId] ?? []), { id, text }],
+      }));
+      return `Tacked a steer card "${text}" onto the composer.`;
+    };
+    return () => {
+      delete w.__steerSubmitDemo;
+    };
+  }, [selectedHermesSessionId, selectedHermesSessionIsProvisional]);
 
   // Hoisted so the trailing "Thinking…" indicator only shows in the gap after a
   // send (last turn is the user's) — once an assistant turn exists it carries
@@ -7517,6 +7633,36 @@ export function AgentWorkspace({
           ) : null}
         </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
+          {selectedHermesSessionId && steerCardsBySessionId[selectedHermesSessionId]?.length ? (
+            <div className="agent-steer-cards">
+              {steerCardsBySessionId[selectedHermesSessionId].map((card) => (
+                <div key={card.id} className="agent-steer-card">
+                  <span className="agent-steer-card-icon" aria-hidden>
+                    <IconArrowCornerDownRight size={13} />
+                  </span>
+                  <span className="agent-steer-card-text">{card.text}</span>
+                  <div className="agent-steer-card-actions">
+                    <button
+                      type="button"
+                      aria-label="Edit steer"
+                      title="Edit"
+                      onClick={() => editSteerCard(selectedHermesSessionId, card.id, card.text)}
+                    >
+                      <IconPencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Remove steer"
+                      title="Remove"
+                      onClick={() => removeSteerCard(selectedHermesSessionId, card.id)}
+                    >
+                      <IconTrashCan size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {attachments.length ? (
             <div className="agent-composer-attachments">
               {attachments.map((attachment) => (
@@ -7726,19 +7872,44 @@ export function AgentWorkspace({
               </button>
               {selectedHermesSessionId &&
               !selectedHermesSessionIsProvisional &&
-              workingSessionIds.has(selectedHermesSessionId) ? (
-                // While June works, stop owns the send slot — sending would
-                // only bounce off the gateway's busy guard anyway.
-                <button
-                  type="button"
-                  className="agent-composer-stop"
-                  aria-label="Stop June"
-                  title="Stop June"
-                  disabled={stoppingSessionIds.has(selectedHermesSessionId)}
-                  onClick={() => void stopHermesSession(selectedHermesSessionId)}
-                >
-                  <IconStop size={16} />
-                </button>
+              (workingSessionIds.has(selectedHermesSessionId) ||
+                submitting ||
+                composerSteerDemo) ? (
+                // June is working (or a follow-up is landing): stop takes the
+                // slot the instant a message fires — no spinner in between. As
+                // the user types a follow-up, a steer-send blurs in beside stop
+                // so the instruction can redirect the run mid-flight
+                // (session.steer) without interrupting it. Both are plain
+                // children of the actions row (no wrapper — a nested flex box
+                // inflated the row height). Empty composer keeps stop alone.
+                <>
+                  <button
+                    type="button"
+                    className="agent-composer-stop"
+                    aria-label="Stop June"
+                    title="Stop June"
+                    disabled={stoppingSessionIds.has(selectedHermesSessionId)}
+                    onClick={() => void stopHermesSession(selectedHermesSessionId)}
+                  >
+                    <IconStop size={16} />
+                  </button>
+                  <button
+                    type="submit"
+                    className="agent-composer-send agent-composer-send-steer"
+                    data-visible={draft.trim().length > 0}
+                    aria-hidden={draft.trim().length === 0}
+                    tabIndex={draft.trim().length > 0 ? 0 : -1}
+                    disabled={draft.trim().length === 0 || imageSlashBlockedByModel}
+                    title={
+                      imageSlashBlockedByModel
+                        ? "Switch to a vision model before using /image."
+                        : "Send to steer June"
+                    }
+                    aria-label="Send to steer June"
+                  >
+                    <IconArrowUp size={18} />
+                  </button>
+                </>
               ) : (
                 <button
                   type="submit"
