@@ -1222,7 +1222,7 @@ async fn finish_recording_session(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    repos
+    if let Err(error) = repos
         .add_checkpoint(
             &finished.session_id,
             "recording_finalization",
@@ -1234,10 +1234,22 @@ async fn finish_recording_session(
                 .to_string(),
             ),
         )
-        .await?;
-    repos
+        .await
+    {
+        eprintln!(
+            "failed to persist recording_finalization checkpoint for {}: {}",
+            finished.session_id, error
+        );
+    }
+    if let Err(error) = repos
         .add_checkpoint(&finished.session_id, "done", None)
-        .await?;
+        .await
+    {
+        eprintln!(
+            "failed to persist done checkpoint for {}: {}",
+            finished.session_id, error
+        );
+    }
     let source_artifacts = repos
         .source_artifacts_for_session(&finished.session_id)
         .await?;
