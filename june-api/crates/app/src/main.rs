@@ -6,15 +6,16 @@ use june_config::{
 };
 use june_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
-    MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceImageEditor,
-    VeniceImageGenerator, VeniceModelCatalog, client_with_timeout, default_client, jwks_client,
+    LogP3aSink, MultiFormatDurationProbe, OsAccountsHttpClient, OsAccountsP3aSink,
+    OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceAugment, VeniceCleaner,
+    VeniceGenerator, VeniceImageEditor, VeniceImageGenerator, VeniceModelCatalog,
+    client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
     ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
     NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    P3aReportService, P3aReportServiceDeps, PricingTable, WebAugmentService, WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -47,14 +48,18 @@ async fn serve() -> anyhow::Result<()> {
     let upstream_http = client_with_timeout(Duration::from_secs(
         config.server.request_timeout_secs.max(1),
     ));
-    let image_http = client_with_timeout(Duration::from_secs(image_client_timeout_secs(
-        config.server.request_timeout_secs,
-    )));
+    // Shared bounded client for every long-running metered inference call
+    // (image generate/edit, note generation, agent chat): route timeout minus
+    // the authorize + settlement budgets, so settlement always lands inside
+    // the hold TTL.
+    let metered_inference_http = client_with_timeout(Duration::from_secs(
+        image_client_timeout_secs(config.server.request_timeout_secs),
+    ));
     let pricing = load_pricing(&config, upstream_http.clone()).await;
     let clients = HttpClients {
         default: &http,
         upstream: &upstream_http,
-        image: &image_http,
+        metered_inference: &metered_inference_http,
     };
     let app = build_router(&config, clients, pricing);
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -115,7 +120,16 @@ fn build_router(
         &config.upstreams,
         openai_model_ids,
     ));
+    // Note generation and agent chat can now run long (streamed/kept-alive
+    // responses), so their upstream window must leave the settlement budget
+    // inside the authorization hold — the same route/client/hold math the
+    // image path pins (see image_client_timeout_secs and
+    // validate_long_inference_hold_ttl). The full-route `upstream` client
+    // would let a 300-600s call reach `charge` after its hold expired.
+    // Unmetered (user-Venice-key) requests have no hold to protect and keep
+    // the full-route client — see AgentChatRequest::unmetered.
     let generator: Arc<dyn june_domain::Generator> = Arc::new(VeniceGenerator::from_config(
+        clients.metered_inference.clone(),
         clients.upstream.clone(),
         &config.upstreams.venice,
     ));
@@ -123,9 +137,12 @@ fn build_router(
         clients.upstream.clone(),
         &config.upstreams.venice,
     ));
-    let agent_chat_completer: Arc<dyn june_domain::AgentChatCompleter> = Arc::new(
-        VeniceAgentChat::from_config(clients.upstream.clone(), &config.upstreams.venice),
-    );
+    let agent_chat_completer: Arc<dyn june_domain::AgentChatCompleter> =
+        Arc::new(VeniceAgentChat::from_config(
+            clients.metered_inference.clone(),
+            clients.upstream.clone(),
+            &config.upstreams.venice,
+        ));
     // One client backs both web traits (search + fetch) over the same Venice
     // credential and base URL.
     let web_augment = Arc::new(VeniceAugment::from_config(
@@ -136,10 +153,14 @@ fn build_router(
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
     let issue_report_sink = build_issue_report_sink(config, clients.default);
+    let p3a_sink = build_p3a_sink(config, clients.default);
     let issue_reports = Arc::new(IssueReportService::new(IssueReportServiceDeps {
         sink: issue_report_sink,
         chat_completer: agent_chat_completer.clone(),
         config: config.issue_reports.clone(),
+    }));
+    let p3a_reports = Arc::new(P3aReportService::new(P3aReportServiceDeps {
+        sink: p3a_sink,
     }));
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
@@ -178,14 +199,14 @@ fn build_router(
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
         generator: build_image_generator(
-            clients.image,
+            clients.metered_inference,
             &config.upstreams.venice,
             Duration::from_secs(image_client_timeout_secs(
                 config.server.request_timeout_secs,
             )),
         ),
         editor: build_image_editor(
-            clients.image,
+            clients.metered_inference,
             &config.upstreams.venice,
             Duration::from_secs(image_client_timeout_secs(
                 config.server.request_timeout_secs,
@@ -229,6 +250,7 @@ fn build_router(
         web,
         image,
         issue_reports,
+        p3a_reports,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
@@ -249,7 +271,7 @@ fn build_router(
 struct HttpClients<'a> {
     default: &'a reqwest::Client,
     upstream: &'a reqwest::Client,
-    image: &'a reqwest::Client,
+    metered_inference: &'a reqwest::Client,
 }
 
 fn build_image_generator(
@@ -352,6 +374,19 @@ fn build_issue_report_sink(
     } else {
         tracing::info!("no issue report sink configured; reports will be logged only");
         Arc::new(LogIssueReportSink)
+    }
+}
+
+fn build_p3a_sink(config: &AppConfig, http: &reqwest::Client) -> Arc<dyn june_domain::P3aSink> {
+    if config.local_dev.enabled {
+        tracing::info!("local dev mode enabled; P3A reports will be logged only");
+        Arc::new(LogP3aSink)
+    } else if let Some(sink) = OsAccountsP3aSink::from_config(http.clone(), &config.os_accounts) {
+        tracing::info!("P3A reports will be forwarded to OS Accounts");
+        Arc::new(sink)
+    } else {
+        tracing::warn!("P3A ingest token is missing; reports will be logged only");
+        Arc::new(LogP3aSink)
     }
 }
 

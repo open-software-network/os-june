@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { RefObject } from "react";
 import { modelAvailableForMode, modelPrivacyBadge } from "../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
+import { useScrollFade } from "../../lib/use-scroll-fade";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { HoverTip } from "../ui/HoverTip";
 import { ModelPrivacyChip } from "../ui/ModelPrivacyChip";
@@ -91,19 +92,7 @@ export function ModelPickerPopover({
   }, [cancelCatalogClose]);
   useEffect(() => cancelCatalogClose, [cancelCatalogClose]);
 
-  const [fade, setFade] = useState({ top: false, bottom: false });
-  const updateFade = useCallback(() => {
-    const el = listRef.current;
-    if (!el) return;
-    const canScroll = el.scrollHeight - el.clientHeight > 1;
-    const atTop = el.scrollTop <= 1;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    setFade((prev) => {
-      const top = canScroll && !atTop;
-      const bottom = canScroll && !atBottom;
-      return prev.top === top && prev.bottom === bottom ? prev : { top, bottom };
-    });
-  }, []);
+  const fade = useScrollFade(listRef);
 
   useLayoutEffect(() => {
     const el = flyoutRef.current;
@@ -129,8 +118,8 @@ export function ModelPickerPopover({
   }, [flyout]);
 
   useLayoutEffect(() => {
-    updateFade();
-  }, [flyout, options, search, updateFade]);
+    fade.update();
+  }, [flyout, options, search, fade.update]);
 
   useEffect(() => {
     setCatalogHover(null);
@@ -222,18 +211,14 @@ export function ModelPickerPopover({
             aria-label="Search models"
           />
         </label>
-        <div
-          className="agent-composer-model-list-wrap"
-          data-fade-top={fade.top || undefined}
-          data-fade-bottom={fade.bottom || undefined}
-        >
+        <div className="agent-composer-model-list-wrap scroll-fade" {...fade.props}>
           <div
             ref={listRef}
             className="agent-composer-model-list"
             role="listbox"
             aria-label={label}
             onScroll={() => {
-              updateFade();
+              fade.update();
               cancelHoverIntent();
               setCatalogHover(null);
             }}

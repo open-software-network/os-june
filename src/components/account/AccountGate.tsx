@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { isMacLikePlatform } from "../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
+import { JuneGlassMark } from "../brand/JuneGlassMark";
 import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
 
 type Props = {
@@ -52,8 +53,8 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
   return (
     <div className="welcome-screen">
       <div className="welcome-card">
-        <span className="welcome-mark welcome-mark-symbol" aria-hidden>
-          <JuneGradientMark />
+        <span className="welcome-mark-glass" aria-hidden>
+          <JuneGlassMark />
         </span>
         <h1 className="welcome-title">Welcome to June</h1>
         <p className="welcome-subtitle">{subtitle}</p>

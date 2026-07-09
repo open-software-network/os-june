@@ -179,9 +179,9 @@ describe("isHermesFeatureSupported — honest support gate", () => {
   });
 
   it("reports feature 10's command.dispatch as supported once shipped", () => {
-    // Feature 10 wired switchActiveSessionModel (/model via command.dispatch)
-    // into the composer model picker with tests, so its owned key flips to
-    // supported.
+    // Feature 10 shipped the typed switchActiveSessionModel seam
+    // (/model via command.dispatch). The composer now keeps existing
+    // sessions model-locked, but the protocol seam remains supported.
     expect(getFeatureStatus("command.dispatch")).toBe("supported");
     expect(isHermesFeatureSupported("command.dispatch")).toBe(true);
   });

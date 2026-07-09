@@ -50,7 +50,12 @@ aud = "open-software-apps"
 jwks_refresh_secs = 300
 jwks_miss_min_backoff_secs = 5
 authorize_hold_ttl_note_transcribe_secs = 60
-authorize_hold_ttl_note_generate_secs = 300
+# Covers the bounded metered-inference client window (route timeout minus the
+# authorize + settlement budgets = 390s) plus the settlement budget (150s),
+# because note generation AND agent chat streaming settle their charge only
+# after the upstream call completes. 300 let a 300-600s call reach `charge`
+# with an expired hold. Same math as authorize_hold_ttl_image_secs.
+authorize_hold_ttl_note_generate_secs = 540
 authorize_hold_ttl_dictate_transcribe_secs = 30
 authorize_hold_ttl_dictate_cleanup_secs = 30
 note_transcribe_preview_max_audio_secs = 30

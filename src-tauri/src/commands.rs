@@ -330,6 +330,7 @@ pub async fn create_agent_task(
     if request.run_placeholder.unwrap_or(true) {
         schedule_agent_runtime_placeholder(repos, task.id.clone());
     }
+    crate::p3a::record_question_best_effort(app, crate::p3a::questions::Question::AgentSessions);
     Ok(task)
 }
 
@@ -1139,7 +1140,14 @@ pub async fn finish_recording(
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
-    finish_recording_session(&repos, finished, finalization_started).await
+    let response = finish_recording_session(&repos, finished, finalization_started).await?;
+    if response.processing_started {
+        crate::p3a::record_question_best_effort(
+            app,
+            crate::p3a::questions::Question::NotesMeetingsRecorded,
+        );
+    }
+    Ok(response)
 }
 
 async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {

@@ -6,13 +6,29 @@
  * everyone after a flow redesign.
  */
 
-const ONBOARDING_VERSION = 7;
+const ONBOARDING_VERSION = 8;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
 const RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
+const USE_CASES_KEY = "june.onboarding.useCases";
+const CUSTOM_USE_CASE_KEY = "june.onboarding.customUseCase";
 const ONBOARDING_BROADCAST_CHANNEL = "june.onboarding";
 
 export const ONBOARDING_COMPLETED_EVENT = "june:onboarding-completed";
+export const ONBOARDING_USE_CASES = [
+  "work",
+  "personal",
+  "school",
+  "creative",
+  "coding",
+  "meetings",
+  "other",
+  "not-sure",
+] as const;
+
+export type OnboardingUseCase = (typeof ONBOARDING_USE_CASES)[number];
+
+const ONBOARDING_USE_CASE_SET = new Set<string>(ONBOARDING_USE_CASES);
 
 type OnboardingReplayEnv = {
   readonly DEV?: boolean;
@@ -127,6 +143,62 @@ export function setOnboardingResumeStep(stepId: string) {
   } catch {
     // Ignore; worst case the wizard restarts from the top.
   }
+}
+
+export function onboardingUseCases(): OnboardingUseCase[] {
+  try {
+    const raw = window.localStorage.getItem(USE_CASES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const deduped = new Set(
+      parsed.filter((value): value is OnboardingUseCase => {
+        return typeof value === "string" && ONBOARDING_USE_CASE_SET.has(value);
+      }),
+    );
+    return ONBOARDING_USE_CASES.filter((useCase) => deduped.has(useCase));
+  } catch {
+    return [];
+  }
+}
+
+export function saveOnboardingUseCases(useCases: readonly OnboardingUseCase[]) {
+  try {
+    const deduped = new Set(
+      useCases.filter((value): value is OnboardingUseCase => {
+        return ONBOARDING_USE_CASE_SET.has(value);
+      }),
+    );
+    const ordered = ONBOARDING_USE_CASES.filter((useCase) => deduped.has(useCase));
+    window.localStorage.setItem(USE_CASES_KEY, JSON.stringify(ordered));
+  } catch {
+    // Ignore; this is product metadata, not a completion gate.
+  }
+}
+
+export function onboardingCustomUseCase(): string {
+  try {
+    return sanitizeCustomUseCase(window.localStorage.getItem(CUSTOM_USE_CASE_KEY) ?? "");
+  } catch {
+    return "";
+  }
+}
+
+export function saveOnboardingCustomUseCase(customUseCase: string) {
+  try {
+    const sanitized = sanitizeCustomUseCase(customUseCase);
+    if (sanitized) {
+      window.localStorage.setItem(CUSTOM_USE_CASE_KEY, sanitized);
+    } else {
+      window.localStorage.removeItem(CUSTOM_USE_CASE_KEY);
+    }
+  } catch {
+    // Ignore; this is product metadata, not a completion gate.
+  }
+}
+
+function sanitizeCustomUseCase(customUseCase: string): string {
+  return customUseCase.trim().replace(/\s+/g, " ").slice(0, 120);
 }
 
 /**

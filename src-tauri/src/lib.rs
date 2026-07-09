@@ -13,6 +13,7 @@ pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
+pub mod p3a;
 pub mod providers;
 pub mod theme_icon;
 pub mod updates;
@@ -268,6 +269,10 @@ pub fn run() {
             providers::save_local_generation_settings,
             providers::set_local_generation_enabled,
             providers::probe_local_generation_endpoint,
+            p3a::p3a_settings,
+            p3a::p3a_question_catalog,
+            p3a::set_p3a_enabled,
+            p3a::p3a_record,
             os_accounts::os_accounts_status,
             os_accounts::os_accounts_status_local,
             os_accounts::os_accounts_login,
@@ -289,6 +294,7 @@ pub fn run() {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
+            p3a::setup(app);
             updates::setup(app);
             dictation::setup(app);
             agent_hud::setup(app);

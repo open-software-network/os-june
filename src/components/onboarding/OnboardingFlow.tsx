@@ -2,14 +2,16 @@ import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { useEffect, useMemo, useState } from "react";
 import { onboardingResumeStep, setOnboardingResumeStep } from "../../lib/onboarding";
 import { isMacLikePlatform } from "../../lib/platform";
-import { dictationSettings, setDictationShortcut } from "../../lib/tauri";
+import { dictationSettings, p3aRecord, setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
+import { TelemetryConsentStep } from "./steps/TelemetryConsentStep";
+import { UsageIntentStep } from "./steps/UsageIntentStep";
 import { usePermissionStatuses, useSystemAudioStatus } from "./use-permission-status";
 
-type StepId = "sign-in" | "permissions" | "dictation-practice";
+type StepId = "sign-in" | "telemetry" | "usage-intent" | "permissions" | "dictation-practice";
 
 // The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
 // on the Rust side.
@@ -39,8 +41,14 @@ function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
   );
 }
 
-const MAC_STEPS: StepId[] = ["sign-in", "permissions", "dictation-practice"];
-const NON_MAC_STEPS: StepId[] = ["sign-in", "permissions"];
+const MAC_STEPS: StepId[] = [
+  "sign-in",
+  "telemetry",
+  "usage-intent",
+  "permissions",
+  "dictation-practice",
+];
+const NON_MAC_STEPS: StepId[] = ["sign-in", "telemetry", "usage-intent", "permissions"];
 
 type Props = {
   account: AccountStatus;
@@ -63,7 +71,11 @@ function initialStepIndex(steps: StepId[]): number {
 function browserOnboardingDemoStep(): StepId | null {
   if (!import.meta.env.DEV || typeof window === "undefined") return null;
   const step = new URLSearchParams(window.location.search).get("juneDemoStep");
-  return step === "sign-in" || step === "permissions" || step === "dictation-practice"
+  return step === "sign-in" ||
+    step === "telemetry" ||
+    step === "usage-intent" ||
+    step === "permissions" ||
+    step === "dictation-practice"
     ? step
     : null;
 }
@@ -131,10 +143,14 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
 
   function goNext() {
     if (stepIndex >= steps.length - 1) {
-      onComplete();
+      completeOnboarding();
       return;
     }
     setStepIndex((index) => Math.min(index + 1, steps.length - 1));
+  }
+
+  function completeOnboarding() {
+    void p3aRecord("onboarding.completed").finally(onComplete);
   }
 
   function goBack() {
@@ -174,6 +190,10 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
       <div className="onboarding-body">
         {stepId === "sign-in" ? (
           <SignInStep account={account} onAccountChanged={onAccountChanged} onContinue={goNext} />
+        ) : stepId === "telemetry" ? (
+          <TelemetryConsentStep onContinue={goNext} />
+        ) : stepId === "usage-intent" ? (
+          <UsageIntentStep onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep
             statuses={permissionStatuses}
@@ -185,7 +205,7 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
           <DictationPracticeStep
             shortcutLabel={shortcutLabel}
             onShortcutLabelChange={setShortcutLabel}
-            onContinue={onComplete}
+            onContinue={completeOnboarding}
           />
         ) : null}
       </div>

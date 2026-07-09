@@ -50,6 +50,7 @@ import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { Dialog } from "../components/ui/Dialog";
+import { Toaster } from "../components/ui/Toaster";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -517,6 +518,21 @@ export function App() {
       cancelled = true;
       updateCardDemoRef.current?.dispose();
       updateCardDemoRef.current = null;
+    };
+  }, []);
+  // Dev console driver (window.__toastDemo) that fires each toast variant so
+  // the toast styling can be inspected without walking a real flow.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/toast-demo").then(({ registerToastDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerToastDemo());
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
     };
   }, []);
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
@@ -991,7 +1007,7 @@ export function App() {
 
   // Modifier state for the click that's about to fire a navigation. A
   // capture-phase listener records it before React's bubble-phase handlers run,
-  // so any nav surface (sidebar, notes list, command palette) can open in a new
+  // so any nav surface (sidebar, notes list, command prompt) can open in a new
   // tab via ⌘/Ctrl-click or middle-click without threading flags through props.
   const newTabIntentRef = useRef(false);
   useEffect(() => {
@@ -3694,6 +3710,9 @@ export function App() {
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
+      {/* Global toast host. Mounted once beside the dialogs; sonner portals its
+          own list to document.body, so placement in the tree is immaterial. */}
+      <Toaster />
     </main>
   );
 }

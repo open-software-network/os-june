@@ -66,6 +66,7 @@ impl NoteGenerateService {
                     model: params.model_id.clone(),
                     system_prompt: prompts::NOTE_GENERATE.to_string(),
                     provider_credentials: params.provider_credentials.clone(),
+                    unmetered: true,
                 })
                 .await?;
             log_skipped_user_venice_key(
@@ -102,6 +103,7 @@ impl NoteGenerateService {
                 model: params.model_id.clone(),
                 system_prompt: prompts::NOTE_GENERATE.to_string(),
                 provider_credentials: params.provider_credentials.clone(),
+                unmetered: false,
             })
             .await?;
         let actual = self

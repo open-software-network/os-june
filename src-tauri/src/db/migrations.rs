@@ -124,6 +124,20 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    for statement in include_str!("../../migrations/010_p3a_counters.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    ensure_column(
+        _pool,
+        "p3a_counters",
+        "reported_value",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(_pool, "p3a_counters", "reported_at", "TEXT").await?;
     Ok(())
 }
 

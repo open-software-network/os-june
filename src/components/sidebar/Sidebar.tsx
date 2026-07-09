@@ -1,5 +1,6 @@
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconClipboard } from "central-icons/IconClipboard";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
 import { IconZap } from "central-icons/IconZap";
 import { IconBubble3 } from "central-icons/IconBubble3";
@@ -59,7 +60,7 @@ import {
 } from "../agent/AgentWorkspace";
 import { CategoryIcon } from "../agent/composer/CategoryIcon";
 import { JuneWordmark } from "../brand/JuneWordmark";
-import type { ReportCategory } from "../agent/composer/reportCategory";
+import { type ReportCategory, reportCategoryDef } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -74,6 +75,7 @@ import {
 import { errorCode, messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import { useDismiss } from "../../lib/use-dismiss";
+import { useScrollFade } from "../../lib/use-scroll-fade";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { useRecordingPresenceBounds } from "../../lib/recording-presence-bounds";
 import { isPrimaryShortcut, primaryShortcutLabel } from "../../lib/platform";
@@ -139,7 +141,7 @@ type MenuState =
   | { kind: "note"; noteId: string; right: number; top: number }
   | { kind: "agent-session"; sessionId: string; right: number; top: number };
 
-type CommandPaletteItem = {
+type CommandPromptItem = {
   id: string;
   label: string;
   meta?: string;
@@ -148,9 +150,9 @@ type CommandPaletteItem = {
   action: () => void;
 };
 
-type CommandPaletteGroup = {
+type CommandPromptGroup = {
   title: string;
-  items: CommandPaletteItem[];
+  items: CommandPromptItem[];
 };
 
 const AGENT_SIDEBAR_SESSION_FETCH_LIMIT = 100;
@@ -363,7 +365,7 @@ export function Sidebar({
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const commandInputRef = useRef<HTMLInputElement>(null);
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [commandPromptOpen, setCommandPromptOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
   const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -371,6 +373,8 @@ export function Sidebar({
   const [referralDialogOpen, setReferralDialogOpen] = useState(false);
   const [referralSummary, setReferralSummary] = useState<ReferralSummary | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
+  // Guards against a stale closure double-firing the summary fetch.
+  const referralLoadingRef = useRef(false);
   const [referralError, setReferralError] = useState<string | null>(null);
   // The deployment can simply not offer referrals (a 404 from /referrals/me).
   // That's not a transient failure, so it gets a calm message with no retry.
@@ -475,6 +479,8 @@ export function Sidebar({
 
   async function loadReferralSummary() {
     if (!account.signedIn || account.localDev) return;
+    if (referralLoadingRef.current) return;
+    referralLoadingRef.current = true;
     setReferralLoading(true);
     setReferralError(null);
     setReferralUnavailable(false);
@@ -484,6 +490,7 @@ export function Sidebar({
       setReferralUnavailable(errorCode(error) === "referrals_unavailable");
       setReferralError(messageFromError(error));
     } finally {
+      referralLoadingRef.current = false;
       setReferralLoading(false);
     }
   }
@@ -518,12 +525,12 @@ export function Sidebar({
     return () => window.clearTimeout(timer);
   }, [referralCopied]);
 
-  const commandPaletteGroups = useMemo<CommandPaletteGroup[]>(() => {
+  const commandPromptGroups = useMemo<CommandPromptGroup[]>(() => {
     const normalized = normalizeCommandQuery(commandQuery);
-    const matches = (item: CommandPaletteItem) =>
+    const matches = (item: CommandPromptItem) =>
       !normalized || item.searchText.includes(normalized);
 
-    const recentItems: CommandPaletteItem[] = [
+    const recentItems: CommandPromptItem[] = [
       ...notes.slice(0, 5).map((note) => {
         const title = note.title.trim() || "New note";
         return {
@@ -553,7 +560,7 @@ export function Sidebar({
       .filter(matches)
       .slice(0, 6);
 
-    const quickItems: CommandPaletteItem[] = [
+    const quickItems: CommandPromptItem[] = [
       {
         id: "quick:new-session",
         label: "New session",
@@ -561,6 +568,19 @@ export function Sidebar({
         searchText: normalizeCommandQuery("new session agent"),
         action: handleNewAgentSession,
       },
+      // "Open recording" only makes sense while a recording is live, mirroring
+      // the sidebar recording indicator that renders under the same condition.
+      ...(onOpenRecording && recordingStatus
+        ? [
+            {
+              id: "quick:open-recording",
+              label: "Open recording",
+              icon: <IconAudio size={15} />,
+              searchText: normalizeCommandQuery("open recording meeting audio"),
+              action: onOpenRecording,
+            } satisfies CommandPromptItem,
+          ]
+        : []),
       {
         id: "quick:meetings",
         label: "Go to Meeting notes",
@@ -604,7 +624,7 @@ export function Sidebar({
             (tab) =>
               !HIDDEN_SETTINGS_TABS.has(tab.id) && !(account.localDev && tab.id === "billing"),
           ).map(
-            (tab): CommandPaletteItem => ({
+            (tab): CommandPromptItem => ({
               id: `quick:settings-${tab.id}`,
               label: `Settings -> ${tab.label}`,
               icon: <IconSettingsGear4 size={15} />,
@@ -622,31 +642,77 @@ export function Sidebar({
         : []),
     ].filter(matches);
 
+    // Support: the report entry points (reusing the identity menu's items and
+    // CategoryIcon), invite friends, and sign out — each guarded exactly like
+    // the identity menu so the prompt never offers an action the menu hides.
+    const supportItems: CommandPromptItem[] = [
+      ...(onReportIssue
+        ? REPORT_MENU_ITEMS.map((item): CommandPromptItem => {
+            const def = reportCategoryDef(item.category);
+            return {
+              id: `support:report-${item.category}`,
+              label: item.label,
+              icon: <CategoryIcon category={item.category} size={15} />,
+              searchText: normalizeCommandQuery(`${item.label} ${def?.keywords.join(" ") ?? ""}`),
+              action: () => onReportIssue(item.category),
+            };
+          })
+        : []),
+      ...(account.signedIn && !account.localDev
+        ? [
+            {
+              id: "support:invite-friends",
+              label: "Invite friends",
+              icon: <IconGift1 size={15} />,
+              searchText: normalizeCommandQuery("invite friends referral share"),
+              action: () => openReferralDialog(),
+            } satisfies CommandPromptItem,
+          ]
+        : []),
+      ...(account.signedIn && !account.localDev && onSignOut
+        ? [
+            {
+              id: "support:sign-out",
+              label: "Sign out",
+              icon: <IconArrowBoxRight size={15} />,
+              searchText: normalizeCommandQuery("sign out log out logout"),
+              action: onSignOut,
+            } satisfies CommandPromptItem,
+          ]
+        : []),
+    ].filter(matches);
+
     return [
       { title: "Recents", items: recentItems },
       { title: "Quick actions", items: quickItems },
+      { title: "Support", items: supportItems },
     ].filter((group) => group.items.length > 0);
   }, [
     account.localDev,
+    account.signedIn,
     agentSessions,
     commandQuery,
     notes,
     onChangeView,
+    onOpenRecording,
+    onReportIssue,
     onSelectAgentSession,
     onSelectNote,
     onSettingsTabChange,
+    onSignOut,
+    recordingStatus,
   ]);
 
-  const commandPaletteItems = commandPaletteGroups.flatMap((group) => group.items);
+  const commandPromptItems = commandPromptGroups.flatMap((group) => group.items);
 
   useEffect(() => {
     setCommandActiveIndex(0);
-  }, [commandPaletteOpen, commandQuery]);
+  }, [commandPromptOpen, commandQuery]);
 
   useEffect(() => {
-    if (commandActiveIndex < commandPaletteItems.length) return;
-    setCommandActiveIndex(Math.max(commandPaletteItems.length - 1, 0));
-  }, [commandActiveIndex, commandPaletteItems.length]);
+    if (commandActiveIndex < commandPromptItems.length) return;
+    setCommandActiveIndex(Math.max(commandPromptItems.length - 1, 0));
+  }, [commandActiveIndex, commandPromptItems.length]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -691,7 +757,7 @@ export function Sidebar({
       setQuery("");
       setMenu(null);
       setIdentityMenuOpen(false);
-      setCommandPaletteOpen(false);
+      setCommandPromptOpen(false);
       setAgentSessions(buildSidebarDevStateSessions());
       setSelectedAgentSessionId(SIDEBAR_DEV_SESSION_IDS.selected);
       setWorkingAgentSessionIds(new Set([SIDEBAR_DEV_SESSION_IDS.working]));
@@ -746,20 +812,20 @@ export function Sidebar({
     });
   }
 
-  function openCommandPalette() {
+  function openCommandPrompt() {
     setMenu(null);
     setIdentityMenuOpen(false);
     setCommandQuery("");
     setCommandActiveIndex(0);
-    setCommandPaletteOpen(true);
+    setCommandPromptOpen(true);
   }
 
-  function closeCommandPalette() {
-    setCommandPaletteOpen(false);
+  function closeCommandPrompt() {
+    setCommandPromptOpen(false);
   }
 
-  function runCommandPaletteItem(item: CommandPaletteItem) {
-    closeCommandPalette();
+  function runCommandPromptItem(item: CommandPromptItem) {
+    closeCommandPrompt();
     item.action();
   }
 
@@ -770,7 +836,7 @@ export function Sidebar({
       if (!isSearchShortcut(event)) return;
       if (document.querySelector('[role="dialog"]')) return;
       event.preventDefault();
-      openCommandPalette();
+      openCommandPrompt();
     }
 
     window.addEventListener("keydown", onKeyDown);
@@ -778,12 +844,12 @@ export function Sidebar({
   });
 
   useEffect(() => {
-    if (!commandPaletteOpen) return;
+    if (!commandPromptOpen) return;
     const frame = window.requestAnimationFrame(() => {
       commandInputRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [commandPaletteOpen]);
+  }, [commandPromptOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1000,7 +1066,7 @@ export function Sidebar({
             className="sidebar-search"
             onMouseDown={(event) => {
               event.preventDefault();
-              openCommandPalette();
+              openCommandPrompt();
             }}
           >
             <IconMagnifyingGlass size={15} />
@@ -1259,17 +1325,17 @@ export function Sidebar({
           onClose={() => setMenu(null)}
         />
       ) : null}
-      {commandPaletteOpen ? (
-        <CommandPalette
+      {commandPromptOpen ? (
+        <CommandPrompt
           inputRef={commandInputRef}
           query={commandQuery}
-          groups={commandPaletteGroups}
-          items={commandPaletteItems}
+          groups={commandPromptGroups}
+          items={commandPromptItems}
           activeIndex={commandActiveIndex}
           onQueryChange={setCommandQuery}
           onActiveIndexChange={setCommandActiveIndex}
-          onClose={closeCommandPalette}
-          onSelect={runCommandPaletteItem}
+          onClose={closeCommandPrompt}
+          onSelect={runCommandPromptItem}
         />
       ) : null}
       <ConfirmDialog
@@ -1542,7 +1608,7 @@ function SettingsSidebarNav({
   );
 }
 
-function CommandPalette({
+function CommandPrompt({
   inputRef,
   query,
   groups,
@@ -1555,30 +1621,64 @@ function CommandPalette({
 }: {
   inputRef: RefObject<HTMLInputElement>;
   query: string;
-  groups: CommandPaletteGroup[];
-  items: CommandPaletteItem[];
+  groups: CommandPromptGroup[];
+  items: CommandPromptItem[];
   activeIndex: number;
   onQueryChange: (value: string) => void;
   onActiveIndexChange: (index: number) => void;
   onClose: () => void;
-  onSelect: (item: CommandPaletteItem) => void;
+  onSelect: (item: CommandPromptItem) => void;
 }) {
-  function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-      return;
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const fade = useScrollFade(resultsRef);
+  // Re-measure the edge fades when the query or result groups change.
+  useEffect(() => {
+    fade.update();
+  }, [fade.update, query, groups]);
+
+  // Escape always closes, from anywhere — the prompt has no focus trap, so a
+  // handler bound to the input alone would miss Esc once focus moves to a row,
+  // the clear button, or out to the background. A window listener (mounted only
+  // while the prompt is open) guarantees there's no way to get stuck in here.
+  // It runs in the capture phase and calls stopPropagation so the prompt claims
+  // Escape before any earlier-registered window handler (note chat panel, an
+  // active agent run) also reacts to it.
+  useEffect(() => {
+    function onWindowKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }
     }
+    window.addEventListener("keydown", onWindowKeyDown, true);
+    return () => window.removeEventListener("keydown", onWindowKeyDown, true);
+  }, [onClose]);
+
+  // Scroll the active row into view, but only from keyboard navigation — doing
+  // it on mouse-hover activation would fight the pointer and cause jumps.
+  function moveActive(nextIndex: number) {
+    onActiveIndexChange(nextIndex);
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById(`command-prompt-item-${nextIndex}`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    // Escape is handled by a window listener (see above) so it works no matter
+    // where focus is; here we only drive list navigation from the input.
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (items.length === 0) return;
-      onActiveIndexChange(Math.min(activeIndex + 1, items.length - 1));
+      moveActive(Math.min(activeIndex + 1, items.length - 1));
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
       if (items.length === 0) return;
-      onActiveIndexChange(Math.max(activeIndex - 1, 0));
+      moveActive(Math.max(activeIndex - 1, 0));
       return;
     }
     if (event.key === "Enter") {
@@ -1592,72 +1692,78 @@ function CommandPalette({
 
   return (
     <div
-      className="command-palette-backdrop"
+      className="command-prompt-backdrop"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="command-palette" role="dialog" aria-modal="true" aria-label="Search">
-        <label className="command-palette-search">
+      <div className="command-prompt" role="dialog" aria-modal="true" aria-label="Search">
+        <label className="command-prompt-search">
           <IconMagnifyingGlass size={16} />
           <input
             ref={inputRef}
-            type="search"
+            type="text"
             value={query}
             onChange={(event) => onQueryChange(event.currentTarget.value)}
             onKeyDown={onKeyDown}
             placeholder="Search meeting notes, sessions, or jump to..."
             aria-label="Search"
             aria-activedescendant={
-              items[activeIndex] ? `command-palette-item-${activeIndex}` : undefined
+              items[activeIndex] ? `command-prompt-item-${activeIndex}` : undefined
             }
           />
+          {query ? (
+            <button
+              type="button"
+              className="command-prompt-clear"
+              aria-label="Clear search"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onQueryChange("");
+                inputRef.current?.focus();
+              }}
+            >
+              <IconCrossSmall size={13} />
+            </button>
+          ) : null}
         </label>
-        <div className="command-palette-results">
-          {groups.length > 0 ? (
-            groups.map((group) => (
-              <section className="command-palette-group" key={group.title}>
-                <div className="command-palette-group-title">{group.title}</div>
-                <div className="command-palette-group-list">
-                  {group.items.map((item) => {
-                    const index = itemIndex;
-                    itemIndex += 1;
-                    return (
-                      <button
-                        type="button"
-                        id={`command-palette-item-${index}`}
-                        className="command-palette-item"
-                        data-active={index === activeIndex}
-                        key={item.id}
-                        onMouseEnter={() => onActiveIndexChange(index)}
-                        onClick={() => onSelect(item)}
-                      >
-                        <span className="command-palette-item-icon">{item.icon}</span>
-                        <span className="command-palette-item-label">{item.label}</span>
-                        {item.meta ? (
-                          <span className="command-palette-item-meta">{item.meta}</span>
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-            ))
-          ) : (
-            <div className="command-palette-empty">No results</div>
-          )}
-        </div>
-        <div className="command-palette-footer" aria-hidden="true">
-          <span>
-            <kbd>↵</kbd> Open
-          </span>
-          <span>
-            <kbd>↑↓</kbd> Navigate
-          </span>
-          <span>
-            <kbd>Esc</kbd> Close
-          </span>
+        <div className="command-prompt-results-wrap scroll-fade" {...fade.props}>
+          <div className="command-prompt-results" ref={resultsRef}>
+            {groups.length > 0 ? (
+              groups.map((group) => (
+                <section className="command-prompt-group" key={group.title}>
+                  <div className="command-prompt-group-title">{group.title}</div>
+                  <div className="command-prompt-group-list">
+                    {group.items.map((item) => {
+                      const index = itemIndex;
+                      itemIndex += 1;
+                      return (
+                        <button
+                          type="button"
+                          id={`command-prompt-item-${index}`}
+                          className="command-prompt-item"
+                          data-active={index === activeIndex}
+                          key={item.id}
+                          onMouseEnter={() => onActiveIndexChange(index)}
+                          onFocus={() => onActiveIndexChange(index)}
+                          onClick={() => onSelect(item)}
+                        >
+                          <span className="command-prompt-item-icon">{item.icon}</span>
+                          <span className="command-prompt-item-label">{item.label}</span>
+                          {item.meta ? (
+                            <span className="command-prompt-item-meta">{item.meta}</span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))
+            ) : (
+              <div className="command-prompt-empty">No results for "{query.trim()}"</div>
+            )}
+          </div>
         </div>
       </div>
     </div>

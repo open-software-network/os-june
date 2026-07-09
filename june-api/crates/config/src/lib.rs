@@ -69,9 +69,14 @@ const fn base64_encoded_len(byte_count: usize) -> usize {
 }
 
 pub const fn image_client_timeout_secs(route_timeout_secs: u64) -> u64 {
-    route_timeout_secs
-        - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
-        - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
+    // Saturating with a 1s floor: validated configs can never get here with a
+    // route timeout at or below the budgets (validate_image_timeout_margin
+    // rejects them), but directly-built states (tests) bypass validation and
+    // a clamped window beats an underflow panic.
+    let window = route_timeout_secs
+        .saturating_sub(OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS)
+        .saturating_sub(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS);
+    if window == 0 { 1 } else { window }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -313,6 +318,8 @@ impl Debug for LocalDevConfig {
 pub struct OsAccountsConfig {
     pub api_url: String,
     pub app_api_key: String,
+    #[serde(default)]
+    pub p3a_ingest_token: String,
     pub iss: String,
     pub aud: String,
     pub jwks_refresh_secs: u64,
@@ -350,6 +357,7 @@ impl Debug for OsAccountsConfig {
             .debug_struct("OsAccountsConfig")
             .field("api_url", &self.api_url)
             .field("app_api_key", &REDACTED)
+            .field("p3a_ingest_token", &REDACTED)
             .field("iss", &self.iss)
             .field("aud", &self.aud)
             .field("jwks_refresh_secs", &self.jwks_refresh_secs)
@@ -721,12 +729,13 @@ impl Default for AppConfig {
             os_accounts: OsAccountsConfig {
                 api_url: String::new(),
                 app_api_key: String::new(),
+                p3a_ingest_token: String::new(),
                 iss: "os-accounts-dev".to_string(),
                 aud: "june-api-dev".to_string(),
                 jwks_refresh_secs: 300,
                 jwks_miss_min_backoff_secs: 5,
                 authorize_hold_ttl_note_transcribe_secs: 60,
-                authorize_hold_ttl_note_generate_secs: 300,
+                authorize_hold_ttl_note_generate_secs: DEFAULT_IMAGE_HOLD_TTL_SECS,
                 authorize_hold_ttl_dictate_transcribe_secs: 30,
                 authorize_hold_ttl_dictate_cleanup_secs: 30,
                 note_transcribe_preview_max_audio_secs: 30,
@@ -819,6 +828,11 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
             "os_accounts.app_api_key",
             &config.os_accounts.app_api_key,
             OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
+        )?;
+        validate_required_secret(
+            "os_accounts.p3a_ingest_token",
+            &config.os_accounts.p3a_ingest_token,
+            &[],
         )?;
     }
     validate_request_limits(config)?;
@@ -932,6 +946,7 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         config.server.max_image_edit_bytes,
     )?;
     validate_image_hold_ttl(config)?;
+    validate_long_inference_hold_ttl(config)?;
     validate_hold_ttl_bounds(config)?;
     Ok(())
 }
@@ -953,6 +968,28 @@ fn validate_image_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
         return Err(ConfigError::InvalidRequired {
             field: "os_accounts.authorize_hold_ttl_image_secs",
             reason: "must cover the image client timeout plus the settlement budget",
+        });
+    }
+    Ok(())
+}
+
+/// Note generation and agent chat run on the bounded metered-inference client
+/// (same window as images) and settle AFTER the upstream call — streamed chat
+/// settles after the body drains, streamed generate keeps the connection
+/// alive for the whole window. Their shared hold must therefore cover that
+/// client window plus the settlement budget, exactly like the image hold;
+/// a shorter hold silently expires before `charge` on every long call.
+fn validate_long_inference_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
+    let minimum = config
+        .server
+        .request_timeout_secs
+        .saturating_sub(OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS)
+        .saturating_sub(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS)
+        .saturating_add(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS);
+    if config.os_accounts.authorize_hold_ttl_note_generate_secs < minimum {
+        return Err(ConfigError::InvalidRequired {
+            field: "os_accounts.authorize_hold_ttl_note_generate_secs",
+            reason: "must cover the metered-inference client timeout plus the settlement budget",
         });
     }
     Ok(())
@@ -1149,6 +1186,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.os_accounts.api_url = "http://127.0.0.1:3000".to_string();
         config.os_accounts.app_api_key = "osk_test".to_string();
+        config.os_accounts.p3a_ingest_token = "p3a-test-token".to_string();
         config.upstreams.openai.api_key = "sk-test".to_string();
         config.upstreams.venice.api_key = "venice-test".to_string();
         config
@@ -1555,6 +1593,21 @@ mod tests {
         let result = validate(&config);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_missing_p3a_ingest_token() {
+        let mut config = valid_config();
+        config.os_accounts.p3a_ingest_token = String::new();
+
+        let result = validate(&config);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::MissingRequired {
+                field: "os_accounts.p3a_ingest_token"
+            })
+        ));
     }
 
     #[test]
